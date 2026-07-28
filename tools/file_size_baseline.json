@@ -13,7 +13,7 @@
   "limit": 800,
   "target": 750,
   "files": {
-    "build.py": 8297,
+    "build.py": 8288,
     "captureengine/injection.cpp": 1695,
     "captureengine/main.cpp": 1904,
     "captureengine/media_main.cpp": 13340,
@@ -54,5 +54,5 @@
     "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
   "count": 39,
-  "total": 141391
+  "total": 141382
 }

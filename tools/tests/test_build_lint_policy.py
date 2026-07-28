@@ -59,6 +59,13 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
             self.assertIsNotNone(exclude_re.search(path), path)
 
 
+class LintDriverContextTest(unittest.TestCase):
+    def test_build_script_registers_the_live_module_for_the_extracted_driver(self) -> None:
+        source = Path(build.__file__).read_text(encoding="utf-8")
+        self.assertIn('sys.modules.setdefault("build", sys.modules[__name__])', source)
+        self.assertEqual(build.run_lint.__module__, "tools.lint_driver")
+
+
 class CompileCommandsDeterminismTest(unittest.TestCase):
     """The compilation database must not depend on parallel compile ordering.
 

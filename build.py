@@ -37,7 +37,7 @@ import shlex
 import site
 import stat
 import threading
-from collections import Counter, deque
+from collections import deque
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -58,6 +58,22 @@ from tools.ffmpeg_dependencies import (
     verify_pe_import_closure,
 )
 from tools.ffmpeg_patch_utils import normalize_custom_patch_targets
+from tools.lint_driver import run_lint
+from tools.python_tool_self_tests import run_tool_self_tests
+from tools.verification_stage_cache import (
+    collect_link_manifest_inputs,
+    collect_stage_inputs,
+    discover_project_inputs,
+    success_manifest_matches,
+    write_success_manifest,
+)
+from tools.clang_tidy_cache import (
+    analyze_warning_output,
+    run_snapshot_preflight,
+    write_compile_database_snapshot,
+)
+
+sys.modules.setdefault("build", sys.modules[__name__])
 
 # --- Platform Detection ---
 IS_WINDOWS = sys.platform == "win32"
@@ -210,6 +226,7 @@ CURRENT_BUILD_NUMBER = 0  # Set by bump_and_write_build_version()
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
+ISOLATED_BUILD_ROOT = os.environ.get("CE_ISOLATED_BUILD_ROOT")
 MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
 MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260611.tar.xz"
 MSYS2_BOOTSTRAP_PGP_KEY = "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964"
@@ -237,18 +254,25 @@ FFX_VK_SDK_SHA256 = "0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e9
 STREAMLINE_SDK_URL = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.11.1/streamline-sdk-v2.11.1.zip"
 STREAMLINE_SDK_ZIP_NAME = "streamline-sdk-v2.11.1.zip"
 FG_SDK_CACHE_DIR = os.path.join(BUILD_DIR, "fg_sdk_cache")
-FG_SDK_INCLUDE_DIR = os.path.join(BUILD_DIR, "fg_sdk_include")
+FG_SDK_INCLUDE_DIR = os.path.join(ISOLATED_BUILD_ROOT, "fg_sdk_include") if ISOLATED_BUILD_ROOT else os.path.join(
+    BUILD_DIR, "fg_sdk_include"
+)
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
-OBJ_DIR = os.path.join(BUILD_DIR, "obj")
+OBJ_DIR = os.path.join(ISOLATED_BUILD_ROOT, "obj") if ISOLATED_BUILD_ROOT else os.path.join(BUILD_DIR, "obj")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
-INSTALLED_DIR = os.path.join(PROJECT_ROOT, "installed")
+INSTALLED_DIR = os.path.join(ISOLATED_BUILD_ROOT, "installed") if ISOLATED_BUILD_ROOT else os.path.join(
+    PROJECT_ROOT, "installed"
+)
 CAPTURE_BIN_DIR = os.path.join(INSTALLED_DIR, "captureengine")
 TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
 BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\captureengine
+TEST_OUTPUT_DIR = os.path.join(ISOLATED_BUILD_ROOT, "tests") if ISOLATED_BUILD_ROOT else os.path.join(
+    PROJECT_ROOT, "tests"
+)
 DEFAULT_LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 LOG_FILE = DEFAULT_LOG_FILE
 DETAIL_LOG_FILE: Optional[str] = None
-VERIFICATION_DIR = os.path.join(BUILD_DIR, "verification")
+VERIFICATION_DIR = os.path.join(ISOLATED_BUILD_ROOT or BUILD_DIR, "verification")
 VERBOSE_COMMANDS = False
 CONCISE_OUTPUT = False
 LOG_LOCK = threading.Lock()
@@ -257,7 +281,16 @@ VERIFICATION_CONTEXT: Optional[Dict[str, Any]] = None
 VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
 VERIFICATION_FINALIZED = False
-WORKSPACE_TEMP_DIR = os.path.join(BUILD_DIR, "tmp")
+WORKSPACE_TEMP_DIR = os.path.join(ISOLATED_BUILD_ROOT, "tmp") if ISOLATED_BUILD_ROOT else os.path.join(BUILD_DIR, "tmp")
+CLANG_TIDY_CACHE_DIR = os.path.join(BUILD_DIR, "cache", "clang_tidy", "entries")
+CLANG_TIDY_SNAPSHOT_DIR = os.path.join(BUILD_DIR, "cache", "clang_tidy", "full_database")
+SANITIZER_STAGE_ROOT = os.path.join(BUILD_DIR, "stages", "sanitize")
+SANITIZER_STAGE_MANIFEST = os.path.join(SANITIZER_STAGE_ROOT, "success.json")
+
+
+def get_compile_commands_path() -> str:
+    root = ISOLATED_BUILD_ROOT or PROJECT_ROOT
+    return os.path.join(root, "compile_commands.json")
 
 
 def sha256_file(path: str) -> str:
@@ -4327,7 +4360,7 @@ def write_compile_commands_json() -> Optional[str]:
             if enriched_cmd["file"] not in seen_files:
                 unique_commands.append(enriched_cmd)
                 seen_files.add(enriched_cmd["file"])
-        compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
+        compile_commands_path = get_compile_commands_path()
         payload = json.dumps(unique_commands, indent=4) + "\n"
         changed = write_text_atomic_if_changed(compile_commands_path, payload)
         log(
@@ -4553,8 +4586,16 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         log("No test files found.")
         return
 
-    tests_dir = os.path.join(PROJECT_ROOT, "tests")
+    tests_source_dir = os.path.join(PROJECT_ROOT, "tests")
+    tests_dir = TEST_OUTPUT_DIR
     os.makedirs(tests_dir, exist_ok=True)
+    if ISOLATED_BUILD_ROOT:
+        isolated_config_dir = os.path.join(ISOLATED_BUILD_ROOT, "captureengine")
+        os.makedirs(isolated_config_dir, exist_ok=True)
+        shutil.copy2(
+            os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
+            os.path.join(isolated_config_dir, "config.ini.template"),
+        )
     test_exe = os.path.join(tests_dir, "unit_tests.exe")
     compile_tasks = []
 
@@ -4729,9 +4770,9 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     config_resource_obj = os.path.join(obj_dir, "tests", "config_template.res.o").replace("\\", "/")
     os.makedirs(os.path.dirname(config_resource_obj), exist_ok=True)
     run_command(
-        [get_windres_exe("x64"), os.path.join(tests_dir, "config_template.rc"), "-o", config_resource_obj],
+        [get_windres_exe("x64"), os.path.join(tests_source_dir, "config_template.rc"), "-o", config_resource_obj],
         env=env,
-        cwd=tests_dir,
+        cwd=tests_source_dir,
     )
 
     log("Linking Unit Tests...")
@@ -4763,7 +4804,7 @@ def copy_test_runtime_dlls(tests_dir):
     import shutil
 
     msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
-    ffmpeg_bin = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
+    ffmpeg_bin = os.path.join(BIN_DIR, "ffmpeg")
     source_built_names = {name.lower() for name in WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS}
     copied = []
     for dll_dir in [msys_bin, ffmpeg_bin]:
@@ -4884,70 +4925,29 @@ def run_tests(env, test_exe, gtest_filter=None, run_python_tools=True):
 
 def run_python_tool_self_tests(env):
     log("=== Running Python Tool Self-Tests ===")
-    # The unittest suites live in tools/tests/ and import `build`, `tools.ffmpeg_*`
-    # by name. Dotted module names plus the pinned cwd below make that resolution
-    # independent of wherever the caller happened to invoke build.py from; passing
-    # file paths instead would leave sys.path[0] at the caller's directory.
-
-    def unittest_command(module):
-        return [sys.executable, "-m", "unittest", "-v", f"tools.tests.{module}"]
-
-    def self_test_command(*relative_path):
-        return [sys.executable, os.path.join(PROJECT_ROOT, "tools", *relative_path), "--self-test"]
-
-    tool_tests = [
-        ("ffmpeg_patch_utils", unittest_command("test_ffmpeg_patch_utils")),
-        ("ffmpeg_dependencies", unittest_command("test_ffmpeg_dependencies")),
-        ("build_flag_policy", unittest_command("test_build_flags")),
-        ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
-        ("pe_hardening_policy", unittest_command("test_pe_hardening")),
-        ("clang_tidy_baseline_scope", unittest_command("test_clang_tidy_baseline")),
-        ("file_size_baseline", unittest_command("test_file_size_baseline")),
-        ("build_lint_policy", unittest_command("test_build_lint_policy")),
-        ("git_clean_paths", unittest_command("test_git_clean")),
-        ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
-        ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
-        ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),
-    ]
-
-    def run_one(tool_test):
-        name, command = tool_test
-        start = time.time()
-        result = subprocess.run(
-            command,
-            env=env,
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        elapsed = time.time() - start
-        return name, command, result, elapsed
-
-    worker_count = get_parallel_job_count(env, len(tool_tests))
-    results = []
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(run_one, tool_test) for tool_test in tool_tests]
-        for future in as_completed(futures):
-            results.append(future.result())
-
-    result_by_name = {result[0]: result for result in results}
+    results = run_tool_self_tests(
+        project_root=PROJECT_ROOT,
+        python_executable=sys.executable,
+        env=env,
+        jobs=get_parallel_job_count(env, 14),
+    )
     ok = True
-    for expected_name, _ in tool_tests:
-        name, command, result, elapsed = result_by_name[expected_name]
+    for result in results:
         record_verification_step(
-            f"python_tool_self_test.{name}",
+            f"python_tool_self_test.{result.name}",
             "passed" if result.returncode == 0 else "failed",
-            duration_seconds=elapsed,
-            details={"exit_code": result.returncode, "command": command},
+            duration_seconds=result.elapsed,
+            details={"exit_code": result.returncode, "command": result.command},
         )
         if result.stdout:
-            log(f"[python_tool_self_test:{name}:stdout]\n{result.stdout.rstrip()}", detail=True)
+            log(f"[python_tool_self_test:{result.name}:stdout]\n{result.stdout.rstrip()}", detail=True)
         if result.stderr:
-            log(f"[python_tool_self_test:{name}:stderr]\n{result.stderr.rstrip()}", detail=result.returncode == 0)
+            log(
+                f"[python_tool_self_test:{result.name}:stderr]\n{result.stderr.rstrip()}",
+                detail=result.returncode == 0,
+            )
         if result.returncode != 0:
-            log(f"Python tool self-test failed: {name} (exit code {result.returncode})")
+            log(f"Python tool self-test failed: {result.name} (exit code {result.returncode})")
             ok = False
     if ok:
         log("=== Python Tool Self-Tests Passed ===")
@@ -5157,6 +5157,8 @@ def evaluate_clang_tidy_baseline(
     check_counts: Mapping[str, int],
     lint_details: Dict[str, Any],
     current_scope: Optional[Mapping[str, Any]] = None,
+    *,
+    mutate_baseline: bool = True,
 ) -> None:
     """Fail when clang-tidy findings grow; fold in improvements automatically.
 
@@ -5173,7 +5175,7 @@ def evaluate_clang_tidy_baseline(
     that were actually linted, so a count above the baseline is a real regression
     however small the scope was.
     """
-    update_requested = "--update-lint-baseline" in sys.argv
+    update_requested = mutate_baseline and "--update-lint-baseline" in sys.argv
     baseline_record = load_clang_tidy_baseline()
     baseline = baseline_record["checks"] if baseline_record else None
     baseline_scope = baseline_record["scope"] if baseline_record else None
@@ -5218,6 +5220,11 @@ def evaluate_clang_tidy_baseline(
         )
         sys.exit(2)
 
+    if baseline is None and not mutate_baseline:
+        lint_details["clang_tidy_baseline"] = "missing_preflight"
+        log("clang-tidy preflight has no accepted baseline to compare; deferring to the final lint stage")
+        return
+
     if baseline is None or update_requested:
         write_clang_tidy_baseline(check_counts, current_scope)
         lint_details["clang_tidy_baseline"] = "written"
@@ -5260,8 +5267,14 @@ def evaluate_clang_tidy_baseline(
         sys.exit(1)
 
     summary = ", ".join(f"{check} {old}->{new}" for check, (old, new) in sorted(improvements.items())[:6])
-    if improvements and not tightening_allowed:
-        reason = "reduced lint scope" if scope_reduced else "unknown lint scope"
+    if improvements and (not tightening_allowed or not mutate_baseline):
+        reason = (
+            "read-only preflight"
+            if not mutate_baseline
+            else "reduced lint scope"
+            if scope_reduced
+            else "unknown lint scope"
+        )
         lint_details["clang_tidy_baseline"] = "tightening_skipped"
         lint_details["clang_tidy_baseline_tightening_skipped"] = {
             check: {"was": old, "now": new} for check, (old, new) in improvements.items()
@@ -5288,7 +5301,7 @@ def evaluate_clang_tidy_baseline(
         return
 
     lint_details["clang_tidy_baseline"] = "unchanged"
-    if tightening_allowed and write_clang_tidy_baseline(baseline, current_scope):
+    if mutate_baseline and tightening_allowed and write_clang_tidy_baseline(baseline, current_scope):
         # Keep the recorded scope current when sources were added, so later subset
         # detection compares against what a full run actually covers today.
         lint_details["clang_tidy_baseline"] = "scope_refreshed"
@@ -5417,7 +5430,9 @@ def write_file_size_baseline(violations: Mapping[str, int]) -> bool:
     return write_text_atomic_if_changed(FILE_SIZE_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
 
 
-def evaluate_file_size_baseline(sizes: Mapping[str, int], lint_details: Dict[str, Any]) -> None:
+def evaluate_file_size_baseline(
+    sizes: Mapping[str, int], lint_details: Dict[str, Any], *, mutate_baseline: bool = True
+) -> None:
     """Fail when a source file grows past the ceiling; fold in shrinkage automatically.
 
     `AGENTS.md` keeps source files at roughly 600-800 lines. The rule was
@@ -5428,13 +5443,18 @@ def evaluate_file_size_baseline(sizes: Mapping[str, int], lint_details: Dict[str
     There is no scope problem here: the walk is filesystem-based and always
     complete, so improvements can be folded in unconditionally.
     """
-    update_requested = "--update-lint-baseline" in sys.argv
+    update_requested = mutate_baseline and "--update-lint-baseline" in sys.argv
     baseline = load_file_size_baseline()
     violations = {path: count for path, count in sizes.items() if count > FILE_SIZE_LIMIT}
 
     lint_details["file_size_files"] = len(sizes)
     lint_details["file_size_violations"] = len(violations)
     lint_details["file_size_violation_lines"] = sum(violations.values())
+
+    if baseline is None and not mutate_baseline:
+        lint_details["file_size_baseline"] = "missing_preflight"
+        log("file-size preflight has no accepted baseline to compare; deferring to the final lint stage")
+        return
 
     if baseline is None or update_requested:
         write_file_size_baseline(violations)
@@ -5476,7 +5496,7 @@ def evaluate_file_size_baseline(sizes: Mapping[str, int], lint_details: Dict[str
         for path, allowed in baseline.items()
         if violations.get(path, 0) < allowed
     }
-    if improvements:
+    if improvements and mutate_baseline:
         write_file_size_baseline(violations)
         resolved = sorted(path for path, (_, now) in improvements.items() if now == 0)
         preview = ", ".join(
@@ -5496,250 +5516,86 @@ def evaluate_file_size_baseline(sizes: Mapping[str, int], lint_details: Dict[str
     log(f"file-size baseline: OK ({len(violations)} accepted file(s) over {FILE_SIZE_LIMIT} lines, none grew)")
 
 
-def run_lint(env, *, advisory=False):
-    log("=== Running Linting ===")
-    lint_start = time.time()
-    checks_ok = True
-    lint_details: Dict[str, Any] = {}
+def run_verify_preflight(env: Dict[str, str]) -> None:
+    """Fail cheap ratchets early and pre-lint changed translation units from the last full database."""
+    log("=== Running Verification Preflight ===")
+    started = time.time()
+    details: Dict[str, Any] = {}
+    evaluate_file_size_baseline(collect_source_file_sizes(), details, mutate_baseline=False)
 
-    # 1. C++ Linting (clang-format)
-    clang_format = None
-    if IS_LINUX:
-        clang_format = shutil.which("clang-format")
-    else:
-        clang_format = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-format.exe")
-
-    if clang_format and (IS_LINUX or os.path.exists(clang_format)):
-        log("Running clang-format...")
-
-        files = collect_lintable_cpp_sources()
-
-        if files:
-            chunk_size = 50
-            issues_found = 0
-            format_outputs: List[str] = []
-            format_issue_files = set()
-
-            for i in range(0, len(files), chunk_size):
-                chunk = files[i : i + chunk_size]
-                cmd = [clang_format, "--dry-run", "-Werror"] + chunk
-                res = subprocess.run(cmd, capture_output=True, text=True, env=env)
-                combined_output = "\n".join(part for part in (res.stdout, res.stderr) if part)
-                if combined_output:
-                    format_outputs.append(f"$ {subprocess.list2cmdline(cmd)}\n{combined_output}")
-                    for line in combined_output.splitlines():
-                        match = re.match(r"^(.+?):\d+:\d+:\s+(?:error|warning):", line)
-                        if match:
-                            format_issue_files.add(os.path.normpath(match.group(1)))
-                if res.returncode != 0:
-                    issues_found += 1
-
-            write_verification_artifact(
-                "clang_format_diagnostics",
-                "clang_format.log",
-                "\n\n".join(format_outputs) + ("\n" if format_outputs else "clang-format: no diagnostics\n"),
-            )
-
-            if issues_found > 0:
-                log(
-                    f"WARNING: C++ style issues found in {len(format_issue_files)} file(s) "
-                    f"across {issues_found} batch(es)."
-                )
-                log("Run 'python build.py --format' to fix them automatically.")
-                checks_ok = False
-                lint_details["clang_format_batches_with_issues"] = issues_found
-                lint_details["clang_format_files_with_issues"] = len(format_issue_files)
-            else:
-                log("C++ Style: OK")
-                lint_details["clang_format_batches_with_issues"] = 0
-                lint_details["clang_format_files_with_issues"] = 0
-    else:
-        log("Error: clang-format not found.")
-        checks_ok = False
-        lint_details["clang_format_missing"] = True
-
-    # 2. Source file size ratchet (the AGENTS.md 600-800 line ceiling).
-    # Cheap and filesystem-only, so it runs before clang-tidy: during an active
-    # split a size regression is the likely failure and should surface fast.
-    log("Checking source file sizes...")
-    evaluate_file_size_baseline(collect_source_file_sizes(), lint_details)
-
-    # 3. Python Linting (flake8)
-    # Check if flake8 is installed in host python
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "flake8", "--version"],
-            capture_output=True,
-            check=True,
-        )
-        has_flake8 = True
-    except Exception:
-        has_flake8 = False
-
-    if has_flake8:
-        log("Running flake8...")
-        # Lint every first-party Python tree. Paths stay explicit so a failed exclude
-        # cannot drag flake8 into build/ or external/. This used to be a hand-listed
-        # subset of the root scripts, which silently left several test suites and all
-        # of tools/ unlinted; directory targets keep new files covered by default.
-        py_targets = [
-            "build.py",
-            "tools",
-            "testapp",
-        ]
-
-        cmd = [sys.executable, "-m", "flake8"] + py_targets
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        write_process_diagnostics_artifact("flake8_diagnostics", "flake8.log", cmd, res)
-
-        if res.returncode != 0:
-            log_failure_output_tail("flake8", "\n".join(part for part in (res.stdout, res.stderr) if part))
-            log("Python Style: FAILED")
-            checks_ok = False
-            lint_details["flake8_exit_code"] = res.returncode
-        else:
-            log("Python Style: OK")
-            lint_details["flake8_exit_code"] = 0
-    else:
-        log("Error: flake8 not installed. (Run 'pip install flake8')")
-        checks_ok = False
-        lint_details["flake8_missing"] = True
-
-    # 4. Python type/LSP check (pyright)
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pyright", "--version"],
-            capture_output=True,
-            check=True,
-        )
-        has_pyright = True
-    except Exception:
-        has_pyright = False
-
-    if has_pyright:
-        log("Running pyright...")
-        cmd = [
-            sys.executable,
-            "-m",
-            "pyright",
-            "-p",
-            os.path.join(PROJECT_ROOT, "pyrightconfig.json"),
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        write_process_diagnostics_artifact("pyright_diagnostics", "pyright.log", cmd, res)
-        if res.returncode != 0:
-            log_failure_output_tail("pyright", "\n".join(part for part in (res.stdout, res.stderr) if part))
-            log("Python Types: FAILED")
-            checks_ok = False
-            lint_details["pyright_exit_code"] = res.returncode
-        else:
-            log("Python Types: OK")
-            lint_details["pyright_exit_code"] = 0
-    else:
-        log("Error: pyright not installed. (Run 'pip install pyright')")
-        checks_ok = False
-        lint_details["pyright_missing"] = True
-
-    # 5. C++ Static Analysis (clang-tidy) — uses compile_commands.json, no recompilation
     clang_tidy = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-tidy.exe")
     if IS_LINUX:
         clang_tidy = shutil.which("clang-tidy") or clang_tidy
-
-    if clang_tidy and (IS_LINUX or os.path.exists(clang_tidy)):
-        log("Running clang-tidy...")
-        run_clang_tidy_script = os.path.join(MSYS2_DIR, "clang64", "bin", "run-clang-tidy")
-        compile_db = os.path.join(PROJECT_ROOT, "compile_commands.json")
-        if os.path.exists(run_clang_tidy_script) and os.path.exists(compile_db):
-            clang_tidy_scope: Optional[Dict[str, Any]] = None
-            try:
-                with open(compile_db, "r", encoding="utf-8") as compile_db_file:
-                    compile_db_data = json.load(compile_db_file)
-                lint_details["compile_database_entries"] = len(compile_db_data)
-                lint_details["compile_database_sha256"] = sha256_file(compile_db)
-                # run-clang-tidy lints every entry, so the database is the exact
-                # scope the baseline counts below were measured over.
-                clang_tidy_scope = clang_tidy_scope_from_entries(compile_db_data)
-                record_verification_artifact("compile_commands", compile_db)
-            except Exception as error:
-                lint_details["compile_database_error"] = str(error)
-            num_workers = cpu_count()
-            cmd = [
-                sys.executable,
-                run_clang_tidy_script,
-                "-p",
-                PROJECT_ROOT,
-                "-j",
-                str(num_workers),
-                "-quiet",
-                "-extra-arg=-w",
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, env=env)
-            write_process_diagnostics_artifact("clang_tidy_diagnostics", "clang_tidy.log", cmd, res)
-            # Count warnings from stdout (non-fatal for now: existing codebase has
-            # many latent issues). We report them so developers can see them without
-            # breaking the build.
-            warning_lines = []
-            if res.stdout:
-                for line in res.stdout.splitlines():
-                    if "warning:" in line:
-                        warning_lines.append(line)
-            warning_count = len(warning_lines)
-            lint_details["clang_tidy_warnings"] = warning_count
-            lint_details["clang_tidy_exit_code"] = res.returncode
-            check_counts = Counter()
-            subsystem_counts = Counter()
-            for line in warning_lines:
-                check_match = re.search(r"\[([^\]]+)\]\s*$", line)
-                if check_match:
-                    check_counts[check_match.group(1)] += 1
-                path_match = re.match(r"^(.+?):\d+:\d+:\s+warning:", line)
-                if path_match:
-                    try:
-                        relative_path = os.path.relpath(path_match.group(1), PROJECT_ROOT)
-                    except ValueError:
-                        relative_path = path_match.group(1)
-                    subsystem_counts[relative_path.replace("\\", "/").split("/", 1)[0]] += 1
-            lint_details["clang_tidy_checks"] = dict(check_counts.most_common())
-            lint_details["clang_tidy_subsystems"] = dict(subsystem_counts.most_common())
-            evaluate_clang_tidy_baseline(check_counts, lint_details, clang_tidy_scope)
-            if res.returncode != 0 or warning_count > 0:
-                log(f"clang-tidy: {warning_count} warning(s) found (non-fatal)")
-                if check_counts:
-                    top_checks = ", ".join(f"{name}={count}" for name, count in check_counts.most_common(8))
-                    log(f"clang-tidy top checks: {top_checks}")
-                if subsystem_counts:
-                    top_subsystems = ", ".join(
-                        f"{name}={count}" for name, count in subsystem_counts.most_common(8)
-                    )
-                    log(f"clang-tidy affected subsystems: {top_subsystems}")
-                diagnostics_path = verification_artifact_path("clang_tidy.log")
-                if diagnostics_path:
-                    log(f"Complete clang-tidy diagnostics: {diagnostics_path}")
-            else:
-                log("clang-tidy: OK")
-        else:
-            log("Skipping clang-tidy (run-clang-tidy script or compile_commands.json missing)")
-            lint_details["clang_tidy_skipped"] = True
+    preflight = run_snapshot_preflight(
+        clang_tidy=clang_tidy,
+        snapshot_dir=CLANG_TIDY_SNAPSHOT_DIR,
+        build_script_sha256=sha256_file(os.path.abspath(__file__)),
+        project_root=PROJECT_ROOT,
+        cache_dir=CLANG_TIDY_CACHE_DIR,
+        jobs=get_parallel_job_count(env, cpu_count()),
+        env=env,
+    )
+    if preflight:
+        result = preflight.result
+        completed = subprocess.CompletedProcess(
+            preflight.command,
+            result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        write_process_diagnostics_artifact(
+            "clang_tidy_preflight_diagnostics",
+            "clang_tidy_preflight.log",
+            list(preflight.command),
+            completed,
+        )
+        warnings, check_counts, _ = analyze_warning_output(result.stdout, PROJECT_ROOT)
+        details.update(
+            {
+                "clang_tidy_warnings": len(warnings),
+                "clang_tidy_cache_hits": result.hits,
+                "clang_tidy_cache_misses": result.misses,
+                "clang_tidy_cache_uncacheable": result.uncacheable,
+            }
+        )
+        comparable_scope = (
+            clang_tidy_scope_from_entries(list(preflight.compile_database)) if result.returncode == 0 else None
+        )
+        evaluate_clang_tidy_baseline(check_counts, details, comparable_scope, mutate_baseline=False)
+        log(
+            f"Verification preflight clang-tidy cache: {result.hits} hit(s), {result.misses} miss(es), "
+            f"{result.uncacheable} uncacheable"
+        )
     else:
-        log("clang-tidy not found. Install via MSYS2: " "pacman -S mingw-w64-clang-x86_64-clang-tools-extra")
-        lint_details["clang_tidy_missing"] = True
-
-    clang_tidy_has_findings = bool(lint_details.get("clang_tidy_warnings")) or bool(
-        lint_details.get("clang_tidy_exit_code")
-    )
-    lint_status = "passed"
-    if not checks_ok:
-        lint_status = "warning" if advisory else "failed"
-    elif clang_tidy_has_findings:
-        lint_status = "warning"
+        details["clang_tidy"] = "deferred_no_compatible_full_snapshot"
+        log("Verification preflight: no compatible full compile database; clang-tidy deferred to final lint")
     record_verification_step(
-        "lint",
-        lint_status,
-        duration_seconds=time.time() - lint_start,
-        details={**lint_details, "advisory": advisory},
+        "preflight",
+        "passed",
+        duration_seconds=time.time() - started,
+        details=details,
     )
 
-    return checks_ok
+
+def refresh_full_compile_database_snapshot() -> None:
+    """Retain only a database proven to cover the committed clang-tidy baseline scope."""
+    try:
+        with open(get_compile_commands_path(), "r", encoding="utf-8") as source:
+            compile_database = json.load(source)
+        baseline = load_clang_tidy_baseline()
+        baseline_scope = baseline["scope"] if baseline else None
+        current_scope = clang_tidy_scope_from_entries(compile_database)
+        if clang_tidy_scope_gap(baseline_scope, current_scope):
+            log("Not refreshing clang-tidy preflight database from a reduced lint scope")
+            return
+        write_compile_database_snapshot(
+            compile_database=compile_database,
+            snapshot_dir=CLANG_TIDY_SNAPSHOT_DIR,
+            build_script_sha256=sha256_file(os.path.abspath(__file__)),
+        )
+        log(f"Refreshed full clang-tidy preflight database ({current_scope['entries']} translation units)")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        log(f"WARNING: Could not refresh clang-tidy preflight database: {error}")
 
 
 def run_format(env):
@@ -7421,7 +7277,7 @@ def compile_project(
     assert_no_obsolete_process_loopback_helper_artifacts()
 
     # Keep runtime DLLs in tests/ current so unit_tests.exe can run directly
-    tests_dir = os.path.join(PROJECT_ROOT, "tests")
+    tests_dir = TEST_OUTPUT_DIR
     if os.path.exists(os.path.join(tests_dir, "unit_tests.exe")):
         copy_test_runtime_dlls(tests_dir)
 
@@ -7552,7 +7408,72 @@ def ensure_debug_logging():
         log(f"Warning: Failed to update config.ini: {e}")
 
 
-def sanitizer_regression_command(ccache_flag: bool) -> List[str]:
+def verification_parallel_job_counts(total_jobs: int) -> Tuple[int, int]:
+    """Reserve most workers for the larger product build and the rest for sanitizer validation."""
+    if total_jobs < 2:
+        return total_jobs, 0
+    sanitizer_jobs = max(1, (total_jobs + 2) // 3)
+    return total_jobs - sanitizer_jobs, sanitizer_jobs
+
+
+def sanitizer_stage_outputs() -> List[str]:
+    capture_dir = os.path.join(SANITIZER_STAGE_ROOT, "installed", "captureengine")
+    return [
+        os.path.join(SANITIZER_STAGE_ROOT, "tests", "unit_tests.exe"),
+        os.path.join(capture_dir, "captureengine.exe"),
+        os.path.join(capture_dir, "mediaengine.dll"),
+        os.path.join(capture_dir, "capture_hook_x64.dll"),
+        os.path.join(capture_dir, "VK_LAYER_CE_overlay.dll"),
+    ]
+
+
+def sanitizer_stage_discovered_inputs() -> List[str]:
+    return discover_project_inputs(PROJECT_ROOT)
+
+
+def sanitizer_stage_cache_hit() -> bool:
+    return success_manifest_matches(
+        SANITIZER_STAGE_MANIFEST,
+        discovered_inputs=sanitizer_stage_discovered_inputs(),
+    )
+
+
+def sanitizer_stage_link_inputs() -> List[str]:
+    """Recover the exact linker/object/library closure recorded by stage link manifests."""
+    return collect_link_manifest_inputs(
+        SANITIZER_STAGE_ROOT,
+        lambda command, cwd: collect_link_dependency_paths(command, command[0], cwd or PROJECT_ROOT),
+    )
+
+
+def record_sanitizer_stage_success() -> None:
+    glslang, spirv_val = get_vulkan_fg_shader_tools()
+    discovered, inputs = collect_stage_inputs(
+        project_root=PROJECT_ROOT,
+        stage_root=SANITIZER_STAGE_ROOT,
+        extra_files=[
+            get_compiler_exe("x64") or "",
+            get_windres_exe("x64"),
+            get_llvm_readobj_exe(),
+            glslang,
+            spirv_val,
+            *sanitizer_stage_link_inputs(),
+        ],
+        extra_roots=[
+            os.path.join(FFMPEG_DIR, "lib"),
+            os.path.join(FFMPEG_DIR, "bin"),
+            os.path.join(MSYS2_DIR, "var", "lib", "pacman", "local"),
+        ],
+    )
+    write_success_manifest(
+        SANITIZER_STAGE_MANIFEST,
+        discovered_inputs=discovered,
+        all_inputs=inputs,
+        outputs=sanitizer_stage_outputs(),
+    )
+
+
+def sanitizer_regression_command(ccache_flag: bool, jobs: Optional[int] = None) -> List[str]:
     """Build the isolated sanitizer command; external inputs are already prepared by the parent."""
     cmd = [
         sys.executable,
@@ -7566,12 +7487,14 @@ def sanitizer_regression_command(ccache_flag: bool) -> List[str]:
     ]
     if ccache_flag:
         cmd.append("--ccache")
+    if jobs:
+        cmd.append(f"--jobs={jobs}")
     return cmd
 
 
-def run_sanitizer_regression_pass(ccache_flag: bool) -> None:
+def run_sanitizer_regression_pass(ccache_flag: bool, jobs: Optional[int] = None) -> None:
     """Run a second validation pass with ASan/UBSan + unit tests."""
-    cmd = sanitizer_regression_command(ccache_flag)
+    cmd = sanitizer_regression_command(ccache_flag, jobs)
 
     log("=== Running sanitizer regression cadence pass ===")
     sanitizer_start = time.time()
@@ -7581,7 +7504,9 @@ def run_sanitizer_regression_pass(ccache_flag: bool) -> None:
         cmd.append(f"--log-file={sanitizer_log}")
     if sanitizer_detail_log:
         cmd.append(f"--detail-log={sanitizer_detail_log}")
-    result = run_logged_subprocess(cmd, cwd=PROJECT_ROOT)
+    child_env = os.environ.copy()
+    child_env["CE_ISOLATED_BUILD_ROOT"] = SANITIZER_STAGE_ROOT
+    result = run_logged_subprocess(cmd, cwd=PROJECT_ROOT, env=child_env)
     elapsed = time.time() - sanitizer_start
     if result.returncode != 0:
         log(f"ERROR: Sanitizer regression pass failed (exit code {result.returncode})")
@@ -7591,12 +7516,13 @@ def run_sanitizer_regression_pass(ccache_flag: bool) -> None:
             duration_seconds=elapsed,
             details={"exit_code": result.returncode},
         )
-        sys.exit(result.returncode)
+        raise RuntimeError(f"sanitizer regression failed with exit code {result.returncode}")
     log("=== Sanitizer regression cadence pass: OK ===")
     if sanitizer_log:
         record_verification_artifact("sanitize_regression_log", sanitizer_log)
     if sanitizer_detail_log:
         record_verification_artifact("sanitize_regression_detail_log", sanitizer_detail_log)
+    record_sanitizer_stage_success()
     record_verification_step("sanitize_regression", "passed", duration_seconds=elapsed)
 
 
@@ -8191,6 +8117,9 @@ def main():
         VERIFICATION_FINAL_EXIT_CODE = 0 if lint_ok else 1
         sys.exit(VERIFICATION_FINAL_EXIT_CODE)
 
+    if (verify_flag or default_quality_mode) and lint_flag and not sanitize_regression_child and not no_build_flag:
+        run_verify_preflight(env)
+
     externals_prepared = False
     if sanitize_regression_flag and not sanitize_regression_child and not sanitize_flag and not no_build_flag:
         # The sanitizer child and final product build use the same non-instrumented
@@ -8205,19 +8134,58 @@ def main():
             details={"skip_updates": skip_updates, "consumers": ["sanitizer", "product"]},
         )
 
+    sanitizer_executor = None
+    sanitizer_future = None
+    parallel_product_jobs = 0
+    parallel_sanitizer_jobs = 0
+    original_job_setting = env.get("CE_BUILD_JOBS")
     if sanitize_regression_flag and not sanitize_regression_child:
         if sanitize_flag:
             log("Sanitizer regression cadence requested in sanitizer mode; skipping nested pass")
+        elif "--force-rebuild" not in sys.argv and sanitizer_stage_cache_hit():
+            log("Reusing exact-input sanitizer success manifest; all recorded inputs and outputs match")
+            record_verification_step(
+                "sanitize_regression",
+                "cached",
+                details={"manifest": SANITIZER_STAGE_MANIFEST},
+            )
         else:
-            # Run sanitizer validation first so final installed artifacts remain
-            # non-sanitized unless --sanitize was explicitly requested.
-            run_sanitizer_regression_pass(ccache_flag=ccache_flag)
+            # Populate the shared download cache before isolated parent/child
+            # staging begins, avoiding concurrent archive creation.
+            setup_fg_sdk_for_host(skip_updates=True)
+            total_jobs = get_parallel_job_count(env, cpu_count())
+            product_jobs, sanitizer_jobs = verification_parallel_job_counts(total_jobs)
+            if sanitizer_jobs and not no_build_flag:
+                parallel_product_jobs = product_jobs
+                parallel_sanitizer_jobs = sanitizer_jobs
+                env["CE_BUILD_JOBS"] = str(product_jobs)
+                sanitizer_executor = ThreadPoolExecutor(max_workers=1)
+                sanitizer_future = sanitizer_executor.submit(
+                    run_sanitizer_regression_pass,
+                    ccache_flag,
+                    sanitizer_jobs,
+                )
+                log(
+                    "Running isolated sanitizer validation concurrently with the clean product build "
+                    f"(product jobs={product_jobs}, sanitizer jobs={sanitizer_jobs})"
+                )
+                record_verification_step(
+                    "verification_parallelism",
+                    "running",
+                    details={"product_jobs": product_jobs, "sanitizer_jobs": sanitizer_jobs},
+                )
+            else:
+                try:
+                    run_sanitizer_regression_pass(ccache_flag=ccache_flag)
+                except RuntimeError as error:
+                    log(f"ERROR: {error}")
+                    sys.exit(1)
 
     build_start = time.time()
     if no_build_flag:
         log("Build skipped (--no-build)")
         if run_tests_flag:
-            tests_dir = os.path.join(PROJECT_ROOT, "tests")
+            tests_dir = TEST_OUTPUT_DIR
             test_exe = os.path.join(tests_dir, "unit_tests.exe")
             if not os.path.exists(test_exe):
                 log(f"Error: {test_exe} not found. Build first without --no-build.")
@@ -8258,13 +8226,34 @@ def main():
             "resume": resume_flag,
         },
     )
+    if sanitizer_future is not None:
+        try:
+            sanitizer_future.result()
+            record_verification_step(
+                "verification_parallelism",
+                "passed",
+                details={
+                    "product_jobs": parallel_product_jobs,
+                    "sanitizer_jobs": parallel_sanitizer_jobs,
+                },
+            )
+        except (RuntimeError, SystemExit) as error:
+            log(f"ERROR: Concurrent sanitizer validation failed: {error}")
+            sys.exit(1)
+        finally:
+            assert sanitizer_executor is not None
+            sanitizer_executor.shutdown()
+            if original_job_setting is None:
+                env.pop("CE_BUILD_JOBS", None)
+            else:
+                env["CE_BUILD_JOBS"] = original_job_setting
 
     # Publish the database before advisory lint so clang-tidy sees this build's
     # exact compiler, flags, and sources. The atexit hook still preserves a
     # partial database when compilation fails before reaching this point.
     if COMPILE_COMMANDS:
         write_compile_commands_json()
-    compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
+    compile_commands_path = get_compile_commands_path()
     if os.path.exists(compile_commands_path):
         record_verification_artifact("compile_commands", compile_commands_path)
         try:
@@ -8282,6 +8271,8 @@ def main():
         lint_ok = run_lint(env, advisory=True)
         if not lint_ok:
             log("Lint/LSP checks reported advisory issues; complete diagnostics were retained as artifacts.")
+        if not tests_only_flag and not no_build_flag and not sanitize_flag and not sanitize_regression_child:
+            refresh_full_compile_database_snapshot()
 
     if run_fuzz_flag:
         run_fuzz_targets(env, fuzz_seconds)
