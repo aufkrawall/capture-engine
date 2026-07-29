@@ -16,6 +16,11 @@ TEST(DXGISharedTest, ReinitCooldownLetsHalfArmedSyntheticPostSLContinue) {
         true, false, false, true, false));
 }
 
+TEST(DXGISharedTest, InactiveDLSSExactKeepAliveSubmitsOnlyWhenPreRoutingDidNotCoverPresent) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSubmitInactiveDLSSExactPostSLKeepAlive(false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSubmitInactiveDLSSExactPostSLKeepAlive(true));
+}
+
 TEST(DXGISharedTest, VisibleOverlayCanWakeECLDrivenStartupActivationBeforePostSLCallbackEnters) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, true, false, false, true,
                                                                                       true, false, false));

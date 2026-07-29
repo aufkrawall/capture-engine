@@ -89,6 +89,15 @@ inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(bool keepAliveLatche
            hasPostSLRenderQueue && currentSwapchainMatchesLastSuccessfulPostSLSwapchain;
 }
 
+inline bool ShouldSubmitInactiveDLSSExactPostSLKeepAlive(bool preRoutingKeepAliveAlreadySubmitted) {
+    // The top-level Present pre-routing hook covers wrapped/pass-through routes
+    // before any early return. ProcessFrame reaches the same exact-proxy route on
+    // the ordinary path; submitting again would blend two independently sampled
+    // overlay snapshots into one backbuffer and retain stale content across
+    // buffer reuse. ProcessFrame is only the fallback when pre-routing failed.
+    return !preRoutingKeepAliveAlreadySubmitted;
+}
+
 inline bool ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(bool streamlineTurnedOff,
                                                                       bool postSLExplicitOffKeepAlive,
                                                                       bool currentSwapchainMatchesLastSuccessfulPostSL,

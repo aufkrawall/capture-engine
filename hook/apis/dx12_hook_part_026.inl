@@ -241,36 +241,50 @@
             postSLCallbackReady, hasPostSLRenderQueue,
             lastSuccessfulPostSLSwapchain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain);
         if (recoveryRoute == ce::dx12_overlay_policy::InactiveDLSSPresentRoute::kConfirmedPostSLKeepAlive) {
+            const bool preRoutingKeepAliveAlreadySubmitted = DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn();
+            const bool shouldSubmitKeepAlive =
+                ce::dx12_overlay_policy::ShouldSubmitInactiveDLSSExactPostSLKeepAlive(
+                    preRoutingKeepAliveAlreadySubmitted);
             const uint64_t successfulSubmitSequenceBefore = s_PostSLSuccessfulSubmitSequence;
-            const bool previousInlineCoverageOwner = g_PostSLDrawBelongsToEnclosingProcessFramePresent;
-            g_PostSLDrawBelongsToEnclosingProcessFramePresent = true;
-            auto inlineCoverageOwnerGuard = ce::make_scope_guard([previousInlineCoverageOwner]() {
-                g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousInlineCoverageOwner;
-            });
-            PostSLOverlayRenderGated(pSwapChain);
-            const uint64_t successfulSubmitSequenceAfter = s_PostSLSuccessfulSubmitSequence;
-            const bool directKeepAliveDrawSucceeded = successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;
-            if (directKeepAliveDrawSucceeded) {
-                DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
-            } else {
-                NoteDX12OverlayCoverageGate("postsl-exact-off-keepalive-submit-missed");
+            uint64_t successfulSubmitSequenceAfter = successfulSubmitSequenceBefore;
+            bool fallbackKeepAliveDrawSucceeded = false;
+            if (shouldSubmitKeepAlive) {
+                const bool previousInlineCoverageOwner = g_PostSLDrawBelongsToEnclosingProcessFramePresent;
+                g_PostSLDrawBelongsToEnclosingProcessFramePresent = true;
+                auto inlineCoverageOwnerGuard = ce::make_scope_guard([previousInlineCoverageOwner]() {
+                    g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousInlineCoverageOwner;
+                });
+                PostSLOverlayRenderGated(pSwapChain);
+                successfulSubmitSequenceAfter = s_PostSLSuccessfulSubmitSequence;
+                fallbackKeepAliveDrawSucceeded =
+                    successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;
+                if (fallbackKeepAliveDrawSucceeded) {
+                    DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
+                } else {
+                    NoteDX12OverlayCoverageGate("postsl-exact-off-keepalive-submit-missed");
+                }
             }
+            const bool keepAliveCoverageSucceeded =
+                preRoutingKeepAliveAlreadySubmitted || fallbackKeepAliveDrawSucceeded;
 
             static std::atomic<int> s_confirmedPostSLProxyKeepAliveLogCount{0};
             const int logCount = s_confirmedPostSLProxyKeepAliveLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
-                    "DX12: Inactive-DLSS Present remains on exact confirmed PostSL proxy — direct keep-alive "
-                    "submit completed=%d sequence=%llu->%llu "
+                    "DX12: Inactive-DLSS Present remains on exact confirmed PostSL proxy — keep-alive "
+                    "coverage completed=%d preRouting=%d fallbackSubmit=%d sequence=%llu->%llu "
                     "(sc=%p lastWorking=%p locked=%p origGame=%p; no copy/reinit/wait log=%d)",
-                    directKeepAliveDrawSucceeded ? 1 : 0, successfulSubmitSequenceBefore, successfulSubmitSequenceAfter,
-                    pSwapChain, recoveryPostSLLastWorkingQueue, recoveryPostSLLockedQueue, recoveryOriginalGameQueue,
-                    logCount + 1);
+                    keepAliveCoverageSucceeded ? 1 : 0, preRoutingKeepAliveAlreadySubmitted ? 1 : 0,
+                    fallbackKeepAliveDrawSucceeded ? 1 : 0, successfulSubmitSequenceBefore,
+                    successfulSubmitSequenceAfter, pSwapChain, recoveryPostSLLastWorkingQueue,
+                    recoveryPostSLLockedQueue, recoveryOriginalGameQueue, logCount + 1);
             }
             // Streamline's explicit-OFF pass-through does not reliably issue a
-            // later callback. Submit once on the exact previously successful
-            // PostSL route before Present. If Streamline does nest synchronously,
-            // dxgi_shared suppresses only that same-present duplicate.
+            // later callback. The pre-routing hook normally submitted once on the
+            // exact previously successful PostSL route; this ProcessFrame route
+            // submits only as a fallback if that attempt missed. If Streamline
+            // nests synchronously, dxgi_shared suppresses that same-Present
+            // duplicate too.
             return true;
         }
         if (recoveryRoute == ce::dx12_overlay_policy::InactiveDLSSPresentRoute::kAwaitNormalOwnershipProof) {

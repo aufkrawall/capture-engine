@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-07-29 - Deduplicate exact PostSL suspension rendering across pre-routing and ProcessFrame
+
+- **Evidence / corrected diagnosis:** GTA follow-up session
+  `installed/captureengine/logs/20260729_225256` proved the prior independent-FFX cleanup did execute
+  (`nativeFGPath=0 noCallback=1`) and eliminated the earlier continuous FFX/PostSL overlap. The remaining
+  explicit-DLSS-OFF interval instead submitted PostSL twice on every game Present: the new top-level pre-routing hook
+  and `ProcessFrame`'s older inactive-DLSS route both targeted the same proxy buffer and queue. Examples include
+  submits `#5191/#5192` on buffer 0 and `#8158/#8159` on buffer 2, with both successful sequence increments inside
+  one Present. This invalidates the prior source-only assumption that the Present scope already deduplicated the
+  ordinary ProcessFrame route.
+- **Root cause / fix:** the thread-local marker was honored by wrapped and recursive Present paths but never read by
+  `routeInactiveDLSSPresentBeforeBackbufferAccess`. Two independently sampled overlay draws could therefore blend
+  old and new text/graph state into one backbuffer and preserve stale content when the proxy buffers were reused
+  across suspend/resume. The ordinary ProcessFrame route now treats a successful top-level pre-routing submit as
+  authoritative coverage and remains GPU-quiet; it performs exactly one fallback submit only if pre-routing missed.
+  Nested Streamline Present keeps using the same marker. The diagnostic reports `preRouting` and `fallbackSubmit`
+  separately. There is no copy, extra queue, reinit, wait, delay, polling, title branch, or active-FG work.
+- **Coverage:** policy tests prove both marker states, and the source contract requires the marker/policy decision to
+  precede the fallback submit. The focused `DXGISharedTest.*:DXGISharedSourceTest.*` development loop passes.
+- **Source anchors:** `hook/common/dx12_overlay_policy/postsl_keepalive.h`,
+  `hook/apis/dx12_hook_part_026.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
 ### 2026-07-29 - Retire the independent FFX no-callback route on post-FSR DLSS comeback
 
 - **Root cause:** follow-up GTA session `installed/captureengine/logs/20260729_220919` exercised the prior

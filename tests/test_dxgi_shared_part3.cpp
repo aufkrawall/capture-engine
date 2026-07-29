@@ -168,12 +168,18 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     EXPECT_LT(explicitOffRouteProtection, routeProtectionGuard);
     EXPECT_LT(routeProtectionGuard, recoveryDecision)
         << "a pure-DLSS explicit-OFF proxy must use the exact keep-alive route even without FSR history";
-    const size_t exactPostSLKeepAlive = text.find("PostSLOverlayRenderGated(pSwapChain);", recoveryDecision);
-    const size_t directDrawSuccess = text.find("const bool directKeepAliveDrawSucceeded", exactPostSLKeepAlive);
-    const size_t directDrawSuccessGuard = text.find("if (directKeepAliveDrawSucceeded)", directDrawSuccess);
+    const size_t preRoutingCoverage = text.find("DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn()", recoveryDecision);
+    const size_t dedupDecision = text.find("ShouldSubmitInactiveDLSSExactPostSLKeepAlive(", preRoutingCoverage);
+    const size_t fallbackSubmitGuard = text.find("if (shouldSubmitKeepAlive)", dedupDecision);
+    const size_t exactPostSLKeepAlive = text.find("PostSLOverlayRenderGated(pSwapChain);", fallbackSubmitGuard);
+    const size_t directDrawSuccess = text.find("fallbackKeepAliveDrawSucceeded =", exactPostSLKeepAlive);
+    const size_t directDrawSuccessGuard = text.find("if (fallbackKeepAliveDrawSucceeded)", directDrawSuccess);
     const size_t markPrePresentDraw =
         text.find("DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();", directDrawSuccessGuard);
     const size_t exactPostSLReturn = text.find("return true;", markPrePresentDraw);
+    ASSERT_NE(preRoutingCoverage, std::string::npos);
+    ASSERT_NE(dedupDecision, std::string::npos);
+    ASSERT_NE(fallbackSubmitGuard, std::string::npos);
     ASSERT_NE(exactPostSLKeepAlive, std::string::npos);
     ASSERT_NE(directDrawSuccess, std::string::npos);
     ASSERT_NE(directDrawSuccessGuard, std::string::npos);
@@ -181,13 +187,16 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     ASSERT_NE(exactPostSLReturn, std::string::npos);
     const size_t overlayMutex = text.find("g_OverlayMutex.try_lock()", recoveryDecision);
     ASSERT_NE(overlayMutex, std::string::npos);
-    EXPECT_LT(recoveryDecision, exactPostSLKeepAlive);
+    EXPECT_LT(recoveryDecision, preRoutingCoverage);
+    EXPECT_LT(preRoutingCoverage, dedupDecision);
+    EXPECT_LT(dedupDecision, fallbackSubmitGuard);
+    EXPECT_LT(fallbackSubmitGuard, exactPostSLKeepAlive);
     EXPECT_LT(exactPostSLKeepAlive, directDrawSuccess);
     EXPECT_LT(directDrawSuccess, directDrawSuccessGuard);
     EXPECT_LT(directDrawSuccessGuard, markPrePresentDraw);
     EXPECT_LT(markPrePresentDraw, exactPostSLReturn);
     EXPECT_LT(exactPostSLReturn, overlayMutex)
-        << "the exact confirmed proxy must draw once before pass-through Present and before normal backbuffer access";
+        << "the exact confirmed proxy must have one keep-alive draw before Present and normal backbuffer access";
     const size_t postLockRecoveryRecheck =
         text.find("if (g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||", overlayMutex);
     const size_t postLockExplicitOffRecheck =

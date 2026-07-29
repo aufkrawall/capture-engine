@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-29 (GetState-first post-FSR Streamline ownership repair including the independent FFX no-callback latch and all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-29 (GetState-first post-FSR Streamline ownership repair including the independent FFX no-callback latch and single-submit all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -63,7 +63,7 @@ Primary sources:
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting, phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-29.
 - `frame-generation-switching.md`
-  - Stub pointing to `frame-generation/guardrails.md` (invariants, including independent no-callback cleanup on GetState-first post-FSR ownership repair, all-transport exact PostSL suspension keep-alive, first-confirmed Reflex suspend, and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-29.
+  - Stub pointing to `frame-generation/guardrails.md` (invariants, including independent no-callback cleanup on GetState-first post-FSR ownership repair, single-submit all-transport exact PostSL suspension keep-alive, first-confirmed Reflex suspend, and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-29.
 - `vulkan-fg-switch-test.md`
   - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`
