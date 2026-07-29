@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-07-29 - Keep DX12 prerender pacing off FG runtime presenter threads
+
+- **Dump proof:** Talos session `installed/captureengine/logs/20260729_190753` froze during DLSS-FG enable with
+  Streamline's generated-output Present thread blocked inside `ApplyPrerenderLimitDX12`, waiting for CE fence value
+  5. CE had rebound the configured `cpu_prerender_limit=1` stream from the retained game queue to Streamline's
+  internal wrapper/presenter queue. Five exact PostSL overlay submits had succeeded immediately beforehand, so the
+  overlay route was healthy; the limiter wait created the dependency cycle.
+- **Fix / invariant:** whenever Streamline/FFX may own presentation, only the pre-FG tracked game-present thread may
+  advance DX12 queue-depth pacing. Runtime-generated, eager-startup, and unknown-provenance Presents skip the limiter
+  but retain normal overlay/capture processing. The fence ring uses the retained original game queue rather than the
+  volatile ECL/runtime queue, and derives its device from that selected queue for GTA-style multi-device handoffs,
+  while no-FG source Presents retain existing behavior. This is generic across Talos, GTA, the switch app,
+  Present/Present1, wrapper, and minimal FSR routes.
+- **Coverage:** focused policy/source regressions pass and assert game-thread admission, generated-thread rejection,
+  unknown-provenance rejection, original-queue selection, both DXGI Present variants, the wrapper path, the FSR
+  minimal path, and the eager-startup rejection. Build `0.1.5251` passed the complete 279.5-second gate: clean
+  x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan, packaging/PE checks,
+  file-size and clang-tidy ratchets, flake8, and pyright.
+- **Source anchors:** `hook/common/{dx12_overlay_policy,dxgi_shared}.*`, `hook/apis/dx12_hook.cpp`,
+  `tests/test_dxgi_shared_part{3,10}.cpp`, and `llm-wiki/{graphics-overrides-and-frame-pacing,index}.md`.
+
 ### 2026-07-29 - Publish NVIDIA Smooth Motion status on every supported overlay API path
 
 - **Root causes:** the visible metric type and `NVIDIA SM` label already existed, and DX12 fed them through its

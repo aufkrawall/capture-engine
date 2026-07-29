@@ -44,11 +44,16 @@ void DX12_OnSwapchainResizeEnd() {
 }
 
 // --- CPU Prerender Limit Support (DX12) ---
-static void ApplyPrerenderLimitDX12(float limit) {
+static void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive) {
     if (limit < 0.0f)
         return;
-    // CRITICAL FIX: Use thread-safe accessor to prevent race conditions
-    DX12Context ctx = GetDX12Context();
+    // FG runtimes can replace the observed ECL queue with their own internal
+    // presentation queue. Keep the limiter on the retained application queue
+    // so its fence stream cannot become part of a runtime Present dependency.
+    bool usesOriginalGameQueue = false;
+    ID3D12CommandQueue* currentQueueSnapshot = nullptr;
+    DX12Context ctx = GetDX12PrerenderContext(frameGenerationPresentationActive, &usesOriginalGameQueue,
+                                              &currentQueueSnapshot);
     if (!ctx.IsValid())
         return;
 
@@ -74,7 +79,10 @@ static void ApplyPrerenderLimitDX12(float limit) {
         g_PrerenderQueue = ctx.queue;
         g_PrerenderDevice->AddRef();
         g_PrerenderQueue->AddRef();
-        HookLogImportant("DX12: Prerender fence stream rebound device=%p queue=%p", ctx.device, ctx.queue);
+        HookLogImportant(
+            "DX12: Prerender fence stream rebound device=%p queue=%p role=%s currentQueue=%p",
+            ctx.device, ctx.queue, usesOriginalGameQueue ? "original-game" : "current-fallback",
+            currentQueueSnapshot);
     }
 
     // Initialize fence ring buffer if needed

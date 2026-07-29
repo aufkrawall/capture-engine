@@ -31,7 +31,8 @@ void DX12_ResetOverlayFrameDelay() {
 // cleanup with AddRef/Release, PostSL processing) that take ~27.5ms and desync AMD's QPC-timed pacing.
 // Does only: frame-count reset, RecordFrame, sc3 acquire, capture decision, inner ProcessFrame (which
 // has the overlay-skip gate — no overlay draw during no-callback FSR FG). Capture still works.
-void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain) {
+void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                              bool frameGenerationPresentationActive) {
     if (HookIsShuttingDown() || !pSwapChain) {
         return;
     }
@@ -59,15 +60,16 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain) {
     if (screenshotRequested && !screenshotWantsOverlay) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
-    ProcessFrame(sc3, processCapture);
+    ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);
     if (screenshotWantsOverlay && !ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg)) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     sc3->Release();
 }
 
-void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain,
-                               ce::dx12_process_frame_diagnostics::StageTimings* diagnostics) {
+static void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                                      bool frameGenerationPresentationActive,
+                                      ce::dx12_process_frame_diagnostics::StageTimings* diagnostics) {
     const int64_t diagnosticStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
     if (diagnostics) {
         *diagnostics = {};
@@ -577,7 +579,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain,
     if (diagnostics) {
         diagnostics->innerCalled = true;
     }
-    ProcessFrame(sc3, processCapture, diagnostics);
+    ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive, diagnostics);
     if (diagnostics) {
         diagnostics->innerUs = PerfLogger::GetQpcUs() - innerStartUs;
     }
@@ -593,10 +595,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain,
     sc3->Release();
 }
 
-void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+static void DX12_ProcessFrameExternalForPresent(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                                                bool frameGenerationPresentationActive) {
     ce::dx12_process_frame_diagnostics::StageTimings timings;
     const auto wrapperActivityBefore = GetWrapperHookActivitySnapshot();
-    DX12_ProcessFrameExternal(pSwapChain, &timings);
+    DX12_ProcessFrameExternal(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive, &timings);
     if (timings.totalUs >= 5000) {
         const auto wrapperActivityAfter = GetWrapperHookActivitySnapshot();
         static std::atomic<int> s_slowProcessFrameLogCount{0};
@@ -630,9 +633,20 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     }
 }
 
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    const bool frameGenerationPresentationActive =
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+        DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() ||
+        HookHasRuntimeOwnedNativeFGPresentPath();
+    const bool applicationSourcePresent = ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
+        frameGenerationPresentationActive, DX12_GetGamePresentThreadId(), GetCurrentThreadId());
+    DX12_ProcessFrameExternalForPresent(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
+}
+
 namespace DXGIShared {
-void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
-    DX12_ProcessFrameExternal(pSwapChain);
+void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                            bool frameGenerationPresentationActive) {
+    DX12_ProcessFrameExternalForPresent(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
 }
 void HandleDX12ResizeBegin() {
     HookLog("DX12: HandleDX12ResizeBegin CALLED from DetourResizeBuffers");

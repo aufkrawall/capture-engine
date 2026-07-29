@@ -163,12 +163,24 @@
         HookLog("DX12: ProcessFrame - resuming overlay after drawable swapchain restored");
     }
 
-    // CPU Prerender Limit - Apply before any rendering
+    // CPU Prerender Limit - apply only to application source frames. FG
+    // runtimes also call Present for generated outputs, and waiting for a
+    // queue-depth fence from those workers can form a cycle with the runtime's
+    // own Present completion.
     float prerenderLimit = GetActivePrerenderLimit();
-    if (prerenderLimit >= 0.0f) {
+    if (prerenderLimit >= 0.0f && applicationSourcePresent) {
         int64_t prerenderStartUs = PerfLogger::GetQpcUs();
-        ApplyPrerenderLimitDX12(prerenderLimit);
+        ApplyPrerenderLimitDX12(prerenderLimit, frameGenerationPresentationActive);
         perfMetrics.prerenderWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - prerenderStartUs);
+    } else if (prerenderLimit >= 0.0f) {
+        static std::atomic<int> s_runtimePrerenderSkipLogs{0};
+        const int skipCount = s_runtimePrerenderSkipLogs.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (skipCount <= 20 || (skipCount % 600) == 0) {
+            HookLogImportant(
+                "DX12: Skipping CPU prerender limiter on FG runtime-generated Present #%d "
+                "(limit=%.2f currentTid=0x%04X gameTid=0x%04X)",
+                skipCount, prerenderLimit, GetCurrentThreadId(), DX12_GetGamePresentThreadId());
+        }
     }
 
     // A post-FSR OFF edge can rotate the top-level Present from the FFX proxy

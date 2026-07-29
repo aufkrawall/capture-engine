@@ -335,7 +335,9 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     const size_t recursivePresent = text.find("if (IsRecursivePresent()) {", present);
     const size_t recursivePresentDedup =
         text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent);
-    const size_t processPresent = text.find("HandleDX12ProcessFrame(pSwapChain, true);", presentScope);
+    const size_t processPresent =
+        text.find("HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);",
+                  presentScope);
     ASSERT_NE(present, std::string::npos);
     ASSERT_NE(presentScope, std::string::npos);
     ASSERT_NE(wrappedPassThrough, std::string::npos);
@@ -363,7 +365,9 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     const size_t recursivePresent1 = text.find("if (IsRecursivePresent()) {", present1);
     const size_t recursivePresent1Dedup =
         text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent1);
-    const size_t processPresent1 = text.find("HandleDX12ProcessFrame(pSwapChain, true);", present1Scope);
+    const size_t processPresent1 =
+        text.find("HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);",
+                  present1Scope);
     ASSERT_NE(present1, std::string::npos);
     ASSERT_NE(present1Scope, std::string::npos);
     ASSERT_NE(wrappedPresent1PassThrough, std::string::npos);

@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-18
+Last cross-checked: 2026-07-29
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -72,6 +72,12 @@ Primary sources:
 - D3D10 limit zero uses a native event query; D3D10 limits 1-6 use DXGI maximum frame latency. D3D11 query rings and
   DX12 fence rings are serialized and rebound when device/queue identity changes. Configured waits do not silently
   escape after an 8/16 ms timeout while GPU- or vblank-bound.
+- During DX12 frame generation, the CPU prerender fence ring advances only on a proven application-source Present
+  and stays pinned to the retained original game queue, with the fence device queried from that exact queue for
+  multi-device Streamline topologies. Streamline/FFX output workers, opt-in eager startup draws, and
+  unknown-provenance runtime Presents skip only this limiter; their overlay/capture routing remains unchanged.
+  Waiting on a runtime-generated Present or rebinding the ring to a runtime wrapper/presenter queue can deadlock
+  because that queue may not retire until the same Present returns.
 - Vulkan `cpu_prerender_limit=1-6` uses a per-queue seven-fence marker ring; `0` waits the current marker. OpenGL uses
   the same lookback semantics per context. Vulkan drains and resets outstanding markers when the configured depth
   changes so a previously signaled fence is never resubmitted.

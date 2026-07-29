@@ -192,7 +192,8 @@ inline std::atomic<bool>& GetSteamOnlyOverlayExperimentalFlag() {
 // Exported handlers for specific APIs (implemented in their respective hook
 // files)
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
-void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
+void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                            bool frameGenerationPresentationActive);
 void HandleDX12ResizeBegin();
 void HandleDX12ResizeEnd();
 void HandleDX11ResizeBegin();

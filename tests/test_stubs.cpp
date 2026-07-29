@@ -34,7 +34,7 @@ bool IsInWrapperPresent() {
 }
 
 namespace DXGIShared {
-void HandleDX12ProcessFrame(IDXGISwapChain*, bool) {}
+void HandleDX12ProcessFrame(IDXGISwapChain*, bool, bool) {}
 void HandleDX11ProcessFrame(IDXGISwapChain*, bool) {}
 void HandleDX12ResizeBegin() {}
 void HandleDX11ResizeBegin() {}
@@ -75,6 +75,9 @@ void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char
 bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) {
     return false;
 }
+DWORD DX12_GetGamePresentThreadId() {
+    return 0;
+}
 void DX12_DumpDredIfDeviceRemoved(const char*) {}
 void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 void DX12_NoteFfxConfigureForward(uint64_t) {}
@@ -91,7 +94,7 @@ bool DX12_IsNativeFSRFGSuspendedDisablePending() {
 bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     return false;
 }
-void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
+void DX12_ProcessFrameMinimal(IDXGISwapChain*, bool, bool) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() {
     return false;
 }

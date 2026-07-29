@@ -486,7 +486,12 @@
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
     if (api == APIType::D3D12) {
-        HandleDX12ProcessFrame(pSwapChain, true);
+        const bool frameGenerationPresentationActive =
+            streamlineFGRunning || runtimeOwnedSwapchainActive || callerFromStreamlineModule ||
+            callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath();
+        const bool applicationSourcePresent = ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
+            frameGenerationPresentationActive, DX12_GetGamePresentThreadId(), currentThreadId);
+        HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
     } else if (DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
         if (api == APIType::D3D10) {
             static std::atomic<int> s_d3d10ProcessFrameLogCount1{0};

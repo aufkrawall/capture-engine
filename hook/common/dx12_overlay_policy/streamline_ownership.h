@@ -18,6 +18,21 @@ struct ID3D12Fence;
 
 namespace ce::dx12_overlay_policy {
 
+inline bool ShouldApplyDX12PrerenderLimitOnPresent(bool frameGenerationPresentationActive,
+                                                   uint32_t trackedGamePresentThreadId, uint32_t currentThreadId) {
+    if (!frameGenerationPresentationActive) {
+        return true;
+    }
+
+    // Streamline and FFX can call Present from runtime-owned workers for
+    // generated outputs. A CPU queue-depth limiter cannot wait there: the
+    // runtime may need that Present to return before it retires the queue work
+    // carrying the limiter fence. During FG, only the previously observed game
+    // Present thread is allowed to pace source frames. Unknown provenance fails
+    // closed until a non-FG Present establishes the game thread.
+    return trackedGamePresentThreadId != 0 && trackedGamePresentThreadId == currentThreadId;
+}
+
 inline bool ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
                                                                    fg_runtime::RuntimeMode runtimeMode,
                                                                    bool hasOriginalGameQueue,

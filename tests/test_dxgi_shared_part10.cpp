@@ -1,5 +1,97 @@
 #include "test_dxgi_shared_shared.h"
 
+TEST(DXGISharedTest, DX12PrerenderLimiterRunsOnlyOnProvenSourcePresentsDuringFrameGeneration) {
+    using ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent;
+
+    EXPECT_TRUE(ShouldApplyDX12PrerenderLimitOnPresent(false, 0, 0x1604));
+    EXPECT_TRUE(ShouldApplyDX12PrerenderLimitOnPresent(false, 0x5444, 0x1604));
+
+    EXPECT_FALSE(ShouldApplyDX12PrerenderLimitOnPresent(true, 0, 0x1604));
+    EXPECT_FALSE(ShouldApplyDX12PrerenderLimitOnPresent(true, 0x5444, 0x1604));
+    EXPECT_TRUE(ShouldApplyDX12PrerenderLimitOnPresent(true, 0x5444, 0x5444));
+}
+
+TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntimeGeneratedPresents) {
+    namespace fs = std::filesystem;
+    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path dxgiSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    ASSERT_TRUE(fs::exists(dx12Source));
+    ASSERT_TRUE(fs::exists(dxgiSource));
+    const std::string dx12Text = ce::test_source::ReadLogicalSource(dx12Source);
+    const std::string dxgiText = ce::test_source::ReadLogicalSource(dxgiSource);
+    ASSERT_FALSE(dx12Text.empty());
+    ASSERT_FALSE(dxgiText.empty());
+
+    const size_t prerenderContext = dx12Text.find("static DX12Context GetDX12PrerenderContext(");
+    const size_t originalQueueSelection =
+        dx12Text.find("preferOriginalGameQueue && g_OriginalGameQueue != nullptr", prerenderContext);
+    const size_t selectedQueueDevice =
+        dx12Text.find("selectedQueue->GetDevice(IID_PPV_ARGS(&queueDevice))", originalQueueSelection);
+    const size_t limiter =
+        dx12Text.find("static void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive)");
+    const size_t sourcePresentGate =
+        dx12Text.find("if (prerenderLimit >= 0.0f && applicationSourcePresent)", limiter);
+    ASSERT_NE(prerenderContext, std::string::npos);
+    ASSERT_NE(originalQueueSelection, std::string::npos);
+    ASSERT_NE(selectedQueueDevice, std::string::npos);
+    ASSERT_NE(limiter, std::string::npos);
+    ASSERT_NE(sourcePresentGate, std::string::npos);
+
+    const size_t minimalProcessFrame = dx12Text.find("void DX12_ProcessFrameMinimal(");
+    const size_t minimalForward =
+        dx12Text.find(
+            "ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);",
+            minimalProcessFrame);
+    const size_t externalProcessFrame = dx12Text.find("static void DX12_ProcessFrameExternal(", minimalForward);
+    const size_t externalForward =
+        dx12Text.find(
+            "ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive, "
+            "diagnostics);",
+            externalProcessFrame);
+    const size_t wrapperEntry =
+        dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {", externalForward);
+    const size_t wrapperClassification =
+        dx12Text.find("ShouldApplyDX12PrerenderLimitOnPresent(", wrapperEntry);
+    ASSERT_NE(minimalProcessFrame, std::string::npos);
+    ASSERT_NE(minimalForward, std::string::npos);
+    ASSERT_NE(externalProcessFrame, std::string::npos);
+    ASSERT_NE(externalForward, std::string::npos);
+    ASSERT_NE(wrapperEntry, std::string::npos);
+    ASSERT_NE(wrapperClassification, std::string::npos);
+
+    const size_t handler = dx12Text.find("void HandleDX12ProcessFrame(");
+    const size_t handlerForward =
+        dx12Text.find(
+            "DX12_ProcessFrameExternalForPresent(pSwapChain, applicationSourcePresent, "
+            "frameGenerationPresentationActive);",
+            handler);
+    ASSERT_NE(handler, std::string::npos);
+    ASSERT_NE(handlerForward, std::string::npos);
+
+    const size_t eagerStartup = dxgiText.find("MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(");
+    const size_t eagerReject = dxgiText.find("HandleDX12ProcessFrame(pSwapChain, false, true);", eagerStartup);
+    const size_t present = dxgiText.find("HRESULT STDMETHODCALLTYPE DetourPresent(");
+    const size_t presentClassification =
+        dxgiText.find("ShouldApplyDX12PrerenderLimitOnPresent(", present);
+    const size_t presentFFXProvenance =
+        dxgiText.rfind("callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath()",
+                       presentClassification);
+    const size_t minimalForwardFromPresent =
+        dxgiText.find("DX12_ProcessFrameMinimal(pSwapChain, applicationSourcePresent,",
+                      presentClassification);
+    const size_t present1 = dxgiText.find("HRESULT STDMETHODCALLTYPE DetourPresent1(");
+    const size_t present1Classification =
+        dxgiText.find("ShouldApplyDX12PrerenderLimitOnPresent(", present1);
+    ASSERT_NE(eagerStartup, std::string::npos);
+    ASSERT_NE(eagerReject, std::string::npos);
+    ASSERT_NE(present, std::string::npos);
+    ASSERT_NE(presentClassification, std::string::npos);
+    ASSERT_NE(presentFFXProvenance, std::string::npos);
+    ASSERT_NE(minimalForwardFromPresent, std::string::npos);
+    ASSERT_NE(present1, std::string::npos);
+    ASSERT_NE(present1Classification, std::string::npos);
+}
+
 // GTA session 20260714_140617 proved the protected inner DXGI create queue is FFX's newly-created internal
 // presentQueue, not the descriptor gameQueue. It proves the missed-create topology but must never become CE's
 // overlay owner binding. Recovery uses the retained original game/producer queue before the proxy hook is live.

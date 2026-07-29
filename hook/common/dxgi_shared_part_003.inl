@@ -599,7 +599,7 @@ static void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* p
         HookLogImportant(
             "DX12: Eager present-time overlay draw before Streamline-startup bypass (RTSS-style, site=%s sc=%p)", site,
             (void*)pSwapChain);
-    HandleDX12ProcessFrame(pSwapChain, true);
+    HandleDX12ProcessFrame(pSwapChain, false, true);
 }
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {

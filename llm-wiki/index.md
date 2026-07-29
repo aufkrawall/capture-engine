@@ -61,9 +61,9 @@ Primary sources:
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, early raw/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements.
 - `graphics-overrides-and-frame-pacing.md`
-  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting, phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-18.
+  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting, phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-29.
 - `frame-generation-switching.md`
-  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current first-confirmed Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-18.
+  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current first-confirmed Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-29.
 - `vulkan-fg-switch-test.md`
   - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`

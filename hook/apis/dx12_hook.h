@@ -169,7 +169,8 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 // AMD is not interpolating). The proxy-present prework uses this to select the exact-owner-queue backbuffer route.
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
-void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
+void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                              bool frameGenerationPresentationActive);
 struct DX12FFXUiOverlayTargetPreparation {
     ID3D12Resource* target = nullptr;  // one staged reference; commit or discard consumes it
     uint32_t state = 0;

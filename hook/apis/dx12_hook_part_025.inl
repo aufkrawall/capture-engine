@@ -490,7 +490,8 @@ static void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm) {
 }
 // ===================== end DX12 focus/mode-switch analysis =====================
 
-void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture,
+void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicationSourcePresent,
+                  bool frameGenerationPresentationActive,
                   ce::dx12_process_frame_diagnostics::StageTimings* diagnostics = nullptr) {
     // Re-entrancy guard: NVIDIA driver can pump window messages during
     // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter

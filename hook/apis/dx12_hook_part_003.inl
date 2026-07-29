@@ -586,6 +586,39 @@ static DX12Context GetDX12Context() {
     return DX12Context(g_Device.load(), g_CommandQueue.load());
 }
 
+static DX12Context GetDX12PrerenderContext(bool preferOriginalGameQueue, bool* usesOriginalGameQueue,
+                                           ID3D12CommandQueue** currentQueueSnapshot) {
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    ID3D12CommandQueue* currentQueue = g_CommandQueue.load(std::memory_order_acquire);
+    const bool useOriginalGameQueue = preferOriginalGameQueue && g_OriginalGameQueue != nullptr;
+    ID3D12CommandQueue* selectedQueue = useOriginalGameQueue ? g_OriginalGameQueue : currentQueue;
+    if (usesOriginalGameQueue) {
+        *usesOriginalGameQueue = useOriginalGameQueue;
+    }
+    if (currentQueueSnapshot) {
+        *currentQueueSnapshot = currentQueue;
+    }
+    if (!selectedQueue) {
+        return {};
+    }
+
+    // Streamline can use a second D3D12 device. Derive the fence device from
+    // the selected queue instead of pairing origGame with a volatile runtime
+    // device pointer.
+    ID3D12Device* queueDevice = nullptr;
+    const HRESULT deviceHr = selectedQueue->GetDevice(IID_PPV_ARGS(&queueDevice));
+    if (FAILED(deviceHr) || !queueDevice) {
+        static std::atomic<int> s_prerenderQueueDeviceLogs{0};
+        if (s_prerenderQueueDeviceLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLog("DX12: Prerender queue GetDevice failed queue=%p hr=0x%08X", selectedQueue, deviceHr);
+        }
+        return {};
+    }
+    DX12Context context(queueDevice, selectedQueue);
+    queueDevice->Release();
+    return context;
+}
+
 // Keep native driver limiters in sync with the DX12 device we already discover
 // from queue/swapchain hooks. Ownership remains with the existing DX12 globals.
 static void DX12_PublishNativeLimiterDevice(ID3D12Device* device, ID3D12CommandQueue* queue, const char* source) {

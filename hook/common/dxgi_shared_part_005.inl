@@ -262,6 +262,14 @@
             // texture intercepted — test app), call the minimal ProcessFrame path so the overlay
             // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+            const bool frameGenerationPresentationActive =
+                noCallbackFSRFG || streamlineFGRunning || runtimeOwnedSwapchainActive || callerFromStreamlineModule ||
+                callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath();
+            // Non-FG calls keep existing queue-depth behavior. Once a runtime
+            // can emit its own Presents, only the pre-FG game thread may pace.
+            const bool applicationSourcePresent =
+                ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
+                    frameGenerationPresentationActive, DX12_GetGamePresentThreadId(), currentThreadId);
             {
                 // Transition-edge diagnostic: the post-startup ProcessFrame route log is rate-limited, so the
                 // FSR<->off handoff is otherwise invisible. Mark the exact edge + ownership/queue state so the
@@ -357,10 +365,11 @@
                     // no-callback latch with the live present back on the game's own queue (FSR->off recovery).
                     // Draw via the minimal backbuffer path so the overlay is NEVER blank across these windows;
                     // once active interpolation resumes, control returns to the composite skip branch above.
-                    DX12_ProcessFrameMinimal(pSwapChain);
+                    DX12_ProcessFrameMinimal(pSwapChain, applicationSourcePresent,
+                                             frameGenerationPresentationActive);
                 }
             } else {
-                HandleDX12ProcessFrame(pSwapChain, true);
+                HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
             }
         } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
             if (api == APIType::D3D10) {
@@ -564,6 +573,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool matchesExpectedPresentThread =
         expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
+    const bool callerFromFFXFrameGenerationModule =
+        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
@@ -589,7 +600,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        api == APIType::D3D12, callerFromFFXFrameGenerationModule,
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode,
         observerStartupPresentOnlyMode);
     if (ffxStartupBypass) {

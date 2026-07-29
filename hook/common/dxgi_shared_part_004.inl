@@ -93,6 +93,8 @@
     const bool matchesExpectedPresentThread =
         expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
+    const bool callerFromFFXFrameGenerationModule =
+        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
@@ -142,7 +144,7 @@
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        api == APIType::D3D12, callerFromFFXFrameGenerationModule,
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode,
         observerStartupPresentOnlyMode);
     if (ffxStartupBypass) {
