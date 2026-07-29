@@ -551,6 +551,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+    if (api == APIType::D3D12) {
+        DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(pSwapChain,
+                                                           "DXGIShared::DetourPresent1 pre-routing");
+    }
 
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     char detourCallerModulePath[MAX_PATH] = {};

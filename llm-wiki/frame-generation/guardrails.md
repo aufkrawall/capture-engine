@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-> Current cross-check (2026-07-29): source-Present-only DX12 queue-depth pacing, pixel-probed first-Present authoritative DLSS-off native return, exact PostSL proxy-buffer takeover during FSR->DLSS and explicit OFF->DLSS cold start, creation-time FFX proxy binding for protected OFF->FSR startup, wrapped-Present exact-proxy coverage during DLSS-G suspension, GTA first-confirmed Reflex-driven DLSS-G menu suspend/resume ownership, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, post-FSR normal-return/PostSL queue authority, DLSS-OFF normal-swapchain return crash analysis, protected-create FFX proxy/owner-queue recovery, protected-startup proxy-backbuffer routing, target-validated FFX owner-queue renderer including proven Streamline-wrapper
+> Current cross-check (2026-07-29): source-Present-only DX12 queue-depth pacing, GetState-first post-FSR Streamline ownership repair, all-transport exact PostSL keep-alive during DLSS-G suspension, pixel-probed first-Present authoritative DLSS-off native return, exact PostSL proxy-buffer takeover during FSR->DLSS and explicit OFF->DLSS cold start, creation-time FFX proxy binding for protected OFF->FSR startup, wrapped-Present exact-proxy coverage during DLSS-G suspension, GTA first-confirmed Reflex-driven DLSS-G menu suspend/resume ownership, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, post-FSR normal-return/PostSL queue authority, DLSS-OFF normal-swapchain return crash analysis, protected-create FFX proxy/owner-queue recovery, protected-startup proxy-backbuffer routing, target-validated FFX owner-queue renderer including proven Streamline-wrapper
 > unwrapping for active UI and suspension backbuffer routes, presenter-fallback draw deduplication,
 > transactional UI target publication, proxy Present quiesce/drain, routing of FFX exports cached before CE
 > startup, pre-enable PostSL resource prewarm on fresh post-FSR or prior-healthy-PostSL Streamline handoffs, and first-activation
@@ -11,7 +11,7 @@
 > configure dedupe publishes only actual FG/routing transitions. This supersedes the 2026-07-03
 > independent-CE-queue implementation described in the historical line below.
 
-Last cross-checked: 2026-07-29 (Talos source-Present-only DX12 queue-depth pacing, first-confirmed Reflex-driven GTA menu suspension during post-FSR Streamline settling, repeated pure-DLSS pre-SetOptions first-Present prewarm, first-Present authoritative DLSS-off native return, wrapped-Present exact-proxy coverage during DLSS-G suspension, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, post-FSR normal-return/PostSL queue authority, missed-in-flight FFX create recovery, protected-startup proxy-backbuffer routing after the FSR re-enable 0.x-FPS dump, post-FSR DLSS-suspend FFX-proof lifetime, Streamline-wrapped FFX owner-queue routing, FSR fallback deduplication, DLSS allocator-pool nonblocking selection, Talos GetState-only DLSS-G preactivation official-UI coverage, and the no-callback FSR suspension invariants below; see the current invariant bullets and `log/recent.md` for evidence and validation status.)
+Last cross-checked: 2026-07-29 (Talos source-Present-only DX12 queue-depth pacing, GetState-first post-FSR Streamline ownership repair, all-transport exact PostSL keep-alive during DLSS-G suspension, first-confirmed Reflex-driven GTA menu suspension during post-FSR Streamline settling, repeated pure-DLSS pre-SetOptions first-Present prewarm, first-Present authoritative DLSS-off native return, wrapped-Present exact-proxy coverage during DLSS-G suspension, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, post-FSR normal-return/PostSL queue authority, missed-in-flight FFX create recovery, protected-startup proxy-backbuffer routing after the FSR re-enable 0.x-FPS dump, post-FSR DLSS-suspend FFX-proof lifetime, Streamline-wrapped FFX owner-queue routing, FSR fallback deduplication, DLSS allocator-pool nonblocking selection, Talos GetState-only DLSS-G preactivation official-UI coverage, and the no-callback FSR suspension invariants below; see the current invariant bullets and `log/recent.md` for evidence and validation status.)
 
 Primary sources:
 - `AGENTS.md`
@@ -85,6 +85,7 @@ Primary sources:
 - `installed/captureengine/logs/20260712_220704/crash_*.dmp`
 - `installed/captureengine/logs/20260712_220704/freeze_watchdog_*.dmp`
 - `installed/captureengine/logs/20260715_141520/hook_debug.log`
+- `installed/captureengine/logs/20260729_211446/hook_debug.log`
 
 ## Scope
 This page records current guardrails and tested transition families for no-FG, DLSS FG, and FSR FG switching. The goal is generic support across games, not a pile of title-specific hacks.
@@ -97,6 +98,20 @@ This page records current guardrails and tested transition families for no-FG, D
 - The pseudo-overlay is not an injected-overlay replacement for FG. It must not be used to paper over DLSS FG or FSR FG injected-overlay failures.
 
 ## Facts
+- **CURRENT GETSTATE-FIRST POST-FSR DLSS-SUSPEND OWNERSHIP INVARIANT (2026-07-29):** GTA session
+  `installed/captureengine/logs/20260729_211446` returned from FSR to DLSS with `GetState` reporting active before the
+  explicit `SetOptions(ON)` call. The first edge therefore lacked explicit provenance and retained stale native-FSR
+  no-callback Present ownership; the later already-live provenance upgrade did not execute the fresh activation edge
+  again. Active gameplay masked the stale route because PostSL rendered too, producing a double-draw diagnostic.
+  When Reflex and Streamline suspended in the menu, PostSL callbacks stopped and the stale FFX route still claimed
+  coverage, so no visible overlay reached the proxy output. An already-live GetState-first comeback must replay the
+  same narrowly gated stale native-FG ownership cleanup when explicit SetOptions confirms activation. It must retain
+  the fresh Streamline queue and generic runtime ownership. In addition, both DXGI Present variants invoke the exact
+  confirmed PostSL OFF keep-alive before any top-level DX12 routing branch; its existing proof still requires the
+  last successful exact swapchain/queue, inactive Streamline and FSR APIs, no native-FSR or protected-startup owner,
+  and an installed live callback. The per-thread Present scope deduplicates later wrapped/recursive attempts. This
+  covers wrapped, passive, stale-FSR, and normal transports without a copy, queue, wait, delay, timeout, title branch,
+  status rewrite, or work during active FSR/DLSS steady state.
 - **CURRENT DX12 FG QUEUE-DEPTH PACING INVARIANT (2026-07-29):** Talos session
   `installed/captureengine/logs/20260729_190753` froze on DLSS-FG enable because a Streamline generated-output Present
   entered CE's `cpu_prerender_limit=1` wait after the fence stream rebound from `origGame` to Streamline's internal

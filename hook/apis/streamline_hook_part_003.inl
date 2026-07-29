@@ -2,6 +2,7 @@
 
     if (!previousExplicitSetOptionsActivation && updatedExplicitSetOptionsActivation && signalUpdate.effectiveActive &&
         explicitSetOptionsActivation && !signalUpdate.freshActivationEdge) {
+        DX12_OnStreamlineExplicitSetOptionsActivationConfirmed();
         HookLogImportant(
             "Streamline Hook: Upgraded already-live DLSS comeback provenance to explicit SetOptions enable "
             "(source=%s startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d unconfirmed=%d settling=%d "

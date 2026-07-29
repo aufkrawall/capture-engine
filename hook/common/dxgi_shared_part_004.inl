@@ -72,6 +72,10 @@
     }
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+    if (api == APIType::D3D12) {
+        DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(pSwapChain,
+                                                           "DXGIShared::DetourPresent pre-routing");
+    }
 
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.

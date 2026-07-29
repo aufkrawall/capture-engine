@@ -87,6 +87,7 @@ void DX12_SignalFSR4SwapchainRecreated();
 void DX12_AdjustWrapperResizeDepth(int delta);
 void DX12_StartTransitionCooldown();
 void DX12_OnStreamlineFGStateChanged(bool active);
+void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed();
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 void DX12_PrepareForStreamlineEnableTransition();
 void DX12_BeginStreamlineEnableCall();

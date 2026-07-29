@@ -316,6 +316,37 @@ DWORD DX12_GetGamePresentThreadId() {
     return g_GamePresentThreadId.load(std::memory_order_acquire);
 }
 
+static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(bool explicitSetOptionsActivation,
+                                                                          const char* source) {
+    const bool streamlineStartupHandoffPending =
+        DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
+            g_HadFSRFGPhase, explicitSetOptionsActivation, g_SwapchainQueue != nullptr,
+            g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
+            streamlineStartupHandoffPending, HookHasRuntimeOwnedNativeFGPresentPath())) {
+        return false;
+    }
+
+    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+    ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+        "Streamline FG comeback cleared stale native-FG Present ownership");
+    ForceClearNativeFSRInternalNoCallbackComposition(
+        "Streamline FG comeback cleared stale native-FG Present ownership");
+    g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
+    g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
+    HookLogImportant(
+        "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership "
+        "(source=%s scQueue=%p origGame=%p)",
+        source ? source : "Streamline activation", g_SwapchainQueue, g_OriginalGameQueue);
+    return true;
+}
+
+void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed() {
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(
+        true, "already-live comeback upgraded by explicit SetOptions");
+}
+
 void DX12_OnStreamlineFGStateChanged(bool active) {
     const auto visibleRuntimeMode = active ? ce::fg_runtime::RuntimeMode::kDLSSFG : g_FGCompat.GetRuntimeMode();
     const bool visibleFGActive = active ? true : g_FGCompat.IsFGActive();
@@ -500,24 +531,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 const bool streamlineStartupHandoffPending =
                     DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
                 const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();
-                const bool clearStaleNativeFGPresentOwnership =
-                    ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-                        g_HadFSRFGPhase, explicitSetOptionsActivation, g_SwapchainQueue != nullptr,
-                        g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
-                        streamlineStartupHandoffPending, HookHasRuntimeOwnedNativeFGPresentPath());
-                if (clearStaleNativeFGPresentOwnership) {
-                    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-                    ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
-                        "Streamline FG comeback cleared stale native-FG Present ownership");
-                    ForceClearNativeFSRInternalNoCallbackComposition(
-                        "Streamline FG comeback cleared stale native-FG Present ownership");
-                    g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
-                    g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
-                    HookLogImportant(
-                        "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership before explicit "
-                        "DLSS comeback activation (scQueue=%p origGame=%p)",
-                        g_SwapchainQueue, g_OriginalGameQueue);
-                }
+                ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(
+                    explicitSetOptionsActivation, "fresh Streamline active edge");
                 if (ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
                         g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
                         g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,

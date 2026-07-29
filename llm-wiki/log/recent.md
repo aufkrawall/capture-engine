@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-07-29 - Preserve the overlay across GetState-first post-FSR DLSS menu suspension
+
+- **Root cause:** in GTA session `installed/captureengine/logs/20260729_211446`, the final FSR-to-DLSS comeback
+  reported active through `GetState` before explicit `SetOptions(ON)`. The initial edge consequently retained stale
+  native-FSR no-callback Present ownership, while the already-live explicit provenance upgrade did not replay the
+  cleanup. PostSL masked that stale route during active gameplay and logged a double draw. On the later confirmed
+  Reflex/menu suspend, PostSL callbacks stopped while the stale FFX route continued claiming coverage, leaving no
+  visible CE overlay.
+- **Fix / invariant:** an already-live explicit Streamline enable now reuses the existing guarded post-FSR cleanup
+  to retire only stale native-FG Present ownership while preserving the fresh Streamline queue and generic runtime
+  owner. Present and Present1 also try the existing exact confirmed PostSL OFF keep-alive before top-level DX12
+  route selection, so passive/stale-FSR early returns cannot strand suspension rendering. Exact swapchain/queue,
+  inactive-FG, callback, and native-owner proofs remain mandatory, and the thread-local Present scope deduplicates
+  nested attempts. This adds no copy, queue, wait, timeout, polling, title branch, or active-FG steady-state work.
+- **Coverage:** focused ownership/source regressions and the broader `DX12FGTransitionSequencesFixture`,
+  `DX12FGTraceReplayFixture`, `DXGISharedTest`, `DXGISharedSourceTest`, and `StreamlineRuntimePolicyTest` suites pass.
+- **Source anchors:** `hook/apis/{dx12_hook,streamline_hook}.*`, `hook/common/dxgi_shared.cpp`,
+  `tests/test_dxgi_shared_part3.cpp`, and `llm-wiki/frame-generation/guardrails.md`.
+
 ### 2026-07-29 - Keep DX12 prerender pacing off FG runtime presenter threads
 
 - **Dump proof:** Talos session `installed/captureengine/logs/20260729_190753` froze during DLSS-FG enable with
