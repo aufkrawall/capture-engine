@@ -741,6 +741,8 @@ TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershi
         dx12.find("static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(");
     const size_t staleOwnershipPolicy = dx12.find(
         "ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(", staleOwnershipHelper);
+    const size_t noCallbackOwnershipProof =
+        dx12.find("DX12_IsNativeFSRInternalNoCallbackCompositionActive()", staleOwnershipHelper);
     const size_t clearNoCallback = dx12.find("ForceClearNativeFSRInternalNoCallbackComposition(", staleOwnershipPolicy);
     const size_t implementation =
         dx12.find("void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed()", clearNoCallback);
@@ -748,7 +750,9 @@ TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershi
         dx12.find("ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(", implementation);
     ASSERT_NE(staleOwnershipHelper, std::string::npos);
     ASSERT_NE(staleOwnershipPolicy, std::string::npos);
+    ASSERT_NE(noCallbackOwnershipProof, std::string::npos);
     ASSERT_NE(clearNoCallback, std::string::npos);
+    EXPECT_LT(noCallbackOwnershipProof, staleOwnershipPolicy);
     ASSERT_NE(implementation, std::string::npos);
     ASSERT_NE(helperCall, std::string::npos);
 }

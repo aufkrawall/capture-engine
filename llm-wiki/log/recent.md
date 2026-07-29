@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-07-29 - Retire the independent FFX no-callback route on post-FSR DLSS comeback
+
+- **Root cause:** follow-up GTA session `installed/captureengine/logs/20260729_220919` exercised the prior
+  GetState-first fix but logged no stale-native-ownership cleanup after explicit `SetOptions(ON)`. The main
+  runtime-owned native-FG predicate had already become false when the preserved non-original queue was classified as
+  the new Streamline handoff, while native FSR's independently retained no-callback composition latch remained true.
+  Shared Present routing consequently kept treating the session as FFX composition while PostSL rendered every active
+  and suspended-DLSS Present, producing thousands of `ffx-present-callback then post-sl` double-draw diagnostics.
+- **Fix / invariant:** the guarded explicit post-FSR Streamline cleanup now accepts either stale native-FG ownership
+  signal. It force-clears the retained no-callback route and native-FSR teardown state while preserving the proven
+  Streamline swapchain queue and generic runtime owner. The cleanup diagnostic records both input signals, making the
+  previously hidden `nativeFGPath=0 noCallback=1` case attributable. No hook removal, resource copy, extra queue,
+  delay, polling, timeout, title branch, or steady-state render work was added.
+- **Coverage:** the focused policy regression proves the independent no-callback-only state is sufficient and that
+  both absent signals remain a no-op; the source contract proves the live cleanup samples that route before clearing
+  it. The required full verification result is recorded with the completing commit.
+- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+  `hook/apis/dx12_hook_part_015.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
 ### 2026-07-29 - Preserve the overlay across GetState-first post-FSR DLSS menu suspension
 
 - **Root cause:** in GTA session `installed/captureengine/logs/20260729_211446`, the final FSR-to-DLSS comeback

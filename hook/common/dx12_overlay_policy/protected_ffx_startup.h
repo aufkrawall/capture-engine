@@ -145,17 +145,19 @@ inline bool ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(bool runtimeO
 inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
     bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool hasSwapchainQueue,
     bool swapchainQueueDiffersFromOriginalGameQueue, bool streamlineStartupHandoffPending,
-    bool runtimeOwnedNativeFGPresentPath) {
+    bool runtimeOwnedNativeFGPresentPath, bool nativeFSRInternalNoCallbackComposition) {
     // After a real FSR -> DLSS comeback, the preserved non-origGame swapchain queue
     // can already belong to the new authoritative Streamline handoff. In that
     // state, a stale native-FSR Present-ownership latch from the prior runtime must
     // not keep the later DLSS startup path classified as still runtime-owned native
     // FG. Clear only that stale native-FSR ownership latch; the generic runtime-
     // owned swapchain fact can still remain true for the new Streamline-owned
-    // queue topology.
+    // queue topology. The internal no-callback route is an independent retained
+    // suspension latch: it can remain true after the broader native-FG ownership
+    // predicate has already reclassified the non-original queue as Streamline's.
     return hadFSRFGPhase && explicitSetOptionsActivation && hasSwapchainQueue &&
            swapchainQueueDiffersFromOriginalGameQueue && streamlineStartupHandoffPending &&
-           runtimeOwnedNativeFGPresentPath;
+           (runtimeOwnedNativeFGPresentPath || nativeFSRInternalNoCallbackComposition);
 }
 
 inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool streamlineModuleLoaded,

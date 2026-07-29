@@ -320,10 +320,13 @@ static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(bool e
                                                                           const char* source) {
     const bool streamlineStartupHandoffPending =
         DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+    const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
+    const bool nativeFSRInternalNoCallbackComposition = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
     if (!ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
             g_HadFSRFGPhase, explicitSetOptionsActivation, g_SwapchainQueue != nullptr,
             g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
-            streamlineStartupHandoffPending, HookHasRuntimeOwnedNativeFGPresentPath())) {
+            streamlineStartupHandoffPending, runtimeOwnedNativeFGPresentPath,
+            nativeFSRInternalNoCallbackComposition)) {
         return false;
     }
 
@@ -336,8 +339,9 @@ static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(bool e
     g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
     HookLogImportant(
         "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership "
-        "(source=%s scQueue=%p origGame=%p)",
-        source ? source : "Streamline activation", g_SwapchainQueue, g_OriginalGameQueue);
+        "(source=%s scQueue=%p origGame=%p nativeFGPath=%d noCallback=%d)",
+        source ? source : "Streamline activation", g_SwapchainQueue, g_OriginalGameQueue,
+        runtimeOwnedNativeFGPresentPath ? 1 : 0, nativeFSRInternalNoCallbackComposition ? 1 : 0);
     return true;
 }
 

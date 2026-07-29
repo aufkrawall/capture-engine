@@ -155,18 +155,20 @@ TEST(DXGISharedTest, FFXSwapchainTakeoverStillClearsStaleStreamlineOwnershipWhen
 
 TEST(DXGISharedTest, ExplicitStreamlineComebackClearsOnlyStaleNativeFGPresentOwnership) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, true, true));
+        true, true, true, true, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
+        true, true, true, true, true, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        false, true, true, true, true, true));
+        false, true, true, true, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, false, true, true, true, true));
+        true, false, true, true, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, false, false, true, true));
+        true, true, false, false, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, false, true));
+        true, true, true, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, true, false));
+        true, true, true, true, true, false, false));
 }
 
 TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwnershipOrAuthoritativeFFXTakeover) {
