@@ -28,6 +28,14 @@ This page records how the current tree publishes visible FG status to the overla
   confirmed 2x frame pattern rather than module presence alone. Strange Brigade DX12 session `20260729_182021`
   exposed the old contradiction by logging NvPresent followed by dormant pattern suppression and permanent
   `runtime=Off`.
+- Strange Brigade rerun `20260729_183342` showed that NvPresent-generated DX12 frames are low-work rather than
+  necessarily zero-work: steady sampling reported 56 total frames, 31 high-work frames, 130 output FPS, and 72
+  high-work/base FPS, while individual generated Presents still had two command lists. NvPresent-specific 2x
+  inference therefore accepts only a substantial two-population window near 2x (minimum 30 total and ten frames in
+  each population, ratio 1.6x-2.4x) before the existing multi-sample confirmation can activate the label.
+- Smooth Motion pattern evaluation is blocked by active Streamline/DLSS/FSR evidence, but not by an idle Streamline
+  module. It continues while Smooth Motion is classified active, allowing a broken or superseded pattern to clear
+  rather than latch indefinitely.
 - Direct DX11 processing invokes that adapter before `ProcessDX11FrameWithOverlayOrdering()`. This covers the
   DX11-owned Present/wrapper paths even when the outer shared DXGI publisher is not the active route.
 - Vulkan invokes the same adapter immediately after updating its `PerformanceMetrics` and before recording/waiting
@@ -66,10 +74,13 @@ This page records how the current tree publishes visible FG status to the overla
   - transitioning back to `off` to clear the published FG status back to the baseline `FG` label
   - NvPresent detection to wake pattern analysis without claiming Smooth Motion from module presence alone
   - Streamline module presence without confirmed FG to remain `STREAMLINE_NO_FG` after NvPresent detection
+  - the observed 56-total/31-high-work NvPresent window to infer 2x while startup-skewed, all-high-work,
+    insufficient-minority, module-absent, and 3x-shaped windows remain rejected
+  - idle Streamline support to permit Smooth Motion confirmation while active Streamline/DLSS/FSR evidence blocks it
 - Source-contract coverage requires both the direct DX11 and Vulkan render paths to publish detected status before
   overlay rendering, and requires the Vulkan layer build to link the generic publisher implementation.
 - `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, including both directions of the freshness rule: a stale planner `DLSS FG` publication overridden by the latest DX12-visible `FSR FG` / `off` state, and a newer planner `off` update beating an older cached preferred `DLSS FG` state.
-- Build `0.1.5248` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
+- Build `0.1.5249` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
   full native suite, all Python tool self-tests, lint/ratchets, and x64 ASan/UBSan.
 
 ## Practical Guidance

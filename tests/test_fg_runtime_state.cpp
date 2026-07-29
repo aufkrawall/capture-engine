@@ -21,6 +21,15 @@ TEST(FGRuntimeStateTest, ClassifiesNvidiaSmoothMotionSeparately) {
     EXPECT_EQ(RuntimeMode::kNvidiaSmoothMotion, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
 }
 
+TEST(FGRuntimeStateTest, ClassifiesNvidiaSmoothMotionOverIdleStreamlineSupport) {
+    DetectionSnapshot snapshot;
+    snapshot.dormant = false;
+    snapshot.nvPresentLoaded = true;
+    snapshot.streamlineLoaded = true;
+    snapshot.nvidiaSmoothMotionDetected = true;
+    EXPECT_EQ(RuntimeMode::kNvidiaSmoothMotion, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
+}
+
 TEST(FGRuntimeStateTest, StreamlineWithoutFGStaysSeparate) {
     DetectionSnapshot snapshot;
     snapshot.streamlineLoaded = true;
@@ -112,6 +121,39 @@ TEST(FGRuntimeStateTest, NvPresentDetectionPreservesStreamlineWithoutFrameGenera
 
     EXPECT_FALSE(detector.IsFGActive());
     EXPECT_EQ(RuntimeMode::kStreamlineNoFG, detector.GetRuntimeMode());
+}
+
+TEST(FGRuntimeStateTest, SmoothMotionPatternEligibilityExcludesCompetingFrameGeneration) {
+    DetectionSnapshot snapshot;
+    snapshot.nvPresentLoaded = true;
+    snapshot.streamlineLoaded = true;
+    EXPECT_TRUE(ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot));
+
+    snapshot.streamlineFGSignaled = true;
+    EXPECT_FALSE(ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot));
+    snapshot.streamlineFGSignaled = false;
+
+    snapshot.dlssFGApiActive = true;
+    EXPECT_FALSE(ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot));
+    snapshot.dlssFGApiActive = false;
+
+    snapshot.fsrFGApiActive = true;
+    EXPECT_FALSE(ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot));
+    snapshot.fsrFGApiActive = false;
+
+    snapshot.heuristicFSRFGActive = true;
+    EXPECT_FALSE(ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot));
+}
+
+TEST(FGRuntimeStateTest, SmoothMotionTwoPopulationInferenceMatchesObservedDriverCadence) {
+    EXPECT_TRUE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 56, 31));
+    EXPECT_TRUE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 120, 65));
+
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(false, 56, 31));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 28, 1));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 56, 56));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 30, 25));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 60, 20));
 }
 
 TEST(FGRuntimeStateTest, FsrApiWinsWithoutStreamlineSupport) {

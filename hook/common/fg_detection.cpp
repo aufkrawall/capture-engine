@@ -418,6 +418,11 @@ void FGCompatibility::UpdateMetrics() {
         }
     }
 
+    if (ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(
+            nvPresentDetected.load(std::memory_order_acquire), totalFrames, realFrames)) {
+        mult = 2;
+    }
+
     int prevMult = cachedMultiplier.exchange(mult);
 
     if (prevMult != mult && (prevMult == 1 || mult == 1 || prevMult != mult)) {
@@ -434,21 +439,22 @@ void FGCompatibility::DetectPattern() {
         return;
     }
 
-    if (GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kOff) {
-        int mult = cachedMultiplier.load();
-
-        if (mult == 2 && nvPresentDetected.load(std::memory_order_acquire)) {
-            const int confirmCount = nvidiaSMConfirmCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-            if (confirmCount >= NVIDIA_SM_CONFIRM_THRESHOLD) {
-                if (!nvidiaSmoothMotionDetected.exchange(true, std::memory_order_acq_rel)) {
-                    HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
-                }
+    const auto snapshot = CaptureDetectionSnapshot();
+    const int mult = cachedMultiplier.load(std::memory_order_acquire);
+    if (mult == 2 && ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot)) {
+        int confirmCount = nvidiaSMConfirmCount.load(std::memory_order_acquire);
+        if (confirmCount < NVIDIA_SM_CONFIRM_THRESHOLD) {
+            confirmCount = nvidiaSMConfirmCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+        }
+        if (confirmCount >= NVIDIA_SM_CONFIRM_THRESHOLD) {
+            if (!nvidiaSmoothMotionDetected.exchange(true, std::memory_order_acq_rel)) {
+                HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
             }
-        } else {
-            nvidiaSMConfirmCount.store(0, std::memory_order_release);
-            if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
-                HookLog("FG: NVIDIA Smooth Motion pattern broken, resetting to None");
-            }
+        }
+    } else {
+        nvidiaSMConfirmCount.store(0, std::memory_order_release);
+        if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
+            HookLog("FG: NVIDIA Smooth Motion pattern lost or superseded, resetting to None");
         }
     }
 }

@@ -46,6 +46,23 @@ inline RuntimeMode ClassifyRuntimeMode(const DetectionSnapshot& snapshot) {
     return RuntimeMode::kOff;
 }
 
+inline bool CanEvaluateNvidiaSmoothMotionPattern(const DetectionSnapshot& snapshot) {
+    return snapshot.nvPresentLoaded && !snapshot.streamlineFGSignaled && !snapshot.dlssFGApiActive &&
+           !snapshot.fsrFGApiActive && !snapshot.heuristicFSRFGActive;
+}
+
+inline bool HasNvidiaSmoothMotion2xPopulation(bool nvPresentLoaded, int totalFrames, int highWorkFrames) {
+    const int lowWorkFrames = totalFrames - highWorkFrames;
+    if (!nvPresentLoaded || totalFrames < 30 || highWorkFrames < 10 || lowWorkFrames < 10) {
+        return false;
+    }
+
+    // NvPresent-generated DX12 frames still submit a small amount of driver
+    // work, so they are not necessarily zero-command-list frames.  Require two
+    // substantial work populations whose ratio is conservatively near 2x.
+    return totalFrames * 5 >= highWorkFrames * 8 && totalFrames * 5 <= highWorkFrames * 12;
+}
+
 inline bool IsRuntimeFGActive(RuntimeMode mode) {
     return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG || mode == RuntimeMode::kNvidiaSmoothMotion;
 }
