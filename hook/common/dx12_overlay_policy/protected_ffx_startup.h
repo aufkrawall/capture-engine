@@ -142,21 +142,28 @@ inline bool ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(bool runtimeO
     return runtimeOwnsSwapchain && (directFFXApiConfirmation || nativeFSRStartupArmingPending);
 }
 
-inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-    bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool hasSwapchainQueue,
-    bool swapchainQueueDiffersFromOriginalGameQueue, bool streamlineStartupHandoffPending,
-    bool runtimeOwnedNativeFGPresentPath, bool nativeFSRInternalNoCallbackComposition) {
+inline bool ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+    bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff,
+    bool authoritativeFSRActive, bool hasSwapchainQueue, bool swapchainQueueDiffersFromOriginalGameQueue,
+    bool streamlineStartupHandoffPending, bool runtimeOwnedNativeFGPresentPath,
+    bool nativeFSRInternalNoCallbackComposition) {
     // After a real FSR -> DLSS comeback, the preserved non-origGame swapchain queue
     // can already belong to the new authoritative Streamline handoff. In that
     // state, a stale native-FSR Present-ownership latch from the prior runtime must
     // not keep the later DLSS startup path classified as still runtime-owned native
     // FG. Clear only that stale native-FSR ownership latch; the generic runtime-
     // owned swapchain fact can still remain true for the new Streamline-owned
-    // queue topology. The internal no-callback route is an independent retained
-    // suspension latch: it can remain true after the broader native-FG ownership
-    // predicate has already reclassified the non-original queue as Streamline's.
-    return hadFSRFGPhase && explicitSetOptionsActivation && hasSwapchainQueue &&
-           swapchainQueueDiffersFromOriginalGameQueue && streamlineStartupHandoffPending &&
+    // queue topology. The exact authoritative Streamline swapchain handoff is
+    // sufficient comeback proof even while DLSS remains suspended in a menu and
+    // never emits SetOptions(ON); require FSR itself to be inactive on that path.
+    // The internal no-callback route is an independent retained suspension latch:
+    // it can remain true after the broader native-FG ownership predicate has
+    // already reclassified the non-original queue as Streamline's.
+    const bool provenComeback = explicitSetOptionsActivation ||
+                                (authoritativeStreamlineHandoff && !authoritativeFSRActive);
+    const bool handoffEstablished = streamlineStartupHandoffPending || authoritativeStreamlineHandoff;
+    return hadFSRFGPhase && provenComeback && hasSwapchainQueue &&
+           swapchainQueueDiffersFromOriginalGameQueue && handoffEstablished &&
            (runtimeOwnedNativeFGPresentPath || nativeFSRInternalNoCallbackComposition);
 }
 

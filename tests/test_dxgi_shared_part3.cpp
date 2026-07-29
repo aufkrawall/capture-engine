@@ -746,10 +746,10 @@ TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershi
     EXPECT_LT(ownershipRefresh, ordinaryEdge)
         << "an in-place GetState-to-SetOptions provenance upgrade has no second ON edge";
 
-    const size_t staleOwnershipHelper =
-        dx12.find("static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(");
+    const size_t staleOwnershipHelper = dx12.find(
+        "bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source) {");
     const size_t staleOwnershipPolicy = dx12.find(
-        "ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(", staleOwnershipHelper);
+        "ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(", staleOwnershipHelper);
     const size_t noCallbackOwnershipProof =
         dx12.find("DX12_IsNativeFSRInternalNoCallbackCompositionActive()", staleOwnershipHelper);
     const size_t clearNoCallback = dx12.find("ForceClearNativeFSRInternalNoCallbackComposition(", staleOwnershipPolicy);

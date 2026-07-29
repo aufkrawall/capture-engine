@@ -158,22 +158,32 @@ TEST(DXGISharedTest, FFXSwapchainTakeoverStillClearsStaleStreamlineOwnershipWhen
         ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(false, true, true, false, true));
 }
 
-TEST(DXGISharedTest, ExplicitStreamlineComebackClearsOnlyStaleNativeFGPresentOwnership) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, true, true, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, true, false, true));
+TEST(DXGISharedTest, ProvenStreamlineComebackClearsOnlyStaleNativeFGPresentOwnership) {
+    using ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback;
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        false, true, true, true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, false, true, true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, false, false, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, false, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
-        true, true, true, true, true, false, false));
+    EXPECT_TRUE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, true, false, true, true, true, true, true, false));
+    EXPECT_TRUE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, true, false, false, true, true, true, false, true));
+
+    // GTA can create the authoritative Streamline swapchain while DLSS stays
+    // suspended in the menu. That exact handoff must retire the old FSR route
+    // without waiting for a SetOptions(ON) call that cannot arrive there.
+    EXPECT_TRUE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, false, true, false, true, true, false, false, true));
+
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        false, false, true, false, true, true, false, false, true));
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, false, true, true, true, true, false, false, true));
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, false, false, false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, true, false, false, false, false, true, true, false));
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, true, false, false, true, true, false, true, false));
+    EXPECT_FALSE(ShouldClearStaleNativeFGPresentOwnershipOnStreamlineComeback(
+        true, true, false, false, true, true, false, false, false));
 }
 
 TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwnershipOrAuthoritativeFFXTakeover) {

@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-07-29 - Retire suspended FSR transport at the authoritative Streamline swapchain handoff
+
+- **Evidence / corrected diagnosis:** GTA follow-up session
+  `installed/captureengine/logs/20260729_231137` switched FSR FG to DLSS FG while remaining in the menu, where GTA
+  legitimately kept DLSS inactive. At `23:32:35.081-35.112`, Streamline created an authoritative new swapchain on
+  queue `000002BC878752B0`; CE captured that queue, invalidated stale PostSL proof, and prewarmed the exact new
+  backend. The retained native-FSR no-callback latch nevertheless stayed set because the earlier cleanup waited for
+  explicit `SetOptions(ON)`, which cannot arrive while menu suspension persists. Present then selected the retired
+  FFX fallback, composited once onto stale UI resource `000002BC13F23060`, and never ran the normal
+  `STREAMLINE_NO_FG` overlay path. The previous single-submit PostSL correction behaved as intended and was not this
+  failure.
+- **Fix / invariant:** a fresh authoritative non-game Streamline swapchain queue is itself sufficient comeback proof
+  while FSR API state is inactive. Immediately after publishing that exact queue, CE retires stale FSR
+  Present/no-callback/teardown state before PostSL invalidation or prewarm. The generic runtime-owned swapchain fact
+  and the new Streamline queue remain intact, so ordinary menu Presents render through the existing normal
+  `STREAMLINE_NO_FG` path and a later DLSS activation can use the prewarmed PostSL backend. Active FSR, missing FSR
+  history, same/original queues, non-authoritative creates, and absent stale ownership signals remain ineligible.
+- **Diagnostics / coverage:** the cleanup log now records `proof=authoritative-handoff|explicit-setoptions`,
+  explicit/authoritative inputs, FSR API state, handoff-pending state, both queues, and both stale FSR ownership
+  signals. Policy tests cover the menu-suspended handoff and every major negative gate; a source contract requires
+  cleanup after exact queue publication and before PostSL invalidation/prewarm. Focused DXGI, transition-sequence,
+  trace-replay, FG-session, and Streamline-policy suites pass. Build `0.1.5255` passed the complete 263.403-second
+  gate: clean x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan,
+  packaging/PE checks, file-size and clang-tidy ratchets, flake8, and pyright.
+- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+  `hook/apis/dx12_hook_part_{001,014,015}.inl`, `tests/test_dxgi_shared_part{3,8,10}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
 ### 2026-07-29 - Deduplicate exact PostSL suspension rendering across pre-routing and ProcessFrame
 
 - **Evidence / corrected diagnosis:** GTA follow-up session
@@ -31,8 +59,8 @@
   the new Streamline handoff, while native FSR's independently retained no-callback composition latch remained true.
   Shared Present routing consequently kept treating the session as FFX composition while PostSL rendered every active
   and suspended-DLSS Present, producing thousands of `ffx-present-callback then post-sl` double-draw diagnostics.
-- **Fix / invariant:** the guarded explicit post-FSR Streamline cleanup now accepts either stale native-FG ownership
-  signal. It force-clears the retained no-callback route and native-FSR teardown state while preserving the proven
+- **Fix / invariant:** that revision's guarded explicit post-FSR Streamline cleanup accepts either stale native-FG
+  ownership signal. It force-clears the retained no-callback route and native-FSR teardown state while preserving the proven
   Streamline swapchain queue and generic runtime owner. The cleanup diagnostic records both input signals, making the
   previously hidden `nativeFGPath=0 noCallback=1` case attributable. No hook removal, resource copy, extra queue,
   delay, polling, timeout, title branch, or steady-state render work was added.

@@ -52,6 +52,8 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
                                    bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain = false,
                                    IDXGISwapChain* associatedSwapchain = nullptr,
                                    bool authoritativeNormalSwapchainReturn = false);
+static bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(
+    bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"

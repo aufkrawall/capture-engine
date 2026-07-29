@@ -532,6 +532,11 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             }
         }
         if (freshAuthoritativeStreamlineHandoff) {
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+                ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(
+                    false, true, context ? context : "fresh authoritative Streamline handoff");
+            }
             if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchain(
                     IsDX12Swapchain(pSwapChain), freshAuthoritativeStreamlineHandoff,
                     DXGIShared::DoesFGRuntimeOwnSwapchain())) {

@@ -261,6 +261,31 @@ TEST(DXGISharedTest, FFXUiOverlayTargetSubstitutesForDegenerateGameTexture) {
 // bundle drive (TryAppendNoCallbackBundleOverlay / RecordBundleOverlayForGameECL)
 // plus the dead DX12_ShouldCompositeOverlayOntoFFXUiResource gate must be gone.
 // ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, AuthoritativeStreamlineHandoffRetiresStaleFSRBeforeOverlayPrewarm) {
+    namespace fs = std::filesystem;
+    const std::string dx12 =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    ASSERT_FALSE(dx12.empty());
+
+    const size_t capture = dx12.find("static void CaptureSwapchainQueueFromCreateDevice(");
+    const size_t publishQueue = dx12.find("DX12_SetSwapchainQueue(", capture);
+    const size_t handoff = dx12.find("if (freshAuthoritativeStreamlineHandoff) {", publishQueue);
+    const size_t clearStaleFSR =
+        dx12.find("ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(", handoff);
+    const size_t invalidatePostSL =
+        dx12.find("InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(", clearStaleFSR);
+    const size_t prewarm = dx12.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(", invalidatePostSL);
+    ASSERT_NE(capture, std::string::npos);
+    ASSERT_NE(publishQueue, std::string::npos);
+    ASSERT_NE(handoff, std::string::npos);
+    ASSERT_NE(clearStaleFSR, std::string::npos);
+    ASSERT_NE(invalidatePostSL, std::string::npos);
+    ASSERT_NE(prewarm, std::string::npos);
+    EXPECT_LT(publishQueue, clearStaleFSR);
+    EXPECT_LT(clearStaleFSR, invalidatePostSL);
+    EXPECT_LT(clearStaleFSR, prewarm);
+}
+
 TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
     namespace fs = std::filesystem;
 

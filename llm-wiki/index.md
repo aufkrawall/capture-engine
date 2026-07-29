@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-29 (GetState-first post-FSR Streamline ownership repair including the independent FFX no-callback latch and single-submit all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-29 (authoritative menu-suspended Streamline-handoff retirement of stale FSR transport, GetState-first post-FSR ownership repair including the independent FFX no-callback latch, single-submit all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
