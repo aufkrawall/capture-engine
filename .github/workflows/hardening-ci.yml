@@ -50,6 +50,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            cmake \
             g++-mingw-w64-x86-64 \
             g++-mingw-w64-i686 \
             glslang-tools \

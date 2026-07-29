@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-28 (content-addressed/parallel verification, bounded source-fragment facades, best-effort fullscreen-focus WGC/DXGI privacy blackout, post-prewarm wall-anchored WGC/DXGI startup, authoritative copy-pool reserve, grid-aware visual-debt retention, marginal/degraded overload liveness pacing, adaptive CFR audio ingestion reservoir, immutable-grid encoder-debt recovery, timeline-recovery-safe app audio, transition-aware capture diagnostics, DXGI source-limited cadence, delayed cursor ownership, HDR/SDR signaling, hardware encoders, monitor selection, and the existing current build, graphics, audio, screenshot, and security state; see build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-29 (automatic clean CaptureEngine/test-app 7z packaging plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -41,7 +41,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, bounded C++/Python fragment rules, Python tooling config, and common tree conventions. Last verified 2026-07-28.
 - `build.py.md`
-  - Supported `build.py` flags, content-addressed clang-tidy and exact-input sanitizer reuse, isolated/concurrent verification stages, early preflight, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested gate rule and default tests-only development loop, scope-aware ratchets, incremental/resume/no-build workflow, dependency closure, operational notes, and MinGW pitfalls. Last verified 2026-07-28.
+  - Supported `build.py` flags, automatic clean CaptureEngine/test-app 7z artifacts, content-addressed clang-tidy and exact-input sanitizer reuse, isolated/concurrent verification stages, early preflight, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested gate rule and default tests-only development loop, scope-aware ratchets, incremental/resume/no-build workflow, dependency closure, operational notes, and MinGW pitfalls. Last verified 2026-07-29.
 - `screenshots.md`
   - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, and explicit result notifications. Last verified 2026-07-19.
 - `process-ipc.md`

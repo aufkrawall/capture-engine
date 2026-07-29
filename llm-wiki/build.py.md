@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-28 (verification now uses an early read-only ratchet/static-analysis preflight, content-addressed per-translation-unit clang-tidy results, parallel lint subchecks, an isolated sanitizer tree, exact-input sanitizer success manifests, and concurrent sanitizer/product builds; previously 2026-07-25 for scope-aware clang-tidy baselines and the nested gate workflow)
+Last cross-checked: 2026-07-29 (successful product builds now emit clean, verified CaptureEngine and first-party test-app 7z archives; previously 2026-07-28 for content-aware/concurrent complete verification)
 
 Primary sources:
 - `AGENTS.md`
@@ -14,6 +14,7 @@ Primary sources:
 - `hook/apis/dx12_ffx_suspend_overlay.cpp`
 - `common/sequence_lock.h`
 - `tools/tests/test_build_flags.py`
+- `tools/tests/test_packaging.py`
 - `tools/tests/test_pe_hardening.py`
 - `tools/tests/test_clang_tidy_baseline.py`
 - `tools/clang_tidy_baseline.json`
@@ -44,7 +45,9 @@ Running `python build.py` is the full default-quality path. On Windows it update
 - A fresh MSYS2 bootstrap archive is selected from the official distribution listing, verified with its detached signature against `E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964`, and only then extracted. MSYS2 `pacman` remains the source of the compiler, linker, build tools, headers, and package-manager runtime; its installed package signatures are a separate trusted-toolchain boundary.
 - Final FFmpeg DLL synchronization enforces private-prefix provenance, checks the PE import closure against Windows system DLLs and the shipped directory, and validates PE export tables in the verification pass. The runtime bundle includes `libaom.dll`, `libwinpthread-1.dll`, and their licenses. FFmpeg retains SVT-AV1 and enables `libaom-av1` encoding/decoding for 10-bit 4:4:4 HDR screenshot AVIF. The current custom FFmpeg branch remains separately trusted input; this migration preserves its existing ABI set rather than upgrading FFmpeg majors.
 - License packaging is fail closed. Runtime notices are selected from the exact DLLs copied into `installed/captureengine/ffmpeg`; the bundled oneVPL dispatcher therefore emits `MIT_libvpl.txt`. AMF is the deliberate exception to DLL-triggered selection: FFmpeg compiles against the MSYS2 `amf-headers` package but dynamically loads the AMD-driver `amfrt64.dll`, so packaging unconditionally requires and copies that package's complete license and standards disclaimer as `MIT_AMF-Headers.txt` even though no AMD DLL is redistributed.
-- The release boundary is `installed/captureengine`: its product DLLs/EXEs are built by this project or by the source-built FFmpeg closure. `installed/testapp` is validation-only and may contain precompiled FSR, Streamline, NVIDIA, and other SDK/driver test binaries; never package that directory, `build/msys64`, SDK caches, or `external` build inputs as the product.
+- The product release boundary is the curated `captureengine/` root in `build/packages/captureengine.7z`: it includes the verified first-party product, FFmpeg closure, PDBs, manifests, licenses, and a clean config copied from `captureengine/config.ini.template`. It excludes the live installation's logs, captures, backups, stale/temporary files, `nul`, and user-edited `config.ini`.
+- `build/packages/testapps.7z` is a separate validation artifact, not part of the product. Its `testapps/` root contains only the explicitly built x64/x86 first-party test executables, available PDBs, and `THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`; it never copies DLLs or arbitrary files from `installed/testapp`. The note maps FSR SR/FG, DLSS SR/FG, Reflex/PCL, Streamline core, NVIDIA NGX, and Vulkan FidelityFX requirements to official SDK/driver sources and instructs users to place x64 vendor DLLs beside the x64 FG apps.
+- CMake's `-E tar --format=7zip` path creates each archive through a temporary output, lists it back to verify the single expected root, and atomically replaces the fixed archive name. Packaging runs only after PE/import/PDB verification and is skipped by isolated/sanitizer builds; failures are fatal and recorded in the verification manifest. Never package `build/msys64`, SDK caches, `external`, local diagnostic/session data, or vendor SDK/driver DLLs.
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
@@ -211,7 +214,7 @@ Default quality mode currently:
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
-- An unfiltered `--run-tests` also runs `tools/tests/test_ffmpeg_patch_utils.py`, which exercises strict patch application after CRLF target normalization and rejects target traversal, plus the `tools/tests/test_build_flags.py`, `tools/tests/test_pe_hardening.py`, and `tools/tests/test_clang_tidy_baseline.py` policy suites before the existing A/V tool self-tests (seven self-tests in total). Linux hardening CI runs the two cross-host policy suites in their own fail-fast Actions step before cross-compiling. The failed-unit-test diagnostic regression explicitly mocks the Linux `wine64` resolution boundary so it invokes the intended fake test process independently of the host running Python.
+- An unfiltered `--run-tests` runs sixteen Python tool self-test groups concurrently after the native suite. These include FFmpeg/dependency, build/link/PE/lint/ratchet/cache, Git-clean, packaging, and A/V analysis/matrix coverage. The packaging group verifies clean config substitution, local-state/vendor-DLL exclusion, x86 separation, cleanup containment, build-order gating, the feature-to-DLL note, and a real CMake 7z round trip. Linux hardening CI also runs selected cross-host policy suites before cross-compiling.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
 
 ## Test App Build Behavior

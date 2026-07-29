@@ -272,4 +272,9 @@ if False:
 
     clear_stale_hook_pdb_cache()
 
+    if env.get("CE_SANITIZE") == "1" or ISOLATED_BUILD_ROOT:
+        log("Skipping release archives for isolated/sanitizer validation")
+    else:
+        package_build_outputs()
+
     log("Build Complete.")

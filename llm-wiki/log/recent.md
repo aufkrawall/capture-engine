@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-07-29 - Emit clean CaptureEngine and test-app 7z artifacts
+
+- **Behavior:** every successful non-isolated product build now atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z` after PE/import/PDB verification. Each archive is listed back and must contain one expected root; package failure fails the build and is recorded in the verification manifest.
+- **Product boundary:** the `captureengine/` archive root includes verified product binaries/PDBs, manifests, the FFmpeg closure, licenses, and a clean default `config.ini`. It does not copy local logs, captures, backups, stale/temporary files, `nul`, or the live user configuration.
+- **Test boundary:** the separate `testapps/` root includes only the known first-party x64/x86 EXEs, available PDBs, and `THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`. Vendor DLLs and arbitrary files under `installed/testapp` cannot enter it. The note maps FSR/DLSS SR+FG, Reflex/PCL, Streamline/NGX, and DX12/Vulkan runtimes to official sources and the x64 root placement.
+- **Coverage:** `tools/tests/test_packaging.py` adds six policy/round-trip regressions and is the sixteenth Python self-test group. The tests-only development loop passed, then build `0.1.5243` passed the complete 261.3-second gate: clean x64/x86 product and 30 test-app builds, PE/import/PDB checks, both automatic archives (45 product files and 61 test-app files), the full native suite, all sixteen Python groups, zero file-size/flake8/pyright/clang-tidy-ratchet regressions, and x64 ASan/UBSan validation.
+- **Source anchors:** `build_part_{001,014,015}.py`, `testapp/THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`, `tools/{python_tool_self_tests.py,tests/test_packaging.py}`, `.github/workflows/hardening-ci.yml`, and `llm-wiki/build.py.md`.
+
 ### 2026-07-28 - Resolve the remaining oversized-source baseline
 
 - **Scope:** all 39 entries in `tools/file_size_baseline.json` were converted to bounded ordered fragments. C++ wrappers include `.inl` pieces inside the original translation unit; Python entry points execute `.py` pieces through shared-global compatibility facades. No public API, ABI, CLI, module namespace, preprocessor branch, strict-FP source identity, hot-path translation-unit placement, or runtime state ownership was changed.

@@ -269,6 +269,10 @@ BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\capturee
 TEST_OUTPUT_DIR = os.path.join(ISOLATED_BUILD_ROOT, "tests") if ISOLATED_BUILD_ROOT else os.path.join(
     PROJECT_ROOT, "tests"
 )
+PACKAGE_OUTPUT_DIR = os.path.join(BUILD_DIR, "packages")
+CAPTUREENGINE_PACKAGE_NAME = "captureengine.7z"
+TESTAPPS_PACKAGE_NAME = "testapps.7z"
+TESTAPP_RUNTIME_NOTE = os.path.join(PROJECT_ROOT, "testapp", "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt")
 DEFAULT_LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 LOG_FILE = DEFAULT_LOG_FILE
 DETAIL_LOG_FILE: Optional[str] = None

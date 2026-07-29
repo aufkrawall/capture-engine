@@ -283,8 +283,11 @@ through an MSYS shell.
 
 The build covers the x64 application and hook, the x86 compatibility hook, MediaEngine, both Vulkan layers, shaders
 and resources, the native graphics test applications, and the unit-test binaries. Shipping files are staged under
-`installed/captureengine`; validation-only programs remain under `installed/testapp` and cannot enter a release
-package.
+`installed/captureengine`; validation-only programs remain under `installed/testapp`. After binary verification, a
+product build atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z`. The product
+archive contains a clean `captureengine/` folder without local logs, captures, backups, stale files, or the current
+user configuration. The separate `testapps/` archive contains only first-party executables/PDBs plus a runtime note;
+it does not redistribute the FSR, Streamline, DLSS/NGX, Reflex, or driver DLLs staged for local validation.
 
 Dependency handling is deliberately reproducible and fail-closed. The MSYS2 bootstrap is authenticated using its
 detached signature and a pinned signing key. Source packages and upstream archives are checked against pinned

@@ -41,6 +41,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("file_size_baseline", unittest_command("test_file_size_baseline")),
         ("build_lint_policy", unittest_command("test_build_lint_policy")),
         ("git_clean_paths", unittest_command("test_git_clean")),
+        ("build_packaging", unittest_command("test_packaging")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
         ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),

@@ -1,0 +1,80 @@
+CaptureEngine Test Apps - Third-Party Runtime Requirements
+=========================================================
+
+The test-app archive intentionally does not redistribute vendor SDK or driver
+DLLs. Obtain them from the official SDK/driver sources listed below. Do not use
+unofficial DLL download sites or mix files from unrelated SDK/driver versions.
+
+Placement
+---------
+
+Put every DLL listed below directly in this testapps folder, next to the x64
+frame-generation executables:
+
+  dx12_fsr_fg_test.exe
+  dx12_dlss_fg_test.exe
+  dx12_fg_switch_test.exe
+  vulkan_fg_switch_test.exe
+
+Do not put these x64 vendor DLLs in testapps\x86. The x86 folder contains no
+frame-generation test executable.
+
+AMD FidelityFX
+--------------
+
+Official source:
+  https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+
+DX12 FSR frame generation (SDK 2.2.0):
+  amd_fidelityfx_framegeneration_dx12.dll
+  amd_fidelityfx_loader_dx12.dll
+  amd_acs_x64.dll
+  amd_ags_x64.dll
+
+DX12 FSR super resolution (SDK 2.2.0):
+  amd_fidelityfx_upscaler_dx12.dll
+
+Vulkan FSR super resolution/frame generation (SDK 1.1.4):
+  amd_fidelityfx_vk.dll
+
+NVIDIA Streamline, DLSS, and Reflex
+-----------------------------------
+
+Official Streamline SDK 2.11.1 source:
+  https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.11.1
+
+Copy the complete release runtime set from the SDK's bin\x64 directory. The
+features used by these apps require at least:
+
+  sl.interposer.dll
+  sl.common.dll
+  sl.dlss.dll
+  sl.dlss_g.dll
+  sl.reflex.dll
+  sl.pcl.dll
+  nvngx_dlss.dll
+  nvngx_dlssg.dll
+
+The Vulkan Streamline path also uses the SDK's NvLowLatencyVk.dll. Copying the
+complete bin\x64 release set is recommended because Streamline may load further
+companion plug-ins for the selected feature and GPU/driver combination.
+
+Streamline obtains NVIDIA NGX core support from the installed NVIDIA display
+driver. On systems where local resolution is required, _nvngx.dll must come
+from that same installed driver's DriverStore package and must also be placed
+next to the x64 test executables. Do not redistribute or substitute a copy from
+an unrelated machine or driver version.
+
+Feature mapping
+---------------
+
+  FSR SR:       amd_fidelityfx_upscaler_dx12.dll or amd_fidelityfx_vk.dll
+  FSR FG:       amd_fidelityfx_framegeneration_dx12.dll or amd_fidelityfx_vk.dll
+  DLSS SR:      Streamline + sl.dlss.dll + nvngx_dlss.dll
+  DLSS FG:      Streamline + sl.dlss_g.dll + nvngx_dlssg.dll
+  Reflex/PCL:   Streamline + sl.reflex.dll + sl.pcl.dll
+  SL core:      sl.interposer.dll + sl.common.dll
+
+The non-FG DirectDraw, Direct3D, OpenGL, and Vulkan apps need only the matching
+Windows graphics runtime and a suitable display driver. vulkan_test.exe also
+requires the normal system Vulkan loader supplied by the GPU driver/runtime.

@@ -1,5 +1,239 @@
 
 
+PACKAGED_X64_TEST_APPS = (
+    "directdraw7_test",
+    "dx6_test",
+    "dx7_test",
+    "dx8_test",
+    "dx9_test",
+    "dx9ex_test",
+    "dx10_test",
+    "dx11_test",
+    "dx12_test",
+    "dx12_av_sync_test",
+    "dx12_fsr_fg_test",
+    "dx12_dlss_fg_test",
+    "dx12_fg_switch_test",
+    "opengl_test",
+    "opengl_legacy_test",
+    "vulkan_test",
+    "vulkan_fg_switch_test",
+)
+PACKAGED_X86_TEST_APPS = tuple(
+    name
+    for name in PACKAGED_X64_TEST_APPS
+    if name not in {"dx12_fsr_fg_test", "dx12_dlss_fg_test", "dx12_fg_switch_test", "vulkan_fg_switch_test"}
+)
+CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES = {"bak", "captures", "logs", "screenshots"}
+CAPTURE_PACKAGE_EXCLUDED_SUFFIXES = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
+CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses"}
+CAPTURE_PACKAGE_ROOT_SUFFIXES = (".dll", ".exe", ".json", ".pdb")
+
+
+def _validate_workspace_cleanup_target(path: str) -> str:
+    target = os.path.abspath(path)
+    workspace_temp = os.path.abspath(WORKSPACE_TEMP_DIR)
+    try:
+        inside_workspace_temp = os.path.commonpath([target, workspace_temp]) == workspace_temp
+    except ValueError:
+        inside_workspace_temp = False
+    if not inside_workspace_temp or target == workspace_temp:
+        raise RuntimeError(f"Refusing package cleanup outside the workspace temp directory: {target}")
+    return target
+
+
+def _reset_package_staging_directory(path: str) -> None:
+    target = _validate_workspace_cleanup_target(path)
+    if os.path.exists(target):
+        shutil.rmtree(target)
+    os.makedirs(target, exist_ok=True)
+
+
+def _capture_package_file_allowed(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/")
+    parts = normalized.split("/")
+    if any(part.lower() in CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES for part in parts[:-1]):
+        return False
+    filename = parts[-1].lower()
+    if filename in {"config.ini", "nul"} or ".old." in filename:
+        return False
+    if len(parts) == 1 and not filename.endswith(CAPTURE_PACKAGE_ROOT_SUFFIXES):
+        return False
+    return not filename.endswith(CAPTURE_PACKAGE_EXCLUDED_SUFFIXES)
+
+
+def _stage_captureengine_package(source_root: str, destination_root: str, clean_config: str) -> List[str]:
+    if not os.path.isfile(os.path.join(source_root, "captureengine.exe")):
+        raise RuntimeError("Cannot package CaptureEngine: captureengine.exe is missing")
+    copied: List[str] = []
+    for current_root, directories, filenames in os.walk(source_root, topdown=True):
+        relative_directory = os.path.relpath(current_root, source_root)
+        kept_directories = []
+        for directory in directories:
+            source_directory = os.path.join(current_root, directory)
+            if directory.lower() in CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES:
+                continue
+            if relative_directory == "." and directory.lower() not in CAPTURE_PACKAGE_INCLUDED_DIRECTORIES:
+                continue
+            if os.path.islink(source_directory):
+                raise RuntimeError(f"Refusing to package directory symlink: {source_directory}")
+            kept_directories.append(directory)
+        directories[:] = kept_directories
+
+        for filename in filenames:
+            relative = filename if relative_directory == "." else os.path.join(relative_directory, filename)
+            if not _capture_package_file_allowed(relative):
+                continue
+            source = os.path.join(current_root, filename)
+            if os.path.islink(source):
+                raise RuntimeError(f"Refusing to package file symlink: {source}")
+            destination = os.path.join(destination_root, relative)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
+            copied.append(relative.replace("\\", "/"))
+
+    if not os.path.isfile(clean_config):
+        raise RuntimeError(f"Cannot package CaptureEngine: default config template is missing: {clean_config}")
+    config_destination = os.path.join(destination_root, "config.ini")
+    os.makedirs(destination_root, exist_ok=True)
+    shutil.copy2(clean_config, config_destination)
+    copied.append("config.ini")
+    return sorted(copied)
+
+
+def _stage_testapps_package(source_root: str, destination_root: str, runtime_note: str) -> List[str]:
+    copied: List[str] = []
+    for relative_directory, app_names, required in (
+        ("", PACKAGED_X64_TEST_APPS, True),
+        ("x86", PACKAGED_X86_TEST_APPS, False),
+    ):
+        source_directory = os.path.join(source_root, relative_directory)
+        destination_directory = os.path.join(destination_root, relative_directory)
+        for app_name in app_names:
+            executable_name = app_name + ".exe"
+            executable = os.path.join(source_directory, executable_name)
+            if not os.path.isfile(executable):
+                if required:
+                    raise RuntimeError(f"Cannot package test apps: required executable is missing: {executable}")
+                continue
+            os.makedirs(destination_directory, exist_ok=True)
+            destination = os.path.join(destination_directory, executable_name)
+            shutil.copy2(executable, destination)
+            relative_executable = os.path.join(relative_directory, executable_name).replace("\\", "/")
+            copied.append(relative_executable)
+
+            pdb = os.path.join(source_directory, app_name + ".pdb")
+            if os.path.isfile(pdb):
+                pdb_name = app_name + ".pdb"
+                shutil.copy2(pdb, os.path.join(destination_directory, pdb_name))
+                copied.append(os.path.join(relative_directory, pdb_name).replace("\\", "/"))
+            elif IS_WINDOWS:
+                raise RuntimeError(f"Cannot package test apps: required PDB is missing: {pdb}")
+
+    if not os.path.isfile(runtime_note):
+        raise RuntimeError(f"Cannot package test apps: runtime requirements note is missing: {runtime_note}")
+    note_name = os.path.basename(runtime_note)
+    shutil.copy2(runtime_note, os.path.join(destination_root, note_name))
+    copied.append(note_name)
+    return sorted(copied)
+
+
+def _get_cmake_archiver() -> str:
+    candidates = [
+        os.path.join(MSYS2_DIR, "clang64", "bin", "cmake.exe"),
+        shutil.which("cmake"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    raise RuntimeError("CMake is required to create the automatic .7z packages")
+
+
+def _create_7z_archive(cmake_exe: str, staging_root: str, root_name: str, archive_path: str) -> List[str]:
+    os.makedirs(os.path.dirname(archive_path), exist_ok=True)
+    temporary_archive = archive_path + ".tmp"
+    if os.path.exists(temporary_archive):
+        os.remove(temporary_archive)
+    try:
+        run_command(
+            [cmake_exe, "-E", "tar", "cf", temporary_archive, "--format=7zip", root_name],
+            cwd=staging_root,
+        )
+        listing = run_command([cmake_exe, "-E", "tar", "tf", temporary_archive], cwd=staging_root)
+        members = sorted(
+            line.strip().replace("\\", "/")
+            for line in listing.splitlines()
+            if line.strip()
+        )
+        expected_prefix = root_name + "/"
+        if not members or any(member != root_name and not member.startswith(expected_prefix) for member in members):
+            raise RuntimeError(f"Archive {archive_path} contains an invalid root layout")
+        os.replace(temporary_archive, archive_path)
+        return members
+    finally:
+        if os.path.exists(temporary_archive):
+            os.remove(temporary_archive)
+
+
+def package_build_outputs() -> Tuple[str, str]:
+    """Create clean CaptureEngine and test-app 7z archives after a successful product build."""
+    package_start = time.time()
+    staging_root = os.path.join(WORKSPACE_TEMP_DIR, "package-staging")
+    _reset_package_staging_directory(staging_root)
+    capture_stage = os.path.join(staging_root, "captureengine")
+    testapps_stage = os.path.join(staging_root, "testapps")
+    try:
+        capture_files = _stage_captureengine_package(
+            CAPTURE_BIN_DIR,
+            capture_stage,
+            os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
+        )
+        testapp_files = _stage_testapps_package(TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE)
+
+        cmake_exe = _get_cmake_archiver()
+        capture_archive = os.path.join(PACKAGE_OUTPUT_DIR, CAPTUREENGINE_PACKAGE_NAME)
+        testapps_archive = os.path.join(PACKAGE_OUTPUT_DIR, TESTAPPS_PACKAGE_NAME)
+        capture_members = _create_7z_archive(cmake_exe, staging_root, "captureengine", capture_archive)
+        testapp_members = _create_7z_archive(cmake_exe, staging_root, "testapps", testapps_archive)
+
+        required_capture_member = "captureengine/captureengine.exe"
+        required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
+        if required_capture_member not in capture_members or required_note_member not in testapp_members:
+            raise RuntimeError("Automatic package verification failed: required archive member is missing")
+        if any(member.lower().endswith(".dll") for member in testapp_members):
+            raise RuntimeError("Automatic package verification failed: test-app archive contains a vendor DLL")
+
+        record_verification_artifact("captureengine_package", capture_archive)
+        record_verification_artifact("testapps_package", testapps_archive)
+        record_verification_step(
+            "package_archives",
+            "passed",
+            duration_seconds=time.time() - package_start,
+            details={
+                "captureengine_files": len(capture_files),
+                "testapp_files": len(testapp_files),
+                "captureengine_archive": capture_archive,
+                "testapps_archive": testapps_archive,
+            },
+        )
+        log(f"Packaged CaptureEngine: {capture_archive} ({os.path.getsize(capture_archive)} bytes)")
+        log(f"Packaged test apps: {testapps_archive} ({os.path.getsize(testapps_archive)} bytes)")
+        return capture_archive, testapps_archive
+    except Exception as error:
+        record_verification_step(
+            "package_archives",
+            "failed",
+            duration_seconds=time.time() - package_start,
+            details={"error": str(error)},
+        )
+        log(f"ERROR: Automatic package creation failed: {error}")
+        raise
+    finally:
+        target = _validate_workspace_cleanup_target(staging_root)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+
+
 def ensure_debug_logging():
     """Ensure at least log_level=debug in bin/config.ini."""
     config_path = os.path.join(BIN_DIR, "config.ini")
