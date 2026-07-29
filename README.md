@@ -7,6 +7,8 @@ Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-
 custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application profiles, and native FPS
 limiter integrations.
 
+If you find the project useful and would like to support its development, see [Donations](#donations).
+
 The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
 container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay does not use Dear
 ImGui or another external overlay framework.
@@ -18,8 +20,7 @@ ImGui or another external overlay framework.
 - NVENC, AMD AMF, Intel Quick Sync/oneVPL, and Media Foundation encoders
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
-- General FPS limiting and recording-aware capture sync through a local timer, NVIDIA Reflex, AMD Anti-Lag 2, or Intel
-  XeLL
+- General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
 
@@ -133,10 +134,8 @@ Capture sync can limit an injected application's rendered rate to a multiple of 
 | --- | --- |
 | Basic | Hook-local rational-QPC timer cadence |
 | Reflex | NVIDIA Reflex sleep-mode/low-latency integration, with game-owned sleep handoff when stable |
-| Anti-Lag 2 | AMD driver extension on D3D12 |
-| XeLL | Intel XeLL on D3D12 |
 | FG fallback | Timer cadence scaled to the confirmed frame-generation multiplier |
-| Auto | Game-activated Reflex → Anti-Lag 2 → XeLL → FG fallback → Basic |
+| Auto | Game-activated Reflex → FG fallback → Basic |
 
 The timer path uses a Bresenham-style rational QPC grid rather than rounding every frame to one integer tick interval.
 It arms a high-resolution waitable timer early, adapts its fine-wait margin from the observed p99 wake overshoot, and
@@ -150,8 +149,9 @@ rate, while injected capture targets the application's real rendered frames.
 ## Overlay and frame generation
 
 The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders.
-It tracks presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling;
-texture format alone is not treated as proof of HDR.
+Its layout and font rendering support Windows per-monitor DPI scaling, including fractional scale factors. It tracks
+presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling; texture
+format alone is not treated as proof of HDR.
 
 DLSS Frame Generation integration observes NVIDIA Streamline and NGX through inline, wrapper, dynamic-resolution, and
 direct-import seams. FSR Frame Generation integration observes FidelityFX context/configuration state and the
