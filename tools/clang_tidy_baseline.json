@@ -35,7 +35,7 @@
     "bugprone-macro-parentheses": 21,
     "bugprone-misplaced-widening-cast": 10,
     "bugprone-multi-level-implicit-pointer-conversion": 197,
-    "bugprone-narrowing-conversions": 571,
+    "bugprone-narrowing-conversions": 545,
     "bugprone-nondeterministic-pointer-iteration-order": 8,
     "bugprone-redundant-branch-condition": 1,
     "bugprone-signed-char-misuse": 2,
@@ -50,9 +50,9 @@
     "performance-no-automatic-move": 5,
     "performance-unnecessary-value-param": 7
   },
-  "total": 1612,
+  "total": 1586,
   "scope": {
-    "entries": 269,
+    "entries": 270,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -135,6 +135,7 @@
       "hook/common/input_manager.cpp",
       "hook/common/ipc_client.cpp",
       "hook/common/overlay_adapter.cpp",
+      "hook/common/overlay_metrics_planner_publisher.cpp",
       "hook/common/overlay_metrics_publisher.cpp",
       "hook/common/perf_logger.cpp",
       "hook/common/performance_metrics.cpp",

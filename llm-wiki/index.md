@@ -67,7 +67,7 @@ Primary sources:
 - `vulkan-fg-switch-test.md`
   - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`
-  - Current visible FG status publication rules for the overlay, including authoritative first-confirmed Reflex-driven Streamline suspend edges. Last verified 2026-07-18.
+  - Current visible FG status publication rules across DX11, DX12, and Vulkan, including NVIDIA Smooth Motion and authoritative first-confirmed Reflex-driven Streamline suspend edges. Last verified 2026-07-29.
 - `debug-tools.md`
   - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`

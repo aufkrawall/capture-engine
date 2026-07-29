@@ -145,6 +145,8 @@ extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
     (void)isRealFrame;
+    ce::overlay_metrics::PublishDetectedOverlayFGMetrics(DXGIShared::GetPerformanceMetrics(),
+                                                         "DX11::HandleProcessFrame");
     ProcessDX11FrameWithOverlayOrdering(pSwapChain);
 }
 

@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-07-29 - Publish NVIDIA Smooth Motion status on every supported overlay API path
+
+- **Root cause:** the visible metric type and `NVIDIA SM` label already existed, and DX12 fed them through its
+  transition-aware publisher, but the direct DX11 and Vulkan overlay paths only updated frame timing. A working
+  Smooth Motion detector could therefore affect compatibility without ever populating the metrics consumed by those
+  overlay renderers.
+- **Fix / boundary:** one API-neutral metric policy now maps the unchanged runtime classification to DLSS FG, FSR FG,
+  NVIDIA Smooth Motion, or inactive. Direct DX11 and Vulkan publish the current detector snapshot before drawing;
+  DX12 retains its planner/preferred-state ordering. Detection, Streamline/FFX priority, and NvPresent-without-
+  confirmation behavior are unchanged.
+- **Coverage:** focused status, performance-metric, runtime-classification, and source-contract tests pass. The source
+  contract also proves the Vulkan layer links the generic publisher. Build `0.1.5247` passed the complete gate:
+  clean x64/x86 hooks and Vulkan layers, the full native suite, all sixteen Python groups, lint/ratchets, and x64
+  ASan/UBSan. Fresh x64 DX11/DX12/Vulkan driver validation remains manual.
+- **Source anchors:** `hook/common/overlay_fg_metric_policy.h`,
+  `hook/common/overlay_metrics_publisher.{h,cpp}`, `hook/common/overlay_metrics_planner_publisher.cpp`,
+  `hook/apis/dx11_hook.cpp`, `hook/vulkan_layer/layer_overlay.cpp`, `build.py`,
+  `tests/test_overlay_fg_status_publication.cpp`, and `llm-wiki/overlay-fg-status.md`.
+
 ### 2026-07-29 - Emit clean CaptureEngine and test-app 7z artifacts
 
 - **Behavior:** every successful non-isolated product build now atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z` after PE/import/PDB verification. Each archive is listed back and must contain one expected root; package failure fails the build and is recorded in the verification manifest.

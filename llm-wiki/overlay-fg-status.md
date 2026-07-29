@@ -1,10 +1,15 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-07-18
+Last cross-checked: 2026-07-29
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
+- `hook/common/overlay_metrics_planner_publisher.cpp`
+- `hook/common/overlay_fg_metric_policy.h`
 - `hook/common/dx12_overlay_policy.h`
+- `hook/apis/dx11_hook.cpp`
+- `hook/vulkan_layer/layer_overlay.cpp`
+- `build.py`
 - `hook/common/streamline_runtime_policy.h`
 - `hook/apis/streamline_hook.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
@@ -15,6 +20,19 @@ This page records how the current tree publishes visible FG status to the overla
 
 ## Facts
 - The current shared helper for FG publication is `PublishOverlayFGMetrics()`.
+- `PublishDetectedOverlayFGMetrics()` is the direct-render-path adapter: it snapshots the existing detector's active
+  state, runtime mode, output/base FPS, and multiplier, then delegates to the same canonical publisher. It does not
+  alter detection or runtime priority.
+- Direct DX11 processing invokes that adapter before `ProcessDX11FrameWithOverlayOrdering()`. This covers the
+  DX11-owned Present/wrapper paths even when the outer shared DXGI publisher is not the active route.
+- Vulkan invokes the same adapter immediately after updating its `PerformanceMetrics` and before recording/waiting
+  for the overlay draw. The Vulkan layer explicitly links the generic publisher object; it does not link the
+  DX12 planner-specific publisher.
+- DX12 retains its existing transition-aware direct/planner publication paths. Splitting the planner overload into
+  `overlay_metrics_planner_publisher.cpp` does not change its preferred-state sequence or stale-plan arbitration.
+- Visible type resolution now lives in `overlay_fg_metric_policy.h`. DX12's compatibility entrypoints delegate to
+  that API-neutral mapping, so DX11, DX12, and Vulkan publish the same `DLSS FG`, `FSR FG`, `NVIDIA SM`, and inactive
+  metric types.
 - The main DXGI/DX12 publication call sites still route through the planner-aware `PublishOverlayFGMetrics(..., FGActionPlan, ...)` helper rather than each caller independently deciding `(effectiveFGActive, runtimeMode)` ad hoc.
 - That planner-aware helper now first asks DX12 for the latest preferred visible FG state. This lets the shared publisher keep using a common entrypoint while avoiding stale planner repaints when DX12 already computed a newer user-visible state.
 - The preferred visible-state cache and the planner now share one publication-order sequence. When they disagree, the publisher lets the newer state win instead of unconditionally trusting the preferred cache. This preserves the old stale-plan fix while allowing a later planner `off` update to beat an older cached `DLSS FG` / `FSR FG` label during menu churn or shutdown-adjacent sequences.
@@ -38,9 +56,14 @@ This page records how the current tree publishes visible FG status to the overla
 - Current tests explicitly require:
   - `FSR FG` to publish as `FSR FG`
   - `DLSS FG` to publish as `DLSS FG`
+  - NVIDIA Smooth Motion to publish as `NVIDIA SM`
   - switching between those modes to update the visible label immediately
   - transitioning back to `off` to clear the published FG status back to the baseline `FG` label
+- Source-contract coverage requires both the direct DX11 and Vulkan render paths to publish detected status before
+  overlay rendering, and requires the Vulkan layer build to link the generic publisher implementation.
 - `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, including both directions of the freshness rule: a stale planner `DLSS FG` publication overridden by the latest DX12-visible `FSR FG` / `off` state, and a newer planner `off` update beating an older cached preferred `DLSS FG` state.
+- Build `0.1.5247` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
+  full native suite, all Python tool self-tests, lint/ratchets, and x64 ASan/UBSan.
 
 ## Practical Guidance
 - Route visible FG status publication through the shared helper instead of duplicating mapping logic in multiple runtime paths.
@@ -56,5 +79,8 @@ This page records how the current tree publishes visible FG status to the overla
 - If a runtime path can produce stale status for even a few frames, add a regression test before assuming the behavior is acceptable.
 
 ## Open Questions / Stale-Risk
-- Stale risk is medium because publication correctness still depends on runtime classification and call ordering across multiple DX12 paths. The shared preferred-visible-state cache, publication-order sequence, owner-module Streamline fallback, and first-confirmed Reflex-suspend evidence close the currently observed repaint/missed-OFF families, but fresh GTA/Talos all-direction transitions remain required.
-- Re-check this page after any change to `ResolveOverlayFGMetricType()`, `PublishOverlayFGMetrics()`, or DX12 overlay routing that publishes FG state.
+- Stale risk is medium because publication correctness still depends on runtime classification and call ordering
+  across the API paths. The direct DX11/Vulkan bridge is offline-tested; fresh x64 Smooth Motion runtime validation
+  on native DX11, DX12, and Vulkan remains required.
+- Re-check this page after any change to `ResolveFGMetricType()`, `PublishOverlayFGMetrics()`,
+  `PublishDetectedOverlayFGMetrics()`, the Vulkan layer source list, or DX12 overlay routing that publishes FG state.

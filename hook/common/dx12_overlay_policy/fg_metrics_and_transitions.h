@@ -8,6 +8,7 @@
 
 #include "../dxgi_presentation_color.h"
 #include "../fg_runtime_state.h"
+#include "../overlay_fg_metric_policy.h"
 
 struct ID3D12CommandQueue;
 struct ID3D12Fence;
@@ -61,29 +62,12 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
 }
 
 inline int ResolveOverlayFGMetricType(bool effectiveFGActive, fg_runtime::RuntimeMode effectiveRuntimeMode) {
-    if (!effectiveFGActive) {
-        return 0;
-    }
-
-    switch (effectiveRuntimeMode) {
-        case fg_runtime::RuntimeMode::kDLSSFG:
-            return 1;
-        case fg_runtime::RuntimeMode::kFSRFG:
-            return 2;
-        case fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
-            return 3;
-        case fg_runtime::RuntimeMode::kOff:
-        case fg_runtime::RuntimeMode::kStreamlineNoFG:
-        case fg_runtime::RuntimeMode::kUnknown:
-        default:
-            return 0;
-    }
+    return static_cast<int>(overlay_metrics::ResolveFGMetricType(effectiveFGActive, effectiveRuntimeMode));
 }
 
 inline bool DoOverlayFGPublishedTypesDiffer(bool lhsFGActive, fg_runtime::RuntimeMode lhsRuntimeMode, bool rhsFGActive,
                                             fg_runtime::RuntimeMode rhsRuntimeMode) {
-    return ResolveOverlayFGMetricType(lhsFGActive, lhsRuntimeMode) !=
-           ResolveOverlayFGMetricType(rhsFGActive, rhsRuntimeMode);
+    return overlay_metrics::DoPublishedFGTypesDiffer(lhsFGActive, lhsRuntimeMode, rhsFGActive, rhsRuntimeMode);
 }
 
 inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG, bool actualFGActive,

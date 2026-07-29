@@ -78,7 +78,7 @@ public:
         if (mult >= 2) {
             float output = cachedOutputFPS.load();
             if (output > 1.0f)
-                return output / mult;
+                return output / static_cast<float>(mult);
         }
         return cachedBaseFPS.load();
     }

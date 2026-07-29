@@ -21,6 +21,7 @@
 #include "../common/graphics_api_identity.h"
 #include "../common/hook_common.h"
 #include "../common/overlay_adapter.h"
+#include "../common/overlay_metrics_publisher.h"
 #include "../common/perf_logger.h"
 #include "../common/sampler_override_utils.h"
 #include "../common/screenshot_hook.h"

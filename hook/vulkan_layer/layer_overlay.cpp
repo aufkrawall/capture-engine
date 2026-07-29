@@ -13,6 +13,7 @@
 #include "../common/dxgi_shared.h"
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
+#include "../common/overlay_metrics_publisher.h"
 #include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
 #include "../common/system_metrics.h"
@@ -631,6 +632,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         state.metrics->Update(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
                 .count());
+        ce::overlay_metrics::PublishDetectedOverlayFGMetrics(state.metrics, "Vulkan::RenderOverlay");
     }
 
     // FENCE WAIT: Wait for GPU to be ready for this buffer

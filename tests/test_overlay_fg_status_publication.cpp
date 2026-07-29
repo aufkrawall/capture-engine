@@ -4,6 +4,7 @@
 #include "../hook/common/fg_session_state.h"
 #include "../hook/common/overlay_metrics_publisher.h"
 #include "../hook/common/performance_metrics.h"
+#include "source_fragment_reader.h"
 
 void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::fg_runtime::RuntimeMode runtimeMode);
 void TestStubResetPreferredOverlayFGPublicationState();
@@ -183,4 +184,32 @@ TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationLetsNewerPlannerOff
     EXPECT_FALSE(metrics.IsFGActive());
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
     EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+}
+
+TEST(OverlayFGStatusPublicationSourceTest, DirectX11AndVulkanPublishDetectedStatusBeforeOverlayRendering) {
+    const auto projectRoot = std::filesystem::current_path();
+    const std::string dx11Source =
+        ce::test_source::ReadLogicalSource(projectRoot / "hook" / "apis" / "dx11_hook.cpp");
+    const std::string vulkanSource =
+        ce::test_source::ReadLogicalSource(projectRoot / "hook" / "vulkan_layer" / "layer_overlay.cpp");
+    const std::string buildSource = ce::test_source::ReadLogicalSource(projectRoot / "build.py");
+
+    const size_t dx11ProcessFrame =
+        dx11Source.find("void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {");
+    const size_t dx11Publish = dx11Source.find("PublishDetectedOverlayFGMetrics", dx11ProcessFrame);
+    const size_t dx11Overlay = dx11Source.find("ProcessDX11FrameWithOverlayOrdering", dx11ProcessFrame);
+    ASSERT_NE(dx11ProcessFrame, std::string::npos);
+    ASSERT_NE(dx11Publish, std::string::npos);
+    ASSERT_NE(dx11Overlay, std::string::npos);
+    EXPECT_LT(dx11Publish, dx11Overlay);
+
+    const size_t vulkanUpdate = vulkanSource.find("state.metrics->Update(");
+    const size_t vulkanPublish = vulkanSource.find("PublishDetectedOverlayFGMetrics", vulkanUpdate);
+    const size_t vulkanFenceWait = vulkanSource.find("fp_vkWaitForFences", vulkanUpdate);
+    ASSERT_NE(vulkanUpdate, std::string::npos);
+    ASSERT_NE(vulkanPublish, std::string::npos);
+    ASSERT_NE(vulkanFenceWait, std::string::npos);
+    EXPECT_LT(vulkanPublish, vulkanFenceWait);
+
+    EXPECT_NE(buildSource.find("\"overlay_metrics_publisher.cpp\""), std::string::npos);
 }

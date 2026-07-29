@@ -1,8 +1,11 @@
 #pragma once
 
 #include "fg_runtime_state.h"
-#include "fg_session_state.h"
 #include "performance_metrics.h"
+
+namespace ce::fg_session {
+struct FGActionPlan;
+}
 
 namespace ce::overlay_metrics {
 
@@ -16,6 +19,7 @@ struct PublicationInput {
 };
 
 void PublishOverlayFGMetrics(::PerformanceMetrics* metrics, const PublicationInput& input);
+void PublishDetectedOverlayFGMetrics(::PerformanceMetrics* metrics, const char* publicationSource);
 void PublishOverlayFGMetrics(::PerformanceMetrics* metrics, const fg_session::FGActionPlan& plan, float outputFPS,
                              float baseFPS, int multiplier, const char* publicationSource);
 
