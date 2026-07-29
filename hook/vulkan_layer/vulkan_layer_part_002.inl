@@ -551,6 +551,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, 
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    g_FGCompat.RecordPresentForNvidiaSmoothMotion();
+
     // Performance metrics for this frame
     FrameMetrics perfMetrics;
     perfMetrics.qpcUs = PerfLogger::GetQpcUs();

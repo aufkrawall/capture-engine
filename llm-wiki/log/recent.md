@@ -12,23 +12,36 @@
   the next stale assumption: NvPresent-generated DX12 frames still carried two low-work command lists, so none were
   classified as zero-work generated frames. A stable window measured 130 output / 72 high-work FPS (56 total, 31
   high-work frames, about 1.8x), but noisy interval evidence forced the cached multiplier back from a startup 4x to
-  1x and prevented Smooth Motion confirmation.
+  1x and prevented Smooth Motion confirmation. Third run `20260729_184536` showed the command-work ratio is not
+  stable enough to be the only proof: with driver-forced VSync and ULL capping output near 138 FPS, a steady window
+  contained 120 Presents but only 31 high-work samples, so CE misread the NvPresent queue topology as about 4x.
+  Present callbacks nevertheless formed a driver-paced short/long pair (typically about 0.6/13.8 ms, with 96% of
+  steady adjacent gaps contrasting by at least 3x). These callback start times describe driver/flip-metering
+  topology, not scanout pacing or the actual Smooth Motion multiplier.
 - **Fix / boundary:** one API-neutral metric policy now maps the unchanged runtime classification to DLSS FG, FSR FG,
   NVIDIA Smooth Motion, or inactive. Direct DX11 and Vulkan publish the current detector snapshot before drawing;
   DX12 retains its planner/preferred-state ordering. Detecting NvPresent now disables detector dormancy so the
   existing frame-pattern confirmation can run. NvPresent also has a conservative 2x population fallback: at least
   30 samples, at least ten high- and low-work frames, and a total/high-work ratio between 1.6x and 2.4x. Confirmation
-  is eligible with idle Streamline support but not an active Streamline signal or DLSS/FSR state, and it now keeps
-  evaluating while Smooth Motion is active so a lost/superseded pattern clears correctly. NvPresent presence alone
-  still publishes no FG; API priority is unchanged.
+  is eligible with idle Streamline support but not an active Streamline signal or DLSS/FSR state. NvPresent presence
+  alone still publishes no FG; API priority is unchanged. A second, FPS-independent proof accepts NvPresent's paired
+  Present-callback cadence after at least 20 gaps when at least 80% of adjacent gaps contrast by 3x or more. It does
+  not compare against an absolute FPS or cap. DX11 and Vulkan feed the same Present history before publication, DX12
+  retains command-work analysis as an independent fallback, and confirmed Smooth Motion is always published as its
+  actual 2x multiplier. Three qualifying evaluations need not be adjacent, so a changing cap cannot continually
+  restart confirmation. Once confirmed, the NvPresent session remains latched across transient or sustained
+  cap/scene/flip-metering cadence changes; competing native FG evidence or explicit FG cleanup still clears it.
 - **Coverage:** focused status, performance-metric, runtime-classification, and source-contract tests pass. The source
-  contract also proves the Vulkan layer links the generic publisher. Build `0.1.5249`, including both live-session
-  corrections, passed the complete gate: clean x64/x86 hooks and Vulkan layers, the full native suite, all sixteen
-  Python groups, lint/ratchets, and x64 ASan/UBSan. Fresh Strange Brigade DX12 and native DX11/Vulkan driver
-  validation remains manual.
+  contract also proves the Vulkan layer links the generic publisher and that direct DX11/Vulkan paths feed Present
+  evidence before publishing. Focused regressions cover the observed driver-paced cadence at multiple absolute FPS
+  scales, insufficient/random cadence, module absence, work-population fallback, competing-FG priority, and the
+  confirmed-session latch. Build `0.1.5250` passed the complete clean gate: x64/x86 hooks and Vulkan layers, the full
+  native suite, all sixteen Python groups, lint/ratchets, packaging/PE checks, and x64 ASan/UBSan. Fresh Strange
+  Brigade DX12 and native DX11/Vulkan driver validation remains manual.
 - **Source anchors:** `hook/common/overlay_fg_metric_policy.h`,
   `hook/common/overlay_metrics_publisher.{h,cpp}`, `hook/common/overlay_metrics_planner_publisher.cpp`,
-  `hook/common/fg_detection.{h,cpp}`, `hook/apis/dx11_hook.cpp`, `hook/vulkan_layer/layer_overlay.cpp`, `build.py`,
+  `hook/common/fg_detection.{h,cpp}`, `hook/apis/dx11_hook.cpp`,
+  `hook/vulkan_layer/{vulkan_layer.cpp,layer_overlay.cpp}`, `build.py`,
   `tests/test_overlay_fg_status_publication.cpp`, and `llm-wiki/overlay-fg-status.md`.
 
 ### 2026-07-29 - Emit clean CaptureEngine and test-app 7z artifacts

@@ -156,6 +156,48 @@ TEST(FGRuntimeStateTest, SmoothMotionTwoPopulationInferenceMatchesObservedDriver
     EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(true, 60, 20));
 }
 
+TEST(FGRuntimeStateTest, SmoothMotionPairedPresentCadenceMatchesDriverPacedCallbacks) {
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(600, 13800));
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(14480, 458));
+    EXPECT_FALSE(ce::fg_runtime::HasContrastingPresentGaps(7000, 7100));
+    EXPECT_FALSE(ce::fg_runtime::HasContrastingPresentGaps(0, 13800));
+
+    EXPECT_TRUE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(true, 119, 118));
+    EXPECT_TRUE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(true, 20, 16));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(false, 119, 118));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(true, 19, 18));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(true, 20, 15));
+    EXPECT_FALSE(ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(true, 120, 2));
+}
+
+TEST(FGRuntimeStateTest, SmoothMotionPresentCadenceIsIndependentOfAbsoluteFrameRateAndCap) {
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(250, 3500));
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(500, 7000));
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(1000, 14000));
+    EXPECT_TRUE(ce::fg_runtime::HasContrastingPresentGaps(2000, 28000));
+
+    EXPECT_FALSE(ce::fg_runtime::HasContrastingPresentGaps(4000, 8000));
+    EXPECT_FALSE(ce::fg_runtime::HasContrastingPresentGaps(7000, 7000));
+}
+
+TEST(FGRuntimeStateTest, ConfirmedSmoothMotionLatchesAcrossPacingChangesButNotCompetingFG) {
+    DetectionSnapshot snapshot;
+    snapshot.nvPresentLoaded = true;
+    snapshot.nvidiaSmoothMotionDetected = true;
+    EXPECT_TRUE(ce::fg_runtime::ShouldRetainConfirmedNvidiaSmoothMotion(snapshot));
+
+    snapshot.streamlineFGSignaled = true;
+    EXPECT_FALSE(ce::fg_runtime::ShouldRetainConfirmedNvidiaSmoothMotion(snapshot));
+    snapshot.streamlineFGSignaled = false;
+
+    snapshot.fsrFGApiActive = true;
+    EXPECT_FALSE(ce::fg_runtime::ShouldRetainConfirmedNvidiaSmoothMotion(snapshot));
+    snapshot.fsrFGApiActive = false;
+
+    snapshot.nvidiaSmoothMotionDetected = false;
+    EXPECT_FALSE(ce::fg_runtime::ShouldRetainConfirmedNvidiaSmoothMotion(snapshot));
+}
+
 TEST(FGRuntimeStateTest, FsrApiWinsWithoutStreamlineSupport) {
     DetectionSnapshot snapshot;
     snapshot.fsrFGApiActive = true;

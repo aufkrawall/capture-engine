@@ -63,6 +63,33 @@ inline bool HasNvidiaSmoothMotion2xPopulation(bool nvPresentLoaded, int totalFra
     return totalFrames * 5 >= highWorkFrames * 8 && totalFrames * 5 <= highWorkFrames * 12;
 }
 
+inline bool HasContrastingPresentGaps(int64_t previousGapUs, int64_t currentGapUs) {
+    if (previousGapUs <= 0 || currentGapUs <= 0) {
+        return false;
+    }
+
+    const int64_t shorterGapUs = previousGapUs < currentGapUs ? previousGapUs : currentGapUs;
+    const int64_t longerGapUs = previousGapUs < currentGapUs ? currentGapUs : previousGapUs;
+    return longerGapUs / shorterGapUs >= 3;
+}
+
+inline bool HasNvidiaSmoothMotionPairedPresentCadence(bool nvPresentLoaded, int presentGapCount,
+                                                      int contrastingGapTransitions) {
+    if (!nvPresentLoaded || presentGapCount < 20 || contrastingGapTransitions < 0 ||
+        contrastingGapTransitions >= presentGapCount) {
+        return false;
+    }
+
+    // Recent NvPresent drivers can pace generated frames below Present, making
+    // callback start times alternate between a short and long gap. Require this
+    // strong pairing in at least 80% of adjacent gap transitions.
+    return contrastingGapTransitions * 5 >= (presentGapCount - 1) * 4;
+}
+
+inline bool ShouldRetainConfirmedNvidiaSmoothMotion(const DetectionSnapshot& snapshot) {
+    return snapshot.nvidiaSmoothMotionDetected && CanEvaluateNvidiaSmoothMotionPattern(snapshot);
+}
+
 inline bool IsRuntimeFGActive(RuntimeMode mode) {
     return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG || mode == RuntimeMode::kNvidiaSmoothMotion;
 }

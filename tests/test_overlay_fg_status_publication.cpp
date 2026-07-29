@@ -192,6 +192,8 @@ TEST(OverlayFGStatusPublicationSourceTest, DirectX11AndVulkanPublishDetectedStat
         ce::test_source::ReadLogicalSource(projectRoot / "hook" / "apis" / "dx11_hook.cpp");
     const std::string vulkanSource =
         ce::test_source::ReadLogicalSource(projectRoot / "hook" / "vulkan_layer" / "layer_overlay.cpp");
+    const std::string vulkanPresentSource =
+        ce::test_source::ReadLogicalSource(projectRoot / "hook" / "vulkan_layer" / "vulkan_layer.cpp");
     const std::string buildSource = ce::test_source::ReadLogicalSource(projectRoot / "build.py");
 
     const size_t dx11ProcessFrame =
@@ -199,9 +201,23 @@ TEST(OverlayFGStatusPublicationSourceTest, DirectX11AndVulkanPublishDetectedStat
     const size_t dx11Publish = dx11Source.find("PublishDetectedOverlayFGMetrics", dx11ProcessFrame);
     const size_t dx11Overlay = dx11Source.find("ProcessDX11FrameWithOverlayOrdering", dx11ProcessFrame);
     ASSERT_NE(dx11ProcessFrame, std::string::npos);
+    const size_t dx11RecordPresent =
+        dx11Source.find("RecordPresentForNvidiaSmoothMotion", dx11ProcessFrame);
     ASSERT_NE(dx11Publish, std::string::npos);
     ASSERT_NE(dx11Overlay, std::string::npos);
+    ASSERT_NE(dx11RecordPresent, std::string::npos);
+    EXPECT_LT(dx11RecordPresent, dx11Publish);
     EXPECT_LT(dx11Publish, dx11Overlay);
+
+    const size_t vulkanPresent =
+        vulkanPresentSource.find("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR");
+    const size_t vulkanRecordPresent =
+        vulkanPresentSource.find("RecordPresentForNvidiaSmoothMotion", vulkanPresent);
+    const size_t vulkanMetricsStart = vulkanPresentSource.find("// Performance metrics for this frame", vulkanPresent);
+    ASSERT_NE(vulkanPresent, std::string::npos);
+    ASSERT_NE(vulkanRecordPresent, std::string::npos);
+    ASSERT_NE(vulkanMetricsStart, std::string::npos);
+    EXPECT_LT(vulkanRecordPresent, vulkanMetricsStart);
 
     const size_t vulkanUpdate = vulkanSource.find("state.metrics->Update(");
     const size_t vulkanPublish = vulkanSource.find("PublishDetectedOverlayFGMetrics", vulkanUpdate);

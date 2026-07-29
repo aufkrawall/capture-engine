@@ -29,6 +29,7 @@ public:
     // Per-frame tracking - call from DetourPresent with command list count
     // NOTE: In dormant mode, this only tracks basic stats, no pattern detection
     void RecordFrame(int commandListsExecuted);
+    void RecordPresentForNvidiaSmoothMotion();
 
     // State queries
     bool IsFGActive() const;
@@ -50,6 +51,9 @@ public:
     }
     int GetFGMultiplier() const {
         const auto runtimeMode = GetRuntimeMode();
+        if (runtimeMode == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
+            return 2;
+        }
         if (runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG) {
             const int fsrMultiplier = fsrFGMultiplier.load(std::memory_order_acquire);
             if (fsrMultiplier >= 2) {

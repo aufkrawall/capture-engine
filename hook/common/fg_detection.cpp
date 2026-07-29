@@ -308,6 +308,17 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
     }
 }
 
+void FGCompatibility::RecordPresentForNvidiaSmoothMotion() {
+    if (!IsNvPresentLoaded()) {
+        return;
+    }
+
+    // DX11 and Vulkan do not have the DX12 command-list classifier. A constant
+    // non-zero sample keeps work classification neutral while still feeding the
+    // API-independent Present timestamp cadence detector.
+    RecordFrame(1);
+}
+
 void FGCompatibility::UpdateMetrics() {
     // DORMANT MODE: Skip metrics calculation
     if (dormantMode.load()) {
@@ -341,6 +352,10 @@ void FGCompatibility::UpdateMetrics() {
     int lastRealLogicalIdx = -1;
     int intervalCounts[16] = {0};
     int totalIntervals = 0;
+    int64_t previousPresentTs = 0;
+    int64_t previousPresentGapUs = 0;
+    int presentGapCount = 0;
+    int contrastingPresentGapTransitions = 0;
 
     for (int i = 0; i < WINDOW_SIZE; i++) {
         int idx = (startIdx + i) % WINDOW_SIZE;
@@ -356,6 +371,18 @@ void FGCompatibility::UpdateMetrics() {
             minTs = ts;
         if (ts > maxTs)
             maxTs = ts;
+
+        if (previousPresentTs > 0 && ts > previousPresentTs) {
+            const int64_t presentGapUs = ts - previousPresentTs;
+            if (ce::fg_runtime::HasContrastingPresentGaps(previousPresentGapUs, presentGapUs)) {
+                contrastingPresentGapTransitions++;
+            }
+            previousPresentGapUs = presentGapUs;
+            presentGapCount++;
+        }
+        if (ts > previousPresentTs) {
+            previousPresentTs = ts;
+        }
 
         if (cmd > workThreshold) {
             realFrames++;
@@ -418,8 +445,14 @@ void FGCompatibility::UpdateMetrics() {
         }
     }
 
-    if (ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(
-            nvPresentDetected.load(std::memory_order_acquire), totalFrames, realFrames)) {
+    const bool nvPresentLoaded = nvPresentDetected.load(std::memory_order_acquire);
+    const bool smoothMotionWorkPopulation =
+        ce::fg_runtime::HasNvidiaSmoothMotion2xPopulation(nvPresentLoaded, totalFrames, realFrames);
+    const bool smoothMotionPairedCadence = ce::fg_runtime::HasNvidiaSmoothMotionPairedPresentCadence(
+        nvPresentLoaded, presentGapCount, contrastingPresentGapTransitions);
+    const bool retainConfirmedSmoothMotion =
+        ce::fg_runtime::ShouldRetainConfirmedNvidiaSmoothMotion(CaptureDetectionSnapshot());
+    if (smoothMotionWorkPopulation || smoothMotionPairedCadence || retainConfirmedSmoothMotion) {
         mult = 2;
     }
 
@@ -428,8 +461,9 @@ void FGCompatibility::UpdateMetrics() {
     if (prevMult != mult && (prevMult == 1 || mult == 1 || prevMult != mult)) {
         HookLog(
             "FG: Multiplier changed %d -> %d (output=%.1f, base=%.1f, real=%d, "
-            "total=%d)",
-            prevMult, mult, outputFPS, baseFPS, realFrames, totalFrames);
+            "total=%d, smWork=%d, smCadence=%d, gapContrast=%d/%d)",
+            prevMult, mult, outputFPS, baseFPS, realFrames, totalFrames, smoothMotionWorkPopulation ? 1 : 0,
+            smoothMotionPairedCadence ? 1 : 0, contrastingPresentGapTransitions, presentGapCount);
     }
 }
 
@@ -441,7 +475,8 @@ void FGCompatibility::DetectPattern() {
 
     const auto snapshot = CaptureDetectionSnapshot();
     const int mult = cachedMultiplier.load(std::memory_order_acquire);
-    if (mult == 2 && ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot)) {
+    const bool patternEligible = ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot);
+    if (mult == 2 && patternEligible) {
         int confirmCount = nvidiaSMConfirmCount.load(std::memory_order_acquire);
         if (confirmCount < NVIDIA_SM_CONFIRM_THRESHOLD) {
             confirmCount = nvidiaSMConfirmCount.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -451,12 +486,14 @@ void FGCompatibility::DetectPattern() {
                 HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
             }
         }
-    } else {
+    } else if (!patternEligible) {
         nvidiaSMConfirmCount.store(0, std::memory_order_release);
         if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
-            HookLog("FG: NVIDIA Smooth Motion pattern lost or superseded, resetting to None");
+            HookLog("FG: NVIDIA Smooth Motion superseded by another FG signal, resetting to None");
         }
     }
+    // Preserve partial confirmation across cap, scene, and driver-pacing
+    // changes. Only explicit competing FG evidence resets the NvPresent epoch.
 }
 
 void FGCompatibility::DetectNvidiaSmoothMotion() {
