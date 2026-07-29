@@ -18,6 +18,7 @@ ImGui or another external overlay framework.
 - WGC, DXGI Desktop Duplication, and injected capture, with video routing and DLL injection configured independently
 - D3D9 through D3D12, Vulkan, OpenGL, and DXVK-aware hook and transport paths
 - NVENC, AMD AMF, Intel Quick Sync/oneVPL, and Media Foundation encoders
+- Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
 - General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
@@ -94,6 +95,19 @@ The principal capture-to-encoder paths keep frames GPU-resident wherever the API
 GPU blit, or the final encoder-surface handoff can still be required. The important boundary is avoiding a
 GPU-to-CPU readback followed by a CPU-to-GPU upload in the normal hardware path. Classic D3D9 devices are deliberately
 not promoted to D3D9Ex because that changes resource, reset, presentation, and COM behavior.
+
+## Video, screenshots, and audio recording
+
+- **HDR video:** `[Video] color_space=auto` preserves a detected HDR source as BT.2020/PQ through supported HEVC or
+  AV1 hardware encoders. Selecting `[Video] color_space=bt709` instead performs an actual HDR-to-SDR tone and gamut
+  map; it does not merely relabel HDR pixels as SDR. The conversion is calibrated from the Windows SDR-white setting.
+- **Screenshots:** screenshots can come from the active injected capture path or from the out-of-process WGC fallback.
+  With `[Screenshot] color_space=auto`, SDR is saved as PNG and HDR is preserved as 10-bit 4:4:4 BT.2020/PQ AVIF.
+  Selecting `[Screenshot] color_space=bt709` tone-maps HDR to a conventional SDR PNG independently of the video
+  setting.
+- **Audio recording:** recordings can contain video plus audio or be audio-only. CaptureEngine supports multiple
+  system-output, microphone, and per-application loopback sources; each source can feed one or more tracks, and sources
+  sharing a track are mixed. AAC, ALAC, FLAC, Opus, and PCM are supported.
 
 ## Smooth CFR video and exact A/V endpoints
 
