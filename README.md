@@ -1,131 +1,282 @@
-# CaptureProject
+# CaptureEngine
 
-Game capture, recording, overlay, and FPS limiting for Windows.
+Game capture, recording, overlays, graphics overrides, and frame pacing for Windows.
 
-## Overview
+CaptureEngine records game video and multiple audio sources to Matroska files. It supports non-injected Windows
+Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-aware capture path. The project includes
+custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application profiles, and native FPS
+limiter integrations.
 
-CaptureProject captures and records game video + audio to MKV files. It runs as a system-tray application that injects a hook DLL into games. All rendering, capture, overlay, and encoding is custom code — no third-party libraries are used beyond FFmpeg.
+The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
+container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay does not use Dear
+ImGui or another external overlay framework.
 
-## FFmpeg Integration
+## Highlights
 
-Video/audio encoding and MKV muxing uses FFmpeg (`libavformat`, `libavcodec`, `libavutil`, `swresample`). Hardware encoders (NVENC, AMF, QSV) are supported.
+- WGC, DXGI Desktop Duplication, and injected capture, with video routing and DLL injection configured independently
+- D3D9 through D3D12, Vulkan, OpenGL, and DXVK-aware hook and transport paths
+- NVENC, AMD AMF, Intel Quick Sync/oneVPL, and Media Foundation encoders
+- Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
+- Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
+- General FPS limiting and recording-aware capture sync through a local timer, NVIDIA Reflex, AMD Anti-Lag 2, or Intel
+  XeLL
+- Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
+- Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
 
-See [patches/ffmpeg/](patches/ffmpeg/) for our custom patches.
+## Multi-process architecture
 
-## Zero-Copy Capture
+`CaptureEngine.exe` runs several internal roles. Keeping capture, media processing, telemetry, and control in separate
+processes limits failure propagation and lets recording finalization finish without blocking tray or hotkey handling.
 
-Capture transfers game frames to the encoder without an extra GPU copy:
+```mermaid
+flowchart LR
+    Controller["Controller<br/>tray, hotkeys, profiles, child supervision"]
+    Inject["Inject host<br/>injection and shared-state owner"]
+    Media["Disposable media process<br/>capture, mix, encode, mux, validate"]
+    Limiter["Optional limiter process"]
+    Aux["Logger and sensor processes"]
+    Hook["Hook DLL<br/>inside the game"]
+    Shared["Exact-version shared-memory ABI<br/>state, telemetry, frame leases, log ring"]
 
-| API | Mechanism |
-|-----|-----------|
-| D3D9Ex | Shared handle (upgraded from D3D9 via `Direct3DCreate9Ex`) |
-| D3D10/11 | Shared D3D11 textures |
-| D3D12 | Shared heap via D3D11 interop |
-| Vulkan | KMT handle import |
-| OpenGL | Interop path |
-| DXVK (D3D9/10/11 on Vulkan) | Encoder KMT textures imported directly into Vulkan |
+    Controller -->|"authenticated private pipe"| Inject
+    Controller -->|"authenticated private pipe"| Media
+    Controller -->|"authenticated private pipe"| Limiter
+    Controller -->|"restricted child processes"| Aux
+    Inject -->|"injects"| Hook
+    Inject <--> Shared
+    Media <--> Shared
+    Hook <--> Shared
+    Aux <--> Shared
+```
 
-## WGC vs Hook Capture
+- **Controller:** owns the tray UI, hotkeys, configuration/profile selection, session identity, and child supervision.
+- **Inject host:** owns the discovery/shared-memory contract, injects the hook DLL, and publishes resolved per-process
+  configuration.
+- **Hook DLL:** intercepts graphics and frame-generation APIs inside the target, renders the injected overlay, publishes
+  GPU frame leases, and runs latency-sensitive pacing locally.
+- **Media process:** is disposable per recording. It owns WGC/DXGI capture when selected, audio capture/mixing, encoding,
+  muxing, post-write validation, and the recording's immutable diagnostic files.
+- **Logger and sensor processes:** consume the shared ABI for hook logs and CPU/GPU/RAM/VRAM telemetry without putting
+  that work on the game's render thread.
+- **Limiter process:** provides the optional process-side limiter role; basic and fallback timer cadence itself remains
+  hook-local, so it does not pay a cross-process round trip per frame.
 
-Two capture paths:
+Controller-to-inject/media/limiter commands use a unique duplex named-pipe channel per child. Only the child's pipe
+handle is inherited, the channel is restricted to the current user and SYSTEM, and startup authenticates the exact
+child PID, role, protocol, sequence, and a random 128-bit nonce. The high-volume shared-memory path is an exact,
+versioned ABI with size and layout fingerprints; mixed or stale binaries fail closed instead of reading shifted frame
+or telemetry fields.
 
-- **WGC** (Windows Graphics Capture) — runs out-of-process, compatible with anti-cheat. Uses WinRT `Windows.Graphics.Capture` API. Supports DirectFlip content. Default non-injected path.
-- **Hook capture** — runs in-process via Present/swapchain hooks. Shares captured textures to the encoder via shared memory + GPU fences. Used when the overlay is active.
+## Capture paths and GPU transport
 
-## Custom Overlay with Frame Generation Support
+- **WGC:** the default non-injected window-capture path. It uses
+  `Windows.Graphics.Capture`, works with DirectFlip content, and is generally the safer choice for software that does
+  not permit injection. This is not a universal anti-cheat compatibility guarantee; use a profile with
+  `dll_injection=never` where injection must be excluded.
+- **DXGI Desktop Duplication:** non-injected monitor capture with explicit source-delivery and duplication-pressure
+  diagnostics. It can fall back to WGC for the same selected monitor when necessary.
+- **Injected capture:** intercepts Present/swap-chain paths and publishes frames directly from the game process. The
+  injected overlay and graphics overrides can also be used while WGC or DXGI remains the selected video source.
 
-100% custom overlay renderers for DX9–DX12, Vulkan, and OpenGL. Custom font rasterizer, pre-compiled HLSL shaders. No Dear ImGui, no external overlay libraries.
+The principal capture-to-encoder paths keep frames GPU-resident wherever the API and driver allow it:
 
-- **DLSS FG**: Hooked via NVIDIA Streamline API (`slDLSSGSetOptions`, `slDLSSGGetState`) and NGX (`NVNGX_CreateFeature`). Four interception seams: inline hook, wrapper substitution, `GetProcAddress` hooks, and direct-import fallback.
-- **FSR FG**: Hooked via AMD FidelityFX API (`ffxCreateContext`, `ffxConfigure`, Present-callback bridge).
-- **Switching**: All combinations work — `off ↔ DLSS FG ↔ off ↔ FSR FG ↔ DLSS FG` without crashes or lost overlay rendering.
+| Source API | Transport |
+| --- | --- |
+| D3D9Ex | Asynchronous GPU blit to shareable textures, imported by D3D11 |
+| Classic D3D9 | Opportunistic native sharing; otherwise a GPU-based screen-capture fallback |
+| D3D10/11 | Shared D3D11 textures with query/fence and lease ownership |
+| D3D12 | Shared resources/fences through the D3D11 hardware-frame handoff |
+| Vulkan and DXVK | Encoder-owned KMT textures imported into Vulkan |
+| OpenGL | GPU interop transport |
 
-## Audio Capture and Mixing
+“GPU-resident” does not mean that every backend performs literally zero GPU copies. Format conversion, an asynchronous
+GPU blit, or the final encoder-surface handoff can still be required. The important boundary is avoiding a
+GPU-to-CPU readback followed by a CPU-to-GPU upload in the normal hardware path. Classic D3D9 devices are deliberately
+not promoted to D3D9Ex because that changes resource, reset, presentation, and COM behavior.
 
-- **System audio**: WASAPI loopback capture.
-- **Per-application audio**: Windows 10/11 process-loopback API (`ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`). Captures by PID or process name.
-- **Lock-free ring buffer**: SPSC float buffer decoupling capture from encoding.
-- **Drift compensation**: Pitch-adjustment (tier 1) + sample trimming (tier 2) for clock mismatch between audio device and render pipeline.
+## Smooth CFR video and exact A/V endpoints
 
-## FPS Limiter and Capture-Sync
+The CFR media clock is authoritative. CaptureEngine does not derive file timing from whichever frames happened to
+arrive:
 
-Multiple limiter backends with automatic selection:
+- Output timestamps follow an immutable rational CFR grid. Matroska uses 1 microsecond timestamp precision, so 120 FPS
+  intervals are represented as 8,333/8,334 microseconds instead of being quantized to 8/9 milliseconds.
+- WGC and DXGI keep a bounded source-history reservoir and choose the nearest monotonic source frame for each scheduled
+  content timestamp. Inject capture uses the same nearest-timestamp principle with a smaller, GPU-native queue.
+- Game hitches and mismatched source rates are represented by evenly placed repeats or decimation. A repeated desktop
+  frame can still re-render a newly positioned hardware cursor.
+- Encoder overload never authorizes skipping CFR packet slots or accelerating audio. The scheduler preserves the
+  output grid with cached repeats and, when safe, grid-matched historical frames. Measured fresh/repeat service time
+  controls how aggressively recovery can run without creating another overload oscillation.
+- Inject producers never wait in Present for a busy transport slot. A busy ring drops that source frame safely; the
+  media scheduler closes the CFR slot using the last valid frame.
+- Finalization derives every audio target from the final CFR frame count. The completed file is reopened, video packet
+  coverage is checked for gaps, and every audio stream is decoded to verify the exact target sample count and identical
+  endpoints across tracks.
 
-| Mode | Description |
-|------|-------------|
-| Basic | Timer-based `SmartWait` with hybrid sleep/spin (waitable timer, `Sleep(0)`, `SwitchToThread`, `_mm_pause`) |
-| Reflex | NVIDIA Reflex (`NvAPI_D3D_SetSleepMode` / `Sleep`) |
-| Anti-Lag 2 | AMD driver extension (DX12 only) |
-| XeLL | Intel XeLL (DX12 only) |
-| Auto | Priority: Reflex > Anti-Lag 2 > XeLL > FG fallback > Basic |
+Audio uses WASAPI loopback for system outputs and the Windows process-loopback API for application audio. Each source
+has a timeline-aware float ring, and sources sharing a track are mixed before a soft-knee limiter that leaves ordinary
+in-range samples bit-exact. Sparse application sources contribute source-local silence instead of blocking a mixed
+track.
 
-**Capture-sync**: When recording, game FPS = capture FPS × multiplier (e.g., 60 fps capture × 2 = 120 fps game). Uses local cadence in the hook DLL instead of cross-process event round-trips (~3–4 ms saved).
+Audio is never cut, broadly pitch-shifted, or moved earlier to catch up with video pressure. An adaptive ingestion
+reservoir absorbs delivery jitter without changing where samples land on the timeline. A very small source-clock
+resampler correction is available only on a settled, healthy timeline and is capped at 0.05%; it is disabled during
+startup protection, force drain, source loss, or encoder/timeline shortfall.
 
-## Injection and Hooking
+## FPS limiter internals
 
-- **Injection**: `CreateRemoteThread` (post-loader) and APC-based early injection (pre-loader, requires `CREATE_SUSPENDED`).
-- **Signature verification**: Authenticode + SHA-256 hash check before injection.
-- **Hook types**: IAT hooks, inline hooks (x86/x64 trampolines), COM vtable hooks.
-- **COM wrappers**: Full DXGI/D3D device, swapchain, and queue wrapping for transparent hooking.
-- **Vulkan**: Implicit layer (`VK_LAYER_CE_overlay`) for capture and overlay.
-- **IPC**: Named pipes between controller, hook, media, sensor, and logger processes.
-- **Shared memory ABI**: Frame ring buffer with GPU fence synchronization.
+Capture sync can limit an injected application's rendered rate to a multiple of the recording rate—for example,
+120 rendered FPS for a 60 FPS recording. General limiting works independently of recording.
 
-## Multi-Process Architecture
+| Mode | Internal path |
+| --- | --- |
+| Basic | Hook-local rational-QPC timer cadence |
+| Reflex | NVIDIA Reflex sleep-mode/low-latency integration, with game-owned sleep handoff when stable |
+| Anti-Lag 2 | AMD driver extension on D3D12 |
+| XeLL | Intel XeLL on D3D12 |
+| FG fallback | Timer cadence scaled to the confirmed frame-generation multiplier |
+| Auto | Game-activated Reflex → Anti-Lag 2 → XeLL → FG fallback → Basic |
 
-Separate processes for isolation and stability:
+The timer path uses a Bresenham-style rational QPC grid rather than rounding every frame to one integer tick interval.
+It arms a high-resolution waitable timer early, adapts its fine-wait margin from the observed p99 wake overshoot, and
+uses a tight spin only for the final 50 microseconds. Missing a deadline never produces a short catch-up frame.
 
-- **Controller** (captureengine.exe): system tray, injection, WGC capture, IPC hub
-- **Hook DLL**: injected into the game, runs all API hooks and overlay
-- **Media encoder**: separate process for encoding/muxing
-- **Sensor service**: CPU/GPU/RAM/VRAM metrics
-- **Logger service**: dedicated logging
-- **Limiter service**: optional standalone FPS limiter process
+Capture-sync recovery advances by whole grid slots until the next deadline has useful headroom, preserving phase with
+the CFR selector after a hitch. Re-entrant or concurrent Present calls cannot advance the same cadence twice: one
+caller owns it and the others return without blocking. With frame generation, WGC/DXGI target the final presented
+rate, while injected capture targets the application's real rendered frames.
 
-## FFmpeg Patches
+## Overlay and frame generation
 
-See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for details.
+The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders.
+It tracks presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling;
+texture format alone is not treated as proof of HDR.
 
-- **`0001-matroska-add-timestamp-precision-option.patch`**: Adds exact configurable MKV timestamp precision, including duration/default-duration scaling and signed-16-bit-safe cluster rollover. At 120 fps, 1 µs precision reduces timestamp quantization from alternating 8/9 ms intervals to 8333/8334 µs.
-- **`0002-nvenc-bframe-cfr-improvements.patch`**: Makes explicit lookahead/AQ disablement deterministic, resolves automatic B references from the selected GPU's capabilities, maps known NVENC picture types, and adds an AV1 B-frame-only maximum-QP control while preserving upstream safety checks and flush behavior.
+DLSS Frame Generation integration observes NVIDIA Streamline and NGX through inline, wrapper, dynamic-resolution, and
+direct-import seams. FSR Frame Generation integration observes FidelityFX context/configuration state and the
+application's present-callback contract. Explicit transition state machines and trace-replay tests cover off, DLSS FG,
+and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
+runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
 
-## Smooth Video Capture
+## Anisotropic filtering and sampler overrides
 
-- Microsecond MKV timestamps (patch above eliminates frame-interval jitter)
-- Capture-sync pacing keeps game and capture cadence aligned
-- Async capture thread with lock-free ring buffer
-- Fence-based GPU synchronization (no CPU stalls)
-- WGC texture pool with keyed mutex
-- Clock-mismatch compensation in audio path
+Forced AF follows each graphics API's native sampler model. It is not one generic per-draw replacement hack:
 
-## Render Overrides
+| API | Implementation |
+| --- | --- |
+| D3D6-9 | Reconciles mutable texture/sampler state on state changes, config changes, and state-block application |
+| D3D10 | Modifies immutable sampler descriptors once at creation and retries the original descriptor if rejected |
+| D3D11 | Uses pixel-shader/SRV-aware dirty-slot replacement; a clean draw performs only a version/dirty check |
+| D3D12 | Covers dynamic samplers plus static samplers in root signatures 1.0-1.2 at creation time |
+| Vulkan | Applies policy at `vkCreateSampler`, clamps to device limits, and transactionally retries the original |
+| OpenGL | Reconciles texture/sampler parameter, storage, mip-generation, and cached bind events without a draw hook |
 
-Forced anisotropic filtering (2x–16x), mip/LOD bias, and SGSSAA, applied per-API:
+Safe mode preserves structurally special samplers such as comparison/reduction, border, fixed-LOD, non-mipmapped, and
+other API-specific unsafe cases. Aggressive mode broadens ordinary material coverage without opting protected sampler
+families in. D3D10, D3D12, and Vulkan have no bind/draw overhead after sampler creation; legacy APIs and OpenGL do only
+event-driven bookkeeping. Decisions, retries, bootstrap failures, and summaries are rate-limited in the debug logs.
 
-| API | Hook Point |
-|-----|------------|
-| D3D9 | `SetSamplerState` interception |
-| D3D10/11 | `CreateSamplerState` / `PSSetSamplers` override |
-| D3D12 | Root-signature static sampler + `CreateSampler` IAT hook |
-| OpenGL | `glTexParameterf` interception |
-| Vulkan | `vkCreateSampler` override (via layer) |
+## Encoding and FFmpeg patches
 
-AF selectively skips textures/mip maps where applying anisotropic filtering would cause rendering artifacts on Blackwell (RTX 50 series) GPUs.
+Video/audio encoding and Matroska muxing use FFmpeg (`libavformat`, `libavcodec`, `libavutil`, and `swresample`).
+Hardware-frame paths are available for NVENC, AMD AMF, and Intel Quick Sync/oneVPL. HDR recording uses an explicit
+BT.2020/PQ signaling contract across codec frames, bitstreams, and the container rather than inferring HDR from an
+FP16 or 10-bit texture.
 
-## HDR Support
+See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for the exact patches:
 
-HDR-aware capture and overlay rendering. Probes DXGI output color space to distinguish FP16 (always HDR) from 10-bit UNORM (probe-dependent). *Note: HDR support is still experimental.*
+- Configurable Matroska timestamp precision, including duration/default-duration scaling and safe cluster rollover
+- Deterministic NVENC lookahead/AQ disablement, capability-aware B-reference resolution, additional picture-type
+  mapping, and an AV1 B-frame maximum-QP control
 
-## Test Infrastructure
+## Debug logging and crash dumps
 
-- **Unit tests**: GoogleTest in `tests/` (FPS limiter, FG session state, DXGI shared routing, sampler overrides, crash dump policies, overlay FG status, FFX API parsing, config)
-- **Test applications**: Per-API test apps in `testapp/` (DX6–DX12, OpenGL, Vulkan, DirectDraw)
-- **Python test runner**: Automated test execution
+Each run receives a timestamped session directory. It contains a controller manifest, per-process logs, performance
+metrics, and immutable recording-specific media logs/manifests, so a later recording cannot overwrite the evidence for
+an earlier one.
 
-## License
+The hook publishes bounded log records through a lock-free shared ring to the logger process. Hot paths use
+rate-limited state-transition, ownership, and failure diagnostics rather than unbounded per-frame noise. Depending on
+the configured log level, the resulting evidence can reconstruct:
 
-MIT — see [LICENSE](LICENSE).
+- capture-backend selection and DXGI-to-WGC fallback history
+- source starvation versus copy-pool, GPU-fence, media-CPU, mux, or encoder pressure
+- CFR selection, repeats, phase lock, visual debt, timer overshoot, and limiter mode changes
+- audio source epochs, delivery headroom, reservoir changes, drift correction, mixing, and final sample accounting
+- DLSS/FSR state transitions, swap-chain/queue ownership, overlay routing, and slow DX12 Present/command-list phases
+- post-mux packet coverage, codec padding, decoded audio endpoints, and finalization failures
+
+Crash handling writes dumps through an out-of-stack worker with richer thread, unloaded-module, handle, process/thread,
+and memory metadata where the target permits it, then falls back to more compatible dump types if necessary. The
+injected hook also has a freeze watchdog that can capture the monitored thread's context for hangs, blocking dialogs,
+and selected GPU-removal paths without immediately terminating the game. Successful external
+`MiniDumpWriteDump` calls made by a game/runtime crash handler can be mirrored into the active session, covering crash
+families that bypass CaptureEngine's unhandled-exception filter.
+
+Windows builds emit PDBs, and every session snapshots the matching CaptureEngine PE/PDB set beside its dumps. A dump
+therefore remains symbolizable after a newer build has replaced the installed binaries. CDB, WinDbg, or Visual Studio
+can resolve both those archived local symbols and Microsoft system symbols. DX12 device-removal diagnosis can
+additionally use opt-in DRED breadcrumbs/page-fault data and the built-in command-queue/overlay timing diagnostics.
+
+Logs and dumps may contain process names, paths, window titles, memory, or other private data. Review them before
+sharing.
+
+## Configuration
+
+There is no separate usage wiki. The generated `config.ini` is the user reference: it documents every normal option,
+valid values, safety notes, and complete application-profile examples. The authored source is
+[captureengine/config.ini.template](captureengine/config.ini.template), and its exact contents are embedded into
+CaptureEngine for first-run creation.
+
+An existing `config.ini` is never silently merged or replaced. When updating an older installation, compare it with
+the current template for newly added settings and examples.
+
+## Testing
+
+The repository contains GoogleTest coverage for capture scheduling, audio timing and codecs, FPS limiting,
+frame-generation transitions, shared-memory/IPC validation, graphics overrides, crash-dump policy, mux invariants, and
+configuration parsing. Native x86/x64 test applications exercise DirectDraw, D3D6-D3D12, OpenGL, Vulkan, frame
+generation, and deterministic A/V markers. The verification pipeline also checks tool self-tests, static analysis,
+sanitizers, PE hardening/architecture, import closure, and PDB availability.
+
+## Possible future work
+
+These are exploratory directions, not promises or a release schedule:
+
+- LibreHardwareMonitor integration for broader sensor support
+- PresentMon plug-in support
+- managed loading of ReShade or OptiScaler as DLL add-ons
+- further capture, overlay-coexistence, encoder, and hardware-monitoring improvements discovered through testing
+
+Some ideas may prove unsafe, too costly, incompatible with upstream runtimes, or simply not work well enough to ship.
+They may change substantially or be abandoned.
+
+## Bug reports and support expectations
+
+Useful, reproducible bug reports are welcome—especially with the relevant session logs, configuration, reproduction
+steps, and dumps where available. Please remove private information before attaching diagnostics.
+
+I intend to investigate and fix bugs, but this is a free-time project: I cannot guarantee a fix, compatibility with
+every game/driver/runtime combination, or a response or timeline for every report. Difficult fixes may take a while,
+and some reports may receive no individual reply even when the information is useful.
+
+## Other projects
+
+- [green-curve](https://github.com/aufkrawall/green-curve) — open-source GPU curve undervolting and overclocking
+- [GreenPostInstallDebloatNative](https://github.com/aufkrawall/GreenPostInstallDebloatNative) — removes optional
+  driver bloat after a regular installation
+- [DpcLatencyMon](https://github.com/aufkrawall/DpcLatencyMon) — Windows DPC latency monitoring
+- [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
+
+More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories).
 
 ## Donations
 
-If you find this project useful, consider tipping via [GitHub Sponsors](https://github.com/sponsors/aufkrawall).
+Donations are welcome if CaptureEngine or my other projects are useful to you. You can support development through
+[GitHub Sponsors](https://github.com/sponsors/aufkrawall).
+
+## License
+
+CaptureEngine is licensed under the [MIT License](LICENSE). Bundled FFmpeg components and the FFmpeg patches retain
+their applicable LGPL licensing; see [licenses/](licenses/) and [patches/ffmpeg/README.md](patches/ffmpeg/README.md).
