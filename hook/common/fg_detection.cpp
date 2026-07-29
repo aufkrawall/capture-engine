@@ -460,6 +460,19 @@ void FGCompatibility::DetectNvidiaSmoothMotion() {
     CheckForNvPresent();
 }
 
+void FGCompatibility::MarkNvPresentLoaded() {
+    const bool wasDetected = nvPresentDetected.exchange(true, std::memory_order_acq_rel);
+    const bool wasDormant = dormantMode.exchange(false, std::memory_order_acq_rel);
+    if (wasDormant) {
+        HookLog("FG: Disabled dormant mode for NVIDIA Smooth Motion pattern analysis");
+    }
+    if (!wasDetected) {
+        HookLog(
+            "FG: NvPresent64.dll detected — NVIDIA Smooth Motion compatibility "
+            "enabled");
+    }
+}
+
 void FGCompatibility::CheckForNvPresent() {
     // Already detected — no need to re-check
     if (nvPresentDetected.load(std::memory_order_acquire))
@@ -481,10 +494,7 @@ void FGCompatibility::CheckForNvPresent() {
         hNvPresent = GetModuleHandleW(L"NvPresent32.dll");
 
     if (hNvPresent) {
-        nvPresentDetected.store(true, std::memory_order_release);
-        HookLog(
-            "FG: NvPresent64.dll detected — NVIDIA Smooth Motion compatibility "
-            "enabled");
+        MarkNvPresentLoaded();
     }
 }
 

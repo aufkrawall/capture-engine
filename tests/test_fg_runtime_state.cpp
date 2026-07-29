@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "../hook/common/fg_detection.h"
 #include "../hook/common/fg_runtime_state.h"
 
 namespace {
@@ -89,6 +90,28 @@ TEST(FGRuntimeStateTest, NvPresentWithoutConfirmedSmoothMotionStaysOff) {
     DetectionSnapshot snapshot;
     snapshot.nvPresentLoaded = true;
     EXPECT_EQ(RuntimeMode::kOff, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
+}
+
+TEST(FGRuntimeStateTest, NvPresentDetectionWakesPatternAnalysisWithoutClaimingFrameGeneration) {
+    FGCompatibility detector;
+    ASSERT_TRUE(detector.IsDormant());
+
+    detector.MarkNvPresentLoaded();
+
+    EXPECT_FALSE(detector.IsDormant());
+    EXPECT_TRUE(detector.IsNvPresentLoaded());
+    EXPECT_FALSE(detector.IsFGActive());
+    EXPECT_EQ(RuntimeMode::kOff, detector.GetRuntimeMode());
+}
+
+TEST(FGRuntimeStateTest, NvPresentDetectionPreservesStreamlineWithoutFrameGeneration) {
+    FGCompatibility detector;
+    detector.SetStreamlineSupportPresent(true);
+
+    detector.MarkNvPresentLoaded();
+
+    EXPECT_FALSE(detector.IsFGActive());
+    EXPECT_EQ(RuntimeMode::kStreamlineNoFG, detector.GetRuntimeMode());
 }
 
 TEST(FGRuntimeStateTest, FsrApiWinsWithoutStreamlineSupport) {

@@ -23,6 +23,11 @@ This page records how the current tree publishes visible FG status to the overla
 - `PublishDetectedOverlayFGMetrics()` is the direct-render-path adapter: it snapshots the existing detector's active
   state, runtime mode, output/base FPS, and multiplier, then delegates to the same canonical publisher. It does not
   alter detection or runtime priority.
+- NvPresent module detection disables the FG detector's default dormant mode. This is necessary because Smooth
+  Motion has no DLSS/FFX API activation to wake pattern analysis, and its active state requires the existing
+  confirmed 2x frame pattern rather than module presence alone. Strange Brigade DX12 session `20260729_182021`
+  exposed the old contradiction by logging NvPresent followed by dormant pattern suppression and permanent
+  `runtime=Off`.
 - Direct DX11 processing invokes that adapter before `ProcessDX11FrameWithOverlayOrdering()`. This covers the
   DX11-owned Present/wrapper paths even when the outer shared DXGI publisher is not the active route.
 - Vulkan invokes the same adapter immediately after updating its `PerformanceMetrics` and before recording/waiting
@@ -59,10 +64,12 @@ This page records how the current tree publishes visible FG status to the overla
   - NVIDIA Smooth Motion to publish as `NVIDIA SM`
   - switching between those modes to update the visible label immediately
   - transitioning back to `off` to clear the published FG status back to the baseline `FG` label
+  - NvPresent detection to wake pattern analysis without claiming Smooth Motion from module presence alone
+  - Streamline module presence without confirmed FG to remain `STREAMLINE_NO_FG` after NvPresent detection
 - Source-contract coverage requires both the direct DX11 and Vulkan render paths to publish detected status before
   overlay rendering, and requires the Vulkan layer build to link the generic publisher implementation.
 - `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, including both directions of the freshness rule: a stale planner `DLSS FG` publication overridden by the latest DX12-visible `FSR FG` / `off` state, and a newer planner `off` update beating an older cached preferred `DLSS FG` state.
-- Build `0.1.5247` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
+- Build `0.1.5248` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
   full native suite, all Python tool self-tests, lint/ratchets, and x64 ASan/UBSan.
 
 ## Practical Guidance
@@ -80,7 +87,7 @@ This page records how the current tree publishes visible FG status to the overla
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because publication correctness still depends on runtime classification and call ordering
-  across the API paths. The direct DX11/Vulkan bridge is offline-tested; fresh x64 Smooth Motion runtime validation
-  on native DX11, DX12, and Vulkan remains required.
+  across the API paths. The direct DX11/Vulkan bridge and NvPresent dormant-mode wakeup are offline-tested; a fresh
+  Strange Brigade x64 DX12 rerun plus native DX11 and Vulkan Smooth Motion validation remain required.
 - Re-check this page after any change to `ResolveFGMetricType()`, `PublishOverlayFGMetrics()`,
   `PublishDetectedOverlayFGMetrics()`, the Vulkan layer source list, or DX12 overlay routing that publishes FG state.

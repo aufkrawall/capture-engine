@@ -125,6 +125,7 @@ public:
         }
         return nvPresentDetected.load(std::memory_order_acquire);
     }
+    void MarkNvPresentLoaded();
     void CheckForNvPresent();
 
     // Debug

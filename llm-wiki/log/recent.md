@@ -2,21 +2,26 @@
 
 ### 2026-07-29 - Publish NVIDIA Smooth Motion status on every supported overlay API path
 
-- **Root cause:** the visible metric type and `NVIDIA SM` label already existed, and DX12 fed them through its
-  transition-aware publisher, but the direct DX11 and Vulkan overlay paths only updated frame timing. A working
-  Smooth Motion detector could therefore affect compatibility without ever populating the metrics consumed by those
-  overlay renderers.
+- **Root causes:** the visible metric type and `NVIDIA SM` label already existed, and DX12 fed them through its
+  transition-aware publisher, but the direct DX11 and Vulkan overlay paths only updated frame timing. More
+  importantly, live Strange Brigade DX12 session `20260729_182021` proved NvPresent detection did not imply usable
+  Smooth Motion detection: the log found `NvPresent64.dll`, then immediately reported `Running in DORMANT mode -
+  pattern detection disabled` and retained `runtime=Off` / `published_type=0` for the session. Dormant mode was added
+  after the Smooth Motion detector and accidentally made its required 2x pattern confirmation unreachable unless
+  another API FG mode had first disabled dormancy.
 - **Fix / boundary:** one API-neutral metric policy now maps the unchanged runtime classification to DLSS FG, FSR FG,
   NVIDIA Smooth Motion, or inactive. Direct DX11 and Vulkan publish the current detector snapshot before drawing;
-  DX12 retains its planner/preferred-state ordering. Detection, Streamline/FFX priority, and NvPresent-without-
-  confirmation behavior are unchanged.
+  DX12 retains its planner/preferred-state ordering. Detecting NvPresent now disables detector dormancy so the
+  existing frame-pattern confirmation can run. NvPresent presence alone still publishes no FG, and Streamline
+  without confirmed FG remains `STREAMLINE_NO_FG`; API priority is unchanged.
 - **Coverage:** focused status, performance-metric, runtime-classification, and source-contract tests pass. The source
-  contract also proves the Vulkan layer links the generic publisher. Build `0.1.5247` passed the complete gate:
-  clean x64/x86 hooks and Vulkan layers, the full native suite, all sixteen Python groups, lint/ratchets, and x64
-  ASan/UBSan. Fresh x64 DX11/DX12/Vulkan driver validation remains manual.
+  contract also proves the Vulkan layer links the generic publisher. Build `0.1.5248`, including the live-session
+  dormant-mode correction, passed the complete gate: clean x64/x86 hooks and Vulkan layers, the full native suite,
+  all sixteen Python groups, lint/ratchets, and x64 ASan/UBSan. Fresh Strange Brigade DX12 and native DX11/Vulkan
+  driver validation remains manual.
 - **Source anchors:** `hook/common/overlay_fg_metric_policy.h`,
   `hook/common/overlay_metrics_publisher.{h,cpp}`, `hook/common/overlay_metrics_planner_publisher.cpp`,
-  `hook/apis/dx11_hook.cpp`, `hook/vulkan_layer/layer_overlay.cpp`, `build.py`,
+  `hook/common/fg_detection.{h,cpp}`, `hook/apis/dx11_hook.cpp`, `hook/vulkan_layer/layer_overlay.cpp`, `build.py`,
   `tests/test_overlay_fg_status_publication.cpp`, and `llm-wiki/overlay-fg-status.md`.
 
 ### 2026-07-29 - Emit clean CaptureEngine and test-app 7z artifacts
