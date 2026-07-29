@@ -146,6 +146,13 @@ arrive:
   coverage is checked for gaps, and every audio stream is decoded to verify the exact target sample count and identical
   endpoints across tracks.
 
+Windows provides no API that can guarantee a recorder a fixed allocation of hardware video-encoding resources.
+CaptureEngine can preserve CFR and audio-sync correctness through transient pressure, but it cannot force a saturated
+GPU, video engine, memory path, or driver queue to finish encoding on time. B-frames, lookahead, multipass encoding,
+and higher-quality presets increase this pressure. Sustained encoder overload therefore cannot be fixed inside
+CaptureEngine: lower the game's GPU load or frame-rate limit, or reduce encoder complexity and quality settings—most
+notably B-frames, lookahead, and multipass.
+
 Audio uses WASAPI loopback for system outputs and the Windows process-loopback API for application audio. Each source
 has a timeline-aware float ring, and sources sharing a track are mixed before a soft-knee limiter that leaves ordinary
 in-range samples bit-exact. Sparse application sources contribute source-local silence instead of blocking a mixed
