@@ -457,6 +457,9 @@ dlss_sharpening=default
 dlss_fg_factor=default
 ; default, on, or off.
 dlss_debug_overlay=default
+; The DLL path overrides below are implemented by CaptureEngine's injected hook.
+; They are not NVIDIA's official DLL override feature and are not anti-cheat safe.
+; Read the safe/unsafe application-profile examples at the end before using them.
 ; Empty uses the normal DLL search path. Use an absolute DLL or folder path here.
 dlss_sr_dll_path=
 dlss_rr_dll_path=

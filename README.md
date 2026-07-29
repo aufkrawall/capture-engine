@@ -25,6 +25,23 @@ ImGui or another external overlay framework.
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
 
+## Anti-cheat safety
+
+> [!WARNING]
+> Any feature that depends on CaptureEngine's injected hook DLL should be treated as unsafe with anti-cheat software.
+> This includes injected capture, the injected overlay, graphics and DLSS overrides, and FPS limiting. WGC or DXGI
+> capture is non-injected only when the selected profile does not enable injection for another feature.
+
+CaptureEngine's `dlss_sr_dll_path`, `dlss_rr_dll_path`, `dlss_fg_dll_path`, and `streamline_dll_path` settings are
+implemented through CaptureEngine's injected hook. Do not confuse them with NVIDIA's official DLL-override feature:
+CaptureEngine's implementation does not use NVIDIA's supported override mechanism and does not inherit its anti-cheat
+safety properties.
+
+For software protected by anti-cheat, start with WGC or DXGI Desktop Duplication and explicitly set
+`dll_injection=never`. This is the likely-compatible configuration, not a universal guarantee. Before configuring a
+game, read the [safe and unsafe application-profile examples near the end of
+`config.ini`](captureengine/config.ini.template#L621-L663).
+
 ## Multi-process architecture
 
 `CaptureEngine.exe` runs several internal roles. Keeping capture, media processing, telemetry, and control in separate
@@ -242,6 +259,9 @@ There is no separate usage wiki. The generated `config.ini` is the user referenc
 valid values, safety notes, and complete application-profile examples. The authored source is
 [captureengine/config.ini.template](captureengine/config.ini.template), and its exact contents are embedded into
 CaptureEngine for first-run creation.
+
+If anti-cheat is involved, consult the safe/unsafe examples at the end before enabling a profile. The decisive boundary
+is whether CaptureEngine loads its hook DLL, not whether video itself comes from WGC, DXGI, or injected capture.
 
 An existing `config.ini` is never silently merged or replaced. When updating an older installation, compare it with
 the current template for newly added settings and examples.

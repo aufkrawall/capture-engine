@@ -68,6 +68,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("not 100% reliable"), std::string::npos);
     EXPECT_NE(generatedText.find("does not inspect or inject"), std::string::npos);
     EXPECT_NE(generatedText.find("WGC/DXGI profile with dll_injection=never"), std::string::npos);
+    EXPECT_NE(generatedText.find("not NVIDIA's official DLL override feature"), std::string::npos);
+    EXPECT_NE(generatedText.find("not anti-cheat safe"), std::string::npos);
     EXPECT_NE(generatedText.find("CaptureEngine.exe --list-monitors"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
