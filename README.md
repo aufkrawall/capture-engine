@@ -266,6 +266,55 @@ is whether CaptureEngine loads its hook DLL, not whether video itself comes from
 An existing `config.ini` is never silently merged or replaced. When updating an older installation, compare it with
 the current template for newly added settings and examples.
 
+## Build system
+
+[build.py](build.py) is the single orchestration entry point for dependency preparation, compilation, testing,
+analysis, binary verification, and packaging. On Windows it manages a project-local MSYS2 `clang64` environment,
+which supplies the package manager, Clang/LLD, build tools, headers, and libraries. MSYS2 is the controlled build
+environment; CaptureEngine itself is built as native Windows PE executables and DLLs and does not need to be launched
+through an MSYS shell.
+
+The build covers the x64 application and hook, the x86 compatibility hook, MediaEngine, both Vulkan layers, shaders
+and resources, the native graphics test applications, and the unit-test binaries. Shipping files are staged under
+`installed/captureengine`; validation-only programs remain under `installed/testapp` and cannot enter a release
+package.
+
+Dependency handling is deliberately reproducible and fail-closed. The MSYS2 bootstrap is authenticated using its
+detached signature and a pinned signing key. Source packages and upstream archives are checked against pinned
+signatures, fingerprints, and SHA-256 hashes, then the FFmpeg dependency closure and the project's customized FFmpeg
+are built into a private prefix. Runtime DLLs are staged only from that prefix. Unexpected PE imports, missing
+licenses, a changed patch/configuration fingerprint, or an unverifiable dependency cause a rebuild or a hard failure
+instead of silently using an arbitrary system copy.
+
+Incremental builds are content-validated rather than timestamp-based: an object is reused only when its source,
+compiler binary, flags, dependency information, and project-header contents still match. Product binaries are
+relinked with the exact new build identity, while reusable test links additionally validate every input and the
+output hash. The build also emits `compile_commands.json`, uses strict floating-point semantics for sensitive audio,
+timing, and color-conversion code, and verifies PE architecture, import closure, Control Flow Guard and other
+mitigations, writable/executable section separation, shaders, CodeView records, and matching PDBs.
+
+Useful contributor loops are:
+
+```powershell
+# Fast edit/test loop for one suite or test
+python build.py --incremental --tests-only --run-tests --gtest-filter=<suite-or-test> --skip-updates --concise
+
+# Normal completion gate
+python build.py --incremental --skip-updates --concise
+python build.py --no-build --run-tests --skip-updates --concise
+
+# Complete clean gate for high-risk or build-system changes
+python build.py --verify --skip-updates --concise
+```
+
+`--verify` is a nested all-in-one gate, not an extra step after the normal gate: it performs a clean product build,
+the full native and Python test suites, content-addressed clang-tidy and file-size ratchets, and isolated ASan/UBSan
+validation. On a cache miss, the sanitizer build runs concurrently with the clean product build in separate output
+roots. `--skip-updates` keeps routine development on the already verified dependency set; stale or missing outputs
+are still rebuilt. `--concise` keeps the terminal readable while preserving complete commands and subprocess output
+in the detailed build log. A plain `python build.py` uses the managed default-quality path and may refresh MSYS2 and
+source-built dependencies when required.
+
 ## Testing
 
 The repository contains GoogleTest coverage for capture scheduling, audio timing and codecs, FPS limiting,
