@@ -71,7 +71,9 @@ class VerificationParallelismTest(unittest.TestCase):
             sibling_linker = compiler_dir / "ld"
             cross_linker = cross_dir / "ld"
             for path in (compiler, sibling_linker, cross_linker):
-                path.write_bytes(path.name.encode("ascii"))
+                # A driver query only happens for a loadable image, so the
+                # stand-in carries a program magic like the real toolchain.
+                path.write_bytes(b"MZ" + path.name.encode("ascii"))
 
             def fake_check_output(command, **kwargs):
                 self.assertEqual(command[0], str(compiler))
@@ -92,7 +94,7 @@ class VerificationParallelismTest(unittest.TestCase):
     def test_unresolvable_linker_names_are_not_fingerprinted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             compiler = Path(temporary) / "clang++"
-            compiler.write_bytes(b"compiler")
+            compiler.write_bytes(b"MZcompiler")
 
             build.resolve_link_program_paths.cache_clear()
             try:
@@ -103,6 +105,52 @@ class VerificationParallelismTest(unittest.TestCase):
                 build.resolve_link_program_paths.cache_clear()
 
         self.assertEqual(resolved, ())
+
+    def test_a_file_that_is_not_a_program_image_is_never_spawned(self) -> None:
+        """Windows answers an unloadable child image with a modal dialog.
+
+        CreateProcess hands a file it cannot classify to the 16-bit path, and
+        CSRSS blocks the caller on an "unsupported 16-bit application" box until
+        somebody clicks OK - a build stall with no log line and no timeout. The
+        link fingerprint therefore inspects the magic bytes before it spawns
+        anything, so a placeholder or truncated compiler stays a fast miss.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            compiler = stage / "clang++.exe"
+            sibling_linker = stage / "ld.lld.exe"
+            compiler.write_bytes(b"not a program image")
+            sibling_linker.write_bytes(b"MZld.lld")
+
+            def refuse_to_spawn(command, **kwargs):
+                raise AssertionError(f"spawned a non-image file: {command}")
+
+            build.resolve_link_program_paths.cache_clear()
+            try:
+                with patch.object(build.subprocess, "check_output", refuse_to_spawn):
+                    resolved = build.resolve_link_program_paths(str(compiler))
+            finally:
+                build.resolve_link_program_paths.cache_clear()
+
+        self.assertEqual(resolved, (str(sibling_linker.resolve()),))
+
+    def test_program_images_are_recognized_by_their_magic_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            cases = {
+                "windows.exe": (b"MZ\x90\x00stub", True),
+                "linux.elf": (b"\x7fELF\x02\x01", True),
+                "wrapper.sh": (b"#!/bin/sh\nexec clang++ \"$@\"\n", True),
+                "placeholder.exe": (b"compiler", False),
+                "empty.exe": (b"", False),
+            }
+            for name, (content, expected) in cases.items():
+                path = stage / name
+                path.write_bytes(content)
+                self.assertEqual(build.looks_like_executable_image(str(path)), expected, name)
+
+            self.assertFalse(build.looks_like_executable_image(str(stage / "absent.exe")))
+            self.assertFalse(build.looks_like_executable_image(str(stage)))
 
     def test_sanitizer_child_uses_an_isolated_build_root(self) -> None:
         completed = build.subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")

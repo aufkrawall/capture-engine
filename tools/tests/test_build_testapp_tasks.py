@@ -6,10 +6,40 @@ from pathlib import Path
 from unittest.mock import patch
 
 import build
+from tools.verification_stage_cache import SOURCE_DIRS
 
 
 LINUX_X64_COMPILER = "/usr/bin/x86_64-w64-mingw32-g++"
 LINUX_X86_COMPILER = "/usr/bin/i686-w64-mingw32-g++"
+NATIVE_HANDLE_SCAN_SUFFIXES = {".cpp", ".h", ".hpp", ".inl"}
+
+
+def scan_native_handle_uses(project_root: Path) -> list[str]:
+    """Report first-party uses of std::thread::native_handle().
+
+    Scoped to the first-party source directories on purpose. Vendored trees
+    (external/, ffmpeg_build/) follow their own conventions, are never built
+    against this contract, and are not even UTF-8 - AMD's and Valve's headers
+    carry CP1252 copyright signs - so walking the whole project root raises
+    UnicodeDecodeError long before it can report anything. Decoding stays
+    tolerant for the same reason: the token searched for is pure ASCII, so a
+    stray byte in a first-party file must not abort the scan either.
+    """
+    allowed = project_root / "common" / "thread_wait.h"
+    offenders: list[str] = []
+    for directory_name in SOURCE_DIRS:
+        directory = project_root / directory_name
+        if not directory.is_dir():
+            continue
+        for source in sorted(directory.rglob("*")):
+            if source.suffix not in NATIVE_HANDLE_SCAN_SUFFIXES or source == allowed:
+                continue
+            text = source.read_text(encoding="utf-8", errors="replace")
+            for number, line in enumerate(text.splitlines(), start=1):
+                code = line.split("//", 1)[0]
+                if "native_handle" in code:
+                    offenders.append(f"{source.relative_to(project_root)}:{number}")
+    return offenders
 
 
 class TestAppTaskTest(unittest.TestCase):
@@ -161,18 +191,7 @@ class TestAppTaskTest(unittest.TestCase):
         handle WaitForSingleObject rejects. Windows-only work would never see
         either, so the contract is checked here instead.
         """
-        project_root = Path(build.__file__).parent
-        allowed = project_root / "common" / "thread_wait.h"
-        offenders = []
-        for source in project_root.rglob("*"):
-            if source.suffix not in {".cpp", ".h", ".hpp", ".inl"} or source == allowed:
-                continue
-            if "build" in source.relative_to(project_root).parts[:1]:
-                continue
-            for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
-                code = line.split("//", 1)[0]
-                if "native_handle" in code:
-                    offenders.append(f"{source.relative_to(project_root)}:{number}")
+        offenders = scan_native_handle_uses(Path(build.__file__).parent)
 
         self.assertEqual(
             offenders,
@@ -180,6 +199,27 @@ class TestAppTaskTest(unittest.TestCase):
             "use ce::Win32ThreadHandle() from common/thread_wait.h instead of std::thread::native_handle(): "
             + ", ".join(offenders),
         )
+
+    def test_native_handle_scan_skips_vendored_trees_and_survives_their_encodings(self) -> None:
+        """The scan must not read third-party sources, whatever they contain."""
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            first_party = project_root / "common"
+            first_party.mkdir()
+            (first_party / "worker.cpp").write_text(
+                "void wait() { worker.native_handle(); }\n", encoding="utf-8"
+            )
+            for vendored in ("external", "ffmpeg_build", "build"):
+                directory = project_root / vendored / "nested"
+                directory.mkdir(parents=True)
+                # Latin-1 copyright banners are what actually broke the walk.
+                (directory / "vendor.h").write_bytes(
+                    b"// Copyright \xa9 2023 Vendor\nauto h = t.native_handle();\n"
+                )
+
+            offenders = scan_native_handle_uses(project_root)
+
+        self.assertEqual(offenders, [os.path.join("common", "worker.cpp") + ":1"])
 
     def test_test_app_commands_carry_their_architecture(self) -> None:
         objects, _ = self.run_testapps()

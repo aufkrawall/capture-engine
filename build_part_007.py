@@ -310,6 +310,27 @@ def compute_file_content_hash(path: str) -> str:
         return hashlib.md5(f.read()).hexdigest()[:16]
 
 
+def looks_like_executable_image(path: str) -> bool:
+    """Whether the OS could load this file as a program image.
+
+    Toolchain probes spawn the compiler to ask it about itself. A file that is
+    not a loadable image must never reach CreateProcess on Windows: the loader
+    classifies it as a DOS/16-bit image and raises a hard error, which CSRSS
+    answers with a modal "unsupported 16-bit application" box that blocks the
+    build until somebody clicks it. Checking the magic bytes first keeps a
+    truncated download, a placeholder path, or a corrupted toolchain a fast
+    error instead of an indefinite stall.
+    """
+    resolved = path if os.path.isfile(path) else (shutil.which(path) or path)
+    try:
+        with open(resolved, "rb") as image:
+            header = image.read(4)
+    except OSError:
+        return False
+    # PE/COFF (also MS-DOS stubs), ELF, and shebang scripts are all launchable.
+    return header[:2] in (b"MZ", b"#!") or header[:4] == b"\x7fELF"
+
+
 @lru_cache(maxsize=None)
 def compute_compiler_fingerprint(clang_exe: str) -> str:
     resolved_compiler = clang_exe if os.path.isfile(clang_exe) else shutil.which(clang_exe)
@@ -415,6 +436,9 @@ def resolve_link_program_paths(compiler_exe: str) -> Tuple[str, ...]:
         candidate = os.path.join(compiler_dir, linker_name)
         if os.path.isfile(candidate):
             resolved.append(os.path.abspath(candidate))
+
+    if not looks_like_executable_image(compiler_exe):
+        return tuple(dict.fromkeys(resolved))
 
     for program in ("ld", "ld.lld"):
         try:

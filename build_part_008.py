@@ -189,7 +189,7 @@ def write_json_atomic(path: str, payload: Any) -> None:
 
 def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[str]:
     """Detect clang resource-dir via compiler query, then fallback to local scan."""
-    if clang_exe and is_clang_compiler(clang_exe):
+    if clang_exe and is_clang_compiler(clang_exe) and looks_like_executable_image(clang_exe):
         detected = run_command(
             [os.path.normpath(clang_exe), "--print-resource-dir"],
             env=env,

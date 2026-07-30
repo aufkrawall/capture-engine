@@ -80,6 +80,23 @@ IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 IS_WSL = IS_LINUX and "microsoft" in platform.uname().release.lower()
 
+if IS_WINDOWS:
+    # A build must fail, never wait for a mouse click. Windows answers a hard
+    # error - an unloadable child image, a missing removable volume - with a
+    # modal message box that blocks the raising process indefinitely, and this
+    # error mode is inherited by every child, including the test and sanitizer
+    # runs. SEM_NOGPFAULTERRORBOX is deliberately not set: crash reporting must
+    # keep producing the dumps this project debugs from.
+    import ctypes
+
+    SEM_FAILCRITICALERRORS = 0x0001
+    SEM_NOOPENFILEERRORBOX = 0x8000
+    # Read-modify-write so an inherited mode survives; still single-threaded here.
+    _INHERITED_ERROR_MODE = ctypes.windll.kernel32.SetErrorMode(0)
+    ctypes.windll.kernel32.SetErrorMode(
+        _INHERITED_ERROR_MODE | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
+    )
+
 # --- Optimization Flags ---
 # These flags are safe for both host and injected binaries and provide basic
 # hardening without changing program behavior. _FORTIFY_SOURCE requires the

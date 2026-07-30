@@ -52,7 +52,7 @@
   },
   "total": 1586,
   "scope": {
-    "entries": 270,
+    "entries": 271,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -313,6 +313,7 @@
       "tests/test_streamline_runtime_policy_part2.cpp",
       "tests/test_strict_integer_parse.cpp",
       "tests/test_stubs.cpp",
+      "tests/test_thread_wait.cpp",
       "tests/test_tray_source.cpp",
       "tests/test_video_encoder_hardware_options.cpp",
       "tests/test_video_encoder_options.cpp",
