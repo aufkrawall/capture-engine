@@ -46,6 +46,7 @@
     } else {
         capture->SetDirectFrameCallback(nullptr);
     }
+    capture->SetDirectCursorCallback(config.video.captureCursor ? QueueWgcCursorObservation : nullptr);
     capture->ResetStats();
     // Explicitly reset both the cache and the encoder-side state. A prior
     // duplication session may have ended while its software cursor was embedded.
@@ -90,6 +91,7 @@
     }
     if (!capture->StartCapture()) {
         capture->SetDirectFrameCallback(nullptr);
+        capture->SetDirectCursorCallback(nullptr);
         return false;
     }
     SnapshotWgcRuntimeLogState(capture);

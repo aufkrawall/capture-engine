@@ -285,6 +285,8 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
     shutdown_.store(false, std::memory_order_release);
     acquireTimeoutCount_.store(0, std::memory_order_relaxed);
     cursorOnlyUpdateCount_.store(0, std::memory_order_relaxed);
+    pointerUpdateCount_.store(0, std::memory_order_relaxed);
+    forwardedPointerUpdateCount_.store(0, std::memory_order_relaxed);
     accumulatedMissedFrameCount_.store(0, std::memory_order_relaxed);
     protectedContentMaskedFrameCount_.store(0, std::memory_order_relaxed);
     consecutiveAcquireFailures_.store(0, std::memory_order_relaxed);
@@ -490,6 +492,22 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         // cursor-plane detector and drives encoder-side cursor suppression.
         if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
             UpdatePointerState(frameInfo);
+            pointerUpdateCount_.fetch_add(1, std::memory_order_relaxed);
+            if (sink_.onPointerUpdate) {
+                ce::cursor::SourcePointerObservation observation;
+                if (GetPointerState(&observation)) {
+                    try {
+                        sink_.onPointerUpdate(observation, frameInfo.LastPresentTime.QuadPart == 0);
+                        forwardedPointerUpdateCount_.fetch_add(1, std::memory_order_relaxed);
+                    } catch (const std::exception& e) {
+                        LogError("[DXGIDup] Pointer-update callback threw an exception: %s", e.what());
+                        requestReset("pointer-update sink callback failed");
+                    } catch (...) {
+                        LogError("[DXGIDup] Pointer-update callback threw an unknown exception");
+                        requestReset("pointer-update sink callback failed");
+                    }
+                }
+            }
         }
 
         if (frameInfo.ProtectedContentMaskedOut) {
@@ -501,21 +519,10 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         }
 
         // LastPresentTime == 0: pointer shape/position metadata only, the
-        // desktop image itself did not change. The encoder-side cursor
-        // composition samples the live cursor directly, so nothing to encode.
+        // desktop image itself did not change. The QPC-stamped pointer sample
+        // was forwarded above; there is no content texture to copy or encode.
         if (frameInfo.LastPresentTime.QuadPart == 0) {
             cursorOnlyUpdateCount_.fetch_add(1, std::memory_order_relaxed);
-            if (sink_.onCursorOnlyUpdate) {
-                try {
-                    sink_.onCursorOnlyUpdate();
-                } catch (const std::exception& e) {
-                    LogError("[DXGIDup] Cursor-only callback threw an exception: %s", e.what());
-                    requestReset("cursor-only sink callback failed");
-                } catch (...) {
-                    LogError("[DXGIDup] Cursor-only callback threw an unknown exception");
-                    requestReset("cursor-only sink callback failed");
-                }
-            }
             DupSafeRelease(resource);
             duplication_->ReleaseFrame();
             continue;
@@ -610,11 +617,14 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
     }
 
     LogInfo(
-        "[DXGIDup] Capture thread exiting (delivered=%llu timeouts=%llu cursorOnly=%llu accumulatedMissed=%llu "
-        "protectedMasked=%llu separatePointer=%d cursorEmbedded=%d pointerStateTransitions=%llu)",
+        "[DXGIDup] Capture thread exiting (delivered=%llu timeouts=%llu cursorOnly=%llu pointerUpdates=%llu "
+        "pointerForwarded=%llu accumulatedMissed=%llu protectedMasked=%llu separatePointer=%d cursorEmbedded=%d "
+        "pointerStateTransitions=%llu)",
         static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(cursorOnlyUpdateCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(pointerUpdateCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(forwardedPointerUpdateCount_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(accumulatedMissedFrameCount_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(protectedContentMaskedFrameCount_.load(std::memory_order_relaxed)),
         separatePointerVisible_.load(std::memory_order_relaxed) ? 1 : 0,

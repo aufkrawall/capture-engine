@@ -243,3 +243,61 @@ TEST(CursorTimelineTest, DropsOldestSamplesAtCapacity) {
     ASSERT_TRUE(timeline.SelectAtOrBefore(250, &selected));
     EXPECT_EQ(selected.associationQpc, 200);
 }
+
+TEST(CursorTimelineTest, ReplacesDuplicateTimestampWithLatestPointerMetadata) {
+    ce::cursor::Timeline timeline(3);
+    ce::cursor::CaptureState older;
+    older.flags = ce::cursor::kStateValid;
+    older.associationQpc = 50;
+    older.screenX = 5;
+    ce::cursor::CaptureState first;
+    first.flags = ce::cursor::kStateValid;
+    first.associationQpc = 100;
+    first.screenX = 10;
+    ce::cursor::CaptureState replacement = first;
+    replacement.screenX = 20;
+
+    timeline.Publish(older);
+    timeline.Publish(first);
+    timeline.Publish(replacement);
+    ce::cursor::CaptureState later = first;
+    later.associationQpc = 200;
+    later.screenX = 30;
+    timeline.Publish(later);
+
+    ce::cursor::CaptureState selected;
+    ASSERT_TRUE(timeline.SelectAtOrBefore(50, &selected));
+    EXPECT_EQ(selected.screenX, 5);
+    ASSERT_TRUE(timeline.SelectAtOrBefore(100, &selected));
+    EXPECT_EQ(selected.screenX, 20);
+    ASSERT_TRUE(timeline.SelectAtOrBefore(200, &selected));
+    EXPECT_EQ(selected.screenX, 30);
+}
+
+TEST(CursorTimelineTest, HighRateDxgiPointerHistoryAdvancesEveryDelayedCfrTick) {
+    constexpr int64_t qpcFrequency = 1000000;
+    constexpr int64_t pointerInterval = qpcFrequency / 1000;
+    constexpr int64_t outputInterval = qpcFrequency / 120;
+    constexpr int64_t contentDelay = 2000000;
+    ce::cursor::Timeline timeline(8192);
+
+    for (int64_t qpc = 1; qpc <= 4000000; qpc += pointerInterval) {
+        ce::cursor::CaptureState state;
+        state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible;
+        state.handle = 1;
+        state.associationQpc = qpc;
+        state.screenX = static_cast<int32_t>(qpc / pointerInterval);
+        timeline.Publish(state);
+    }
+
+    int32_t previousX = -1;
+    for (int64_t scheduledQpc = 3600000; scheduledQpc < 3700000; scheduledQpc += outputInterval) {
+        const int64_t targetQpc = scheduledQpc - contentDelay;
+        ce::cursor::CaptureState selected;
+        ASSERT_TRUE(timeline.SelectAtOrBefore(targetQpc, &selected));
+        EXPECT_GT(selected.screenX, previousX);
+        EXPECT_GE(targetQpc - selected.associationQpc, 0);
+        EXPECT_LT(targetQpc - selected.associationQpc, pointerInterval);
+        previousX = selected.screenX;
+    }
+}

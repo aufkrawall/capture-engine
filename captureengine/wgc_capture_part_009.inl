@@ -575,12 +575,14 @@ void WGCCapture::ForceReset() {
         const uint32_t producerTargetFps = impl_->producerTargetFps_;
         const auto* throttleFlag = impl_->throttleFlag_;
         const auto directFrameCallback = impl_->frameCallback_.load(std::memory_order_acquire);
+        const auto directCursorCallback = impl_->cursorCallback_.load(std::memory_order_acquire);
         const uint64_t sourceEpoch = impl_->sourceEpoch_.load(std::memory_order_acquire);
 
         // Stop all producers and synchronously drain the per-instance callback
         // epoch before destroying Impl. A queued WinRT callback can retain the
         // shared gate, but cannot reacquire this owner after StopCapture.
         impl_->frameCallback_.store(nullptr, std::memory_order_release);
+        impl_->cursorCallback_.store(nullptr, std::memory_order_release);
         impl_->alive_.store(false, std::memory_order_release);
         impl_->StopCapture();
 
@@ -601,6 +603,7 @@ void WGCCapture::ForceReset() {
         impl_->throttleFlag_ = throttleFlag;
         impl_->sourceEpoch_.store(sourceEpoch, std::memory_order_release);
         impl_->frameCallback_.store(directFrameCallback, std::memory_order_release);
+        impl_->cursorCallback_.store(directCursorCallback, std::memory_order_release);
         if (!impl_->InitializeDevices(device_)) {
             LogError("[WGC] ForceReset failed to reinitialize capture devices");
             return;

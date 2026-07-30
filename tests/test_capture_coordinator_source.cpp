@@ -17,6 +17,15 @@ std::string ReadWgcCaptureSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp");
 }
 
+std::string ReadDxgiDuplicationSource() {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "captureengine" / "dxgi_dup_capture.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 std::string ReadVideoEncoderSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp");
 }
@@ -113,6 +122,10 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
 
     const std::string resolverBody = source.substr(resolver, repeat - resolver);
     EXPECT_NE(resolverBody.find("timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("if (!useDxgiPointerTimeline)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("CaptureCursorSnapshot(scheduledQpc"), std::string::npos);
+    EXPECT_NE(resolverBody.find("g_DxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0"),
+              std::string::npos);
     EXPECT_NE(resolverBody.find("captureWidth, captureHeight, false)"), std::string::npos);
     EXPECT_NE(resolverBody.find("cursorState.SetSourceEmbedded(cursorEmbedded)"), std::string::npos);
     EXPECT_EQ(resolverBody.find("captureWidth, captureHeight, cursorEmbedded)"), std::string::npos);
@@ -125,6 +138,51 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
               std::string::npos);
     EXPECT_NE(source.find("selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, \"fresh-catchup\")"),
               std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, DxgiPointerOnlyUpdatesFeedAuthoritativeCursorTimeline) {
+    const std::string coordinator = ReadCoordinatorSource();
+    const std::string capture = ReadWgcCaptureSource();
+    const std::string duplication = ReadDxgiDuplicationSource();
+    ASSERT_FALSE(coordinator.empty());
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(duplication.empty());
+
+    const size_t pointerUpdate = duplication.find("if (frameInfo.LastMouseUpdateTime.QuadPart != 0)");
+    const size_t cursorOnly = duplication.find("if (frameInfo.LastPresentTime.QuadPart == 0)", pointerUpdate);
+    ASSERT_NE(pointerUpdate, std::string::npos);
+    ASSERT_NE(cursorOnly, std::string::npos);
+    const std::string pointerUpdateBody = duplication.substr(pointerUpdate, cursorOnly - pointerUpdate);
+    EXPECT_NE(pointerUpdateBody.find("sink_.onPointerUpdate(observation, frameInfo.LastPresentTime.QuadPart == 0)"),
+              std::string::npos);
+
+    EXPECT_NE(capture.find("sink.onPointerUpdate = [this, originLeft, originTop]"), std::string::npos);
+    EXPECT_NE(capture.find("cursorCallback_.load(std::memory_order_acquire)"), std::string::npos);
+    EXPECT_NE(capture.find("callback(observation, originLeft, originTop, frameWidth_, frameHeight_"),
+              std::string::npos);
+
+    const size_t publish = coordinator.find("static void QueueWgcCursorObservation");
+    const size_t frameQueue = coordinator.find("static void QueueWgcFrame", publish);
+    ASSERT_NE(publish, std::string::npos);
+    ASSERT_NE(frameQueue, std::string::npos);
+    const std::string publishBody = coordinator.substr(publish, frameQueue - publish);
+    EXPECT_NE(publishBody.find("sourceEpoch != g_WgcSourceEpoch.load(std::memory_order_acquire)"),
+              std::string::npos);
+    EXPECT_NE(publishBody.find("CaptureCursorSnapshot(observation.updateQpc"), std::string::npos);
+    EXPECT_NE(publishBody.find("ApplySourcePointerObservation(&cursorState, observation)"), std::string::npos);
+    EXPECT_NE(publishBody.find("std::lock_guard<std::mutex> lock(g_WgcCursorPublicationMutex)"),
+              std::string::npos);
+    EXPECT_NE(publishBody.find("g_WgcCursorTimeline.Publish(cursorState)"), std::string::npos);
+    EXPECT_NE(coordinator.find("SetDirectCursorCallback(config.video.captureCursor ? QueueWgcCursorObservation"),
+              std::string::npos);
+
+    const size_t advanceEpoch = coordinator.find("static uint64_t AdvanceWgcSourceEpoch");
+    const size_t publishCapture = coordinator.find("static void PublishWgcCapture", advanceEpoch);
+    ASSERT_NE(advanceEpoch, std::string::npos);
+    ASSERT_NE(publishCapture, std::string::npos);
+    const std::string epochBody = coordinator.substr(advanceEpoch, publishCapture - advanceEpoch);
+    EXPECT_NE(epochBody.find("g_WgcCursorTimeline.Clear()"), std::string::npos);
+    EXPECT_NE(epochBody.find("g_DxgiCursorTimelinePublished.store(0"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, CfrRecoverySeparatesOutputGridFromWakeDeadlineForEveryBackend) {

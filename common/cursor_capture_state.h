@@ -145,6 +145,13 @@ public:
         const auto position = std::upper_bound(
             states_.begin(), states_.end(), state.associationQpc,
             [](int64_t timestamp, const CaptureState& candidate) { return timestamp < candidate.associationQpc; });
+        if (position != states_.begin()) {
+            auto existing = std::prev(position);
+            if (existing->associationQpc == state.associationQpc) {
+                *existing = state;
+                return;
+            }
+        }
         states_.insert(position, state);
         while (states_.size() > capacity_) {
             states_.pop_front();

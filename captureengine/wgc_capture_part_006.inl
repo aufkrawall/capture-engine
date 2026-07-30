@@ -123,10 +123,26 @@
             frameArrivedEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);  // Auto-reset
         }
 
+        // The duplication monitor is immutable for this source lifetime. Cache
+        // its origin instead of issuing monitor queries for every mouse report.
+        int32_t originLeft = 0;
+        int32_t originTop = 0;
+        const bool originOk = GetCaptureOrigin(originLeft, originTop);
         DxgiDuplicationFrameSink sink;
         sink.onFrame = [this](ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc,
                               uint32_t /*accumulatedFrames*/) { OnDuplicationFrame(texture, desc, rawSourceQpc); };
-        sink.onCursorOnlyUpdate = [this]() { cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed); };
+        sink.onPointerUpdate = [this, originLeft, originTop](const ce::cursor::SourcePointerObservation& observation,
+                                                            bool cursorOnly) {
+            if (cursorOnly) {
+                cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
+            }
+            const auto callback = cursorCallback_.load(std::memory_order_acquire);
+            if (!callback) {
+                return;
+            }
+            callback(observation, originLeft, originTop, frameWidth_, frameHeight_,
+                     sourceEpoch_.load(std::memory_order_acquire));
+        };
         sink.onResetNeeded = [this](const char* reason) { FlagResetNeeded(reason); };
         if (!dupSource_->Start(std::move(sink))) {
             dupInitFailureReason_ = dupSource_->GetStartFailureReason();
@@ -152,9 +168,6 @@
             WgcItemCreationMethodName(itemCreationMethod_), targetMonitor_, producerTargetFps_, targetFps_,
             DescribeCaptureFormat());
 
-        int32_t originLeft = 0;
-        int32_t originTop = 0;
-        const bool originOk = GetCaptureOrigin(originLeft, originTop);
         LogInfo("[WGC] Capture origin diagnostics: target=monitor originMode=%s origin=(%d,%d) itemSize=%ux%u",
                 originOk ? "monitor" : "unresolved", originLeft, originTop, frameWidth_, frameHeight_);
 
@@ -541,6 +554,7 @@
 
         // Safe to clear callback now - no more concurrent readers
         frameCallback_.store(nullptr, std::memory_order_release);
+        cursorCallback_.store(nullptr, std::memory_order_release);
 
         // NOTE: Do NOT null item_ - it's the capture target (monitor) and doesn't
         // change between recordings. StartCapture() needs item_ to exist.

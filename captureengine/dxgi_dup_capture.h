@@ -45,8 +45,9 @@ struct DxgiDuplicationFrameSink {
     std::function<void(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc,
                        uint32_t accumulatedFrames)>
         onFrame;
-    // Pointer-shape/position-only desktop update (no content change).
-    std::function<void()> onCursorOnlyUpdate;
+    // Every QPC-stamped pointer update, including pointer-only updates with no
+    // desktop content change. The sink must not retain the reference.
+    std::function<void(const ce::cursor::SourcePointerObservation& observation, bool cursorOnly)> onPointerUpdate;
     // Unrecoverable duplication loss; the owner must stop and re-initialize.
     std::function<void(const char* reason)> onResetNeeded;
 };
@@ -102,6 +103,12 @@ public:
     }
     uint64_t GetCursorOnlyUpdateCount() const {
         return cursorOnlyUpdateCount_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetPointerUpdateCount() const {
+        return pointerUpdateCount_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetForwardedPointerUpdateCount() const {
+        return forwardedPointerUpdateCount_.load(std::memory_order_relaxed);
     }
     uint64_t GetAccumulatedMissedFrameCount() const {
         return accumulatedMissedFrameCount_.load(std::memory_order_relaxed);
@@ -180,6 +187,8 @@ private:
 
     std::atomic<uint64_t> acquireTimeoutCount_{0};
     std::atomic<uint64_t> cursorOnlyUpdateCount_{0};
+    std::atomic<uint64_t> pointerUpdateCount_{0};
+    std::atomic<uint64_t> forwardedPointerUpdateCount_{0};
     std::atomic<uint64_t> accumulatedMissedFrameCount_{0};
     std::atomic<uint64_t> protectedContentMaskedFrameCount_{0};
     std::atomic<uint32_t> consecutiveAcquireFailures_{0};

@@ -390,6 +390,34 @@ static void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
     g_FrameQueue.Push(std::move(frame));
 }
 
+static void QueueWgcCursorObservation(const ce::cursor::SourcePointerObservation& observation, int32_t captureLeft,
+                                      int32_t captureTop, uint32_t captureWidth, uint32_t captureHeight,
+                                      uint64_t sourceEpoch) {
+    if (!observation.valid || observation.updateQpc <= 0 || captureWidth == 0 || captureHeight == 0 ||
+        sourceEpoch != g_WgcSourceEpoch.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    ce::cursor::CaptureState cursorState =
+        CaptureCursorSnapshot(observation.updateQpc, captureLeft, captureTop, captureWidth, captureHeight, false);
+    ce::cursor::ApplySourcePointerObservation(&cursorState, observation);
+    std::lock_guard<std::mutex> lock(g_WgcCursorPublicationMutex);
+    if (sourceEpoch != g_WgcSourceEpoch.load(std::memory_order_acquire)) {
+        return;
+    }
+    g_WgcCursorTimeline.Publish(cursorState);
+    const uint64_t published = g_DxgiCursorTimelinePublished.fetch_add(1, std::memory_order_release) + 1;
+    if (published == 1) {
+        LogInfo(
+            "[Cursor] DXGI QPC pointer timeline active: updateQpc=%lld position=(%d,%d) visible=%d embedded=%d "
+            "coord=%s bounds=(%d,%d %ux%u)",
+            static_cast<long long>(observation.updateQpc), observation.screenX, observation.screenY,
+            observation.visible ? 1 : 0, observation.embedded ? 1 : 0,
+            observation.positionIsShapeTopLeft ? "shape-top-left" : "hotspot", captureLeft, captureTop, captureWidth,
+            captureHeight);
+    }
+}
+
 static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
                           int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp,
                           const ce::cursor::SourcePointerObservation& cursorObservation, int32_t captureLeft,
@@ -609,6 +637,7 @@ static void StopWgcCapturePipeline() {
     auto capture = g_WgcCap.LockExclusive();
     if (capture) {
         capture->SetDirectFrameCallback(nullptr);
+        capture->SetDirectCursorCallback(nullptr);
         capture->SetTargetFps(0);
         if (capture->IsCapturing()) {
             capture->StopCapture();
@@ -633,6 +662,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
 
     if (capture->IsCapturing()) {
         capture->SetDirectFrameCallback(nullptr);
+        capture->SetDirectCursorCallback(nullptr);
         capture->StopCapture();
     }
 

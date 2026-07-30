@@ -320,20 +320,30 @@
                                                    ? referenceFrame.cursorState.captureHeight
                                                    : referenceFrame.height;
                 const bool cursorEmbedded = useScreenGrab && referenceFrame.wgcCursorEmbedded;
+                bool useDxgiPointerTimeline = false;
+                if (useScreenGrab) {
+                    const auto capture = g_WgcCap.Read();
+                    useDxgiPointerTimeline =
+                        capture && capture->IsUsingDesktopDuplication() &&
+                        g_DxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0;
+                }
                 // Source-embedded ownership belongs to the delayed reference
                 // frame, not to this live pointer sample. Publishing it here
                 // would delay suppression a second time and hide the cursor
                 // after an embedded -> hardware-plane transition.
-                const ce::cursor::CaptureState liveState =
-                    CaptureCursorSnapshot(scheduledQpc, referenceFrame.captureLeft, referenceFrame.captureTop,
-                                          captureWidth, captureHeight, false);
                 ce::cursor::Timeline& timeline = useScreenGrab ? g_WgcCursorTimeline : g_InjectCursorTimeline;
-                timeline.Publish(liveState);
+                ce::cursor::CaptureState liveState;
+                if (!useDxgiPointerTimeline) {
+                    liveState =
+                        CaptureCursorSnapshot(scheduledQpc, referenceFrame.captureLeft, referenceFrame.captureTop,
+                                              captureWidth, captureHeight, false);
+                    timeline.Publish(liveState);
+                }
                 const int64_t cursorTargetQpc =
                     useScreenGrab ? std::max<int64_t>(1, scheduledQpc - getWgcEffectiveContentDelayQpc())
                                   : scheduledQpc;
                 if (!timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)) {
-                    cursorState = liveState;
+                    cursorState = useDxgiPointerTimeline ? referenceFrame.cursorState : liveState;
                 }
                 // Pixel ownership is authoritative for exactly this selected
                 // source frame. Remove stale source ownership from the cursor
@@ -347,7 +357,7 @@
                     LogInfo(
                         "[Cursor] CFR timeline backend=%s output=%s scheduled=%lld target=%lld source=%lld "
                         "selected=%lld observed=%lld deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) "
-                        "visible=%d embedded=%d fallback=%d coord=%s",
+                        "visible=%d embedded=%d fallback=%d coord=%s samples=%s",
                         useScreenGrab ? "screen-grab" : "inject", outputKind ? outputKind : "unknown",
                         static_cast<long long>(scheduledQpc), static_cast<long long>(cursorTargetQpc),
                         static_cast<long long>(referenceFrame.cursorState.associationQpc),
@@ -362,7 +372,8 @@
                         cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0,
                         cursorState.IsSourceEmbedded() ? 1 : 0,
                         (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0,
-                        cursorState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
+                        cursorState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot",
+                        useDxgiPointerTimeline ? "dxgi-qpc" : "grid-query");
                 }
             }
             return cursorState;

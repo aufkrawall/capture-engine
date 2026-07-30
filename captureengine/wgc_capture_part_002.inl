@@ -87,6 +87,9 @@
                                            const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t,
                                            WgcPoolSlotLease&&);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
+    using DirectCursorCallbackFn = void (*)(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t,
+                                            uint32_t, uint64_t);
+    std::atomic<DirectCursorCallbackFn> cursorCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
     std::atomic<int64_t> lastCallbackStartQpc_{0};

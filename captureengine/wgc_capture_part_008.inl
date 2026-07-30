@@ -271,6 +271,24 @@ uint64_t WGCCapture::GetDuplicationAccumulatedMissedFrameCount() const {
     return 0;
 }
 
+uint64_t WGCCapture::GetDuplicationPointerUpdateCount() const {
+#if HAS_WGC
+    if (impl_ && impl_->dupSource_) {
+        return impl_->dupSource_->GetPointerUpdateCount();
+    }
+#endif
+    return 0;
+}
+
+uint64_t WGCCapture::GetDuplicationForwardedPointerUpdateCount() const {
+#if HAS_WGC
+    if (impl_ && impl_->dupSource_) {
+        return impl_->dupSource_->GetForwardedPointerUpdateCount();
+    }
+#endif
+    return 0;
+}
+
 bool WGCCapture::IsDuplicationCursorEmbedded() const {
 #if HAS_WGC
     if (impl_ && impl_->dupSource_) {
@@ -412,6 +430,22 @@ void WGCCapture::SetDirectFrameCallback(
             }
         }
         impl_->frameCallback_.store(rawPtr, std::memory_order_release);
+    }
+#endif
+}
+
+void WGCCapture::SetDirectCursorCallback(
+    std::function<void(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t, uint32_t, uint64_t)>
+        callback) {
+#if HAS_WGC
+    if (impl_) {
+        Impl::DirectCursorCallbackFn rawPtr = nullptr;
+        if (callback) {
+            if (auto target = callback.target<Impl::DirectCursorCallbackFn>()) {
+                rawPtr = *target;
+            }
+        }
+        impl_->cursorCallback_.store(rawPtr, std::memory_order_release);
     }
 #endif
 }

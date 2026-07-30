@@ -306,7 +306,8 @@
                 "KMFail: %u/%u KMReclaim: %u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X | "
                 "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu DupHwCursor: %d DupCursorEmbedded: %d "
-                "DupPtrTransitions: %llu | TimingBasis: Copy/Convert/Encode/Fence=CPU-wall-or-submit",
+                "DupPtrTransitions: %llu DupPtrUpdates: %llu DupPtrForwarded: %llu DupPtrPublished: %llu | "
+                "TimingBasis: Copy/Convert/Encode/Fence=CPU-wall-or-submit",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
                 cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(g_FrameQueue.Size()),
@@ -343,7 +344,10 @@
                 static_cast<unsigned long long>(g_WgcCap->GetDuplicationAccumulatedMissedFrameCount()),
                 g_WgcCap->IsDuplicationSeparatePointerVisible() ? 1 : 0,
                 g_WgcCap->IsDuplicationCursorEmbedded() ? 1 : 0,
-                static_cast<unsigned long long>(g_WgcCap->GetDuplicationPointerStateTransitionCount()));
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationPointerStateTransitionCount()),
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationPointerUpdateCount()),
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationForwardedPointerUpdateCount()),
+                static_cast<unsigned long long>(g_DxgiCursorTimelinePublished.load(std::memory_order_relaxed)));
 
             lastInputCount = currentInputCount;
             lastCallbackCount = currentCount;
@@ -389,7 +393,11 @@
 void EncoderThreadFunc(const AppConfig& config) {
     LogInfo("[EncoderThread] Started");
 
-    g_WgcCursorTimeline.Clear();
+    {
+        std::lock_guard<std::mutex> lock(g_WgcCursorPublicationMutex);
+        g_WgcCursorTimeline.Clear();
+        g_DxgiCursorTimelinePublished.store(0, std::memory_order_release);
+    }
     g_InjectCursorTimeline.Clear();
 
     DisableCurrentThreadPowerThrottling("EncoderThread");

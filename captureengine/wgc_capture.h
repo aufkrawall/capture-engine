@@ -84,6 +84,8 @@ public:
     // Duplication-specific diagnostics (0 when the WGC backend is active).
     uint64_t GetDuplicationAcquireTimeoutCount() const;
     uint64_t GetDuplicationAccumulatedMissedFrameCount() const;
+    uint64_t GetDuplicationPointerUpdateCount() const;
+    uint64_t GetDuplicationForwardedPointerUpdateCount() const;
 
     // Duplication cursor-plane state (see DxgiDuplicationSource): when the
     // cursor is composed into the duplicated frames (software cursor),
@@ -145,6 +147,13 @@ public:
     void SetDirectFrameCallback(
         std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
                            const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&)>
+            callback);
+    // QPC-stamped DXGI hardware-pointer updates are independent of desktop
+    // content frames and must reach the cursor timeline even during source
+    // stalls. WGC itself has no equivalent source callback.
+    void SetDirectCursorCallback(
+        std::function<void(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t, uint32_t,
+                           uint64_t)>
             callback);
 
     // Get count of frames processed via direct callback

@@ -112,8 +112,12 @@ static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcProducerTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
-static ce::cursor::Timeline g_WgcCursorTimeline(1024);
+// Preserve several seconds even with a 1000 Hz DXGI hardware pointer so normal
+// delayed screen-grab targets retain the source history they still need.
+static ce::cursor::Timeline g_WgcCursorTimeline(8192);
 static ce::cursor::Timeline g_InjectCursorTimeline(1024);
+static std::atomic<uint64_t> g_DxgiCursorTimelinePublished{0};
+static std::mutex g_WgcCursorPublicationMutex;
 
 static UINT GetCursorDpiAtPoint(POINT point) {
     using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
@@ -213,6 +217,14 @@ static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, in
 
 static uint64_t AdvanceWgcSourceEpoch(const char* reason) {
     const uint64_t epoch = g_WgcSourceEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    // Cursor history is source-owned just like retained textures. Do not let a
+    // newly published duplication source select exact-QPC samples from the
+    // retired monitor/window epoch before its first pointer update arrives.
+    {
+        std::lock_guard<std::mutex> lock(g_WgcCursorPublicationMutex);
+        g_WgcCursorTimeline.Clear();
+        g_DxgiCursorTimelinePublished.store(0, std::memory_order_release);
+    }
     LogInfo("[Media] Advanced WGC source epoch to %llu (%s)", static_cast<unsigned long long>(epoch),
             reason ? reason : "unspecified");
     return epoch;
