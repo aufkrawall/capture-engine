@@ -432,7 +432,11 @@ void VideoEncoder::BeginDeferredRecording() {
     if (!writerRunning) {
         writerRunning = true;
         writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
-        writerThread = std::thread(&VideoEncoder::AsyncWriteLoop, this);
+        // The task and its future are created together so a joinable writer
+        // thread always has a valid completion future to wait on.
+        std::packaged_task<void()> writerTask([this] { AsyncWriteLoop(); });
+        writerFinished = writerTask.get_future();
+        writerThread = std::thread(std::move(writerTask));
         DLL_Log("[VideoEncoder] Started Writer Thread");
     }
 }
@@ -444,13 +448,11 @@ bool VideoEncoder::Start() {
     Stop();
     if (writerThread.joinable()) {
         if (writerFinalizeTimedOut.load(std::memory_order_acquire)) {
-            HANDLE hThread = writerThread.native_handle();
-            DWORD waitResult = WaitForSingleObject(hThread, 0);
-            if (waitResult != WAIT_OBJECT_0) {
+            if (!WriterFinishedWithin(writerFinished, 0)) {
                 DLL_Log(
-                    "[VideoEncoder] Start: ERROR previous writer finalize is still running (result=%lu); refusing "
+                    "[VideoEncoder] Start: ERROR previous writer finalize is still running (phase=%s); refusing "
                     "new recording to preserve muxer ownership",
-                    waitResult);
+                    WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)));
                 return false;
             }
             DLL_Log("[VideoEncoder] Start: Previous timed-out writer completed before restart; joining now.");

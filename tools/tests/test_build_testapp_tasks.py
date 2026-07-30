@@ -152,6 +152,35 @@ class TestAppTaskTest(unittest.TestCase):
         self.assertEqual(self.objects, [])
         self.assertEqual(self.links, [])
 
+    def test_no_source_treats_a_native_thread_handle_as_a_win32_handle(self) -> None:
+        """std::thread::native_handle() is only a Win32 HANDLE under the Win32 threading model.
+
+        A winpthreads MinGW - the system default on several Linux distributions,
+        and therefore for cross builds - returns a pthread_t. A plain assignment
+        fails to compile there; a reinterpret_cast compiles and silently yields a
+        handle WaitForSingleObject rejects. Windows-only work would never see
+        either, so the contract is checked here instead.
+        """
+        project_root = Path(build.__file__).parent
+        allowed = project_root / "common" / "thread_wait.h"
+        offenders = []
+        for source in project_root.rglob("*"):
+            if source.suffix not in {".cpp", ".h", ".hpp", ".inl"} or source == allowed:
+                continue
+            if "build" in source.relative_to(project_root).parts[:1]:
+                continue
+            for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+                code = line.split("//", 1)[0]
+                if "native_handle" in code:
+                    offenders.append(f"{source.relative_to(project_root)}:{number}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "use ce::Win32ThreadHandle() from common/thread_wait.h instead of std::thread::native_handle(): "
+            + ", ".join(offenders),
+        )
+
     def test_test_app_commands_carry_their_architecture(self) -> None:
         objects, _ = self.run_testapps()
         self.assertTrue(objects)

@@ -134,7 +134,7 @@ void InjectionManager::ReapCompletedDelayedInjectionThreadsLocked() {
             continue;
         }
 
-        HANDLE existingThreadHandle = reinterpret_cast<HANDLE>(it->native_handle());
+        HANDLE existingThreadHandle = ce::Win32ThreadHandle(*it);
         if (WaitForSingleObject(existingThreadHandle, 0) == WAIT_OBJECT_0) {
             it->join();
             it = delayedInjectionThreads.erase(it);
@@ -631,7 +631,7 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
         DWORD waitMs = static_cast<DWORD>(std::max<int64_t>(remaining, 1));
-        HANDLE threadHandle = reinterpret_cast<HANDLE>(t.native_handle());
+        HANDLE threadHandle = ce::Win32ThreadHandle(t);
         DWORD waitResult = WaitForSingleObject(threadHandle, waitMs);
 
         if (waitResult == WAIT_OBJECT_0) {

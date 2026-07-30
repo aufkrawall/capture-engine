@@ -609,6 +609,9 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-ffmpeg",
     "mingw-w64-clang-x86_64-cppwinrt",
     "mingw-w64-clang-x86_64-headers",
+    # Header-only, but packaging requires its bundled build-time license and
+    # fails closed without it, so Linux must stage the package too.
+    "mingw-w64-clang-x86_64-amf-headers",
     # FFmpeg dependencies (required by external/ffmpeg/bin DLLs)
     "mingw-w64-clang-x86_64-libxml2",
     "mingw-w64-clang-x86_64-bzip2",
@@ -624,6 +627,7 @@ LINUX_MSYS2_PACKAGES = [
 
 LINUX_MSYS2_REQUIRED_SENTINELS = [
     os.path.join("clang64", "share", "licenses", "crt", "COPYING.MinGW-w64-runtime.txt"),
+    os.path.join("clang64", "share", "licenses", "amf-headers", "LICENSE"),
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"

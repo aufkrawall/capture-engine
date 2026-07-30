@@ -39,6 +39,20 @@ class FfmpegCustomPatchTest(unittest.TestCase):
             Path("libavcodec/nvenc_hevc.c"),
         ]
 
+        # Only a host that builds FFmpeg from source has the pinned checkout;
+        # Linux consumes prebuilt MSYS2 FFmpeg packages and never creates it.
+        # Skip loudly in that case rather than failing on a missing input, but
+        # still fail when the checkout exists and is incomplete, because that is
+        # a broken pin rather than an absent one.
+        if not PINNED_FFMPEG.is_dir():
+            self.skipTest(
+                f"pinned FFmpeg checkout is absent at {PINNED_FFMPEG}; "
+                "run a source FFmpeg build (python build.py) to validate the project patches"
+            )
+        missing = [str(relative) for relative in targets if not (PINNED_FFMPEG / relative).is_file()]
+        if missing:
+            self.fail(f"pinned FFmpeg checkout at {PINNED_FFMPEG} is missing patch targets: {', '.join(missing)}")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "ffmpeg"
             root.mkdir()

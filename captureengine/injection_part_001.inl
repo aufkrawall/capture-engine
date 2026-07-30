@@ -11,6 +11,7 @@
 #include "../common/logging.h"
 #include "../common/module_enumeration.h"
 #include "../common/raii_helpers.h"
+#include "../common/thread_wait.h"
 #include "injection_policy.h"
 
 #include <aclapi.h>

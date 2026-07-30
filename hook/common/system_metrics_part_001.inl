@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "../../common/thread_wait.h"
 #include "hook_common.h"
 #include "ipc_client.h"
 
@@ -37,7 +38,7 @@ bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* con
         return true;
     }
 
-    HANDLE threadHandle = reinterpret_cast<HANDLE>(thread.native_handle());
+    HANDLE threadHandle = ce::Win32ThreadHandle(thread);
     DWORD waitResult = WaitForSingleObject(threadHandle, timeoutMs);
     if (waitResult == WAIT_OBJECT_0) {
         thread.join();

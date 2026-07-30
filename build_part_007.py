@@ -397,6 +397,42 @@ def get_link_search_directories(command: List[str], clang_exe: str) -> List[str]
     return directories
 
 
+@lru_cache(maxsize=8)
+def resolve_link_program_paths(compiler_exe: str) -> Tuple[str, ...]:
+    """Linker binaries a link driven by this compiler can actually execute.
+
+    Both halves matter. The sibling scan covers toolchains that ship their
+    linker next to the driver, and the executable suffix belongs to the
+    toolchain rather than the host: a cross toolchain staged from MSYS2
+    packages carries `.exe` binaries on Linux too. The driver query covers the
+    common cross layout where the real linker lives outside the driver's own
+    bin directory - on Linux, guessing `<compiler_dir>/ld` would otherwise
+    fingerprint the host ELF linker in /usr/bin instead of the cross linker.
+    """
+    resolved: List[str] = []
+    compiler_dir = os.path.dirname(os.path.abspath(compiler_exe))
+    for linker_name in ("ld.lld.exe", "lld-link.exe", "ld.exe", "ld.lld", "lld-link", "ld"):
+        candidate = os.path.join(compiler_dir, linker_name)
+        if os.path.isfile(candidate):
+            resolved.append(os.path.abspath(candidate))
+
+    for program in ("ld", "ld.lld"):
+        try:
+            reported = subprocess.check_output(
+                [compiler_exe, f"-print-prog-name={program}"],
+                encoding="utf-8",
+                errors="ignore",
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            continue
+        # Drivers echo the bare program name back when they cannot resolve it.
+        if reported and reported != program and os.path.isfile(reported):
+            resolved.append(os.path.abspath(reported))
+
+    return tuple(dict.fromkeys(resolved))
+
+
 def collect_link_dependency_paths(command: List[str], clang_exe: str, cwd: Optional[str] = None) -> List[str]:
     base_dir = os.path.abspath(cwd or PROJECT_ROOT)
     dependencies: set[str] = set()
@@ -442,11 +478,7 @@ def collect_link_dependency_paths(command: List[str], clang_exe: str, cwd: Optio
                 if os.path.isfile(candidate):
                     dependencies.add(os.path.abspath(candidate))
 
-    compiler_dir = os.path.dirname(os.path.abspath(clang_exe))
-    for linker_name in ("ld.lld.exe", "lld-link.exe", "ld.exe") if IS_WINDOWS else ("ld.lld", "ld"):
-        candidate = os.path.join(compiler_dir, linker_name)
-        if os.path.isfile(candidate):
-            dependencies.add(os.path.abspath(candidate))
+    dependencies.update(resolve_link_program_paths(clang_exe))
     return sorted(dependencies, key=os.path.normcase)
 
 

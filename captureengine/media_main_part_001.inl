@@ -37,6 +37,7 @@
 #include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
+#include "../common/thread_wait.h"
 #include "capture_cadence_diagnostics.h"
 #include "mediaengine_loader.h"
 #include "screen_grab_privacy_runtime.h"

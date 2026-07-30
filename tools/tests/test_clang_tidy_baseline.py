@@ -75,6 +75,22 @@ class ClangTidyBaselineScopeTest(unittest.TestCase):
             {"entries": 2, "translation_units": ["captureengine/capture.cpp", "tests/test_config.cpp"]},
         )
 
+    def test_scope_keys_match_across_hosts_for_a_windows_written_database(self) -> None:
+        """The baseline is committed, so a key must not depend on the reading host.
+
+        Backslashes are separators in a Windows-written compilation database but
+        ordinary filename characters on Linux, which used to leave the whole
+        absolute path as the key there and silently break scope-gap detection.
+        """
+        windows_style = str(self.root) + "\\captureengine\\capture.cpp"
+        posix_style = str(self.root / "captureengine" / "capture.cpp")
+        self.assertEqual(build.clang_tidy_scope_path(windows_style), "captureengine/capture.cpp")
+        self.assertEqual(build.clang_tidy_scope_path(windows_style), build.clang_tidy_scope_path(posix_style))
+        self.assertEqual(
+            build.clang_tidy_scope_from_entries([{"file": windows_style}, {"file": posix_style}]),
+            {"entries": 1, "translation_units": ["captureengine/capture.cpp"]},
+        )
+
     def test_scope_gap_reports_baseline_units_the_run_did_not_lint(self) -> None:
         self.create_sources(*PRODUCT_SOURCES, *TEST_SOURCES)
         baseline_scope = self.scope_for(*PRODUCT_SOURCES, *TEST_SOURCES)

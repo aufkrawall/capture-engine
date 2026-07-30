@@ -193,8 +193,14 @@ CLANG_TIDY_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "clang_tidy_basel
 
 
 def project_relative_key(source_path: str) -> str:
-    """Project-relative, separator-normalized key for one source file."""
-    candidate = os.path.normpath(str(source_path))
+    """Project-relative, separator-normalized key for one source file.
+
+    Separators are folded before the relative-path step, not just after it. The
+    keys land in the committed clang-tidy baseline, and a compilation database
+    written on Windows must produce the same key when it is read on Linux, where
+    a backslash is an ordinary filename character rather than a separator.
+    """
+    candidate = os.path.normpath(str(source_path).replace("\\", "/"))
     try:
         relative = os.path.relpath(candidate, PROJECT_ROOT)
     except ValueError:

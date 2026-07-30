@@ -238,7 +238,6 @@ void VideoEncoder::Stop() {
     // than packet drain on busy disks, but the async writer must remain the
     // only owner of the muxer until it either completes or definitively times out.
     if (writerThread.joinable()) {
-        HANDLE hThread = writerThread.native_handle();
         const uint64_t waitStartMs = GetTickCount64();
         constexpr uint64_t kSlowFinalizeWarnMs = 5000;
         constexpr uint64_t kWriterFinalizeTimeoutMs = 30000;
@@ -246,10 +245,10 @@ void VideoEncoder::Stop() {
                 WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(kWriterFinalizeTimeoutMs));
 
-        DWORD waitResult = WAIT_TIMEOUT;
+        bool writerCompleted = false;
         while (true) {
-            waitResult = WaitForSingleObject(hThread, 250);
-            if (waitResult == WAIT_OBJECT_0) {
+            writerCompleted = WriterFinishedWithin(writerFinished, 250);
+            if (writerCompleted) {
                 break;
             }
             const uint64_t elapsedMs = GetTickCount64() - waitStartMs;
@@ -263,12 +262,12 @@ void VideoEncoder::Stop() {
                     currentQueueBytes.load(std::memory_order_relaxed),
                     currentQueuePackets.load(std::memory_order_relaxed));
             }
-            if (elapsedMs >= kWriterFinalizeTimeoutMs || waitResult == WAIT_FAILED) {
+            if (elapsedMs >= kWriterFinalizeTimeoutMs) {
                 break;
             }
         }
 
-        if (waitResult == WAIT_OBJECT_0) {
+        if (writerCompleted) {
             writerThread.join();
             if (writerFinalizeTimedOut.exchange(false, std::memory_order_acq_rel)) {
                 DLL_Log("[VideoEncoder] Stop: Timed-out writer completed on a later stop; muxer ownership recovered.");
@@ -286,10 +285,11 @@ void VideoEncoder::Stop() {
             // file was already closed.
             writerStillOwnsEncoderResources = true;
             DLL_Log(
-                "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu phase=%s elapsed=%llums "
+                "[VideoEncoder] Stop: ERROR writer_finalize_timeout phase=%s timeout=%llums elapsed=%llums "
                 "queueBytes=%zu queuePackets=%u writerRetainsEncoderResources=%d; "
                 "skipping synchronous finalize",
-                waitResult, WriterFinalizePhaseName(timedOutPhase),
+                WriterFinalizePhaseName(timedOutPhase),
+                static_cast<unsigned long long>(kWriterFinalizeTimeoutMs),
                 static_cast<unsigned long long>(GetTickCount64() - waitStartMs),
                 currentQueueBytes.load(std::memory_order_relaxed), currentQueuePackets.load(std::memory_order_relaxed),
                 writerStillOwnsEncoderResources ? 1 : 0);

@@ -93,6 +93,19 @@ const char* WriterFinalizePhaseName(uint32_t phase) {
     }
 }
 
+// Bounded completion check for the async writer, independent of the MinGW
+// threading model. std::thread::native_handle() only yields a waitable Win32
+// HANDLE under the Win32 threading model; a winpthreads build returns a
+// pthread_t instead, so WaitForSingleObject cannot be used here.
+bool WriterFinishedWithin(std::future<void>& finished, uint64_t timeoutMs) {
+    // A joinable writer is always paired with a valid future. Should that ever
+    // not hold, report "still running" so muxer ownership is never assumed free.
+    if (!finished.valid()) {
+        return false;
+    }
+    return finished.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready;
+}
+
 bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
 }

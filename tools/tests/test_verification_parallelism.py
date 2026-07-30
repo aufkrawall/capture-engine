@@ -54,6 +54,56 @@ class VerificationParallelismTest(unittest.TestCase):
         self.assertIn(str(object_file.resolve()), inputs)
         self.assertIn(str(linker.resolve()), inputs)
 
+    def test_link_inputs_fingerprint_the_linker_the_driver_actually_runs(self) -> None:
+        """A cross driver's linker usually lives outside its own bin directory.
+
+        Resolving it only by sibling layout picks up the host linker that
+        happens to share a name, so a real cross-linker change would not
+        invalidate the link cache while an unrelated host change would.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            compiler_dir = stage / "bin"
+            cross_dir = stage / "cross" / "bin"
+            compiler_dir.mkdir(parents=True)
+            cross_dir.mkdir(parents=True)
+            compiler = compiler_dir / "x86_64-w64-mingw32-g++"
+            sibling_linker = compiler_dir / "ld"
+            cross_linker = cross_dir / "ld"
+            for path in (compiler, sibling_linker, cross_linker):
+                path.write_bytes(path.name.encode("ascii"))
+
+            def fake_check_output(command, **kwargs):
+                self.assertEqual(command[0], str(compiler))
+                if command[1] == "-print-prog-name=ld":
+                    return str(cross_linker) + "\n"
+                return command[1].split("=", 1)[1] + "\n"
+
+            build.resolve_link_program_paths.cache_clear()
+            try:
+                with patch.object(build.subprocess, "check_output", fake_check_output):
+                    resolved = build.resolve_link_program_paths(str(compiler))
+            finally:
+                build.resolve_link_program_paths.cache_clear()
+
+        self.assertIn(str(cross_linker), resolved)
+        self.assertIn(str(sibling_linker), resolved)
+
+    def test_unresolvable_linker_names_are_not_fingerprinted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiler = Path(temporary) / "clang++"
+            compiler.write_bytes(b"compiler")
+
+            build.resolve_link_program_paths.cache_clear()
+            try:
+                # Drivers echo the bare program name back when lookup fails.
+                with patch.object(build.subprocess, "check_output", lambda command, **kwargs: "ld\n"):
+                    resolved = build.resolve_link_program_paths(str(compiler))
+            finally:
+                build.resolve_link_program_paths.cache_clear()
+
+        self.assertEqual(resolved, ())
+
     def test_sanitizer_child_uses_an_isolated_build_root(self) -> None:
         completed = build.subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as temporary, patch.object(

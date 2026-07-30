@@ -283,7 +283,7 @@ static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const ch
         return true;
     }
 
-    HANDLE threadHandle = reinterpret_cast<HANDLE>(thread.native_handle());
+    HANDLE threadHandle = ce::Win32ThreadHandle(thread);
     DWORD waitResult = WaitForSingleObject(threadHandle, timeoutMs);
     if (waitResult == WAIT_OBJECT_0) {
         thread.join();

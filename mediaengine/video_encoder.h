@@ -4,9 +4,11 @@
 #include <d3d12.h>
 #include <windows.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -504,6 +506,12 @@ private:
     // Decouples file I/O from the capture thread to prevent stalls on network
     // drives or slow disks.
     std::thread writerThread;
+    // Bounded "has the writer finished?" checks go through this future rather
+    // than a Win32 handle from std::thread::native_handle(). native_handle_type
+    // is only HANDLE under the Win32 threading model; MinGW toolchains built
+    // against winpthreads hand back a pthread_t, which is not a thread handle
+    // and cannot be waited on with WaitForSingleObject.
+    std::future<void> writerFinished;
     std::queue<AVPacket*> packetQueue;
     std::mutex queueMutex;
     std::condition_variable queueCV;
