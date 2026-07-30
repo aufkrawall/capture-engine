@@ -1,0 +1,230 @@
+# Archive 2026-W31a
+
+### 2026-07-30 - Preserve the exact DXGI hardware-pointer timeline independently of desktop frames
+
+- **Evidence / root cause:** supplied 3840x2160 120-fps AV1 recording `capture_20260730T003820372Z_p23688_s2.mkv` kept ordinary scene motion smooth while the separate hardware cursor advanced in conspicuous held steps. Session `installed/captureengine/logs/20260730_000812` ended with 130,104 desktop frames but 458,535 pointer-only acquisitions over about 1,008 seconds; the old sink counted and discarded all pointer-only events, then the CFR resolver queried Windows at encoder wake time and assigned the result to the scheduled grid QPC. Irregular/catch-up encoder service could therefore collapse several real pointer observations into one held position even while independently timestamped source pixels remained smooth.
+- **Fix / invariants / coverage:** every nonzero DXGI `LastMouseUpdateTime`, including `LastPresentTime == 0`, now crosses the source epoch into the bounded cursor history with its exact QPC, coordinate convention, visibility, and embedded ownership. CFR selects this authoritative stream at the delayed content target for fresh/catch-up/repeat output and never inserts synthetic grid-time samples after the exact stream activates; existing WGC/inject sampling is unchanged. Equal timestamps replace metadata and the DXGI history holds 8192 states. The live cursor stays in the Windows hardware plane; encoded composition retains the cached small-rectangle GPU path with no full-frame copy, readback, GPU wait, game-process work, timing workaround, or software-cursor substitution. Timeline regressions prove duplicate replacement and 1000-Hz history advancing every delayed 120-fps tick; coordinator coverage proves forwarding precedes no-texture discard, enforces source epoch, and gates exact selection on a published sample. Watch `[Cursor] DXGI QPC pointer timeline active`, `samples=dxgi-qpc`, and advancing `DupPtrUpdates` / `DupPtrForwarded` / `DupPtrPublished`; historical `DropCursor` remains the pointer-only acquisition count, not lost pointer state. Focused tests pass; build `0.1.5256` passed the complete 293.8-second gate: clean product/test-app builds and packaging, full native/Python suites, file-size/clang-tidy ratchets, and x64 ASan/UBSan. Source anchors: `captureengine/{dxgi_dup_capture,wgc_capture,media_main}.*`, `common/cursor_capture_state.h`, `tests/{test_cursor_geometry,test_capture_coordinator_source}.cpp`, and `llm-wiki/wgc-capture.md`.
+
+### 2026-07-29 - Retire suspended FSR transport at the authoritative Streamline swapchain handoff
+
+- **Evidence / corrected diagnosis:** GTA follow-up session
+  `installed/captureengine/logs/20260729_231137` switched FSR FG to DLSS FG while remaining in the menu, where GTA
+  legitimately kept DLSS inactive. At `23:32:35.081-35.112`, Streamline created an authoritative new swapchain on
+  queue `000002BC878752B0`; CE captured that queue, invalidated stale PostSL proof, and prewarmed the exact new
+  backend. The retained native-FSR no-callback latch nevertheless stayed set because the earlier cleanup waited for
+  explicit `SetOptions(ON)`, which cannot arrive while menu suspension persists. Present then selected the retired
+  FFX fallback, composited once onto stale UI resource `000002BC13F23060`, and never ran the normal
+  `STREAMLINE_NO_FG` overlay path. The previous single-submit PostSL correction behaved as intended and was not this
+  failure.
+- **Fix / invariant:** a fresh authoritative non-game Streamline swapchain queue is itself sufficient comeback proof
+  while FSR API state is inactive. Immediately after publishing that exact queue, CE retires stale FSR
+  Present/no-callback/teardown state before PostSL invalidation or prewarm. The generic runtime-owned swapchain fact
+  and the new Streamline queue remain intact, so ordinary menu Presents render through the existing normal
+  `STREAMLINE_NO_FG` path and a later DLSS activation can use the prewarmed PostSL backend. Active FSR, missing FSR
+  history, same/original queues, non-authoritative creates, and absent stale ownership signals remain ineligible.
+- **Diagnostics / coverage:** the cleanup log now records `proof=authoritative-handoff|explicit-setoptions`,
+  explicit/authoritative inputs, FSR API state, handoff-pending state, both queues, and both stale FSR ownership
+  signals. Policy tests cover the menu-suspended handoff and every major negative gate; a source contract requires
+  cleanup after exact queue publication and before PostSL invalidation/prewarm. Focused DXGI, transition-sequence,
+  trace-replay, FG-session, and Streamline-policy suites pass. Build `0.1.5255` passed the complete 263.403-second
+  gate: clean x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan,
+  packaging/PE checks, file-size and clang-tidy ratchets, flake8, and pyright.
+- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+  `hook/apis/dx12_hook_part_{001,014,015}.inl`, `tests/test_dxgi_shared_part{3,8,10}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
+### 2026-07-29 - Deduplicate exact PostSL suspension rendering across pre-routing and ProcessFrame
+
+- **Evidence / corrected diagnosis:** GTA follow-up session
+  `installed/captureengine/logs/20260729_225256` proved the prior independent-FFX cleanup did execute
+  (`nativeFGPath=0 noCallback=1`) and eliminated the earlier continuous FFX/PostSL overlap. The remaining
+  explicit-DLSS-OFF interval instead submitted PostSL twice on every game Present: the new top-level pre-routing hook
+  and `ProcessFrame`'s older inactive-DLSS route both targeted the same proxy buffer and queue. Examples include
+  submits `#5191/#5192` on buffer 0 and `#8158/#8159` on buffer 2, with both successful sequence increments inside
+  one Present. This invalidates the prior source-only assumption that the Present scope already deduplicated the
+  ordinary ProcessFrame route.
+- **Root cause / fix:** the thread-local marker was honored by wrapped and recursive Present paths but never read by
+  `routeInactiveDLSSPresentBeforeBackbufferAccess`. Two independently sampled overlay draws could therefore blend
+  old and new text/graph state into one backbuffer and preserve stale content when the proxy buffers were reused
+  across suspend/resume. The ordinary ProcessFrame route now treats a successful top-level pre-routing submit as
+  authoritative coverage and remains GPU-quiet; it performs exactly one fallback submit only if pre-routing missed.
+  Nested Streamline Present keeps using the same marker. The diagnostic reports `preRouting` and `fallbackSubmit`
+  separately. There is no copy, extra queue, reinit, wait, delay, polling, title branch, or active-FG work.
+- **Coverage:** policy tests prove both marker states, and the source contract requires the marker/policy decision to
+  precede the fallback submit. The focused `DXGISharedTest.*:DXGISharedSourceTest.*` development loop passes.
+- **Source anchors:** `hook/common/dx12_overlay_policy/postsl_keepalive.h`,
+  `hook/apis/dx12_hook_part_026.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
+### 2026-07-29 - Retire the independent FFX no-callback route on post-FSR DLSS comeback
+
+- **Root cause:** follow-up GTA session `installed/captureengine/logs/20260729_220919` exercised the prior
+  GetState-first fix but logged no stale-native-ownership cleanup after explicit `SetOptions(ON)`. The main
+  runtime-owned native-FG predicate had already become false when the preserved non-original queue was classified as
+  the new Streamline handoff, while native FSR's independently retained no-callback composition latch remained true.
+  Shared Present routing consequently kept treating the session as FFX composition while PostSL rendered every active
+  and suspended-DLSS Present, producing thousands of `ffx-present-callback then post-sl` double-draw diagnostics.
+- **Fix / invariant:** that revision's guarded explicit post-FSR Streamline cleanup accepts either stale native-FG
+  ownership signal. It force-clears the retained no-callback route and native-FSR teardown state while preserving the proven
+  Streamline swapchain queue and generic runtime owner. The cleanup diagnostic records both input signals, making the
+  previously hidden `nativeFGPath=0 noCallback=1` case attributable. No hook removal, resource copy, extra queue,
+  delay, polling, timeout, title branch, or steady-state render work was added.
+- **Coverage:** the focused policy regression proves the independent no-callback-only state is sufficient and that
+  both absent signals remain a no-op; the source contract proves the live cleanup samples that route before clearing
+  it. The required full verification result is recorded with the completing commit.
+- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+  `hook/apis/dx12_hook_part_015.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
+  `llm-wiki/frame-generation/guardrails.md`.
+
+### 2026-07-29 - Preserve the overlay across GetState-first post-FSR DLSS menu suspension
+
+- **Root cause:** in GTA session `installed/captureengine/logs/20260729_211446`, the final FSR-to-DLSS comeback
+  reported active through `GetState` before explicit `SetOptions(ON)`. The initial edge consequently retained stale
+  native-FSR no-callback Present ownership, while the already-live explicit provenance upgrade did not replay the
+  cleanup. PostSL masked that stale route during active gameplay and logged a double draw. On the later confirmed
+  Reflex/menu suspend, PostSL callbacks stopped while the stale FFX route continued claiming coverage, leaving no
+  visible CE overlay.
+- **Fix / invariant:** an already-live explicit Streamline enable now reuses the existing guarded post-FSR cleanup
+  to retire only stale native-FG Present ownership while preserving the fresh Streamline queue and generic runtime
+  owner. Present and Present1 also try the existing exact confirmed PostSL OFF keep-alive before top-level DX12
+  route selection, so passive/stale-FSR early returns cannot strand suspension rendering. Exact swapchain/queue,
+  inactive-FG, callback, and native-owner proofs remain mandatory, and the thread-local Present scope deduplicates
+  nested attempts. This adds no copy, queue, wait, timeout, polling, title branch, or active-FG steady-state work.
+- **Coverage:** focused ownership/source regressions and the broader `DX12FGTransitionSequencesFixture`,
+  `DX12FGTraceReplayFixture`, `DXGISharedTest`, `DXGISharedSourceTest`, and `StreamlineRuntimePolicyTest` suites pass.
+- **Source anchors:** `hook/apis/{dx12_hook,streamline_hook}.*`, `hook/common/dxgi_shared.cpp`,
+  `tests/test_dxgi_shared_part3.cpp`, and `llm-wiki/frame-generation/guardrails.md`.
+
+### 2026-07-29 - Keep DX12 prerender pacing off FG runtime presenter threads
+
+- **Dump proof:** Talos session `installed/captureengine/logs/20260729_190753` froze during DLSS-FG enable with
+  Streamline's generated-output Present thread blocked inside `ApplyPrerenderLimitDX12`, waiting for CE fence value
+  5. CE had rebound the configured `cpu_prerender_limit=1` stream from the retained game queue to Streamline's
+  internal wrapper/presenter queue. Five exact PostSL overlay submits had succeeded immediately beforehand, so the
+  overlay route was healthy; the limiter wait created the dependency cycle.
+- **Fix / invariant:** whenever Streamline/FFX may own presentation, only the pre-FG tracked game-present thread may
+  advance DX12 queue-depth pacing. Runtime-generated, eager-startup, and unknown-provenance Presents skip the limiter
+  but retain normal overlay/capture processing. The fence ring uses the retained original game queue rather than the
+  volatile ECL/runtime queue, and derives its device from that selected queue for GTA-style multi-device handoffs,
+  while no-FG source Presents retain existing behavior. This is generic across Talos, GTA, the switch app,
+  Present/Present1, wrapper, and minimal FSR routes.
+- **Coverage:** focused policy/source regressions pass and assert game-thread admission, generated-thread rejection,
+  unknown-provenance rejection, original-queue selection, both DXGI Present variants, the wrapper path, the FSR
+  minimal path, and the eager-startup rejection. Build `0.1.5251` passed the complete 279.5-second gate: clean
+  x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan, packaging/PE checks,
+  file-size and clang-tidy ratchets, flake8, and pyright.
+- **Source anchors:** `hook/common/{dx12_overlay_policy,dxgi_shared}.*`, `hook/apis/dx12_hook.cpp`,
+  `tests/test_dxgi_shared_part{3,10}.cpp`, and `llm-wiki/{graphics-overrides-and-frame-pacing,index}.md`.
+
+### 2026-07-29 - Publish NVIDIA Smooth Motion status on every supported overlay API path
+
+- **Root causes:** the visible metric type and `NVIDIA SM` label already existed, and DX12 fed them through its
+  transition-aware publisher, but the direct DX11 and Vulkan overlay paths only updated frame timing. More
+  importantly, live Strange Brigade DX12 session `20260729_182021` proved NvPresent detection did not imply usable
+  Smooth Motion detection: the log found `NvPresent64.dll`, then immediately reported `Running in DORMANT mode -
+  pattern detection disabled` and retained `runtime=Off` / `published_type=0` for the session. Dormant mode was added
+  after the Smooth Motion detector and accidentally made its required 2x pattern confirmation unreachable unless
+  another API FG mode had first disabled dormancy. Rerun `20260729_183342` proved the wakeup worked, but also exposed
+  the next stale assumption: NvPresent-generated DX12 frames still carried two low-work command lists, so none were
+  classified as zero-work generated frames. A stable window measured 130 output / 72 high-work FPS (56 total, 31
+  high-work frames, about 1.8x), but noisy interval evidence forced the cached multiplier back from a startup 4x to
+  1x and prevented Smooth Motion confirmation. Third run `20260729_184536` showed the command-work ratio is not
+  stable enough to be the only proof: with driver-forced VSync and ULL capping output near 138 FPS, a steady window
+  contained 120 Presents but only 31 high-work samples, so CE misread the NvPresent queue topology as about 4x.
+  Present callbacks nevertheless formed a driver-paced short/long pair (typically about 0.6/13.8 ms, with 96% of
+  steady adjacent gaps contrasting by at least 3x). These callback start times describe driver/flip-metering
+  topology, not scanout pacing or the actual Smooth Motion multiplier.
+- **Fix / boundary:** one API-neutral metric policy now maps the unchanged runtime classification to DLSS FG, FSR FG,
+  NVIDIA Smooth Motion, or inactive. Direct DX11 and Vulkan publish the current detector snapshot before drawing;
+  DX12 retains its planner/preferred-state ordering. Detecting NvPresent now disables detector dormancy so the
+  existing frame-pattern confirmation can run. NvPresent also has a conservative 2x population fallback: at least
+  30 samples, at least ten high- and low-work frames, and a total/high-work ratio between 1.6x and 2.4x. Confirmation
+  is eligible with idle Streamline support but not an active Streamline signal or DLSS/FSR state. NvPresent presence
+  alone still publishes no FG; API priority is unchanged. A second, FPS-independent proof accepts NvPresent's paired
+  Present-callback cadence after at least 20 gaps when at least 80% of adjacent gaps contrast by 3x or more. It does
+  not compare against an absolute FPS or cap. DX11 and Vulkan feed the same Present history before publication, DX12
+  retains command-work analysis as an independent fallback, and confirmed Smooth Motion is always published as its
+  actual 2x multiplier. Three qualifying evaluations need not be adjacent, so a changing cap cannot continually
+  restart confirmation. Once confirmed, the NvPresent session remains latched across transient or sustained
+  cap/scene/flip-metering cadence changes; competing native FG evidence or explicit FG cleanup still clears it.
+- **Coverage:** focused status, performance-metric, runtime-classification, and source-contract tests pass. The source
+  contract also proves the Vulkan layer links the generic publisher and that direct DX11/Vulkan paths feed Present
+  evidence before publishing. Focused regressions cover the observed driver-paced cadence at multiple absolute FPS
+  scales, insufficient/random cadence, module absence, work-population fallback, competing-FG priority, and the
+  confirmed-session latch. Build `0.1.5250` passed the complete clean gate: x64/x86 hooks and Vulkan layers, the full
+  native suite, all sixteen Python groups, lint/ratchets, packaging/PE checks, and x64 ASan/UBSan. Fresh Strange
+  Brigade DX12 and native DX11/Vulkan driver validation remains manual.
+- **Source anchors:** `hook/common/overlay_fg_metric_policy.h`,
+  `hook/common/overlay_metrics_publisher.{h,cpp}`, `hook/common/overlay_metrics_planner_publisher.cpp`,
+  `hook/common/fg_detection.{h,cpp}`, `hook/apis/dx11_hook.cpp`,
+  `hook/vulkan_layer/{vulkan_layer.cpp,layer_overlay.cpp}`, `build.py`,
+  `tests/test_overlay_fg_status_publication.cpp`, and `llm-wiki/overlay-fg-status.md`.
+
+### 2026-07-29 - Emit clean CaptureEngine and test-app 7z artifacts
+
+- **Behavior:** every successful non-isolated product build now atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z` after PE/import/PDB verification. Each archive is listed back and must contain one expected root; package failure fails the build and is recorded in the verification manifest.
+- **Product boundary:** the `captureengine/` archive root includes verified product binaries/PDBs, manifests, the FFmpeg closure, licenses, and a clean default `config.ini`. It does not copy local logs, captures, backups, stale/temporary files, `nul`, or the live user configuration.
+- **Test boundary:** the separate `testapps/` root includes only the known first-party x64/x86 EXEs, available PDBs, and `THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`. Vendor DLLs and arbitrary files under `installed/testapp` cannot enter it. The note maps FSR/DLSS SR+FG, Reflex/PCL, Streamline/NGX, and DX12/Vulkan runtimes to official sources and the x64 root placement.
+- **Coverage:** `tools/tests/test_packaging.py` adds six policy/round-trip regressions and is the sixteenth Python self-test group. The tests-only development loop passed, then build `0.1.5243` passed the complete 261.3-second gate: clean x64/x86 product and 30 test-app builds, PE/import/PDB checks, both automatic archives (45 product files and 61 test-app files), the full native suite, all sixteen Python groups, zero file-size/flake8/pyright/clang-tidy-ratchet regressions, and x64 ASan/UBSan validation.
+- **Source anchors:** `build_part_{001,014,015}.py`, `testapp/THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`, `tools/{python_tool_self_tests.py,tests/test_packaging.py}`, `.github/workflows/hardening-ci.yml`, and `llm-wiki/build.py.md`.
+
+### 2026-07-28 - Resolve the remaining oversized-source baseline
+
+- **Scope:** all 39 entries in `tools/file_size_baseline.json` were converted to bounded ordered fragments. C++ wrappers include `.inl` pieces inside the original translation unit; Python entry points execute `.py` pieces through shared-global compatibility facades. No public API, ABI, CLI, module namespace, preprocessor branch, strict-FP source identity, hot-path translation-unit placement, or runtime state ownership was changed.
+- **Validation:** exact logical reassembly passed for 38 ordinary files plus the WGC payload after removing only its wrapper-owned outer conditional; `compileall` passed; source-policy readers now expand fragments; the final `python build.py --verify --run-fuzz --skip-updates --concise` passed with 1,875 native tests, sanitizer regression, Python self-tests, zero file-size violations, zero flake8/pyright errors, unchanged clang-tidy ratchet, and both fuzz targets.
+- **Lint boundary:** `*_part_*.py` is intentionally excluded from standalone flake8/pyright discovery because fragments execute in a neighboring facade namespace. Facades stay linted, source reassembly and runtime execution prove the logical program, and the size ratchet remains authoritative over all governed fragments.
+- **Result:** `tools/file_size_baseline.json` now has `count: 0` and `total: 0`. Future splits must use preprocessor-/AST-safe boundaries, retain explicit source/Vulkan/strict-FP lists, prove reassembly and symbol/state ownership, and target roughly 650-750 lines without padding small files.
+- **Source anchors:** `build.py`, `.flake8`, `pyrightconfig.json`, `tools/file_size_baseline.json`, `tests/source_fragment_reader.h`, `llm-wiki/{codestyle,build.py,known-debt}.md`, and the generated `*_part_*` files.
+
+### 2026-07-28 - Make complete verification content-aware and concurrent
+
+- **Evidence / goal:** the pre-change privacy gate took 372.8 s: clean build 183.1 s, sanitizer 108.6 s, lint 77.4 s, native tests 9.2 s. A late one-warning clang-tidy regression forced all earlier work to repeat even though output was already kept concise and token-light.
+- **Lint path:** `--verify` now runs a read-only file-size/static-analysis preflight from the last compatible full database. clang-tidy stores one result per translation unit, keyed by analyzer/configuration, compile command, source, and all depfile dependencies by content, then aggregates hits and misses before applying the unchanged global/scope ratchet. Misses overlap clang-format, flake8, and pyright.
+- **Sanitizer path:** the child builds in `build/stages/sanitize` with isolated object/output/test/temp/database/SDK paths. Exact-input/output SHA-256 success manifests reuse only unchanged validation; misses split the worker budget and run concurrently with the mandatory clean product build. New, changed, missing, unreadable, or explicitly force-rebuilt state runs again.
+- **Workflow boundary:** ordinary changes still use incremental build plus native tests. `--verify` remains required for build/toolchain/analyzer/shared-ABI and capture/CFR/FG/audio work, but agents run it once without redundant pre-gates. This changes scheduling and validated reuse, not test/analyzer/sanitizer coverage.
+- **Gate evidence:** build 5232 passed the complete gate in 221.2 s versus the pre-change 372.8 s run. Its clean product build took 203.3 s, concurrent sanitizer branch 38.4 s, and warm lint 14.2 s (268 hits, one build-identity miss); the post-gate proof reported an exact sanitizer hit and 269/269 clang-tidy hits.
+- **Source anchors:** `build.py`, `tools/{clang_tidy_cache,lint_driver,python_tool_self_tests,verification_stage_cache}.py`, `tools/tests/test_{clang_tidy_cache,verification_parallelism,verification_stage_cache}.py`, `AGENTS.md`, and `llm-wiki/build.py.md`.
+
+### 2026-07-28 - Add best-effort fullscreen-focus privacy blackout for WGC/DXGI
+
+- **Behavior:** opt-in `[Capture] black_when_no_fullscreen_focus=false`, including `Capture.*` profile overrides, gates only the active WGC/DXGI path. Exact-root fullscreen focus is required for window capture; monitor capture requires a fullscreen-like foreground root on the captured monitor. Missing, changing, invalid, minimized, cross-monitor, or ambiguous state fails closed to opaque black. Inject capture is unchanged.
+- **Safety / reliability boundary:** CaptureEngine uses only documented passive foreground/window/monitor geometry queries and performs no process opens, memory inspection, messages, input, event/Windows hooks, DLL injection, or anti-cheat bypass. A non-injected profile should still use `dll_injection=never`. Windows can misreport focus or bounds during transitions, so the setting is best-effort rather than a guaranteed privacy/redaction boundary and may occasionally mask or reveal incorrectly.
+- **Pipeline contract:** focus loss masks immediately; reacquisition stays black until normal selection reaches a source QPC captured after the successful observation. Fresh, repeat, CFR catch-up, and VFR blackout output share the gate and an empty cursor. The cached opaque-black BGRA8/R10/FP16 texture is created and cleared on GPU from the authoritative source descriptor. Only a known-black media cache may recover a failed black encode; otherwise the recording fails closed. Source consumption, audio samples, PTS/CFR grid, synchronization, mixing, duration, and finalization remain unchanged.
+- **Coverage / structure:** pure policy tests cover geometry tolerance, root/monitor matching, ambiguity, retarget/reset, reacquisition threshold, disabled/inject behavior, and opaque GPU pixels for BGRA8/R10/FP16. Coordinator source tests cover every output shape, cursor suppression, cache-failure safety, and the passive-API boundary. The duplicated fullscreen classifier moved to `common/screen_grab_privacy.*`; runtime glue lives in `captureengine/screen_grab_privacy_runtime.*`, and cadence diagnostics moved out of `media_main.cpp` so existing file-size baselines did not grow. Focused privacy/config/coordinator tests and the complete `--verify` gate passed in build 5228.
+- **Source anchors:** `common/{config,screen_grab_privacy}.{h,cpp}`, `captureengine/{config.ini.template,media_main,pseudo_overlay,screen_grab_privacy_runtime}.{h,cpp}`, `tests/{test_config,test_screen_grab_privacy,test_capture_coordinator_source}.cpp`, and `llm-wiki/{configuration,wgc-capture,index,log/recent}.md`.
+
+### 2026-07-27 - Preserve WGC/DXGI startup and visual liveness at the repeat-service boundary
+
+- **Evidence:** follow-up WGC 4K120 AV1/NVENC session `20260727_182804` kept contiguous CFR and exact, artifact-free audio, but deferred prewarm consumed roughly `786 ms`; the first live contract was already about `587 ms` overdue. The copy pool reached `free=0` with 115,685 prevented overwrites, wall-relative cleanup discarded 3,430 visual-debt frames, and a later episode held one base frame for 3,775 slots (`31.458 s`). The overload pacer had exited while repeat service rose to about `8.08 ms` against the `8.33 ms` interval and output shortfall already existed.
+- **Root causes:** prewarm filled the finite pool with history that was stale by the time the mux/encoder opened; recovery and low-water exceptions bypassed the nominal soft reserve; wall-time pruning deleted frames still needed by an older immutable grid target; and the 95%-budget pacer boundary could disarm the only mechanism distributing fresh work just before repeats approached the real frame interval.
+- **Fix / boundary:** after first deferred prewarm, WGC/DXGI retire prewarm-era frames and re-arm the barrier before constructing a wall-anchored delayed timeline contract. The copy-pool reserve is now authoritative. Debt pruning preserves the newest predecessor of the concrete grid target and yields bulk wall pruning while shortfall has no target. Pacing treats shortfall as pressure, uses 75% of marginal repeat headroom near the interval, applies a 5% fresh-liveness floor when repeats themselves exceed real time, requires a meaningful repeat saving, and waits eight recovered decisions before exit. This changes neither encoder settings nor CFR PTS, audio samples/cursors, compensation, mixing, or finalization; Inject remains separate.
+- **Coverage:** policy tests cover wall-anchored contracts, authoritative reserve behavior across every former bypass, grid-predecessor pruning, marginal/degraded pacing, fresh-within-effective-budget suppression, repeat-value rejection, and recovery hysteresis. Source-integration tests require post-prewarm barrier refresh, virtual timeline origin without source-QPC rebase, target-aware debt cleanup, and shortfall-safe bulk pruning. Focused capture-policy/coordinator tests pass; the required closure is `python build.py --verify --skip-updates --concise`.
+- **Source anchors:** `common/capture_policy/{constants,cfr_startup,cfr_scheduling,ingress_and_active_delay,live_debt}.h`, `captureengine/media_main.cpp`, `mediaengine/mediaengine.cpp`, `tests/test_capture_{pipeline_policy,pipeline_policy_part3,pipeline_policy_part4,coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
+
+### 2026-07-27 - Prevent feasible WGC/DXGI encoder overload from collapsing into a long static hold
+
+- **Evidence:** WGC 4K120 AV1/NVENC session `20260727_172407` kept all 13,406 CFR packets contiguous and video/audio endpoints within one microsecond, with no audible audio fault, but one 64.5-second interval emitted 7,744 slots with only 19 unique frames and a 7,631-slot (`63.591 s`) contiguous hold. Game presentation remained around 132 fps and the WGC source continued producing; measured fresh submission service was about `9.21 ms`, while cached repeats were about `5.48 ms` against the `8.33 ms` CFR interval.
+- **Root cause:** the immutable-grid/deep-debt fix correctly refused to put future pixels on old PTS, but a small sustained fresh-service deficit could escape retained history before recovery. Once all retained frames were newer than the old grid target, sync protection had to hold the last frame until packet-backed repeat catch-up regained coverage. The result was structurally perfect A/V but needlessly clustered visual loss.
+- **Fix / boundary:** the shared WGC/DXGI scheduler now measures fresh and repeat service separately. After eight samples of each, authoritative capacity pressure, healthy non-starved source evidence, target coverage, and a valid repeat cache, it computes the fresh fraction for a 95% service budget and distributes the minimum feasible repeats with a credit accumulator. Natural source holds credit the next fresh slot; covered candidates stay buffered. Paced repeats are not mislabeled as source starvation. The policy does not change encoder options and never changes CFR PTS, selection targets, audio samples/cursors, compensation, mixing, or finalization. Inject remains on its separate policy. If repeats themselves cannot fit the budget, no fake real-time solution is asserted.
+- **Diagnostics / coverage:** rate-limited enter/exit logs and `[WGC CFR OVERLOAD PACER]` expose fresh/repeat EMAs and samples, budget/fraction, decisions/emitted repeats, and maximum run; `[WGC CFR SUMMARY] Pacer=` separates emitted capacity repeats from `DupReason(src=...)`. A 7,744-tick regression using the observed `9.21/5.48 ms` shape grants about 5,059 evenly distributed fresh slots instead of 19, keeps maximum proactive repeat run at one, and stays inside the service budget. Guard tests cover missing pressure/source/cache/samples, infeasible mixes, natural holds, pressure-flag hysteresis, and clean exit. Focused policy/source-integration tests pass; the required closure is `python build.py --verify --skip-updates --concise`.
+- **Source anchors:** `common/capture_policy/{constants,cfr_scheduling}.h`, `captureengine/media_main.cpp`, `tests/{test_capture_pipeline_policy_part4,test_capture_coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
+
+### 2026-07-27 - Oversized-source refactor: hook/wrappers, shared_capture, crash_handler, screenshot_encoding, process_ipc
+
+- **Scope:** five splits across two sessions took `tools/file_size_baseline.json` from 47 to 39 files. `0d9cc65c` split the four oversized `hook/wrappers` sources; `5030db05` cut `shared_capture.cpp` on the D3D11/D3D12 boundary; `92ee7aee`, `c2ec59cb` and `5c6a78ca` split `crash_handler.cpp` (1167 -> 500 + 683), `screenshot_encoding.cpp` (997 -> 631 + 407) and `process_ipc.cpp` (872 -> 589 + 290). Shared state moved into private `*_internal.h` headers rather than being reached through file statics.
+- **Method that held up:** partition the file into contiguous line ranges, prove the partition reassembles byte-identically before writing anything, then prove the result is pure motion by diffing the pre-split object's defined-symbol set against the union of the post-split objects. Byte-identical reassembly is necessary but *not* sufficient — it says nothing about whether the halves compile, so build both architectures before believing a split. Expect `PROMOTED` for anything that left an anonymous namespace, and `ADDED` with no matching `LOST` for a small `static` that was previously inlined away entirely and must now be emitted; anything else means code was dropped or invented.
+- **Trap - the clang-tidy ratchet counts per translation unit, not per location.** A header warning is counted once for every TU that includes it, so a new sibling `.cpp` that inherits an include block it does not use raises the total with no new code (this cost a gate failure on `wrapper_hooks_devices.cpp`, which inherited `fg_detection.h` for one narrowing warning). Trim the new file's includes instead of regenerating the baseline. Confirmed working: the three splits on 2026-07-27 grew the scope 263 -> 266 TUs with the accepted counts completely unchanged.
+- **Trap - `captureengine/*` is not uniformly globbed.** The unit-test link names its captureengine sources explicitly, and `screenshot_encoding.cpp` is compiled with `-ffp-model=strict` at two separate sites. A split half therefore linked nowhere *and* would have silently lost strict FP. Both sites now share `STRICT_FP_SCREENSHOT_SOURCES`, and `tools/tests/test_build_flags.py` fails when a source including `screenshot_encoding_internal.h` is missing from it. `common/*`, `hook/apis/*`, `hook/wrappers/*`, `hook/capture/*` and the fuzz stage are globbed and need no `build.py` edit; the Vulkan layer's `hook_common_sources` list does.
+- **Trap - the file-size ratchet also governs `build.py` itself.** Adding the strict-FP registry pushed `build.py` from 8297 to 8310 and failed lint. Folding the adjacent near-duplicate `pseudo_overlay` block into the same loop paid for the addition and returned the file to 8297, which is better than conceding baseline space via `--update-lint-baseline`.
+- **Where cuts were better than expected:** for `screenshot_encoding.cpp`, measuring the actual cross-region references showed the HDR half reaches the per-pixel converters only through the *public* API, so the PQ/ST-2084 maths did not have to move into a shared header at all — five shared symbols instead of ~14, and nothing hot crossing a TU boundary. For `process_ipc.cpp`, cutting at `ProcessIPCClient` rather than mid-server leaves the fuzzed trust boundary `ValidateProcessMessage` whole and in place. Measure before trusting a planned cut.
+- **Anonymous namespaces:** when most of one is shared across the cut, dissolving it and marking the remainder `static` is cleaner than interleaved segment surgery. Only `bugprone-*` and `performance-*` are enabled, so `misc-use-anonymous-namespace` does not object.
+- **Source anchors:** `common/{crash_handler,crash_dump_writer,crash_handler_internal.h,process_ipc,process_ipc_client,process_ipc_internal.h}`, `captureengine/{screenshot_encoding,screenshot_hdr_encoding,screenshot_encoding_internal.h}`, `build.py` (`STRICT_FP_SCREENSHOT_SOURCES`, `compile_tests`), `tools/tests/test_build_flags.py`, `tests/test_process_ipc.cpp`, and `llm-wiki/known-debt.md`.
+- **Gate:** `python build.py --verify --run-fuzz --skip-updates --concise`, `success=1` in 471 s (sanitizers, full native suite, twelve Python self-tests, clean product build, clang-tidy, both fuzz targets).
+
+### 2026-07-26 - Keep deep encoder debt on the immutable audio-aligned content grid
+
+- **Evidence:** the 67-minute 4K120 DXGI/AV1-NVENC session `20260726_182814` kept contiguous CFR packets, exact decoded audio samples/endpoints, zero audio recovery artifacts, and later smooth recovery, but encoder shortfall reached about `2.067 s`. During deep episodes the old uniform anti-freeze floor selected retained pixels roughly `1.8-2.0 s` newer than `gridSlot - contentDelay`, producing large positive delay residuals even though PTS and track lengths stayed exact.
+- **Root cause:** `IsWgcUniformPlayoutAntiFreezeFloorSyncSafe` compared oldest-frame wall age with configured content delay. A frame can be hundreds of milliseconds old by wall time yet seconds ahead of an encoder grid that fell further behind, so wall age cannot establish file-timeline content sync. The July 1 floor also predated the packet-backed two/four-slot held-repeat catch-up added on July 24, which now provides a convergent recovery path without target motion.
+- **Fix / boundary:** uniform WGC/DXGI playout no longer raises its audio-aligned selection target to retained history. If all history is too new, it repeats the prior frame while bounded catch-up advances the immutable CFR grid; safe grid-matched historical surplus may still replace a hold under the existing service/reservoir gates. Fresh selection resumes once the target reaches retained history. No encoder setting is changed automatically, and audio targets, samples, compensation, resampling, PTS, and finalization are untouched. Sustained throughput below the requested FPS still has unavoidable repeats.
+- **Diagnostics / coverage:** rate-limited `[WGC CFR] Uniform playout grid-debt sync hold` and summary `GridDebtSyncHolds` / `GridDebtLeadMax` expose the state. Regression coverage proves that the removed wall-age shape is rejected and that a simulated 24-tick debt reaches zero through held repeats, resumes monotonic fresh output, and never exceeds the grid-relative selection tolerance. Focused uniform-playout, catch-up, and source-integration tests pass.
+- **Source anchors:** `captureengine/media_main.cpp`, `common/capture_policy/cfr_nearest_playout.h`, `tests/{test_capture_pipeline_policy_part2,test_capture_coordinator_source}.cpp`, `tests/test_capture_pipeline_policy_shared.h`, and `llm-wiki/{wgc-capture,cfr-capture-sync,current,index,log/recent}.md`.

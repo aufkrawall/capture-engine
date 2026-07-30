@@ -1,5 +1,37 @@
 
 
+class TestAppCommand(List[str]):
+    """Test app command that remembers the architecture its call site selected.
+
+    The architecture decides both the build environment and the object
+    directory, so it must not be re-derived by inspecting the flags: Linux
+    cross builds carry no architecture flag at all, which silently mapped every
+    x86 test app onto the x64 object path.
+    """
+
+    def __init__(self, arguments: List[str], arch: str):
+        super().__init__(arguments)
+        self.arch = arch
+
+
+def ensure_unique_testapp_objects(entries: List[Tuple[str, str]]) -> None:
+    """Reject test app tasks that would compile into a shared object path.
+
+    Two tasks sharing one object let parallel workers overwrite each other's
+    object mid-link, which surfaces as an unrelated "file format not
+    recognized" link failure on whichever task lost the race.
+    """
+    owners: Dict[str, str] = {}
+    for desc, object_path in entries:
+        normalized = os.path.normcase(os.path.abspath(object_path))
+        previous_desc = owners.get(normalized)
+        if previous_desc is not None:
+            raise RuntimeError(
+                f"Multiple test app tasks target the same object {normalized}: {previous_desc} and {desc}"
+            )
+        owners[normalized] = desc
+
+
 def compile_testapps(env, x86_env, clang_exe, cflags):
     """Compile test applications using Clang (and x86 if available)"""
     log("Compiling Test Applications...")
@@ -91,9 +123,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         vulkan_fg_cflags.append("-I" + vulkan_fg_shader_include)
 
     def add_task(desc, cmd, cwd=None, task_env=None):
+        arch = getattr(cmd, "arch", None) or ("x86" if is_x86_compile_command(cmd) else "x64")
         if task_env is None:
-            task_env = x86_env if x86_env is not None and is_x86_compile_command(cmd) else env
-        tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc)))
+            task_env = x86_env if x86_env is not None and arch == "x86" else env
+        tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc), arch))
 
     def make_cmd(compiler, flags, source, linker_flags, output, *, arch="x64"):
         effective_linker_flags = list(linker_flags) + list(LD_OPT_FLAGS)
@@ -102,7 +135,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         else:
             effective_linker_flags.extend(get_x86_testapp_cfg_link_flags(compiler))
         append_windows_pdb_linker_flag(effective_linker_flags, output)
-        return [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
+        return TestAppCommand([compiler] + flags + [source] + effective_linker_flags + ["-o", output], arch)
 
     def make_cmd_x86(compiler, flags, source, linker_flags, output):
         return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output, arch="x86")
@@ -558,19 +591,27 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     log("Test app compiler temp directories are isolated per task to avoid parallel temp-file collisions")
 
-    def compile_app(t):
-        desc, cmd, cwd, tenv = t
+    def split_task_command(cmd):
         source_index = next(index for index, argument in enumerate(cmd) if argument.endswith(".cpp"))
         output_index = cmd.index("-o", source_index + 1)
+        return source_index, output_index
+
+    def testapp_object_path(cmd, arch):
+        _, output_index = split_task_command(cmd)
+        output = cmd[output_index + 1]
+        object_dir = os.path.join(OBJ_DIR, "testapps", arch)
+        return os.path.join(object_dir, os.path.splitext(os.path.basename(output))[0] + ".o")
+
+    def compile_app(t):
+        desc, cmd, cwd, tenv, arch = t
+        source_index, output_index = split_task_command(cmd)
         compiler = cmd[0]
         compile_flags = cmd[1:source_index]
         source = cmd[source_index]
         linker_flags = cmd[source_index + 1 : output_index]
         output = cmd[output_index + 1]
-        arch = "x86" if is_x86_compile_command(cmd) else "x64"
-        object_dir = os.path.join(OBJ_DIR, "testapps", arch)
-        object_path = os.path.join(object_dir, os.path.splitext(os.path.basename(output))[0] + ".o")
-        os.makedirs(object_dir, exist_ok=True)
+        object_path = testapp_object_path(cmd, arch)
+        os.makedirs(os.path.dirname(object_path), exist_ok=True)
 
         log(f"Building {desc}...", detail=True)
         compiled = compile_object(tenv, compiler, compile_flags, source, object_path)
@@ -607,7 +648,11 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         log(f"Test app {state}: {desc}", detail=True)
         return compiled, linked
 
-    for _, command, _, _ in tasks:
+    ensure_unique_testapp_objects(
+        [(desc, testapp_object_path(command, arch)) for desc, command, _, _, arch in tasks]
+    )
+
+    for _, command, _, _, _ in tasks:
         compute_compiler_fingerprint(command[0])
 
     worker_count = get_parallel_job_count(env, len(tasks))
@@ -615,9 +660,11 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     errors = []
     built_count = 0
     cached_count = 0
+    failed_descriptions = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(compile_app, t) for t in tasks]
+        futures = {executor.submit(compile_app, t): t[0] for t in tasks}
         for future in as_completed(futures):
+            desc = futures[future]
             try:
                 compiled, linked = future.result()
                 if compiled or linked:
@@ -625,10 +672,18 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 else:
                     cached_count += 1
             except BaseException as e:
+                # A bare exception repr rarely names the failing app, so record
+                # the task description: it is the only handle the log offers
+                # when several apps build concurrently.
+                log(f"ERROR: Test app failed to build: {desc} - {type(e).__name__}: {e}")
+                failed_descriptions.append(desc)
                 errors.append(e)
 
     if errors:
-        raise RuntimeError(f"{len(errors)} test app(s) failed to build; first error: {errors[0]}")
+        raise RuntimeError(
+            f"{len(errors)} test app(s) failed to build: {', '.join(failed_descriptions)};"
+            f" first error: {errors[0]}"
+        )
     log(f"Test app summary: {built_count} built, {cached_count} cached, {len(tasks)} total")
 
     stale_shader_sidecars = glob.glob(os.path.join(testapp_bin_dir, "vulkan_fg_*.spv"))

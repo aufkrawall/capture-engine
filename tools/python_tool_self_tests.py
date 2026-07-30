@@ -33,6 +33,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("ffmpeg_dependencies", unittest_command("test_ffmpeg_dependencies")),
         ("build_flag_policy", unittest_command("test_build_flags")),
         ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
+        ("build_testapp_tasks", unittest_command("test_build_testapp_tasks")),
         ("pe_hardening_policy", unittest_command("test_pe_hardening")),
         ("clang_tidy_baseline_scope", unittest_command("test_clang_tidy_baseline")),
         ("clang_tidy_cache", unittest_command("test_clang_tidy_cache")),

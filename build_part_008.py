@@ -2,8 +2,17 @@
 
 def is_x86_compile_command(arguments: List[str]) -> bool:
     normalized = [arg.replace("\\", "/") for arg in arguments]
+    if not normalized:
+        return False
+    # Linux hosts drive both architectures through prefixed system compilers and
+    # therefore pass neither --target nor --sysroot: the x86 command is only
+    # distinguishable by its driver name. Missing that made every Linux x86
+    # command look like an x64 one.
+    if os.path.basename(normalized[0]).lower().startswith("i686-w64-mingw32-"):
+        return True
     return any(
         arg.startswith("--target=i686-w64")
+        or arg == "-m32"
         or (arg.startswith("--sysroot=") and "/mingw32" in arg)
         or "/build/msys64/mingw32/" in arg
         for arg in normalized

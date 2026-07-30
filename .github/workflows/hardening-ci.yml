@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/msys64_linux
-          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py') }}
+          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'build_part_*.py') }}
 
       - name: Install Linux build dependencies
         shell: bash
@@ -61,7 +61,7 @@ jobs:
 
       - name: Run build policy tests on Linux
         shell: pwsh
-        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_pe_hardening
+        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening
 
       - name: Cross-compile on Linux
         shell: pwsh
