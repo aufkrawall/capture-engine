@@ -38,6 +38,76 @@ TEST(AudioSyncUtilsTest, StartupFirstPacketRebaseOffsetOnlyAppliesAfterSyncPendi
     EXPECT_EQ(ce::audio::ComputeStartupFirstPacketRebaseOffset(480, true, 480, 2400), 0);
 }
 
+TEST(AudioSyncUtilsTest, CaptureEpochResetPreservesOnlyRecordingLevelBootstrapSettlement) {
+    const auto initialReset = ce::audio::ComputeAudioCaptureEpochReadinessReset(false);
+    EXPECT_FALSE(initialReset.timelineValid);
+    EXPECT_FALSE(initialReset.isPrimed);
+    EXPECT_FALSE(initialReset.bootstrapComplete);
+
+    const auto settledReset = ce::audio::ComputeAudioCaptureEpochReadinessReset(true);
+    EXPECT_FALSE(settledReset.timelineValid);
+    EXPECT_FALSE(settledReset.isPrimed);
+    EXPECT_TRUE(settledReset.bootstrapComplete);
+
+    // Repeated endpoint recovery and fan-out route epochs remain recording-settled. Only
+    // the current epoch's packet/timeline cushion must be reacquired each time.
+    bool bootstrapComplete = settledReset.bootstrapComplete;
+    for (int epoch = 0; epoch < 8; ++epoch) {
+        const auto reset = ce::audio::ComputeAudioCaptureEpochReadinessReset(bootstrapComplete);
+        EXPECT_FALSE(reset.timelineValid);
+        EXPECT_FALSE(reset.isPrimed);
+        EXPECT_TRUE(reset.bootstrapComplete);
+        bootstrapComplete = reset.bootstrapComplete;
+    }
+}
+
+TEST(AudioSyncUtilsTest, SettledTrackRepairsImpossibleLivePrimedUnsettledSourceState) {
+    EXPECT_TRUE(ce::audio::ShouldRestoreSettledSourceBootstrap(
+        /*trackBootstrapComplete*/ true, /*sourceTimelineValid*/ true, /*sourceIsPrimed*/ true,
+        /*sourceBootstrapComplete*/ false));
+    EXPECT_FALSE(ce::audio::ShouldRestoreSettledSourceBootstrap(false, true, true, false));
+    EXPECT_FALSE(ce::audio::ShouldRestoreSettledSourceBootstrap(true, false, true, false));
+    EXPECT_FALSE(ce::audio::ShouldRestoreSettledSourceBootstrap(true, true, false, false));
+    EXPECT_FALSE(ce::audio::ShouldRestoreSettledSourceBootstrap(true, true, true, true));
+}
+
+TEST(AudioSyncUtilsTest, SettledEpochRejoinUsesBoundedHoldThenTimelineSilenceWithoutBacklogCycle) {
+    constexpr int64_t kRequestedSamples = 24000;
+    constexpr size_t kBufferedSamples = 4800;
+    const auto reset = ce::audio::ComputeAudioCaptureEpochReadinessReset(true);
+
+    // Before the new epoch's first packet, a process-loopback route remains optional and
+    // cannot block its already-live track.
+    const bool optionalBeforePacket =
+        ce::audio::IsOptionalUnstartedAppAudioSource(true, reset.timelineValid, false);
+    EXPECT_TRUE(optionalBeforePacket);
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+        true, false, optionalBeforePacket, false, kRequestedSamples, 0));
+
+    // Once the source is live and primed, sticky bootstrap eligibility enables the existing
+    // bounded late-packet hold. At the reservoir cap, sparse-source silence makes progress;
+    // the strict 1.5-2.0 second backlog limit cycle is unreachable.
+    const bool sparseMaySilence =
+        ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, reset.bootstrapComplete, false);
+    EXPECT_TRUE(sparseMaySilence);
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+        true, false, false, sparseMaySilence, kRequestedSamples, kBufferedSamples));
+    EXPECT_TRUE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(
+        true, false, true, reset.bootstrapComplete, true, true, kRequestedSamples, kBufferedSamples, 0));
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(
+        true, false, true, reset.bootstrapComplete, true, true, kRequestedSamples, kBufferedSamples,
+        ce::audio::kAudioIngestMaxExtraReservoirMs));
+}
+
+TEST(AudioSyncUtilsTest, AppBacklogDiagnosticsDistinguishBootstrapAndEpochRejoinPending) {
+    EXPECT_STREQ(ce::audio::CfrAppAudioBacklogDrainReasonName(
+                     ce::audio::CfrAppAudioBacklogDrainReason::SourceBootstrapPending),
+                 "source_bootstrap_pending");
+    EXPECT_STREQ(ce::audio::CfrAppAudioBacklogDrainReasonName(
+                     ce::audio::CfrAppAudioBacklogDrainReason::EpochRejoinPending),
+                 "epoch_rejoin_pending");
+}
+
 TEST(AudioSyncUtilsTest, SharedStartupRebasePreservesInterSourceFirstPacketDelta) {
     const int64_t earlySourceStart = 8804;
     const int64_t lateSourceStart = 9855;

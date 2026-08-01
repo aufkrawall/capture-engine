@@ -1,6 +1,148 @@
 
 
-def analyze_inter_track_correlations(decoded_tracks, max_offset_ms=10):
+def best_signature_window_correlation(left, right, start, end, signature_rate, max_offset_ms):
+    max_lag = max(0, int(round(max_offset_ms * signature_rate / 1000.0)))
+    coarse_step = max(1, int(round(signature_rate / 50.0)))
+    coarse_lags = set(range(-max_lag, max_lag + 1, coarse_step))
+    coarse_lags.add(0)
+    coarse_lags.add(-max_lag)
+    coarse_lags.add(max_lag)
+    scores = {}
+    for lag in sorted(coarse_lags):
+        correlation = normalized_signature_correlation(left, right, start, end, lag, coarse_step)
+        if correlation is not None:
+            scores[lag] = correlation
+    if not scores:
+        return None
+
+    # Refine the strongest coarse peaks at the full retained signature rate. Looking
+    # around several peaks avoids choosing the wrong local maximum for music/game audio.
+    strongest_coarse = sorted(scores, key=lambda lag: scores[lag], reverse=True)[:3]
+    fine_lags = set()
+    for coarse_lag in strongest_coarse:
+        fine_lags.update(
+            range(max(-max_lag, coarse_lag - coarse_step), min(max_lag, coarse_lag + coarse_step) + 1)
+        )
+    fine_lags.add(0)
+    for lag in sorted(fine_lags):
+        correlation = normalized_signature_correlation(left, right, start, end, lag)
+        if correlation is not None:
+            scores[lag] = correlation
+
+    best_lag = max(scores, key=lambda lag: scores[lag])
+    best_correlation = scores[best_lag]
+    exclusion_lag = max(1, int(round(signature_rate * 0.04)))
+    alternatives = [
+        correlation for lag, correlation in scores.items() if abs(lag - best_lag) > exclusion_lag
+    ]
+    runner_up = max(alternatives) if alternatives else -1.0
+    zero_correlation = scores.get(0)
+    if zero_correlation is None:
+        zero_correlation = normalized_signature_correlation(left, right, start, end, 0)
+    return {
+        "correlation": best_correlation,
+        "offset_ms": best_lag * 1000.0 / signature_rate,
+        "zero_lag_correlation": zero_correlation if zero_correlation is not None else 0.0,
+        "peak_prominence": best_correlation - runner_up,
+    }
+
+
+def select_signature_correlation_windows(
+    left, right, signature_rate, focus_times_s, window_seconds=20.0, max_windows=32
+):
+    length = min(len(left), len(right))
+    window_points = max(64, int(round(window_seconds * signature_rate)))
+    minimum_points = max(32, int(round(min(5.0, window_seconds) * signature_rate)))
+    windows = []
+    for start in range(0, length, window_points):
+        end = min(length, start + window_points)
+        if end - start < minimum_points:
+            continue
+        activity = min(signature_window_variance(left, start, end), signature_window_variance(right, start, end))
+        windows.append((start, end, activity))
+    if not windows:
+        return []
+
+    priority = []
+    focus_indices = set()
+    for focus_time_s in focus_times_s or []:
+        focus_index = int(max(0.0, focus_time_s) * signature_rate) // window_points
+        for offset in (-1, 0, 1, 2, 3):
+            candidate = focus_index + offset
+            if 0 <= candidate < len(windows):
+                focus_indices.add(candidate)
+    focus_indices = sorted(focus_indices)
+    focus_limit = max(1, max_windows // 2)
+    if len(focus_indices) > focus_limit and focus_limit == 1:
+        focus_indices = [focus_indices[len(focus_indices) // 2]]
+    elif len(focus_indices) > focus_limit:
+        focus_indices = [
+            focus_indices[int(round(index * (len(focus_indices) - 1) / (focus_limit - 1)))]
+            for index in range(focus_limit)
+        ]
+    priority.extend(focus_indices)
+
+    uniform_count = min(10, len(windows), max(1, max_windows // 3))
+    if uniform_count == 1:
+        priority.append(0)
+    else:
+        for index in range(uniform_count):
+            priority.append(int(round(index * (len(windows) - 1) / (uniform_count - 1))))
+    priority.extend(sorted(range(len(windows)), key=lambda item: windows[item][2], reverse=True))
+
+    selected = []
+    selected_set = set()
+    for index in priority:
+        if len(selected) >= max_windows:
+            break
+        if index not in selected_set:
+            selected.append(index)
+            selected_set.add(index)
+    return [windows[index] for index in sorted(selected)]
+
+
+def find_consistent_content_offset(window_results, min_correlation=0.60, min_prominence=0.03,
+                                   min_offset_ms=20.0, offset_tolerance_ms=30.0):
+    candidates = [
+        result
+        for result in window_results
+        if result["correlation"] >= min_correlation
+        and result["peak_prominence"] >= min_prominence
+        and abs(result["offset_ms"]) >= min_offset_ms
+    ]
+    best_cluster = []
+    for seed in candidates:
+        cluster = [
+            result
+            for result in candidates
+            if abs(result["offset_ms"] - seed["offset_ms"]) <= offset_tolerance_ms
+        ]
+        if len(cluster) < 2:
+            continue
+        median_offset = statistics.median(result["offset_ms"] for result in cluster)
+        if abs(median_offset) < min_offset_ms:
+            continue
+        if not best_cluster or (len(cluster), statistics.median(item["correlation"] for item in cluster)) > (
+            len(best_cluster),
+            statistics.median(item["correlation"] for item in best_cluster),
+        ):
+            best_cluster = cluster
+    return sorted(best_cluster, key=lambda result: result["window_start_s"])
+
+
+def extract_audio_correlation_focus_times(text, sample_rate=48000):
+    if not text or sample_rate <= 0:
+        return []
+    return sorted(
+        {
+            parse_int(match.group(1)) / sample_rate
+            for match in AUDIO_CORRELATION_FOCUS_CURSOR_RE.finditer(text)
+            if parse_int(match.group(1)) >= 0
+        }
+    )
+
+
+def analyze_inter_track_correlations(decoded_tracks, max_offset_ms=2000, focus_times_s=None):
     correlations = []
     for left_index in range(len(decoded_tracks)):
         for right_index in range(left_index + 1, len(decoded_tracks)):
@@ -9,46 +151,59 @@ def analyze_inter_track_correlations(decoded_tracks, max_offset_ms=10):
             if not left.get("signature") or not right.get("signature"):
                 continue
             signature_rate = min(left["signature_rate"], right["signature_rate"])
-            if abs(left["signature_rate"] - right["signature_rate"]) > 0.01 or signature_rate <= 0:
+            if abs(left["signature_rate"] - right["signature_rate"]) > 1e-6 or signature_rate <= 0:
                 continue
-            max_lag = max(0, int(round(max_offset_ms * signature_rate / 1000.0)))
-            best = None
-            for lag in range(-max_lag, max_lag + 1):
-                left_start = max(0, -lag)
-                right_start = max(0, lag)
-                count = min(len(left["signature"]) - left_start, len(right["signature"]) - right_start)
-                if count < 32:
+            window_results = []
+            for start, end, activity in select_signature_correlation_windows(
+                left["signature"], right["signature"], signature_rate, focus_times_s
+            ):
+                best = best_signature_window_correlation(
+                    left["signature"], right["signature"], start, end, signature_rate, max_offset_ms
+                )
+                if best is None:
                     continue
-                left_values = left["signature"][left_start : left_start + count]
-                right_values = right["signature"][right_start : right_start + count]
-                left_mean = sum(left_values) / count
-                right_mean = sum(right_values) / count
-                numerator = 0.0
-                left_energy = 0.0
-                right_energy = 0.0
-                for left_value, right_value in zip(left_values, right_values):
-                    left_delta = left_value - left_mean
-                    right_delta = right_value - right_mean
-                    numerator += left_delta * right_delta
-                    left_energy += left_delta * left_delta
-                    right_energy += right_delta * right_delta
-                denominator = math.sqrt(left_energy * right_energy)
-                correlation = numerator / denominator if denominator > 0 else 0.0
-                if best is None or correlation > best[0]:
-                    best = (correlation, lag)
-            if best is not None:
-                correlations.append(
+                best.update(
                     {
-                        "left": left["audio_ordinal"],
-                        "right": right["audio_ordinal"],
-                        "correlation": best[0],
-                        "offset_ms": best[1] * 1000.0 / signature_rate,
+                        "window_start_s": start / signature_rate,
+                        "window_duration_s": (end - start) / signature_rate,
+                        "joint_activity": activity,
                     }
                 )
+                window_results.append(best)
+            if not window_results:
+                continue
+
+            support = find_consistent_content_offset(window_results)
+            representative = (
+                max(support, key=lambda result: result["correlation"])
+                if support
+                else max(window_results, key=lambda result: result["correlation"])
+            )
+            detected_offset_ms = statistics.median(result["offset_ms"] for result in support) if support else None
+            correlations.append(
+                {
+                    "left": left["audio_ordinal"],
+                    "right": right["audio_ordinal"],
+                    "correlation": (
+                        statistics.median(result["correlation"] for result in support)
+                        if support
+                        else representative["correlation"]
+                    ),
+                    "offset_ms": detected_offset_ms if detected_offset_ms is not None else representative["offset_ms"],
+                    "window_start_s": representative["window_start_s"],
+                    "window_duration_s": representative["window_duration_s"],
+                    "analyzed_window_count": len(window_results),
+                    "supporting_window_count": len(support),
+                    "content_offset_detected": bool(support),
+                    "detected_offset_ms": detected_offset_ms,
+                    "supporting_windows": support,
+                    "windows": sorted(window_results, key=lambda result: result["window_start_s"]),
+                }
+            )
     return correlations
 
 
-def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-4):
+def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-4, correlation_focus_times=None):
     format_info, video_streams, audio_streams = analyze_streams(ffprobe, capture_path)
     video_stream = video_streams[0]
     fps_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
@@ -58,8 +213,11 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
     frame_count = packet_coverage["packet_count"]
     target_frame_count = packet_coverage["expected_packets"]
     target_duration = Fraction(target_frame_count, 1) / fps_fraction if fps_fraction > 0 else Fraction(0, 1)
+    format_duration = parse_float(format_info.get("duration"))
     decoded_tracks = [
-        analyze_audio_tail_marker(ffmpeg, capture_path, ordinal, stream_info, threshold)
+        analyze_audio_tail_marker(
+            ffmpeg, capture_path, ordinal, stream_info, threshold, fallback_duration=format_duration
+        )
         for ordinal, stream_info in enumerate(audio_streams)
     ]
     track_reports = []
@@ -98,16 +256,20 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
                 "longest_silence_frames": decoded["longest_silence_samples"],
                 "discontinuities": decoded["discontinuities"],
                 "identical_channel_frames": decoded["identical_channel_frames"],
+                "signature_rate": decoded["signature_rate"],
+                "signature_coverage_seconds": decoded["signature_coverage_seconds"],
+                "signature_complete": decoded["signature_complete"],
             }
         )
     endpoint_durations_identical = not endpoints or all(endpoint == endpoints[0] for endpoint in endpoints[1:])
     all_tracks_exact = all(track["endpoint_exact"] and track["decoder_clean"] for track in track_reports)
-    correlations = analyze_inter_track_correlations(decoded_tracks)
+    correlations = analyze_inter_track_correlations(decoded_tracks, focus_times_s=correlation_focus_times)
+    content_offset_fault = any(item["content_offset_detected"] for item in correlations)
     return {
         "analysis_mode": "exact",
         "authoritative": True,
         "capture": str(capture_path),
-        "container_duration": parse_float(format_info.get("duration")),
+        "container_duration": format_duration,
         "video": {
             "codec": video_stream.get("codec_name", ""),
             "fps": fps_text,
@@ -120,11 +282,14 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
         },
         "tracks": track_reports,
         "correlations": correlations,
+        "inter_track_content_offset_fault": content_offset_fault,
         "endpoint_durations_identical": endpoint_durations_identical,
         "all_tracks_exact": all_tracks_exact,
         "decoder_clean": all(track["decoder_clean"] for track in track_reports),
         "cfr_packet_coverage_exact": packet_coverage["complete"],
-        "passed": all_tracks_exact and endpoint_durations_identical and packet_coverage["complete"],
+        "passed": (
+            all_tracks_exact and endpoint_durations_identical and packet_coverage["complete"] and not content_offset_fault
+        ),
     }
 
 
@@ -165,6 +330,7 @@ def analyze_completed_capture_metadata(ffprobe, capture_path):
         },
         "tracks": tracks,
         "correlations": [],
+        "inter_track_content_offset_fault": None,
         "endpoint_durations_identical": None,
         "all_tracks_exact": None,
         "decoder_clean": None,
@@ -174,9 +340,13 @@ def analyze_completed_capture_metadata(ffprobe, capture_path):
     }
 
 
-def analyze_completed_capture(ffprobe, ffmpeg, capture_path, full_scan, threshold=1e-4):
+def analyze_completed_capture(
+    ffprobe, ffmpeg, capture_path, full_scan, threshold=1e-4, correlation_focus_times=None
+):
     if full_scan:
-        return analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold)
+        return analyze_completed_capture_exact(
+            ffprobe, ffmpeg, capture_path, threshold, correlation_focus_times=correlation_focus_times
+        )
     return analyze_completed_capture_metadata(ffprobe, capture_path)
 
 
@@ -192,6 +362,10 @@ def attach_completed_capture_report(report, completed_capture):
         if "ce_visual_timeline_fault" not in report["verdicts"]:
             report["verdicts"].append("ce_visual_timeline_fault")
         report["faults"]["visual_timeline"] = True
+    if completed_capture.get("inter_track_content_offset_fault"):
+        if "ce_audio_content_sync_fault" not in report["verdicts"]:
+            report["verdicts"].append("ce_audio_content_sync_fault")
+        report["faults"]["audio_content_sync"] = True
     if len(report["verdicts"]) > 1 and "unknown" in report["verdicts"]:
         report["verdicts"].remove("unknown")
 

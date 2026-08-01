@@ -240,6 +240,16 @@
                         isAppAudioSource ? 1 : 0);
                 }
 
+                if (ce::audio::ShouldRestoreSettledSourceBootstrap(
+                        trackBootstrapComplete[track], src.timelineValid, src.isPrimed, src.bootstrapComplete)) {
+                    src.bootstrapComplete = true;
+                    DLL_Log(
+                        "[AudioEpoch] WARNING: restored recording-sticky source bootstrap eligibility "
+                        "src=%zu track=%d timelineValid=1 primed=1 trackBootstrap=1 realBuffered=%zu. "
+                        "This liveness recovery prevents an epoch rejoin from blocking the settled CFR track.",
+                        srcIdx, track, primedSampleCount);
+                }
+
                 trackAllPrimed =
                     trackAllPrimed && ce::audio::IsSourceStartupPrimed(src.isPrimed, src.timelineValid,
                                                                        isAppAudioSource, src.sawSyncPendingPackets);

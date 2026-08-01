@@ -166,6 +166,10 @@ def main():
         except ValueError as exc:
             fail(str(exc))
         if effective_capture:
+            selected_media_log = reports[0].get("paths", {}).get("media_log")
+            correlation_focus_times = extract_audio_correlation_focus_times(
+                read_text_if_exists(Path(selected_media_log)) if selected_media_log else ""
+            )
             attach_completed_capture_report(
                 reports[0],
                 analyze_completed_capture(
@@ -174,6 +178,7 @@ def main():
                     effective_capture,
                     args.full_scan,
                     args.tail_threshold,
+                    correlation_focus_times=correlation_focus_times,
                 ),
             )
         for index, report in enumerate(reports):
@@ -230,7 +235,14 @@ def main():
     tail_results = []
     if args.full_scan or args.waveform_tail_scan or args.max_audio_tail_marker_spread_ms is not None:
         tail_results = [
-            analyze_audio_tail_marker(args.ffmpeg, args.capture, audio_ordinal, stream_info, args.tail_threshold)
+            analyze_audio_tail_marker(
+                args.ffmpeg,
+                args.capture,
+                audio_ordinal,
+                stream_info,
+                args.tail_threshold,
+                fallback_duration=format_duration,
+            )
             for audio_ordinal, stream_info in enumerate(audio_streams)
         ]
     if args.full_scan:
@@ -242,7 +254,12 @@ def main():
             )
             track["frame_start"] = 0.0
             track["frame_end"] = track["decoded_duration"]
-    inter_track_correlations = analyze_inter_track_correlations(tail_results)
+    correlation_focus_times = extract_audio_correlation_focus_times(
+        read_text_if_exists(args.log) if args.log else ""
+    )
+    inter_track_correlations = analyze_inter_track_correlations(
+        tail_results, focus_times_s=correlation_focus_times
+    )
     log_summary = analyze_log(args.log)
 
     video_duration = video_timing["duration"]
@@ -408,7 +425,9 @@ def main():
                 "  a:{ordinal} samples={samples} first_marker_sample={first_marker} last_marker_sample={marker} "
                 "last_marker_time={time} tail_silence={silence} peak={peak:.7f} clipping={clipping} "
                 "silent={silent} longest_silence={longest} discontinuities={discontinuities} "
-                "identical_channel_frames={identical} decoder_rc={returncode} threshold={threshold:g}".format(
+                "identical_channel_frames={identical} signature={signature_rate:.3f}Hz/"
+                "{signature_coverage:.3f}s complete={signature_complete} decoder_rc={returncode} "
+                "threshold={threshold:g}".format(
                     ordinal=result["audio_ordinal"],
                     samples=result["samples"],
                     first_marker=first_marker_text,
@@ -421,6 +440,9 @@ def main():
                     longest=result["longest_silence_samples"],
                     discontinuities=result["discontinuities"],
                     identical=result["identical_channel_frames"],
+                    signature_rate=result["signature_rate"],
+                    signature_coverage=result["signature_coverage_seconds"],
+                    signature_complete=int(result["signature_complete"]),
                     returncode=result["returncode"],
                     threshold=args.tail_threshold,
                 )
@@ -430,11 +452,16 @@ def main():
         print(f"  audio_tail_marker_spread={audio_tail_marker_spread:.6f}")
         for correlation in inter_track_correlations:
             print(
-                "  correlation a:{left}<->a:{right} coefficient={coefficient:.6f} offset={offset:+.3f}ms".format(
+                "  correlation a:{left}<->a:{right} coefficient={coefficient:.6f} offset={offset:+.3f}ms "
+                "window={window:.3f}s support={support}/{analyzed} contentOffsetFault={fault}".format(
                     left=correlation["left"],
                     right=correlation["right"],
                     coefficient=correlation["correlation"],
                     offset=correlation["offset_ms"],
+                    window=correlation["window_start_s"],
+                    support=correlation["supporting_window_count"],
+                    analyzed=correlation["analyzed_window_count"],
+                    fault=int(correlation["content_offset_detected"]),
                 )
             )
         print()
@@ -548,6 +575,25 @@ def main():
                 "expected": "all decoded tracks end at the same exact rational duration",
             }
         )
+        content_offset_faults = [
+            correlation for correlation in inter_track_correlations if correlation["content_offset_detected"]
+        ]
+        checks.append(
+            {
+                "name": "audio_inter_track_content_alignment",
+                "passed": not content_offset_faults,
+                "actual": [
+                    "a:{left}<->a:{right} offset={offset:+.3f}ms support={support}".format(
+                        left=correlation["left"],
+                        right=correlation["right"],
+                        offset=correlation["detected_offset_ms"],
+                        support=correlation["supporting_window_count"],
+                    )
+                    for correlation in content_offset_faults
+                ],
+                "expected": "no repeatable high-confidence shared-content offset >= 20 ms",
+            }
+        )
     if args.decode_check:
         for result in decode_results:
             checks.append(
@@ -591,6 +637,11 @@ def main():
     print(f"  cfr_packet_coverage={'yes' if packet_coverage['complete'] else 'no'}")
     if tail_results:
         print(f"  audio_tail_marker_spread_ms={audio_tail_marker_spread * 1000.0:.3f}")
+        print(
+            "  inter_track_content_offset_fault={value}".format(
+                value="yes" if any(item["content_offset_detected"] for item in inter_track_correlations) else "no"
+            )
+        )
     print(
         "  all_audio_tracks_match_video_length={value}".format(
             value="yes" if math.isclose(video_audio_max_delta, 0.0, abs_tol=1e-3) else "no"

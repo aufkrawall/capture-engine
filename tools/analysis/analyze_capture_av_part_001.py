@@ -94,6 +94,9 @@ LOG_PATTERNS = {
         r"\[PullAudio\] Ingest reservoir deepened", re.IGNORECASE
     ),
     "audio_late_live_source_hold": re.compile(r"\[PullAudio\] Late live source hold", re.IGNORECASE),
+    "audio_epoch_bootstrap_recovery": re.compile(
+        r"\[AudioEpoch\] WARNING: restored recording-sticky source bootstrap eligibility", re.IGNORECASE
+    ),
     "wgc_output_limited": re.compile(r"\[WGC CFR\] (?:Output limited|Encoder cannot sustain target)"),
     "wgc_stop_drain_aborted": re.compile(r"\[EncoderThread\] CFR stop drain aborted"),
     "wgc_fresh_catchup": re.compile(r"\[EncoderThread\] CFR Catchup applied using fresh frame"),
@@ -175,6 +178,7 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_extreme_drift",
     "audio_ingest_starvation",
     "audio_ingest_starvation_resync",
+    "audio_epoch_bootstrap_recovery",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
@@ -442,6 +446,11 @@ ZERO_DRIFT_WARNING_RE = re.compile(
 EXTERNAL_OVERLAY_RE = re.compile(r"\b(Steam|Rockstar|RTSS|ReShade|SpecialK|Streamline|FFX)\b", re.IGNORECASE)
 CRASH_LOG_RE = re.compile(r"\b(CRASH DETECTED|Unhandled exception|Exception Code:|VEH Exception:)\b", re.IGNORECASE)
 LATE_APP_LIVE_JOIN_SRC_RE = re.compile(r"\[AudioLoop\] Late app source live join src=(\d+)", re.IGNORECASE)
+AUDIO_CORRELATION_FOCUS_CURSOR_RE = re.compile(
+    r"\[(?:AudioLoop|AudioEpoch)\] (?:Late app source live join|"
+    r"Capture owner accepted acknowledged transition).*?\btrackCursor=(\d+)",
+    re.IGNORECASE,
+)
 LATE_APP_PRIMED_SRC_RE = re.compile(
     r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms(?:\s+app=([01]))?",
     re.IGNORECASE,
@@ -501,6 +510,7 @@ TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_extreme_drift",
     "audio_ingest_starvation",
     "audio_ingest_starvation_resync",
+    "audio_epoch_bootstrap_recovery",
 }
 
 TRIAGE_VISUAL_FAULT_EVENTS = {

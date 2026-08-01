@@ -104,9 +104,9 @@ public:
         int64_t observedLateStartMs = 0;               // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;                  // True after first packet aligned to recording start
         bool sawCaptureEpoch = false;                  // Activation succeeded even if WASAPI delivered no data
-        bool timelineValid = false;                // True once the source can contribute silence/real audio on timeline
-        bool isPrimed = false;                     // True after source has buffered a startup safety cushion
-        bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
+        bool timelineValid = false;  // Epoch-local: source can contribute silence/real audio on the current timeline
+        bool isPrimed = false;       // Epoch-local: source has buffered the post-activation safety cushion
+        bool bootstrapComplete = false;  // Recording-sticky after startup settles; capture epochs must preserve it
         bool pendingUnderrunRecoveryFade = false;  // Arm fade-in when real audio resumes after padded silence
         bool sawSyncPendingPackets = false;        // App audio arrived before its post-anchor timeline opened
         bool startupRealAudioSeen = false;         // Real audio has been emitted for this source since sync reset
@@ -155,7 +155,7 @@ public:
         bool appAudioBacklogDrainInitialized = false;
         bool appAudioBacklogDrainActive = false;
         uint32_t appAudioBacklogDrainReason =
-            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::SourceBootstrapPending);
         int64_t appAudioBacklogTargetSamples = 0;
         int64_t appAudioBacklogExcessSamples = 0;
         int32_t appAudioBacklogCompensationDelta = 0;

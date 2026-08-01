@@ -500,7 +500,8 @@
         src.pendingUnderrunRecoveryFade = true;
         src.appAudioBacklogDrainInitialized = false;
         src.appAudioBacklogDrainActive = false;
-        src.appAudioBacklogDrainReason = static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+        src.appAudioBacklogDrainReason =
+            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::EpochRejoinPending);
         src.appAudioBacklogTargetSamples = 0;
         src.appAudioBacklogExcessSamples = 0;
         src.appAudioBacklogCompensationDelta = 0;

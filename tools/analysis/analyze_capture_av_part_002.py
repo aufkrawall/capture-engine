@@ -491,7 +491,29 @@ def analyze_audio_decode(ffmpeg, capture_path, audio_ordinal):
     }
 
 
-def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, threshold):
+def compute_audio_signature_stride(
+    sample_rate, stream_info, fallback_duration=0.0, target_rate=250.0, sample_budget=500000
+):
+    if sample_rate <= 0:
+        return 1
+
+    duration = max(parse_float(stream_info.get("duration")), max(0.0, fallback_duration))
+    duration_ts = parse_int(stream_info.get("duration_ts"))
+    time_base = parse_ratio(stream_info.get("time_base"))
+    if duration_ts > 0 and time_base > 0.0:
+        duration = max(duration, duration_ts * time_base)
+
+    rate_stride = max(1, int(math.ceil(sample_rate / max(1.0, target_rate))))
+    estimated_samples = max(0, int(math.ceil(duration * sample_rate)))
+    budget_stride = (
+        max(1, int(math.ceil(estimated_samples / max(1, sample_budget)))) if estimated_samples > 0 else 1
+    )
+    return max(rate_stride, budget_stride)
+
+
+def analyze_audio_tail_marker(
+    ffmpeg, capture_path, audio_ordinal, stream_info, threshold, fallback_duration=0.0
+):
     sample_rate = parse_int(stream_info.get("sample_rate"))
     channels = max(1, parse_int(stream_info.get("channels"), 1))
     if sample_rate <= 0:
@@ -535,9 +557,17 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
     discontinuities = 0
     previous_frame = None
     identical_channel_frames = 0
-    signature = []
-    signature_stride = max(1, sample_rate // 1000)
-    signature_limit = 120000
+    # Preserve a bounded, uniformly sampled RMS-envelope signature across the whole stream.
+    # The envelope survives codec and mix differences far better than picking one aliased raw
+    # sample per interval. The old 1 kHz/120k-point prefix also silently stopped at 120 seconds,
+    # so a later source join/restart could be badly out of sync while only the healthy opening
+    # was correlated. array('f') keeps the full-duration evidence small.
+    signature = array.array("f")
+    signature_stride = compute_audio_signature_stride(sample_rate, stream_info, fallback_duration)
+    signature_limit = 500000
+    signature_truncated = False
+    signature_energy = 0.0
+    signature_energy_frames = 0
     pending = b""
     assert process.stdout is not None
     while True:
@@ -579,10 +609,22 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
                 abs(channel_values[channel] - channel_values[0]) <= 1e-7 for channel in range(1, channels)
             ):
                 identical_channel_frames += 1
-            absolute_sample = total_samples + frame
-            if absolute_sample % signature_stride == 0 and len(signature) < signature_limit:
-                signature.append(sum(channel_values) / channels)
+            signature_energy += sum(value * value for value in channel_values) / channels
+            signature_energy_frames += 1
+            if signature_energy_frames >= signature_stride:
+                if len(signature) < signature_limit:
+                    signature.append(math.sqrt(signature_energy / signature_energy_frames))
+                else:
+                    signature_truncated = True
+                signature_energy = 0.0
+                signature_energy_frames = 0
         total_samples += frames
+
+    if signature_energy_frames > 0:
+        if len(signature) < signature_limit:
+            signature.append(math.sqrt(signature_energy / signature_energy_frames))
+        else:
+            signature_truncated = True
 
     stderr = b""
     if process.stderr is not None:
@@ -614,5 +656,57 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
         "discontinuities": discontinuities,
         "identical_channel_frames": identical_channel_frames,
         "signature_rate": sample_rate / signature_stride,
+        "signature_stride": signature_stride,
+        "signature_complete": not signature_truncated,
+        "signature_coverage_seconds": min(total_samples, len(signature) * signature_stride) / sample_rate,
         "signature": signature,
     }
+
+
+def signature_window_variance(signature, start, end):
+    count = max(0, end - start)
+    if count < 2:
+        return 0.0
+    total = 0.0
+    total_squares = 0.0
+    for index in range(start, end):
+        value = signature[index]
+        total += value
+        total_squares += value * value
+    return max(0.0, (total_squares - (total * total / count)) / count)
+
+
+def normalized_signature_correlation(left, right, start, end, lag, step=1):
+    if lag >= 0:
+        left_start = start
+        right_start = start + lag
+    else:
+        left_start = start - lag
+        right_start = start
+    available = min(end - left_start, end - right_start)
+    if available <= 0:
+        return None
+
+    step = max(1, step)
+    count = (available + step - 1) // step
+    if count < 32:
+        return None
+    left_sum = 0.0
+    right_sum = 0.0
+    left_squares = 0.0
+    right_squares = 0.0
+    products = 0.0
+    for offset in range(0, available, step):
+        left_value = left[left_start + offset]
+        right_value = right[right_start + offset]
+        left_sum += left_value
+        right_sum += right_value
+        left_squares += left_value * left_value
+        right_squares += right_value * right_value
+        products += left_value * right_value
+
+    numerator = products - (left_sum * right_sum / count)
+    left_energy = left_squares - (left_sum * left_sum / count)
+    right_energy = right_squares - (right_sum * right_sum / count)
+    denominator = math.sqrt(max(0.0, left_energy) * max(0.0, right_energy))
+    return numerator / denominator if denominator > 0.0 else None

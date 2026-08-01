@@ -52,6 +52,18 @@ if False:
         assert healthy_report["evidence"]["audio_ingest_starvation"]["destroyed_samples"] == 0
         assert healthy_report["evidence"]["audio_ingest_starvation"]["reservoir_peak_ms"] == 95
 
+        epoch_bootstrap_recovery = make_session(
+            "epoch_bootstrap_recovery",
+            media=(
+                "[AudioEpoch] WARNING: restored recording-sticky source bootstrap eligibility "
+                "src=1 track=1 timelineValid=1 primed=1 trackBootstrap=1 realBuffered=1200. "
+                "This liveness recovery prevents an epoch rejoin from blocking the settled CFR track.\n"
+            ),
+        )
+        recovery_report = classify_session_triage(epoch_bootstrap_recovery)
+        assert "ce_audio_timeline_fault" in recovery_report["verdicts"]
+        assert recovery_report["evidence"]["audio_fault_counts"]["audio_epoch_bootstrap_recovery"] == 1
+
         # Pre-counter logs (such as the original `logs/audiodeath` capture) still expose the
         # failure through the per-source packet-overlap total, so triage of old sessions must
         # not silently pass. Ordinary boundary de-duplication stays below the thresholds.
@@ -458,7 +470,8 @@ if False:
         original_metadata_analyzer = analyzer_globals["analyze_completed_capture_metadata"]
         completed_capture_calls = []
 
-        def fake_exact_analyzer(_ffprobe, _ffmpeg, _capture_path, _threshold):
+        def fake_exact_analyzer(_ffprobe, _ffmpeg, _capture_path, _threshold, correlation_focus_times=None):
+            assert correlation_focus_times is None
             completed_capture_calls.append("exact")
             return {"analysis_mode": "exact"}
 
@@ -498,3 +511,20 @@ if False:
         assert metadata_report["verdicts"] == ["unknown"]
         assert not metadata_report["faults"]["audio_timeline"]
         assert not metadata_report["faults"]["visual_timeline"]
+
+        content_offset_attachment = {
+            "analysis_mode": "exact",
+            "authoritative": True,
+            "all_tracks_exact": True,
+            "endpoint_durations_identical": True,
+            "cfr_packet_coverage_exact": True,
+            "inter_track_content_offset_fault": True,
+        }
+        content_offset_report = {
+            "verdicts": ["unknown"],
+            "faults": {"audio_timeline": False, "visual_timeline": False},
+        }
+        attach_completed_capture_report(content_offset_report, content_offset_attachment)
+        assert content_offset_report["verdicts"] == ["ce_audio_content_sync_fault"]
+        assert content_offset_report["faults"]["audio_content_sync"]
+        assert not content_offset_report["faults"]["audio_timeline"]

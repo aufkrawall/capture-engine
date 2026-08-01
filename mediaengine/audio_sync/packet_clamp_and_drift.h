@@ -163,6 +163,8 @@ enum class CfrAppAudioBacklogDrainReason : uint8_t {
     TimelineRecoveryActive,
     BufferBelowMinimum,
     WithinSlack,
+    SourceBootstrapPending,
+    EpochRejoinPending,
 };
 
 struct CfrAppAudioBacklogDrainDecision {
@@ -194,6 +196,10 @@ inline const char* CfrAppAudioBacklogDrainReasonName(CfrAppAudioBacklogDrainReas
             return "buffer_below_minimum";
         case CfrAppAudioBacklogDrainReason::WithinSlack:
             return "within_slack";
+        case CfrAppAudioBacklogDrainReason::SourceBootstrapPending:
+            return "source_bootstrap_pending";
+        case CfrAppAudioBacklogDrainReason::EpochRejoinPending:
+            return "epoch_rejoin_pending";
     }
     return "unknown";
 }
@@ -361,6 +367,26 @@ inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, 
 
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
     return trackBootstrapComplete || allSourcesPrimed;
+}
+
+struct AudioCaptureEpochReadinessReset {
+    bool timelineValid = false;
+    bool isPrimed = false;
+    bool bootstrapComplete = false;
+};
+
+// Capture epochs own packet-format, resampler, timeline, and priming readiness. Bootstrap
+// settlement belongs to the recording: once a source has joined a settled track, an endpoint
+// or process-loopback reactivation must not make that source a strict startup blocker again.
+inline AudioCaptureEpochReadinessReset ComputeAudioCaptureEpochReadinessReset(bool sourceBootstrapComplete) {
+    return {false, false, sourceBootstrapComplete};
+}
+
+// Defense in depth for persisted/older state or a future reset regression. A settled track
+// cannot legitimately contain a live, primed source that is still marked startup-ineligible.
+inline bool ShouldRestoreSettledSourceBootstrap(bool trackBootstrapComplete, bool sourceTimelineValid,
+                                                 bool sourceIsPrimed, bool sourceBootstrapComplete) {
+    return trackBootstrapComplete && sourceTimelineValid && sourceIsPrimed && !sourceBootstrapComplete;
 }
 
 inline bool ShouldRememberPreStartPacketForAppBootstrap(bool isAppAudioSource, bool firstSourcePacket,

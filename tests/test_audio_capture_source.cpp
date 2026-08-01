@@ -102,6 +102,23 @@ TEST(AudioCaptureSourceTest, EveryCaptureRouteUsesOwnerAcknowledgedEpochRejoin) 
     EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, MidRecordingEpochRejoinCannotClearSettledSourceBootstrap) {
+    const std::string mediaSource = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(mediaSource.empty());
+
+    const size_t transition = mediaSource.find("const bool captureEpochTransition =");
+    const size_t transitionEnd = mediaSource.find("if (packet.captureEpoch != 0)", transition);
+    ASSERT_NE(transition, std::string::npos);
+    ASSERT_NE(transitionEnd, std::string::npos);
+    const std::string transitionBody = mediaSource.substr(transition, transitionEnd - transition);
+    EXPECT_NE(transitionBody.find("ComputeAudioCaptureEpochReadinessReset(src.bootstrapComplete)"),
+              std::string::npos);
+    EXPECT_EQ(transitionBody.find("src.bootstrapComplete = false"), std::string::npos);
+    EXPECT_NE(transitionBody.find("bootstrapPreserved=%d"), std::string::npos);
+    EXPECT_NE(mediaSource.find("ShouldRestoreSettledSourceBootstrap("), std::string::npos);
+    EXPECT_NE(mediaSource.find("EpochRejoinPending"), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, InitialProcessLoopbackEpochMarkerSurvivesUntilWorkerConsumption) {
     const std::string source = ReadSource("app_audio_capture.cpp");
     ASSERT_FALSE(source.empty());

@@ -181,9 +181,11 @@
                         sourceTimestamps[srcIdx] = 0;
                         sourceLastPackets[srcIdx] = {};
                         deferredFirstTimelinePacketValid[srcIdx] = false;
-                        src.timelineValid = false;
-                        src.isPrimed = false;
-                        src.bootstrapComplete = false;
+                        const auto epochReadiness =
+                            ce::audio::ComputeAudioCaptureEpochReadinessReset(src.bootstrapComplete);
+                        src.timelineValid = epochReadiness.timelineValid;
+                        src.isPrimed = epochReadiness.isPrimed;
+                        src.bootstrapComplete = epochReadiness.bootstrapComplete;
                         src.sawSyncPendingPackets = false;
                         src.startupRealAudioSeen = false;
                         src.startupSyntheticRingSamples = 0;
@@ -192,14 +194,15 @@
                         DLL_Log(
                             "[AudioEpoch] Capture owner accepted acknowledged transition src=%zu track=%d type=%d "
                             "process=%s epoch=%llu->%llu requested=%llu acknowledged=%llu trackCursor=%lld "
-                            "sourceCursor=%llu; capture state reset for live rejoin",
+                            "sourceCursor=%llu bootstrapPreserved=%d; epoch-local capture state reset for live rejoin",
                             srcIdx, src.track, static_cast<int>(src.sourceType),
                             src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
                             static_cast<unsigned long long>(previousCaptureEpoch),
                             static_cast<unsigned long long>(packet.captureEpoch),
                             static_cast<unsigned long long>(requested), static_cast<unsigned long long>(acknowledged),
                             static_cast<long long>(trackTimelineSamples[src.track]),
-                            static_cast<unsigned long long>(src.qpcAlignedWrittenSamples));
+                            static_cast<unsigned long long>(src.qpcAlignedWrittenSamples),
+                            src.bootstrapComplete ? 1 : 0);
                     }
                     if (packet.captureEpoch != 0) {
                         sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
