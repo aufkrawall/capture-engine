@@ -220,4 +220,3 @@ static void UnloadFSRRuntimeSerialized(const char* reason);
 #include "dx12_fg_switch_streamline.inl"
 #include "dx12_fg_switch_swapchain.inl"
 #include "dx12_fg_switch_upscale.inl"
-

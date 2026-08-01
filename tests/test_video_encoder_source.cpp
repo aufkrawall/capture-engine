@@ -613,4 +613,3 @@ TEST(VideoEncoderSourceTest, ForcedSdrPackedHdr10OverlayGreenRemainsColoredAndOp
     EXPECT_NEAR(static_cast<int>((packed >> 20) & 0x3ff), 4, 2);
     EXPECT_EQ(packed >> 30, 3u);
 }
-

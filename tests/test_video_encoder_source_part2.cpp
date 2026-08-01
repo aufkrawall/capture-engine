@@ -326,4 +326,3 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
     EXPECT_EQ(chromaOutput[1], kNeutralCr);
     context->Unmap(stagingTexture.get(), 0);
 }
-

@@ -745,4 +745,3 @@ TEST(OverlayCompatTest, UsableSameProcessForegroundWindowIsAcceptedAfterResumeSe
     EXPECT_FALSE(ce::overlay_compat::IsUsableSameProcessForegroundWindow(reinterpret_cast<HWND>(1),
                                                                          GetCurrentProcessId(), &width, &height));
 }
-

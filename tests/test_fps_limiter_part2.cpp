@@ -156,4 +156,3 @@ TEST_F(FpsLimiterTest, FreezeWatchdogKeepsRuntimePresentationMonitoredInBackgrou
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, true, false, false));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(true, false, false, false));
 }
-

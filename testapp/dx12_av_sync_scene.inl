@@ -165,4 +165,3 @@ void RenderFrame() {
     }
     ++g_FrameId;
 }
-

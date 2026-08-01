@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 aufkrawall
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 import os
 import tempfile
 import unittest

@@ -414,31 +414,3 @@
 // Streamline FG ON while the latch is set is a warm resume of a continuously-
 // live path.
 // ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -615,4 +615,3 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     testapp::LogFlush();
     return ok;
 }
-

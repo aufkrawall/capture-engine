@@ -372,4 +372,3 @@ TEST(AudioSyncUtilsTest, StarvedSourceResyncIsLastResortOnly) {
     // Only when the reservoir is exhausted and a live source is still fully starved.
     EXPECT_TRUE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, true, 5000, deficit));
 }
-

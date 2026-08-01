@@ -188,11 +188,7 @@ bool ShouldInjectChild(const char *exePath) {
   for (int i = 0; skipList[i] != nullptr; i++) {
     std::string_view entry(skipList[i]);
     // Exact-match .exe filenames; substring-match generic terms (vc_redist, setup, install)
-    if (entry.size() >= 4 &&
-        (entry[entry.size() - 4] == '.' || entry[entry.size() - 4] == '.') &&
-        (entry[entry.size() - 3] == 'e' || entry[entry.size() - 3] == 'E') &&
-        (entry[entry.size() - 2] == 'x' || entry[entry.size() - 2] == 'X') &&
-        (entry[entry.size() - 1] == 'e' || entry[entry.size() - 1] == 'E')) {
+    if (entry.ends_with(".exe")) {
       if (lowerName == entry) {
         return false;
       }

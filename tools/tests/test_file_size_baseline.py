@@ -8,6 +8,10 @@ grow, a previously compliant file may not cross the ceiling, and a file that
 drops back under it is removed so the space cannot be silently reclaimed.
 """
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 import json
 import tempfile
 import unittest

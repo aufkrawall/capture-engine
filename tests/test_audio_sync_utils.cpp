@@ -774,4 +774,3 @@ TEST(AudioSyncUtilsTest, TimelineGapClampBoundsOversizedGapToRingCapacity) {
     // The crash value: ~2 trillion samples (~497 days) -> clamped to ring capacity.
     EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(2061584303294LL, ringCapacitySamples), ringCapacitySamples);
 }
-

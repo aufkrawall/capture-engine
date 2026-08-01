@@ -729,4 +729,3 @@ TEST_F(ConfigTest, ParseNumberedAudioSections) {
     EXPECT_TRUE(foundSpeakers);
     EXPECT_TRUE(foundHeadphones);
 }
-

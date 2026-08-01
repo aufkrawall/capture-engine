@@ -419,4 +419,3 @@ static void Cleanup() {
     }
     g_FrameLatencyWaitHandle = nullptr;
 }
-

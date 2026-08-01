@@ -323,4 +323,3 @@ bool InitDX12(HWND hwnd) {
         g_TearingActive ? 1 : 0);
     return true;
 }
-

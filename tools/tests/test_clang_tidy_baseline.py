@@ -7,6 +7,10 @@ scope record existed it folded those lower counts into the baseline; the next fu
 run then failed with ~21 phantom "regressions" and needed a manual git checkout.
 """
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 import json
 import sys
 import tempfile

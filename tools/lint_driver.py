@@ -1,5 +1,9 @@
 """Lint-stage orchestration kept outside the already oversized build.py."""
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 from __future__ import annotations
 
 import json

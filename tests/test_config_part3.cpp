@@ -447,4 +447,3 @@ TEST_F(WhitelistEntryTest, OverlayWhitelistEntries) {
         EXPECT_EQ(config.overlayWhitelist[1].mode, MatchMode::kTitleExecutable);
     }
 }
-

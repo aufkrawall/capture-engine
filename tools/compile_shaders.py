@@ -356,7 +356,7 @@ def main():
         part.append("")
         part.append(format_array(name, data))
         with open(os.path.join(part_dir, part_file), "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(part))
+            f.write("\n".join(part).rstrip("\n") + "\n")
 
     umbrella = list(banner)
     umbrella.append("#pragma once")
@@ -365,7 +365,7 @@ def main():
     umbrella.append("")
     out_path = os.path.join(common_dir, "overlay_shader_bytecode.h")
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(umbrella))
+        f.write("\n".join(umbrella).rstrip("\n") + "\n")
 
     print(f"Written to {out_path} and {len(part_files)} shader header(s) in {part_dir}", file=sys.stderr)
 

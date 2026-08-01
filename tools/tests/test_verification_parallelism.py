@@ -1,5 +1,9 @@
 """Policy tests for isolated and parallel sanitizer verification."""
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 import json
 import os
 import tempfile

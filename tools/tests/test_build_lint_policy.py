@@ -5,6 +5,10 @@ Covers the clang-tidy header filters and the compilation database that the
 lint ratchets are measured over.
 """
 
+# build.py executes its fragments via exec, so its module attributes exist only
+# at runtime; pyright cannot see them through the facade.
+# pyright: reportAttributeAccessIssue=false
+
 import json
 import re
 import tempfile
@@ -35,8 +39,10 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
         config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
         include = re.search(r"^HeaderFilterRegex:\s*'(.+)'\s*$", config, re.MULTILINE)
         exclude = re.search(r"^ExcludeHeaderFilterRegex:\s*'(.+)'\s*$", config, re.MULTILINE)
-        self.assertIsNotNone(include)
-        self.assertIsNotNone(exclude)
+        if include is None:
+            self.fail("HeaderFilterRegex not found in .clang-tidy")
+        if exclude is None:
+            self.fail("ExcludeHeaderFilterRegex not found in .clang-tidy")
         include_re = re.compile(include.group(1))
         exclude_re = re.compile(exclude.group(1))
 

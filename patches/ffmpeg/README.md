@@ -29,6 +29,13 @@ early Duration metadata, track default-duration bounds, and cluster limits in
 the same exact timebase. Cluster rollover observes SimpleBlock's signed 16-bit
 relative-timecode range at sub-millisecond precision.
 
+The finer TimecodeScale also caps the maximum cluster span: SimpleBlock
+relative timecodes are signed 16-bit values in TimecodeScale units, so at 1 µs a
+cluster must roll over at `INT16_MAX` ticks (~32.8 ms) regardless of
+`cluster_time_limit` (the normal 5 s default is clamped to that span). This adds
+a small per-cluster overhead (~30 clusters/s at typical frame rates) and is the
+format cost of sub-millisecond PTS precision.
+
 **Usage (FFmpeg CLI):**
 ```
 ffmpeg -i input -c:v copy -timestamp_precision 1000 output.mkv
