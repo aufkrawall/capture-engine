@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <cmath>
 
 #include "cfr_startup.h"
 
@@ -35,8 +36,19 @@ inline bool IsWgcCaptureLimitedForOverlay(uint32_t captureHealthFlags) {
     return (captureHealthFlags & captureLimitedFlags) != 0;
 }
 
-inline uint32_t SelectWgcOverlayWarningKind(uint32_t overloadFlags, uint32_t captureHealthFlags) {
-    if (IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+inline uint32_t SelectWgcOverlayWarningKind(uint32_t overloadFlags, uint32_t captureHealthFlags,
+                                            uint32_t recordingHealthFlags = 0) {
+    if ((recordingHealthFlags & kRecordingHealthFlagRecovering) != 0) {
+        return kOverlayWarningRecordingRecovering;
+    }
+
+    if ((recordingHealthFlags & kRecordingHealthFlagVideoDegraded) != 0) {
+        return kOverlayWarningRecordingDegraded;
+    }
+
+    const bool encoderCauseObserved =
+        (recordingHealthFlags & kRecordingHealthFlagEncoderPressureObserved) != 0;
+    if (IsWgcCaptureLimitedForOverlay(captureHealthFlags) && !encoderCauseObserved) {
         return kOverlayWarningNone;
     }
 
@@ -54,7 +66,7 @@ inline uint32_t GetEncoderBudgetUtilizationPermille(double encodeMs, double fram
 
     const double utilizationPermille = (encodeMs * 1000.0) / frameIntervalMs;
     const double clampedPermille = std::clamp(utilizationPermille, 0.0, 1000000.0);
-    return static_cast<uint32_t>(clampedPermille + 0.5);
+    return static_cast<uint32_t>(std::lround(clampedPermille));
 }
 
 inline bool IsEncoderTooSlowForTargetFps(double encodeMs, double frameIntervalMs, uint32_t targetFps,

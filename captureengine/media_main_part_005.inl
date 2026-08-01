@@ -436,6 +436,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     }
 
     double smoothedEncodeMs = 0.0;
+    ce::capture_policy::RecordingHealthState recordingHealthState;
     double smoothedWgcFreshServiceMs = 0.0;
     double smoothedWgcRepeatServiceMs = 0.0;
     uint32_t wgcFreshServiceSamples = 0;

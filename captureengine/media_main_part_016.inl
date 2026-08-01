@@ -436,6 +436,43 @@
             state.wgcCaptureHealthFlags.store(wgcCaptureHealthFlags, std::memory_order_relaxed);
             state.wgcCaptureHealthFps.store(wgcRecentInputMin250Fps, std::memory_order_relaxed);
 
+            const bool rawRecordingEncoderPressure =
+                g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+                (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
+                smoothedEncodeMs >= frameIntervalMs;
+            const bool recordingMuxPressure =
+                (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0;
+            const uint32_t recordingDebtMs = SaturatingToUint32(
+                static_cast<uint64_t>(std::max(0.0, std::ceil(shortfallDurationMs))));
+            const uint64_t recordingHealthNow = GetTickCount64();
+            const bool startupPressureOnly =
+                ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick,
+                                                            recordingHealthNow) &&
+                recordingDebtMs < ce::capture_policy::kRecordingHealthCausalDebtMs;
+            const ce::capture_policy::RecordingHealthObservation recordingHealthObservation = {
+                recordingOutputLive, !config.video.useVFR,
+                rawRecordingEncoderPressure && !startupPressureOnly, recordingMuxPressure, recordingDebtMs};
+            const uint32_t previousRecordingHealthFlags = recordingHealthState.flags;
+            recordingHealthState =
+                ce::capture_policy::UpdateRecordingHealth(recordingHealthState, recordingHealthObservation);
+            PublishRecordingHealth(recordingHealthState);
+            constexpr uint32_t recordingHealthTransitionMask =
+                ce::capture_policy::kRecordingHealthCauseMask |
+                ce::capture_policy::kRecordingHealthFlagRecovering |
+                ce::capture_policy::kRecordingHealthFlagVideoDegraded |
+                ce::capture_policy::kRecordingHealthFlagSevere;
+            if (((previousRecordingHealthFlags ^ recordingHealthState.flags) & recordingHealthTransitionMask) != 0) {
+                LogWarn(
+                    "[RECORDING CAPACITY] status=%s cause=%s flags=0x%X debtMs=%u peakDebtMs=%u capacityDebtMs=%u "
+                    "target=%ufps sustain=%.1ffps encode=%.2fms budget=%.2fms overload=0x%X "
+                    "sourceHealth=0x%X settingsChanged=0 policy=observe_and_preserve_cfr_audio",
+                    ce::capture_policy::GetRecordingHealthStatus(recordingHealthState.flags),
+                    ce::capture_policy::GetRecordingHealthCause(recordingHealthState.flags),
+                    recordingHealthState.flags, recordingHealthState.currentDebtMs, recordingHealthState.peakDebtMs,
+                    recordingHealthState.capacityAttributedDebtMs, outputFps, sustainableOutputFps,
+                    smoothedEncodeMs, frameIntervalMs, overloadFlags, wgcCaptureHealthFlags);
+            }
+
             // Flush the in-progress hold run into the histogram before logging,
             // but preserve the running count so it continues into the next interval.
             const uint32_t savedHoldTicks = cadenceCounters.holdTicksRunning;

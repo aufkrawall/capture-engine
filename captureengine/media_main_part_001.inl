@@ -40,6 +40,7 @@
 #include "../common/thread_wait.h"
 #include "capture_cadence_diagnostics.h"
 #include "mediaengine_loader.h"
+#include "recording_manifest.h"
 #include "screen_grab_privacy_runtime.h"
 #include "wgc_capture.h"
 #include "windows_gpu_scheduling.h"
@@ -60,6 +61,11 @@ static std::atomic<bool> g_RecordingUsesVfr{false};
 static std::atomic<bool> g_DrainOutstandingCfrTicks{false};
 static std::atomic<bool> g_PrivacyFailClosedStopRequested{false};
 static std::atomic<int64_t> g_CfrDrainStopQpc{0};
+static std::atomic<uint32_t> g_RecordingHealthFlags{0};
+static std::atomic<uint32_t> g_RecordingTimelineDebtMs{0};
+static std::atomic<uint32_t> g_RecordingPeakTimelineDebtMs{0};
+static std::atomic<uint32_t> g_RecordingCapacityAttributedDebtMs{0};
+static std::string g_RecordingManifestLogPath;
 
 BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
     // Handle all console events including Windows shutdown/logoff

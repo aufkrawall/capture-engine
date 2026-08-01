@@ -37,6 +37,22 @@ def print_triage_report(report):
     if len(backend_history) > 1:
         print(f"  screen_capture_backend_history={'->'.join(backend_history)}")
     print(f"  exported_av_sync_ok={int(evidence.get('exported_av_sync_ok', False))}")
+    recording_health = evidence.get("recording_health", {})
+    if recording_health and recording_health.get("status", "unknown") != "unknown":
+        print(
+            "  recording_health status={status} cause={cause} flags=0x{flags:X} "
+            "debt_ms={current}/{peak} capacity_debt_ms={capacity} "
+            "settings_changed={settings} inferred={inferred}".format(
+                status=recording_health.get("status", "unknown"),
+                cause=recording_health.get("cause", "none"),
+                flags=recording_health.get("flags", 0),
+                current=recording_health.get("current_debt_ms", 0),
+                peak=recording_health.get("peak_debt_ms", 0),
+                capacity=recording_health.get("capacity_attributed_debt_ms", -1),
+                settings=recording_health.get("settings_changed", 0),
+                inferred=int(recording_health.get("inferred_from_legacy_evidence", False)),
+            )
+        )
     print(
         "  max_present_gap_ms={gap:.3f} source={source}".format(
             gap=evidence["max_present_gap_ms"], source=evidence.get("present_gap_source", "hook_logs")
@@ -209,6 +225,15 @@ def print_triage_report(report):
         )
     if report["evidence"]["crash_events"]:
         print(f"  crash_events={len(report['evidence']['crash_events'])}")
+    finalization = evidence.get("recording_finalization", {})
+    if finalization.get("complete"):
+        print(
+            "  recording_finalization status={status} output_saved={saved} failed={failed}".format(
+                status=finalization.get("status", "unknown"),
+                saved=finalization.get("output_saved"),
+                failed=int(finalization.get("failed", False)),
+            )
+        )
     if evidence["zero_drift_warnings"]:
         worst_residual = max(abs(item["residual_samples"]) for item in evidence["zero_drift_warnings"])
         print(f"  zero_drift_warnings={len(evidence['zero_drift_warnings'])} worst_residual_samples={worst_residual}")

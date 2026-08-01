@@ -174,7 +174,7 @@ static bool RequestChildRecordingStop(ProcessIPCClient* client, const char* chil
     return true;
 }
 
-static void RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
+static bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
     // Ask media first. It acknowledges before finalization, so controller UI work
     // does not wait for trailer writing or the post-mux probe. Media clears the
     // hook-facing shared state before acknowledging. The inject command is only a
@@ -192,6 +192,7 @@ static void RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeou
     if (g_MediaClient)
         g_MediaClient->Disconnect();
     CloseProcessHandle(g_hMediaProcess);
+    return stopAccepted;
 }
 
 void CheckRecordingFailureState() {
@@ -227,6 +228,11 @@ void ToggleRecording() {
 
     if (g_Recording) {
         PrepareRecordingDiagnosticIdentity();
+        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
+            shm->runtimeState.notificationExpiry.store(0, std::memory_order_release);
+            shm->runtimeState.notificationType.store(static_cast<uint32_t>(OverlayNotificationType::None),
+                                                     std::memory_order_release);
+        });
         PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
         LogInfo("[Controller] Starting recording...");
 
@@ -278,17 +284,20 @@ void ToggleRecording() {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
         WithInjectSharedMem([&](SharedMemoryLayout* shm) {
             shm->runtimeState.notificationType.store(
-                static_cast<uint32_t>(OverlayNotificationType::RecordingStopped), std::memory_order_release);
-            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
+                static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing), std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 60000ULL, std::memory_order_release);
         });
         if (g_PseudoOverlay) {
-            g_PseudoOverlay->ShowRecordingStoppedNotification();
+            g_PseudoOverlay->ShowRecordingFinalizingNotification();
         }
         LogInfo("[Controller] Stopping recording...");
 
-        RequestRecordingStopAndReleaseMedia("record hotkey", 5000);
-
-        LogInfo("[Controller] Recording stopped");
+        const bool stopAccepted = RequestRecordingStopAndReleaseMedia("record hotkey", 5000);
+        if (stopAccepted) {
+            LogInfo("[Controller] Recording stop accepted; media finalization continues asynchronously");
+        } else {
+            LogWarn("[Controller] Recording stop state cleared, but media finalization acceptance is unknown");
+        }
     }
 
     if (g_Tray)
@@ -301,6 +310,11 @@ void ToggleAudioOnlyRecording() {
 
     if (g_Recording) {
         PrepareRecordingDiagnosticIdentity();
+        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
+            shm->runtimeState.notificationExpiry.store(0, std::memory_order_release);
+            shm->runtimeState.notificationType.store(static_cast<uint32_t>(OverlayNotificationType::None),
+                                                     std::memory_order_release);
+        });
         const bool audioOnlySet =
             PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only hotkey");
         LogInfo("[Controller] Starting audio-only recording...");
@@ -352,17 +366,20 @@ void ToggleAudioOnlyRecording() {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
         WithInjectSharedMem([&](SharedMemoryLayout* shm) {
             shm->runtimeState.notificationType.store(
-                static_cast<uint32_t>(OverlayNotificationType::RecordingStopped), std::memory_order_release);
-            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
+                static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing), std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 60000ULL, std::memory_order_release);
         });
         if (g_PseudoOverlay) {
-            g_PseudoOverlay->ShowRecordingStoppedNotification();
+            g_PseudoOverlay->ShowRecordingFinalizingNotification();
         }
         LogInfo("[Controller] Stopping audio-only recording...");
 
-        RequestRecordingStopAndReleaseMedia("audio-only hotkey", 5000);
-
-        LogInfo("[Controller] Audio-only recording stopped");
+        const bool stopAccepted = RequestRecordingStopAndReleaseMedia("audio-only hotkey", 5000);
+        if (stopAccepted) {
+            LogInfo("[Controller] Audio-only recording stop accepted; media finalization continues asynchronously");
+        } else {
+            LogWarn("[Controller] Audio-only stop state cleared, but media finalization acceptance is unknown");
+        }
     }
 
     if (g_Tray)

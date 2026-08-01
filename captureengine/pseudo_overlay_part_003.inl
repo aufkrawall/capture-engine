@@ -126,7 +126,8 @@ void PseudoOverlay::ShutdownOnUiThread() {
     lastOv_ = {};
     lastCol_ = 0;
     lastWarnVis_ = false;
-    recordingStopNotifyUntil_.store(0, std::memory_order_relaxed);
+    recordingNotifyUntil_.store(0, std::memory_order_relaxed);
+    recordingNotification_.store(ce::pseudo_overlay::RecordingNotificationKind::None, std::memory_order_relaxed);
     lastWarnMsg_.clear();
     warnActive_ = false;
     warnVisible_ = false;
@@ -136,6 +137,7 @@ void PseudoOverlay::ShutdownOnUiThread() {
     lastEncoderOverloadFlags_ = 0;
     lastCaptureHealthFlags_ = 0;
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
+    overloadWarnKind_.store(ce::capture_policy::kOverlayWarningNone, std::memory_order_relaxed);
     lastOverlaySuppressed_ = false;
     lastFullscreenSuppressed_ = false;
     stickyAnchorWindow_ = NULL;
@@ -228,6 +230,13 @@ void PseudoOverlay::ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const s
 
 void PseudoOverlay::SetRecordingStartIntent(RecordingStartIntent intent) {
     requestedStartIntent_.store(intent, std::memory_order_release);
+    if (intent != RecordingStartIntent::Idle) {
+        recordingNotifyUntil_.store(0, std::memory_order_relaxed);
+        recordingNotification_.store(ce::pseudo_overlay::RecordingNotificationKind::None,
+                                     std::memory_order_relaxed);
+        overloadWarnUntil_.store(0, std::memory_order_relaxed);
+        overloadWarnKind_.store(ce::capture_policy::kOverlayWarningNone, std::memory_order_relaxed);
+    }
     PostRefresh();
 }
 
@@ -259,7 +268,8 @@ void PseudoOverlay::PostRefresh() {
     }
 }
 
-void PseudoOverlay::TriggerEncoderOverloadWarning(uint32_t sustainFpsX100) {
+void PseudoOverlay::TriggerRecordingHealthWarning(uint32_t warningKind, uint32_t sustainFpsX100) {
+    overloadWarnKind_.store(warningKind, std::memory_order_relaxed);
     overloadWarnSustainFpsX100_.store(sustainFpsX100, std::memory_order_relaxed);
     overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
     PostRefresh();
@@ -286,8 +296,10 @@ void PseudoOverlay::EndScreenshotCapture() {
     LogDebug("[PseudoOverlay] Screenshot capture ended, overlay restore requested");
 }
 
-void PseudoOverlay::ShowRecordingStoppedNotification() {
-    recordingStopNotifyUntil_.store(GetTickCount64() + 2000ULL);
+void PseudoOverlay::ShowRecordingFinalizingNotification() {
+    recordingNotification_.store(ce::pseudo_overlay::RecordingNotificationKind::Finalizing,
+                                 std::memory_order_relaxed);
+    recordingNotifyUntil_.store(GetTickCount64() + 60000ULL);
     PostRefresh();
 }
 

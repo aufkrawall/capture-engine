@@ -1,9 +1,10 @@
 # NVENC Encoding Policy and FFmpeg Patches
 
-Last cross-checked: 2026-07-21
+Last cross-checked: 2026-08-01
 
 Primary sources:
 - `common/config.{h,cpp}`
+- `common/capture_policy/recording_health.h`
 - `captureengine/config.ini.template`
 - `mediaengine/video_encoder.{h,cpp}`
 - `mediaengine/video_encoder_options.{h,cpp}`
@@ -12,6 +13,7 @@ Primary sources:
 - `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`
 - `tests/test_{config,video_encoder_options,video_encoder_source}.cpp`
+- `tests/test_recording_health.cpp`
 - `tools/tests/test_ffmpeg_patch_utils.py`
 - NVIDIA developer forum: `https://forums.developer.nvidia.com/t/ffmpeg-av1-nvenc-encoder-sometimes-generates-undecodeable-bitstreams/364011`
 
@@ -29,6 +31,25 @@ CFR repeats always re-encode cached pixel content. A compressed packet is a
 reference-dependent bitstream unit and must never be cloned with rewritten PTS
 or DTS, even for H.264/HEVC. Packet replay can corrupt reference state, keyframe
 semantics, decoder timing, or codec-specific headers.
+
+## Capacity health and user authority
+
+CaptureEngine never silently lowers preset, resolution, frame rate, bit depth,
+lookahead, rate control, or another encoder setting when NVENC cannot sustain the
+requested CFR rate. The user-selected settings remain authoritative. The CFR
+pipeline preserves contiguous packets and exact audio endpoints with repeats and
+bounded immutable-grid recovery; missing unique pixels are an unavoidable video
+quality consequence when physical encode throughput remains below target.
+
+Recording health observes sustained encoder/mux pressure together with exact CFR
+timeline debt and latches the historical cause/degraded result. Thus a later GPU
+clock recovery clears the current overload/recovery state but cannot relabel an
+already damaged recording as healthy. Runtime warnings, the final manifest, and
+the analyzer expose that result with `encoder_settings_changed=0`. Direct GPU
+clock telemetry is intentionally not required: there is no stable cross-vendor
+contract, while measured end-to-end encoder capacity and timeline debt describe
+the capture-relevant failure regardless of whether clocks, thermals, contention,
+drivers, or another system condition caused it.
 
 ## Configuration semantics
 

@@ -375,8 +375,8 @@ mode=2
 ; has no effect unless always_render is true.
 always_render=false
 always_render_only_when_game=false
-; Shows ENCODER OVERLOADED while a recording cannot be encoded quickly enough.
-show_encoder_overload_warnings=false
+; Shows live encoder-capacity, recovery, and video-degraded recording warnings.
+show_encoder_overload_warnings=true
 ; After focus changes, wait this many milliseconds for the intended window before
 ; deciding whether to show NOT RECORDING. Valid range: 0-10000.
 foreground_acquire_grace_ms=2000

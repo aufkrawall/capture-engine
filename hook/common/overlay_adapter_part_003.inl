@@ -7,7 +7,9 @@
 
             if (frameLayout.showOverloadWarning) {
                 const std::string overloadLabel =
-                    FormatEncoderOverloadLabel(frameLayout.recordingSustainFpsX100, frameLayout.recordingTargetFps);
+                    FormatRecordingHealthLabel(frameLayout.recordingWarningKind,
+                                               frameLayout.recordingSustainFpsX100,
+                                               frameLayout.recordingTargetFps);
                 std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
                               overloadLabel.c_str());
                 renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);

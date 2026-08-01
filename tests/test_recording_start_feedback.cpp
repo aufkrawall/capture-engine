@@ -101,18 +101,24 @@ TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulCont
     EXPECT_LT(start, reserveForRecording);
 }
 
-TEST(RecordingStartFeedbackSourceTest, RecordingStoppedEnumExists) {
+TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationEnumsDistinguishAcceptanceFromCompletion) {
     // shared_defs.h is an umbrella over common/shared_defs_detail/; the overlay
     // notification enum lives in the constants/config part.
     const std::string source = ReadSource("common/shared_defs_detail/abi_constants_and_config.h");
     ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("RecordingStopped = 3"), std::string::npos);
+    EXPECT_NE(source.find("RecordingFinalizing = 3"), std::string::npos);
+    EXPECT_NE(source.find("RecordingSaved = 4"), std::string::npos);
+    EXPECT_NE(source.find("RecordingSavedDegraded = 5"), std::string::npos);
+    EXPECT_NE(source.find("RecordingFailed = 7"), std::string::npos);
 }
 
-TEST(RecordingStartFeedbackSourceTest, RecordingStoppedTextInInjectOverlay) {
+TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay) {
     const std::string source = ReadSource("hook/common/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("\"Recording stopped\""), std::string::npos);
+    EXPECT_NE(source.find("\"Finalizing recording...\""), std::string::npos);
+    EXPECT_NE(source.find("\"Recording saved\""), std::string::npos);
+    EXPECT_NE(source.find("\"Recording saved - video degraded\""), std::string::npos);
+    EXPECT_NE(source.find("\"Recording failed\""), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
@@ -120,7 +126,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
     ASSERT_FALSE(source.empty());
     const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
     ASSERT_NE(stopLine, std::string::npos);
-    const size_t notifCall = source.find("ShowRecordingStoppedNotification()", stopLine);
+    const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
     EXPECT_NE(notifCall, std::string::npos);
 }
 
@@ -129,8 +135,40 @@ TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
     ASSERT_FALSE(source.empty());
     const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"audio-only stop hotkey\")");
     ASSERT_NE(stopLine, std::string::npos);
-    const size_t notifCall = source.find("ShowRecordingStoppedNotification()", stopLine);
+    const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
     EXPECT_NE(notifCall, std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinalization) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t stop = source.find("MediaEngine_StopRecording(cancelBeforeLive)");
+    const size_t complete = source.find("CompleteRecordingFinalization(cancelBeforeLive, outputSaved)", stop);
+    ASSERT_NE(stop, std::string::npos);
+    ASSERT_NE(complete, std::string::npos);
+    EXPECT_LT(stop, complete);
+    EXPECT_NE(source.find("OverlayNotificationType::RecordingSavedDegraded"), std::string::npos);
+    EXPECT_NE(source.find("OverlayNotificationType::RecordingFailed"), std::string::npos);
+    EXPECT_NE(source.find("outputSaved=%d"), std::string::npos);
+    EXPECT_NE(source.find("finalizationComplete=1"), std::string::npos);
+
+    const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
+    ASSERT_FALSE(overlay.empty());
+    EXPECT_NE(overlay.find("recordingFinalizationNotification"), std::string::npos);
+    EXPECT_NE(overlay.find("recordingState == ce::recording_indicator::State::Idle"), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {
+    const std::string api = ReadSource("mediaengine/mediaengine.h");
+    const std::string loader = ReadSource("captureengine/mediaengine_loader.h");
+    const std::string encoder = ReadSource("mediaengine/video_encoder.h");
+    ASSERT_FALSE(api.empty());
+    ASSERT_FALSE(loader.empty());
+    ASSERT_FALSE(encoder.empty());
+
+    EXPECT_NE(api.find("MEDIAENGINE_API bool MediaEngine_StopRecording"), std::string::npos);
+    EXPECT_NE(loader.find("typedef bool (*MediaEngine_StopRecording_t)"), std::string::npos);
+    EXPECT_NE(encoder.find("WasLastOutputPublished() const"), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAndPseudoOwnsUiThread) {

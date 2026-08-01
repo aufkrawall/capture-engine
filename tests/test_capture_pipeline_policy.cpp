@@ -742,22 +742,3 @@ TEST(CapturePipelinePolicyTest, AdaptiveEncoderGpuPriorityUsesBudgetHysteresis) 
     EXPECT_FALSE(policy::IsAdaptiveEncoderGpuPriorityPressureActive(5.9, 8.0, false));
     EXPECT_FALSE(policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(4.0, 8.0, true));
 }
-
-TEST(CapturePipelinePolicyTest, WgcOverlayWarningSuppressesEncoderPressureWhenSourceLimited) {
-    EXPECT_FALSE(policy::IsWgcCaptureLimitedForOverlay(0));
-    EXPECT_TRUE(policy::IsWgcCaptureLimitedForOverlay(policy::kWgcCaptureHealthFlagSourceStarved));
-    EXPECT_TRUE(policy::IsWgcCaptureLimitedForOverlay(policy::kWgcCaptureHealthFlagSchedulerLimited));
-
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0, 0), policy::kOverlayWarningNone);
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder, 0),
-              policy::kOverlayWarningEncoderOverload);
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagMux, 0), policy::kOverlayWarningNone);
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder,
-                                                  policy::kWgcCaptureHealthFlagSourceStarved),
-              policy::kOverlayWarningNone);
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder,
-                                                  policy::kWgcCaptureHealthFlagSchedulerLimited),
-              policy::kOverlayWarningNone);
-    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0, policy::kWgcCaptureHealthFlagSourceStarved),
-              policy::kOverlayWarningNone);
-}

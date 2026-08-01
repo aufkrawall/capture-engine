@@ -139,8 +139,8 @@
                     const uint32_t wgcInfoIngressHard = g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u;
                     const uint32_t wgcInfoIngressSoft = g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
                     const uint32_t wgcInfoIngressDecimated = g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u;
-                    const bool wgcInfoPoolPressure = wgcInfoPoolSaturatedDrops > 0 || wgcInfoIngressHard > 0 ||
-                                                     wgcInfoIngressDecimated > 0 || wgcInfoPoolFreeMin == 0;
+                    const bool wgcInfoPoolPressure =
+                        wgcInfoPoolSaturatedDrops > 0 || wgcInfoIngressHard > 0 || wgcInfoPoolFreeMin == 0;
                     const bool wgcInfoCleanCe = !encoderPressure && !muxPressure && !wgcInfoPoolPressure &&
                                                 wgcExcessRepeatWindow == 0 && wgcPolicyAddedRepeatWindow == 0 &&
                                                 wgcDelayPostSelectionRejectedSyncRiskWindow == 0;
@@ -170,7 +170,8 @@
                         static_cast<long long>(wgcInfoCallbackGapMaxUs),
                         static_cast<long long>(wgcInfoSourceJitterAvgUs),
                         static_cast<long long>(wgcInfoSourceJitterMaxUs),
-                        ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, wgcCaptureHealthFlags) ==
+                        ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, wgcCaptureHealthFlags,
+                                                                       recordingHealthState.flags) ==
                                 ce::capture_policy::kOverlayWarningEncoderOverload
                             ? 1
                             : 0);
@@ -379,6 +380,18 @@
         }
         const double shortfallDurationMs =
             ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
+        const uint32_t finalOverloadFlags = state.encoderOverloadFlags.load(std::memory_order_relaxed);
+        const bool finalEncoderPressure =
+            g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+            (finalOverloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
+            smoothedEncodeMs >= frameIntervalMs;
+        const bool finalMuxPressure =
+            (finalOverloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0;
+        recordingHealthState = ce::capture_policy::UpdateRecordingHealth(
+            recordingHealthState,
+            {recordingOutputLive, !config.video.useVFR, finalEncoderPressure, finalMuxPressure,
+             SaturatingToUint32(static_cast<uint64_t>(std::max(0.0, std::ceil(shortfallDurationMs))))});
+        PublishRecordingHealth(recordingHealthState);
         const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
         const InputFrameRatePredictor& activeInputPredictor = useScreenGrab ? wgcInputPredictor : injectInputPredictor;
         const uint32_t srcFpsX100Val =

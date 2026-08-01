@@ -154,10 +154,9 @@ MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {
         g_Engine->SetAudioOnly(audioOnly);
 }
 
-MEDIAENGINE_API void MediaEngine_StopRecording(bool cancelUncommittedVideo) {
+MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
-    if (g_Engine)
-        g_Engine->StopRecording(cancelUncommittedVideo);
+    return g_Engine ? g_Engine->StopRecording(cancelUncommittedVideo) : false;
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {

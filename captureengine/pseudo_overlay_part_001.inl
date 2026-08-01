@@ -94,7 +94,14 @@ UINT GetResolvedWindowDpi(HWND hwnd) {
     return dpi == 0 ? 96u : dpi;
 }
 
-std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targetFps) {
+std::string FormatRecordingHealthMessage(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
+    if (warningKind == ce::capture_policy::kOverlayWarningRecordingDegraded) {
+        return "Recording video degraded!";
+    }
+    if (warningKind == ce::capture_policy::kOverlayWarningRecordingRecovering) {
+        return "Recording recovering...";
+    }
+
     const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
     if (targetFps == 0 || sustainFpsX100 == 0) {
         return "Encoder overloaded!";
@@ -110,6 +117,23 @@ std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targe
         std::snprintf(buffer, sizeof(buffer), "Encoder severely overloaded (%.1f/%ufps)", sustainFps, targetFps);
     }
     return buffer;
+}
+
+ce::pseudo_overlay::RecordingNotificationKind ToPseudoRecordingNotification(uint32_t notificationType) {
+    switch (static_cast<OverlayNotificationType>(notificationType)) {
+        case OverlayNotificationType::RecordingFinalizing:
+            return ce::pseudo_overlay::RecordingNotificationKind::Finalizing;
+        case OverlayNotificationType::RecordingSaved:
+            return ce::pseudo_overlay::RecordingNotificationKind::Saved;
+        case OverlayNotificationType::RecordingSavedDegraded:
+            return ce::pseudo_overlay::RecordingNotificationKind::SavedDegraded;
+        case OverlayNotificationType::RecordingCanceled:
+            return ce::pseudo_overlay::RecordingNotificationKind::Canceled;
+        case OverlayNotificationType::RecordingFailed:
+            return ce::pseudo_overlay::RecordingNotificationKind::Failed;
+        default:
+            return ce::pseudo_overlay::RecordingNotificationKind::None;
+    }
 }
 
 static HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {
@@ -174,9 +198,11 @@ HWND GetMainWindowForProcess(DWORD pid) {
 }
 
 bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
-                            bool warnVisible,
-                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
-                            ULONGLONG recordingStopNotifyUntil, bool ghostActive) {
+                             bool warnVisible,
+                             ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
+                             ULONGLONG recordingNotifyUntil,
+                             ce::pseudo_overlay::RecordingNotificationKind recordingNotification,
+                             bool ghostActive) {
     // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
     // warning on the resolved idle state so it can never leak into pending or active recording (see
     // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
@@ -189,7 +215,8 @@ bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_ind
     in.nowMs = GetTickCount64();
     in.overloadWarnUntilMs = overloadWarnUntil;
     in.screenshotNotifyUntilMs = screenshotNotifyUntil;
-    in.recordingStopNotifyUntilMs = recordingStopNotifyUntil;
+    in.recordingNotifyUntilMs = recordingNotifyUntil;
+    in.recordingNotification = recordingNotification;
     return ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(in);
 }
 }  // namespace

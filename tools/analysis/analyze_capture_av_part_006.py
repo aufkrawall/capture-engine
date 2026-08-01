@@ -7,6 +7,7 @@ def parse_media_triage(media_text):
     wgc_perf = []
     wgc_summary = []
     wgc_quality = []
+    recording_health = []
     wgc_source_coverage = []
     wgc_cadence_events = []
     wgc_smoothness_summary = []
@@ -67,6 +68,8 @@ def parse_media_triage(media_text):
             wgc_perf.append(parse_wgc_perf_line(line))
         if WGC_QUALITY_RE.search(line):
             wgc_quality.append(parse_wgc_quality_line(line))
+        if RECORDING_HEALTH_RE.search(line):
+            recording_health.append(parse_recording_health_line(line))
         if WGC_SOURCE_COVERAGE_RE.search(line):
             wgc_source_coverage.append(parse_wgc_source_coverage_line(line))
         cadence_event_match = WGC_CADENCE_EVENT_RE.search(line)
@@ -554,6 +557,7 @@ def parse_media_triage(media_text):
         "wgc_perf": wgc_perf,
         "wgc_summary": wgc_summary,
         "wgc_quality": wgc_quality,
+        "recording_health": recording_health,
         "wgc_source_coverage": wgc_source_coverage,
         "wgc_cadence_events": wgc_cadence_events,
         "wgc_smoothness_summary": wgc_smoothness_summary,

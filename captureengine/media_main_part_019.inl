@@ -1,6 +1,7 @@
     }
 
-    MediaEngine_StopRecording(cancelBeforeLive);
+    const bool outputSaved = MediaEngine_StopRecording(cancelBeforeLive);
+    CompleteRecordingFinalization(cancelBeforeLive, outputSaved);
     if (MediaEngine_ReleaseEncoderTextures) {
         MediaEngine_ReleaseEncoderTextures();
     }
@@ -28,6 +29,8 @@
 
 int MediaProcessMain(const AppConfig& initialConfig) {
     AppConfig config = initialConfig;
+    g_RecordingManifestLogPath =
+        IsAnyLoggingEnabled(initialConfig.logLevel) ? initialConfig.logFilePath : std::string{};
     Log_SetLevel(config.logLevel);
     SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
 

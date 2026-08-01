@@ -57,15 +57,40 @@
                 g_pSharedMem ? g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
             const uint32_t wgcSummaryMuxBackpressure =
                 g_pSharedMem ? g_pSharedMem->runtimeState.muxBackpressureCount.load(std::memory_order_relaxed) : 0u;
-            const bool wgcSummaryPoolPressure = wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 ||
-                                                wgcSummaryIngressDecimated > 0 || wgcSummaryPoolFreeMin == 0;
-            const bool wgcSummaryEncoderMuxPressure = ce::capture_policy::HasRecordingEncoderOrMuxPressure(
-                wgcSummaryOverloadFlags, wgcSummaryMuxBackpressure, wgcEncoderLimitedSourceDropTotal);
-            const char* wgcSummaryLimiter = wgcSummaryEncoderMuxPressure                       ? "encoder_or_mux"
-                                            : wgcSummaryPoolPressure                           ? "wgc_pool_pressure"
-                                            : captureSessionSummary.duplicateNoSourceTicks > 0 ? "source_limited"
-                                            : captureSessionSummary.duplicateTicks > 0         ? "source_cadence_or_vrr"
-                                                                                               : "none";
+            const bool wgcSummaryPoolPressure =
+                wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 || wgcSummaryPoolFreeMin == 0;
+            const uint32_t recordingCapacityCauses =
+                recordingHealthState.flags & ce::capture_policy::kRecordingHealthCauseMask;
+            const bool recordingVideoDegraded = ce::capture_policy::HasRecordingHealthFlag(
+                recordingHealthState.flags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
+            const bool capacityDebtDominant =
+                ce::capture_policy::IsRecordingCapacityDebtDominant(recordingHealthState);
+            const bool encoderDebtHistoryLoss =
+                recordingVideoDegraded && capacityDebtDominant &&
+                (recordingCapacityCauses & ce::capture_policy::kRecordingHealthFlagEncoderPressureObserved) != 0;
+            const bool muxDebtHistoryLoss =
+                recordingVideoDegraded && capacityDebtDominant &&
+                (recordingCapacityCauses & ce::capture_policy::kRecordingHealthFlagMuxPressureObserved) != 0;
+            const bool wgcSummaryEncoderMuxPressure =
+                ce::capture_policy::HasRecordingEncoderOrMuxPressure(
+                    wgcSummaryOverloadFlags, wgcSummaryMuxBackpressure, wgcEncoderLimitedSourceDropTotal) ||
+                encoderDebtHistoryLoss || muxDebtHistoryLoss;
+            const bool nonDominantCapacityHistory =
+                recordingVideoDegraded && recordingCapacityCauses != 0 && !capacityDebtDominant;
+            const char* wgcSummaryLimiter =
+                encoderDebtHistoryLoss && muxDebtHistoryLoss ? "encoder_mux_timeline_debt"
+                : encoderDebtHistoryLoss                    ? "encoder_timeline_debt"
+                : muxDebtHistoryLoss                        ? "mux_timeline_debt"
+                : nonDominantCapacityHistory && wgcSummaryPoolPressure
+                    ? "wgc_pool_pressure"
+                : nonDominantCapacityHistory && captureSessionSummary.duplicateNoSourceTicks > 0
+                    ? "source_limited"
+                : wgcSummaryEncoderMuxPressure              ? "encoder_or_mux"
+                : wgcSummaryPoolPressure                    ? "wgc_pool_pressure"
+                : captureSessionSummary.duplicateNoSourceTicks > 0
+                    ? "source_limited"
+                : captureSessionSummary.duplicateTicks > 0 ? "source_cadence_or_vrr"
+                                                           : "none";
             const bool wgcSummaryCleanEncoderMux =
                 !wgcSummaryEncoderMuxPressure && wgcSummaryOverloadFlags == 0 && wgcSummaryMuxBackpressure == 0;
             const bool wgcSummaryCleanPool = !wgcSummaryPoolPressure;
@@ -77,13 +102,16 @@
             const bool wgcSummaryCoverageHoles =
                 captureSessionSummary.duplicateNoSourceTicks > 0 || wgcCombinedSourceRepeatLowerBoundTotal > 0 ||
                 wgcSourceRepeatLowerBoundTotal > 0 || wgcDeliveryRepeatLowerBoundTotal > 0;
-            const bool wgcSummarySourceCoverageBestEffort =
-                wgcSummaryCoverageHoles && wgcSummaryCleanEncoderMux && wgcSummaryCleanPool && wgcSummaryCleanSelection;
+            const bool wgcSummarySourceCoverageBestEffort = wgcSummaryCoverageHoles && wgcSummaryCleanEncoderMux &&
+                                                            wgcSummaryCleanPool && wgcSummaryCleanSelection &&
+                                                            !recordingVideoDegraded;
             const char* wgcSummaryCoverage =
                 wgcSummaryCoverageHoles ? "limited"
                                         : (captureSessionSummary.duplicateTicks > 0 ? "cadence_or_vrr" : "full");
             const char* wgcSummaryCoverageReason =
-                (wgcSourceRepeatLowerBoundTotal > 0 && wgcDeliveryRepeatLowerBoundTotal > 0)
+                encoderDebtHistoryLoss ? "encoder_debt_history_loss"
+                : muxDebtHistoryLoss   ? "mux_debt_history_loss"
+                : (wgcSourceRepeatLowerBoundTotal > 0 && wgcDeliveryRepeatLowerBoundTotal > 0)
                     ? "source_and_delivery_holes"
                 : (wgcDeliveryRepeatLowerBoundTotal > 0) ? "delivery_holes"
                 : (wgcSourceRepeatLowerBoundTotal > 0)   ? "source_holes"
@@ -352,6 +380,13 @@
             static_cast<unsigned long long>(phaseLockSummary.acquisitions),
             static_cast<unsigned long long>(phaseLockSummary.rephases),
             static_cast<unsigned long long>(phaseLockSummary.releases), captureSyncMultiplier);
+        LogInfo(
+            "[RECORDING HEALTH] status=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
+            "capacityDebtMs=%u cfr=%d settingsChanged=0 ptsGrid=immutable audioTimeline=unchanged",
+            ce::capture_policy::GetRecordingHealthStatus(recordingHealthState.flags),
+            ce::capture_policy::GetRecordingHealthCause(recordingHealthState.flags), recordingHealthState.flags,
+            recordingHealthState.currentDebtMs, recordingHealthState.peakDebtMs,
+            recordingHealthState.capacityAttributedDebtMs, config.video.useVFR ? 0 : 1);
     }
 
     SetCapturePipelinePhase(CapturePipelinePhase::kIdle);
@@ -364,6 +399,7 @@ bool StartRecording(const AppConfig& config) {
         return true;
 
     g_PrivacyFailClosedStopRequested.store(false, std::memory_order_release);
+    ResetRecordingHealthPublication();
     LogInfo("[Media] Starting recording...");
 
     timeBeginPeriod(1);
@@ -573,7 +609,8 @@ void StopRecording() {
         SetRecordingVisibleState(false);
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
-        MediaEngine_StopRecording(false);
+        const bool outputSaved = MediaEngine_StopRecording(false);
+        CompleteRecordingFinalization(false, outputSaved);
 
         if (g_pSharedMem) {
             ResetRuntimeDiagnostics(g_pSharedMem);

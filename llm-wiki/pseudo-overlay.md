@@ -1,6 +1,6 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-07-18 (application-profile settings + instant recording-start feedback + dedicated UI thread)
+Last cross-checked: 2026-08-01 (recording-health/recovery and truthful asynchronous-finalization feedback, application-profile settings, instant recording-start feedback, and dedicated UI thread)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
@@ -10,7 +10,8 @@ Primary sources:
 - `common/pseudo_overlay_focus_grace.cpp`
 - `common/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
 - `common/recording_indicator_policy.h`
-- `common/shared_defs.h` (`RecordingStartIntent` runtime flags)
+- `common/capture_policy/recording_health.h`
+- `common/shared_defs.h` (`RecordingStartIntent`, recording health, and finalization notification fields)
 - `common/config.h` (`PseudoOverlayConfig`)
 - `common/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
 - `tests/test_pseudo_overlay_thread.cpp`
@@ -23,7 +24,7 @@ Controller-side overlay for WGC capture (no injection required). It uses two lay
 The controller pre-resolves `[DesktopOverlay]` once for each process-backed `[Profile.*]` and publishes those compact settings to the overlay thread. While idle, the foreground process selects the effective settings. At the recording-start edge that profile is pinned so focus changes do not alter the active indicator; for injected video, the hook's actual source PID can replace the provisional foreground choice. Title-only profiles do not own setting overrides because the general profile override contract requires `process`.
 
 - `hOv_` (`CE_PseudoOv` class): indicator circle (amber=start pending, red=recording)
-- `hWarn_` (`CE_PseudoWarn` class): status/notification text (`STARTING RECORDING...`, `STARTING AUDIO...`, `NOT RECORDING`, encoder overload, or screenshot saved)
+- `hWarn_` (`CE_PseudoWarn` class): status/notification text (`STARTING RECORDING...`, `STARTING AUDIO...`, `NOT RECORDING`, capacity/recovery/degraded health, recording finalization, or screenshot saved)
 
 Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to prevent focus stealing.
 
@@ -52,22 +53,29 @@ Visibility terms:
 - **Indicator** — pending or live recording state and `mode != 2`.
 - **Startup text** — pending video/audio state and `mode != 0`.
 - **NOT-RECORDING warning** — `warnVisible` only while the resolved state is idle.
-- **Encoder-overload warning** — `showEncoderOverloadWarn && now < overloadWarnUntil`.
+- **Recording-health warning** — `showEncoderOverloadWarn && now < overloadWarnUntil`; active overload, recovery debt, and latched degradation have distinct text.
+- **Recording-finalization notification** — idle-only finalizing/saved/degraded/canceled/failed feedback from the shared media-owned notification.
 - **Screenshot notification** — `now < screenshotNotifyUntil`.
 - **Ghost keepalive** — `alwaysRender` (explicit opt-in).
 
 **Mode-2 contract:** with `mode=2` and a recording active, the overlay is inactive (no windows,
-no `UpdateLayeredWindow`/`SetWindowPos`, no `EnsureOverlayWindows`) **except** the two sanctioned
-notifications: encoder-overload and screenshot-saved. Those may spawn a short-lived topmost
+no `UpdateLayeredWindow`/`SetWindowPos`, no `EnsureOverlayWindows`) **except** sanctioned
+recording-health and screenshot notifications. Those may spawn a short-lived topmost
 window mid-recording (accepted as singular slight-stutter events). The steady-state timer does NOT
 call `UpdateOverlay` in this state; only lightweight CPU polling runs (no window/plane work).
+
+## Recording Health And Finalization Feedback
+
+`show_encoder_overload_warnings` defaults to true and now covers the recording-level health result, not only the current encoder bottleneck bit. Sustained capacity loss can show `!VIDEO DEGRADED!`; after capacity returns while CFR debt is still being repaid it can show `!RECOVERING!`. These warnings consume telemetry only and never change encoder settings, frame scheduling, timestamps, or audio.
+
+The controller's stop-command `Ack` means only that media accepted the stop. The pseudo-overlay therefore shows `Finalizing recording...` at that point and does not claim success. The disposable media child publishes `Recording saved` or `Recording saved - video degraded` only after `MediaEngine_StopRecording` has completed its bounded stop attempt and the output was actually published. Pre-live cancellation reports `Recording canceled`; trailer/close/publication failure reports `Recording failed`. A writer timeout remains a strict analyzer/process-lifetime fault, but it cannot turn an already closed and published playable file into a false “not saved” result. The immutable per-recording manifest records the actual publication outcome with `output_saved`. Completion notifications are idle-only and a new recording-start intent clears stale feedback, so an older media child cannot cover a newer active recording.
 
 ## Recording-Start State Contract
 
 - The controller publishes `RecordingStartIntent::Video` or `AudioOnly` before media/limiter readiness waits and posts an immediate refresh. The shared intent stays active through encoder calibration and hidden-frame warm-up; it has no timeout and does not start the timer.
 - The UI thread resolves shared `isRecording`, `audioOnly`, and start intent through `recording_indicator::SelectState`. Live state wins over a stale pending bit.
 - Pending video renders amber `STARTING RECORDING...`; pending audio renders amber `STARTING AUDIO...`. A pending transition clears the blinking `NOT RECORDING` state and aborts foreground-acquire grace so feedback can render immediately.
-- Pending startup text has priority over screenshot, overload, and `NOT RECORDING` text. Encoder-overload polling remains gated on established recording.
+- Pending startup text has priority over screenshot, recording-health, finalization, and `NOT RECORDING` text. Recording-health polling remains gated on established recording.
 - Media clears the intent only when it publishes live recording, stop/cancel occurs, or startup fails. The controller also clears its direct-thread fallback on every readiness/command/child-exit/shutdown terminal path.
 - Inject-overlay handoff suppression, profile/global `enabled` and mode, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
 

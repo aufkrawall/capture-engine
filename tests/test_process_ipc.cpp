@@ -253,7 +253,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
-    const size_t helperBegin = controllerSource.find("static void RequestRecordingStopAndReleaseMedia(");
+    const size_t helperBegin = controllerSource.find("static bool RequestRecordingStopAndReleaseMedia(");
     const size_t helperEnd = controllerSource.find("void CheckRecordingFailureState()", helperBegin);
     ASSERT_NE(helperBegin, std::string::npos);
     ASSERT_NE(helperEnd, std::string::npos);

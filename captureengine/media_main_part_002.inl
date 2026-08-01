@@ -163,6 +163,73 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
     state.wgcCaptureHealthFps.store(0, std::memory_order_relaxed);
     state.encoderBottlenecked.store(0, std::memory_order_relaxed);
+    state.recordingTimelineDebtMs.store(0, std::memory_order_relaxed);
+    state.recordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
+    state.recordingHealthFlags.store(0, std::memory_order_release);
+}
+
+void ResetRecordingHealthPublication() {
+    g_RecordingTimelineDebtMs.store(0, std::memory_order_relaxed);
+    g_RecordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
+    g_RecordingCapacityAttributedDebtMs.store(0, std::memory_order_relaxed);
+    g_RecordingHealthFlags.store(0, std::memory_order_release);
+    if (g_pSharedMem) {
+        g_pSharedMem->runtimeState.recordingTimelineDebtMs.store(0, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.recordingHealthFlags.store(0, std::memory_order_release);
+    }
+}
+
+void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& health) {
+    g_RecordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
+    g_RecordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
+    g_RecordingCapacityAttributedDebtMs.store(health.capacityAttributedDebtMs, std::memory_order_relaxed);
+    g_RecordingHealthFlags.store(health.flags, std::memory_order_release);
+    if (g_pSharedMem) {
+        g_pSharedMem->runtimeState.recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.recordingHealthFlags.store(health.flags, std::memory_order_release);
+    }
+}
+
+void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
+    const uint32_t healthFlags = g_RecordingHealthFlags.load(std::memory_order_acquire);
+    const uint32_t currentDebtMs = g_RecordingTimelineDebtMs.load(std::memory_order_relaxed);
+    const uint32_t peakDebtMs = g_RecordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
+    const uint32_t capacityAttributedDebtMs =
+        g_RecordingCapacityAttributedDebtMs.load(std::memory_order_relaxed);
+    const char* healthStatus = ce::capture_policy::GetRecordingHealthStatus(healthFlags);
+    const char* healthCause = ce::capture_policy::GetRecordingHealthCause(healthFlags);
+    LogInfo(
+        "[RECORDING FINALIZATION] status=%s health=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
+        "capacityDebtMs=%u outputSaved=%d finalizationComplete=1 settingsChanged=0",
+        canceled ? "canceled" : (outputSaved ? "media_finalized" : "failed"), healthStatus, healthCause,
+        healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
+    FinalizeRecordingManifest(g_RecordingManifestLogPath, canceled, outputSaved, healthStatus, healthCause,
+                              healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs);
+
+    if (!g_pSharedMem) {
+        return;
+    }
+    auto& state = g_pSharedMem->runtimeState;
+    const bool newerRecordingActive = state.captureRequested.load(std::memory_order_acquire) ||
+                                      state.isRecording.load(std::memory_order_acquire) ||
+                                      state.GetRecordingStartIntent() != RecordingStartIntent::Idle;
+    if (newerRecordingActive) {
+        LogInfo("[RECORDING FINALIZATION] Completion notification suppressed because a newer recording is active");
+        return;
+    }
+
+    const bool degraded = ce::capture_policy::HasRecordingHealthFlag(
+        healthFlags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
+    const OverlayNotificationType notification =
+        canceled    ? OverlayNotificationType::RecordingCanceled
+        : !outputSaved ? OverlayNotificationType::RecordingFailed
+        : degraded ? OverlayNotificationType::RecordingSavedDegraded
+                   : OverlayNotificationType::RecordingSaved;
+    state.notificationType.store(static_cast<uint32_t>(notification), std::memory_order_release);
+    state.notificationExpiry.store(GetTickCount64() + ((degraded || !outputSaved) ? 7000ULL : 3000ULL),
+                                   std::memory_order_release);
 }
 
 bool IsActiveScreenGrab() {

@@ -21,7 +21,7 @@
             std::lock_guard<std::recursive_mutex> lock(muxMutex);
             if (!recording) {
                 audioFinalizingCfrStop.store(false, std::memory_order_release);
-                return;
+                return false;
             }
 
             // Set recording end timestamp on all audio encoders BEFORE stopping
@@ -471,9 +471,12 @@
         // since we're using AddAudioContext and the contexts are stored per-source
 
         // Stop video encoder (writes trailer)
+        bool videoOutputPublished = false;
         if (videoEnc) {
             videoEnc->Stop();
+            videoOutputPublished = videoEnc->WasLastOutputPublished();
         }
+        return videoOutputPublished;
     }
 
     bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,

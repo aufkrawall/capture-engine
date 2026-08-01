@@ -86,7 +86,14 @@ private:
     DPI_AWARENESS_CONTEXT oldContext_ = nullptr;
 };
 
-std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetFps) {
+std::string FormatRecordingHealthLabel(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
+    if (warningKind == ce::capture_policy::kOverlayWarningRecordingDegraded) {
+        return "!VIDEO DEGRADED!";
+    }
+    if (warningKind == ce::capture_policy::kOverlayWarningRecordingRecovering) {
+        return "!RECOVERING!";
+    }
+
     const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
     if (targetFps == 0 || sustainFpsX100 == 0) {
         return "!ENCODER OVERLOAD!";
@@ -637,8 +644,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
         const uint32_t captureHealthFlags =
             sharedMem->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
-        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
-        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+        const uint32_t recordingHealthFlags =
+            sharedMem->runtimeState.recordingHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(
+            overloadFlags, captureHealthFlags, recordingHealthFlags);
+        if (warningKind == ce::capture_policy::kOverlayWarningNone &&
+            ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
             lastEncoderOverloadTick = 0;
             lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
         } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {

@@ -146,6 +146,9 @@ TEST(CaptureStateTest, WgcDiagnosticsFieldsDefaultToZero) {
     EXPECT_EQ(state.wgcBufferedAtTickMin.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.recordingHealthFlags.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.recordingTimelineDebtMs.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.recordingPeakTimelineDebtMs.load(std::memory_order_relaxed), 0u);
 }
 
 TEST(CaptureStateTest, WgcTelemetryFieldsRepresentFreshnessAndReserveCounters) {
@@ -195,8 +198,8 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateShutdownEventName(shutdownEventName, std::size(shutdownEventName), 0x89ABCDEFu);
     GenerateShmemName(shmemName, std::size(shmemName), 0x00ABCDEFu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_37_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_37"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_38_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_38"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
 }

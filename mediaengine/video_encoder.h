@@ -69,6 +69,9 @@ public:
 
     void Stop();
     void Cancel();
+    bool WasLastOutputPublished() const {
+        return outputPublished.load(std::memory_order_acquire);
+    }
 
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);
@@ -201,6 +204,7 @@ private:
     uint32_t qsvSurfaceMappingFailures = 0;
     bool hdrPacketMetadataLogged = false;
     std::atomic<bool> discardOutputRequested{false};
+    std::atomic<bool> outputPublished{false};
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"
     std::atomic<int64_t> startPts{-1};      // First frame PTS for relative timestamps

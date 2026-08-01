@@ -232,3 +232,96 @@ def summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us=
         "elevated_sources": elevated_sources,
         "stop_context_sources": stop_context_sources,
     }
+
+
+def summarize_recording_health_attribution(media_evidence, recording_manifest, log_summary):
+    hard_wgc_pool_pressure = any(
+        item.get("pool_saturated_drops", 0) > 0
+        or item.get("ingress_hard", 0) > 0
+        or (item.get("pool_free_evidence", False) and item.get("free_min", 0) == 0)
+        for item in media_evidence["wgc_quality"]
+    ) or any(
+        item.get("pool_saturated_drops", 0) > 0
+        or item.get("ingress_hard_reserve_pressure", 0) > 0
+        or (item.get("pool_lease_evidence", False) and item.get("pool_free_min", 0) == 0)
+        for item in media_evidence["wgc_perf"]
+    ) or any(
+        item.get("pool_saturated_drops", 0) > 0
+        or item.get("wgc_ingress_hard_reserve_pressure", 0) > 0
+        or (item.get("pool_lifetime_evidence", 0) > 0 and item.get("pool_free_min", 0) == 0)
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+    authoritative = bool(media_evidence["recording_health"]) or (
+        recording_manifest.get("recording_health", "unknown") not in ("", "unknown")
+    )
+    if media_evidence["recording_health"]:
+        health = media_evidence["recording_health"][-1]
+    else:
+        health = {
+            "status": recording_manifest.get("recording_health", "unknown"),
+            "cause": recording_manifest.get("recording_health_cause", "none"),
+            "flags": parse_int(recording_manifest.get("recording_health_flags"), 0),
+            "current_debt_ms": parse_int(recording_manifest.get("final_timeline_debt_ms"), 0),
+            "peak_debt_ms": parse_int(recording_manifest.get("peak_timeline_debt_ms"), 0),
+            "capacity_attributed_debt_ms": parse_int(
+                recording_manifest.get("capacity_attributed_debt_ms"), -1
+            ),
+            "settings_changed": parse_int(recording_manifest.get("encoder_settings_changed"), 0),
+        }
+
+    legacy_peak_encoder_debt_ms = max(
+        [item.get("shortfall_max_ms", 0.0) for item in media_evidence["wgc_smoothness_summary"]]
+        + ([log_summary.get("max_wgc_shortfall_ms", 0)] if log_summary else [0])
+    )
+    legacy_encoder_pressure_seen = any(
+        item.get("overload_flags", 0) & 0x1 for item in media_evidence["wgc_perf"]
+    ) or any(
+        parse_hex_flags(item.get("overload", "0x0")) & 0x1
+        for item in media_evidence["wgc_cadence_events"]
+    ) or any(
+        item.get("encoder_overload", 0) for item in media_evidence["final_metadata"]
+    )
+    if log_summary:
+        legacy_encoder_pressure_seen = legacy_encoder_pressure_seen or log_summary.get("saw_encoder_overload", False)
+    inferred = (
+        not authoritative
+        and legacy_encoder_pressure_seen
+        and log_summary is not None
+        and log_summary["counts"].get("wgc_visual_timeline_debt_drop", 0) > 0
+        and legacy_peak_encoder_debt_ms >= 500.0
+        and not hard_wgc_pool_pressure
+    )
+    if inferred:
+        health = {
+            "status": "degraded",
+            "cause": "encoder",
+            "flags": 0,
+            "current_debt_ms": 0,
+            "peak_debt_ms": int(round(legacy_peak_encoder_debt_ms)),
+            "capacity_attributed_debt_ms": int(round(legacy_peak_encoder_debt_ms)),
+            "settings_changed": 0,
+            "inferred_from_legacy_evidence": True,
+        }
+
+    degraded = health.get("status") == "degraded"
+    encoder_cause = "encoder" in health.get("cause", "")
+    mux_cause = "mux" in health.get("cause", "")
+    final_wgc_limiter = media_evidence["wgc_quality"][-1].get("limiter", "") if media_evidence["wgc_quality"] else ""
+    capacity_debt_history_loss = (
+        degraded
+        and (encoder_cause or mux_cause)
+        and (
+            final_wgc_limiter
+            in ("encoder_timeline_debt", "mux_timeline_debt", "encoder_mux_timeline_debt")
+            or inferred
+        )
+    )
+    return {
+        "health": health,
+        "hard_wgc_pool_pressure": hard_wgc_pool_pressure,
+        "degraded": degraded,
+        "encoder_cause": encoder_cause,
+        "mux_cause": mux_cause,
+        "capacity_debt_history_loss": capacity_debt_history_loss,
+        "inferred": inferred,
+    }

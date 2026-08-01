@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-07-19 (presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 37/request-specific completion)
+Last cross-checked: 2026-08-01 (presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
 
 Primary sources:
 - `common/shared_defs.h`
@@ -13,7 +13,7 @@ Primary sources:
 
 ## Summary
 
-Injected screenshots use the current exact shared-memory ABI 37 and the generation-like request-ID protocol introduced with ABI 32. The controller publishes the request ID, pending status, raw path, and a unique completion-event name. The hook copies mapped pixels before returning from the graphics backend and queues one managed filesystem worker. The worker writes a request-bound raw payload to a new `.part` file, flushes and closes it, atomically renames it to `.ready`, publishes the matching result, and signals that request's event. Stale results never satisfy a newer request.
+Injected screenshots use the current exact shared-memory ABI 38 and the generation-like request-ID protocol introduced with ABI 32. The controller publishes the request ID, pending status, raw path, and a unique completion-event name. The hook copies mapped pixels before returning from the graphics backend and queues one managed filesystem worker. The worker writes a request-bound raw payload to a new `.part` file, flushes and closes it, atomically renames it to `.ready`, publishes the matching result, and signals that request's event. Stale results never satisfy a newer request.
 
 The request state is explicit: request ID, completed request ID, `Idle|Pending|Writing|Succeeded|Busy|Failed`, Windows error, payload kind, raw path, and completion-event name. A busy worker produces an explicit `Busy` result rather than spawning a detached writer or racing the existing task.
 

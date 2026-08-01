@@ -350,6 +350,7 @@ WGC_SMOOTHNESS_LOWER_BOUND_RE = re.compile(
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
 WGC_QUALITY_RE = re.compile(r"\[WGC CFR QUALITY\]\s*(.*)", re.IGNORECASE)
 WGC_SOURCE_COVERAGE_RE = re.compile(r"\[WGC CFR SOURCE COVERAGE\]\s*(.*)", re.IGNORECASE)
+RECORDING_HEALTH_RE = re.compile(r"\[RECORDING HEALTH\]\s*(.*)", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
 INJECT_CONTENTION_RE = re.compile(
     r"\[Inject Contention(?: SUMMARY)?\].*CaptureLock=(\d+) CpuLease=(\d+) GpuBusy=(\d+) "

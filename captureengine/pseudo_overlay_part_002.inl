@@ -37,34 +37,60 @@
     }
     lastScreenshotNotifyUntil = currentScreenshot;
 
-    static ULONGLONG lastRecordingStopNotifyUntil = 0;
-    ULONGLONG currentRecordingStop = recordingStopNotifyUntil_.load();
-    if ((lastRecordingStopNotifyUntil > 0 && currentRecordingStop == 0) ||
-        (currentRecordingStop > 0 && GetTickCount64() > currentRecordingStop)) {
+    static ULONGLONG lastRecordingNotifyUntil = 0;
+    ULONGLONG currentRecordingNotification = recordingNotifyUntil_.load();
+    if ((lastRecordingNotifyUntil > 0 && currentRecordingNotification == 0) ||
+        (currentRecordingNotification > 0 && GetTickCount64() > currentRecordingNotification)) {
         UpdateOverlay();
     }
-    lastRecordingStopNotifyUntil = currentRecordingStop;
+    lastRecordingNotifyUntil = currentRecordingNotification;
+
+    if (EnsureSharedMemoryMapping() && pSharedMem_) {
+        const uint64_t sharedNotificationExpiry =
+            pSharedMem_->runtimeState.notificationExpiry.load(std::memory_order_acquire);
+        const uint32_t sharedNotificationType =
+            pSharedMem_->runtimeState.notificationType.load(std::memory_order_relaxed);
+        const auto sharedRecordingNotification = ToPseudoRecordingNotification(sharedNotificationType);
+        if (recordingIndicatorState_ == ce::recording_indicator::State::Idle &&
+            sharedRecordingNotification != ce::pseudo_overlay::RecordingNotificationKind::None &&
+            sharedNotificationExpiry > GetTickCount64() &&
+            (recordingNotification_.load(std::memory_order_relaxed) != sharedRecordingNotification ||
+             recordingNotifyUntil_.load(std::memory_order_relaxed) != sharedNotificationExpiry)) {
+            recordingNotification_.store(sharedRecordingNotification, std::memory_order_relaxed);
+            recordingNotifyUntil_.store(sharedNotificationExpiry, std::memory_order_relaxed);
+            UpdateOverlay();
+        }
+    }
 
     if (config_.showEncoderOverloadWarn && ce::recording_indicator::IsRecording(recordingIndicatorState_) &&
         EnsureSharedMemoryMapping() && pSharedMem_) {
         const uint32_t overloadFlags = pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
         const uint32_t captureHealthFlags =
             pSharedMem_->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
-        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
-        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+        const uint32_t recordingHealthFlags =
+            pSharedMem_->runtimeState.recordingHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(
+            overloadFlags, captureHealthFlags, recordingHealthFlags);
+        if (warningKind == ce::capture_policy::kOverlayWarningNone &&
+            ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
             const ULONGLONG previousWarnUntil = overloadWarnUntil_.exchange(0, std::memory_order_relaxed);
             if (previousWarnUntil != 0 && initialized_.load(std::memory_order_acquire)) {
                 UpdateOverlay();
             }
-        } else if (warningKind == ce::capture_policy::kOverlayWarningEncoderOverload) {
+        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
             ULONGLONG current = GetTickCount64();
             uint32_t currentFps = pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
             uint32_t lastFps = overloadWarnSustainFpsX100_.load(std::memory_order_relaxed);
             bool fpsChanged = (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100;
+            const bool encoderWarning = warningKind == ce::capture_policy::kOverlayWarningEncoderOverload;
+            const bool encoderWarningStarted =
+                encoderWarning &&
+                (lastEncoderOverloadFlags_ & ce::capture_policy::kEncoderOverloadFlagEncoder) == 0;
 
-            if ((lastEncoderOverloadFlags_ & ce::capture_policy::kEncoderOverloadFlagEncoder) == 0 ||
-                (current > overloadWarnUntil_.load() - 2500) || fpsChanged) {
-                TriggerEncoderOverloadWarning(currentFps);
+            if (warningKind != overloadWarnKind_.load(std::memory_order_relaxed) ||
+                encoderWarningStarted || (current > overloadWarnUntil_.load() - 2500) ||
+                (encoderWarning && fpsChanged)) {
+                TriggerRecordingHealthWarning(warningKind, currentFps);
             }
         }
         lastEncoderOverloadFlags_ = overloadFlags;
@@ -116,7 +142,7 @@ void PseudoOverlay::UpdateOverlay() {
 
     const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
         config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
-        recordingStopNotifyUntil_.load(), ghostActive);
+        recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive);
 
     LogDebug(
         "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
@@ -386,7 +412,8 @@ void PseudoOverlay::UpdateOverlay() {
     textInputs.showEncoderOverloadWarn = config_.showEncoderOverloadWarn;
     textInputs.overloadWarnUntilMs = overloadWarnUntil_.load();
     textInputs.screenshotNotifyUntilMs = screenshotNotifyUntil_.load();
-    textInputs.recordingStopNotifyUntilMs = recordingStopNotifyUntil_.load();
+    textInputs.recordingNotifyUntilMs = recordingNotifyUntil_.load();
+    textInputs.recordingNotification = recordingNotification_.load(std::memory_order_relaxed);
     textInputs.nowMs = now;
     const auto textKind = ce::pseudo_overlay::SelectPseudoOverlayText(textInputs);
     const bool showStarting = textKind == ce::pseudo_overlay::OverlayTextKind::Starting;
@@ -402,11 +429,21 @@ void PseudoOverlay::UpdateOverlay() {
     if (showOverload && EnsureSharedMemoryMapping() && pSharedMem_) {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
-    const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
-    const bool showRecordingStopped = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingStopped;
+    const std::string overloadMsg = FormatRecordingHealthMessage(
+        overloadWarnKind_.load(std::memory_order_relaxed), overloadWarnSustainFpsX100, overloadTargetFps);
+    const bool showRecordingFinalizing = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingFinalizing;
+    const bool showRecordingSaved = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingSaved;
+    const bool showRecordingSavedDegraded =
+        textKind == ce::pseudo_overlay::OverlayTextKind::RecordingSavedDegraded;
+    const bool showRecordingCanceled = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingCanceled;
+    const bool showRecordingFailed = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingFailed;
     const char* msg = showStarting ? ce::recording_indicator::GetStartingText(recordingState)
                        : showScreenshot ? (screenshotSucceeded ? "Screenshot saved!" : "Screenshot failed!")
-                      : showRecordingStopped ? "Recording stopped"
+                       : showRecordingFinalizing ? "Finalizing recording..."
+                       : showRecordingSaved ? "Recording saved"
+                       : showRecordingSavedDegraded ? "Recording saved - video degraded"
+                       : showRecordingCanceled ? "Recording canceled"
+                       : showRecordingFailed ? "Recording failed"
                       : showOverload   ? overloadMsg.c_str()
                                        : "NOT RECORDING";
     if (ghostActive) {
@@ -490,8 +527,10 @@ void PseudoOverlay::UpdateOverlay() {
             SetTextColor(hdcWarn_, showStarting   ? kColStarting
                                    : showScreenshot ? (screenshotSucceeded ? kColScreenshotText
                                                                             : kColScreenshotFailureText)
-                                   : showRecordingStopped ? kColScreenshotText
-                                                          : kColWarnText);
+                                    : (showRecordingSavedDegraded || showRecordingFailed) ? kColWarnText
+                                    : (showRecordingFinalizing || showRecordingSaved || showRecordingCanceled)
+                                        ? kColScreenshotText
+                                        : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};

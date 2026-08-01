@@ -7,7 +7,12 @@
 
     const uint64_t notificationExpiry = sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
     frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
-    frameLayout.notificationVisible = notificationExpiry > nowTick64 && frameLayout.notificationType != 0;
+    const bool recordingFinalizationNotification =
+        frameLayout.notificationType >= static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing) &&
+        frameLayout.notificationType <= static_cast<uint32_t>(OverlayNotificationType::RecordingFailed);
+    frameLayout.notificationVisible =
+        notificationExpiry > nowTick64 && frameLayout.notificationType != 0 &&
+        (!recordingFinalizationNotification || frameLayout.recordingState == ce::recording_indicator::State::Idle);
 
     ce::overlay_layout::RowInputs rowInputs = {};
     rowInputs.showGPU = cfg.showGPU;
@@ -305,12 +310,19 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENC SEVERE 9999.9/9999!");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+            snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !VIDEO DEGRADED!");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "AUDIO 00:00:00");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
         }
         if (rowNotification) {
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot saved!") + kShadowPad);
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot failed!") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Finalizing recording...") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Recording saved") + kShadowPad);
+            measuredWidth =
+                (std::max)(measuredWidth, MeasureTextWidth("Recording saved - video degraded") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Recording failed") + kShadowPad);
         }
 
         cachedContentWidth = measuredWidth;
@@ -486,8 +498,23 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 notifText = "Screenshot failed!";
                 notifColor = Colors::Red;
                 break;
-            case static_cast<uint32_t>(OverlayNotificationType::RecordingStopped):
-                notifText = "Recording stopped";
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing):
+                notifText = "Finalizing recording...";
+                notifColor = Colors::LabelYellow;
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingSaved):
+                notifText = "Recording saved";
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingSavedDegraded):
+                notifText = "Recording saved - video degraded";
+                notifColor = Colors::Red;
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingCanceled):
+                notifText = "Recording canceled";
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingFailed):
+                notifText = "Recording failed";
+                notifColor = Colors::Red;
                 break;
             default:
                 break;

@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-08-01 (recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, measured WGC/DXGI overload repeat pacing, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, cursor-aware repeat rendering, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, and exact codec-decoded endpoints)
+Last cross-checked: 2026-08-01 (latched recording-level capacity health without policy mutation, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, measured WGC/DXGI overload repeat pacing, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, cursor-aware repeat rendering, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, and exact codec-decoded endpoints)
 Stale-risk: low
 
 ## Inject contention invariants (2026-07-12)
@@ -13,6 +13,7 @@ Session triage distinguishes upstream screen-source starvation, proven DXGI Dupl
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
+- `common/capture_policy/recording_health.h`
 - `common/recording_lifecycle.h`
 - `common/wgc_pool_lease.h`
 - `common/inject_frame_ring_lease.h`
@@ -29,6 +30,7 @@ Primary sources:
 - `mediaengine/mux_invariants.h`
 - `llm-wiki/multi-audio-capture.md`
 - `tests/test_capture_pipeline_policy.cpp`
+- `tests/test_recording_health.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_recording_start_feedback.cpp`
 - `tests/test_fps_limiter.cpp`
@@ -48,6 +50,14 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### Recording-level capacity health (2026-08-01)
+
+The immutable CFR pipeline now publishes an observational recording-health state. Once per diagnostic window, `UpdateRecordingHealth` combines current encoder/mux pressure with exact accrued CFR timeline debt. A capacity cause is confirmed at 250 ms of simultaneous debt or after two consecutive per-cause pressure samples; video degradation latches once debt growth accumulated during capacity-pressure episodes reaches 500 ms, with a severe flag at 2 seconds. Overall peak debt and capacity-attributed growth remain separate, so pre-existing or later source-only shortfall cannot be claimed by a brief encoder/mux-pressure sample. Capacity is selected as the final limiter only when that attributed growth is at least three quarters of overall peak debt. Current `recovering` state clears when debt clears, while the confirmed cause and degraded/severe result remain recording-sticky for truthful final reporting.
+
+This state is deliberately one-way telemetry: it has no scheduling output and cannot change CFR ticks, PTS, source selection, audio targets/samples/resampling, encoder options, or mux policy. Users remain responsible for selecting an encoder configuration their hardware can sustain. `[RECORDING CAPACITY]` transition logs, the final `[RECORDING HEALTH]` line, shared runtime fields, and the per-recording manifest expose current/peak debt, capacity-attributed debt growth, cause, and the explicit `settingsChanged=0` invariant. The overlay can therefore distinguish active overload, recovery, and a recording whose video was already degraded even if encoder speed later recovers.
+
+Session `installed/captureengine/logs/20260801_191800` is the legacy edge-case proof. Forced-low GPU clocks reduced 4K120 AV1 NVENC sustain to about 46 fps and accumulated about 23.4 seconds of CFR debt; after clocks were restored, measured sustain recovered above target but the immutable grid still owed that historical work. Packet PTS and audio endpoints remained exact, so the right diagnosis is encoder-driven visual timeline degradation with clean audio—not WGC pool pressure and not a sticky NVENC failure. The analyzer conservatively infers that cause for old logs only when material timeline debt and encoder-overload evidence coexist without hard pool-pressure evidence.
 
 ### Adaptive audio ingestion reservoir (2026-07-25)
 

@@ -11,6 +11,7 @@
 #include "capture_policy/cfr_scheduling.h"
 #include "capture_policy/cfr_startup.h"
 #include "capture_policy/encoder_priority_and_routing.h"
+#include "capture_policy/recording_health.h"
 #include "capture_policy/source_state.h"
 #include "capture_policy/live_debt.h"
 #include "capture_policy/smoothness_budget.h"

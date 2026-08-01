@@ -396,6 +396,108 @@ def self_test():
         assert report["evidence"]["exported_av_sync_ok"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
 
+        encoder_debt_history_loss = make_session(
+            "encoder_debt_history_loss",
+            media=(
+                "[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure poolSat=0 "
+                "overwritePrevented=0 ingressDecimated=8303\n"
+                "[WGC CFR QUALITY] duplicatePct=98.9 duplicates=11820/11948 worst1sUnique=2 "
+                "worst1sRepeats=118 worst1sEmit=120 limiter=encoder_timeline_debt "
+                "sourceLimitedRepeats=11820 poolPressure=0 freeMin=25 poolSaturatedDrops=0 "
+                "ingressHard=0 ingressSoft=0 ingressDecimated=8303 encoderOverload=0x0 "
+                "muxBackpressure=0 backend=wgc finalAvSync=exported_tracks_authoritative\n"
+                "[WGC CFR SOURCE COVERAGE] coverage=limited reason=encoder_debt_history_loss bestEffort=0 "
+                "outputFps=120 duplicates=11820/11948 sourceLimitedRepeats=11820 "
+                "sourceRepeatLowerBound=11820 syncSourceRepeatLowerBound=11820 "
+                "deliveryRepeatLowerBound=11820 excessRepeats=0 policyAddedRepeats=0 "
+                "policyNoSourceRepeats=0 cleanEncoderMux=0 cleanPool=1 cleanSelection=1 "
+                "encoderOverload=0x0 muxBackpressure=0 poolPressure=0 poolFreeMin=25\n"
+                "[RECORDING HEALTH] status=degraded cause=encoder flags=0x35 currentDebtMs=0 "
+                "peakDebtMs=23425 capacityDebtMs=23425 cfr=1 settingsChanged=0 "
+                "ptsGrid=immutable audioTimeline=unchanged\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0\n"
+            ),
+        )
+        report = classify_session_triage(encoder_debt_history_loss)
+        assert "hardware_encoder_starvation" in report["verdicts"]
+        assert "wgc_encoder_timeline_debt" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" in report["verdicts"]
+        assert "wgc_framepool_pressure" not in report["verdicts"]
+        assert "wgc_framepool_pressure_after_capacity_debt" in report["contexts"]
+        assert report["evidence"]["recording_health"]["peak_debt_ms"] == 23425
+        assert report["evidence"]["recording_health"]["capacity_attributed_debt_ms"] == 23425
+        assert report["faults"]["recording_health_degraded"]
+
+        mixed_capacity_and_source_debt = make_session(
+            "mixed_capacity_and_source_debt",
+            media=(
+                "[WGC CFR] Source-starved episode: duration=1000ms out=120 dup=100 minIn=20 minDel=20 "
+                "freshMiss=800pm minBuf=0\n"
+                "[WGC CFR QUALITY] duplicatePct=90.0 duplicates=5400/6000 worst1sUnique=10 "
+                "worst1sRepeats=110 worst1sEmit=120 limiter=source_limited sourceLimitedRepeats=5000 "
+                "poolPressure=0 freeMin=20 poolSaturatedDrops=0 ingressHard=0 ingressSoft=0 "
+                "ingressDecimated=0 encoderOverload=0x0 muxBackpressure=0 backend=wgc "
+                "finalAvSync=exported_tracks_authoritative\n"
+                "[RECORDING HEALTH] status=degraded cause=encoder flags=0x11 currentDebtMs=6000 "
+                "peakDebtMs=6000 capacityDebtMs=600 cfr=1 settingsChanged=0 "
+                "ptsGrid=immutable audioTimeline=unchanged\n"
+            ),
+        )
+        report = classify_session_triage(mixed_capacity_and_source_debt)
+        assert "wgc_encoder_timeline_debt" in report["verdicts"]
+        assert "wgc_source_starvation" in report["verdicts"]
+        assert "wgc_source_starvation_after_capacity_debt" not in report["contexts"]
+
+        legacy_encoder_debt_history = make_session(
+            "legacy_encoder_debt_history",
+            media=(
+                "[WGC Perf] Input: 50 | Queued: 48 | DropIngress: 2 | Dup: 57 | Late: 28 | "
+                "PoolLease: max=58 freeMin=6 satDrop=0 overwritePrevented=530 mismatch=0 | "
+                "Ingress: accepted=48 decimated=2 retained=45/58 lowWater=33 decSoft=2 decHard=0 "
+                "softPress=2 hardPress=0 | Copy: 72us | Fence: 0us | Mux: 0KB | Overload: 0x1\n"
+                "[EncoderThread] WGC CFR visual timeline debt drop: reason=live mode=encoder_limited "
+                "excessTicks=2811 maxDebtTicks=3 maxExcessTicks=2811 shortfall=2814\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=31 "
+                "phaseErrorMax=9471568us shortfallMax=23425.0ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=0 syncDelayHolds=0 tooNewLeadMax=0us avDelay=30.5ms "
+                "startupDelay=272.3ms scheduleOffset=241758us effectiveDelay=272.3ms "
+                "lowSourceBypass=150 modeMismatch=0 sourceBacktrack=0 smoothBuf=1 smoothTargetMs=300 "
+                "smoothFrames=29/45/45 smoothDelay=241.8ms smoothPoolSlots=64 safetySlots=4 "
+                "retainedCapTrim=8303 ingressAccepted=8747 ingressDecimated=640 ingressRetained=0/58 "
+                "ingressLowWater=33 leasedMax=58 freeNow=0 freeMin=6 poolPressureTrim=8303 "
+                "poolSaturatedDrops=0 overwritePrevented=121889 leaseMismatches=0\n"
+                "[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure poolSat=0 "
+                "overwritePrevented=121889 ingressDecimated=640\n"
+                "[WGC CFR QUALITY] duplicatePct=98.9 duplicates=11820/11948 worst1sUnique=24 "
+                "worst1sRepeats=1733 worst1sEmit=1757 limiter=wgc_pool_pressure "
+                "sourceLimitedRepeats=9027 poolPressure=1 freeMin=6 poolSaturatedDrops=0 "
+                "ingressHard=0 ingressSoft=640 ingressDecimated=640 encoderOverload=0x0 "
+                "muxBackpressure=0 backend=wgc finalAvSync=exported_tracks_authoritative\n"
+                "[AppLatency] WARNING: app audio src=2 latency=17005ms\n"
+                "[PullAudio] WARNING: Extreme drift detected (98225 samples src=2) forceDrain=0\n"
+                "[STOP APP LATENCY] Source 2: avg=17005.0ms max=23999ms excessAvg=3982.0ms "
+                "excessMax=15256ms queueOverrun=0/0 underruns=0 catastrophicResync=0\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=4779200 expected=4779200 diff=+0 (+0.000 ms) "
+                "realMixed=4779200 fullSilence=0 partialSilence=0 sources=[2]\n"
+                "[VideoEncoder] Final packet timeline: target=99566667 us videoEnd=99566667 us "
+                "audioMinEnd=99566667 us audioMaxEnd=99566667 us maxPacketDelta=0 us streams(v=1 a=1) "
+                "audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(legacy_encoder_debt_history)
+        assert "wgc_encoder_timeline_debt" in report["verdicts"]
+        assert "wgc_framepool_pressure" not in report["verdicts"]
+        assert "wgc_copy_pool_pressure" not in report["verdicts"]
+        assert "duplication_consumer_starvation" not in report["verdicts"]
+        assert "audio_app_latency_elevated" not in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert "wgc_recording_health_inferred_from_legacy_evidence" in report["contexts"]
+        assert "app_audio_latency_following_encoder_debt" in report["contexts"]
+        assert report["evidence"]["recording_health"]["inferred_from_legacy_evidence"]
+        assert report["evidence"]["recording_health"]["peak_debt_ms"] == 23425
+
         wgc_source_coverage_best_effort = make_session(
             "wgc_source_coverage_best_effort",
             media=(

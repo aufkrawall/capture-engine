@@ -613,8 +613,8 @@ inline bool ShouldClampWgcCoverageCatchupToSingleTick(bool coverageRepeatActive,
     return false;
 }
 
-inline double GetWgcForceCatchupBudgetFrameMultiplier(double shortfallDurationMs) {
-    return HasWgcSevereLiveShortfall(shortfallDurationMs) ? 4.0 : 4.0;
+inline double GetWgcForceCatchupBudgetFrameMultiplier(double /*shortfallDurationMs*/) {
+    return 4.0;
 }
 
 inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double oldestBufferedFrameAgeMs,

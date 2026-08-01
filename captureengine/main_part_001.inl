@@ -28,6 +28,7 @@
 #include "injection.h"
 #include "process_loopback_worker_host.h"
 #include "pseudo_overlay.h"
+#include "recording_manifest.h"
 #include "screenshot.h"
 #include "tray.h"
 

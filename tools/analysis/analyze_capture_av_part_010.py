@@ -38,6 +38,15 @@ def classify_session_triage(
         )
     manifest = parse_session_manifest(session_dir)
     recording_manifest = selected_recording.get("manifest", {})
+    recording_status = recording_manifest.get("status", "")
+    recording_finalization_complete = parse_int(recording_manifest.get("finalization_complete"), 0) == 1
+    recording_output_saved = None
+    if "output_saved" in recording_manifest:
+        recording_output_saved = parse_int(recording_manifest.get("output_saved"), 0) == 1
+    recording_finalization_failed = recording_finalization_complete and (
+        recording_status == "recording_failed"
+        or (recording_status != "recording_canceled" and recording_output_saved is False)
+    )
     screen_capture_backend_history = resolve_screen_capture_backend_history(manifest, media_evidence)
     screen_capture_backend = resolve_screen_capture_backend(manifest, media_evidence)
     screen_capture_diagnostic_prefix = (
@@ -61,6 +70,17 @@ def classify_session_triage(
 
     verdicts = []
     contexts = []
+    recording_health_summary = summarize_recording_health_attribution(
+        media_evidence, recording_manifest, log_summary
+    )
+    recording_health = recording_health_summary["health"]
+    hard_wgc_pool_pressure = recording_health_summary["hard_wgc_pool_pressure"]
+    recording_health_degraded = recording_health_summary["degraded"]
+    recording_health_encoder_cause = recording_health_summary["encoder_cause"]
+    recording_health_mux_cause = recording_health_summary["mux_cause"]
+    wgc_capacity_debt_history_loss = recording_health_summary["capacity_debt_history_loss"]
+    if recording_health_summary["inferred"]:
+        contexts.append(screen_capture_diagnostic("recording_health_inferred_from_legacy_evidence"))
     controller_text = read_text_if_exists(session_dir / "captureengine.log")
     controller_recording_starts = len(
         re.findall(r"\[Controller\] Starting (?:audio-only )?recording\.\.\.", controller_text)
@@ -116,8 +136,11 @@ def classify_session_triage(
     if max_present_gap_ms >= 100.0:
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
-        verdicts.append(screen_capture_diagnostic("source_starvation"))
-        verdicts.append(screen_capture_diagnostic("upstream_producer_starvation"))
+        if wgc_capacity_debt_history_loss:
+            contexts.append(screen_capture_diagnostic("source_starvation_after_capacity_debt"))
+        else:
+            verdicts.append(screen_capture_diagnostic("source_starvation"))
+            verdicts.append(screen_capture_diagnostic("upstream_producer_starvation"))
     dxgi_dup_missed = any(
         item.get("backend", "").lower() == "dxgiduplication" and item.get("dup_missed", 0) > 0
         for item in media_evidence["wgc_perf"]
@@ -135,7 +158,10 @@ def classify_session_triage(
         for item in media_evidence["wgc_perf"]
     )
     if dxgi_dup_consumer_pressure:
-        verdicts.append("duplication_consumer_starvation")
+        if wgc_capacity_debt_history_loss and not hard_wgc_pool_pressure:
+            contexts.append("duplication_delivery_loss_after_capacity_debt")
+        else:
+            verdicts.append("duplication_consumer_starvation")
     elif dxgi_dup_missed:
         contexts.append("dxgi_dup_delivery_gap")
     if any(item.get("gpu_busy", 0) > 0 for item in media_evidence["inject_contention"]):
@@ -146,12 +172,20 @@ def classify_session_triage(
         contexts.append("inject_startup_publication_backlog")
     wgc_delivery_gap = has_wgc_delivery_gap(media_evidence)
     if wgc_delivery_gap:
-        verdicts.append(screen_capture_diagnostic("delivery_gap"))
+        if wgc_capacity_debt_history_loss:
+            contexts.append(screen_capture_diagnostic("delivery_gap_after_capacity_debt"))
+        else:
+            verdicts.append(screen_capture_diagnostic("delivery_gap"))
     if log_summary and log_summary["counts"].get("wgc_cfr_producer_contract_fault", 0) > 0:
         verdicts.append(screen_capture_diagnostic("producer_rate_contract_fault"))
-    wgc_framepool_pressure = has_wgc_framepool_pressure_attribution(media_evidence)
+    wgc_framepool_pressure_evidence = has_wgc_framepool_pressure_attribution(media_evidence)
+    wgc_framepool_pressure = wgc_framepool_pressure_evidence and not (
+        wgc_capacity_debt_history_loss and not hard_wgc_pool_pressure
+    )
     if wgc_framepool_pressure:
         verdicts.append(screen_capture_diagnostic("framepool_pressure"))
+    elif wgc_framepool_pressure_evidence:
+        contexts.append(screen_capture_diagnostic("framepool_pressure_after_capacity_debt"))
     wgc_pool_lease_contention = any(
         item.get("fault_hint") == "wgc_pool_lease_contention"
         or parse_numeric_prefix_int(item.get("overwritePrevented"), 0) > 0
@@ -208,10 +242,15 @@ def classify_session_triage(
     encoder_or_mux_backpressure = (
         has_encoder_or_mux_backpressure(media_evidence, perf_summaries, windowed=windowed_capacity_context)
         or strict_writer_failure
+        or (recording_health_degraded and recording_health_encoder_cause)
+        or (recording_health_degraded and recording_health_mux_cause)
     )
     if encoder_or_mux_backpressure:
         verdicts.append("ce_encoder_or_mux_backpressure")
-    hardware_encoder_starvation = any(item.get("encoder_overload", 0) for item in media_evidence["final_metadata"])
+    hardware_encoder_starvation = recording_health_degraded and recording_health_encoder_cause
+    hardware_encoder_starvation = hardware_encoder_starvation or any(
+        item.get("encoder_overload", 0) for item in media_evidence["final_metadata"]
+    )
     hardware_encoder_starvation = hardware_encoder_starvation or any(
         item.get("overload_flags", 0) & 0x1 for item in media_evidence["wgc_perf"]
     )
@@ -220,6 +259,14 @@ def classify_session_triage(
     )
     if hardware_encoder_starvation:
         verdicts.append("hardware_encoder_starvation")
+    if recording_health_degraded and recording_health_encoder_cause:
+        verdicts.append(screen_capture_diagnostic("encoder_timeline_debt"))
+    if recording_health_degraded and recording_health_mux_cause:
+        verdicts.append(screen_capture_diagnostic("mux_timeline_debt"))
+    if not recording_health_degraded and recording_health_encoder_cause:
+        contexts.append("recording_encoder_capacity_pressure_observed")
+    if not recording_health_degraded and recording_health_mux_cause:
+        contexts.append("recording_mux_capacity_pressure_observed")
     capacity_pressure_for_wgc_overload = encoder_or_mux_backpressure if windowed_capacity_context else None
     wgc_encoder_overload_policy_fault = has_wgc_encoder_overload_policy_fault(
         media_evidence, log_summary, capacity_pressure_for_wgc_overload
@@ -301,13 +348,19 @@ def classify_session_triage(
         verdicts.append(screen_capture_diagnostic("pool_saturated_safe_drop"))
     wgc_ingress_decimated = has_wgc_ingress_decimated(media_evidence)
     if wgc_ingress_decimated:
-        verdicts.append(screen_capture_diagnostic("ingress_decimated"))
+        if wgc_capacity_debt_history_loss and not hard_wgc_pool_pressure:
+            contexts.append(screen_capture_diagnostic("ingress_decimated_after_capacity_debt"))
+        else:
+            verdicts.append(screen_capture_diagnostic("ingress_decimated"))
     wgc_uniform_playout_ingress_double_decimation = has_wgc_uniform_playout_ingress_double_decimation(media_evidence)
     if wgc_uniform_playout_ingress_double_decimation:
         verdicts.append(screen_capture_diagnostic("uniform_playout_ingress_double_decimation"))
     wgc_copy_pool_pressure = has_wgc_copy_pool_pressure(media_evidence)
     if wgc_copy_pool_pressure:
-        verdicts.append(screen_capture_diagnostic("copy_pool_pressure"))
+        if wgc_capacity_debt_history_loss and not hard_wgc_pool_pressure:
+            contexts.append(screen_capture_diagnostic("copy_pool_pressure_after_capacity_debt"))
+        else:
+            verdicts.append(screen_capture_diagnostic("copy_pool_pressure"))
     wgc_pool_evidence_missing = has_wgc_pool_evidence_missing(media_evidence)
     if wgc_pool_evidence_missing:
         verdicts.append(screen_capture_diagnostic("pool_evidence_missing"))
@@ -340,8 +393,23 @@ def classify_session_triage(
             verdicts.append("sparse_app_source_silence")
         else:
             verdicts.append("started_app_source_underrun")
+    exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
+    encoder_debt_audio_backlog_recovered = (
+        recording_health_degraded
+        and recording_health_encoder_cause
+        and exported_av_sync_ok
+        and app_audio_latency["queue_overrun_packets"] == 0
+        and app_audio_latency["queue_overrun_frames"] == 0
+        and app_audio_latency["underruns"] == 0
+        and app_audio_latency["catastrophic_resync_events"] == 0
+        and audio_ingest_starvation["destroyed_samples"] == 0
+        and stop_audio_shortfalls["short_count"] == 0
+    )
     if app_audio_latency["fault_evidence"]:
-        verdicts.append("audio_app_latency_elevated")
+        if encoder_debt_audio_backlog_recovered:
+            contexts.append("app_audio_latency_following_encoder_debt")
+        else:
+            verdicts.append("audio_app_latency_elevated")
     elif app_audio_latency["warning_only_context"]:
         contexts.append("app_audio_latency_within_slack")
     elif app_audio_latency["stop_drain_only"]:
@@ -358,7 +426,6 @@ def classify_session_triage(
         item for item in media_evidence["final_packet_timelines"]
         if item["max_packet_delta_us"] > 1000 or item["audio_past_target"] > 0
     ]
-    exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
     if log_summary and log_summary["counts"].get("audio_stop_force_drain_backlog", 0) > 0:
         contexts.append("audio_stop_force_drain_backlog")
     if stop_audio_shortfalls["multi_source_short_count"] > 0:
@@ -371,6 +438,10 @@ def classify_session_triage(
     if audio_ingest_starvation["resync_events"] > 0:
         verdicts.append("audio_ingest_starvation_resync")
     timeline_audio_fault_counts = dict(strict_audio_fault_counts)
+    if encoder_debt_audio_backlog_recovered:
+        timeline_audio_fault_counts["audio_extreme_drift"] = 0
+        if strict_audio_fault_counts.get("audio_extreme_drift", 0) > 0:
+            contexts.append("audio_drift_backlog_recovered_after_encoder_debt")
     if exported_av_sync_ok:
         for source_health_event in (
             "audio_underrun",
@@ -421,12 +492,15 @@ def classify_session_triage(
         or wgc_framepool_pressure
         or wgc_repeat_with_safe_candidate
         or wgc_post_stall_recovery_fault
+        or recording_health_degraded
     ):
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
         contexts.append("external_overlay_present")
     if hook_evidence["crash_events"]:
         verdicts.append("ce_process_crash")
+    if recording_finalization_failed:
+        verdicts.append("ce_recording_output_not_saved")
     if not verdicts:
         verdicts.append("unknown")
 
@@ -467,6 +541,8 @@ def classify_session_triage(
             "audio_timeline": "ce_audio_timeline_fault" in verdicts,
             "visual_timeline": "ce_visual_timeline_fault" in verdicts,
             "wgc_encoder_overload_policy": wgc_encoder_overload_policy_fault,
+            "recording_health_degraded": recording_health_degraded,
+            "recording_encoder_timeline_debt": recording_health_degraded and recording_health_encoder_cause,
             "wgc_av_sync_delay_unrealized": wgc_av_sync_delay_risk,
             "wgc_av_sync_delay_residual": wgc_av_sync_delay_residual_fault,
             "wgc_audio_late_risk": wgc_audio_late_risk,
@@ -504,6 +580,7 @@ def classify_session_triage(
             "inject_cfr_target_policy_hold": inject_target_policy_hold_fault,
             "post_mux_probe_hang": post_mux_probe_hang,
             "post_mux_probe_timeout": post_mux_probe_timeout,
+            "recording_output_not_saved": recording_finalization_failed,
             "ce_process_crash": bool(hook_evidence["crash_events"]),
         },
         "evidence": {
@@ -537,6 +614,13 @@ def classify_session_triage(
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
             "wgc_quality": media_evidence["wgc_quality"],
+            "recording_health": recording_health,
+            "recording_finalization": {
+                "status": recording_status,
+                "complete": recording_finalization_complete,
+                "output_saved": recording_output_saved,
+                "failed": recording_finalization_failed,
+            },
             "wgc_source_coverage": media_evidence["wgc_source_coverage"],
             "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
             "wgc_near_cap_window_pressure": wgc_near_cap_window,

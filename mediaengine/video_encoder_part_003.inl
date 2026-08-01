@@ -137,6 +137,7 @@ uint64_t VideoEncoder::GetWrittenVideoPacketCount() const {
 }
 
 bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs) {
+    outputPublished.store(false, std::memory_order_relaxed);
     const uint64_t writtenVideoPackets = GetWrittenVideoPacketCount();
     const auto disposition = ce::mux::SelectVideoOutputDisposition(
         discardOutputRequested.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
@@ -163,12 +164,14 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
             "staging='%s' (file is playable but was not renamed to final name)",
             publishError, static_cast<long long>(finalDurationUs),
             static_cast<unsigned long long>(writtenVideoPackets), outputFilename.c_str());
+        outputPublished.store(true, std::memory_order_release);
         return true;
     }
 
     outputFilename = outputReservation.Utf8Path();
     DLL_Log("[VideoEncoder] output_published file='%s' durationUs=%lld videoPackets=%llu", outputFilename.c_str(),
             static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets));
+    outputPublished.store(true, std::memory_order_release);
     return true;
 }
 

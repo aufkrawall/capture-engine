@@ -557,6 +557,38 @@ if False:
         assert report["evidence"]["mux_fault_counts"]["writer_finalize_timeout"] == 1
         assert report["evidence"]["writer_sync_after_timeout"]
 
+        failed_output = make_session(
+            "failed_output",
+            media="[RECORDING FINALIZATION] status=failed outputSaved=0 finalizationComplete=1\n",
+        )
+        (failed_output / "recording_legacy_42.manifest").write_text(
+            "recording_id=legacy\nmedia_pid=42\nmedia_log=media.log\nstatus=recording_failed\n"
+            "output_saved=0\nfinalization_complete=1\n",
+            encoding="utf-8",
+        )
+        report = classify_session_triage(failed_output)
+        assert "ce_recording_output_not_saved" in report["verdicts"]
+        assert report["faults"]["recording_output_not_saved"]
+        assert report["evidence"]["recording_finalization"] == {
+            "status": "recording_failed",
+            "complete": True,
+            "output_saved": False,
+            "failed": True,
+        }
+
+        canceled_output = make_session(
+            "canceled_output",
+            media="[RECORDING FINALIZATION] status=canceled outputSaved=0 finalizationComplete=1\n",
+        )
+        (canceled_output / "recording_legacy_43.manifest").write_text(
+            "recording_id=legacy\nmedia_pid=43\nmedia_log=media.log\nstatus=recording_canceled\n"
+            "output_saved=0\nfinalization_complete=1\n",
+            encoding="utf-8",
+        )
+        report = classify_session_triage(canceled_output)
+        assert "ce_recording_output_not_saved" not in report["verdicts"]
+        assert not report["faults"]["recording_output_not_saved"]
+
         writer_post_mux_hang = make_session(
             "writer_post_mux_hang",
             media=(

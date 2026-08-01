@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "../common/config.h"
+#include "../common/capture_policy/constants.h"
 #include "../common/pseudo_overlay_focus_grace.h"
+#include "../common/pseudo_overlay_visibility.h"
 #include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
 
@@ -42,13 +44,13 @@ public:
     void RequestRefresh();
 
     // Notify encoder overload (warning shown for 5 seconds).
-    void TriggerEncoderOverloadWarning(uint32_t sustainFpsX100 = 0);
+    void TriggerRecordingHealthWarning(uint32_t warningKind, uint32_t sustainFpsX100 = 0);
 
     // Show a brief screenshot result notification (2 seconds).
     void ShowScreenshotNotification(bool succeeded);
 
-    // Show a brief recording-stopped notification (2 seconds).
-    void ShowRecordingStoppedNotification();
+    // Show recording finalization state until media publishes the actual result.
+    void ShowRecordingFinalizingNotification();
 
     // Temporarily hide overlay windows so they do not appear in a screenshot.
     // Must be paired with EndScreenshotCapture() after the capture completes.
@@ -154,10 +156,13 @@ private:
         ce::recording_indicator::State::Idle};
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
+    std::atomic<uint32_t> overloadWarnKind_{ce::capture_policy::kOverlayWarningNone};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
     std::atomic<bool> screenshotNotificationSucceeded_{true};
     std::atomic<bool> screenshotInProgress_{false};
-    std::atomic<ULONGLONG> recordingStopNotifyUntil_{0};
+    std::atomic<ULONGLONG> recordingNotifyUntil_{0};
+    std::atomic<ce::pseudo_overlay::RecordingNotificationKind> recordingNotification_{
+        ce::pseudo_overlay::RecordingNotificationKind::None};
     // Warning blink state
     bool warnActive_ = false;
     bool warnVisible_ = false;

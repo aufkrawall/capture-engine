@@ -48,7 +48,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.overlay.fpsColor, 0xFF05FAB8u);
     EXPECT_TRUE(config.pseudoOverlay.enabled);
     EXPECT_EQ(config.pseudoOverlay.mode, 2);
-    EXPECT_FALSE(config.pseudoOverlay.showEncoderOverloadWarn);
+    EXPECT_TRUE(config.pseudoOverlay.showEncoderOverloadWarn);
     EXPECT_EQ(config.pseudoOverlay.foregroundAcquireGraceMs, 2000);
     ASSERT_EQ(config.audioSources.size(), 1u);
     EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);

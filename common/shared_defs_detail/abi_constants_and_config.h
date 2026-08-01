@@ -53,14 +53,15 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 35: Added exact build identity to discovery so stale Vulkan layers stay dormant
 // Version 36: Expanded Vulkan encoder-owned texture publication to the full shared texture slot count
 // Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
-static constexpr uint32_t SHARED_MEMORY_VERSION = 37;
+// Version 38: Added latched recording-health telemetry and finalization-result notifications
+static constexpr uint32_t SHARED_MEMORY_VERSION = 38;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_37_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_38_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_37";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_38";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -231,7 +232,11 @@ enum class OverlayNotificationType : uint32_t {
     None = 0,
     ScreenshotSaved = 1,
     ScreenshotFailed = 2,
-    RecordingStopped = 3,
+    RecordingFinalizing = 3,
+    RecordingSaved = 4,
+    RecordingSavedDegraded = 5,
+    RecordingCanceled = 6,
+    RecordingFailed = 7,
 };
 
 enum class ScreenshotPixelFormat : uint32_t {

@@ -113,6 +113,12 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> wgcCaptureHealthFlags{0};  // bit0=source-starved, bit1=scheduler-limited
     std::atomic<uint32_t> wgcCaptureHealthFps{0};    // recent WGC input min-250 FPS for source warnings
     std::atomic<uint32_t> encoderBottlenecked{0};    // 1 when encoder can't sustain target FPS
+    // Recording-level capacity history. Unlike encoderOverloadFlags, the cause
+    // and degradation bits remain latched until the next recording so recovery
+    // cannot erase evidence that the immutable CFR timeline was damaged.
+    std::atomic<uint32_t> recordingHealthFlags{0};
+    std::atomic<uint32_t> recordingTimelineDebtMs{0};
+    std::atomic<uint32_t> recordingPeakTimelineDebtMs{0};
 
     // Command flags (controller -> media process via shared memory)
     // Using std::atomic for proper cross-process visibility and memory ordering

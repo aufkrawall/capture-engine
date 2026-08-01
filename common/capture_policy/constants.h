@@ -150,5 +150,24 @@ constexpr uint32_t kWgcCaptureHealthFlagSourceStarved = 1u;
 constexpr uint32_t kWgcCaptureHealthFlagSchedulerLimited = 2u;
 constexpr uint32_t kOverlayWarningNone = 0u;
 constexpr uint32_t kOverlayWarningEncoderOverload = 1u;
+constexpr uint32_t kOverlayWarningRecordingRecovering = 2u;
+constexpr uint32_t kOverlayWarningRecordingDegraded = 3u;
+
+// Recording-health flags are telemetry and user feedback only. They must never
+// alter CFR scheduling, timestamps, audio, encoder settings, or mux policy.
+constexpr uint32_t kRecordingHealthFlagEncoderPressureObserved = 1u << 0;
+constexpr uint32_t kRecordingHealthFlagMuxPressureObserved = 1u << 1;
+constexpr uint32_t kRecordingHealthFlagTimelineDebt = 1u << 2;
+constexpr uint32_t kRecordingHealthFlagRecovering = 1u << 3;
+constexpr uint32_t kRecordingHealthFlagVideoDegraded = 1u << 4;
+constexpr uint32_t kRecordingHealthFlagSevere = 1u << 5;
+constexpr uint32_t kRecordingHealthCauseMask =
+    kRecordingHealthFlagEncoderPressureObserved | kRecordingHealthFlagMuxPressureObserved;
+constexpr uint32_t kRecordingHealthLatchedMask =
+    kRecordingHealthCauseMask | kRecordingHealthFlagVideoDegraded | kRecordingHealthFlagSevere;
+constexpr uint32_t kRecordingHealthCausalDebtMs = 250;
+constexpr uint32_t kRecordingHealthDegradedDebtMs = 500;
+constexpr uint32_t kRecordingHealthSevereDebtMs = 2000;
+constexpr uint32_t kRecordingHealthPressureConfirmationSamples = 2;
 
 }  // namespace ce::capture_policy

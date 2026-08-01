@@ -100,6 +100,7 @@ def parse_wgc_quality_line(line):
         "limiter": values.get("limiter", ""),
         "source_limited_repeats": parse_int(values.get("sourceLimitedRepeats"), 0),
         "pool_pressure": parse_int(values.get("poolPressure"), 0),
+        "pool_free_evidence": "freeMin" in values,
         "free_min": parse_int(values.get("freeMin"), 0),
         "pool_saturated_drops": parse_int(values.get("poolSaturatedDrops"), 0),
         "ingress_hard": parse_int(values.get("ingressHard"), 0),
@@ -156,6 +157,23 @@ def parse_wgc_source_coverage_line(line):
         "pool_free_min": parse_int(values.get("poolFreeMin"), 0),
         "final_av_sync": values.get("finalAvSync", ""),
         "note": values.get("note", ""),
+        "line": line,
+    }
+
+
+def parse_recording_health_line(line):
+    payload_match = RECORDING_HEALTH_RE.search(line)
+    payload = payload_match.group(1) if payload_match else line
+    values = parse_attribution_payload(payload)
+    return {
+        "status": values.get("status", "unknown"),
+        "cause": values.get("cause", "none"),
+        "flags": parse_base0_int(values.get("flags"), 0),
+        "current_debt_ms": parse_int(values.get("currentDebtMs"), 0),
+        "peak_debt_ms": parse_int(values.get("peakDebtMs"), 0),
+        "capacity_attributed_debt_ms": parse_int(values.get("capacityDebtMs"), -1),
+        "cfr": parse_int(values.get("cfr"), 0),
+        "settings_changed": parse_int(values.get("settingsChanged"), 0),
         "line": line,
     }
 
@@ -362,6 +380,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "screen_capture_backend_events",
         "wgc_summary",
         "wgc_quality",
+        "recording_health",
         "wgc_smoothness_summary",
         "inject_summary",
         "inject_source_summary",

@@ -432,7 +432,7 @@
         }
     }
 
-    void CleanupAudioOnlyMuxer() {
+    bool CleanupAudioOnlyMuxer() {
         int closeResult = 0;
         if (audioOnlyFmtCtx) {
             if (audioOnlyFmtCtx->pb) {
@@ -444,13 +444,15 @@
             avformat_free_context(audioOnlyFmtCtx);
             audioOnlyFmtCtx = nullptr;
         }
-        if (audioOnlyTrailerSucceeded && closeResult >= 0) {
+        const bool outputPublished = audioOnlyTrailerSucceeded && closeResult >= 0;
+        if (outputPublished) {
             audioOnlyOutputReservation.Publish();
         } else {
             audioOnlyOutputReservation.CleanupOwnedFile();
         }
         audioOnlyTrailerSucceeded = false;
         audioOnlyFilename.clear();
+        return outputPublished;
     }
 
     // Trusted System QPC Frequency

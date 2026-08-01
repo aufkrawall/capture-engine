@@ -506,13 +506,13 @@
         DLL_Log("[STOP SUMMARY] Recording cancelled before live output; staged media discarded");
     }
 
-    void StopRecording(bool cancelUncommittedVideo = false) {
+    bool StopRecording(bool cancelUncommittedVideo = false) {
         // Audio-only: stop audio thread, write trailer, clean up
         if (audioOnly) {
             {
                 std::lock_guard<std::recursive_mutex> lock(muxMutex);
                 if (!recording)
-                    return;
+                    return false;
             }
             // Stop WASAPI/process-loopback first while AudioLoop is still
             // alive. Stop(false) performs each source's one-shot final drain;
@@ -620,13 +620,14 @@
                 if (src.syncResampler)
                     src.syncResampler->Reset();
             }
+            bool audioOutputPublished = false;
             if (audioOnlyFmtCtx) {
                 audioOnlyTrailerSucceeded = av_write_trailer(audioOnlyFmtCtx) >= 0;
                 if (!audioOnlyTrailerSucceeded) {
                     DLL_Log("[StopAudio] ERROR: Audio-only trailer write failed");
                 }
                 DLL_Log("[StopAudio] Audio-only recording finalized: %s", audioOnlyFilename.c_str());
-                CleanupAudioOnlyMuxer();
+                audioOutputPublished = CleanupAudioOnlyMuxer();
             }
             firstVideoFrameMs = 0;
             firstVideoFrameCommitted = false;
@@ -642,9 +643,9 @@
                 static_cast<double>(config.avSyncResolvedRenderLatencyMs), config.avSyncConfidence.c_str(),
                 config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
-            return;
+            return audioOutputPublished;
         }
 
         if (cancelUncommittedVideo && !firstVideoFrameCommitted) {
             CancelUncommittedVideoRecording();
-            return;
+            return false;

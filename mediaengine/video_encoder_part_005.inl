@@ -391,6 +391,7 @@ void VideoEncoder::BeginDeferredRecording() {
     writerFinalizeSlowWarningLogged.store(false, std::memory_order_relaxed);
     writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
     discardOutputRequested.store(false, std::memory_order_relaxed);
+    outputPublished.store(false, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
