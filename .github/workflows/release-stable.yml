@@ -1,0 +1,151 @@
+name: release-stable
+
+# Manual-only stable release builder: never runs on push or pull_request.
+# Trigger with the desired version (0.1.N) or leave it empty to derive the
+# next build number from the newest existing v0.1.* release tag.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable release version (0.1.N). Empty = next after the newest v0.1.* release tag."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-stable
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Linux MSYS2 packages
+        uses: actions/cache@v4
+        with:
+          path: build/msys64_linux
+          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'build_part_*.py') }}
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            g++-mingw-w64-x86-64 \
+            g++-mingw-w64-i686 \
+            glslang-tools \
+            llvm \
+            pkg-config \
+            spirv-tools \
+            zstd
+
+      - name: Run build policy tests on Linux
+        shell: pwsh
+        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $inputVersion = "${{ inputs.version }}".Trim()
+          if ($inputVersion) {
+            if ($inputVersion -notmatch '^0\.1\.(\d+)$') {
+              throw "Version input must match 0.1.N, got '$inputVersion'"
+            }
+            "version=$inputVersion" >> $env:GITHUB_OUTPUT
+          } else {
+            $numbers = @()
+            git ls-remote --tags origin "refs/tags/v0.1.*" | ForEach-Object {
+              if ($_ -match 'refs/tags/v0\.1\.(\d+)$') {
+                $numbers += [int]$Matches[1]
+              }
+            }
+            if ($numbers.Count -eq 0) {
+              throw "No existing v0.1.* release tags found; pass the 'version' input (e.g. 0.1.5266)."
+            }
+            $next = ($numbers | Measure-Object -Maximum).Maximum + 1
+            "version=0.1.$next" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Seed build number
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ($env:VERSION -notmatch '^0\.1\.(\d+)$') {
+            throw "Unexpected version '$env:VERSION'"
+          }
+          $buildNumber = [int]$Matches[1]
+          if ($buildNumber -lt 1) {
+            throw "Build number must be >= 1"
+          }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Set-Content -Path build/build_number.txt -Value ($buildNumber - 1) -NoNewline
+          Write-Output "Seeded build number $($buildNumber - 1); build.py will mint 0.1.$buildNumber"
+
+      - name: Build release product
+        shell: pwsh
+        run: python build.py --skip-updates
+
+      - name: Verify built version
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $expected = $env:VERSION
+          $header = Get-Content -Raw common/build_version.h
+          $pattern = '#define CAPTURE_VERSION "' + [regex]::Escape($expected) + '"'
+          if ($header -notmatch $pattern) {
+            Write-Output $header
+            throw "Built CAPTURE_VERSION does not match requested $expected"
+          }
+          Write-Output "Built version confirmed: $expected"
+
+      - name: Publish stable tag and GitHub release
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          $version = $env:VERSION
+          $tag = "v$version"
+          $existing = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "git ls-remote failed"
+          }
+          if ($existing) {
+            throw "Tag $tag already exists on origin; refusing to overwrite."
+          }
+          $assets = @(
+            "build/packages/captureengine.7z",
+            "build/packages/testapps.7z",
+            "build/verification/latest_manifest.json",
+            "build/verification/latest_summary.txt"
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path $asset)) {
+              throw "Missing release asset: $asset"
+            }
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a $tag -m "Stable release $version"
+          git push origin $tag
+          gh release create $tag `
+            --title "Stable release $version" `
+            --notes "Stable release $version built from $env:COMMIT.`n`nAssets: captureengine.7z (product), testapps.7z (test apps), latest_manifest.json / latest_summary.txt (build verification evidence)." `
+            @assets

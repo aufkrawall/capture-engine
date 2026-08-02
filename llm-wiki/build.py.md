@@ -6,6 +6,7 @@ Primary sources:
 - `AGENTS.md`
 - `build.py`
 - `.github/workflows/hardening-ci.yml`
+- `.github/workflows/release-stable.yml`
 - `tools/verify_pe_hardening.py`
 - `licenses/FFmpeg_NOTICE.txt`
 - `hook/common/dx12_sampler_policy.cpp`
@@ -296,6 +297,7 @@ Default quality mode currently:
 - Lint findings are fatal only for a standalone `--lint` invocation. Default, verify, and mixed build/test flows record a `warning` lint step and continue, so a style/LSP checker cannot prevent compilation or the authoritative test/product gates from running.
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
+- **GitHub Actions release automation (2026-08-02):** `hardening-ci.yml` is now manual-only (`workflow_dispatch`); push/PR CI is disabled. `release-stable.yml` builds a stable release on manual dispatch with the same Linux cross-compile command the former CI ran (`python build.py --skip-updates`), then tags `v0.1.<N>` (from the `version` input or the newest `v0.1.*` tag plus one), pushes the tag, and creates a GitHub release with `build/packages/captureengine.7z`, `build/packages/testapps.7z`, and the verification manifest/summary. Because `common/build_version.h` is untracked and a fresh checkout has no local build counter, the workflow seeds `build/build_number.txt` with N-1 so the build mints exactly `0.1.N`, and fails closed when the built `CAPTURE_VERSION` or an already-existing tag contradicts the requested version. Hosted Windows runners cannot cache the ~10+ GB MSYS2 tree plus source-built FFmpeg closure within GitHub cache limits, so the release uses the Linux cross-build; the canonical native Windows build (PDBs, effective x64 CFG) remains the local release-quality path.
 - On Linux and WSL, the script uses system MinGW cross-compilers, downloaded MSYS2 packages for dependencies, and a host-native `llvm-readobj` for final PE inspection. GCC-specific flag selection prevents Clang-only CFG, diagnostic, and strict-FP spellings from reaching the cross compiler. Hook and FG test-app DX12 sources tolerate the older system D3D12 declarations: local sampler-bit encoding replaces a missing SDK helper, enum masks avoid non-`constexpr` MinGW operators, and DRED capability-gates newer interfaces while retaining the base path whenever the header exposes it. Required x64 Vulkan test apps, hook, and layer fail immediately when their import library or layer link is unavailable; only Linux x86 Vulkan coverage may be explicitly skipped because the dependency package is optional. Parallel compile queues reject duplicate normalized object outputs before workers start.
 
 ### MinGW Cross-Compile Pitfalls

@@ -1,25 +1,12 @@
 name: hardening-ci
 
+# Manual-only since 2026-08-02: push/PR CI is disabled by request.
+# Stable releases are produced by release-stable.yml (also manual dispatch).
 on:
-  push:
-    branches: ["main", "master"]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE"
-      - "analysis/**"
-      - "analysis_logs/**"
-      - "*.log"
-  pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE"
-      - "analysis/**"
-      - "analysis_logs/**"
-      - "*.log"
   workflow_dispatch:
 
 concurrency:
-  group: hardening-ci-${{ github.event.pull_request.number || github.ref }}
+  group: hardening-ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
