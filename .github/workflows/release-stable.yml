@@ -51,13 +51,16 @@ jobs:
       - name: Sync repository (persistent workspace, never cleans)
         shell: pwsh
         run: |
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            throw "GitHub CLI (gh) is required on the self-hosted runner; install it from https://cli.github.com/ and make sure it is on PATH."
+          }
+          Write-Output "GITHUB_TOKEN length: $($env:GITHUB_TOKEN.Length)"
+          gh auth setup-git
           if (-not (Test-Path .git)) {
             git init -b main
             git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
           }
           git remote set-url origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GITHUB_TOKEN"))
-          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
           git fetch --prune origin main
           git switch -C main origin/main
           Write-Output "Workspace synced to $env:GITHUB_SHA; persistent ignored trees preserved"
