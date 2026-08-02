@@ -8,7 +8,11 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     permissions:
       contents: read
+    env:
+      CTX_TOKEN: ${{ github.token }}
     steps:
       - name: Token length
         shell: pwsh
-        run: Write-Output "len=$($env:GITHUB_TOKEN.Length)"
+        run: |
+          Write-Output "env_len=$($env:GITHUB_TOKEN.Length)"
+          Write-Output "ctx_len=$($env:CTX_TOKEN.Length)"
