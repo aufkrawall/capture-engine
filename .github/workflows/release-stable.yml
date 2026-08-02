@@ -46,6 +46,11 @@ jobs:
     # files and never touches ignored trees or junctions. See llm-wiki.
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 180
+    # This self-hosted runner (broker flow) does not populate the GITHUB_TOKEN
+    # environment variable automatically, although the github.token context is
+    # available. Pass it explicitly so steps/actions that read the env var work.
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - name: Sync repository (persistent workspace, never cleans)
@@ -54,7 +59,6 @@ jobs:
           if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
             throw "GitHub CLI (gh) is required on the self-hosted runner; install it from https://cli.github.com/ and make sure it is on PATH."
           }
-          Write-Output "GITHUB_TOKEN length: $($env:GITHUB_TOKEN.Length)"
           gh auth setup-git
           git config --local --unset-all http.https://github.com/.extraheader 2>$null
           if (-not (Test-Path .git)) {
