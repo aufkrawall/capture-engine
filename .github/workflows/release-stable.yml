@@ -175,13 +175,10 @@ jobs:
           if ($mode -notin @('auto', 'always', 'never')) {
             throw "Unexpected attest input '$mode'"
           }
-          $headers = @{
-            Authorization = "Bearer $env:GITHUB_TOKEN"
-            "User-Agent" = "release-stable"
-            Accept = "application/vnd.github+json"
+          $visibility = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.visibility'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not query repository visibility via gh"
           }
-          $repo = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY" -Headers $headers
-          $visibility = [string]$repo.visibility
           $runAttest = $false
           if ($mode -eq 'always') {
             $runAttest = $true
