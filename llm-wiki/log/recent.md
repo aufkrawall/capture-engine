@@ -1,10 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-02 - Stable releases move to a self-hosted native Windows runner with GitHub attestation
+
+- **Change:** `release-stable.yml` no longer runs the Ubuntu Linux cross-compile on `ubuntu-latest`. It now targets the maintainer's self-hosted Windows runner (`runs-on: [self-hosted, Windows, X64]`) and builds natively with `python build.py --skip-updates`, so release artifacts match local Windows quality: PDBs, effective x64 CFG, custom-patched FFmpeg closure, and FG test-app runtime payloads. `actions/checkout` runs with `clean: false`; the persistent runner workspace must keep the ignored `build/msys64`, `ffmpeg_build/`, `external/ffmpeg`, and `installed/` trees (copy them once, or create junctions to the local dev trees; do not run a concurrent dev build against shared junctions).
+- **Attestation:** a new `attest` dispatch input (`auto`/`always`/`never`, default `auto`) generates `actions/attest@v4` build provenance for the four release assets. `auto` queries the REST API for repository visibility and attests only when the repository is public, because GitHub Free/Pro/Team artifact attestation is restricted to public repositories; `always` fails closed on a private repo. Attestation runs before the tag/release is published. Enabling immutable releases in repository settings remains recommended for automatic release attestations (`gh release verify`).
+- **Runner prerequisites:** GitHub CLI (`gh`) must be installed on the runner; the job preflights it. The workflow queues until a Windows x64 self-hosted runner is registered with the `self-hosted`/`Windows`/`X64` labels.
+
 ### 2026-08-02 - GitHub Actions: push/PR CI disabled, manual stable-release workflow added
 
 - **Change:** `.github/workflows/hardening-ci.yml` is now `workflow_dispatch`-only; push and pull_request triggers are removed. New `.github/workflows/release-stable.yml` compiles a stable release on manual dispatch only, using the same Ubuntu cross-compile path the former CI used (`python build.py --skip-updates`, shared `build/msys64_linux` cache), then tags `v0.1.<N>`, pushes the tag, and creates a GitHub release with `build/packages/captureengine.7z`, `build/packages/testapps.7z`, and the verification `latest_manifest.json`/`latest_summary.txt`.
 - **Version contract:** `common/build_version.h` is untracked and fresh checkouts have no build counter, so the workflow seeds `build/build_number.txt` with N-1 before the build (`build.py` mints `0.1.N`), derives N from the optional `version` input or from the newest existing `v0.1.*` tag, and fails closed if the built `CAPTURE_VERSION` or an already-existing tag contradicts the requested version. Trigger via `gh workflow run release-stable.yml -f version=0.1.N` (or UI dispatch, with or without a version).
 - **Trade-off:** GitHub-hosted Windows runners cannot cache the ~10+ GB MSYS2 tree plus source-built FFmpeg closure within cache limits, so the release artifact is the Linux cross-compiled product (DWARF in image, no PDBs/x64 CFG). The canonical native Windows build (PDBs, effective CFG) remains the local release-quality path. See `build.py.md` for details.
+
+Superseded later the same day by the self-hosted native Windows release runner described in the entry above.
 
 ### 2026-08-01 - Preserve CFR/audio under extreme encoder loss while reporting the damaged recording truthfully
 

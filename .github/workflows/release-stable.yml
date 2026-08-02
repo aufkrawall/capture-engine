@@ -11,9 +11,20 @@ on:
         required: false
         type: string
         default: ""
+      attest:
+        description: "Generate GitHub artifact attestation for release assets. auto = only when the repository is public (GitHub Free/Pro/Team cannot attest private repositories)."
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - always
+          - never
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-stable
@@ -21,39 +32,27 @@ concurrency:
 
 jobs:
   build-release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Native Windows release build on the maintainer's self-hosted runner.
+    # The workspace must be persistent: checkout runs with clean: false so the
+    # ignored toolchain trees (build/msys64, ffmpeg_build/, external/ffmpeg,
+    # installed/) survive and the artifact matches a local native build
+    # (PDBs, effective x64 CFG, custom-patched FFmpeg, FG runtime payloads).
+    # See llm-wiki/build.py.md for runner setup.
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Cache Linux MSYS2 packages
-        uses: actions/cache@v4
-        with:
-          path: build/msys64_linux
-          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'build_part_*.py') }}
-
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake \
-            g++-mingw-w64-x86-64 \
-            g++-mingw-w64-i686 \
-            glslang-tools \
-            llvm \
-            pkg-config \
-            spirv-tools \
-            zstd
-
-      - name: Run build policy tests on Linux
+      - name: Run build policy tests
         shell: pwsh
         run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening
 
@@ -115,12 +114,62 @@ jobs:
           }
           Write-Output "Built version confirmed: $expected"
 
+      - name: Determine attestation mode
+        id: attest
+        shell: pwsh
+        env:
+          ATTEST_INPUT: ${{ inputs.attest }}
+        run: |
+          $mode = $env:ATTEST_INPUT
+          if ($mode -notin @('auto', 'always', 'never')) {
+            throw "Unexpected attest input '$mode'"
+          }
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            "User-Agent" = "release-stable"
+            Accept = "application/vnd.github+json"
+          }
+          $repo = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY" -Headers $headers
+          $visibility = [string]$repo.visibility
+          $runAttest = $false
+          if ($mode -eq 'always') {
+            $runAttest = $true
+            if ($visibility -ne 'public') {
+              Write-Warning "Attestation forced (always) but repository is '$visibility'; GitHub Free/Pro/Team only supports artifact attestation in public repositories, so the attestation step will fail closed."
+            }
+          } elseif ($mode -eq 'auto' -and $visibility -eq 'public') {
+            $runAttest = $true
+          }
+          if ($runAttest) {
+            Write-Output "Artifact attestation enabled (mode=$mode, repository_visibility=$visibility)."
+          } else {
+            Write-Output "Artifact attestation skipped (mode=$mode, repository_visibility=$visibility). GitHub Free/Pro/Team artifact attestation requires a public repository."
+          }
+          if ($runAttest) {
+            "run=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "run=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Attest release assets
+        if: steps.attest.outputs.run == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            build/packages/captureengine.7z
+            build/packages/testapps.7z
+            build/verification/latest_manifest.json
+            build/verification/latest_summary.txt
+
       - name: Publish stable tag and GitHub release
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
           COMMIT: ${{ github.sha }}
         run: |
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            throw "GitHub CLI (gh) is required on the self-hosted runner; install it from https://cli.github.com/ and make sure it is on PATH."
+          }
           $version = $env:VERSION
           $tag = "v$version"
           $existing = git ls-remote --tags origin "refs/tags/$tag"
