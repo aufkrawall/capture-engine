@@ -33,19 +33,66 @@ concurrency:
 jobs:
   build-release:
     # Native Windows release build on the maintainer's self-hosted runner.
-    # The workspace must be persistent: checkout runs with clean: false so the
-    # ignored toolchain trees (build/msys64, ffmpeg_build/, external/ffmpeg,
-    # installed/) survive and the artifact matches a local native build
-    # (PDBs, effective x64 CFG, custom-patched FFmpeg, FG runtime payloads).
-    # See llm-wiki/build.py.md for runner setup.
+    # The workspace must be persistent so the ignored toolchain trees
+    # (build/msys64, ffmpeg_build/, external/ffmpeg, installed/) survive and
+    # the artifact matches a local native build (PDBs, effective x64 CFG,
+    # custom-patched FFmpeg, FG runtime payloads).
+    #
+    # actions/checkout is deliberately NOT used: it deletes the entire
+    # workspace contents whenever the expected repository URL differs from the
+    # configured fetch URL (e.g. the trailing ".git"), and on Windows rmRF
+    # follows directory junctions, which destroyed the toolchain trees during
+    # the first test. The sync step below only fetches/switches/resets tracked
+    # files and never touches ignored trees or junctions. See llm-wiki.
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 180
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          clean: false
+      - name: Sync repository (persistent workspace, never cleans)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .git)) {
+            git init -b main
+            git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          }
+          git remote set-url origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GITHUB_TOKEN"))
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          git fetch --prune origin main
+          git switch -C main origin/main
+          Write-Output "Workspace synced to $env:GITHUB_SHA; persistent ignored trees preserved"
+
+      - name: Prepare persistent toolchain junctions
+        shell: pwsh
+        env:
+          TOOLCHAIN_ROOT: ${{ vars.CE_TOOLCHAIN_ROOT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TOOLCHAIN_ROOT)) {
+            throw "Repository variable CE_TOOLCHAIN_ROOT must point to the maintainer's dev checkout (e.g. %USERPROFILE%\Programme\build\captureproject)."
+          }
+          $root = [System.IO.Path]::GetFullPath($env:TOOLCHAIN_ROOT)
+          foreach ($required in @('build\msys64', 'ffmpeg_build', 'external')) {
+            if (-not (Test-Path (Join-Path $root $required))) {
+              throw "Toolchain root '$root' is missing $required; restore the local build environment first."
+            }
+          }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          foreach ($pair in @(
+            @('build\msys64', (Join-Path $root 'build\msys64')),
+            @('ffmpeg_build', (Join-Path $root 'ffmpeg_build')),
+            @('external', (Join-Path $root 'external'))
+          )) {
+            if (-not (Test-Path $pair[0])) {
+              New-Item -ItemType Junction -Path $pair[0] -Target $pair[1] | Out-Null
+              Write-Output "Created junction $($pair[0]) -> $($pair[1])"
+            } else {
+              $item = Get-Item -LiteralPath $pair[0] -Force
+              if ($item.LinkType -ne 'Junction') {
+                throw "$($pair[0]) already exists but is not a junction to the persistent toolchain; refusing to proceed."
+              }
+            }
+          }
+          Write-Output "Toolchain junctions ready (root=$root)"
 
       - name: Setup Python
         uses: actions/setup-python@v5
