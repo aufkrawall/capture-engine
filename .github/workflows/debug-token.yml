@@ -1,0 +1,14 @@
+name: debug-token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64]
+    permissions:
+      contents: read
+    steps:
+      - name: Token length
+        shell: pwsh
+        run: Write-Output "len=$($env:GITHUB_TOKEN.Length)"
