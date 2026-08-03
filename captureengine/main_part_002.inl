@@ -94,7 +94,7 @@ void SendCommandToAll(ProcessCommand cmd) {
 
 // Helper: open inject's shared memory and run a callback with a writable view.
 // Returns true if the shared memory was opened and the callback executed.
-static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
+static bool WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& fn) {
     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (!hDisc)
         return false;

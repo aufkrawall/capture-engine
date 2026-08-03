@@ -297,6 +297,7 @@ ce::presentation_color::Encoding ResolveSwapChainPresentationEncoding(IDXGISwapC
     return ce::presentation_color::ResolveDXGI(format, tracked, colorSpace);
 }
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 SharedState g_SharedState;
 std::mutex g_SharedMutex;
 static std::mutex s_thirdPartyOverlaySwapchainMutex;
@@ -359,6 +360,7 @@ bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain) {
 }
 
 // Global metrics for DXGI-based APIs
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static PerformanceMetrics g_DXGIPerfMetrics;
 static std::atomic<uint32_t> g_LatestSourceFrameIndex{0};
 
@@ -381,8 +383,11 @@ void BeginPostSLOffKeepAlivePresentScope() {
 }
 
 void EndPostSLOffKeepAlivePresentScope() {
-    if (s_postSLOffKeepAlivePresentScopeDepth != 0 && --s_postSLOffKeepAlivePresentScopeDepth == 0) {
+    if (s_postSLOffKeepAlivePresentScopeDepth != 0) {
+        --s_postSLOffKeepAlivePresentScopeDepth;
+        if (s_postSLOffKeepAlivePresentScopeDepth == 0) {
         s_postSLOffKeepAlivePrePresentDrawn = false;
+        }
     }
 }
 

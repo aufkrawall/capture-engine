@@ -73,16 +73,9 @@ This page records the style rules that are either tool-backed or strongly reflec
 
 ### Current clang-tidy debt and triage
 
-The 2026-07-17 inventory runs against `compile_commands.json` (217 C++ entries) with the project header boundary in `.clang-tidy`. After the first focused cleanup it contains 1,129 raw project findings at 1,096 unique file/line/check locations: 539 raw findings in `hook`, 242 in `tests`, 215 in `testapp`, 81 in `mediaengine`, 43 in `captureengine`, and 9 in `common`. External, generated, installed, and FFmpeg trees are excluded and are not part of this debt.
-
-Use these dispositions; they are triage buckets, not blanket suppressions:
-
-| Disposition | Checks and counts | Required handling |
-| --- | --- | --- |
-| Correctness/design review (350) | `invalid-enum-default-initialization` 137; `throwing-static-initialization` 62; `unchecked-string-to-number-conversion` 42; `exception-escape` 26; `incorrect-roundings` 19; `inc-dec-in-conditions` 10; `switch-missing-default-case` 9; `nondeterministic-pointer-iteration-order` 8; `misplaced-widening-cast` 7; `suspicious-memory-comparison` 6; `sizeof-expression` 4; `use-after-move` 9; `empty-catch` 3; `unused-return-value` 3; `signed-char-misuse` 2; `integer-division` 2; `redundant-branch-condition` 1 | Inspect behavior and add focused regression coverage before changing or documenting the finding. Never globally disable these checks. |
-| Conversion/ABI/intent review (762) | `narrowing-conversions` 337; `multi-level-implicit-pointer-conversion` 183; `argument-comment` 165; `bitwise-pointer-cast` 44; `branch-clone` 25; `macro-parentheses` 7; `casting-through-void` 1 | Verify range/ABI/lifetime assumptions. Use explicit local conversions, wrappers, or narrow documented suppressions only when the intent is proven. |
-| Performance review (17) | `inefficient-vector-operation` 6; `unnecessary-value-param` 7; `no-automatic-move` 4 | Change only when ownership and measured behavior support it; do not trade hot-path correctness for warning count. |
-
-The first cleanup eliminated all 26 `unchecked-optional-access` findings by preserving fatal test assertions while using analyzer-safe fallback reads, eliminated the sole undefined raw-memory initialization of a non-trivial shared-memory object, normalized high-bit font bytes before indexing, and stopped reading an audio packet after moving it into the deferred epoch queue. No checks were disabled or suppressed.
+As of 2026-08-03 the clang-tidy baseline is **zero warnings** across 272 translation
+units. Remaining analyzer findings are either fixed at the root or carry a targeted
+`NOLINT` comment with a concrete rationale; checks are never disabled globally. See
+`known-debt.md` for the category-by-category disposition.
 
 `run_tests()` captures the executable's stdout/stderr and, on failure, writes `unit_tests_failure.log` into the verification bundle while logging the diagnostic tail. This is required because an exit code without the failing GoogleTest name is not actionable.

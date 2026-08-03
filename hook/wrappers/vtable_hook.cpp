@@ -91,7 +91,7 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
 
     // DEBUG: Log memory region details
     MEMORY_BASIC_INFORMATION mbi = {};
-    if (VirtualQuery(ppEntry, &mbi, sizeof(mbi))) {
+    if (VirtualQuery(reinterpret_cast<void*>(ppEntry), &mbi, sizeof(mbi))) {
         HookLog(
             "VTableHook: DEBUG - Target %p in region: Base=%p, Size=%zu, "
             "Protect=0x%X",
@@ -109,7 +109,7 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
 
     // Patch the vtable entry directly
     DWORD oldProtect;
-    if (!VirtualProtect(ppEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(ppEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLog("VTableHook: Create - VirtualProtect FAILED for %p (Error=%lu)", ppEntry, GetLastError());
         return ErrorMemoryProtect;
     }
@@ -119,10 +119,10 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
     // CRITICAL FIX: Flush instruction cache after modifying code
     // While x86/x64 has strong cache coherency, this is required for correctness
     // and may be needed on certain configurations or future CPUs
-    FlushInstructionCache(GetCurrentProcess(), ppEntry, sizeof(void*));
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(ppEntry), sizeof(void*));
 
     DWORD newProtect;
-    if (!VirtualProtect(ppEntry, sizeof(void*), oldProtect, &newProtect)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(ppEntry), sizeof(void*), oldProtect, &newProtect)) {
         HookLog("VTableHook: Create - VirtualProtect RESTORE FAILED for %p (Error=%lu)", ppEntry, GetLastError());
     }
 
@@ -156,14 +156,14 @@ Status Remove(void* pVTableEntry, void* pOriginal) {
     void** ppEntry = reinterpret_cast<void**>(pVTableEntry);
 
     DWORD oldProtect;
-    if (!VirtualProtect(ppEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(ppEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLog("VTableHook: Remove - VirtualProtect FAILED for %p (Error=%lu)", ppEntry, GetLastError());
         return ErrorMemoryProtect;
     }
 
     *ppEntry = pOriginal;
 
-    VirtualProtect(ppEntry, sizeof(void*), oldProtect, &oldProtect);
+    VirtualProtect(reinterpret_cast<void*>(ppEntry), sizeof(void*), oldProtect, &oldProtect);
 
     HookLog("VTableHook: Remove - Restored %p to %p", ppEntry, pOriginal);
     return Success;

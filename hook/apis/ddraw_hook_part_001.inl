@@ -152,6 +152,7 @@ static DirectDrawCreate_t oDirectDrawCreate = nullptr;
 static DirectDrawCreateEx_t oDirectDrawCreateEx = nullptr;
 
 // Globals
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
@@ -537,7 +538,7 @@ static void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, v
 
         if (!record->setState.load(std::memory_order_acquire)) {
             ce::legacy_d3d_sampler_state::SetTextureStageStateFn original = nullptr;
-            if (VTableHook::Create(&vtable[setSlot], setDetour, reinterpret_cast<LPVOID*>(&original)) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[setSlot]), setDetour, reinterpret_cast<LPVOID*>(&original)) ==
                 VTableHook::Success) {
                 record->setState.store(original, std::memory_order_release);
                 if (isD3D7 && !oSetTextureStageState7)
@@ -548,7 +549,7 @@ static void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, v
         }
         if (!record->getState.load(std::memory_order_acquire)) {
             ce::legacy_d3d_sampler_state::GetTextureStageStateFn original = nullptr;
-            if (VTableHook::Create(&vtable[getSlot], getDetour, reinterpret_cast<LPVOID*>(&original)) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[getSlot]), getDetour, reinterpret_cast<LPVOID*>(&original)) ==
                 VTableHook::Success) {
                 record->getState.store(original, std::memory_order_release);
                 if (isD3D7 && !oGetTextureStageState7)
@@ -559,14 +560,14 @@ static void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, v
         }
         if (!record->endScene.load(std::memory_order_acquire)) {
             LegacyD3DEndScene_t original = nullptr;
-            if (VTableHook::Create(&vtable[endSceneSlot], endSceneDetour, reinterpret_cast<LPVOID*>(&original)) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[endSceneSlot]), endSceneDetour, reinterpret_cast<LPVOID*>(&original)) ==
                 VTableHook::Success) {
                 record->endScene.store(original, std::memory_order_release);
             }
         }
         if (isD3D7 && !record->applyStateBlock.load(std::memory_order_acquire)) {
             D3D7ApplyStateBlock_t original = nullptr;
-            if (VTableHook::Create(&vtable[D3D7_VTABLE_APPLYSTATEBLOCK],
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D7_VTABLE_APPLYSTATEBLOCK]),
                                    reinterpret_cast<LPVOID>(&DetourD3D7ApplyStateBlock),
                                    reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
                 record->applyStateBlock.store(original, std::memory_order_release);

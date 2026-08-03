@@ -144,6 +144,7 @@ bool DX10Backend::CreateBuffers() {
 }
 
 bool DX10Backend::CreateStates() {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     sampDesc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
@@ -155,6 +156,7 @@ bool DX10Backend::CreateStates() {
     if (FAILED(hr))
         return false;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_BLEND_DESC blendDesc = {};
     blendDesc.BlendEnable[0] = TRUE;
     blendDesc.SrcBlend = D3D10_BLEND_SRC_ALPHA;
@@ -169,6 +171,7 @@ bool DX10Backend::CreateStates() {
     if (FAILED(hr))
         return false;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_RASTERIZER_DESC rasterDesc = {};
     rasterDesc.FillMode = D3D10_FILL_SOLID;
     rasterDesc.CullMode = D3D10_CULL_NONE;
@@ -179,6 +182,7 @@ bool DX10Backend::CreateStates() {
     if (FAILED(hr))
         return false;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_DEPTH_STENCIL_DESC depthDesc = {};
     depthDesc.DepthEnable = FALSE;
     depthDesc.DepthWriteMask = D3D10_DEPTH_WRITE_MASK_ALL;

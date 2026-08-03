@@ -219,7 +219,7 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
                 InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api::D3D7, d3d7Device, false,
                                             "bootstrap");
 
-                if (VTableHook::Create(&d3d7DeviceVTable[D3D7_VTABLE_SETRENDERSTATE], (LPVOID)&DetourSetRenderState7,
+                if (VTableHook::Create(reinterpret_cast<void*>(&d3d7DeviceVTable[D3D7_VTABLE_SETRENDERSTATE]), (LPVOID)&DetourSetRenderState7,
                                        (LPVOID*)&oSetRenderState7) == VTableHook::Success) {
                     HookLog("DDraw: SetRenderState hook installed");
                 }
@@ -420,6 +420,7 @@ public:
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc;
                 adapter->GetDesc(&desc);
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
 
@@ -530,6 +531,7 @@ public:
         UINT presentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 
         auto tryCreateDevice = [&](D3DSWAPEFFECT swapEffect, UINT backBufferCount) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             D3DPRESENT_PARAMETERS d3dpp = {};
             d3dpp.Windowed = TRUE;
             d3dpp.SwapEffect = swapEffect;
@@ -560,6 +562,7 @@ public:
         LUID helperLuid = {};
         const HRESULT luidHr = d3d9Ex->GetAdapterLUID(D3DADAPTER_DEFAULT, &helperLuid);
         if (SUCCEEDED(luidHr) && (helperLuid.LowPart != 0 || helperLuid.HighPart != 0)) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             luidLow = helperLuid.LowPart;
             luidHigh = helperLuid.HighPart;
             ReportLUID(luidLow, luidHigh);

@@ -74,6 +74,7 @@ BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
     return TRUE;
 }
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static FrameQueue g_FrameQueue(32);
 static std::mutex g_StandbyWgcFrameMutex;
 static QueuedFrame g_StandbyWgcFrame;
@@ -85,6 +86,7 @@ static bool g_HasLastFrame = false;
 static std::atomic<uint64_t> g_InjectDeferredFrames{0};
 
 // Screengrab mode components
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static ce::AtomicSharedOwner<WGCCapture> g_WgcCap;
 static std::atomic<uint64_t> g_WgcSourceEpoch{0};
 static std::atomic<bool> g_UseScreenGrab{false};     // Active capture mode for the current recording
@@ -121,7 +123,9 @@ static std::atomic<uint32_t> g_WgcProducerTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
 // Preserve several seconds even with a 1000 Hz DXGI hardware pointer so normal
 // delayed screen-grab targets retain the source history they still need.
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static ce::cursor::Timeline g_WgcCursorTimeline(8192);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static ce::cursor::Timeline g_InjectCursorTimeline(1024);
 static std::atomic<uint64_t> g_DxgiCursorTimelinePublished{0};
 static std::mutex g_WgcCursorPublicationMutex;
@@ -401,7 +405,9 @@ static double g_AutoDetectedRenderLatencyMs = -1.0;  // <0 = not measured / unav
 static bool g_RenderLatencyMeasureAttempted = false;
 static bool g_LegacyAudioLatencyCacheCleanupAttempted = false;
 static std::mutex g_LegacyAudioLatencyCacheCleanupMutex;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - fixed short values stay in SSO; default construction is non-allocating
 static std::string g_AvSyncConfidence = "low";
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - fixed short values stay in SSO; default construction is non-allocating
 static std::string g_AvSyncReason = "not_measured";
 static bool g_AvSyncUsedAudioProbe = false;
 

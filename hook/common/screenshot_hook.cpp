@@ -420,7 +420,9 @@ bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* 
 
     D3D11_TEXTURE2D_DESC sourceDesc{};
     texture->GetDesc(&sourceDesc);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotPixelFormat pixelFormat{};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotColorEncoding colorEncoding{};
     if (!GetD3D11PixelDescription(sourceDesc.Format, presentationEncoding, pixelFormat, colorEncoding)) {
         HookLog("[Screenshot] Unsupported D3D11 presentation contract: format=%u encoding=%s",
@@ -489,7 +491,9 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
     const D3D12_RESOURCE_DESC sourceDesc = backBuffer->GetDesc();
     if (sourceDesc.Width == 0 || sourceDesc.Width > std::numeric_limits<uint32_t>::max())
         return false;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotPixelFormat pixelFormat{};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotColorEncoding colorEncoding{};
     if (!GetD3D11PixelDescription(sourceDesc.Format, presentationEncoding, pixelFormat, colorEncoding)) {
         HookLog("[Screenshot] Unsupported D3D12 presentation contract: format=%u encoding=%s",
@@ -505,6 +509,7 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
     if (bufferSize == 0 || footprint.Footprint.RowPitch > std::numeric_limits<uint32_t>::max())
         return false;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps{};
     heapProps.Type = D3D12_HEAP_TYPE_READBACK;
     D3D12_RESOURCE_DESC bufferDesc{};

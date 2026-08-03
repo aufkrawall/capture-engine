@@ -234,6 +234,7 @@ public:
         const size_t dataSize = (size_t)fontWidth * fontHeight * 4;  // RGBA8
         fontBufferSize_ = dataSize;
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_HEAP_PROPERTIES defaultHeap = {};
         defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd = {};
@@ -258,6 +259,7 @@ public:
         }
         fontBuffer_->SetName(L"CE_DescFreeFontDefaultBuffer");
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_HEAP_PROPERTIES uploadHeap = {};
         uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
         hr = device_->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
@@ -535,6 +537,7 @@ private:
             {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = {inputLayout, 3};
         psoDesc.pRootSignature = rootSig_;
@@ -582,6 +585,7 @@ private:
     }
 
     bool CreateBuffers() {
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_HEAP_PROPERTIES hp = {};
         hp.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC rd = {};
@@ -622,6 +626,7 @@ private:
         buf->Unmap(0, nullptr);
         buf->Release();
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_HEAP_PROPERTIES hp = {};
         hp.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC rd = {};

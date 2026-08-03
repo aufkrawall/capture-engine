@@ -206,9 +206,9 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsOverlayImmediatelyInsteadOf
     // (a CONFIRMED PostSL path that is merely suspended), reinit the warm backend
     // immediately on its live queue.
     EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        /*keepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
-        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/true,
-        /*scQueueIsConfirmedPostSLRenderQueue=*/false));
+        /*postSLExplicitOffKeepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/false, /*runtimeOwnsSwapchain=*/true, /*swapchainQueueIsLiveCommandQueue=*/true,
+        /*swapchainQueueIsConfirmedPostSLRenderQueue=*/false));
 
     // Without the keep-alive latch this is not a confirmed-PostSL suspension — keep the cooldown.
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(false, false, false, false,
@@ -238,9 +238,9 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsImmediatelyWhenSwapchainQue
     // scQueue==cmdQueue test wrongly rejected this safe suspend and dropped it into the 90-frame
     // cooldown. The confirmed PostSL render queue alone now satisfies the queue proof.
     EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        /*keepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
-        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/false,
-        /*scQueueIsConfirmedPostSLRenderQueue=*/true));
+        /*postSLExplicitOffKeepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/false, /*runtimeOwnsSwapchain=*/true, /*swapchainQueueIsLiveCommandQueue=*/false,
+        /*swapchainQueueIsConfirmedPostSLRenderQueue=*/true));
 
     // The relaxed queue proof does NOT loosen any of the hard suspension guards.
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
@@ -329,12 +329,12 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionAfterFSRHistoryResolvesReinitCoold
     const bool immediate = keepAlive && /*!deviceRemoved=*/true;
     const int cooldownFrames = immediate ? 0 : 60;
     // override == immediate || useShort; here useShort is false, so override == immediate.
-    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existing=*/90, cooldownFrames, /*override=*/immediate), 0);
+    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existingCooldownFrames=*/90, cooldownFrames, /*overrideExistingCooldown=*/immediate), 0);
 
     // No confirmed PostSL (e.g. a real teardown) keeps the protective 60-frame cooldown.
     const bool noKeepAlive = ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(false, false, false, false);
     EXPECT_FALSE(noKeepAlive);
-    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existing=*/0, 60, /*override=*/false), 60);
+    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existingCooldownFrames=*/0, 60, /*overrideExistingCooldown=*/false), 60);
 }
 
 TEST(DXGISharedTest, InactiveStreamlineRuntimeStateDoesNotStartFGCooldown) {

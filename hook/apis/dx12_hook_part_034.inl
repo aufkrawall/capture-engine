@@ -191,6 +191,7 @@ static void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain, bool applicati
         }
         // Check if we can actually use this device (Vulkan WSI devices may fail
         // here)
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels = {};
         hr = pDevice->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &featureLevels, sizeof(featureLevels));
         pDevice->Release();

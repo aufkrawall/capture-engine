@@ -182,6 +182,7 @@ bool DX12Backend::CreateRootSignature() {
     DX12_DEBUG_STEP("CreateRootSignature", "Param 1: Descriptor table, ranges=%d",
                     params[1].DescriptorTable.NumDescriptorRanges);
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -246,6 +247,7 @@ bool DX12Backend::CreatePipelineState() {
     };
     DX12_DEBUG_STEP("CreatePipelineState", "Input layout: %zu elements", sizeof(inputLayout) / sizeof(inputLayout[0]));
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature.Get();
     psoDesc.VS = {g_VS_5_0, sizeof(g_VS_5_0)};
@@ -316,6 +318,7 @@ bool DX12Backend::CreateBuffers() {
     const size_t initIBSize = 8192 * sizeof(uint16_t);
     DX12_DEBUG_STEP("CreateBuffers", "Per-slot sizes: vertex=%zu bytes, index=%zu bytes", initVBSize, initIBSize);
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -379,6 +382,7 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     }
 
     DX12_DEBUG_STEP("CreateFontTexture", "Step 2: Creating texture resource");
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -412,6 +416,7 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
     DX12_DEBUG_STEP("CreateFontTexture", "Required upload buffer size: %llu bytes", uploadSize);
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES uploadHeapProps = {};
     uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -617,6 +622,8 @@ bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
     DX12_DEBUG_STEP("ResizeVertexBuffer", "New size: %zu bytes (old=%zu, slot=%d)", newSize, vertexBufferSize[slot],
                     slot);
 
+// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 

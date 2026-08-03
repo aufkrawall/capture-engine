@@ -32,6 +32,7 @@
         return false;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sampDesc.AddressU = sampDesc.AddressV = sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -274,6 +275,7 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
         return false;
     }
     const float lumaSharpenStrength =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         scalingEnabled ? std::clamp(savedConfig.scaling.sharpness / 400.0f, 0.0f, 0.25f) : 0.0f;
     const float fullRangeFlag = WantsFullOutputRange(savedConfig.colorRange) ? 1.0f : 0.0f;
     *static_cast<CopyConstants*>(mapped.pData) = {
@@ -298,7 +300,9 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
     d3d11Context->PSSetShader(hdrP010LumaPS, nullptr, 0);
     d3d11Context->Draw(3, 0);
 
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Width = static_cast<float>(outputDesc.Width / 2);
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Height = static_cast<float>(outputDesc.Height / 2);
     d3d11Context->RSSetViewports(1, &viewport);
     ID3D11RenderTargetView* chromaView = outputViews->chromaView;
@@ -550,7 +554,8 @@ void VideoEncoder::AsyncWriteLoop() {
             if (fileOpened && fmtCtx) {
                 // Log last few audio/video packets to verify PTS alignment
                 if (pkt->stream_index != stream->index) {
-                    if (audioWriteLogCount++ < 5 || audioWriteLogCount % 500 == 0) {
+                    ++audioWriteLogCount;
+                    if (audioWriteLogCount <= 5 || audioWriteLogCount % 500 == 0) {
                         AVStream* ast = fmtCtx->streams[pkt->stream_index];
                         int64_t aPtsUs = av_rescale_q(pkt->pts, ast->time_base, AVRational{1, 1000000});
                         AVStream* vst = fmtCtx->streams[stream->index];

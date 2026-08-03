@@ -160,10 +160,10 @@ std::optional<int> TryRunProcessLoopbackWorkerHost() {
         return ERROR_BAD_ARGUMENTS;
     }
     if (argumentCount < 2 || wcscmp(arguments[1], kProcessLoopbackWorkerCommand) != 0) {
-        LocalFree(arguments);
+        LocalFree(reinterpret_cast<HLOCAL>(arguments));
         return std::nullopt;
     }
     const int result = RunProcessLoopbackWorkerHost(argumentCount, arguments);
-    LocalFree(arguments);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
     return result;
 }

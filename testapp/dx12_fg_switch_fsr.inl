@@ -173,7 +173,7 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* re
     cfgDesc.presentCallback = usePresentCallback ? TestPresentCallback : nullptr;
     cfgDesc.presentCallbackUserContext = nullptr;
     cfgDesc.frameGenerationCallback = TestFrameGenerationCallback;
-    cfgDesc.frameGenerationCallbackUserContext = &g_FfxCtx;
+    cfgDesc.frameGenerationCallbackUserContext = reinterpret_cast<void*>(&g_FfxCtx);
     cfgDesc.frameGenerationEnabled = enable;
     cfgDesc.allowAsyncWorkloads = true;
     if (g_FgInputs.valid && g_FgInputs.hudlessColor) {
@@ -245,6 +245,7 @@ static ID3D12Resource* AcquireFsrUiRegistrationTexture() {
     }
     if (!g_FsrDegenerateUiTexture && g_Device && g_FgInputs.uiColor) {
         const D3D12_RESOURCE_DESC src = g_FgInputs.uiColor->GetDesc();
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D12_HEAP_PROPERTIES heap = {};
         heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC td = {};

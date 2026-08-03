@@ -10,8 +10,12 @@
 
 namespace {
 std::string MakeTestPath(const char* filename) {
+    // Include the process id so concurrently running unit-test binaries
+    // (for example the product suite and the isolated sanitizer suite) never
+    // clobber each other's config files.
+    std::string uniqueName = std::string(filename) + "." + std::to_string(GetCurrentProcessId());
     char buffer[MAX_PATH] = {};
-    DWORD length = GetFullPathNameA(filename, MAX_PATH, buffer, nullptr);
+    DWORD length = GetFullPathNameA(uniqueName.c_str(), MAX_PATH, buffer, nullptr);
     if (length == 0 || length >= MAX_PATH) {
         return filename;
     }

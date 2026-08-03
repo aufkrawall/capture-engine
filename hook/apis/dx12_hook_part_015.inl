@@ -6,6 +6,7 @@
         return;
     }
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_CommandListsExecutedThisFrame.fetch_add(numCommandLists, std::memory_order_relaxed);
 }
 

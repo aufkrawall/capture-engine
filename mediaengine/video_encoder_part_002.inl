@@ -343,6 +343,7 @@ bool QuerySdrWhiteLevelNits(HMONITOR monitor, float* nits, ULONG* rawLevel) {
 
         paths.resize(pathCount);
         for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName = {};
             sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
             sourceName.header.size = sizeof(sourceName);
@@ -353,6 +354,7 @@ bool QuerySdrWhiteLevelNits(HMONITOR monitor, float* nits, ULONG* rawLevel) {
                 continue;
             }
 
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel = {};
             whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
             whiteLevel.header.size = sizeof(whiteLevel);
@@ -548,6 +550,7 @@ VideoEncoder::VideoEncoder()
       videoProcessorInit(false) {}
 
 VideoEncoder::~VideoEncoder() {
+    try {
     Stop();  // Triiger async stop
 
     // Destructor MUST be synchronous to ensure no threads are running
@@ -560,6 +563,9 @@ VideoEncoder::~VideoEncoder() {
     if (fenceEvent) {
         CloseHandle(fenceEvent);
         fenceEvent = nullptr;
+        }
+    } catch (...) {
+        DLL_Log("[VideoEncoder] Suppressed exception during destruction");
     }
 }
 

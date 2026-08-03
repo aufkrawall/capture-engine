@@ -457,7 +457,7 @@ bool ProcessIPCServer::ReadStartupArguments() {
             }
         }
     }
-    LocalFree(arguments);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
     if (invalid || !haveHandle || !haveControllerPid || !haveNonce || handleValue == 0 ||
         handleValue == reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE)) {
         return false;

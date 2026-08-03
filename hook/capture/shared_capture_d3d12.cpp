@@ -36,6 +36,7 @@ SharedCaptureD3D12::SharedCaptureD3D12()
       m_Active(false) {}
 
 SharedCaptureD3D12::~SharedCaptureD3D12() {
+    try {
     m_Active.store(false, std::memory_order_release);
     CaptureManager::Get().UnregisterCaptureTarget("d3d12", this);
 
@@ -58,21 +59,24 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
         if (m_FenceShareHandle) {
             CloseHandle(m_FenceShareHandle);
             m_FenceShareHandle = nullptr;
-        }
-        for (UINT i = 0; i < kSharedTextureCount; ++i) {
-            if (m_SharedHandles[i]) {
-                CloseHandle(m_SharedHandles[i]);
-                m_SharedHandles[i] = nullptr;
             }
+            for (UINT i = 0; i < kSharedTextureCount; ++i) {
+                if (m_SharedHandles[i]) {
+                    CloseHandle(m_SharedHandles[i]);
+                    m_SharedHandles[i] = nullptr;
+                }
+            }
+            return;
         }
-        return;
-    }
 
     Reset(true);
     // A DLL unload or process teardown cannot safely wait on the game's GPU.
     // Any generation still in flight is intentionally detached here; completed
     // generations were already released by Reset/ReapRetiredGenerations.
     AbandonRetiredGenerations();
+    } catch (...) {
+        EarlyLog("DX12: Suppressed exception during SharedCaptureD3D12 destruction");
+    }
 }
 
 void SharedCaptureD3D12::ReapRetiredGenerations() {
@@ -355,6 +359,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
     // CROSS_ADAPTER)
     texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
     heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;

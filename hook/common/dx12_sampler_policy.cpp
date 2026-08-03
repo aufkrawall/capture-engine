@@ -126,6 +126,7 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
 
     result.anisotropyModified = filterAfterMipMapping != desc.Filter || originalAnisotropy != desc.MaxAnisotropy;
     result.mipMappingModified = originalFilter != filterAfterMipMapping;
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - bitwise comparison also detects -0.0 vs +0.0 changes
     result.mipBiasModified = std::memcmp(&originalBias, &desc.MipLODBias, sizeof(originalBias)) != 0;
     if (!result.Modified()) {
         result.decision = Decision::AlreadyCompliant;
@@ -140,6 +141,7 @@ Result Apply(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
 }
 
 Result Apply(D3D12_STATIC_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_SAMPLER_DESC dynamicDesc = {};
     dynamicDesc.Filter = desc.Filter;
     dynamicDesc.AddressU = desc.AddressU;

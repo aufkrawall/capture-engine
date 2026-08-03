@@ -42,9 +42,9 @@ WrapperPixelShaderAFMetadataHandle* AcquireWrapperPixelShaderAFMetadata(ID3D11Pi
         return nullptr;
     }
     IUnknown* metadataInterface = nullptr;
-    UINT dataSize = sizeof(metadataInterface);
-    if (FAILED(shader->GetPrivateData(kWrapperPixelShaderAFMetadataGuid, &dataSize, &metadataInterface)) ||
-        dataSize != sizeof(metadataInterface) || !metadataInterface) {
+    UINT dataSize = sizeof(IUnknown*);
+    if (FAILED(shader->GetPrivateData(kWrapperPixelShaderAFMetadataGuid, &dataSize, reinterpret_cast<void*>(&metadataInterface))) ||
+        dataSize != sizeof(IUnknown*) || !metadataInterface) {
         return nullptr;
     }
     auto* handle = static_cast<WrapperPixelShaderAFMetadataHandle*>(metadataInterface);
@@ -418,6 +418,7 @@ ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDevice, I
         return nullptr;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC desc = {};
     original->GetDesc(&desc);
     if (!WrapperSamplerAllowsForcedAF(desc, gfx)) {
@@ -431,8 +432,10 @@ ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDevice, I
     const UINT levelIndex = WrapperAFLevelIndex(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx));
     const GUID& variantGuid = kWrapperForcedAFSamplerVariantGuids[levelIndex];
     ID3D11SamplerState* cached = nullptr;
-    UINT dataSize = sizeof(cached);
-    if (SUCCEEDED(original->GetPrivateData(variantGuid, &dataSize, &cached)) && dataSize == sizeof(cached) && cached) {
+    UINT dataSize = sizeof(ID3D11SamplerState*);
+    if (SUCCEEDED(original->GetPrivateData(variantGuid, &dataSize, reinterpret_cast<void*>(&cached))) &&
+        dataSize == sizeof(ID3D11SamplerState*) &&
+        cached) {
         return cached;
     }
     if (HasWrapperSamplerMarker(original, kWrapperForcedAFSamplerCompliantGuids[levelIndex])) {

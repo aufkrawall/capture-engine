@@ -19,9 +19,11 @@
 
     pglBindVertexArray(modern.vao);
     pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     pglBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(DrawVertex), vertices.data(), GL_DYNAMIC_DRAW);
 
     pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modern.ibo);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     pglBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), indices.data(), GL_DYNAMIC_DRAW);
 
     for (const auto& cmd : commands) {
@@ -39,6 +41,7 @@
             pglBindTexture(GL_TEXTURE_2D, 0);
         }
 
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT,
                         (const void*)(cmd.indexOffset * sizeof(uint16_t)));
     }
@@ -205,6 +208,7 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
 
         for (const auto& cmd : commands) {
             pglBindTexture(GL_TEXTURE_2D, cmd.useTexture ? fontTextureId : 0);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT, indices.data() + cmd.indexOffset);
         }
     } else if (pglBegin && pglEnd && pglVertex2f && pglTexCoord2f && pglColor4ub) {
@@ -220,7 +224,9 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
                 const GLubyte b = (v.color >> 16) & 0xFF;
                 const GLubyte a = (v.color >> 24) & 0xFF;
 
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 const float vx = legacyMatrixValid ? v.x : (v.x / viewportWidth) * 2.0f - 1.0f;
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 const float vy = legacyMatrixValid ? v.y : 1.0f - (v.y / viewportHeight) * 2.0f;
                 pglColor4ub(r, g, b, a);
                 pglTexCoord2f(v.u, v.v);

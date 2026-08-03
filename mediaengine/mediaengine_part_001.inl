@@ -56,7 +56,11 @@ public:
           lastVideoFrameMs(0),
           videoElapsedMs(0) {}
     ~MediaEngine() {
+        try {
         StopRecording();
+        } catch (...) {
+            DLL_Log("[MediaEngine] Suppressed exception during destruction");
+        }
     }
 
     // Multi-source audio support

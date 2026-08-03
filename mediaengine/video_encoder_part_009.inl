@@ -398,7 +398,9 @@ bool VideoEncoder::InitVideoProcessor() {
     }
 
     // NV12 output textures require even-aligned dimensions
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     outputWidth = outputWidth & ~1u;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     outputHeight = outputHeight & ~1u;
     if (outputWidth == 0 || outputHeight == 0) {
         DLL_Log("[VideoProcessor] Dimensions too small after NV12 alignment");

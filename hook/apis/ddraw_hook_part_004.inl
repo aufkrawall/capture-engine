@@ -8,7 +8,7 @@
     DDraw4CreateSurface_t originalCreateSurface = nullptr;
     std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
     VTableHook::Status createSurfaceStatus =
-        VTableHook::Create(&ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface, (LPVOID*)&originalCreateSurface);
+        VTableHook::Create(reinterpret_cast<void*>(&ddraw4VTable[6]), (LPVOID)&DetourDirectDraw4CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
         g_DDraw4CreateSurfaceOriginals.emplace(ddraw4VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface4 hook installed via %s", reason);
@@ -32,7 +32,7 @@ static void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const cha
         if (g_D3D3CreateDeviceOriginals.find(vtable) == g_D3D3CreateDeviceOriginals.end()) {
             D3D3CreateDevice_t original = nullptr;
             const VTableHook::Status status =
-                VTableHook::Create(&vtable[8], (LPVOID)&DetourD3D3CreateDevice, (LPVOID*)&original);
+                VTableHook::Create(reinterpret_cast<void*>(&vtable[8]), (LPVOID)&DetourD3D3CreateDevice, (LPVOID*)&original);
             if (status == VTableHook::Success && original) {
                 g_D3D3CreateDeviceOriginals.emplace(vtable, original);
                 HookLog("DDraw: D3D6 CreateDevice identity hook installed via %s", reason);
@@ -57,7 +57,7 @@ static void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const cha
             if (g_D3D7CreateDeviceOriginals.find(vtable) == g_D3D7CreateDeviceOriginals.end()) {
                 D3D7CreateDevice_t original = nullptr;
                 const VTableHook::Status status =
-                    VTableHook::Create(&vtable[4], (LPVOID)&DetourD3D7CreateDevice, (LPVOID*)&original);
+                    VTableHook::Create(reinterpret_cast<void*>(&vtable[4]), (LPVOID)&DetourD3D7CreateDevice, (LPVOID*)&original);
                 if (status == VTableHook::Success && original) {
                     g_D3D7CreateDeviceOriginals.emplace(vtable, original);
                     HookLog("DDraw: D3D7 CreateDevice identity hook installed via %s", reason);
@@ -125,7 +125,7 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
     DDraw7CreateSurface_t originalCreateSurface = nullptr;
     std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
     VTableHook::Status createSurfaceStatus =
-        VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&originalCreateSurface);
+        VTableHook::Create(reinterpret_cast<void*>(&ddraw7VTable[6]), (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
         g_DDraw7CreateSurfaceOriginals.emplace(ddraw7VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface hook installed via %s", reason);

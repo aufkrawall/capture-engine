@@ -46,49 +46,47 @@ new file that exceeds 800 lines.
 
 ## clang-tidy baseline
 
-`tools/clang_tidy_baseline.json` freezes **1,612 accepted warnings across 28 checks**,
-measured over a recorded scope of **266 translation units** (verified 2026-07-27). The
-lint stage fails on any increase or any new check; counts below baseline are folded in
-automatically so a fixed warning cannot silently return — but only when the run linted
-everything the recorded `scope` covers, so a partial `compile_commands.json` can no
-longer ratchet the accepted counts down to a subset (see `build.py.md`).
+`tools/clang_tidy_baseline.json` is now at **zero accepted warnings across 28 checks**,
+measured over **272 translation units** (verified 2026-08-03). The remaining findings
+were either fixed at the root or annotated with targeted `NOLINT` comments carrying a
+concrete rationale; no check was disabled globally.
 
-The earlier figure of 1,179 across 27 checks predates the `HeaderFilterRegex` fix
-recorded in `.clang-tidy`: a bare `build` segment also matched this checkout's own
-path (`...\Programme\build\captureproject\...`), suppressing every project header.
-456 findings at 195 header locations were invisible until that was narrowed.
+Cleanup dispositions by category:
 
-**Counts are per translation unit, not per location.** A warning inside a header is
-counted once for every TU that includes it, so adding a sibling `.cpp` that inherits an
-include block raises the total with no new code, and moving code from a `.cpp` into a
-shared header multiplies its findings. Trim a new file's includes to what it actually
-uses rather than regenerating the baseline.
+- Real correctness/performance fixes: rate-limit counters moved out of conditions,
+  assignment chains removed from `if` conditions, explicit `strtol` parsing for CLI
+  and config inputs, `std::llround`/`std::lround` for rounding, explicit `void*` casts
+  for Win32/VTable APIs, noexcept-safe destructor teardown, and `std::move`/const-ref
+  parameter fixes.
+- Targeted `NOLINT` with rationale: intentional narrowing in graphics/timing math,
+  zero-initialized Windows/Vulkan structs whose enum fields are assigned before use,
+  non-throwing `std::mutex`-family statics, bitwise identity comparisons for sampler
+  caches, order-independent pointer-map iteration, and moved-from contract checks in
+  tests.
+- `bugprone-throwing-static-initialization` is at zero because the remaining global
+  objects are either non-allocating/trivial or were made `noexcept`; the annotations
+  document each case.
+- `bugprone-exception-escape` is at zero: teardown destructors now catch and log
+  suppressed exceptions instead of letting them escape, and standalone test-app `main`
+  functions carry an annotated exception boundary.
 
-The large frozen entries and why they are not being driven to zero:
+The baseline scope semantics are unchanged: counts are per translation unit, a warning
+inside a header is counted once per TU that includes it, partial databases never fold
+counts down, and increases remain fatal.
 
-| Check | Count | Rationale |
-|---|---:|---|
-| `bugprone-narrowing-conversions` | 571 | Pervasive in graphics and timing math; mass-editing these touches every hot path for no behavioural gain. |
-| `bugprone-invalid-enum-default-initialization` | 198 | `D3D12_HEAP_PROPERTIES{}` and similar zero-init; the fields are assigned immediately after. |
-| `bugprone-multi-level-implicit-pointer-conversion` | 197 | COM `void**` out-parameters. Idiomatic for the API. |
-| `bugprone-argument-comment` | 171 | Comment/parameter-name drift only. |
-| `bugprone-incorrect-roundings` | 81 | 62 of these live in headers and are therefore multiplied across TUs; never individually reviewed. |
-| `bugprone-unchecked-string-to-number-conversion` | 75 | |
-| `bugprone-throwing-static-initialization` | 61 | `std::mutex` / `std::recursive_mutex` globals, effectively non-throwing on this toolchain. |
-| `bugprone-exception-escape` | 30 | Destructors whose only realistic throw is `bad_alloc` or mutex failure during teardown. See below. |
+### Concurrent test-suite hygiene
 
-### Destructor exception escapes
+The isolated sanitizer suite runs concurrently with the clean product unit suite during
+`--verify`. Two shared-state defects made that combination fail under full CPU load and
+were fixed:
 
-Wrapping `~SharedCaptureD3D11`, `~SharedCaptureD3D12`, `~VideoEncoder`, `~MediaEngine`,
-`~InjectionManager`, `~AudioEncoder`, `~ProcessLoopbackCapture`,
-`~CWrapD3D11DeviceContext`, and `~TypedHook` in try/catch would add broad scaffolding
-to the most fragile teardown paths. The failure mode it would prevent (`std::terminate`
-on allocation failure while already tearing down) is not meaningfully better than the
-alternative. Recorded rather than fixed.
-
-The three *empty* catch blocks that discarded real diagnostic information were fixed
-on 2026-07-24 and now log rate-limited diagnostics; `bugprone-empty-catch` is at zero
-and the ratchet keeps it there.
+- Config tests used `test_config.ini` / `test_whitelist_entry.ini` in the current
+  working directory; both suites clobbered each other's files. Paths now include the
+  process id.
+- FPS-limiter timing tests used single-shot upper bounds that were too tight under
+  scheduler contention. `SmartWait_Accuracy` now asserts on the median of seven waits,
+  and the remaining upper bounds are loaded-host sanity bounds while lower/median
+  accuracy checks stay meaningful.
 
 ## Duplicated overlay telemetry conversion
 

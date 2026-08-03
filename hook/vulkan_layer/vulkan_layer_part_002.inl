@@ -20,6 +20,7 @@
     } else {
         // Inject required extensions
         std::vector<const char*> extensions;
+        extensions.reserve(pCreateInfo->enabledExtensionCount + 2);
         for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
             extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
         }
@@ -258,6 +259,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         // advertises the complete Win32 external-memory/fence contract. Never
         // make the game's vkCreateDevice fail merely because capture is absent.
         std::vector<const char*> extensions;
+        extensions.reserve(pCreateInfo->enabledExtensionCount + 2);
         for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
             extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
         }
@@ -630,10 +632,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
     if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
-        perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
-        perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(perf->Get1PercentLowFPS() * 100.0f + 0.5f);
-        perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(perf->Get01PercentLowFPS() * 100.0f + 0.5f);
-        perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
+    perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
+    perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
+    perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
+    perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
     }
 
     const VkSemaphore* currentWaitSemaphores =

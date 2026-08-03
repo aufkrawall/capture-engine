@@ -401,6 +401,7 @@ static bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXG
         return false;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC resDesc = {};

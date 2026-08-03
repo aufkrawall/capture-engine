@@ -245,6 +245,7 @@ private:
     OverlayAdapter overlay;
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_Mutex;
 std::atomic<bool> g_FrameTagTrackingActive{false};
 std::atomic<bool> g_ActiveCoverage{false};
@@ -648,6 +649,7 @@ void Shutdown(const char* reason) {
     size_t abandoned = 0;
     for (auto& renderer : g_RetiredRenderers) {
         if (renderer && !renderer->IsGpuComplete() && renderer->DeviceHealthy()) {
+            // NOLINTNEXTLINE(bugprone-unused-return-value) - intentional ownership abandonment on GPU teardown
             (void)renderer.release();
             ++abandoned;
         }

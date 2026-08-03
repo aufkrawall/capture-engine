@@ -37,6 +37,7 @@
 #include <vector>
 
 // Global adapter instance
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 OverlayAdapter g_OverlayAdapter;
 
 namespace {
@@ -154,6 +155,7 @@ static bool QueryWindowsSdrWhiteNits(HMONITOR monitor, float& nits, ULONG& rawLe
             return false;
         paths.resize(pathCount);
         for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
             sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
             sourceName.header.size = sizeof(sourceName);
@@ -163,6 +165,7 @@ static bool QueryWindowsSdrWhiteNits(HMONITOR monitor, float& nits, ULONG& rawLe
                 lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
                 continue;
             }
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
             whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
             whiteLevel.header.size = sizeof(whiteLevel);
@@ -201,6 +204,7 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
     if (getDpiForWindow) {
         UINT dpi = getDpiForWindow(hwnd);
         if (dpi > 0) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             return dpi / 96.0f;
         }
     }
@@ -211,6 +215,7 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
         int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
         ReleaseDC(hwnd, hdc);
         if (dpiX > 0) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             return dpiX / 96.0f;
         }
     }
@@ -627,6 +632,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         frameLayout.fgOutputFPS = cachedFPS;
     if (frameLayout.fgBaseFPS < 1.0f) {
         frameLayout.fgBaseFPS =
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier : cachedFPS;
     }
 

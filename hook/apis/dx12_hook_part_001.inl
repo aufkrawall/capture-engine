@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -111,6 +112,7 @@ HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device*, const D
                                                           void**);
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 // --- end DX12 API call trace diagnostic ---
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::recursive_mutex g_ExecuteCommandListsHookStateMutex;
 static std::map<void**, ExecuteCommandListsPtr> g_ExecuteCommandListsOriginalByVTable;
 // ExecuteCommandLists runs many times per frame in CPU-bound workloads, so keep a

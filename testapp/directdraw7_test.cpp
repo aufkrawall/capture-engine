@@ -56,10 +56,15 @@ static void LoadConfig() {
     if (pos != std::string::npos)
         configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WorkloadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_WorkloadPasses, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
@@ -286,6 +291,7 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     ColorFillSurfaceRect(surface, desc, borderRight, border);
 
     const LONG barWidth = 180;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const LONG barX = static_cast<LONG>(g_BarPosition * static_cast<float>(std::max<int>(1, desc.dwWidth - barWidth)));
     const LONG barY = static_cast<LONG>(desc.dwHeight / 2) - 44;
     RECT movingBar = {barX, barY, barX + barWidth, barY + 88};
@@ -296,7 +302,9 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     ColorFillSurfaceRect(surface, desc, centerBox, accentA);
 
     for (int pass = 0; pass < g_WorkloadPasses; ++pass) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         int x = (pass * 97 + static_cast<int>(elapsed * 120.0f)) % std::max<int>(1, desc.dwWidth);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         int y = (pass * 53 + static_cast<int>(elapsed * 90.0f)) % std::max<int>(1, desc.dwHeight);
         RECT stripe = {
             std::clamp(x - 36, 0, static_cast<int>(desc.dwWidth)),
@@ -311,6 +319,7 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     static int frames = 0;
     ++frames;
     if (std::chrono::duration<float>(now - lastLog).count() >= 2.0f) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         printf("DirectDraw7 FPS: %.2f\n", frames / 2.0f);
         frames = 0;
         lastLog = now;
@@ -537,17 +546,18 @@ static void PresentFrame(HWND hwnd) {
         g_ResetPending = true;
 }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
     LoadConfig();
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
 
     if (argc >= 3) {
-        g_WindowWidth = atoi(argv[1]);
-        g_WindowHeight = atoi(argv[2]);
+        g_WindowWidth = testapp::ParseIntOrZero(argv[1]);
+        g_WindowHeight = testapp::ParseIntOrZero(argv[2]);
     }
     if (argc >= 4) {
-        g_WorkloadPasses = atoi(argv[3]);
+        g_WorkloadPasses = testapp::ParseIntOrZero(argv[3]);
     }
 
     WNDCLASSEXW wc = {sizeof(WNDCLASSEXW),

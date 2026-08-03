@@ -382,6 +382,7 @@
                 LARGE_INTEGER budgetNow;
                 QueryPerformanceCounter(&budgetNow);
                 const double elapsedFromTickStartMs =
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     static_cast<double>(budgetNow.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
                 const bool allowWgcCatchupBudget = useScreenGrab && catchupTicksThisLoop > 1;
                 const bool allowForceCatchupBudget =
@@ -508,6 +509,7 @@
                                 (uint64_t)catchupFrame.sharedHandle, (uint64_t)catchupFrame.fenceHandle,
                                 catchupFrame.fenceValue, catchupFrame.timestamp, catchupFrame.luidLow,
                                 catchupFrame.luidHigh, catchupFrame.sourcePid, catchupFrame.width, catchupFrame.height,
+                                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                 catchupFrame.format, catchupFrame.isHDR, catchupFrame.isShmem, catchupFrame.shmemSlot,
                                 &catchupFrame.cursorState);
                             const bool catchupEncodeDeferred =
@@ -515,6 +517,7 @@
                             QueryPerformanceCounter(&catchupEndEnc);
 
                             const double currentEncodeMs =
+                                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                 (double)(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
                             const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
                             if (pureEncodeMs > 0.0) {

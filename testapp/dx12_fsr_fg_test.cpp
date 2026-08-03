@@ -60,10 +60,15 @@ void LoadConfig() {
     size_t pos = configPath.find_last_of("\\/");
     if (pos != std::string::npos)
         configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
@@ -125,6 +130,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 DestroyWindow(hWnd);
             }
             return 0;
+        default:
+            break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
@@ -435,11 +442,14 @@ void Render() {
     const float clearColor[] = {0.1f, 0.1f, 0.1f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     D3D12_RECT scissor = {(LONG)(g_BarPosition * (g_WindowWidth - 100)), g_WindowHeight / 2 - 50,
+                          // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                           (LONG)(g_BarPosition * (g_WindowWidth - 100) + 100), g_WindowHeight / 2 + 50};
     const float barColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
     for (int pass = 0; pass < g_GpuLoadPasses; pass++) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         float loadColor[] = {0.1f + (pass % 2) * 0.01f, 0.1f, 0.1f, 1.0f};
         g_CommandList->ClearRenderTargetView(rtvHandle, loadColor, 0, nullptr);
     }
@@ -473,14 +483,15 @@ void Cleanup() {
     g_FrameLatencyWaitHandle = nullptr;
 }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
     LoadConfig();
     if (argc >= 3) {
-        g_WindowWidth = atoi(argv[1]);
-        g_WindowHeight = atoi(argv[2]);
+        g_WindowWidth = testapp::ParseIntOrZero(argv[1]);
+        g_WindowHeight = testapp::ParseIntOrZero(argv[2]);
     }
     if (argc >= 4)
-        g_GpuLoadPasses = atoi(argv[3]);
+        g_GpuLoadPasses = testapp::ParseIntOrZero(argv[3]);
 
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();

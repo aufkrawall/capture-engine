@@ -491,11 +491,11 @@ static void InstallGlobalVTableHooks() {
 
     // Hook CreateSwapChain (vtable[10] for IDXGIFactory)
     // Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
-    if (VTableHook::Create(&vtable[10], (LPVOID)DetourCreateSwapChainGlobal, (LPVOID*)&oCreateSwapChainGlobal)) {
+    if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal, (LPVOID*)&oCreateSwapChainGlobal)) {
         HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
     }
 
-    if (VTableHook::Create(&vtable[15], (LPVOID)DetourCreateSwapChainForHwndGlobal,
+    if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
                            (LPVOID*)&oCreateSwapChainForHwndGlobal)) {
         HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
     }
@@ -512,8 +512,8 @@ static void InstallGlobalVTableHooks() {
         HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable4, vtable,
                 (int)(vtable4 == vtable));
         if (vtable4 != vtable) {  // Different vtable pointer
-            VTableHook::Create(&vtable4[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
-            VTableHook::Create(&vtable4[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+            VTableHook::Create(reinterpret_cast<void*>(&vtable4[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
+            VTableHook::Create(reinterpret_cast<void*>(&vtable4[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
             HookLog("DX12: Hooked IDXGIFactory4 vtable[10] and vtable[15]");
         }
         pFactory4->Release();
@@ -527,8 +527,8 @@ static void InstallGlobalVTableHooks() {
         HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable6, vtable,
                 (int)(vtable6 == vtable));
         if (vtable6 != vtable) {  // Different vtable pointer
-            VTableHook::Create(&vtable6[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
-            VTableHook::Create(&vtable6[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+            VTableHook::Create(reinterpret_cast<void*>(&vtable6[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
+            VTableHook::Create(reinterpret_cast<void*>(&vtable6[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
             HookLog("DX12: Hooked IDXGIFactory6 vtable[10] and vtable[15]");
         }
         pFactory6->Release();
@@ -627,13 +627,13 @@ void RemoveGlobalVTableHooks() {
     void** vtable = *(void***)pFactory;
 
     if (oCreateSwapChainGlobal) {
-        VTableHook::Remove(&vtable[10], (void*)oCreateSwapChainGlobal);
+        VTableHook::Remove(reinterpret_cast<void*>(&vtable[10]), (void*)oCreateSwapChainGlobal);
         HookLog("DX12: Removed CreateSwapChain vtable hook");
         oCreateSwapChainGlobal = nullptr;
     }
 
     if (oCreateSwapChainForHwndGlobal) {
-        VTableHook::Remove(&vtable[15], (void*)oCreateSwapChainForHwndGlobal);
+        VTableHook::Remove(reinterpret_cast<void*>(&vtable[15]), (void*)oCreateSwapChainForHwndGlobal);
         HookLog("DX12: Removed CreateSwapChainForHwnd vtable hook");
         oCreateSwapChainForHwndGlobal = nullptr;
     }

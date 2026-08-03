@@ -103,7 +103,7 @@ static void* ResolveFF25JmpTarget(void* funcAddress) {
     int32_t dispOffset = 0;
     memcpy(&dispOffset, code + 2, sizeof(dispOffset));
     const auto* targetSlot = reinterpret_cast<void* const*>(code + 6 + dispOffset);
-    if (!IsReadableMemory(targetSlot, sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(targetSlot), sizeof(void*))) {
         return nullptr;
     }
     return *targetSlot;
@@ -188,7 +188,7 @@ static bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut) {
     }
 
     void** callbackSlot = reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(steamMod) + kSteamCallbackRva);
-    if (!IsReadableMemory(callbackSlot, sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(callbackSlot), sizeof(void*))) {
         return false;
     }
 
@@ -544,7 +544,7 @@ static void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapCha
     }
 
     void** vtable = *(void***)pSwapChain;
-    const bool hasReadableVtable = vtable && IsReadableMemory(vtable, 23 * sizeof(void*));
+    const bool hasReadableVtable = vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*));
     const bool trackedVtableMatchesCurrent = hasReadableVtable && s_hookedVTable == vtable;
     const bool presentHookInstalled = hasReadableVtable && vtable[8] == (void*)DetourPresent;
     const bool present1HookInstalled = hasReadableVtable && vtable[22] == (void*)DetourPresent1;

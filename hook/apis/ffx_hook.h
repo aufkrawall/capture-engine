@@ -63,7 +63,7 @@ inline bool SnapshotMatchesExpectedInlineDetour(const void* target, const unsign
     }
 
     void* installedDetour = nullptr;
-    std::memcpy(&installedDetour, code + 6, sizeof(installedDetour));
+    std::memcpy(reinterpret_cast<void*>(&installedDetour), code + 6, sizeof(installedDetour));
     return installedDetour == detour;
 #else
     if (codeSize < 5 || code[0] != 0xE9) {

@@ -253,6 +253,7 @@
 
     if (semResult == VK_SUCCESS) {
         if (disp->fp_vkGetSemaphoreWin32HandleKHR) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             VkSemaphoreGetWin32HandleInfoKHR getHandleInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR};
             getHandleInfo.semaphore = state.timelineSemaphore;
             getHandleInfo.handleType = semHandleType;

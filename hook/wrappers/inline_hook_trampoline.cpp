@@ -276,7 +276,7 @@ void WriteJump(uint8_t* dest, void* target) {
     // 6-byte JMP [RIP+0] header. If a concurrent thread sees a partial JMP,
     // dest+6 already contains the correct absolute target, and the disp32=0
     // means [RIP+0] correctly reads from dest+6.
-    memcpy(dest + 6, &target, 8);
+    memcpy(dest + 6, reinterpret_cast<const void*>(&target), 8);
     MemoryBarrier();
     // Write full 6-byte JMP header atomically (32-bit aligned, single memcpy)
     const uint8_t jmpHeader[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};

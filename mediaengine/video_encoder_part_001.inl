@@ -18,6 +18,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <cmath>
+
 extern "C" {
 #include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
@@ -155,7 +157,7 @@ int64_t ParseDurationTagUs(const char* value) {
     }
 
     const double totalSeconds = static_cast<double>(hours * 3600LL + minutes * 60LL) + seconds;
-    return static_cast<int64_t>(totalSeconds * 1000000.0 + 0.5);
+    return static_cast<int64_t>(std::llround(totalSeconds * 1000000.0));
 }
 
 int64_t GetStreamStartUs(const AVStream* stream) {

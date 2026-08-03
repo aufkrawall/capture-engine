@@ -15,6 +15,7 @@
 #include "vulkan_layer.h"
 
 // Global IPC Client
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 IPCClient g_IPCClient;
 // Shared globals needed by system_metrics.cpp and other common files
 IPCClient* g_IPC = &g_IPCClient;
@@ -83,6 +84,7 @@ uint32_t VkFormatToDXGI(uint32_t vkFormat) {
 bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat) {
     switch (vkFormat) {
         // Standard 8-bit formats - fully compatible
+        // NOLINTNEXTLINE(bugprone-branch-clone) - fallthrough group intentionally returns true for every 8-bit format
         case VK_FORMAT_B8G8R8A8_UNORM:
         case VK_FORMAT_R8G8B8A8_UNORM:
         case VK_FORMAT_B8G8R8A8_SRGB:
@@ -266,6 +268,7 @@ void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint3
     // Write handles up to the shared-memory layout limit.
     uint32_t maxHandles = SHARED_TEXTURE_SLOT_COUNT;
     for (uint32_t i = 0; i < count && i < maxHandles; i++) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         mem->SetSharedHandle(i, (uint64_t)handles[i]);
         LayerLog("Layer IPC: Wrote handle %d = %p to shared memory", i, handles[i]);
     }
@@ -361,6 +364,7 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
     if (slot < FRAME_RING_SIZE) {
         ring.slots[slot].timestamp = (int64_t)timestamp;
         ring.slots[slot].frameIndex = wIdx;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ring.slots[slot].textureIndex = wIdx % g_PublishedTextureCount;  // Use tracked count
         ring.slots[slot].sourcePid = GetCurrentProcessId();
         ring.slots[slot].valid.store(1, std::memory_order_release);

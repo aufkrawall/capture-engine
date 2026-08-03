@@ -367,8 +367,8 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorDerivationIsClampedAndMonotoni
     EXPECT_LE(capQpc, (kQpcFreq * kMaxMs) / 1000);
 
     // No reservoir capacity -> floor cannot be realized (0), regardless of measured jitter.
-    EXPECT_EQ(policy::DeriveWgcSmoothnessFloorDelayQpc(heavy, kInterval120, kQpcFreq, kMaxMs, /*reservoir=*/0), 0);
-    EXPECT_EQ(policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, /*reservoir=*/0), 0);
+    EXPECT_EQ(policy::DeriveWgcSmoothnessFloorDelayQpc(heavy, kInterval120, kQpcFreq, kMaxMs, /*maxReservoirFrames=*/0), 0);
+    EXPECT_EQ(policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, /*maxReservoirFrames=*/0), 0);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorIsSyncNeutralAcrossDelays) {
@@ -394,7 +394,7 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorIsSyncNeutralAcrossDelays) {
             for (int64_t p = 0; p < 5; ++p) {
                 const int64_t gridTick = liveStart + p * interval;
                 const int64_t selectionTarget =
-                    policy::GetWgcSelectionTargetQpc(gridTick, /*fallback=*/0, interval, /*recordingOutputLive=*/true,
+                    policy::GetWgcSelectionTargetQpc(gridTick, /*fallbackTargetQpc=*/0, interval, /*recordingOutputLive=*/true,
                                                      /*extraSelectionDelayQpc=*/L + S);
                 const int64_t audioRealSoundTime = audioAnchor + p * interval - L;
                 EXPECT_EQ(selectionTarget, audioRealSoundTime) << "L=" << L << " S=" << S << " p=" << p;
@@ -431,28 +431,28 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySelectionTargetHoldsDelayThroughLi
     // the two in agreement.
     const int64_t scheduled = 2000, fallback = 1900, interval = 100, contentDelay = 400;
     // Uniform-cadence path: the content delay is HELD whether or not live-recovery is active.
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/true,
-                                                          /*applyLiveDelay=*/true, /*liveRecovery=*/true,
-                                                          /*uniformCadence=*/true, contentDelay),
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*recordingOutputLive=*/true,
+                                                          /*applyLiveDelay=*/true, /*liveRecoveryActive=*/true,
+                                                          /*uniformCadenceActiveDelay=*/true, contentDelay),
               scheduled - contentDelay);  // 1600 -- would have been 2000 (collapsed) before the fix
     EXPECT_EQ(
         policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                    /*liveRecovery=*/false, /*uniformCadence=*/true, contentDelay),
+                                                    /*liveRecoveryActive=*/false, /*uniformCadenceActiveDelay=*/true, contentDelay),
         scheduled - contentDelay);
     // Legacy reservoir-target path: live-recovery still legitimately yields to near-live catch-up.
     EXPECT_EQ(
         policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                    /*liveRecovery=*/true, /*uniformCadence=*/false, contentDelay),
+                                                    /*liveRecoveryActive=*/true, /*uniformCadenceActiveDelay=*/false, contentDelay),
         scheduled);
     EXPECT_EQ(
         policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                    /*liveRecovery=*/false, /*uniformCadence=*/false, contentDelay),
+                                                    /*liveRecoveryActive=*/false, /*uniformCadenceActiveDelay=*/false, contentDelay),
         scheduled - contentDelay);
     // applyLiveDelay false, or not live, never applies the delay regardless of path.
     EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true,
                                                           /*applyLiveDelay=*/false, true, true, contentDelay),
               scheduled);
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/false, true, true,
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*recordingOutputLive=*/false, true, true,
                                                           true, contentDelay),
               scheduled);
 }

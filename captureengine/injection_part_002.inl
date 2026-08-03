@@ -154,6 +154,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
     }
 
     try {
+        // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below
         delayedInjectionThreads.emplace_back([this, pid, name, source]() {
             try {
                 LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...",

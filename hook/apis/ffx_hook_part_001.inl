@@ -103,6 +103,7 @@ std::atomic<bool> g_ffxConfigureInlineHooked{false};
 std::atomic<void*> g_ffxCreateContextTarget{nullptr};
 std::atomic<void*> g_ffxDestroyContextTarget{nullptr};
 std::atomic<void*> g_ffxConfigureTarget{nullptr};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_FfxConfigureBreakpointMutex;
 static void* g_ffxConfigureVehHandle = nullptr;
 static uint8_t g_ffxConfigureOriginalFirstByte = 0;
@@ -428,7 +429,7 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
             DX12_OnNativeFSRFrameGenerationContextsDestroyed();
             g_FGCompat.SetFSRFGActive(false);
             ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
-                                        "FFXHook::Hooked_ffxDestroyContext", context, nullptr,
+                                        "FFXHook::Hooked_ffxDestroyContext", reinterpret_cast<void*>(context), nullptr,
                                         ce::fg_runtime::RuntimeMode::kOff, false, true);
         }
     } else if (result == FFX_API_RETURN_OK && isVulkanFGContext) {

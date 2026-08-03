@@ -213,7 +213,9 @@ std::pair<double, int> BestCorrelation(const std::vector<float>& reference, cons
             referenceMean += reference[referenceStart + index];
             candidateMean += candidate[candidateStart + index];
         }
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         referenceMean /= count;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         candidateMean /= count;
         double cross = 0.0;
         double referenceEnergy = 0.0;

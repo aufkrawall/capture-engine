@@ -20,7 +20,7 @@ void FillInlineDetourSnapshot(std::array<unsigned char, N>& snapshot, const void
     static_assert(N >= 14);
     snapshot[0] = 0xFF;
     snapshot[1] = 0x25;
-    std::memcpy(snapshot.data() + 6, &detour, sizeof(detour));
+    std::memcpy(snapshot.data() + 6, reinterpret_cast<const void*>(&detour), sizeof(detour));
 #else
     static_assert(N >= 5);
     snapshot[0] = 0xE9;

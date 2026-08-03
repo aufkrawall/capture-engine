@@ -97,6 +97,7 @@ struct AuxiliaryResources {
 };
 
 inline D3D12_HEAP_PROPERTIES DefaultHeapProperties() {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES props = {};
     props.Type = D3D12_HEAP_TYPE_DEFAULT;
     props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -289,8 +290,10 @@ inline void RenderAuxiliaryInputs(ID3D12GraphicsCommandList* commandList, Auxili
     commandList->ClearDepthStencilView(resources.DepthDsv(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     D3D12_RECT sceneRect = {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         static_cast<LONG>(barPosition * (width - 100)),
         height / 2 - 50,
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         static_cast<LONG>(barPosition * (width - 100) + 100),
         height / 2 + 50,
     };

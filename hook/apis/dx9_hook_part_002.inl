@@ -39,6 +39,7 @@ static bool GetD3D9PresentAddresses(void** ppPresent, void** ppPresentEx, void**
     IDirect3DDevice9Ex* deviceEx = nullptr;
     IDirect3DSwapChain9* swapChain = nullptr;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DPRESENT_PARAMETERS pp = {};
     pp.Windowed = TRUE;
     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;

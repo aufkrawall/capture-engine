@@ -162,7 +162,9 @@ bool CaptureD3D11Texture(ID3D11Texture2D* texture, bool isHdrPresentation, RawSc
 
     D3D11_TEXTURE2D_DESC description{};
     texture->GetDesc(&description);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotPixelFormat format{};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotColorEncoding encoding{};
     switch (description.Format) {
         case DXGI_FORMAT_B8G8R8A8_UNORM:
@@ -358,6 +360,7 @@ float QueryPrimarySdrWhiteNits() {
             break;
         paths.resize(pathCount);
         for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
             sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
             sourceName.header.size = sizeof(sourceName);
@@ -367,6 +370,7 @@ float QueryPrimarySdrWhiteNits() {
                 lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
                 continue;
             }
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
             whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
             whiteLevel.header.size = sizeof(whiteLevel);
@@ -390,6 +394,7 @@ float QueryPrimarySdrWhiteNits() {
 bool TryWgcScreenshot(RawScreenshot& screenshot) {
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D_FEATURE_LEVEL featureLevel{};
     const HRESULT createResult =
         D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,

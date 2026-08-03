@@ -16,6 +16,8 @@ static std::string TempPath(const char* suffix) {
     EXPECT_LT(len, MAX_PATH);
     std::string path(buf);
     path += "ce_config_fuzz_";
+    path += std::to_string(GetCurrentProcessId());
+    path += "_";
     path += suffix;
     return path;
 }

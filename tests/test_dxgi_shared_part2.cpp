@@ -156,16 +156,16 @@ TEST(DXGISharedTest, NormalOverlayDeniedDuringDormantProtectedFFXStartup) {
 
     // No distinct staged takeover queue → no live-swapchain creation queue to submit on → quiesce.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, true, true, /*hasStaged=*/false, false, false, true));
+        true, true, true, /*hasDistinctStagedTakeoverQueue=*/false, false, false, true));
     // Enabled ffxConfigure landed → AMD no longer dormant; hand to the FFX callback route.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(true, true, true, true,
-                                                                                      /*directFFX=*/true, false, true));
+                                                                                      /*hasDirectFFXApiConfirmation=*/true, false, true));
     // An FFX present callback is firing → AMD active; quiesce the normal route.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(true, true, true, true, false,
-                                                                                      /*callbackActive=*/true, true));
+                                                                                      /*ffxPresentCallbackActive=*/true, true));
     // Not yet enough stable frames (protects the fragile AMD swapchain-create instant) → quiesce.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, true, true, true, false, false, /*sustainedProgress=*/false));
+        true, true, true, true, false, false, /*sustainedGameProgress=*/false));
     // Overlay backend not live → nothing to draw (the bootstrap wrappers substitute this true).
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(true, /*overlayInit=*/false, true,
                                                                                       true, false, false, true));
@@ -173,14 +173,14 @@ TEST(DXGISharedTest, NormalOverlayDeniedDuringDormantProtectedFFXStartup) {
                                                                                       true, false, false, true));
     // Not in a protected-FFX startup window → predicate is inert.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedPending=*/false, true, true, true, false, false, true));
+        /*protectedOfficialFFXStartupPending=*/false, true, true, true, false, false, true));
 }
 
 TEST(DXGISharedTest, ProtectedFFXStartupUsesProxyBackbufferOnlyUntilDirectProof) {
     using ce::dx12_overlay_policy::ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute;
 
     EXPECT_TRUE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(
-        /*protectedPending=*/true, /*startupResolved=*/false, /*proxyHookInstalled=*/true));
+        /*protectedOfficialFFXStartupPending=*/true, /*ffxStartupAlreadyResolved=*/false, /*proxyPresentHookInstalled=*/true));
     EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(false, false, true));
     EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(true, true, true));
     EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(true, false, false));

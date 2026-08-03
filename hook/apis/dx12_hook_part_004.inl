@@ -291,7 +291,7 @@ static bool IsCrtPurecallFunctionPointer(const void* ptr) {
 }
 
 static bool IsUsableStartupActivationSwapchainPointer(IDXGISwapChain* swapchain) {
-    if (!IsReadableSwapchainPointer(swapchain) || !IsReadableSwapchainPointer(*(void***)swapchain)) {
+    if (!IsReadableSwapchainPointer(swapchain) || !IsReadableSwapchainPointer(reinterpret_cast<const void*>(*(void***)swapchain))) {
         return false;
     }
 

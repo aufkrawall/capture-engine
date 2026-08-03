@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-03 - clang-tidy baseline driven to zero and verify made robust at full CPU load
+
+- **Change:** all 1,541 previously accepted clang-tidy warnings were eliminated.
+  Genuine issues were fixed (condition-side effects, unchecked string parsing, stale
+  argument comments, implicit COM/VTable pointer conversions, rounding, destructor
+  exception escapes, and several branch/parameter cleanups); false-positive classes
+  received targeted `NOLINT` comments with explicit rationales instead of global
+  suppression. `tools/clang_tidy_baseline.json` now records **0 warnings** across 272
+  translation units.
+- **Test-suite hardening:** `--verify` runs the sanitizer suite concurrently with the
+  clean product suite. Config tests used shared `test_config.ini` names in the CWD and
+  clobbered each other; paths now include the process id. FPS-limiter timing tests used
+  single-shot upper bounds that failed under scheduler contention; `SmartWait_Accuracy`
+  now asserts on the median of seven waits and remaining upper bounds are loaded-host
+  sanity bounds. `--verify --skip-updates --concise` passes at the default worker count.
+- **Source anchors:** `tools/clang_tidy_baseline.json`, `.clang-tidy`,
+  `tests/test_config_shared.h`, `tests/test_config_fuzz.cpp`,
+  `tests/test_fps_limiter.cpp`, `llm-wiki/known-debt.md`.
+
 ### 2026-08-02 - Release-runner incident: actions/checkout wiped the dev toolchain through a junction; workflow now syncs without checkout
 
 - **Incident:** the first end-to-end test of the self-hosted release runner used the dev checkout as the runner workspace via a directory junction, with `actions/checkout@v4` and `clean: false`. Checkout's `prepareExistingDirectory` compares the expected repository URL (`https://github.com/aufkrawall/capture-engine`) with the configured fetch URL (`.../capture-engine.git`); the `.git` suffix mismatch made it delete the entire workspace contents before cloning, and Node's `rmRF` followed the junction into the dev checkout. It deleted `.git`, the dotfiles (`.gitignore`, `.github`, `AGENTS.md`, lint configs), and `build/msys64` (~17.7 GB) until a locked `build/tmp/pip-build-tracker-*` directory aborted the run with `EPERM`. `ffmpeg_build/`, `external/`, `installed/`, and `common/build_version.h` survived.

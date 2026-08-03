@@ -388,7 +388,9 @@
             }
         }
 
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         poolWidth_ = width;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         poolHeight_ = height;
         poolSourceFormat_ = sourceFormat;
         poolFormat_ = retainedFormat;

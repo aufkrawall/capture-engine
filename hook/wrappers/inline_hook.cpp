@@ -284,7 +284,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
                                 trampolineOff += instrLen;
                                 srcOff += instrLen;
                             }
-                            if (fixupFailed || static_cast<size_t>(trampolineOff + 5) > TRAMPOLINE_ENTRY_SIZE) {
+                            if (fixupFailed || trampolineOff > static_cast<int>(TRAMPOLINE_ENTRY_SIZE) - 5) {
                                 LogDirect("Chain hook: trampoline build failed (off=%d)", trampolineOff);
                                 AbandonCurrentTrampoline();
                                 return false;
@@ -310,8 +310,8 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
                             LogDirect("Chain trampoline: %d src bytes -> %d trampoline bytes, JMP -> %p (rel=0x%08X)",
                                       chainCopySize, trampolineOff, (void*)(chainCode + chainCopySize),
                                       (unsigned)jmpOffset);
-                            const size_t chainTrampolineBytes =
-                                static_cast<size_t>(trampolineOff + 5 + (chainHasPendingAbsCall ? 8 : 0));
+                            const size_t chainTrampolineBytes = static_cast<size_t>(trampolineOff) + 5 +
+                                                                (chainHasPendingAbsCall ? 8u : 0u);
                             if (!FinalizeCurrentTrampoline(chainTrampoline, chainTrampolineBytes)) {
                                 LogDirect("Chain hook: trampoline RX/CFG finalization failed");
                                 return false;
@@ -631,7 +631,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     jmpBuf[3] = 0x00;
     jmpBuf[4] = 0x00;
     jmpBuf[5] = 0x00;
-    memcpy(jmpBuf + 6, &detour, 8);
+    memcpy(jmpBuf + 6, reinterpret_cast<const void*>(&detour), 8);
 
     // Write the 8-byte target address first, so a concurrent thread that
     // sees a partial JMP [RIP+0] header reads the correct target from dest+6.

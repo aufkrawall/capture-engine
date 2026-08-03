@@ -185,7 +185,7 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
     cfgDesc.presentCallback = TestPresentCallback;
     cfgDesc.presentCallbackUserContext = nullptr;
     cfgDesc.frameGenerationCallback = TestFrameGenerationCallback;
-    cfgDesc.frameGenerationCallbackUserContext = &g_FfxCtx;
+    cfgDesc.frameGenerationCallbackUserContext = reinterpret_cast<void*>(&g_FfxCtx);
     cfgDesc.frameGenerationEnabled = enable;
     cfgDesc.allowAsyncWorkloads = true;
     if (g_FgInputs.valid && g_FgInputs.hudlessColor) {

@@ -67,7 +67,7 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
             return false;
         }
         if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                       const_cast<HANDLE*>(inheritedHandles.data()),
+                                       reinterpret_cast<void*>(const_cast<HANDLE*>(inheritedHandles.data())),
                                        inheritedHandles.size() * sizeof(HANDLE), nullptr, nullptr)) {
             error = GetLastError();
             DeleteProcThreadAttributeList(startup.lpAttributeList);

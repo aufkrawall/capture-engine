@@ -232,7 +232,8 @@
             if (routingDecision ==
                 ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
                 static int s_fgOwnSkipLog = 0;
-                if (s_fgOwnSkipLog++ < 10 || (s_fgOwnSkipLog % 300) == 0) {
+                ++s_fgOwnSkipLog;
+                if (s_fgOwnSkipLog <= 10 || (s_fgOwnSkipLog % 300) == 0) {
                     HookLogImportant(
                         "DX12: ProcessFrame — FG runtime owns swapchain but scQueue is null, SKIPPING overlay "
                         "(origGame=%p, fsrFGHeur=%d, fgOwnedSince=%llums ago) #%d",
@@ -346,7 +347,8 @@
                     startupCompatCanUseSettledRuntimeOwnedQueue && g_OriginalGameQueue != nullptr;
                 gameQueue = useOriginalQueueForStartupCompat ? g_OriginalGameQueue : g_SwapchainQueue;
                 static int s_runtimeOwnedQueueLogCount = 0;
-                if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
+                ++s_runtimeOwnedQueueLogCount;
+                if (s_runtimeOwnedQueueLogCount <= 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
                     const bool authoritativeFSR = g_FGCompat.IsFSRFGApiActive();
                     HookLogImportant(
                         "DX12: ProcessFrame — runtime-owned swapchain %s, using %s %p "
@@ -364,7 +366,8 @@
                 // causing an internal FSR deadlock (ffxQuery spin-wait or WaitForSingleObject).
                 // Instead, skip rendering entirely until scQueue is recaptured.
                 static int s_fsrSkipLog = 0;
-                if (s_fsrSkipLog++ < 5 || (s_fsrSkipLog % 300) == 0) {
+                ++s_fsrSkipLog;
+                if (s_fsrSkipLog <= 5 || (s_fsrSkipLog % 300) == 0) {
                     HookLogImportant(
                         "DX12: ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay (origGame=%p used by "
                         "FSR, "

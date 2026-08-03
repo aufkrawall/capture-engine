@@ -109,6 +109,7 @@ DeviceState* FindOrCreateDevice(IDirect3DDevice9* device) {
 
     auto entry = std::make_unique<DeviceState>();
     entry->device = device;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DCAPS9 caps = {};
     if (device && SUCCEEDED(device->GetDeviceCaps(&caps))) {
         entry->maxAnisotropy = std::max<UINT>(1u, static_cast<UINT>(caps.MaxAnisotropy));
@@ -170,6 +171,7 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
         case D3DRTYPE_TEXTURE: {
             state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.textureFilterCaps);
             if (state.textureMipLevels <= 1) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DSURFACE_DESC desc = {};
                 auto* texture2D = static_cast<IDirect3DTexture9*>(texture);
                 if (SUCCEEDED(texture2D->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
@@ -180,6 +182,7 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
         case D3DRTYPE_CUBETEXTURE: {
             state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.cubeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DSURFACE_DESC desc = {};
                 auto* cubeTexture = static_cast<IDirect3DCubeTexture9*>(texture);
                 if (SUCCEEDED(cubeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
@@ -191,6 +194,7 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
             state.textureUsesAddressW = true;
             state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.volumeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DVOLUME_DESC desc = {};
                 auto* volumeTexture = static_cast<IDirect3DVolumeTexture9*>(texture);
                 if (SUCCEEDED(volumeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
@@ -438,7 +442,9 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
         return;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DCAPS9 caps = {};
     if (SUCCEEDED(device->GetDeviceCaps(&caps))) {
         deviceState->maxAnisotropy = std::max<UINT>(1u, static_cast<UINT>(caps.MaxAnisotropy));

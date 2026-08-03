@@ -434,6 +434,7 @@
     }
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static DX11Capture g_DX11Capture;
 
 static OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm) {

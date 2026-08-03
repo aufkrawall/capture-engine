@@ -191,6 +191,7 @@ static UINT QueryD3D8MaxAnisotropy(void* opaqueDevice) {
     void** vtable = *(void***)device;
     using GetDeviceCaps8_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DCAPS9*);
     auto getCaps = reinterpret_cast<GetDeviceCaps8_t>(vtable[7]);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DCAPS9 caps = {};
     return getCaps && SUCCEEDED(getCaps(device, &caps)) ? std::max<UINT>(1, caps.MaxAnisotropy) : 1;
 }
@@ -225,7 +226,7 @@ static void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
 
     if (!record->setHooked) {
         D3D8SetTextureStageState_t original = record->setState.load(std::memory_order_relaxed);
-        if (VTableHook::Create(&vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE],
+        if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE]),
                                reinterpret_cast<LPVOID>(&DetourD3D8SetTextureStageState),
                                reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
             record->setState.store(original, std::memory_order_release);
@@ -236,7 +237,7 @@ static void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
     }
     if (!record->getHooked) {
         D3D8GetTextureStageState_t original = record->getState.load(std::memory_order_relaxed);
-        if (VTableHook::Create(&vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE],
+        if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE]),
                                reinterpret_cast<LPVOID>(&DetourD3D8GetTextureStageState),
                                reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
             record->getState.store(original, std::memory_order_release);
@@ -247,7 +248,7 @@ static void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
     }
     if (!record->applyHooked) {
         D3D8ApplyStateBlock_t original = record->applyStateBlock.load(std::memory_order_relaxed);
-        if (VTableHook::Create(&vtable[D3D8_VTABLE_APPLYSTATEBLOCK],
+        if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D8_VTABLE_APPLYSTATEBLOCK]),
                                reinterpret_cast<LPVOID>(&DetourD3D8ApplyStateBlock),
                                reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
             record->applyStateBlock.store(original, std::memory_order_release);
@@ -307,12 +308,12 @@ static void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
 
     void** deviceVTable = *(void***)device;
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present, (LPVOID*)&oD3D8Present) ==
+    if (VTableHook::Create(reinterpret_cast<void*>(&deviceVTable[D3D8_VTABLE_PRESENT]), (LPVOID)&DetourD3D8Present, (LPVOID*)&oD3D8Present) ==
         VTableHook::Success) {
         HookLog("DX8: Present hook installed");
     }
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset, (LPVOID*)&oD3D8Reset) ==
+    if (VTableHook::Create(reinterpret_cast<void*>(&deviceVTable[D3D8_VTABLE_RESET]), (LPVOID)&DetourD3D8Reset, (LPVOID*)&oD3D8Reset) ==
         VTableHook::Success) {
         HookLog("DX8: Reset hook installed");
     }
@@ -326,7 +327,7 @@ static void InstallD3D8CreateDeviceHook(IDirect3D8* d3d8) {
     }
 
     void** d3d8VTable = *(void***)d3d8;
-    if (VTableHook::Create(&d3d8VTable[D3D8_VTABLE_CREATEDEVICE], (LPVOID)&DetourD3D8CreateDevice,
+    if (VTableHook::Create(reinterpret_cast<void*>(&d3d8VTable[D3D8_VTABLE_CREATEDEVICE]), (LPVOID)&DetourD3D8CreateDevice,
                            (LPVOID*)&oD3D8CreateDevice) == VTableHook::Success) {
         HookLog("DX8: CreateDevice hook installed");
     }
@@ -377,6 +378,7 @@ static IDirect3D8* WINAPI DetourDirect3DCreate8(UINT sdkVersion) {
 }
 
 // Globals
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 
@@ -432,6 +434,7 @@ static HWND ResolveD3D8TargetWindow(IDirect3DDevice8* device, HWND hDestWindowOv
     }
 
     if (device) {
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS params = {};
         D3D8GetCreationParameters_t getCreationParameters = GetD3D8GetCreationParameters(device);
         if (getCreationParameters && SUCCEEDED(getCreationParameters(device, &params)) && params.hFocusWindow &&
@@ -466,6 +469,7 @@ static bool ResolveD3D8RenderSize(IDirect3DDevice8* device, HWND hwnd, uint32_t*
         IDirect3DSurface8* backBuffer = nullptr;
         HRESULT hr = GetD3D8GetBackBuffer(device)(device, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
         if (SUCCEEDED(hr) && backBuffer) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             D3D8_SURFACE_DESC_LOCAL desc = {};
             if (SUCCEEDED(D3D8SurfaceGetDesc(backBuffer, &desc)) && desc.Width > 0 && desc.Height > 0) {
                 *outWidth = desc.Width;

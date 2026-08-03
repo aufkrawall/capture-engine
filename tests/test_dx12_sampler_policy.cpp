@@ -13,6 +13,7 @@
 namespace {
 
 D3D12_SAMPLER_DESC MaterialSampler(D3D12_FILTER filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_SAMPLER_DESC desc = {};
     desc.Filter = filter;
     desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -118,6 +119,7 @@ TEST(DX12SamplerPolicyTest, RejectsInvalidLodRangesWithoutChangingBytes) {
         const auto result = ce::dx12_sampler_policy::Apply(desc, ForcedAf());
 
         EXPECT_FALSE(result.Modified());
+        // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - byte-identical preservation is the contract under test
         EXPECT_EQ(0, std::memcmp(&desc, &original, sizeof(desc)));
     }
 
@@ -130,6 +132,7 @@ TEST(DX12SamplerPolicyTest, RejectsInvalidLodRangesWithoutChangingBytes) {
 
         EXPECT_EQ(result.decision, ce::dx12_sampler_policy::Decision::InvalidDescriptor);
         EXPECT_FALSE(result.Modified());
+        // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - byte-identical preservation is the contract under test
         EXPECT_EQ(0, std::memcmp(&desc, &original, sizeof(desc)));
     }
 }
@@ -206,6 +209,7 @@ TEST(DX12SamplerPolicyTest, AggressiveModeStillProtectsBorderSamplers) {
 
     EXPECT_FALSE(result.Modified());
     EXPECT_EQ(result.decision, ce::dx12_sampler_policy::Decision::BorderAddress);
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - byte-identical preservation is the contract under test
     EXPECT_EQ(0, std::memcmp(&desc, &original, sizeof(desc)));
 }
 
@@ -232,6 +236,7 @@ TEST(DX12SamplerPolicyTest, IsIdempotentAndReportsAlreadyCompliant) {
 }
 
 TEST(DX12SamplerPolicyTest, AppliesSamePolicyToStaticSamplerWithoutChangingBindings) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_STATIC_SAMPLER_DESC desc = {};
     desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;

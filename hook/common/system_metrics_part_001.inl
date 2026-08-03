@@ -332,6 +332,7 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
                 if (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0) {
                     if (g_IPC->GetSharedMem()->GetLuidLowPart() != (int32_t)adapterLuid.LowPart ||
                         g_IPC->GetSharedMem()->GetLuidHighPart() != (int32_t)adapterLuid.HighPart) {
+                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                         g_IPC->GetSharedMem()->SetLuidLowPart(adapterLuid.LowPart);
                         g_IPC->GetSharedMem()->SetLuidHighPart(adapterLuid.HighPart);
                     }
@@ -417,6 +418,7 @@ void SystemMetricsCollector::UpdateCPU() {
 
         SYSTEM_INFO sysInfo;
         GetSystemInfo(&sysInfo);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         numProcs = sysInfo.dwNumberOfProcessors;
         prevInfo.resize(numProcs);
 
@@ -452,6 +454,7 @@ void SystemMetricsCollector::UpdateCPU() {
             uint64_t busy = (total > idle) ? (total - idle) : 0;
 
             if (total > 0) {
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 float coreLoad = (float)busy / total * 100.0f;
                 if (coreLoad > 100.0f)
                     coreLoad = 100.0f;  // Clamp due to timing jitter
@@ -464,6 +467,7 @@ void SystemMetricsCollector::UpdateCPU() {
         }
 
         if (totalTime > 0) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             float cpuUsage = (float)totalBusy / totalTime * 100.0f;
             std::lock_guard<std::mutex> lock(mutex);
             current.cpuUsage = cpuUsage;

@@ -7,8 +7,8 @@ static constexpr UINT BLINK_INTERVAL_MS = 500;
 
 TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit, std::function<void()> onOpenConfig)
     : hInstance(hInstance),
-      onQuit(onQuit),
-      onOpenConfig(onOpenConfig) {
+      onQuit(std::move(onQuit)),
+      onOpenConfig(std::move(onOpenConfig)) {
     InitWindow();
     InitIcon();
 }

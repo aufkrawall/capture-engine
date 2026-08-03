@@ -188,6 +188,7 @@ bool PopulateSwapchainImages(SwapchainState* state) {
 bool BuildSwapchainDescription(VkSwapchainKHR oldSwapchain, VkSwapchainCreateInfoKHR* createInfo,
                                VkFormat* selectedFormat, VkColorSpaceKHR* selectedColorSpace,
                                VkPresentModeKHR* selectedPresentMode, VkExtent2D* selectedExtent) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkSurfaceCapabilitiesKHR capabilities{};
     VkResult result =
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_App.vk.physicalDevice, g_App.vk.surface, &capabilities);
@@ -268,6 +269,7 @@ bool BuildSwapchainDescription(VkSwapchainKHR oldSwapchain, VkSwapchainCreateInf
         return false;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     *createInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     createInfo->surface = g_App.vk.surface;
     createInfo->minImageCount = imageCount;
@@ -401,6 +403,7 @@ bool CreateOrReplaceSwapchain(SwapchainOwner owner, const char* reason) {
     const bool crossOwner = old.handle != VK_NULL_HANDLE && old.owner != owner;
     const bool leavingFfx = old.owner == SwapchainOwner::FidelityFX && owner != SwapchainOwner::FidelityFX;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkSwapchainCreateInfoKHR createInfo{};
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;

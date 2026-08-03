@@ -280,6 +280,7 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
 
     if (SUCCEEDED(device->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) && backBuffer) {
         device->SetRenderTarget(backBuffer, oldDS);
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DSURFACE_DESC desc = {};
         if (SUCCEEDED(backBuffer->GetDesc(&desc))) {
             viewportWidth = static_cast<int>(desc.Width);

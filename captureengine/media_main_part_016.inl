@@ -226,6 +226,7 @@
             LARGE_INTEGER cycleEndQpc;
             QueryPerformanceCounter(&cycleEndQpc);
             const double cycleMs =
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 static_cast<double>(cycleEndQpc.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
             if (smoothedEncCycleMs < 0.001) {
                 smoothedEncCycleMs = cycleMs;

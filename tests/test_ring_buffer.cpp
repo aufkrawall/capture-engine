@@ -308,6 +308,7 @@ TEST_F(DynamicRingBufferTest, MovedFromBufferIsSafelyEmpty) {
 
     DynamicRingBuffer<int> destination(std::move(source));
 
+    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from buffer contract
     EXPECT_EQ(source.Capacity(), 0u);
     EXPECT_TRUE(source.Empty());
     EXPECT_FALSE(source.Push(2));
@@ -324,6 +325,7 @@ TEST_F(DynamicRingBufferTest, MoveAssignmentLeavesSourceSafelyEmpty) {
 
     destination = std::move(source);
 
+    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from buffer contract
     EXPECT_EQ(source.Capacity(), 0u);
     EXPECT_TRUE(source.Empty());
     EXPECT_FALSE(source.Push(8));

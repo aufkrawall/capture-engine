@@ -280,6 +280,7 @@ void SetRecordingVisibleState(bool enabled) {
     if (enabled) {
         const bool wasVisible = g_pSharedMem->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
         if (!wasVisible) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             g_pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
         }
         // Propagate audio-only flag so overlay can show AUDIO vs REC

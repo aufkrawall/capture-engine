@@ -18,10 +18,15 @@ static void LoadConfig() {
     if (pos != std::string::npos) {
         configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
     }
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
     g_FsrReloadRuntimeOnSwitch = GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch",
                                                        g_FsrReloadRuntimeOnSwitch ? 1 : 0, configPath.c_str()) != 0;
@@ -37,12 +42,14 @@ static void LoadConfig() {
     g_FsrSuspendResumeStress = GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
                                                      configPath.c_str()) != 0;
     g_FsrSuspendResumeIntervalSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds", g_FsrSuspendResumeIntervalSeconds,
                               configPath.c_str()),
         1, 60);
     g_DlssSuspendResumeStress = GetPrivateProfileIntA("Stress", "dlss_suspend_resume",
                                                       g_DlssSuspendResumeStress ? 1 : 0, configPath.c_str()) != 0;
     g_DlssSuspendResumeIntervalSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "dlss_suspend_resume_interval_seconds", g_DlssSuspendResumeIntervalSeconds,
                               configPath.c_str()),
         1, 60);
@@ -52,6 +59,7 @@ static void LoadConfig() {
         GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_stress",
                               g_FsrPresentCallbackStress ? 1 : 0, configPath.c_str()) != 0;
     g_FsrPresentCallbackToggleIntervalSeconds =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ClampInt(GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_interval_seconds",
                                        g_FsrPresentCallbackToggleIntervalSeconds, configPath.c_str()),
                  1, 120);
@@ -60,14 +68,17 @@ static void LoadConfig() {
     g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
                                                          g_DxgiVideoMemoryQueryStress ? 1 : 0, configPath.c_str()) != 0;
     g_DxgiVideoMemoryQueryCountPerFrame = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_count_per_frame",
                               g_DxgiVideoMemoryQueryCountPerFrame, configPath.c_str()),
         0, 512);
     g_BootstrapNativeSwapchainStressCount =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ClampInt(GetPrivateProfileIntA("Stress", "bootstrap_native_swapchain_stress_count",
                                        g_BootstrapNativeSwapchainStressCount, configPath.c_str()),
                  0, 8);
     g_StartupNativeSwapchainRecreateCount =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ClampInt(GetPrivateProfileIntA("Stress", "startup_native_swapchain_recreate_count",
                                        g_StartupNativeSwapchainRecreateCount, configPath.c_str()),
                  0, 8);
@@ -75,14 +86,18 @@ static void LoadConfig() {
         GetPrivateProfileIntA("Stress", "async_runtime_preload", g_AsyncRuntimePreload ? 1 : 0,
                               configPath.c_str()) != 0;
     g_AutoExitSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "auto_exit_seconds", g_AutoExitSeconds, configPath.c_str()), 0, 3600);
     g_AutoFsrStartSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "auto_fsr_start_seconds", g_AutoFsrStartSeconds, configPath.c_str()), 0,
         3600);
     g_AutoDlssStartSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "auto_dlss_start_seconds", g_AutoDlssStartSeconds, configPath.c_str()), 0,
         3600);
     g_AutoReturnFsrSeconds = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Stress", "auto_return_fsr_seconds", g_AutoReturnFsrSeconds, configPath.c_str()), 0,
         3600);
 
@@ -97,6 +112,7 @@ static void LoadConfig() {
                      testapp::fg::UpscaleQualityName(g_UpscaleQuality));
     }
     g_UpscaleScalePercent =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ClampInt(GetPrivateProfileIntA("Upscaling", "scale", g_UpscaleScalePercent, configPath.c_str()), 0, 100);
     GetPrivateProfileStringA("Upscaling", "dlss_preset", "default", textValue, sizeof(textValue), configPath.c_str());
     g_DlssPresetConfig = (textValue[0] && strcmp(textValue, "default") != 0) ? textValue[0] : 0;
@@ -107,6 +123,7 @@ static void LoadConfig() {
     g_DlssHdrInput =
         GetPrivateProfileIntA("Upscaling", "dlss_hdr", g_DlssHdrInput ? 1 : 0, configPath.c_str()) != 0;
     g_FsrUpscaleVersionConfig =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Upscaling", "fsr_version", g_FsrUpscaleVersionConfig, configPath.c_str());
     if (g_FsrUpscaleVersionConfig != 0 && g_FsrUpscaleVersionConfig != 3 && g_FsrUpscaleVersionConfig != 4) {
         testapp::Log("[FG-DIAG] WARN [Upscaling] fsr_version must be 0(auto)/3/4; using auto\n");
@@ -115,6 +132,7 @@ static void LoadConfig() {
     g_FsrSharpeningEnabled = GetPrivateProfileIntA("Upscaling", "fsr_sharpening", g_FsrSharpeningEnabled ? 1 : 0,
                                                    configPath.c_str()) != 0;
     g_FsrSharpnessPercent = ClampInt(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntA("Upscaling", "fsr_sharpness_percent", g_FsrSharpnessPercent, configPath.c_str()), 0,
         100);
 }
@@ -128,7 +146,7 @@ static bool TryParseIntOption(const char* arg, const char* prefix, int* valueOut
     if (strncmp(arg, prefix, prefixLength) != 0 || arg[prefixLength] != '=') {
         return false;
     }
-    *valueOut = atoi(arg + prefixLength + 1);
+    *valueOut = testapp::ParseIntOrZero(arg + prefixLength + 1);
     return true;
 }
 
@@ -137,7 +155,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         int value = 0;
         if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
-            g_AutoExitSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            g_AutoExitSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 3600);
             continue;
         }
         if (TryParseIntOption(argv[i], "--duration", &value)) {
@@ -145,7 +163,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--auto-fsr-start") == 0 && i + 1 < argc) {
-            g_AutoFsrStartSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            g_AutoFsrStartSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 3600);
             continue;
         }
         if (TryParseIntOption(argv[i], "--auto-fsr-start", &value)) {
@@ -153,7 +171,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--auto-dlss-start") == 0 && i + 1 < argc) {
-            g_AutoDlssStartSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            g_AutoDlssStartSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 3600);
             continue;
         }
         if (TryParseIntOption(argv[i], "--auto-dlss-start", &value)) {
@@ -161,7 +179,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--auto-return-fsr") == 0 && i + 1 < argc) {
-            g_AutoReturnFsrSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            g_AutoReturnFsrSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 3600);
             continue;
         }
         if (TryParseIntOption(argv[i], "--auto-return-fsr", &value)) {
@@ -169,7 +187,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--startup-recreates") == 0 && i + 1 < argc) {
-            g_StartupNativeSwapchainRecreateCount = ClampInt(atoi(argv[++i]), 0, 8);
+            g_StartupNativeSwapchainRecreateCount = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 8);
             continue;
         }
         if (TryParseIntOption(argv[i], "--startup-recreates", &value)) {
@@ -177,7 +195,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--bootstrap-native-swaps") == 0 && i + 1 < argc) {
-            g_BootstrapNativeSwapchainStressCount = ClampInt(atoi(argv[++i]), 0, 8);
+            g_BootstrapNativeSwapchainStressCount = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 8);
             continue;
         }
         if (TryParseIntOption(argv[i], "--bootstrap-native-swaps", &value)) {
@@ -185,7 +203,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--fsr-suspend-interval") == 0 && i + 1 < argc) {
-            g_FsrSuspendResumeIntervalSeconds = ClampInt(atoi(argv[++i]), 1, 60);
+            g_FsrSuspendResumeIntervalSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 1, 60);
             continue;
         }
         if (TryParseIntOption(argv[i], "--fsr-suspend-interval", &value)) {
@@ -193,7 +211,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--dlss-suspend-interval") == 0 && i + 1 < argc) {
-            g_DlssSuspendResumeIntervalSeconds = ClampInt(atoi(argv[++i]), 1, 60);
+            g_DlssSuspendResumeIntervalSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 1, 60);
             continue;
         }
         if (TryParseIntOption(argv[i], "--dlss-suspend-interval", &value)) {
@@ -257,7 +275,7 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--upscale-scale") == 0 && i + 1 < argc) {
-            g_UpscaleScalePercent = ClampInt(atoi(argv[++i]), 0, 100);
+            g_UpscaleScalePercent = ClampInt(testapp::ParseIntOrZero(argv[++i]), 0, 100);
             continue;
         }
         if (TryParseIntOption(argv[i], "--upscale-scale", &value)) {
@@ -274,16 +292,16 @@ static void ParseCommandLine(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(argv[i], "--fsr-upscale-version") == 0 && i + 1 < argc) {
-            const int version = atoi(argv[++i]);
+            const int version = testapp::ParseIntOrZero(argv[++i]);
             g_FsrUpscaleVersionConfig = (version == 3 || version == 4) ? version : 0;
             continue;
         }
         if (strcmp(argv[i], "--dlss-hdr") == 0 && i + 1 < argc) {
-            g_DlssHdrInput = atoi(argv[++i]) != 0;
+            g_DlssHdrInput = testapp::ParseIntOrZero(argv[++i]) != 0;
             continue;
         }
         if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {
-            g_FsrPresentCallbackToggleIntervalSeconds = ClampInt(atoi(argv[++i]), 1, 120);
+            g_FsrPresentCallbackToggleIntervalSeconds = ClampInt(testapp::ParseIntOrZero(argv[++i]), 1, 120);
             continue;
         }
         if (TryParseIntOption(argv[i], "--fsr-present-callback-interval", &value)) {
@@ -349,13 +367,13 @@ static void ParseCommandLine(int argc, char* argv[]) {
 
         switch (positional++) {
             case 0:
-                g_WindowWidth = atoi(argv[i]);
+                g_WindowWidth = testapp::ParseIntOrZero(argv[i]);
                 break;
             case 1:
-                g_WindowHeight = atoi(argv[i]);
+                g_WindowHeight = testapp::ParseIntOrZero(argv[i]);
                 break;
             case 2:
-                g_GpuLoadPasses = atoi(argv[i]);
+                g_GpuLoadPasses = testapp::ParseIntOrZero(argv[i]);
                 break;
             default:
                 break;

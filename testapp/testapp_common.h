@@ -5,11 +5,25 @@
 #include <windows.h>
 
 #include <cstdarg>
+#include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
 namespace testapp {
+
+inline int ParseIntOrZero(const char* text) {
+    if (!text || !*text) {
+        return 0;
+    }
+    char* end = nullptr;
+    const long value = std::strtol(text, &end, 10);
+    if (end == text || *end != '\0' || value < INT_MIN || value > INT_MAX) {
+        return 0;
+    }
+    return static_cast<int>(value);
+}
 
 inline std::wstring NarrowToWide(const char* value) {
     if (!value || !*value) {

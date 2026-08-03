@@ -114,6 +114,7 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
   HANDLE hWorker = CreateThread(NULL, 0, ChildInjectWorker, p.get(), 0, NULL);
   if (hWorker) {
     CloseHandle(hWorker); // Detach — worker cleans up
+    // NOLINTNEXTLINE(bugprone-unused-return-value) - ownership intentionally transferred to the detached worker
     p.release();
   } else {
     HookLog("[ChildInject] CreateThread failed: %d", GetLastError());

@@ -172,4 +172,4 @@ private:
     int64_t startQpc_;
 };
 
-#define PERF_TIMER(var) ScopedPerfTimer _perfTimer_##var(&var)
+#define PERF_TIMER(var) ScopedPerfTimer _perfTimer_##var(&(var))

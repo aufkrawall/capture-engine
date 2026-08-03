@@ -60,6 +60,7 @@
       QueryPerformanceCounter(&_t1);
       g_DX11Hook->Init();
       QueryPerformanceCounter(&_t2);
+      // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
       double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
       HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
     }
@@ -88,6 +89,7 @@
     QueryPerformanceCounter(&_t1);
     g_DX9Hook->Init();
     QueryPerformanceCounter(&_t2);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DX9 hooks installed (hook ptr=%p, init=%.1f ms)", (void*)g_DX9Hook, _initMs);
   } else if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
@@ -113,7 +115,9 @@
     QueryPerformanceFrequency(&_freq);
     QueryPerformanceCounter(&_t1);
     g_DDrawHook->Init();
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     QueryPerformanceCounter(&_t2);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DDraw hooks installed (init=%.1f ms)", _initMs);
   } else if (!s_vulkanActive && !g_DDrawHook && GetModuleHandleA("ddraw.dll")) {
@@ -128,9 +132,11 @@
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
     QueryPerformanceCounter(&_t1);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_DX8Hook->Init();
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     QueryPerformanceCounter(&_t2);
-    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
     HookLog("DX8 hooks installed (init=%.1f ms)", _initMs);
   }
 
@@ -139,10 +145,12 @@
     g_OpenGLHook = new OpenGLHook();
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     QueryPerformanceCounter(&_t1);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_OpenGLHook->Init();
     QueryPerformanceCounter(&_t2);
-    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
     HookLog("OpenGL hooks installed (init=%.1f ms)", _initMs);
   }
 

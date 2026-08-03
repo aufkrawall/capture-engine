@@ -290,7 +290,9 @@ void StartFidelityFxRuntimePreload(const char* reason) {
     g_App.ffx.preloadSucceeded = false;
     testapp::Log("[FG-DIAG] Async FidelityFX Vulkan runtime preload scheduled reason=%s path='%S'\n",
                  reasonText.c_str(), runtimePath.c_str());
+    // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body catches all exceptions below; thread-start copies are handled by std::thread
     g_App.ffx.preloadThread = std::thread([runtimePath, reasonText]() {
+        try {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         HMODULE module = LoadLibraryW(runtimePath.c_str());
         ffxFunctions functions{};
@@ -299,18 +301,24 @@ void StartFidelityFxRuntimePreload(const char* reason) {
             if (!MandatoryFidelityFxFunctionsAvailable(functions)) {
                 FreeLibrary(module);
                 module = nullptr;
+                }
             }
+            {
+                std::lock_guard<std::mutex> lock(g_App.ffx.preloadMutex);
+                g_App.ffx.preloadedModule = module;
+            }
+            g_App.ffx.preloadSucceeded = module != nullptr;
+            g_App.ffx.preloadInProgress = false;
+            testapp::Log(
+                "[FG-DIAG] Async FidelityFX Vulkan runtime preload finished reason=%s ok=%d module=%p\n",
+                reasonText.c_str(), module ? 1 : 0, module);
+            testapp::LogFlush();
+        } catch (...) {
+            g_App.ffx.preloadSucceeded = false;
+            g_App.ffx.preloadInProgress = false;
+            testapp::Log("[FG-DIAG] Async FidelityFX Vulkan runtime preload failed reason=%s\n",
+                         reasonText.c_str());
         }
-        {
-            std::lock_guard<std::mutex> lock(g_App.ffx.preloadMutex);
-            g_App.ffx.preloadedModule = module;
-        }
-        g_App.ffx.preloadSucceeded = module != nullptr;
-        g_App.ffx.preloadInProgress = false;
-        testapp::Log(
-            "[FG-DIAG] Async FidelityFX Vulkan runtime preload finished reason=%s ok=%d module=%p\n",
-            reasonText.c_str(), module ? 1 : 0, module);
-        testapp::LogFlush();
     });
 }
 
@@ -433,6 +441,7 @@ bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain,
     g_App.ffx.swapchainMode.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_MODE_VK;
     g_App.ffx.swapchainMode.composeOnPresentQueue = false;
     g_App.ffx.swapchainHandleStorage = oldSwapchain;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     g_App.ffx.swapchainCreate = {};
     g_App.ffx.swapchainCreate.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK;
     g_App.ffx.swapchainCreate.header.pNext = &g_App.ffx.swapchainMode.header;
@@ -530,7 +539,7 @@ bool SetFsrFrameGeneration(bool enabled, const char* reason, bool forceLog) {
     configure.swapChain = NativeHandleToVoid(g_App.swapchain.handle);
     configure.presentCallback = usePresentCallback ? FidelityFxPresentCallback : nullptr;
     configure.frameGenerationCallback = FidelityFxFrameGenerationCallback;
-    configure.frameGenerationCallbackUserContext = &g_App.ffx.frameGenerationContext;
+    configure.frameGenerationCallbackUserContext = reinterpret_cast<void*>(&g_App.ffx.frameGenerationContext);
     configure.frameGenerationEnabled = enabled;
     configure.allowAsyncWorkloads = true;
     if (resources.presentationColor.image) {

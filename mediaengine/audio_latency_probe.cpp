@@ -22,11 +22,17 @@
 namespace ce::audio {
 namespace {
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const CLSID kCLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID kIID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID kIID_IAudioClient = __uuidof(IAudioClient);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID kIID_IAudioRenderClient = __uuidof(IAudioRenderClient);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID kIID_IAudioCaptureClient = __uuidof(IAudioCaptureClient);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID kIID_IAudioClock = __uuidof(IAudioClock);
 
 constexpr REFERENCE_TIME kRefPerSec = 10000000;  // 100-ns units per second

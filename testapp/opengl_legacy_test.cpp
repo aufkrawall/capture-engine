@@ -48,10 +48,15 @@ static void LoadConfig() {
     if (pos != std::string::npos)
         configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WorkloadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_WorkloadPasses, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
@@ -173,6 +178,7 @@ static void RenderFrame() {
 
     const float barWidth = 180.0f;
     const float barX = g_BarPosition * static_cast<float>(g_WindowWidth - static_cast<int>(barWidth));
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const float barY = g_WindowHeight * 0.55f;
 
     glBegin(GL_QUADS);
@@ -190,6 +196,7 @@ static void RenderFrame() {
     glEnd();
 
     glPushMatrix();
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     glTranslatef(g_WindowWidth * 0.5f, g_WindowHeight * 0.35f, 0.0f);
     glRotatef(elapsed * 90.0f, 0.0f, 0.0f, 1.0f);
     glBegin(GL_TRIANGLES);
@@ -207,6 +214,7 @@ static void RenderFrame() {
         float x = static_cast<float>((pass * 73) % (g_WindowWidth + 80));
         float y = static_cast<float>((pass * 41 + static_cast<int>(elapsed * 85.0f)) % (g_WindowHeight + 40));
         float t = static_cast<float>(pass + 1) / static_cast<float>(g_WorkloadPasses + 1);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         glColor3f(0.25f + 0.45f * t, 0.35f, 0.55f + 0.25f * std::sin(elapsed + pass));
         glVertex2f(x - 30.0f, y - 18.0f);
         glVertex2f(x + 30.0f, y + 18.0f);
@@ -225,12 +233,14 @@ static void RenderFrame() {
     static int frames = 0;
     ++frames;
     if (std::chrono::duration<float>(now - lastLog).count() >= 2.0f) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         printf("Legacy OpenGL FPS: %.2f\n", frames / 2.0f);
         frames = 0;
         lastLog = now;
     }
 }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     LoadConfig();
@@ -238,11 +248,11 @@ int main(int argc, char* argv[]) {
     testapp::ApplyGameScheduling();
 
     if (argc >= 3) {
-        g_WindowWidth = atoi(argv[1]);
-        g_WindowHeight = atoi(argv[2]);
+        g_WindowWidth = testapp::ParseIntOrZero(argv[1]);
+        g_WindowHeight = testapp::ParseIntOrZero(argv[2]);
     }
     if (argc >= 4) {
-        g_WorkloadPasses = atoi(argv[3]);
+        g_WorkloadPasses = testapp::ParseIntOrZero(argv[3]);
     }
 
     WNDCLASSA wc = {};

@@ -49,7 +49,7 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
     std::memset(m_TrackedSamplers, 0, sizeof(m_TrackedSamplers));
     std::memset(m_RealSamplers, 0, sizeof(m_RealSamplers));
     std::memset(m_PixelSRVAFState, 0, sizeof(m_PixelSRVAFState));
-    std::memset(m_ForcedSamplerVariants, 0, sizeof(m_ForcedSamplerVariants));
+    std::memset(reinterpret_cast<void*>(m_ForcedSamplerVariants), 0, sizeof(m_ForcedSamplerVariants));
     std::memset(m_ForcedSamplerVariantResolved, 0, sizeof(m_ForcedSamplerVariantResolved));
     if (pReal) {
         pReal->AddRef();
@@ -64,6 +64,7 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
 }
 
 CWrapD3D11DeviceContext::~CWrapD3D11DeviceContext() {
+    try {
     WrapperLog("D3D11 Context Wrapper: Destroyed");
     ClearForcedAFTracking();
     if (m_pReal4)
@@ -80,6 +81,9 @@ CWrapD3D11DeviceContext::~CWrapD3D11DeviceContext() {
         m_pDevice->Release();
     if (m_pReal)
         m_pReal->Release();
+    } catch (...) {
+        WrapperLog("D3D11 Context Wrapper: suppressed exception during destruction");
+    }
 }
 
 void CWrapD3D11DeviceContext::InvalidateDeviceWrapper() {
@@ -459,6 +463,8 @@ void CWrapD3D11DeviceContext::SetRealSamplerRange(UINT stageIndex, UINT startSlo
             case kWrapperStageCS:
                 m_pReal->CSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
+            default:
+                break;
         }
     }
     for (UINT i = 0; i < actualSamplers; ++i) {
@@ -549,6 +555,8 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
                 break;
             case kWrapperStageCS:
                 m_pReal->CSSetSamplers(startSlot, numSamplers, samplers);
+                break;
+            default:
                 break;
         }
     };

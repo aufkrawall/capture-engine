@@ -87,6 +87,7 @@
                     };
 
                     considerStartupWgcCandidate(std::move(frame), false, true);
+                    frame = QueuedFrame{};
 
                     while (!bufferedWgcFrames.empty()) {
                         QueuedFrame candidate = std::move(bufferedWgcFrames.front());
@@ -438,14 +439,12 @@
                     uint32_t startupRetainedCapTrimmed = 0;
                     size_t startupKeptReserveFrames = 0;
                     for (size_t i = 0; i < startupCandidates.size(); ++i) {
-                        if (i < selectedStartupIndex) {
-                            ReleaseQueuedFrameTexture(startupCandidates[i].frame);
-                            ++startupDiscardedOlder;
-                        } else if (i == selectedStartupIndex) {
+                        if (i == selectedStartupIndex) {
                             frame = std::move(startupCandidates[i].frame);
                         } else if (startupReserveSelection.usedDelayReserve || startupPartialReserveFallback) {
-                            if (smoothnessRetainedFrameCap == 0 ||
-                                startupKeptReserveFrames < smoothnessRetainedFrameCap) {
+                            if (i > selectedStartupIndex &&
+                                (smoothnessRetainedFrameCap == 0 ||
+                                 startupKeptReserveFrames < smoothnessRetainedFrameCap)) {
                                 bufferedWgcFrames.push_back(std::move(startupCandidates[i].frame));
                                 ++startupKeptReserveFrames;
                             } else {

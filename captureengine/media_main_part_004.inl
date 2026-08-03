@@ -486,6 +486,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         if (g_RejectInjectFrames.load(std::memory_order_acquire)) {
                             droppedCount++;
                             dropFrame = true;
+                            qf.injectRingLease.Reset();
                         } else {
                             // Push cannot fail and always takes ownership; qf is moved-from
                             // below, so no post-push recovery path may touch it.
@@ -517,11 +518,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     } else {
                         droppedCount++;
                         dropFrame = true;
+                        qf.injectRingLease.Reset();
                     }
 
                     if (dropFrame) {
                         advanceIngestIndex();
-                        qf.injectRingLease.Reset();
                         continue;
                     }
                 } else {

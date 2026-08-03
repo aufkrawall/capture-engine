@@ -61,7 +61,11 @@ struct ProcessLoopbackCapture::WorkerInstance {
 ProcessLoopbackCapture::ProcessLoopbackCapture() = default;
 
 ProcessLoopbackCapture::~ProcessLoopbackCapture() {
+    try {
     Stop(true);
+    } catch (...) {
+        DLL_Log("[AppAudioWorker] Suppressed exception during process-loopback capture destruction");
+    }
 }
 
 bool ProcessLoopbackCapture::IsSupported() {

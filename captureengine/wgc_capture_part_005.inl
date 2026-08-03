@@ -253,7 +253,7 @@
         return true;
     }
 
-    bool ProcessCapturedFrame(winrt::Direct3D11CaptureFrame winrtFrame, WGCCapturedFrame* outputFrame) {
+    bool ProcessCapturedFrame(const winrt::Direct3D11CaptureFrame& winrtFrame, WGCCapturedFrame* outputFrame) {
         if (!winrtFrame) {
             return false;
         }
@@ -423,7 +423,7 @@
                     ++drainedCount;
 
                     WGCCapturedFrame frame{};
-                    if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
+                    if (ProcessCapturedFrame(winrtFrame, &frame) && frame.texture) {
                         drainedFrames.push_back(std::move(frame));
                         processedFrame = true;
                     }
@@ -460,7 +460,7 @@
                     break;
                 }
                 ++drainedCount;
-                processedFrame = ProcessCapturedFrame(std::move(winrtFrame), nullptr) || processedFrame;
+                processedFrame = ProcessCapturedFrame(winrtFrame, nullptr) || processedFrame;
             }
         }
 

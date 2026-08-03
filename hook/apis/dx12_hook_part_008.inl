@@ -92,7 +92,7 @@ static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMA
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
     auto* dxgiSwapChain = static_cast<IDXGISwapChain*>(swapChain);
     if (!dxgiSwapChain || !IsReadableSwapchainPointer(dxgiSwapChain) ||
-        !IsReadableSwapchainPointer(*(void***)dxgiSwapChain)) {
+        !IsReadableSwapchainPointer(reinterpret_cast<const void*>(*(void***)dxgiSwapChain))) {
         return;
     }
 

@@ -395,7 +395,7 @@
             }
         };
     const uint64_t minLoggedWgcStarvedEpisodeMs =
-        std::max<uint64_t>(100ull, static_cast<uint64_t>(frameIntervalMs * 8.0 + 0.5));
+        static_cast<uint64_t>(std::llround(std::max(100.0, frameIntervalMs * 8.0)));
     const auto shouldLogWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks,
                                                 uint32_t peakFreshMissPermille) {
         if (duplicateTicks > 0 || durationMs >= minLoggedWgcStarvedEpisodeMs) {

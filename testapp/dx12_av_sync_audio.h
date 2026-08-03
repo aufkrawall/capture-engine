@@ -411,6 +411,7 @@ inline void AudioRenderer::FillAudio(BYTE* data, UINT32 frames, UINT32 queuedFra
         return;
     }
     const int channels = std::max<int>(1, mixFormat_->nChannels);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int sampleRate = std::max<int>(1, mixFormat_->nSamplesPerSec);
     const int blockAlign = std::max<int>(1, mixFormat_->nBlockAlign);
     const LONGLONG stimulusStart = stimulusStartQpc_ ? stimulusStartQpc_->QuadPart : 0;

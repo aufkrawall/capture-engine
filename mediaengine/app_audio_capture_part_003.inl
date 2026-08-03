@@ -105,8 +105,10 @@
                 firstQpcPos = qpcPosition;
                 firstSet = true;
                 const uint64_t packetDuration100ns =
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     ce::audio::AudioFramesToHundredNanoseconds(numFramesAvailable, pwfx->nSamplesPerSec);
                 const uint64_t packetStartQpc = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     firstQpcPos, numFramesAvailable, pwfx->nSamplesPerSec);
                 // streamLatency telemetry only; placement uses packetStartQpc (period-center). The
                 // wouldAdvanceQpc shows the retired GetStreamLatency audio-advance, not applied.
@@ -153,6 +155,7 @@
             // Build packet with format info
             AudioPacket packet{};
             packet.channels = pwfx->nChannels;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             packet.sampleRate = pwfx->nSamplesPerSec;
             packet.bitsPerSample = pwfx->wBitsPerSample;
             packet.blockAlign = pwfx->nBlockAlign;
@@ -168,6 +171,7 @@
             // not exist; the CFR pipeline absorbs the shift). Process loopback shares the render
             // endpoint, so it inherits audio_capture_latency_ms and is handled by the video delay.
             packet.qpcPosition = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 qpcPosition, numFramesAvailable, pwfx->nSamplesPerSec);
 
             // Check for float format

@@ -561,8 +561,10 @@
                 const size_t realCopiedSamples = (toCopy / CHANNELS) - syntheticCopiedSamples;
 
                 if (toCopy > 0) {
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     std::copy(src.postResampleBuffer.begin(), src.postResampleBuffer.begin() + toCopy, srcData.begin());
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
+                                                 // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                                  src.postResampleBuffer.begin() + toCopy);
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticPostSamples, toCopy / CHANNELS);
                     if (realCopiedSamples > 0 && src.pendingStartupJoinFade) {

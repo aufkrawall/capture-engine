@@ -194,7 +194,7 @@ void HookDeviceFactory(IUnknown* factory) {
         return;
     FactoryCreateDevicePtr original = nullptr;
     const VTableHook::Status status = VTableHook::Create(
-        &vtable[9], reinterpret_cast<void*>(&DetourFactoryCreateDevice), reinterpret_cast<void**>(&original));
+        reinterpret_cast<void*>(&vtable[9]), reinterpret_cast<void*>(&DetourFactoryCreateDevice), reinterpret_cast<void**>(&original));
     if (status == VTableHook::Success && original) {
         g_factoryOriginals.emplace(vtable, original);
         HookLogImportant("DX12 AF: ID3D12DeviceFactory::CreateDevice hook ready factory=%p vtable=%p", factory, vtable);
@@ -366,6 +366,7 @@ void STDMETHODCALLTYPE DetourCreateSampler2(IUnknown* device, const SamplerDesc2
         return;
     }
     SamplerDesc2Compat modified = *desc;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_SAMPLER_DESC ordinary = {};
     static_assert(sizeof(ordinary) + sizeof(UINT) == sizeof(modified));
     std::memcpy(&ordinary, &modified, sizeof(ordinary));
@@ -418,7 +419,7 @@ bool HookDevice(ID3D12Device* device) {
     if (vtable[16] != reinterpret_cast<void*>(&DetourCreateRootSignature)) {
         CreateRootSignaturePtr original = nullptr;
         const VTableHook::Status status = VTableHook::Create(
-            &vtable[16], reinterpret_cast<void*>(&DetourCreateRootSignature), reinterpret_cast<void**>(&original));
+            reinterpret_cast<void*>(&vtable[16]), reinterpret_cast<void*>(&DetourCreateRootSignature), reinterpret_cast<void**>(&original));
         if (status == VTableHook::Success && original) {
             originals.createRootSignature = original;
         } else {
@@ -430,7 +431,7 @@ bool HookDevice(ID3D12Device* device) {
 
     if (vtable[22] != reinterpret_cast<void*>(&DetourCreateSampler)) {
         CreateSamplerPtr original = nullptr;
-        const VTableHook::Status status = VTableHook::Create(&vtable[22], reinterpret_cast<void*>(&DetourCreateSampler),
+        const VTableHook::Status status = VTableHook::Create(reinterpret_cast<void*>(&vtable[22]), reinterpret_cast<void*>(&DetourCreateSampler),
                                                              reinterpret_cast<void**>(&original));
         if (status == VTableHook::Success && original) {
             originals.createSampler = original;
@@ -457,7 +458,7 @@ bool HookDevice(ID3D12Device* device) {
         if (vtable11 && vtable11[84] != reinterpret_cast<void*>(&DetourCreateSampler2)) {
             CreateSampler2Ptr original = nullptr;
             const VTableHook::Status status = VTableHook::Create(
-                &vtable11[84], reinterpret_cast<void*>(&DetourCreateSampler2), reinterpret_cast<void**>(&original));
+                reinterpret_cast<void*>(&vtable11[84]), reinterpret_cast<void*>(&DetourCreateSampler2), reinterpret_cast<void**>(&original));
             if (status == VTableHook::Success && original) {
                 g_deviceOriginals[vtable11].createSampler2 = original;
                 HookLogImportant("DX12 AF: CreateSampler2 hook ready device=%p vtable=%p", device11, vtable11);

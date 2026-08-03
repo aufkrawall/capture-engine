@@ -402,12 +402,15 @@ void FGCompatibility::UpdateMetrics() {
         return;
     }
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float durationS = (maxTs - minTs) / 1000000.0f;
     if (durationS < 0.1f) {
         return;
     }
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float outputFPS = totalFrames / durationS;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float baseFPS = realFrames / durationS;
 
     cachedOutputFPS.store(outputFPS);

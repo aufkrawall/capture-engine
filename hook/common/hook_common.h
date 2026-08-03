@@ -34,8 +34,6 @@ enum class RuntimeMode : int;
 }
 }  // namespace ce
 
-class PerformanceMetrics;
-
 // Logging Helper
 void HookLog(const char* fmt, ...);
 void HookLog(LogLevel level, const char* fmt, ...);

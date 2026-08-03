@@ -383,6 +383,7 @@ TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles)
 TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHeadroomAndForcesOpaqueOutput) {
     ce::ComGuard<ID3D11Device> device;
     ce::ComGuard<ID3D11DeviceContext> context;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D_FEATURE_LEVEL featureLevel = {};
     const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -435,6 +436,7 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
     ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), nullptr,
                                                     pixelShader.addressof())));
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -490,8 +492,11 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
     const uint32_t packed = *static_cast<const uint32_t*>(mapped.pData);
     context->Unmap(stagingTexture.get(), 0);
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int red = packed & 0x3ff;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int green = (packed >> 10) & 0x3ff;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int blue = (packed >> 20) & 0x3ff;
     EXPECT_NEAR(red, 927, 1);
     EXPECT_NEAR(green, 927, 1);
@@ -502,6 +507,7 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
 TEST(VideoEncoderSourceTest, ForcedSdrPackedHdr10OverlayGreenRemainsColoredAndOpaque) {
     ce::ComGuard<ID3D11Device> device;
     ce::ComGuard<ID3D11DeviceContext> context;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D_FEATURE_LEVEL featureLevel = {};
     const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -553,6 +559,8 @@ TEST(VideoEncoderSourceTest, ForcedSdrPackedHdr10OverlayGreenRemainsColoredAndOp
     ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), nullptr,
                                                     pixelShader.addressof())));
 
+// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;

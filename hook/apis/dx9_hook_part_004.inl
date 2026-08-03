@@ -118,6 +118,7 @@
         CleanupSharedHandles();
         ReleaseDirectD3D9SharedRing();
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS params = {};
         if (FAILED(device->GetCreationParameters(&params))) {
             HookLogImportant("DX9: Direct D3D9 shared ring unavailable - GetCreationParameters failed");
@@ -152,6 +153,7 @@
             }
 
             if (EnsureDirectD3D9ExProducerDevice(params)) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DDEVICE_CREATION_PARAMETERS helperParams = {};
                 if (SUCCEEDED(directSharedProducerDeviceEx->GetCreationParameters(&helperParams))) {
                     LogDirectD3D9SharingDiagnostics(directSharedProducerDeviceEx, helperParams,
@@ -164,6 +166,7 @@
             }
 
             if (EnsureDirectD3D9LegacyProducerDevice(params)) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DDEVICE_CREATION_PARAMETERS helperParams = {};
                 if (SUCCEEDED(directSharedProducerDevice->GetCreationParameters(&helperParams))) {
                     LogDirectD3D9SharingDiagnostics(directSharedProducerDevice, helperParams,
@@ -214,6 +217,8 @@
         if (!d3d9Device)
             return false;
 
+// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS params = {};
         if (FAILED(d3d9Device->GetCreationParameters(&params)))
             return false;

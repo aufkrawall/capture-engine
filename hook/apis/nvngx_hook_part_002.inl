@@ -350,6 +350,8 @@ static char GetPresetChar(int qualityValue) {
         case 5:
             presetVal = cfg.parsed.presetDLAA;
             break;
+        default:
+            break;
     }
 
     // Fallback to global srPreset if specific is 0

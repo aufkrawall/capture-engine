@@ -83,7 +83,7 @@ CustomHook::Status StubUnhookExport(const char* moduleName, const char* function
 }
 
 CustomHook::Status StubUnhookVtableEntry(void** vtableEntry, void* original) {
-    g_LastRemovedVtableEntry = vtableEntry;
+    g_LastRemovedVtableEntry = reinterpret_cast<void*>(vtableEntry);
     if (vtableEntry && original) {
         *vtableEntry = original;
     }
@@ -174,7 +174,7 @@ TEST_F(HookSystemTest, CreateComHookRestoresOriginalEntryOnRemove) {
     EXPECT_EQ(original, reinterpret_cast<void*>(&DummyOriginal));
     EXPECT_EQ(vtable[0], reinterpret_cast<void*>(&DummyDetour));
 
-    HookSystem::RemoveHook(&vtable[0]);
+    HookSystem::RemoveHook(reinterpret_cast<void*>(&vtable[0]));
     EXPECT_EQ(g_LastRemovedVtableEntry, &vtable[0]);
     EXPECT_EQ(vtable[0], reinterpret_cast<void*>(&DummyOriginal));
 }

@@ -287,9 +287,8 @@
         profile.resolvedVideoCapture = resolved;
 
         if (!profile.legacyInjectionSyntax) {
-            if (profile.dllInjection == ApplicationDllInjection::kNever) {
-                profile.injectionMode = ApplicationInjectionMode::kNone;
-            } else if (resolved == ApplicationVideoCapture::kInject) {
+            if (resolved == ApplicationVideoCapture::kInject &&
+                profile.dllInjection != ApplicationDllInjection::kNever) {
                 profile.injectionMode = ApplicationInjectionMode::kCapture;
             } else if (profile.dllInjection == ApplicationDllInjection::kAlways) {
                 profile.injectionMode = ApplicationInjectionMode::kOverlay;
@@ -621,9 +620,7 @@
                 inOverlayWhitelist = false;
                 inWgcWindowDetection = true;
             } else if (inWgcWindowDetection) {
-                if (trimmed.find('=') != std::string::npos) {
-                    inWgcWindowDetection = false;
-                } else if (trimmed == ")") {
+                if (trimmed.find('=') != std::string::npos || trimmed == ")") {
                     inWgcWindowDetection = false;
                 } else if (trimmed != "(") {
                     AddEntry(trimmed, config.wgcWindowTitles);

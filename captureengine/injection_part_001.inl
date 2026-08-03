@@ -244,14 +244,18 @@ InjectionManager::~InjectionManager() {
     // Reject and drain WMI callbacks before joining raw-owner worker threads.
     // Launch and worker-list transfer are serialized by threadListMutex, so no
     // worker can appear after the list has been claimed for shutdown.
+    try {
     RequestShutdown();
     ShutdownWMI();
     WaitForInjectionThreads(5000);
     EjectAll();
+    } catch (...) {
+        LogWarn("[Injection] Suppressed exception during manager destruction");
+    }
 }
 
 void InjectionManager::SetOnInjectCallback(std::function<void(const std::string&)> callback) {
-    this->onInjectCallback = callback;
+    this->onInjectCallback = std::move(callback);
 }
 
 void InjectionManager::UpdateConfig(const AppConfig& newConfig) {

@@ -58,7 +58,8 @@
             gdiBufferBusy[surfIdx].store(false, std::memory_order_release);
 
             static int gdiThreadLogCount = 0;
-            if (++gdiThreadLogCount <= 5 || gdiThreadLogCount % 200 == 0)
+            ++gdiThreadLogCount;
+            if (gdiThreadLogCount <= 5 || gdiThreadLogCount % 200 == 0)
                 HookLog("DX9: GDI thread: frame #%d surf[%d] %dus", gdiThreadLogCount, surfIdx, captureUs);
 
             pendingReadIdx.store(rIdx + 1, std::memory_order_release);
@@ -275,6 +276,7 @@
     }
 
     void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp, bool useExRuntime) const {
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         pp = {};
         pp.Windowed = TRUE;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -437,6 +439,7 @@
             deviceEx->Release();
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DCAPS9 caps = {};
         D3DADAPTER_IDENTIFIER9 identifier = {};
         D3DDISPLAYMODE displayMode = {};
@@ -544,6 +547,7 @@
             }
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DPRESENT_PARAMETERS pp = {};
         BuildDirectD3D9HelperPresentParameters(pp, true);
         HookLogImportant("DX9: Trying helper D3D9Ex producer (adapter=%u type=%u flags=0x%08x)", params.AdapterOrdinal,
@@ -621,6 +625,7 @@
         }
 
         auto tryCreateLegacyHelper = [&](DWORD attemptFlags, const char* attemptLabel) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             D3DPRESENT_PARAMETERS pp = {};
             BuildDirectD3D9HelperPresentParameters(pp, false);
             HookLogImportant(

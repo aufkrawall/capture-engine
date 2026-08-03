@@ -94,6 +94,7 @@ bool FillHdrYuvFrame(const RawScreenshot& screenshot, AVFrame* frame, uint32_t w
                                .count();
     LogInfo("[Screenshot] HDR-to-PQ conversion: %ux%u format=%u workers=%u duration=%.3fms",
             screenshot.header.width, screenshot.header.height, static_cast<unsigned>(format), workerCount,
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             elapsedUs / 1000.0);
     return true;
 }
@@ -152,6 +153,7 @@ bool ConvertHdrToSdrScreenshot(const RawScreenshot& screenshot, float sdrWhiteNi
                                                                                  started)
                                .count();
     LogInfo("[Screenshot] HDR->SDR conversion: %ux%u white=%.1f-nit workers=%u duration=%.3fms",
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             screenshot.header.width, screenshot.header.height, sdrWhiteNits, workerCount, elapsedUs / 1000.0);
     return MakeRawScreenshot(pixels.data(), screenshot.header.width, screenshot.header.height, outputRowPitch,
                              ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB, converted);
@@ -399,7 +401,9 @@ bool SaveHdrAvif(const std::filesystem::path& outputDirectory, const RawScreensh
     LogInfo("[Screenshot] AVIF pipeline: %ux%u mode=realtime cpu=8 crf=8 threads=%u tiles=%ux%u "
             "encode=%.3fms total=%.3fms",
             screenshot.header.width, screenshot.header.height, encodingPlan.threadCount,
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             1u << encodingPlan.tileColumnsLog2, 1u << encodingPlan.tileRowsLog2, encodeElapsedUs / 1000.0,
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             totalElapsedUs / 1000.0);
     return true;
 }

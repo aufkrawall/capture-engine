@@ -392,12 +392,15 @@
 
         DXGI_SWAP_CHAIN_DESC desc;
         if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             g_State.cachedWidth = desc.BufferDesc.Width;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             g_State.cachedHeight = desc.BufferDesc.Height;
 
             // Use actual swapchain buffer count for ImGui initialization
             // The separate overlay queue (Change 1) eliminates the need for buffer
             // limiting
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             int imguiBufferCount = desc.BufferCount;
 
             HookLog("DX12: ProcessFrame - initializing ImGui (%dx%d, buffers=%d)", g_State.cachedWidth,
@@ -459,6 +462,7 @@
                             "%llums",
                             kStartupOverlayPostBackendInitSettleMs);
                     } else {
+                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                         int actualBufferCount = desc.BufferCount;
                         if (actualBufferCount > 8) {
                             HookLog("DX12: Swapchain has %d buffers, limiting RTVs to 8", actualBufferCount);
@@ -635,6 +639,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             return;
         }
 
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         int actualBufferCount = desc.BufferCount;
         if (actualBufferCount > 8) {
             HookLog("DX12: Swapchain has %d buffers during staged activation, limiting RTVs to 8", actualBufferCount);

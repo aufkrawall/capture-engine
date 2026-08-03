@@ -92,6 +92,7 @@ inline bool TemporalUpscaler::Initialize(ID3D12Device* device, DXGI_FORMAT color
     params[1].Constants.Num32BitValues = 8;  // renderSize, displaySize(unused slot kept), jitter, historyValid, blend
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
     samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -181,6 +182,7 @@ inline bool TemporalUpscaler::Initialize(ID3D12Device* device, DXGI_FORMAT color
         return false;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature_.Get();
     psoDesc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
@@ -368,6 +370,7 @@ inline bool PresentBlitPass::Initialize(ID3D12Device* device, DXGI_FORMAT source
     params[1].Constants.Num32BitValues = 4;  // ditherSeed, unused x3
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -428,6 +431,7 @@ inline bool PresentBlitPass::Initialize(ID3D12Device* device, DXGI_FORMAT source
         return false;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature_.Get();
     psoDesc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};

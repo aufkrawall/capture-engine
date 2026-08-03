@@ -9,6 +9,7 @@
 #include <d3d11.h>
 #include <windows.h>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include "../../common/logging.h"
@@ -392,7 +393,7 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
 
         // Store wrapper pointer on real swapchain for retrieval
         void* pThis = this;
-        pReal->SetPrivateData(IID_CWrapDXGISwapChain, sizeof(void*), &pThis);
+        pReal->SetPrivateData(IID_CWrapDXGISwapChain, sizeof(void*), reinterpret_cast<void*>(&pThis));
     }
 
     WrapperStateManager::Get().RegisterSwapchain(this, pReal);

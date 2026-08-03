@@ -33,6 +33,7 @@ void SetObjectName(VkObjectType type, uint64_t handle, const char* name) {
 
 bool CreateImageResource(ImageResource* resource, uint32_t width, uint32_t height, VkFormat format,
                          VkImageUsageFlags usage, VkImageAspectFlags aspect, const char* name) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     resource->createInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     resource->createInfo.imageType = VK_IMAGE_TYPE_2D;
     resource->createInfo.format = format;
@@ -113,6 +114,7 @@ bool CheckFormat(VkFormat format, VkFormatFeatureFlags required, const char* rol
 }
 
 VkRenderPass CreateSingleColorRenderPass(VkFormat format) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkAttachmentDescription attachment{};
     attachment.format = format;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -157,6 +159,7 @@ VkRenderPass CreateSingleColorRenderPass(VkFormat format) {
 }
 
 VkRenderPass CreateSceneRenderPass() {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     std::array<VkAttachmentDescription, 5> attachments{};
     const VkFormat formats[] = {kSceneColorFormat, kMotionFormat, kMaskFormat, kMaskFormat, kDepthFormat};
     for (size_t index = 0; index < attachments.size(); ++index) {
@@ -283,6 +286,7 @@ VkPipeline CreateGraphicsPipeline(VkRenderPass renderPass, VkPipelineLayout layo
     rasterization.cullMode = VK_CULL_MODE_NONE;
     rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization.lineWidth = 1.0f;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkPipelineMultisampleStateCreateInfo multisample = {
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -688,6 +692,7 @@ void ShutdownRenderer() {
     for (VkRenderPass renderPass : renderPasses) {
         if (renderPass) vkDestroyRenderPass(g_App.vk.device, renderPass, nullptr);
     }
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     g_App.renderer = {};
 }
 

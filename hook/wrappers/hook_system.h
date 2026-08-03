@@ -104,8 +104,14 @@ class TypedHook {
 public:
     TypedHook() = default;
     ~TypedHook() {
+        try {
         if (m_Created.load()) {
             RemoveHook(m_Target);
+            }
+        } catch (...) {
+            // Hook teardown must never throw out of a destructor; the OS/process
+            // teardown path reclaims any residual state.
+            (void)0;
         }
     }
 

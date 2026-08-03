@@ -99,6 +99,7 @@ static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count) {
 
         if (rva >= sh.VirtualAddress && rva < sh.VirtualAddress + sh.Misc.VirtualSize) {
             DWORD fileOff = sh.PointerToRawData + (DWORD)(rva - sh.VirtualAddress);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             if (SetFilePointer(hFile, fileOff, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
                 if (ReadFile(hFile, outBuf, (DWORD)count, &br, nullptr) && (int)br == count)
                     success = true;

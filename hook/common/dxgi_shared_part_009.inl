@@ -86,7 +86,7 @@
     // This avoids mixing wrapper and real swapchain original function pointers.
     if (IsReadableMemory(pSwapChain, sizeof(void*))) {
         void** vtable = *(void***)pSwapChain;
-        if (vtable && IsReadableMemory(vtable, 9 * sizeof(void*)) && vtable[8]) {
+        if (vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 9 * sizeof(void*)) && vtable[8]) {
             auto currentPresent = reinterpret_cast<PFN_Present>(vtable[8]);
             if (currentPresent != DetourPresent) {
                 static int s_copLogCount3 = 0;
@@ -241,7 +241,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     // Prefer the current object's Present1 slot when it is not detoured.
     if (IsReadableMemory(pSwapChain, sizeof(void*))) {
         void** vtable = *(void***)pSwapChain;
-        if (vtable && IsReadableMemory(vtable, 23 * sizeof(void*)) && vtable[22]) {
+        if (vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) && vtable[22]) {
             auto currentPresent1 = reinterpret_cast<PFN_Present1>(vtable[22]);
             if (currentPresent1 != DetourPresent1) {
                 return currentPresent1(pSwapChain, SyncInterval, Flags, pParams);

@@ -76,6 +76,7 @@ static std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 
 static void SyncOverlayActiveFlagLocked() {
     bool overlayActive = false;
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - only existence of any initialized state matters
     for (const auto& entry : g_OverlayStates) {
         if (entry.second.initialized) {
             overlayActive = true;
@@ -290,6 +291,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog("Vulkan Layer: InitializeOverlay - Using graphics queue family %d", graphicsQueueFamily);
 
     // Create render pass (load existing content, don't clear)
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkAttachmentDescription attachment = {};
     attachment.format = format;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -471,6 +473,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // init
     if (hasLuid) {
         LayerLog("Vulkan Layer: InitializeOverlay - Starting SystemMetricsCollector...");
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
         if (vramTotal > 0) {
             SystemMetricsCollector::Get().SetVRAMTotal(vramTotal);
@@ -722,6 +725,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
             if (vkBackend) {
                 vkBackend->SetRenderContext(cmd, state.renderPass, state.framebuffers[imageIndex], state.extent);
                 // RenderOverlay will check if pipeline is ready
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 state.overlayAdapter->RenderOverlay(state.extent.width, state.extent.height);
             } else {
                 LayerLog("Vulkan Layer: [Error] Vulkan backend is null");

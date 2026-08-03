@@ -226,7 +226,7 @@ static bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain, const ch
 
     void** colorSpaceVtable = *reinterpret_cast<void***>(colorSpaceSwapChain);
     void* colorSpaceAddress =
-        colorSpaceVtable && IsReadableMemory(&colorSpaceVtable[38], sizeof(void*)) ? colorSpaceVtable[38] : nullptr;
+        colorSpaceVtable && IsReadableMemory(reinterpret_cast<const void*>(&colorSpaceVtable[38]), sizeof(void*)) ? colorSpaceVtable[38] : nullptr;
     colorSpaceSwapChain->Release();
     if (!colorSpaceAddress || colorSpaceAddress == reinterpret_cast<void*>(DetourSetColorSpace1)) {
         HookLogImportant("DXGI: Refusing unsafe SetColorSpace1 hook target source=%s sc=%p target=%p",
@@ -295,7 +295,7 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     }
 
     DWORD oldProtect;
-    if (!VirtualProtect(vtable, 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLog("DXGIShared::InstallHooks: VirtualProtect failed");
         return false;
     }
@@ -326,7 +326,7 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
             oResizeBuffers1, DetourResizeBuffers1);
     }
 
-    VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &oldProtect);
+    VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &oldProtect);
     HookLog("DXGIShared::InstallHooks: All vtable hooks installed successfully");
     return true;
 }
@@ -405,7 +405,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // E9 JMP.
     {
         void** vtable = *(void***)pSwapChain;
-        if (vtable && IsReadableMemory(&vtable[8], sizeof(void*))) {
+        if (vtable && IsReadableMemory(reinterpret_cast<const void*>(&vtable[8]), sizeof(void*))) {
             if (!s_originalVtable8Present) {
                 s_originalVtable8Present = (PFN_Present)vtable[8];
                 // Log the saved address and compare with GetPresentAddress
@@ -572,7 +572,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
 
         DWORD oldProtect;
-        if (!VirtualProtect(vtable, 23 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (!VirtualProtect(reinterpret_cast<void*>(vtable), 23 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             HookLog("InstallPresentInlineHooks: VirtualProtect failed for vtable hook");
             s_inlineHooksInstalled = true;
             return true;
@@ -601,7 +601,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // Thread safety: InstallPresentInlineHooks runs once on the hook thread.
         // The temp swapchain is valid and vtable page is already writable
         // (from VirtualProtect at line ~2843).
-        if (externalJmpDetected) {
             const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
             if (overlayModule && IsSteamOverlayModule(overlayModule)) {
                 HookLogImportant(
@@ -616,7 +615,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     "InstallPresentInlineHooks: Steam overlay pre-init on temp swapchain "
                     "returned hr=0x%08X — proceeding with vtable hook installation",
                     (unsigned)steamInitHr);
-            }
         }
         // === END STEAM PRE-INIT ===
 
@@ -643,7 +641,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             }
         }
 
-        VirtualProtect(vtable, 23 * sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(vtable), 23 * sizeof(void*), oldProtect, &oldProtect);
 
         s_inlineHooksInstalled = true;
         return true;

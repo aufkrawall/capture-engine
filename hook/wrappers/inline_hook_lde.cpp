@@ -237,12 +237,10 @@ static int ParseModRM(const uint8_t* code, bool hasAddrPrefix) {
         }
     } else {
         // 16-bit addressing (rare, mainly for x86 with 67h prefix)
-        if (mod == 0 && rm == 6) {
+        if ((mod == 0 && rm == 6) || mod == 2) {
             extra += 2;  // disp16
         } else if (mod == 1) {
             extra += 1;  // disp8
-        } else if (mod == 2) {
-            extra += 2;  // disp16
         }
     }
 
@@ -266,10 +264,9 @@ int GetInstructionLength(const uint8_t* code, bool is64bit) {
         } else if (b == 0x67) {
             hasAddrSize = true;
             p++;
-        } else if (b == 0xF0 || b == 0xF2 || b == 0xF3) {
-            p++;  // LOCK, REPNE, REP
-        } else if (b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 || b == 0x65) {
-            p++;  // Segment overrides
+        } else if (b == 0xF0 || b == 0xF2 || b == 0xF3 || b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E ||
+                   b == 0x64 || b == 0x65) {
+            p++;  // LOCK, REPNE, REP, segment overrides
         } else if (is64bit && (b >= 0x40 && b <= 0x4F)) {
             hasREX_W = (b & 0x08) != 0;
             p++;  // REX prefix
@@ -312,7 +309,6 @@ int GetInstructionLength(const uint8_t* code, bool is64bit) {
                     return (int)(p - code) + (hasOpSize ? 4 : 6);
                 case 0xA0:  // MOV AL, moffs
                 case 0xA2:  // MOV moffs, AL
-                    return (int)(p - code) + (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));
                 case 0xA1:  // MOV rAX, moffs
                 case 0xA3:  // MOV moffs, rAX
                     return (int)(p - code) + (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));

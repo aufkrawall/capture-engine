@@ -350,6 +350,7 @@
 
         if (g_PostFSRProbeLevel.load(std::memory_order_acquire) == 0) {
             // Probe 0: Scratch resource barrier on origGame — confirms queue works.
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             D3D12_HEAP_PROPERTIES heapProps = {};
             heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
             D3D12_RESOURCE_DESC scratchDesc = {};
@@ -615,7 +616,8 @@
     if (renderDirectlyOnTransitionProbe && !fastPostFSRDLSSProbe && s_reactivationEpoch > 1 &&
         s_postSLProbeFrames == 0) {
         static int s_skipTransitionProbeLog = 0;
-        if (s_skipTransitionProbeLog++ < 20 || (s_skipTransitionProbeLog % 120) == 0)
+        ++s_skipTransitionProbeLog;
+        if (s_skipTransitionProbeLog <= 20 || (s_skipTransitionProbeLog % 120) == 0)
             HookLogImportant(
                 "DX12: PostSL rendering overlay directly on first reactivation present — skipping redundant "
                 "empty-ECL transition probe (swapchain queue, device healthy; render's pre/post devRemoved check "

@@ -53,6 +53,7 @@ static bool g_Running = true;
 static bool g_Recording = false;
 static uint32_t g_RecordingSerial = 0;
 static std::atomic<RecordingStartIntent> g_RecordingStartIntent{RecordingStartIntent::Idle};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static AppConfig g_Config;
 static std::string g_ConfigPath;
 
@@ -125,7 +126,7 @@ bool HasExactCommandLineArgument(const wchar_t* expected) {
             break;
         }
     }
-    LocalFree(arguments);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
     return found;
 }
 

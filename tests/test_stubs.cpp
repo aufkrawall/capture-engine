@@ -138,6 +138,7 @@ extern "C" BOOL MiniDumpWriteDump(HANDLE, DWORD, HANDLE, int, void*, void*, void
 
 // Stubs for hook_common.cpp
 #include "config.h"
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static AppConfig g_LocalConfigInstance{};
 AppConfig* g_pLocalConfig = &g_LocalConfigInstance;
 static std::atomic<bool> g_TestPreferredOverlayFGPublicationStateValid{false};

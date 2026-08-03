@@ -255,14 +255,18 @@ extern "C" __declspec(dllexport) bool DX12_IsDeferOverlaySubmitPending() {
     return g_steamDeferredOverlay.pending;
 }
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static OverlayAdapter g_D3D11On12Adapter;
 // Separate overlay adapter for D3D11On12 rendering during Streamline FG.
 // Uses the DX11 backend via D3D11On12 bridge to properly manage cross-queue
 // resource transitions, which SL's FG pipeline can track.
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static OverlayAdapter g_SLFGAdapter;
 // Native/runtime-owned FSR present-callback rendering must not inherit stale
 // normal/DLSS DX12 backend state across later FFX-owned swapchain/device handoffs.
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static OverlayAdapter g_FFXPresentOverlayAdapter;
 static ID3D12Device* g_FFXPresentOverlayDevice = nullptr;
 static DXGI_FORMAT g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
@@ -371,6 +375,7 @@ static bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORM
 // These are read/written from multiple threads (hook thread, present thread, etc.)
 std::atomic<ID3D12Device*> g_Device{nullptr};
 std::atomic<ID3D12CommandQueue*> g_CommandQueue{nullptr};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_CommandQueueMutex;
 
 ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay() {
@@ -417,6 +422,7 @@ static void EnsureOverlayBreadcrumbBuffer(ID3D12Device* device) {
     if (g_OverlayBcBuffer || !device) {
         return;
     }
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES hp = {};
     hp.Type = D3D12_HEAP_TYPE_CUSTOM;
     hp.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;  // system memory, CPU-cached, GPU-writable

@@ -25,6 +25,7 @@ public:
 
         // Calculate interval in ticks
         if (fps > 0) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             targetIntervalTicks = qpcFrequency / fps;
         } else {
             targetIntervalTicks = 0;  // Variable framerate

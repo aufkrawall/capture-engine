@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -110,7 +111,9 @@ inline int64_t ClampWgcPositiveDriftCorrection(int64_t targetCorrection, int64_t
 
 inline int32_t ComputeTier1CompensationDelta(int64_t trueDriftSamples, int64_t compensationWindowSamples,
                                              double maxPitchPercent = 0.5) {  // Match WGC CFR default
-    const int32_t maxDelta = static_cast<int32_t>(compensationWindowSamples * maxPitchPercent / 100.0 + 0.5);
+    const int32_t maxDelta =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        static_cast<int32_t>(std::lround(compensationWindowSamples * maxPitchPercent / 100.0));
     if (maxDelta <= 0) {
         return 0;
     }

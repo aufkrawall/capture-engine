@@ -234,6 +234,7 @@
         state.d3d11Context4->Flush();
     }
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     LayerIPC_SignalFrameReady(slotIndex, encoderFenceValue, sourceQpc.QuadPart);
     return true;
 }
@@ -251,7 +252,9 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     uint32_t bytesPerPixel = 0;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotPixelFormat pixelFormat{};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ScreenshotColorEncoding colorEncoding{};
     bool swapPackedRedBlue = false;
     const auto presentationEncoding = ce::presentation_color::ResolveVulkan(format, colorSpace);

@@ -36,13 +36,7 @@ AVSampleFormat AudioResampler::DetermineInputFormat() const {
         case 24:
             // 24-bit is tricky - if in 32-bit container, we treat as S32
             // If truly packed 24-bit (3 bytes), we need to unpack first
-            if (inFmt.bitsPerSample == 32) {
-                // 24-bit in 32-bit container - treat as S32 (left-justified)
-                return AV_SAMPLE_FMT_S32;
-            } else {
-                // Packed 24-bit - we'll unpack to S32 before resampling
-                return AV_SAMPLE_FMT_S32;
-            }
+            // Either way the resampler consumes S32; packed input is unpacked first.
         case 32:
             return AV_SAMPLE_FMT_S32;
         default:
@@ -176,10 +170,8 @@ bool AudioResampler::Process(const uint8_t* inputData, int inputBytes, uint8_t**
 
     // Calculate input samples
     int bytesPerInputFrame;
-    if (isPacked24Bit) {
-        // After unpacking, we have 4 bytes per sample
-        bytesPerInputFrame = 4 * inFmt.channels;
-    } else if (inFmt.isFloat) {
+    if (isPacked24Bit || inFmt.isFloat) {
+        // After unpacking 24-bit (or for float), every sample occupies 4 bytes
         bytesPerInputFrame = 4 * inFmt.channels;
     } else {
         bytesPerInputFrame = (inFmt.bitsPerSample / 8) * inFmt.channels;
@@ -213,8 +205,8 @@ bool AudioResampler::Process(const uint8_t* inputData, int inputBytes, uint8_t**
         char errbuf[256];
         av_strerror(convertedSamples, errbuf, sizeof(errbuf));
         DLL_Log("[AudioResampler] Conversion failed: %s", errbuf);
-        av_freep(&outBuf[0]);
-        av_freep(&outBuf);
+        av_freep(reinterpret_cast<void*>(&outBuf[0]));
+        av_freep(reinterpret_cast<void*>(&outBuf));
         return false;
     }
 
@@ -256,16 +248,16 @@ AudioResampler::FlushResult AudioResampler::Flush(uint8_t*** outputData, int* ou
         char errbuf[256];
         av_strerror(convertedSamples, errbuf, sizeof(errbuf));
         DLL_Log("[AudioResampler] Flush conversion failed: %s", errbuf);
-        av_freep(&outBuf[0]);
-        av_freep(&outBuf);
+        av_freep(reinterpret_cast<void*>(&outBuf[0]));
+        av_freep(reinterpret_cast<void*>(&outBuf));
         return FlushResult::Error;
     }
     if (convertedSamples == 0) {
         // swr_get_delay can retain the resampler's intrinsic filter delay even
         // after a null-input conversion proves that no samples remain
         // producible. Treat the conversion result as the EOF authority.
-        av_freep(&outBuf[0]);
-        av_freep(&outBuf);
+        av_freep(reinterpret_cast<void*>(&outBuf[0]));
+        av_freep(reinterpret_cast<void*>(&outBuf));
         return FlushResult::Complete;
     }
 
@@ -283,8 +275,8 @@ int64_t AudioResampler::GetDelay() const {
 
 void AudioResampler::FreeOutputBuffer(uint8_t** data) {
     if (data) {
-        av_freep(&data[0]);
-        av_freep(&data);
+        av_freep(reinterpret_cast<void*>(&data[0]));
+        av_freep(reinterpret_cast<void*>(&data));
     }
 }
 

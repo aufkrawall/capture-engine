@@ -266,7 +266,7 @@
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
-    if (!vtable || !IsReadableMemory(vtable, 23 * sizeof(void*)) || !vtable[22]) {
+    if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) || !vtable[22]) {
         RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }

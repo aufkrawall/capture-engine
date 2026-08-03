@@ -417,9 +417,9 @@ TEST(DXGISharedTest, D3D12NonPresentableSwapchainHoldsBackbufferWork) {
 // focus-gated policy this returned true (hold == overlay hidden).
 TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
     const bool hold = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
-        /*wrappedD3D12=*/true, /*fullscreen=*/false, /*occluded=*/false, /*iconic=*/false,
-        /*zeroSized=*/false, /*fgActive=*/false, /*runtimeOwned=*/false, /*dedicated=*/false,
-        /*steamDeferred=*/false, /*deviceLost=*/false, /*hasQueue=*/true);
+        /*isWrappedD3D12Present=*/true, /*isFullscreen=*/false, /*isOccluded=*/false, /*isIconic=*/false,
+        /*hasZeroSize=*/false, /*frameGenerationActive=*/false, /*runtimeOwnedPresentation=*/false, /*usingDedicatedQueue=*/false,
+        /*steamDeferredOverlaySubmit=*/false, /*deviceLost=*/false, /*hasQueue=*/true);
     EXPECT_FALSE(hold);
 }
 

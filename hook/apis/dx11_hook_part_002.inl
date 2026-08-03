@@ -56,6 +56,7 @@ struct D3D11SamplerCacheEntry {
 };
 
 static std::vector<D3D11SamplerCacheEntry> g_SamplerCache11;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::shared_mutex g_SamplerCacheMutex11;
 static std::vector<ID3D11SamplerState*> g_ReplacementSamplers11;
 static uint64_t g_SamplerConfigHash11 = 0;
@@ -104,6 +105,7 @@ enum class D3D11ShaderStage : uint32_t {
 static bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
     return a.Filter == b.Filter && a.AddressU == b.AddressU && a.AddressV == b.AddressV && a.AddressW == b.AddressW &&
            a.MipLODBias == b.MipLODBias && a.MaxAnisotropy == b.MaxAnisotropy && a.ComparisonFunc == b.ComparisonFunc &&
+           // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - exact bitwise cache identity is intended
            std::memcmp(a.BorderColor, b.BorderColor, sizeof(a.BorderColor)) == 0 && a.MinLOD == b.MinLOD &&
            a.MaxLOD == b.MaxLOD;
 }
@@ -371,6 +373,7 @@ static void ReleaseTrackedContextState11(D3D11PerContextState& state) {
 }
 
 static void ReleaseTrackedShaderResources11Unlocked() {
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - resource release order is irrelevant
     for (auto& [context, state] : g_D3D11ContextStates) {
         (void)context;
         ReleaseTrackedContextState11(state);

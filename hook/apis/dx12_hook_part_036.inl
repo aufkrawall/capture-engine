@@ -138,6 +138,7 @@
             IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
     }
     if ((!classificationQueue || pThis == classificationQueue) && !callerFromThirdPartyOverlay) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
     } else if (callerFromThirdPartyOverlay) {
         static std::atomic<int> s_overlayECLCountIgnoreLogCount{0};
@@ -280,14 +281,8 @@
             }
             goto skip_command_queue_registration;
         }
-        if (!anyFGActive) {
-            // No FG: always register (same as before)
-            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
-        } else if (!primaryQ) {
-            // FG active but primary queue not yet captured: register to capture it
-            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
-        } else if (!isKnownQueue) {
-            // FG active, unknown queue: register it (new queue from FG runtime)
+        if (!anyFGActive || !primaryQ || !isKnownQueue) {
+            // No FG, or FG active with a primary queue still missing/unknown: register this queue.
             DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
         }
         // else: FG active, known queue — skip registration (fast path)
@@ -379,7 +374,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     char vtableModulePath[MAX_PATH] = {};
     char executeModulePath[MAX_PATH] = {};
     const bool vtableModuleResolved =
-        ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl, vtableModulePath, sizeof(vtableModulePath));
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(vtbl), vtableModulePath, sizeof(vtableModulePath));
     const bool executeModuleResolved = vtbl[10] && ce::overlay_compat::TryGetModulePathFromCodeAddress(
                                                        vtbl[10], executeModulePath, sizeof(executeModulePath));
     const bool vtableFromStreamline =
@@ -481,7 +476,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         HookLog("DX12: Hooking ExecuteCommandLists vtable for queue %p", queue);
         ExecuteCommandListsPtr original = nullptr;
         VTableHook::Status hookStatus =
-            VTableHook::Create(&vtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&original);
+            VTableHook::Create(reinterpret_cast<void*>(&vtbl[10]), (LPVOID)DetourExecuteCommandLists, (LPVOID*)&original);
         if (hookStatus == VTableHook::Success && original) {
             std::lock_guard<std::recursive_mutex> stateLock(g_ExecuteCommandListsHookStateMutex);
             g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
@@ -501,7 +496,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // own queue. Only installed when tracing is enabled (Dx12TraceEnabled).
     if (Dx12TraceEnabled() && vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
         CommandQueueSignalPtr origSignal = nullptr;
-        if (VTableHook::Create(&vtbl[14], (LPVOID)DetourTraceCommandQueueSignal, (LPVOID*)&origSignal) ==
+        if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[14]), (LPVOID)DetourTraceCommandQueueSignal, (LPVOID*)&origSignal) ==
                 VTableHook::Success &&
             origSignal && !oTraceCommandQueueSignal) {
             oTraceCommandQueueSignal = origSignal;
@@ -566,7 +561,7 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
     if (Dx12TraceEnabled()) {
         if (vtbl[8] && vtbl[8] != (void*)DetourTraceCreateCommandQueue) {
             CreateCommandQueuePtr o = nullptr;
-            if (VTableHook::Create(&vtbl[8], (LPVOID)DetourTraceCreateCommandQueue, (LPVOID*)&o) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[8]), (LPVOID)DetourTraceCreateCommandQueue, (LPVOID*)&o) ==
                     VTableHook::Success &&
                 o && !oTraceCreateCommandQueue) {
                 oTraceCreateCommandQueue = o;
@@ -575,7 +570,7 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
         }
         if (vtbl[14] && vtbl[14] != (void*)DetourTraceCreateDescriptorHeap) {
             CreateDescriptorHeapPtr o = nullptr;
-            if (VTableHook::Create(&vtbl[14], (LPVOID)DetourTraceCreateDescriptorHeap, (LPVOID*)&o) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[14]), (LPVOID)DetourTraceCreateDescriptorHeap, (LPVOID*)&o) ==
                     VTableHook::Success &&
                 o && !oTraceCreateDescriptorHeap) {
                 oTraceCreateDescriptorHeap = o;
@@ -584,7 +579,7 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
         }
         if (vtbl[27] && vtbl[27] != (void*)DetourCreateCommittedResource) {
             CreateCommittedResourcePtr o = nullptr;
-            if (VTableHook::Create(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&o) ==
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[27]), (LPVOID)DetourCreateCommittedResource, (LPVOID*)&o) ==
                     VTableHook::Success &&
                 o && !oCreateCommittedResource) {
                 oCreateCommittedResource = o;

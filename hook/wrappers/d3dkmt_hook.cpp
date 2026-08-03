@@ -238,21 +238,12 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO
 
     // Handle specific query types that report VRAM
     switch (pInfo->Type) {
-        case KMTQAITYPE_ADAPTERREGISTRYINFO: {
-            // Adapter registry info sometimes contains VRAM info
-            // D3DKMT_ADAPTERREGISTRYINFO* pRegInfo =
-            // (D3DKMT_ADAPTERREGISTRYINFO*)pInfo->pPrivateDriverData; Could modify
-            // reported memory here if needed
+        // NOLINTNEXTLINE(bugprone-branch-clone) - empty/identical switch branches are intentionally shared no-op cases
+        case KMTQAITYPE_ADAPTERREGISTRYINFO:
+        case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS:
+        case KMTQAITYPE_UMDRIVERNAME:
+            // Adapter registry/device-ID/UMD queries are logged above; no override is applied.
             break;
-        }
-        case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS: {
-            // Physical adapter device IDs
-            break;
-        }
-        case KMTQAITYPE_UMDRIVERNAME: {
-            // UMD driver name
-            break;
-        }
         default:
             break;
     }

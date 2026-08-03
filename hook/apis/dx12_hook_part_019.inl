@@ -436,7 +436,9 @@ static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapCh
             // submitting an overlay draw. This completes before slDLSSGSetOptions(ON), so the first generated
             // Present cannot race a backend shutdown/rebuild.
             g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             g_State.cachedWidth = desc.BufferDesc.Width;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             g_State.cachedHeight = desc.BufferDesc.Height;
             g_State.format = desc.BufferDesc.Format;
 

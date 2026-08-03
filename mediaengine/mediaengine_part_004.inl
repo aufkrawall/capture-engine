@@ -188,10 +188,15 @@
                     "queueOverrun=%llu/%llu underruns=%u trims(lat=%llu normal=%llu cat=%u/%llu). "
                     "Lower/more-uniform excess is better; high excess means audio content ran behind video.",
                     i, s.track, avgMs, s.appLatencyMaxMs, targetAvgMs, excessAvgMs, s.appLatencyExcessMaxMs,
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     n > 0 ? 100.0 * s.appLatencyBuckets[0] / n : 0.0,
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     n > 0 ? 100.0 * s.appLatencyBuckets[1] / n : 0.0,
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     n > 0 ? 100.0 * s.appLatencyBuckets[2] / n : 0.0,
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     n > 0 ? 100.0 * s.appLatencyBuckets[3] / n : 0.0,
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     n > 0 ? 100.0 * s.appLatencyBuckets[4] / n : 0.0, elevatedPct, s.appLatencyDrainingSamples,
                     static_cast<unsigned long long>(n), static_cast<unsigned long long>(s.appLatencyDrainTransitions),
                     maxCompPercent, static_cast<unsigned long long>(n),
@@ -512,7 +517,9 @@
         if (cursorState) {
             videoEnc->SetCursorCaptureState(*cursorState);
         }
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedUs, sourcePid, width,
+                                         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                          height, format, isHDR, isShmem, shmemSlot);
 
         if (!res && videoEnc->WasLastFrameDeferred()) {

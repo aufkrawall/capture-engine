@@ -74,6 +74,7 @@ SharedCaptureD3D11::SharedCaptureD3D11()
       m_Active(false) {}
 
 SharedCaptureD3D11::~SharedCaptureD3D11() {
+    try {
     m_Active.store(false, std::memory_order_release);
     CaptureManager::Get().UnregisterCaptureTarget("d3d11", this);
 
@@ -89,12 +90,15 @@ SharedCaptureD3D11::~SharedCaptureD3D11() {
             if (m_SharedHandles[i]) {
                 CloseHandle(m_SharedHandles[i]);
                 m_SharedHandles[i] = nullptr;
+                }
             }
+            return;
         }
-        return;
-    }
 
     Reset(true);
+    } catch (...) {
+        EarlyLog("DX11: Suppressed exception during SharedCaptureD3D11 destruction");
+    }
 }
 
 bool SharedCaptureD3D11::Reset(bool force) {

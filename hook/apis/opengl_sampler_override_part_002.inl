@@ -381,8 +381,10 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
 
 #define INTERCEPT(procName, storage, type, detour) \
     if (!std::strcmp(name, procName)) {            \
-        storage = std::bit_cast<type>(original);   \
-        return std::bit_cast<PROC>(&detour);       \
+        /* NOLINTNEXTLINE(bugprone-macro-parentheses) - type is a template argument */ \
+        storage = reinterpret_cast<type>(original); \
+        /* NOLINTNEXTLINE(bugprone-macro-parentheses) - PROC is a type name */ \
+        return reinterpret_cast<PROC>(&detour);     \
     }
 
     INTERCEPT("glTexParameteri", g_texParameteri, TexParameteriFn, DetourTexParameteri)

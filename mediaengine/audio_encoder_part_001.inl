@@ -222,8 +222,12 @@ AudioEncoder::AudioEncoder()
 }
 
 AudioEncoder::~AudioEncoder() {
+    try {
     Stop();
     ReleaseCodecResources();
+    } catch (...) {
+        DLL_Log("[AudioEncoder] Suppressed exception during destruction");
+    }
 }
 
 void AudioEncoder::ReleaseCodecResources() {
@@ -256,7 +260,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     // Clear any resources left by a previous failed initialization. Successful recording
     // contexts reach this point only after Stop() drained them to EOF and destroyed them.
     ReleaseCodecResources();
-    onPacket = packetCallback;
+    onPacket = std::move(packetCallback);
 
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -567,6 +571,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         return false;
     }
     DLL_Log("[AudioEncoder] FIFO allocated: %d samples (%.2f sec at %dHz)", fifoCapacity,
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             (float)fifoCapacity / codecCtx->sample_rate, codecCtx->sample_rate);
 
     // Alloc frame for encoding

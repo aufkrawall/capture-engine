@@ -133,7 +133,7 @@ TEST(DXGISharedTest, NativeFSRNoCallbackSuspendRidesBundleNeverStallingBackbuffe
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
         /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/false));
-    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false,
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/false,
                                                 /*fsrFGDisabledSuspendPending=*/false,
                                                 /*uiResourceCachedForBundle=*/true,
                                                 /*bundleOverlayActivelyFiring=*/false),
@@ -146,7 +146,7 @@ TEST(DXGISharedTest, NativeFSRNoCallbackSuspendRidesBundleNeverStallingBackbuffe
         true, false, ce::fg_runtime::RuntimeMode::kOff, false, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
         /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/true));
-    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false,
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/false,
                                                 /*fsrFGDisabledSuspendPending=*/true,
                                                 /*uiResourceCachedForBundle=*/true,
                                                 /*bundleOverlayActivelyFiring=*/false),
@@ -159,7 +159,7 @@ TEST(DXGISharedTest, NativeFSRNoCallbackSuspendRidesBundleNeverStallingBackbuffe
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
         /*liveSwapchainQueueIsOriginalGameQueue=*/true, /*fsrFGDisabledSuspendPending=*/false));
-    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/true,
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/true,
                                                 /*fsrFGDisabledSuspendPending=*/false,
                                                 /*uiResourceCachedForBundle=*/true,
                                                 /*bundleOverlayActivelyFiring=*/false),
@@ -197,7 +197,7 @@ TEST(DXGISharedTest, FFXUiCompositeTimelineRingBufferWrapsCorrectly) {
 
     // Fill exactly kTimelineSize entries (frames 0..31).
     for (int i = 0; i < kTimelineSize; ++i) {
-        record(static_cast<uint64_t>(i), static_cast<uint64_t>(i * 10));
+        record(static_cast<uint64_t>(i), static_cast<uint64_t>(i) * 10u);
     }
     ASSERT_EQ(timelineIdx, static_cast<uint32_t>(kTimelineSize));
 
@@ -207,12 +207,13 @@ TEST(DXGISharedTest, FFXUiCompositeTimelineRingBufferWrapsCorrectly) {
     EXPECT_EQ(startIdx0, 0u);
     for (int i = 0; i < kTimelineSize; ++i) {
         EXPECT_EQ(timeline[i].frame, static_cast<uint64_t>(i));
-        EXPECT_EQ(timeline[i].fenceVal, static_cast<uint64_t>(i * 10));
+        EXPECT_EQ(timeline[i].fenceVal, static_cast<uint64_t>(i) * 10u);
     }
 
     // Add 10 more entries (frames 32..41). The ring buffer should wrap and retain only the last 32.
     for (int i = 0; i < 10; ++i) {
-        record(static_cast<uint64_t>(kTimelineSize + i), static_cast<uint64_t>((kTimelineSize + i) * 10));
+        record(static_cast<uint64_t>(kTimelineSize) + static_cast<uint64_t>(i),
+               (static_cast<uint64_t>(kTimelineSize) + static_cast<uint64_t>(i)) * 10u);
     }
     EXPECT_EQ(timelineIdx, static_cast<uint32_t>(kTimelineSize + 10));
 
@@ -223,7 +224,7 @@ TEST(DXGISharedTest, FFXUiCompositeTimelineRingBufferWrapsCorrectly) {
     const int count42 = kTimelineSize;
     for (int i = 0; i < count42; ++i) {
         const uint32_t slotIdx = (startIdx42 + i) % kTimelineSize;
-        const uint64_t expectedFrame = static_cast<uint64_t>(10 + i);
+        const uint64_t expectedFrame = static_cast<uint64_t>(10) + static_cast<uint64_t>(i);
         EXPECT_EQ(timeline[slotIdx].frame, expectedFrame) << "i=" << i << " slotIdx=" << slotIdx;
     }
 }

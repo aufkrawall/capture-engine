@@ -482,16 +482,16 @@ TEST(DXGISharedTest, StaleFSRQueueClearSkippedForWarmPostSLResume) {
     // Cold FSR->DLSS transition (no warm resume): the non-origGame queue is stale
     // FSR ownership and MUST be cleared to prevent DEVICE_REMOVED.
     EXPECT_TRUE(ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
-        /*hadFSR=*/true, /*hasScQueue=*/true, /*scQueueDiffersFromOrig=*/true,
-        /*handoffPending=*/false, /*warmPostSLResume=*/false));
+        /*hadFSRFGPhase=*/true, /*hasSwapchainQueue=*/true, /*swapchainQueueDiffersFromOriginalGameQueue=*/true,
+        /*streamlineStartupHandoffPending=*/false, /*warmPostSLResumeFromKeepAlive=*/false));
 
     // Session 20260613_151646: a DLSS-FG suspend->resume bridged by the make-before-break
     // keep-alive (warm PostSL resume) is NOT an FSR->DLSS transition — the non-origGame queue
     // is the LIVE DLSS-G proxy PostSL has been submitting on. Clearing it strands the warm
     // resume (scQueue=null + FSR history => "refusing SL wrapper bootstrap" forever). Preserve it.
     EXPECT_FALSE(ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
-        /*hadFSR=*/true, /*hasScQueue=*/true, /*scQueueDiffersFromOrig=*/true,
-        /*handoffPending=*/false, /*warmPostSLResume=*/true));
+        /*hadFSRFGPhase=*/true, /*hasSwapchainQueue=*/true, /*swapchainQueueDiffersFromOriginalGameQueue=*/true,
+        /*streamlineStartupHandoffPending=*/false, /*warmPostSLResumeFromKeepAlive=*/true));
 }
 
 TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingProtectsThroughFirstEightFrames) {

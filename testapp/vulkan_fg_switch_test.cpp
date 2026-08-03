@@ -18,6 +18,7 @@
 #include <cstring>
 
 namespace testapp::vkfg {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 AppState g_App;
 }  // namespace testapp::vkfg
 
@@ -284,6 +285,7 @@ void UpdateAutomaticSequenceAndStress() {
         stressEnabled = g_App.config.dlssSuspendResumeStress;
         interval = g_App.config.dlssSuspendResumeIntervalSeconds;
     }
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     if (stressEnabled && std::chrono::duration<float>(now - g_LastStressToggle).count() >= interval) {
         g_LastStressToggle = now;
         testapp::vkfg::RequestMode(g_App.transition.currentMode, "automatic suspend/resume stress");
@@ -291,6 +293,7 @@ void UpdateAutomaticSequenceAndStress() {
     }
     if (g_App.config.dlssOffAfterActiveStress && !g_DlssOffStressRequested &&
         g_App.transition.currentMode == testapp::vkfg::FgMode::Dlss &&
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         std::chrono::duration<float>(now - g_LastStressToggle).count() >= interval) {
         g_DlssOffStressRequested = true;
         testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Off, "DLSS off-after-active stress");
@@ -371,6 +374,7 @@ void Cleanup() {
 
 }  // namespace
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
@@ -508,6 +512,7 @@ int main(int argc, char* argv[]) {
         }
         if (g_App.config.autoExitSeconds > 0 &&
             std::chrono::duration<float>(std::chrono::steady_clock::now() - g_App.startTime).count() >=
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 g_App.config.autoExitSeconds) {
             testapp::Log("[FG-DIAG] Auto-exit deadline reached\n");
             break;

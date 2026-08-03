@@ -349,8 +349,10 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     codecCtx->bit_rate = optionPlan.bitRate.value_or(0);
     codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     codecCtx->rc_buffer_size = optionPlan.bufferSize.value_or(0);
     codecCtx->rc_initial_buffer_occupancy =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         optionPlan.bufferSize.has_value() ? *optionPlan.bufferSize - (*optionPlan.bufferSize / 4) : 0;
     if (optionPlan.globalQuality.has_value()) {
         codecCtx->global_quality = optionPlan.scaleGlobalQualityByQp2Lambda

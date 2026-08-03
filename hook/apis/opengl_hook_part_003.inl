@@ -5,6 +5,7 @@
                 uint32_t lLow = desc.AdapterLuid.LowPart;
                 uint32_t lHigh = desc.AdapterLuid.HighPart;
 
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 SystemMetricsCollector::Get().Initialize(lLow, lHigh);
                 ReportLUID(lLow, lHigh);
 
@@ -353,14 +354,12 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         if (gfx.vsyncMode != "default" && !gfx.vsyncMode.empty()) {
-            if (gfx.vsyncMode == "off")
+            if (gfx.vsyncMode == "off" || gfx.vsyncMode == "mailbox")
                 interval = 0;
             else if (gfx.vsyncMode == "fifo")
                 interval = 1;
             else if (gfx.vsyncMode == "adaptive")
                 interval = -1;
-            else if (gfx.vsyncMode == "mailbox")
-                interval = 0;
         }
     }
 

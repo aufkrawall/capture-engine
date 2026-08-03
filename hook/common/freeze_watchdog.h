@@ -38,7 +38,7 @@ public:
     using FreezeCallback = std::function<void(const std::string& reason)>;
     using PreferredThreadProvider = DWORD (*)();
 
-    FreezeWatchdog();
+    FreezeWatchdog() noexcept;
     ~FreezeWatchdog();
 
     // Non-copyable, non-movable

@@ -444,9 +444,9 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionBypassesReinitCooldownEvenWithFSRH
     // (the overlay ECL on the SL queue already succeeded), the cooldown is unneeded
     // regardless of FSR history.
     EXPECT_TRUE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
-        /*slTurnedOff=*/true, /*keepAlive=*/true, /*confirmed=*/true, /*fsrFGApiActive=*/false,
-        /*runtimeOwnedNativeFG=*/false, /*overlayInit=*/true, /*syncInit=*/true, /*scQueue=*/true,
-        /*origGameQueue=*/true, /*deviceRemoved=*/false));
+        /*streamlineTurnedOff=*/true, /*postSLExplicitOffKeepAlive=*/true, /*postSLConfirmedRendering=*/true, /*fsrFGApiActive=*/false,
+        /*runtimeOwnedNativeFGPresentPath=*/false, /*hasOverlayBackend=*/true, /*hasSyncBackend=*/true, /*hasSwapchainQueue=*/true,
+        /*hasOriginalGameQueue=*/true, /*deviceRemoved=*/false));
 
     // Not a Streamline-off edge, no keep-alive latch, or PostSL never confirmed -> keep the cooldown.
     EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(false, true, true, false, false, true, true,
@@ -617,11 +617,11 @@ TEST(DXGISharedTest, CallOriginalPresentVtableFixupRequiresVirtualProtect) {
 
     // Make vtable read-only, simulating DXGI runtime vtable page protection
     DWORD oldProtect;
-    ASSERT_NE(0, VirtualProtect(vtable, vtableBytes, PAGE_READONLY, &oldProtect));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(vtable), vtableBytes, PAGE_READONLY, &oldProtect));
 
     // Verify read-only: VirtualQuery confirms protection
     MEMORY_BASIC_INFORMATION mbi;
-    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_NE(0u, VirtualQuery(reinterpret_cast<const void*>(vtable), &mbi, sizeof(mbi)));
     ASSERT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
 
     // ---- vtable[8] fixup pattern (exact sequence from CallOriginalPresent) ----
@@ -629,17 +629,17 @@ TEST(DXGISharedTest, CallOriginalPresentVtableFixupRequiresVirtualProtect) {
     ASSERT_EQ(savedVtable8, fakeOriginalPresent);
 
     DWORD vpOld;
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[8] = const_cast<void*>(fakeBypassTrampoline);
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), vpOld, &vpOld));
 
     // Verify bypass trampoline was written
     ASSERT_EQ(vtable[8], fakeBypassTrampoline);
 
     // Restore original value (post-Steam-hook)
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[8] = savedVtable8;
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), vpOld, &vpOld));
 
     // Verify restore
     ASSERT_EQ(vtable[8], fakeOriginalPresent);
@@ -648,23 +648,23 @@ TEST(DXGISharedTest, CallOriginalPresentVtableFixupRequiresVirtualProtect) {
     void* savedVtable22 = vtable[22];
     ASSERT_EQ(savedVtable22, fakeOriginalPresent1);
 
-    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[22]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[22] = const_cast<void*>(fakeBypassTrampoline1);
-    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[22]), sizeof(void*), vpOld, &vpOld));
 
     // Verify bypass trampoline was written
     ASSERT_EQ(vtable[22], fakeBypassTrampoline1);
 
     // Restore original value
-    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[22]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[22] = savedVtable22;
-    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[22]), sizeof(void*), vpOld, &vpOld));
 
     // Verify restore
     ASSERT_EQ(vtable[22], fakeOriginalPresent1);
 
     // Verify page is still read-only after all manipulations
-    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_NE(0u, VirtualQuery(reinterpret_cast<const void*>(vtable), &mbi, sizeof(mbi)));
     EXPECT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
 
     VirtualFree(alloc, 0, MEM_RELEASE);
@@ -699,34 +699,34 @@ TEST(DXGISharedTest, SteamDX12InitVtableUnhookRestorePattern) {
 
     // Make vtable read-only, simulating DXGI runtime vtable page protection
     DWORD oldProtect;
-    ASSERT_NE(0, VirtualProtect(vtable, vtableBytes, PAGE_READONLY, &oldProtect));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(vtable), vtableBytes, PAGE_READONLY, &oldProtect));
 
     // Verify read-only
     MEMORY_BASIC_INFORMATION mbi;
-    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_NE(0u, VirtualQuery(reinterpret_cast<const void*>(vtable), &mbi, sizeof(mbi)));
     ASSERT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
 
     // ---- Unhook: VirtualProtect → write dxgi!Present → restore protection ----
     ASSERT_EQ(vtable[8], fakeDetourPresent);
 
     DWORD vpOld;
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[8] = const_cast<void*>(fakeDxgiPresent);
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), vpOld, &vpOld));
 
     // Verify dxgi!Present was written
     ASSERT_EQ(vtable[8], fakeDxgiPresent);
 
     // ---- Re-hook: VirtualProtect → write DetourPresent → restore protection ----
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), PAGE_READWRITE, &vpOld));
     vtable[8] = const_cast<void*>(fakeDetourPresent);
-    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(&vtable[8]), sizeof(void*), vpOld, &vpOld));
 
     // Verify DetourPresent was restored
     ASSERT_EQ(vtable[8], fakeDetourPresent);
 
     // Verify page is still read-only after all manipulations
-    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_NE(0u, VirtualQuery(reinterpret_cast<const void*>(vtable), &mbi, sizeof(mbi)));
     EXPECT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
 
     VirtualFree(alloc, 0, MEM_RELEASE);

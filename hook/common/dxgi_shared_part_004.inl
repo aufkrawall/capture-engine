@@ -28,6 +28,7 @@
         if (s_lastPresentTime.QuadPart != 0) {
             LARGE_INTEGER freq;
             QueryPerformanceFrequency(&freq);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             double gapMs = (double)(now.QuadPart - s_lastPresentTime.QuadPart) * 1000.0 / freq.QuadPart;
             static constexpr double kLargePresentGapMs = 250.0;
 
@@ -516,7 +517,7 @@
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
-    if (!vtable || !IsReadableMemory(vtable, 9 * sizeof(void*)) || !vtable[8]) {
+    if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 9 * sizeof(void*)) || !vtable[8]) {
         RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }

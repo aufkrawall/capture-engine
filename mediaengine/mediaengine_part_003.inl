@@ -562,6 +562,7 @@
                         while (remaining > 0) {
                             int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
                             enc->EncodeSamples((const uint8_t*)silence.data(), chunk * channels * (int)sizeof(float),
+                                               // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                                channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
                             remaining -= chunk;
                         }
@@ -590,6 +591,7 @@
                                 int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
                                 enc->EncodeSamples((const uint8_t*)silence.data(),
                                                    chunk * channels * (int)sizeof(float), channels, 48000, 32, 32,
+                                                   // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                                                    channels * 4, true, GetTickCount64());
                                 remaining -= chunk;
                             }

@@ -284,7 +284,7 @@ public:
         // when game FPS ~= encoder FPS).
         if (frameQpc == lastInputQpc_) {
             ++frameCount_;
-            return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+            return static_cast<int64_t>(std::llround(smoothedIntervalQpc_));
         }
 
         if (frameQpc < lastInputQpc_) {
@@ -319,7 +319,7 @@ public:
                 // is accepted with fast adaptation.
                 ++consecutiveGapOutlierIntervals_;
                 if (consecutiveGapOutlierIntervals_ < 3) {
-                    return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+                    return static_cast<int64_t>(std::llround(smoothedIntervalQpc_));
                 }
                 consecutiveGapOutlierIntervals_ = 0;
                 alpha = 0.5;
@@ -340,7 +340,7 @@ public:
         const double jitterAlpha = jitterEmaUpdates_ < 8 ? 0.5 : 0.1;
         smoothedJitterQpc_ = smoothedJitterQpc_ * (1.0 - jitterAlpha) + absJitter * jitterAlpha;
 
-        return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+        return static_cast<int64_t>(std::llround(smoothedIntervalQpc_));
     }
 
     // Maximum per-frame deviation the monotonic smoother may introduce between
@@ -384,7 +384,7 @@ public:
             return rawQpc;
         }
         const int64_t maxDeviationQpc = GetSmoothingMaxDeviationQpc(outputIntervalQpc);
-        const int64_t intervalQpc = static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+        const int64_t intervalQpc = static_cast<int64_t>(std::llround(smoothedIntervalQpc_));
         if (!IsCalibrated() || intervalQpc <= 0 || maxDeviationQpc <= 0 || lastSmoothedQpc_ <= 0 ||
             lastSmoothedRawQpc_ <= 0 || rawQpc < lastSmoothedRawQpc_) {
             lastSmoothedQpc_ = std::max(rawQpc, lastSmoothedQpc_ + 1);

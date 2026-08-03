@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -264,7 +265,7 @@ static void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source) 
         return;
 
     D3D11QueryInterface_t original = nullptr;
-    if (VTableHook::Create(&vtable[0], (LPVOID)&DetourD3D11QueryInterface, (LPVOID*)&original) != VTableHook::Success ||
+    if (VTableHook::Create(reinterpret_cast<void*>(&vtable[0]), (LPVOID)&DetourD3D11QueryInterface, (LPVOID*)&original) != VTableHook::Success ||
         !original) {
         HookLog("[GraphicsAPI] D3D11 QueryInterface hook failed object=%p source=%s", object,
                 source ? source : "unknown");
@@ -643,6 +644,7 @@ struct D3D11ContextVTableOriginals {
     SetSamplers11_t csSetSamplers = nullptr;
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::shared_mutex g_D3D11ContextVTableOriginalsMutex;
 static std::unordered_map<void*, D3D11ContextVTableOriginals> g_D3D11ContextVTableOriginals;
 static std::atomic<void*> g_PrimaryD3D11ContextVTable{nullptr};

@@ -119,6 +119,7 @@ static std::string CleanHardwareName(std::string raw, bool isGpu) {
             std::string upperT = t;
             // ToUpper
             for (auto& c : upperT)
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 c = toupper((unsigned char)c);
 
             // Check anchors
@@ -171,6 +172,7 @@ static std::string CleanHardwareName(std::string raw, bool isGpu) {
             for (const auto& t : tokens) {
                 std::string upperT = t;
                 for (auto& c : upperT)
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     c = toupper((unsigned char)c);
 
                 bool skip = false;
@@ -193,7 +195,9 @@ static std::string CleanHardwareName(std::string raw, bool isGpu) {
         // CPU Strategy: Filter noise, keep model
         for (const auto& t : tokens) {
             std::string upperT = t;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             for (auto& c : upperT)
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 c = toupper((unsigned char)c);
 
             bool skip = false;

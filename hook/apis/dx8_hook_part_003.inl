@@ -84,6 +84,7 @@
     }
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static DX8Capture g_DX8Capture;
 
 static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
@@ -300,14 +301,10 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default" && pPresentationParameters) {
             D3D8_PRESENT_PARAMETERS* pp = (D3D8_PRESENT_PARAMETERS*)pPresentationParameters;
-            if (mode == "off")
+            if (mode == "off" || mode == "mailbox")
                 pp->FullScreen_PresentationInterval = 0x80000000;  // D3DPRESENT_INTERVAL_IMMEDIATE
-            else if (mode == "fifo")
-                pp->FullScreen_PresentationInterval = 0x00000001;  // D3DPRESENT_INTERVAL_ONE
-            else if (mode == "adaptive")
+            else if (mode == "fifo" || mode == "adaptive")
                 pp->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "mailbox")
-                pp->FullScreen_PresentationInterval = 0x80000000;
         }
 
         // Backbuffer Count override
@@ -405,14 +402,10 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Ad
     if (g_IPC && pPresentationParameters) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {
-            if (mode == "off")
+            if (mode == "off" || mode == "mailbox")
                 pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
-            else if (mode == "fifo")
+            else if (mode == "fifo" || mode == "adaptive")
                 pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "adaptive")
-                pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "mailbox")
-                pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
             HookLog("DX8: CreateDevice VSync overridden to %08x",
                     pPresentationParameters->FullScreen_PresentationInterval);
         }

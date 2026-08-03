@@ -16,6 +16,7 @@
 namespace HookSystem {
 
 static std::atomic<int> g_InitCount{0};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::shared_mutex g_HookMutex;
 static std::unordered_map<void*, std::unique_ptr<HookHandle>> g_Hooks;
 
@@ -347,11 +348,11 @@ bool CreateCOMHook(void** vtableEntry, void* detour, void** original) {
 
     {
         std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        if (g_Hooks.find(vtableEntry) != g_Hooks.end()) {
+        if (g_Hooks.find(reinterpret_cast<void*>(vtableEntry)) != g_Hooks.end()) {
             HookLog("HookSystem: Duplicate COM hook ignored at %p", vtableEntry);
             return false;
         }
-        StoreHookHandle(vtableEntry, HookType::COMVTable, detour, original ? *original : nullptr);
+        StoreHookHandle(reinterpret_cast<void*>(vtableEntry), HookType::COMVTable, detour, original ? *original : nullptr);
     }
 
     HookLog("HookSystem: Created COM hook at vtable entry %p", vtableEntry);
@@ -420,6 +421,7 @@ void RemoveHook(void* target) {
 
 bool EnableAllHooks() {
     std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - enabling every hook is order-independent
     for (auto& pair : g_Hooks) {
         pair.second->enabled.store(true);
     }
@@ -428,6 +430,7 @@ bool EnableAllHooks() {
 
 bool DisableAllHooks() {
     std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - disabling every hook is order-independent
     for (auto& pair : g_Hooks) {
         pair.second->enabled.store(false);
     }

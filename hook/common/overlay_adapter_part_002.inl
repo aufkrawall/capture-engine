@@ -340,6 +340,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Calculate required height upfront so BottomLeft/BottomRight use the real
     // overlay height instead of a hardcoded estimate.
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float requiredHeight = frameLayout.rowCount * lineHeight;
 
     constexpr int GRAPH_SAMPLES = 180;
@@ -354,15 +355,19 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             y = padding;
             break;
         case OverlayPosition::TopRight:
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             x = viewportWidth - padding - bgWidth;
             y = padding;
             break;
         case OverlayPosition::BottomLeft:
             x = padding;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             y = viewportHeight - padding - bgHeight;
             break;
         case OverlayPosition::BottomRight:
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             x = viewportWidth - padding - bgWidth;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             y = viewportHeight - padding - bgHeight;
             break;
     }
@@ -382,6 +387,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // The row mask is the single source of truth for text, panel height, and
     // graph placement, so rows appear/disappear atomically.
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float graphCursorY = y + frameLayout.rowCount * lineHeight;
 
     // Max frame time display values – recomputed at most once every 2 seconds so
@@ -406,6 +412,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 count++;
             }
             cachedMaxFrameTime = newMax;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             cachedAvgFrameTimeForColor = (count > 0) ? sum / count : 0.0f;
             recentMaxFrameTime = cachedMaxFrameTime;
             recentAvgFrameTime = cachedAvgFrameTimeForColor;

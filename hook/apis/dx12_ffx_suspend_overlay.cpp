@@ -297,6 +297,7 @@ private:
     OverlayAdapter overlay;
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_StateMutex;
 std::unordered_map<void*, std::unique_ptr<RendererState>> g_ProxyStates;
 std::vector<std::unique_ptr<RendererState>> g_RetiredStates;
@@ -457,6 +458,7 @@ void RetireProxy(void* proxySwapChain, const char* reason) {
 void Shutdown(const char* reason) {
     g_ShuttingDown.store(true, std::memory_order_release);
     std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - shutdown retires every state independently
     for (auto& [proxy, state] : g_ProxyStates) {
         (void)proxy;
         RetireState(state, reason ? reason : "shutdown");
@@ -469,6 +471,7 @@ void Shutdown(const char* reason) {
         // waited here (Shutdown may run under loader-sensitive teardown); intentionally leak that tiny terminal
         // state rather than block or release GPU-referenced resources.
         if (state && !state->IsGpuComplete() && state->DeviceHealthy()) {
+            // NOLINTNEXTLINE(bugprone-unused-return-value) - intentional ownership abandonment on device-removal teardown
             (void)state.release();
             ++abandoned;
         }

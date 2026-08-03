@@ -377,6 +377,7 @@ TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
     EXPECT_EQ(moved.deferCount, 2u);
     EXPECT_EQ(moved.rawTimestamp, 54321);
     EXPECT_TRUE(moved.duplicateSourceTimestamp);
+    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from QueuedFrame contract
     EXPECT_EQ(input.captureLeft, 0);
     EXPECT_EQ(input.captureTop, 0);
     EXPECT_EQ(input.frameIndex, 0u);

@@ -55,6 +55,8 @@ TEST(SequenceLockStressTest, ConcurrentReadsUnderWrites) {
 
     std::vector<std::thread> writerThreads;
     std::vector<std::thread> readerThreads;
+    writerThreads.reserve(kWriters);
+    readerThreads.reserve(kReaders);
     for (int i = 0; i < kWriters; ++i)
         writerThreads.emplace_back(writer, i);
     for (int i = 0; i < kReaders; ++i)
@@ -104,6 +106,7 @@ TEST(SequenceLockStressTest, ReadIfChangedConcurrent) {
 
     std::thread w(writer);
     std::vector<std::thread> readers;
+    readers.reserve(3);
     for (int i = 0; i < 3; ++i)
         readers.emplace_back(reader);
 
@@ -152,6 +155,7 @@ TEST(SequenceLockStressTest, CWrapperAtomicSequence) {
 
     std::thread w(writer);
     std::vector<std::thread> readers;
+    readers.reserve(4);
     for (int i = 0; i < 4; ++i)
         readers.emplace_back(reader);
 

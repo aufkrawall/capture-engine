@@ -36,17 +36,13 @@
                     inOverlayWhitelist = true;
                     inWgcWindowDetection = false;
                 } else if (inWhitelist) {
-                    if (trimmed.find('=') != std::string::npos) {
-                        inWhitelist = false;
-                    } else if (trimmed == ")") {
+                    if (trimmed.find('=') != std::string::npos || trimmed == ")") {
                         inWhitelist = false;
                     } else if (trimmed != "(") {
                         AddEntry(trimmed, config.gameWhitelist);
                     }
                 } else if (inOverlayWhitelist) {
-                    if (trimmed.find('=') != std::string::npos) {
-                        inOverlayWhitelist = false;
-                    } else if (trimmed == ")") {
+                    if (trimmed.find('=') != std::string::npos || trimmed == ")") {
                         inOverlayWhitelist = false;
                     } else if (trimmed != "(") {
                         AddEntry(trimmed, config.overlayWhitelist);

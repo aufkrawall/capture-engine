@@ -25,6 +25,7 @@ bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
     DX12_DEBUG_STEP("ResizeIndexBuffer", "New size: %zu bytes (old=%zu, slot=%d)", newSize, indexBufferSize[slot],
                     slot);
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 

@@ -7,6 +7,7 @@
         }
 
         // GPU-accelerated blit on WDDM 2.0+ (both surfaces are GPU-resident)
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         BitBlt(dstDC, 0, 0, width, height, srcDC, 0, 0, SRCCOPY);
 
         dstSurface->ReleaseDC(nullptr);
@@ -55,6 +56,7 @@
             return false;
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS creationParams = {};
         const bool hasCreationParams = SUCCEEDED(d3d9Device->GetCreationParameters(&creationParams));
         const UINT targetAdapterOrdinal = hasCreationParams ? creationParams.AdapterOrdinal : D3DADAPTER_DEFAULT;
@@ -116,6 +118,7 @@
 
             if (matched) {
                 // Store LUID
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
 
@@ -246,6 +249,7 @@
             d3d9DeviceEx = nullptr;
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS creationParams = {};
         const HRESULT creationParamsHr = device->GetCreationParameters(&creationParams);
         allowAsyncD3D9WorkerCapture =

@@ -97,8 +97,11 @@ inline uint32_t ColorScale(uint32_t col, float scale) {
     uint8_t g = (col >> 8) & 0xFF;
     uint8_t b = (col >> 16) & 0xFF;
     uint8_t a = (col >> 24) & 0xFF;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     r = (uint8_t)((r * scale > 255) ? 255 : (int)(r * scale));
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g = (uint8_t)((g * scale > 255) ? 255 : (int)(g * scale));
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     b = (uint8_t)((b * scale > 255) ? 255 : (int)(b * scale));
     return (a << 24) | (b << 16) | (g << 8) | r;
 }

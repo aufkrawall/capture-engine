@@ -89,15 +89,15 @@ TEST(CapturePipelinePolicyTest, WgcSelectionDelayAppliesOnlyForConfiguredContent
 
 TEST(CapturePipelinePolicyTest, LiveRecoverySuppressesDelayOnlyOffUniformCadencePath) {
     // Legacy reservoir-target path (uniform cadence off): live-recovery yields to near-live catch-up.
-    EXPECT_TRUE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/true,
+    EXPECT_TRUE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecoveryActive=*/true,
                                                                     /*uniformCadenceActiveDelay=*/false));
-    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/false,
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecoveryActive=*/false,
                                                                      /*uniformCadenceActiveDelay=*/false));
     // Uniform-cadence path: the content delay is maintained continuously, even during live-recovery,
     // so the realized delay cannot collapse/latch. This is the fix for the 0..248ms delay swing.
-    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/true,
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecoveryActive=*/true,
                                                                      /*uniformCadenceActiveDelay=*/true));
-    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/false,
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecoveryActive=*/false,
                                                                      /*uniformCadenceActiveDelay=*/true));
 }
 
@@ -276,34 +276,34 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceAdvancesAtSourceRateAndHoldsAt
     // A large max-depth makes the setpoint cap inert so these cases exercise the source-rate pacing.
     constexpr size_t kNoCap = 64;
     // Source ~= output (credit 1.0), buffer above the floor: advance one unique frame.
-    auto steady = policy::DecideWgcActiveDelayPace(1.0, /*buffered=*/6, /*floor=*/4, kNoCap);
+    auto steady = policy::DecideWgcActiveDelayPace(1.0, /*bufferedFrames=*/6, /*floorFrames=*/4, kNoCap);
     EXPECT_TRUE(steady.advance);
     EXPECT_EQ(steady.dropBeforeAdvance, 0u);
     EXPECT_EQ(steady.capDrops, 0u);
     EXPECT_DOUBLE_EQ(steady.creditConsumed, 1.0);
 
     // Source below output (credit < 1): HOLD -> an evenly distributed source-limited repeat.
-    auto under = policy::DecideWgcActiveDelayPace(0.9, /*buffered=*/6, /*floor=*/4, kNoCap);
+    auto under = policy::DecideWgcActiveDelayPace(0.9, /*bufferedFrames=*/6, /*floorFrames=*/4, kNoCap);
     EXPECT_FALSE(under.advance);
     EXPECT_EQ(under.dropBeforeAdvance, 0u);
     EXPECT_DOUBLE_EQ(under.creditConsumed, 0.0);
 
     // At the floor: hold even with full credit so the buffer never drains below the delay depth
     // (this is what keeps the realized delay stable / A/V sync preserved).
-    auto atFloor = policy::DecideWgcActiveDelayPace(1.0, /*buffered=*/4, /*floor=*/4, kNoCap);
+    auto atFloor = policy::DecideWgcActiveDelayPace(1.0, /*bufferedFrames=*/4, /*floorFrames=*/4, kNoCap);
     EXPECT_FALSE(atFloor.advance);
     EXPECT_EQ(atFloor.dropBeforeAdvance, 0u);
 
     // Source faster than output (credit >= 2) with headroom above floor+1: decimate one evenly,
     // then advance one. Keeps cadence smooth while holding the floor.
-    auto over = policy::DecideWgcActiveDelayPace(2.5, /*buffered=*/8, /*floor=*/4, kNoCap);
+    auto over = policy::DecideWgcActiveDelayPace(2.5, /*bufferedFrames=*/8, /*floorFrames=*/4, kNoCap);
     EXPECT_TRUE(over.advance);
     EXPECT_EQ(over.dropBeforeAdvance, 1u);
     EXPECT_EQ(over.capDrops, 0u);
     EXPECT_DOUBLE_EQ(over.creditConsumed, 2.0);
 
     // Overcapture but only floor+1 buffered: do not decimate into the floor, just advance one.
-    auto overTight = policy::DecideWgcActiveDelayPace(2.5, /*buffered=*/5, /*floor=*/4, kNoCap);
+    auto overTight = policy::DecideWgcActiveDelayPace(2.5, /*bufferedFrames=*/5, /*floorFrames=*/4, kNoCap);
     EXPECT_TRUE(overTight.advance);
     EXPECT_EQ(overTight.dropBeforeAdvance, 0u);
     EXPECT_DOUBLE_EQ(overTight.creditConsumed, 1.0);
@@ -319,17 +319,17 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceMaxDepthBoundsRealizedDelay) {
     // the pure source-rate matcher never drained it) must be trimmed back toward the cap EVEN when
     // the current credit is below 1 (source now at/below output). Before the setpoint cap this case
     // produced zero drops and the realized content delay stayed stuck ~20 frames deep.
-    auto inflated = policy::DecideWgcActiveDelayPace(/*credit=*/0.9, /*buffered=*/20, /*floor=*/4, /*maxDepth=*/6);
+    auto inflated = policy::DecideWgcActiveDelayPace(/*creditAfterIncrement=*/0.9, /*bufferedFrames=*/20, /*floorFrames=*/4, /*maxDepthFrames=*/6);
     EXPECT_EQ(inflated.capDrops, 14u);           // 20 -> 6
     EXPECT_EQ(inflated.dropBeforeAdvance, 14u);  // all from the cap, none credit-driven
     EXPECT_FALSE(inflated.advance);              // credit 0.9 < 1 after the cap, so just trim+hold
     EXPECT_DOUBLE_EQ(inflated.creditConsumed, 0.0);
 
     // The cap never trims into the delay floor: at exactly the cap there is nothing to trim.
-    auto atCap = policy::DecideWgcActiveDelayPace(/*credit=*/0.9, /*buffered=*/6, /*floor=*/4, /*maxDepth=*/6);
+    auto atCap = policy::DecideWgcActiveDelayPace(/*creditAfterIncrement=*/0.9, /*bufferedFrames=*/6, /*floorFrames=*/4, /*maxDepthFrames=*/6);
     EXPECT_EQ(atCap.capDrops, 0u);
     // A pathological maxDepth below floor+1 is clamped so the cap can never starve the reserve.
-    auto clampLow = policy::DecideWgcActiveDelayPace(/*credit=*/1.0, /*buffered=*/5, /*floor=*/4, /*maxDepth=*/0);
+    auto clampLow = policy::DecideWgcActiveDelayPace(/*creditAfterIncrement=*/1.0, /*bufferedFrames=*/5, /*floorFrames=*/4, /*maxDepthFrames=*/0);
     EXPECT_EQ(clampLow.capDrops, 0u);  // depthCap = max(0, floor+1) = 5, buffered 5 -> no trim
 }
 
@@ -370,18 +370,18 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsAlreadyPastFramesForCloser
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(100);  // 60
     // A strictly-newer successor that is still at/before the slot (within lead tolerance) means the
     // older front is already-past history -> drop it.
-    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/980, target, leadTol));
-    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/target + leadTol, target, leadTol));
+    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/900, /*nextTimestampQpc=*/980, target, leadTol));
+    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/900, /*nextTimestampQpc=*/target + leadTol, target, leadTol));
     // The successor may be within the backend's broad lead tolerance yet still be farther from the
     // slot than an exact/closer front. True nearest-neighbour playout must retain the front.
-    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/target, /*next=*/target + 50, target, leadTol));
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/target, /*nextTimestampQpc=*/target + 50, target, leadTol));
     // The successor is in the future beyond tolerance -> keep the front (it is the slot frame) and
     // hold the future frame as reserve.
     EXPECT_FALSE(
-        policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/980, /*next=*/target + leadTol + 1, target, leadTol));
+        policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/980, /*nextTimestampQpc=*/target + leadTol + 1, target, leadTol));
     // Non-monotonic / duplicate successor is never advanced past.
-    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/900, target, leadTol));
-    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/880, target, leadTol));
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/900, /*nextTimestampQpc=*/900, target, leadTol));
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*frontTimestampQpc=*/900, /*nextTimestampQpc=*/880, target, leadTol));
 }
 
 TEST(CapturePipelinePolicyTest, WgcDuplicateSourceTimestampSkipRequiresPriorDelivery) {
@@ -407,19 +407,19 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEmitHoldDecision) {
     const int64_t target = 1000;
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(100);  // 60
     // Frame at the slot (within lead tolerance) and strictly newer than last emit -> emit.
-    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/990, target, leadTol, /*lastEmitted=*/950).emit);
-    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/target + leadTol, target, leadTol, 950).emit);
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*frontTimestampQpc=*/990, target, leadTol, /*lastEmittedTimestampQpc=*/950).emit);
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*frontTimestampQpc=*/target + leadTol, target, leadTol, 950).emit);
     // Frame still in the future beyond tolerance -> hold (slot not aged in yet), keep as reserve.
-    auto future = policy::DecideWgcNearestPlayout(/*front=*/target + leadTol + 1, target, leadTol, 950);
+    auto future = policy::DecideWgcNearestPlayout(/*frontTimestampQpc=*/target + leadTol + 1, target, leadTol, 950);
     EXPECT_FALSE(future.emit);
     EXPECT_TRUE(future.hold);
     // Non-monotonic front -> hold (never emit backwards).
-    auto stale = policy::DecideWgcNearestPlayout(/*front=*/940, target, leadTol, /*lastEmitted=*/950);
+    auto stale = policy::DecideWgcNearestPlayout(/*frontTimestampQpc=*/940, target, leadTol, /*lastEmittedTimestampQpc=*/950);
     EXPECT_FALSE(stale.emit);
     EXPECT_TRUE(stale.hold);
     // A lone frame OLDER than the target but newer than last emit is still emitted (freshest content
     // during a delivery gap) -> a clean monotonic hold/freeze, never a backward jump.
-    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/700, target, leadTol, /*lastEmitted=*/650).emit);
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*frontTimestampQpc=*/700, target, leadTol, /*lastEmittedTimestampQpc=*/650).emit);
 }
 
 TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockAcquiresAcrossHalfFrameWrap) {
@@ -617,7 +617,7 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWitho
 }
 
 TEST(CapturePipelinePolicyTest, InjectTargetPlayoutUsesNormalDepthForPerfectMatchedCadence) {
-    auto s = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/100,
+    auto s = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*initialSourceInterval=*/100,
                                     /*contentDelay=*/400);
     EXPECT_EQ(s.emits, 1200);
     EXPECT_EQ(s.holds, 0);
@@ -639,19 +639,19 @@ TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockEliminatesHalfFrameBoundaryC
 }
 
 TEST(CapturePipelinePolicyTest, InjectTargetPlayoutResamplesLowHighAndVaryingSourceRatesWithoutChurn) {
-    auto low = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/200,
+    auto low = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*initialSourceInterval=*/200,
                                       /*contentDelay=*/600);
     EXPECT_GT(low.holds, 0);
     EXPECT_LE(low.longestHoldRun, 2);
     EXPECT_EQ(low.dropDupSameTickViolations, 0);
 
-    auto high = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/80,
+    auto high = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*initialSourceInterval=*/80,
                                        /*contentDelay=*/600);
     EXPECT_EQ(high.holds, 0);
     EXPECT_GT(high.staleDrops, 0);
     EXPECT_EQ(high.dropDupSameTickViolations, 0);
 
-    auto varying = RunInjectTargetPlayout(/*ticks=*/1800, /*outputInterval=*/100, /*sourceInterval=*/133,
+    auto varying = RunInjectTargetPlayout(/*ticks=*/1800, /*outputInterval=*/100, /*initialSourceInterval=*/133,
                                           /*contentDelay=*/800, /*varySourceRate=*/true);
     EXPECT_GT(varying.emits, 0);
     EXPECT_GT(varying.holds, 0);

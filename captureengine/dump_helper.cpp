@@ -100,7 +100,7 @@ int RunDumpHelperFromCommandLine() {
 
     const std::string dumpDir = WideToUtf8(dirArg);
     const std::string dumpHint = WideToUtf8(hintArg && hintArg[0] ? hintArg : L"fatal_exit_external_helper.dmp");
-    LocalFree(argv);
+    LocalFree(reinterpret_cast<HLOCAL>(argv));
 
     if (!parsed || dumpDir.empty() || dumpHint.empty()) {
         OutputDebugStringA("[DumpHelper] Invalid dump helper command line\n");

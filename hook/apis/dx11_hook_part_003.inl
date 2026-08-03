@@ -414,6 +414,7 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
         return original;
     }
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC desc = {};
     original->GetDesc(&desc);
 
@@ -486,6 +487,7 @@ static int ReconcileStageSamplers11(SetSamplers11_t originalFn, ID3D11DeviceCont
             ++rebound;
             int idx = g_DiagSamplerRebound.fetch_add(1, std::memory_order_relaxed);
             if (idx < 48) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3D11_SAMPLER_DESC desc = {};
                 desiredSampler->GetDesc(&desc);
                 HookLogImportant("DX11: AF reconciled sampler stage=%s slot=%u Filter=0x%X Aniso=%u Bias=%.2f (#%d)",

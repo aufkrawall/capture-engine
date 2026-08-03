@@ -279,6 +279,7 @@ bool CursorRenderer::CreateRenderingResources() {
 
     // Create sampler
     DLL_Log("[CursorRenderer] Creating sampler");
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -296,6 +297,7 @@ bool CursorRenderer::CreateRenderingResources() {
 
     // Create blend state for alpha blending
     DLL_Log("[CursorRenderer] Creating blend state");
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_BLEND_DESC blendDesc = {};
     blendDesc.RenderTarget[0].BlendEnable = TRUE;
     blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
@@ -315,6 +317,7 @@ bool CursorRenderer::CreateRenderingResources() {
 
     // Create rasterizer state
     DLL_Log("[CursorRenderer] Creating rasterizer state");
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_RASTERIZER_DESC rastDesc = {};
     rastDesc.FillMode = D3D11_FILL_SOLID;
     rastDesc.CullMode = D3D11_CULL_NONE;

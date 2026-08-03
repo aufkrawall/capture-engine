@@ -218,7 +218,7 @@
         ce::fg_session::EmitFGEvent(
             parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn
                            : ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
-            "FFXHook::Hooked_ffxConfigure", context, nullptr,
+            "FFXHook::Hooked_ffxConfigure", reinterpret_cast<void*>(context), nullptr,
             parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled,
             true);
     }
@@ -581,7 +581,7 @@ static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* module
         RestoreFfxConfigureBreakpointIfCurrent(previousTarget, "ffxConfigure target changed");
     }
 
-    auto* targetByte = reinterpret_cast<uint8_t*>(reinterpret_cast<LPVOID>(target));
+    auto* targetByte = reinterpret_cast<uint8_t*>(target);
     const uint8_t currentByte = *targetByte;
     const bool alreadyArmed = g_ffxConfigureVehArmed.load(std::memory_order_acquire) &&
                               g_ffxConfigureTarget.load(std::memory_order_acquire) == reinterpret_cast<void*>(target) &&

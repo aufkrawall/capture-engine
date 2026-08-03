@@ -188,6 +188,7 @@ static glTexImage2DMultisample_t pglTexImage2DMultisample = nullptr;
 // Consolidated multisample pointers
 
 // Globals
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
@@ -198,6 +199,7 @@ static int g_SwapRecurse = 0;
 static thread_local int32_t g_LastOverlayUs = 0;
 static bool g_LegacyContext = false;
 static bool g_VersionChecked = false;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - fixed short values stay in SSO; default construction is non-allocating
 static std::string g_OpenGLApiLabel = "OpenGL";
 static bool g_LuidReported = false;
 static HGLRC g_CurrentTrackedContext = NULL;
@@ -457,6 +459,7 @@ public:
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc;
                 adapter->GetDesc(&desc);
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
 

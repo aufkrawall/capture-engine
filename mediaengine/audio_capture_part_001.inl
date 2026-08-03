@@ -13,9 +13,13 @@ static const PROPERTYKEY PKEY_Device_FriendlyName = {
 #define REFTIMES_PER_SEC 10000000
 #define REFTIMES_PER_MILLISEC 10000
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const CLSID CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID IID_IAudioClient = __uuidof(IAudioClient);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID IID_IAudioCaptureClient = __uuidof(IAudioCaptureClient);
 
 // IEEE Float subformat GUID: {00000003-0000-0010-8000-00aa00389b71}
@@ -49,6 +53,7 @@ static void FillPacketFormatFromWaveFormat(const WAVEFORMATEX* format, AudioPack
     }
 
     packet->channels = format->nChannels;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     packet->sampleRate = format->nSamplesPerSec;
     packet->bitsPerSample = format->wBitsPerSample;
     packet->blockAlign = format->nBlockAlign;

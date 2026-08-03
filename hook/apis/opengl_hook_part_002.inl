@@ -76,6 +76,7 @@
         pglGenTextures(1, &captureTexture);
 
         pglBindTexture(GL_TEXTURE_2D, captureTexture);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
         pglBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -232,6 +233,7 @@
         // Flip Y during blit: OpenGL framebuffer is bottom-up (y=0=bottom) but
         // D3D11 textures are top-down (row 0=top). Swapping srcY0/srcY1 flips
         // the image so that the captured texture has row 0 = top of screen.
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         pglBlitFramebuffer(0, height, width, 0, 0, 0, width, height, 0x4000 /*GL_COLOR_BUFFER_BIT*/,
                            0x2600 /*GL_NEAREST*/);
         pglBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -355,6 +357,7 @@
                 if (writePBO >= 0) {
                     pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
                     pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
                     pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                     pboTimestampQpc[writePBO] = qpc.QuadPart;
@@ -376,6 +379,7 @@
                 const int writePBO = (currentPBO + 1) % 2;
                 pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                 pboTimestampQpc[writePBO] = qpc.QuadPart;
@@ -447,6 +451,7 @@ static void WINAPI DetourGlTexImage2DMultisample(GLenum target, GLsizei samples,
         pglTexImage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
 }
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static OpenGLCapture g_OpenGLCapture;
 
 static void ResetTrackedOpenGLState(HGLRC contextToReset) {

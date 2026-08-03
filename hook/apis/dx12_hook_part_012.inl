@@ -368,9 +368,7 @@ static bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12Comman
     bool slActive = IsStreamlineLoaded() && IsActualFrameGenerationActive();
     {
         ScopedCEOverlayECLSubmission ceOverlayECLGuard(phase ? phase : "overlay command list");
-        if (useDedicated && slActive && realECL) {
-            realECL(submitQueue, 1, lists);
-        } else if (!useDedicated && realECL) {
+        if (realECL && (!useDedicated || slActive)) {
             realECL(submitQueue, 1, lists);
         } else {
             ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(submitQueue);

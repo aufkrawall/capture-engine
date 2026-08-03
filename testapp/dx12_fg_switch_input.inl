@@ -208,6 +208,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 RequestModeOrToggle(FGMode::FSR, "key 3");
             }
             return 0;
+        default:
+            break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }

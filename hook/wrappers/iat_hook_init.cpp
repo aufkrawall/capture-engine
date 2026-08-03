@@ -213,14 +213,12 @@ bool InitializeD3D11Hooks() {
         ::oD3D11CreateDevice = reinterpret_cast<PFN_D3D11CreateDevice>(GetProcAddress(hD3D11, "D3D11CreateDevice"));
 
         void* dummy;
-        bool patched = false;
 
         // Patch D3D11CreateDeviceAndSwapChain
         if (PatchIATAllModules("d3d11.dll", "D3D11CreateDeviceAndSwapChain",
                                (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
                                &dummy)) {  // Use Wrapped_, not DX11_Detour
             WrapperLog("IAT: Patched D3D11CreateDeviceAndSwapChain");
-            patched = true;
         } else {
             WrapperLog("IAT: D3D11CreateDeviceAndSwapChain not found in IAT");
         }
@@ -228,7 +226,6 @@ bool InitializeD3D11Hooks() {
         // Patch D3D11CreateDevice
         if (PatchIATAllModules("d3d11.dll", "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, &dummy)) {
             WrapperLog("IAT: Patched D3D11CreateDevice");
-            patched = true;
         } else {
             WrapperLog("IAT: D3D11CreateDevice not found in IAT");
         }
@@ -472,9 +469,9 @@ void ShutdownIATHooks() {
     // Restore all patched entries
     for (auto& entry : g_PatchedEntries) {
         DWORD oldProtect;
-        if (VirtualProtect(entry.iatEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (VirtualProtect(reinterpret_cast<void*>(entry.iatEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             *entry.iatEntry = entry.originalFunction;
-            VirtualProtect(entry.iatEntry, sizeof(void*), oldProtect, &oldProtect);
+            VirtualProtect(reinterpret_cast<void*>(entry.iatEntry), sizeof(void*), oldProtect, &oldProtect);
         }
     }
 

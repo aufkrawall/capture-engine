@@ -231,6 +231,7 @@ using PFun_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID, void**);
 using PFun_D3D12CreateDevice = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 static PFun_CreateDXGIFactory1 g_SlCreateDXGIFactory1 = nullptr;
 static PFun_D3D12CreateDevice g_SlD3D12CreateDevice = nullptr;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivial value initialization cannot throw
 static sl::ViewportHandle g_SlViewport(1);
 static bool g_SlInitialized = false;
 static bool g_SlDeviceSet = false;
@@ -273,6 +274,7 @@ static auto g_FsrPresentCallbackStressStartTime = std::chrono::high_resolution_c
 static uint64_t g_LastFsrSuspendResumeToggleFrameId = 0;
 static uint64_t g_LastDxgiVideoMemoryQueryStressLogFrame = 0;
 static bool g_FramePacingInitialized = false;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - default time_point construction is noexcept
 static std::chrono::high_resolution_clock::time_point g_LastFramePacingTime;
 static double g_MaxFrameDeltaMs = 0.0;
 static uint64_t g_FramePacingSpikeCount = 0;
@@ -361,6 +363,7 @@ struct GlyphPattern {
 #include "dx12_fg_switch_input.inl"
 #include "dx12_fg_switch_runtime.inl"
 #include "dx12_fg_switch_render.inl"
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
     LoadConfig();
     ParseCommandLine(argc, argv);

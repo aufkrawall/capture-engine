@@ -60,7 +60,7 @@ std::optional<uintptr_t> CommandLineHandle(const wchar_t* prefix) {
         }
         break;
     }
-    LocalFree(arguments);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
     return result;
 }
 

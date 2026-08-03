@@ -37,6 +37,7 @@ TEST(SamplerOverrideUtilsTest, ClassifiesD3D12ComparisonAndReductionFilters) {
 
 TEST(SamplerOverrideUtilsTest, D3D10SafeAndAggressiveEligibilityProtectSpecialSamplers) {
     GraphicsConfig gfx;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_SAMPLER_DESC desc = {};
     desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
@@ -64,6 +65,7 @@ TEST(SamplerOverrideUtilsTest, D3D10SafeAndAggressiveEligibilityProtectSpecialSa
 TEST(SamplerOverrideUtilsTest, D3D10CreationTimeForcedAFAllowsClampButProtectsSpecialSamplers) {
     GraphicsConfig gfx;
     gfx.anisotropicFiltering = "16x";
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D10_SAMPLER_DESC desc = {};
     desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
@@ -190,6 +192,7 @@ TEST(SamplerOverrideUtilsTest, D3D11ForcedAFIgnoresComparisonFuncOnNonComparison
     GraphicsConfig gfx;
     gfx.anisotropicFiltering = "16x";
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC desc = {};
     desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -356,6 +359,8 @@ TEST(SamplerOverrideUtilsTest, D3D11ForcedAFRejectsUnsafeSamplerDescriptors) {
     GraphicsConfig gfx;
     gfx.anisotropicFiltering = "16x";
 
+// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC desc = {};
     desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;

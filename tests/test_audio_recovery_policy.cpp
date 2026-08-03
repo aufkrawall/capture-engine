@@ -37,13 +37,13 @@ TEST(AudioRecoveryPolicyTest, UnqualifiedEventCaptureFallsBackAtDeadlineOnly) {
     cfg.firstPacketEventFallbackMs = 1000;
 
     EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
-        /*eventDriven=*/true, /*activationQualified=*/false, /*elapsed=*/999, cfg));
+        /*eventDriven=*/true, /*activationQualified=*/false, /*activationElapsedMs=*/999, cfg));
     EXPECT_TRUE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
-        /*eventDriven=*/true, /*activationQualified=*/false, /*elapsed=*/1000, cfg));
+        /*eventDriven=*/true, /*activationQualified=*/false, /*activationElapsedMs=*/1000, cfg));
     EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
-        /*eventDriven=*/false, /*activationQualified=*/false, /*elapsed=*/10000, cfg));
+        /*eventDriven=*/false, /*activationQualified=*/false, /*activationElapsedMs=*/10000, cfg));
     EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
-        /*eventDriven=*/true, /*activationQualified=*/true, /*elapsed=*/10000, cfg));
+        /*eventDriven=*/true, /*activationQualified=*/true, /*activationElapsedMs=*/10000, cfg));
 }
 
 // --- Exponential backoff progression ---

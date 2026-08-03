@@ -374,7 +374,7 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
         return false;
     }
     std::lock_guard<std::mutex> lock(g_FFXProxyPresentHookMutex);
-    if (!IsReadableSwapchainPointer(swapChain) || !IsReadableSwapchainPointer(*(void***)swapChain)) {
+    if (!IsReadableSwapchainPointer(swapChain) || !IsReadableSwapchainPointer(reinterpret_cast<const void*>(*(void***)swapChain))) {
         static std::atomic<int> s_unreadableLog{0};
         if (s_unreadableLog.fetch_add(1, std::memory_order_relaxed) < 10) {
             HookLogImportant("DX12: FFX proxy-present hook skipped — unreadable swapchain %p (source=%s)", swapChain,
@@ -383,7 +383,7 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
         return false;
     }
     void** vtable = *reinterpret_cast<void***>(swapChain);
-    if (!IsReadableSwapchainPointer(&vtable[8])) {
+    if (!IsReadableSwapchainPointer(reinterpret_cast<const void*>(&vtable[8]))) {
         return false;
     }
     void* presentEntry = vtable[8];
@@ -441,7 +441,7 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
     g_FFXProxyPresentOriginal.store(reinterpret_cast<PFN_FFXProxyPresent>(presentEntry), std::memory_order_release);
     void* originalPresent = nullptr;
     const VTableHook::Status status =
-        VTableHook::Create(&vtable[8], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent), &originalPresent);
+        VTableHook::Create(reinterpret_cast<void*>(&vtable[8]), reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent), &originalPresent);
     if (status != VTableHook::Success || !originalPresent) {
         HookLogImportant("DX12: FFX proxy-present vtable hook FAILED (%s) for sc=%p entry=%p source=%s",
                          VTableHook::StatusToString(status), swapChain, (void*)&vtable[8], source ? source : "?");
@@ -451,10 +451,10 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
     g_FFXProxyPresentVtableEntry = &vtable[8];
     // Present1 (IDXGISwapChain1 slot 22) — hook when the slot exists and also resolves into the FFX module.
     g_FFXProxyPresent1VtableEntry = nullptr;
-    if (IsReadableSwapchainPointer(&vtable[22]) && ModuleFromAddress(vtable[22]) == ffxModule) {
+    if (IsReadableSwapchainPointer(reinterpret_cast<const void*>(&vtable[22])) && ModuleFromAddress(vtable[22]) == ffxModule) {
         g_FFXProxyPresent1Original.store(reinterpret_cast<PFN_FFXProxyPresent1>(vtable[22]), std::memory_order_release);
         void* originalPresent1 = nullptr;
-        if (VTableHook::Create(&vtable[22], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1), &originalPresent1) ==
+        if (VTableHook::Create(reinterpret_cast<void*>(&vtable[22]), reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1), &originalPresent1) ==
                 VTableHook::Success &&
             originalPresent1) {
             g_FFXProxyPresent1Original.store(reinterpret_cast<PFN_FFXProxyPresent1>(originalPresent1),
@@ -487,14 +487,16 @@ static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason) {
         return;
     }
     g_FFXProxyPresentHookInstalled.store(false, std::memory_order_release);
-    if (g_FFXProxyPresentVtableEntry && IsReadableSwapchainPointer(g_FFXProxyPresentVtableEntry) &&
+    if (g_FFXProxyPresentVtableEntry &&
+        IsReadableSwapchainPointer(reinterpret_cast<const void*>(g_FFXProxyPresentVtableEntry)) &&
         *g_FFXProxyPresentVtableEntry == reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent)) {
-        VTableHook::Remove(g_FFXProxyPresentVtableEntry,
+        VTableHook::Remove(reinterpret_cast<void*>(g_FFXProxyPresentVtableEntry),
                            reinterpret_cast<void*>(g_FFXProxyPresentOriginal.load(std::memory_order_acquire)));
     }
-    if (g_FFXProxyPresent1VtableEntry && IsReadableSwapchainPointer(g_FFXProxyPresent1VtableEntry) &&
+    if (g_FFXProxyPresent1VtableEntry &&
+        IsReadableSwapchainPointer(reinterpret_cast<const void*>(g_FFXProxyPresent1VtableEntry)) &&
         *g_FFXProxyPresent1VtableEntry == reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1)) {
-        VTableHook::Remove(g_FFXProxyPresent1VtableEntry,
+        VTableHook::Remove(reinterpret_cast<void*>(g_FFXProxyPresent1VtableEntry),
                            reinterpret_cast<void*>(g_FFXProxyPresent1Original.load(std::memory_order_acquire)));
     }
     HookLogImportant("DX12: FFX proxy-present hook removed (%s) (proxy=%p preworks=%llu)", reason ? reason : "?",

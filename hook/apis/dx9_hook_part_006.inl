@@ -510,6 +510,7 @@
     }
 };
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static DX9Capture g_DX9Capture;
 static void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
@@ -582,6 +583,7 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.
     // DX9 backend handles state saving/restoring internally.
     g_InOverlayRender = true;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_OverlayAdapter.RenderOverlay(vp.Width, vp.Height);
     g_InOverlayRender = false;
 }

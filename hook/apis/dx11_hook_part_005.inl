@@ -561,7 +561,7 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
 
     LPVOID capturedOriginal = nullptr;
     LPVOID* originalOut = original ? &capturedOriginal : reinterpret_cast<LPVOID*>(&original);
-    VTableHook::Status status = VTableHook::Create(slot, detour, originalOut);
+    VTableHook::Status status = VTableHook::Create(reinterpret_cast<void*>(slot), detour, originalOut);
     if (status == VTableHook::Success) {
         int idx = g_DiagSamplerRuntimeHookInstalled.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
@@ -593,7 +593,7 @@ static bool InstallContextVTableHookSlot11(void** vtable, UINT index, LPVOID det
     }
 
     LPVOID capturedOriginal = nullptr;
-    VTableHook::Status status = VTableHook::Create(slot, detour, &capturedOriginal);
+    VTableHook::Status status = VTableHook::Create(reinterpret_cast<void*>(slot), detour, &capturedOriginal);
     if (status == VTableHook::Success && *slot == detour && capturedOriginal) {
         void* vtableKey = reinterpret_cast<void*>(vtable);
         bool newVTable = false;

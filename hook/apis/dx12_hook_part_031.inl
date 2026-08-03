@@ -351,7 +351,8 @@
                                 ++s_warmupServiceLog;
                             }
                             static int s_warmupSuppressLog = 0;
-                            if (s_warmupSuppressLog++ < 5 || (s_warmupSuppressLog % 200) == 0) {
+                            ++s_warmupSuppressLog;
+                            if (s_warmupSuppressLog <= 5 || (s_warmupSuppressLog % 200) == 0) {
                                 HookLogImportant(
                                     "DX12: PostSL warmup — suppressing stall fallback "
                                     "(stableFrames=%d stallCount=%d threshold=%d) #%d",
@@ -621,7 +622,8 @@
                     if (eagerToggleOnDraw) {
                         NoteDX12OverlayCoverageGate("dlss-toggle-on-eager-presl-draw");
                         static int s_eagerToggleOnLog = 0;
-                        if (s_eagerToggleOnLog++ < 10 || (s_eagerToggleOnLog % 300) == 0) {
+                        ++s_eagerToggleOnLog;
+                        if (s_eagerToggleOnLog <= 10 || (s_eagerToggleOnLog % 300) == 0) {
                             HookLogImportant(
                                 "DX12: Keeping pre-SL overlay live during DLSS toggle-on (RTSS-style, "
                                 "scQueue==origGame=%p postSLActive=%d stallCount=%d) #%d",
@@ -630,7 +632,8 @@
                         // Fall through to the normal pre-SL draw below (do NOT goto skip_overlay_draw).
                     } else {
                         static int s_preSLSuppressLog = 0;
-                        if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
+                        ++s_preSLSuppressLog;
+                        if (s_preSLSuppressLog <= 10 || (s_preSLSuppressLog % 300) == 0) {
                             HookLogImportant(
                                 "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
                                 "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",

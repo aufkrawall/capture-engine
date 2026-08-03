@@ -15,24 +15,34 @@ void LoadConfig() {
         configPath = configPath.substr(0, slash + 1) + L"testappconfig.ini";
     }
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowWidth = GetPrivateProfileIntW(L"Display", L"width", g_WindowWidth, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowHeight = GetPrivateProfileIntW(L"Display", L"height", g_WindowHeight, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Fullscreen = GetPrivateProfileIntW(L"Display", L"fullscreen", g_Fullscreen, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_WindowChrome = GetPrivateProfileIntW(L"Display", L"window_chrome", g_WindowChrome, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_Topmost = GetPrivateProfileIntW(L"Display", L"topmost", g_Topmost, configPath.c_str());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_VSync = GetPrivateProfileIntW(L"Rendering", L"vsync", g_VSync, configPath.c_str());
     g_TearingRequested =
         GetPrivateProfileIntW(L"Rendering", L"allow_tearing", g_TearingRequested ? 1 : 0, configPath.c_str()) != 0;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_GpuLoadPasses = GetPrivateProfileIntW(L"Performance", L"gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_EncoderStressScene = GetPrivateProfileIntW(L"Performance", L"encoder_stress_scene", g_EncoderStressScene ? 1 : 0,
                                                  configPath.c_str()) != 0;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_TargetFps = ClampInt(GetPrivateProfileIntW(L"AVSync", L"fps", g_TargetFps, configPath.c_str()), 1, 480);
     g_DurationSeconds =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ClampInt(GetPrivateProfileIntW(L"AVSync", L"duration_seconds", g_DurationSeconds, configPath.c_str()), 1, 3600);
     g_LogEveryFrame = GetPrivateProfileIntW(L"AVSync", L"log_every_frame", 0, configPath.c_str()) != 0;
     g_AudioEnabled = GetPrivateProfileIntW(L"AVSync", L"audio", 1, configPath.c_str()) != 0;
     g_AudioClockScheduling = GetPrivateProfileIntW(L"AVSync", L"audio_clock_scheduling", 0, configPath.c_str()) != 0;
     g_AudioBufferMs = testapp::avsync::ClampAudioBufferMs(
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         GetPrivateProfileIntW(L"AVSync", L"audio_buffer_ms", g_AudioBufferMs, configPath.c_str()));
     wchar_t audioLeadText[64] = {};
     GetPrivateProfileStringW(L"AVSync", L"audio_lead_ms", L"", audioLeadText,
@@ -61,12 +71,12 @@ void ParseArgs(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         auto readInt = [&](const char* separate, const char* prefix, int* out) {
             if (strcmp(argv[i], separate) == 0 && i + 1 < argc) {
-                *out = atoi(argv[++i]);
+                *out = testapp::ParseIntOrZero(argv[++i]);
                 return true;
             }
             const size_t prefixLen = strlen(prefix);
             if (strncmp(argv[i], prefix, prefixLen) == 0) {
-                *out = atoi(argv[i] + prefixLen);
+                *out = testapp::ParseIntOrZero(argv[i] + prefixLen);
                 return true;
             }
             return false;
@@ -147,6 +157,7 @@ void ParseArgs(int argc, char** argv) {
               [](const auto& lhs, const auto& rhs) { return lhs.spec.startSeconds < rhs.spec.startSeconds; });
 }
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 testapp::avsync::AudioRenderer g_Audio(&g_QpcFreq, &g_StimulusStartQpc);
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -167,6 +178,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 DestroyWindow(hwnd);
             }
             return 0;
+        default:
+            break;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

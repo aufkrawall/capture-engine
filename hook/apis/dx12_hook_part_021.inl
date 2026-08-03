@@ -194,7 +194,9 @@
                         bootstrapOrigQueue = g_OriginalGameQueue;
                     }
 
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     g_State.cachedWidth = bootstrapDesc.BufferDesc.Width;
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     g_State.cachedHeight = bootstrapDesc.BufferDesc.Height;
                     g_State.format = bootstrapDesc.BufferDesc.Format;
 
@@ -269,6 +271,7 @@
         }
         if (reinitQueue) {
             HookLogImportant("DX12: PostSL triggering inline InitOverlaySync (queue=%p dev=%p)", reinitQueue, dev);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             InitOverlaySync(dev, g_State.bufferCount, reinitQueue);
             dev = g_State.syncDevice;
             if (!dev)

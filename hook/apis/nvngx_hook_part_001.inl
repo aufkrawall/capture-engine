@@ -125,6 +125,7 @@ static std::atomic<char> g_UserPresetHints[6] = {'?', '?', '?', '?', '?', '?'};
 
 static char PresetIDToChar(uint32_t id) {
     if (id >= 1 && id <= 26)
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         return 'A' + (id - 1);  // 1=A ... 26=Z
     return '?';
 }
@@ -608,7 +609,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
                 if (!vtable[idx] || vtable[idx] == hook)
                     return false;
                 LPVOID captured = nullptr;
-                if (VTableHook::Create(&vtable[idx], hook, &captured) != VTableHook::Success || !captured)
+                if (VTableHook::Create(reinterpret_cast<void*>(&vtable[idx]), hook, &captured) != VTableHook::Success || !captured)
                     return false;
                 original = reinterpret_cast<std::decay_t<decltype(original)>>(captured);
                 return true;

@@ -255,7 +255,7 @@ TEST(CaptureBaseTest, PublishToSharedMemoryCopiesCaptureMetadata) {
 
     std::array<uintptr_t, CAPTURE_TEXTURE_COUNT> expectedHandles{};
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
-        expectedHandles[i] = static_cast<uintptr_t>(0x1000 + i * 0x40);
+        expectedHandles[i] = static_cast<uintptr_t>(0x1000) + static_cast<uintptr_t>(i) * 0x40u;
         capture.sharedTextureHandles[i].store(reinterpret_cast<HANDLE>(expectedHandles[i]), std::memory_order_relaxed);
     }
     const uintptr_t expectedFence = static_cast<uintptr_t>(0xDEAD0000);

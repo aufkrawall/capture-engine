@@ -426,7 +426,9 @@ std::atomic<bool> g_StartupWindowOffExtensionPending{false};
 
 std::mutex g_SuppressedOffMutex;
 bool g_SuppressedSetOptionsOffDuringStartup = false;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivial value initialization cannot throw
 slViewportHandle g_SuppressedOffViewport = {};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivial value initialization cannot throw
 slDLSSGOptions g_SuppressedOffOptions = {};
 uint32_t g_SuppressedOffViewportKey = 0;
 

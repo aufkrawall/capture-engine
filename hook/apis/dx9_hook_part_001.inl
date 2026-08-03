@@ -156,6 +156,7 @@ static std::atomic<bool> g_InlineHooksInstalled{false};
 static std::atomic<bool> g_InlineHooksInProgress{false};  // Guard against re-entry (atomic for thread safety)
 
 // Globals
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
@@ -164,6 +165,7 @@ static std::mutex g_PresentMutex;
 static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present calls on same thread
 static thread_local bool g_InOverlayRender = false;
 static std::atomic<int> g_MaxMSAASamples{0};  // Tracks highest MSAA target seen
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static GraphicsConfig g_FrameConfig;          // Frame-local config cache for performance
 static int64_t g_LastSleepUs = 0;
 static bool g_WindowedPresent = true;

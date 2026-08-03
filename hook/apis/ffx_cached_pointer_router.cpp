@@ -180,10 +180,11 @@ RefreshResult Refresh(HMODULE sourceModule, const Route* routes, size_t routeCou
     // A runtime reload can change the original export while a client-owned slot remains permanently routed to
     // the same CE replacement. Preserve that durable-route proof instead of needlessly re-enabling the protected
     // entry breakpoint just because there was no new original->replacement exchange during this refresh.
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - route-mask aggregation is order-independent
     for (const auto& entry : g_TrackedPatches) {
         const TrackedPatch& patch = entry.second;
         HMODULE pinnedOwner = nullptr;
-        if (!PinExpectedModuleFromAddress(patch.slot, patch.ownerModule, &pinnedOwner)) {
+        if (!PinExpectedModuleFromAddress(reinterpret_cast<const void*>(patch.slot), patch.ownerModule, &pinnedOwner)) {
             continue;
         }
         void* current =
@@ -257,10 +258,11 @@ RefreshResult Refresh(HMODULE sourceModule, const Route* routes, size_t routeCou
 
 void Shutdown() {
     std::lock_guard<std::mutex> lock(g_RouterMutex);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - each patch is restored independently
     for (const auto& entry : g_TrackedPatches) {
         const TrackedPatch& patch = entry.second;
         HMODULE pinnedOwner = nullptr;
-        if (!PinExpectedModuleFromAddress(patch.slot, patch.ownerModule, &pinnedOwner)) {
+        if (!PinExpectedModuleFromAddress(reinterpret_cast<const void*>(patch.slot), patch.ownerModule, &pinnedOwner)) {
             continue;
         }
         HMODULE pinnedSource = nullptr;

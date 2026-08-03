@@ -74,7 +74,7 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
 
             // CreateSamplerState (Index 9)
             if (oCreateSamplerState10 == NULL) {
-                if (VTableHook::Create(&pDeviceVTable[9], (LPVOID)&DetourCreateSamplerState10,
+                if (VTableHook::Create(reinterpret_cast<void*>(&pDeviceVTable[9]), (LPVOID)&DetourCreateSamplerState10,
                                        (LPVOID*)&oCreateSamplerState10) == VTableHook::Success) {
                     HookLog("DX10: CreateSamplerState hook installed");
                 }
@@ -327,6 +327,7 @@ public:
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC adapterDesc;
                 if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     luidLow = adapterDesc.AdapterLuid.LowPart;
                     luidHigh = adapterDesc.AdapterLuid.HighPart;
 
@@ -573,6 +574,7 @@ public:
                 if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                     DXGI_ADAPTER_DESC adapterDesc;
                     adapter->GetDesc(&adapterDesc);
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     luidLow = adapterDesc.AdapterLuid.LowPart;
                     luidHigh = adapterDesc.AdapterLuid.HighPart;
 

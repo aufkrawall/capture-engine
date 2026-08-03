@@ -29,6 +29,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         IDirect3DSwapChain9* swapChain = nullptr;
         if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             D3DPRESENT_PARAMETERS pp = {};
             if (SUCCEEDED(swapChain->GetPresentParameters(&pp))) {
                 g_WindowedPresent = !!pp.Windowed;

@@ -191,7 +191,7 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     this->height = height;
     this->captureCursor = config.captureCursor;
     this->gpuPriority = config.gpuPriority;
-    this->onPacket = packetCallback;
+    this->onPacket = std::move(packetCallback);
     hdrPacketMetadataLogged = false;
 
     // Initialize cursor renderer if cursor capture enabled
@@ -245,7 +245,9 @@ void VideoEncoder::SetAdapterLUID(int32_t low, int32_t high) {
 
 void VideoEncoder::SetDimensions(uint32_t w, uint32_t h) {
     if (w > 0 && h > 0) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         this->width = w;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         this->height = h;
         DLL_Log("[VideoEncoder] SetDimensions: %dx%d", w, h);
     }

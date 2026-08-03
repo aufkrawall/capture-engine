@@ -22,6 +22,7 @@ namespace CustomHook {
 // ============================================================================
 
 static std::atomic<bool> g_Initialized{false};
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::shared_mutex g_HookMutex;
 static std::unordered_map<void*, std::unique_ptr<HookInfo>> g_Hooks;
 
@@ -85,6 +86,7 @@ void Shutdown() {
     // Unhook all registered hooks
     {
         std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+        // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - hook teardown order is independent
         for (auto& [target, info] : g_Hooks) {
             if (info->type == HookInfo::Type::IAT) {
                 // IAT hooks are cleaned up by IATHook::ShutdownIATHooks
@@ -92,9 +94,9 @@ void Shutdown() {
                 // Restore VTable entry
                 void** entry = reinterpret_cast<void**>(target);
                 DWORD oldProtect;
-                if (VirtualProtect(entry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                if (VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                     *entry = info->original;
-                    VirtualProtect(entry, sizeof(void*), oldProtect, &oldProtect);
+                    VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &oldProtect);
                 }
             }
         }
@@ -138,18 +140,18 @@ Status HookVTableEntry(void** vtableEntry, void* detour, void** original) {
     }
 
     // Use existing VTableHook implementation
-    VTableHook::Status vStatus = VTableHook::Create(vtableEntry, detour, original);
+    VTableHook::Status vStatus = VTableHook::Create(reinterpret_cast<void*>(vtableEntry), detour, original);
 
     if (vStatus == VTableHook::Success) {
         // Register in our tracking
         std::unique_lock<std::shared_mutex> lock(g_HookMutex);
         auto info = std::make_unique<HookInfo>();
-        info->target = vtableEntry;
+        info->target = reinterpret_cast<void*>(vtableEntry);
         info->detour = detour;
         info->original = original ? *original : nullptr;
         info->type = HookInfo::Type::VTable;
         info->enabled.store(true);
-        g_Hooks[vtableEntry] = std::move(info);
+        g_Hooks[reinterpret_cast<void*>(vtableEntry)] = std::move(info);
         return Status::Success;
     }
 
@@ -176,7 +178,7 @@ Status UnhookVTableEntry(void** vtableEntry, void* original) {
     // Remove from tracking
     {
         std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto it = g_Hooks.find(vtableEntry);
+        auto it = g_Hooks.find(reinterpret_cast<void*>(vtableEntry));
         if (it != g_Hooks.end()) {
             if (!original) {
                 original = it->second->original;
@@ -188,9 +190,9 @@ Status UnhookVTableEntry(void** vtableEntry, void* original) {
     // Restore original value
     if (original) {
         DWORD oldProtect;
-        if (VirtualProtect(vtableEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (VirtualProtect(reinterpret_cast<void*>(vtableEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             *vtableEntry = original;
-            VirtualProtect(vtableEntry, sizeof(void*), oldProtect, &oldProtect);
+            VirtualProtect(reinterpret_cast<void*>(vtableEntry), sizeof(void*), oldProtect, &oldProtect);
             HookLog("CustomHook: Unhooked VTable entry %p", vtableEntry);
             return Status::Success;
         }

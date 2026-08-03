@@ -367,6 +367,7 @@ TEST(FrameQueueHardeningTest, InjectLineageSurvivesQueuedFrameMove) {
     EXPECT_EQ(moved.frameIndex, 44u);
     EXPECT_EQ(moved.textureIndex, 2);
     EXPECT_EQ(moved.deferCount, 2u);
+    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from contract
     EXPECT_FALSE(source.isInjectMode);
     EXPECT_EQ(source.sharedHandle, nullptr);
     EXPECT_EQ(source.fenceHandle, nullptr);
@@ -425,6 +426,7 @@ TEST(FrameQueueHardeningTest, PushTransfersInjectRingLeaseOwnershipToQueue) {
 
     // The moved-from lease must be disarmed, and completing it must not advance the
     // ring: the queued frame still owns the slot.
+    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from lease is disarmed
     EXPECT_FALSE(static_cast<bool>(frame.injectRingLease));
     frame.injectRingLease.Reset();
     EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 0u);

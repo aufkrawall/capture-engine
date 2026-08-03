@@ -295,6 +295,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
             }
         }
     }
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - modified is a byte copy of pCreateInfo, so padding cannot differ
     const bool changed = std::memcmp(&modified, pCreateInfo, sizeof(modified)) != 0;
     VkResult result = disp->fp_vkCreateSampler(device, &modified, pAllocator, pSampler);
     if (result != VK_SUCCESS && changed) {

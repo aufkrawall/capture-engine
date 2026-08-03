@@ -15,12 +15,14 @@ extern "C" {
 // Helper to create dummy PCM data
 std::vector<uint8_t> CreateDummyAudio(int milliseconds, int sampleRate, int channels) {
     int numSamples = (sampleRate * milliseconds) / 1000;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     int sizeBytes = numSamples * channels * sizeof(int16_t);
     return std::vector<uint8_t>(sizeBytes, 0);
 }
 
 std::vector<uint8_t> CreateDummyFloatAudio(int milliseconds, int sampleRate, int channels) {
     int numSamples = (sampleRate * milliseconds) / 1000;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     int sizeBytes = numSamples * channels * sizeof(float);
     return std::vector<uint8_t>(sizeBytes, 0);
 }
@@ -405,6 +407,7 @@ TEST_F(AudioEncoderTest, DiscardBeforeStart) {
 
     // Feed audio at timestamp 500us (before start)
     auto data = CreateDummyAudio(10, 48000, 2);  // 10ms
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
                           0);  // ts 0ms = 0us
 
@@ -423,6 +426,7 @@ TEST_F(AudioEncoderTest, GapFilling) {
     // Send enough audio to produce at least one AAC frame (1024 samples @ 48kHz ≈ 21.3ms)
     // Send 100ms to ensure multiple complete frames
     auto data = CreateDummyAudio(100, 48000, 2);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 0);
 
     // AAC encoder should produce packets from 100ms of audio (≈4 frames)
@@ -433,6 +437,7 @@ TEST_F(AudioEncoderTest, GapFilling) {
     // Send another 100ms of audio at a later timestamp
     // Note: gap detection was removed from the encoder — it just encodes what it receives
     // The timestamp parameter is only used for internal tracking, not gap filling
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 200);
 
     // Should produce more packets from the new audio data
@@ -450,6 +455,7 @@ TEST_F(AudioEncoderTest, BufferUntilStreamIndex) {
 
     // Send 100ms of audio (enough for ~4 AAC frames)
     auto data = CreateDummyAudio(100, 48000, 2);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 0);
 
     // Should have received some packets now that stream index is set

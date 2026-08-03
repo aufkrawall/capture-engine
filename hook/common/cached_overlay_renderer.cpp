@@ -8,6 +8,7 @@ namespace overlay {
 
 // Static helpers for D3D12 resource creation
 static bool CreateUploadBuffer(ID3D12Device* device, size_t size, ID3D12Resource** outResource, void** outCpuPtr) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
     heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -50,6 +51,7 @@ void FrameTimeGraphData::InitGpuBuffer(ID3D12Device* device) {
     if (gpuHistoryBuffer)
         return;
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 

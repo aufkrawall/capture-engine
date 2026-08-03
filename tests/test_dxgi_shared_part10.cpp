@@ -163,7 +163,7 @@ TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntim
         for (bool firing : {false, true}) {
             EXPECT_EQ(
                 static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
-                    /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, /*suspendPending=*/false, cached, firing)),
+                    /*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/false, cached, firing)),
                 static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers))
                 << "actively interpolating on AMD's FG queue must never submit on AMD's queue (cached=" << cached
                 << " firing=" << firing << ")";
@@ -181,7 +181,7 @@ TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntim
         for (bool firing : {false, true}) {
             EXPECT_EQ(
                 static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
-                    /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, /*suspendPending=*/true, cached, firing)),
+                    /*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/true, cached, firing)),
                 static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers))
                 << "runtime-owned suspension must ride the bundle, never the (stalling) backbuffer (cached=" << cached
                 << " firing=" << firing << ")";
@@ -196,7 +196,7 @@ TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntim
         for (bool cached : {false, true}) {
             for (bool firing : {false, true}) {
                 EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
-                              /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/true, suspend, cached, firing)),
+                              /*runtimeOwnsSwapchain=*/true, /*liveSwapchainQueueIsOriginalGameQueue=*/true, suspend, cached, firing)),
                           static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer))
                     << "stale latch with live present back on origGame must draw via backbuffer";
             }
@@ -205,18 +205,18 @@ TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntim
 
     // Non-runtime-owned (AMD does NOT own the swapchain — safe to submit on the backbuffer):
     // bundle cached AND actively firing -> safe to skip (bundle composites the overlay).
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*suspendPending=*/false, /*cached=*/true,
-                                                                 /*firing=*/true)),
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/false, /*liveSwapchainQueueIsOriginalGameQueue=*/false,
+                                                                 /*fsrFGDisabledSuspendPending=*/false, /*uiResourceCachedForBundle=*/true,
+                                                                 /*bundleOverlayActivelyFiring=*/true)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers));
     // Cached but NOT firing, or not cached -> draw via the safe minimal backbuffer path (never blank).
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*suspendPending=*/false, /*cached=*/true,
-                                                                 /*firing=*/false)),
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/false, /*liveSwapchainQueueIsOriginalGameQueue=*/false,
+                                                                 /*fsrFGDisabledSuspendPending=*/false, /*uiResourceCachedForBundle=*/true,
+                                                                 /*bundleOverlayActivelyFiring=*/false)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*suspendPending=*/false, /*cached=*/false,
-                                                                 /*firing=*/false)),
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwnsSwapchain=*/false, /*liveSwapchainQueueIsOriginalGameQueue=*/false,
+                                                                 /*fsrFGDisabledSuspendPending=*/false, /*uiResourceCachedForBundle=*/false,
+                                                                 /*bundleOverlayActivelyFiring=*/false)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
 }
 
@@ -232,22 +232,22 @@ TEST(DXGISharedTest, FFXUiOverlayTargetSubstitutesForDegenerateGameTexture) {
     using ce::dx12_overlay_policy::FFXUiOverlayTarget;
 
     // GTA's 1x1 placeholder against a 4K backbuffer -> substitute CE's full-size texture.
-    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/1, /*texH=*/1, /*bbW=*/3840, /*bbH=*/2160)),
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*gameTexWidth=*/1, /*gameTexHeight=*/1, /*backbufferWidth=*/3840, /*backbufferHeight=*/2160)),
               static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
 
     // A usable full-size UI texture (test app) -> composite onto it directly.
-    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/3840, /*texH=*/2160, /*bbW=*/3840, /*bbH=*/2160)),
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*gameTexWidth=*/3840, /*gameTexHeight=*/2160, /*backbufferWidth=*/3840, /*backbufferHeight=*/2160)),
               static_cast<int>(FFXUiOverlayTarget::kCompositeOntoGameTexture));
 
     // A UI texture much smaller than the backbuffer (under half in a dimension) is a placeholder -> substitute.
-    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/640, /*texH=*/360, /*bbW=*/3840, /*bbH=*/2160)),
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*gameTexWidth=*/640, /*gameTexHeight=*/360, /*backbufferWidth=*/3840, /*backbufferHeight=*/2160)),
               static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
 
     // Backbuffer size unknown (0): only the trivially-degenerate (<=1px) case substitutes; otherwise composite
     // (never substitute against a possibly-usable texture we cannot size-compare).
-    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/1, /*texH=*/1, /*bbW=*/0, /*bbH=*/0)),
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*gameTexWidth=*/1, /*gameTexHeight=*/1, /*backbufferWidth=*/0, /*backbufferHeight=*/0)),
               static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
-    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/2560, /*texH=*/1440, /*bbW=*/0, /*bbH=*/0)),
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*gameTexWidth=*/2560, /*gameTexHeight=*/1440, /*backbufferWidth=*/0, /*backbufferHeight=*/0)),
               static_cast<int>(FFXUiOverlayTarget::kCompositeOntoGameTexture));
 }
 

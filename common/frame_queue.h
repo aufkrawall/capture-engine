@@ -148,19 +148,32 @@ public:
     }
 
     ~FrameQueue() {
+        try {
         std::vector<ID3D11Texture2D*> texturesToRelease;
         {
+                std::lock_guard<std::mutex> lock(mtx);
+                texturesToRelease.reserve(buffer.size());
+                for (auto& frame : buffer) {
+                    if (!frame.isInjectMode && frame.texture) {
+                        texturesToRelease.push_back(frame.texture);
+                    }
+                }
+                buffer.clear();
+            }
+            for (auto* texture : texturesToRelease) {
+                texture->Release();
+            }
+        } catch (...) {
+            // Never let teardown allocation/lock failures escape. Release what
+            // we can under the queue lock; worst case is a small texture leak
+            // during process teardown, never std::terminate.
             std::lock_guard<std::mutex> lock(mtx);
-            texturesToRelease.reserve(buffer.size());
             for (auto& frame : buffer) {
                 if (!frame.isInjectMode && frame.texture) {
-                    texturesToRelease.push_back(frame.texture);
+                    frame.texture->Release();
                 }
             }
             buffer.clear();
-        }
-        for (auto* texture : texturesToRelease) {
-            texture->Release();
         }
     }
 

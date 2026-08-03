@@ -221,7 +221,7 @@ public:
         if (CustomHook::HookVTableEntry(vtableEntry, detour, &orig) != CustomHook::Status::Success) {
             return false;
         }
-        m_target = vtableEntry;
+        m_target = reinterpret_cast<void*>(vtableEntry);
         m_original = reinterpret_cast<FuncType>(orig);
         m_created.store(true);
         return true;

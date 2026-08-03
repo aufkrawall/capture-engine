@@ -83,6 +83,7 @@
 // of AMD's pacing-critical present queue (so no ffxQuery wedge) and no ghosting (composited after
 // interpolation). It replaces the old separate-ECL-on-AMD's-runtime-queue route, which wedged AMD's
 // presenter in ~200-300 frames (session 20260618_201038), and the synthesized-callback route (~8 frames).
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::recursive_mutex g_FFXUiCompositeMutex;
 static ID3D12Device* g_FFXUiCompositeDevice = nullptr;
 static ID3D12DescriptorHeap* g_FFXUiCompositeRtvHeap = nullptr;
@@ -358,6 +359,7 @@ static ID3D12Resource* PrepareCEUiSubstituteTexture(ID3D12Device* device, uint32
         g_CEUiSubstituteTexture->AddRef();
         return g_CEUiSubstituteTexture;
     }
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC td = {};

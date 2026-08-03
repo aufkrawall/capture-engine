@@ -3,6 +3,7 @@
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC adapterDesc;
                 if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart,
                                                              adapterDesc.AdapterLuid.HighPart);
                 }
@@ -239,6 +240,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC adapterDesc;
                 if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart,
                                                              adapterDesc.AdapterLuid.HighPart);
                 }
@@ -392,6 +394,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
     // Render Custom Overlay
     g_InOverlayRender = true;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
     g_InOverlayRender = false;
 
@@ -471,12 +474,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 
             void** vtable = *(void***)pSwapChain;
             DWORD oldProtect;
-            if (VirtualProtect(&vtable[13], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            if (VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 // Double check we are overwriting OURSELVES (or a hook), not something
                 // random But actually we just want to restore 'oResizeBuffers' (the
                 // Real Original).
                 vtable[13] = (void*)oResizeBuffers;
-                VirtualProtect(&vtable[13], sizeof(void*), oldProtect, &oldProtect);
+                VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), oldProtect, &oldProtect);
                 HookLog("DX11: DetourResizeBuffers - VTable[13] restored to original.");
             } else {
                 HookLog("DX11: DetourResizeBuffers - FAILED to restore VTable[13]!");

@@ -90,7 +90,7 @@ inline void GenerateProbeMarkerMono(const ProbeMarkerSpec& spec, std::vector<flo
     for (int i = 0; i < spec.markerFrames; ++i) {
         const double hann = 0.5 - 0.5 * std::cos(2.0 * kProbePi * i / std::max(1, spec.markerFrames - 1));
         const double s = spec.amplitude * hann * std::sin(w * i);
-        out[static_cast<size_t>(spec.leadInFrames + i)] = static_cast<float>(s);
+        out[static_cast<size_t>(spec.leadInFrames) + static_cast<size_t>(i)] = static_cast<float>(s);
     }
 }
 

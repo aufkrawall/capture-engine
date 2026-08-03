@@ -4,6 +4,8 @@
  * CreateSamplerState intercepts for AF/mip LOD bias override.
  */
 
+#include <algorithm>
+
 #include "d3d11_device_wrap.h"
 #include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
@@ -105,8 +107,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** p
     }
 
 #define CHECK_DEVICE_VERSION(N, IFACE)                                            \
-    if (riid == IID_ID3D11Device##N && m_Version >= N) {                          \
-        DX11Hook_ReportApiUse(m_pReal, (N < 4) ? N : 4, "ID3D11Device" #N " QI"); \
+    if (riid == IID_ID3D11Device##N && m_Version >= (N)) {                        \
+        DX11Hook_ReportApiUse(m_pReal, std::min(N, 4), "ID3D11Device" #N " QI"); \
         AddRef();                                                                 \
         *ppvObj = static_cast<IFACE*>(this);                                      \
         return S_OK;                                                              \

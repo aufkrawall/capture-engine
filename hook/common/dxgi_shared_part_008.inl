@@ -40,16 +40,16 @@ void RemovePresentHooks() {
 
     DWORD oldProtect;
     if (oPresent && s_hookedVTable[8] == (void*)DetourPresent) {
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[8] = (void*)oPresent;
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed Present vtable hook");
     }
 
     if (oPresent1 && s_hookedVTable[22] == (void*)DetourPresent1) {
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[22] = (void*)oPresent1;
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed Present1 vtable hook");
     }
 
@@ -59,7 +59,7 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
     if (!s_hookedVTable) {
         return;
     }
-    if (!IsReadableMemory(s_hookedVTable, 23 * sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(s_hookedVTable), 23 * sizeof(void*))) {
         HookLogImportant(
             "DXGIShared: Cannot release Present vtable hooks for runtime handoff; vtable %p is not readable "
             "(reason=%s)",
@@ -73,16 +73,16 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
     bool restoredPresent1 = false;
 
     if (oPresent && s_hookedVTable[8] == (void*)DetourPresent &&
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         s_hookedVTable[8] = (void*)oPresent;
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
         restoredPresent = true;
     }
 
     if (oPresent1 && s_hookedVTable[22] == (void*)DetourPresent1 &&
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         s_hookedVTable[22] = (void*)oPresent1;
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
         restoredPresent1 = true;
     }
 
@@ -122,7 +122,7 @@ void RepairVTableHooksIfNeeded() {
         }
         return;
     }
-    if (!IsReadableMemory(s_hookedVTable, 23 * sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(s_hookedVTable), 23 * sizeof(void*))) {
         HookLogImportant("DXGIShared: RepairVTable — s_hookedVTable %p not readable", s_hookedVTable);
         return;
     }
@@ -135,9 +135,9 @@ void RepairVTableHooksIfNeeded() {
         HookLogImportant("DXGIShared: vtable[8] OVERWRITTEN! was=%p expected=%p — re-hooking", s_hookedVTable[8],
                          (void*)DetourPresent);
         oPresent = (PFN_Present)s_hookedVTable[8];
-        if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             s_hookedVTable[8] = (void*)DetourPresent;
-            VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+            VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
             repaired = true;
             HookLogImportant("DXGIShared: vtable[8] re-hooked (new oPresent=%p)", oPresent);
         }
@@ -148,9 +148,9 @@ void RepairVTableHooksIfNeeded() {
         HookLogImportant("DXGIShared: vtable[22] OVERWRITTEN! was=%p expected=%p — re-hooking", s_hookedVTable[22],
                          (void*)DetourPresent1);
         oPresent1 = (PFN_Present1)s_hookedVTable[22];
-        if (VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             s_hookedVTable[22] = (void*)DetourPresent1;
-            VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
+            VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
             repaired = true;
             HookLogImportant("DXGIShared: vtable[22] re-hooked (new oPresent1=%p)", oPresent1);
         }
@@ -181,30 +181,30 @@ void RemoveSwapchainVTableHooks() {
     DWORD oldProtect;
 
     if (oPresent && s_hookedVTable[8] == (void*)DetourPresent) {
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[8] = (void*)oPresent;
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed Present vtable hook");
     }
 
     if (oPresent1 && s_hookedVTable[22] == (void*)DetourPresent1) {
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[22] = (void*)oPresent1;
-        VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed Present1 vtable hook");
     }
 
     if (oResizeBuffers && s_hookedVTable[13] == (void*)DetourResizeBuffers) {
-        VirtualProtect(&s_hookedVTable[13], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[13]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[13] = (void*)oResizeBuffers;
-        VirtualProtect(&s_hookedVTable[13], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[13]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed ResizeBuffers vtable hook");
     }
 
     if (oResizeBuffers1 && s_hookedVTable[39] == (void*)DetourResizeBuffers1) {
-        VirtualProtect(&s_hookedVTable[39], sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[39]), sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[39] = (void*)oResizeBuffers1;
-        VirtualProtect(&s_hookedVTable[39], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[39]), sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed ResizeBuffers1 vtable hook");
     }
 
@@ -236,7 +236,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
         return false;
     }
 
-    if (!IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(s_hookedVTable), 9 * sizeof(void*))) {
         return false;
     }
 
@@ -248,7 +248,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     DWORD oldProtect = 0;
-    if (!VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLogImportant(
             "AttemptSteamDX12OverlayInit: VirtualProtect failed to unhook vtable[8] — will retry on next frame");
         s_steamDX12InitAttempted.store(false, std::memory_order_release);
@@ -258,7 +258,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Save current vtable[8] (= DetourPresent) and restore to the real dxgi!Present
     void* savedVtable8 = s_hookedVTable[8];
     s_hookedVTable[8] = (void*)presentOriginal;
-    VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+    VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: vtable[8] temporarily restored to dxgi!Present=%p — "
@@ -287,9 +287,9 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
     HRESULT initHr = presentOriginal(pSwapChain, SyncInterval, Flags);
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
-    if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         s_hookedVTable[8] = (void*)DetourPresent;
-        VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
     } else {
         // CRITICAL: VirtualProtect for re-hook failed — vtable[8] is exposed.
         // Our DetourPresent hook may be lost. Log prominently and continue.
@@ -305,7 +305,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
         HMODULE steamMod = GetModuleHandleW(L"gameoverlayrenderer64.dll");
         if (steamMod) {
             void** steamCallbackPtr = (void**)((uintptr_t)steamMod + 0x1621d8);
-            if (IsReadableMemory(steamCallbackPtr, sizeof(void*))) {
+            if (IsReadableMemory(reinterpret_cast<const void*>(steamCallbackPtr), sizeof(void*))) {
                 void* callbackAfterInit = *steamCallbackPtr;
                 if (callbackAfterInit != nullptr && callbackAfterInit != (void*)SteamDummyRenderingCallback &&
                     callbackAfterInit != (void*)presentBypass) {
@@ -479,14 +479,14 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // through the natural E9 JMP hook chain instead of re-entering CE.
                     bool needVtableRestore = false;
                     void* savedVtable8 = nullptr;
-                    if (s_hookedVTable && IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+                    if (s_hookedVTable && IsReadableMemory(reinterpret_cast<const void*>(s_hookedVTable), 9 * sizeof(void*))) {
                         savedVtable8 = s_hookedVTable[8];
                         if (savedVtable8 == (void*)DetourPresent && presentOriginal &&
                             presentOriginal != (PFN_Present)DetourPresent) {
                             DWORD oldProtect = 0;
-                            if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                            if (VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                                 s_hookedVTable[8] = (void*)presentOriginal;
-                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
                                 needVtableRestore = true;
                                 vtableRestored = true;
                                 static std::atomic<int> s_vtableRestoreLogCount{0};
@@ -628,12 +628,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // Phase C: Restore vtable[8] to DetourPresent (CE's hook) AFTER
                     // Steam's handler returns.  This ensures CE's overlay hook is
                     // active for the next frame.
-                    if (needVtableRestore && s_hookedVTable && IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+                    if (needVtableRestore && s_hookedVTable && IsReadableMemory(reinterpret_cast<const void*>(s_hookedVTable), 9 * sizeof(void*))) {
                         DWORD oldProtect = 0;
-                        if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                        if (VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                             if (s_hookedVTable[8] == (void*)presentOriginal) {
                                 s_hookedVTable[8] = (void*)DetourPresent;
-                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
                                 static std::atomic<int> s_vtableRehookLogCount{0};
                                 if (s_vtableRehookLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                                     HookLogImportant(
@@ -646,5 +646,5 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                 // turned.  Log it but don't force re-hook — the current
                                 // vtable[8] may have been deliberately changed by Steam or
                                 // another overlay.
-                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                VirtualProtect(reinterpret_cast<void*>(&s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
                                 static std::atomic<int> s_vtableModifiedLogCount{0};

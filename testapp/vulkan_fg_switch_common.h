@@ -72,6 +72,7 @@ struct ImageResource {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkImageCreateInfo createInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -125,6 +126,7 @@ struct SwapchainState {
     SwapchainOwner owner = SwapchainOwner::Native;
     VulkanWsiDispatch wsi;
     VkSwapchainKHR handle = VK_NULL_HANDLE;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkSwapchainCreateInfoKHR createInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -166,6 +168,7 @@ struct RendererState {
 
 struct SlFeatureRequirementCopy {
     sl::Feature feature = {};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     sl::FeatureRequirementFlags flags = {};
     uint32_t graphicsQueues = 0;
     uint32_t computeQueues = 0;
@@ -240,6 +243,7 @@ struct FidelityFxState {
     ffxCreateContextDescFrameGenerationHudless frameGenerationHudless = {};
     ffxCreateContextDescFrameGeneration frameGenerationCreate = {};
     ffxCreateContextDescFrameGenerationSwapChainModeVK swapchainMode = {};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     ffxCreateContextDescFrameGenerationSwapChainVK swapchainCreate = {};
     VkSwapchainKHR swapchainHandleStorage = VK_NULL_HANDLE;
     bool runtimeLoaded = false;

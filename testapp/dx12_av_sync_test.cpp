@@ -468,6 +468,7 @@ void Cleanup() {
 
 }  // namespace
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char** argv) {
     if (testapp::LaunchX86SiblingProcess(argc, argv)) {
         return 0;

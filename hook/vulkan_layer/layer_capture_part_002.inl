@@ -47,6 +47,7 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
         VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
         extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
         imgInfo.imageType = VK_IMAGE_TYPE_2D;
         imgInfo.format = (VkFormat)vkFormat;
@@ -124,6 +125,7 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
             break;
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         VkMemoryGetWin32HandleInfoKHR getHandleInfo = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
         getHandleInfo.memory = entry.vkMemories[i];
         getHandleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
@@ -544,6 +546,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
         VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
         extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
         imgInfo.imageType = VK_IMAGE_TYPE_2D;
         imgInfo.format = (VkFormat)vkFormat;
@@ -566,6 +569,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
         VkMemoryRequirements memReq;
         disp->fp_vkGetImageMemoryRequirements(device, newEntry.vkImages[i], &memReq);
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         VkImportMemoryWin32HandleInfoKHR importInfo = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
         importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
         importInfo.handle = outKmtHandles[i];

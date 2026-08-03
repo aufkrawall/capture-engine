@@ -372,6 +372,7 @@ void NVNGXLog(const char* fmt, ...) {
 
 void ReportLUID(uint32_t low, uint32_t high) {
     // Always initialize local metrics collector first
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     SystemMetricsCollector::Get().Initialize(low, high);
 
     if (g_IPC && g_IPC->GetSharedMem()) {
@@ -608,41 +609,20 @@ GraphicsConfig GetActiveGraphicsConfig() {
     // Add other fields as needed
 
     // Update global performance gating flag
-    bool anyActive = false;
-    if (mergedConfig.vsyncMode != "default" && !mergedConfig.vsyncMode.empty())
-        anyActive = true;
-    else if (mergedConfig.anisotropicFiltering != "default" && !mergedConfig.anisotropicFiltering.empty())
-        anyActive = true;
-    else if (mergedConfig.mipMapping != "default" && !mergedConfig.mipMapping.empty())
-        anyActive = true;
-    else if (mergedConfig.mipBias != "default" && !mergedConfig.mipBias.empty())
-        anyActive = true;
-    else if (mergedConfig.forceMipBiasClamp)
-        anyActive = true;
-    else if (mergedConfig.msaaSamples != "default" && !mergedConfig.msaaSamples.empty())
-        anyActive = true;
-    else if (mergedConfig.cpuPrerenderLimit > -0.5f)
-        anyActive = true;
-    else if (HasBackbufferCountOverride(mergedConfig.backbufferCount))
-        anyActive = true;
-    else if (mergedConfig.frameLatency > 0)
-        anyActive = true;
-    else if (mergedConfig.sgssaa)
-        anyActive = true;
-    else if (mergedConfig.dlssAutoExposure != "default" && !mergedConfig.dlssAutoExposure.empty())
-        anyActive = true;
-    else if (mergedConfig.dlssExposureNormalization != "default" && !mergedConfig.dlssExposureNormalization.empty())
-        anyActive = true;
-    else if (mergedConfig.parsed.presetDLAA > 0 || mergedConfig.parsed.presetQuality > 0)
-        anyActive = true;
-    else if (mergedConfig.parsed.rrPresetDLAA > 0 || mergedConfig.parsed.rrPresetQuality > 0)
-        anyActive = true;
-    else if (mergedConfig.parsed.srPreset > 0 || mergedConfig.parsed.rrPreset > 0)
-        anyActive = true;
-    else if (mergedConfig.parsed.dlssSharpening > -1.5f)
-        anyActive = true;
-    else if (mergedConfig.parsed.dlssFGFactor > 0)
-        anyActive = true;
+    const bool anyActive =
+        (mergedConfig.vsyncMode != "default" && !mergedConfig.vsyncMode.empty()) ||
+        (mergedConfig.anisotropicFiltering != "default" && !mergedConfig.anisotropicFiltering.empty()) ||
+        (mergedConfig.mipMapping != "default" && !mergedConfig.mipMapping.empty()) ||
+        (mergedConfig.mipBias != "default" && !mergedConfig.mipBias.empty()) || mergedConfig.forceMipBiasClamp ||
+        (mergedConfig.msaaSamples != "default" && !mergedConfig.msaaSamples.empty()) ||
+        mergedConfig.cpuPrerenderLimit > -0.5f || HasBackbufferCountOverride(mergedConfig.backbufferCount) ||
+        mergedConfig.frameLatency > 0 || mergedConfig.sgssaa ||
+        (mergedConfig.dlssAutoExposure != "default" && !mergedConfig.dlssAutoExposure.empty()) ||
+        (mergedConfig.dlssExposureNormalization != "default" && !mergedConfig.dlssExposureNormalization.empty()) ||
+        mergedConfig.parsed.presetDLAA > 0 || mergedConfig.parsed.presetQuality > 0 ||
+        mergedConfig.parsed.rrPresetDLAA > 0 || mergedConfig.parsed.rrPresetQuality > 0 ||
+        mergedConfig.parsed.srPreset > 0 || mergedConfig.parsed.rrPreset > 0 ||
+        mergedConfig.parsed.dlssSharpening > -1.5f || mergedConfig.parsed.dlssFGFactor > 0;
 
     g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);
 
@@ -700,15 +680,12 @@ VSyncOverride GetVSyncOverride() {
     if (cfg.vsyncMode == "off") {
         result.presentInterval = 0;  // DX9: D3DPRESENT_INTERVAL_IMMEDIATE, DX11/12: sync interval 0
         result.useMailbox = false;
-    } else if (cfg.vsyncMode == "fifo") {
+    } else if (cfg.vsyncMode == "fifo" || cfg.vsyncMode == "adaptive") {
         result.presentInterval = 1;  // DX9: D3DPRESENT_INTERVAL_ONE, DX11/12: sync interval 1
         result.useMailbox = false;
     } else if (cfg.vsyncMode == "mailbox") {
         result.presentInterval = 0;  // DX9: immediate (no true mailbox), DX11/12: sync 0 + flip_discard
         result.useMailbox = true;
-    } else if (cfg.vsyncMode == "adaptive") {
-        result.presentInterval = 1;  // DX9: no adaptive (use fifo), DX11/12: sync interval 1
-        result.useMailbox = false;
     } else {
         // Unknown mode, don't override
         result.shouldOverride = false;

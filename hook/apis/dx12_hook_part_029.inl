@@ -35,6 +35,7 @@
             }
         }
         HookLogImportant("DX12: Finalizing staged overlay activation step 2/2 - initializing sync");
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         InitOverlaySync(g_Device.load(), desc.BufferCount, gameQueue);
         sc3->Release();
 

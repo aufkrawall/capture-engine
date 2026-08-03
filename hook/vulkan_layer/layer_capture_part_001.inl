@@ -247,13 +247,12 @@ static D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid) {
 static uint32_t VkFormatToDXGI(VkFormat vkFormat) {
     switch (vkFormat) {
         case VK_FORMAT_B8G8R8A8_UNORM:
-            return DXGI_FORMAT_B8G8R8A8_UNORM;
         case VK_FORMAT_B8G8R8A8_SRGB:
             // Map SRGB to UNORM: same byte layout, avoids SRGB shared-texture compatibility issues
             return DXGI_FORMAT_B8G8R8A8_UNORM;
         case VK_FORMAT_R8G8B8A8_UNORM:
-            return DXGI_FORMAT_R8G8B8A8_UNORM;
         case VK_FORMAT_R8G8B8A8_SRGB:
+            // Map SRGB to UNORM: same byte layout, avoids SRGB shared-texture compatibility issues
             return DXGI_FORMAT_R8G8B8A8_UNORM;
         case VK_FORMAT_R16G16B16A16_SFLOAT:
             return DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -443,6 +442,7 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
             extInfo.handleTypes = useNtIpcHandles ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT
                                                   : VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
 
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
             imgInfo.imageType = VK_IMAGE_TYPE_2D;
             imgInfo.format = (VkFormat)vkFormat;
@@ -466,6 +466,7 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
             VkMemoryRequirements memReq;
             disp->fp_vkGetImageMemoryRequirements(vkDev, entry.vkImages[i], &memReq);
 
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             VkImportMemoryWin32HandleInfoKHR importInfo = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
             importInfo.handleType = useNtIpcHandles ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT
                                                     : VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;

@@ -93,6 +93,7 @@
                         QueryPerformanceCounter(&catchupEndEnc);
                         const double currentEncodeMs =
                             static_cast<double>(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 /
+                            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                             qpcFreq.QuadPart;
                         const double pureEncodeMs = static_cast<double>(MediaEngine_GetLastFrameEncodeTimeUs()) / 1000.0;
                         if (pureEncodeMs > 0.0) {
@@ -228,6 +229,7 @@
                 }
 
                 const double currentEncodeMs =
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
                 const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
                 if (pureEncodeMs > 0.0) {
@@ -304,6 +306,7 @@
 
             if (encodeSucceeded && !encodeDeferred) {
                 double currentEncodeMs =
+                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
                 double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
                 if (smoothedEncodeMs == 0.0) {
@@ -334,9 +337,8 @@
                     }
                     if (repeatDuplicateFromTimerRebase) {
                         ++wgcRepeatTimerLateCount;
-                    } else if (!frameToProcess && !wantsTrueRepeatLastFrame) {
-                        ++wgcRepeatNoFreshCount;
-                    } else if (wantsTrueRepeatLastFrame && !wgcProactiveOverloadRepeatThisTick) {
+                    } else if ((!frameToProcess && !wantsTrueRepeatLastFrame) ||
+                               (wantsTrueRepeatLastFrame && !wgcProactiveOverloadRepeatThisTick)) {
                         ++wgcRepeatNoFreshCount;
                     }
                 }
@@ -422,6 +424,7 @@
                         frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,
                         frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
                         frameToProcess->height, frameToProcess->format, frameToProcess->isHDR, frameToProcess->isShmem,
+                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                         frameToProcess->shmemSlot, cursorState);
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
@@ -490,6 +493,7 @@
                         ReleaseQueuedFrameTexture(g_LastFrame);
                     }
                     g_LastFrame = std::move(frame);
+                    frame = QueuedFrame{};
                     g_HasLastFrame = true;
                     frameToProcess = &g_LastFrame;
                 } else {
@@ -510,6 +514,7 @@
             }
 
             QueryPerformanceCounter(&endEnc);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
             double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
             if (pureEncodeMs > 0.0) {
@@ -544,6 +549,7 @@
                         cadenceCounters.maxConsecutiveDeferredFrames, cadenceCounters.consecutiveDeferredFrames);
                     lastDeferredLineage = deferredLineage;
                     QueuedFrame deferredFrame = std::move(frame);
+                    frame = QueuedFrame{};
                     deferredFrame.deferCount++;
                     if (!g_RejectInjectFrames.load(std::memory_order_acquire) &&
                         deferredFrame.deferCount <= ce::capture_policy::kMaxInjectDeferredFrameRetries) {

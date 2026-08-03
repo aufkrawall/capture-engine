@@ -81,6 +81,7 @@
 };
 
 static std::unique_ptr<MediaEngine> g_Engine;
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::recursive_mutex g_EngineApiMutex;
 static bool g_PendingAudioOnly = false;
 
@@ -361,6 +362,7 @@ MEDIAENGINE_API void MediaEngine_ReleaseSharedD3D11Device() {
 // D3D11 Immediate Context Mutex
 // Protects access to the immediate context shared between WGC thread and
 // Encoder thread
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_D3D11Mutex;
 
 MEDIAENGINE_API void MediaEngine_LockD3D11() {

@@ -5,8 +5,10 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
 
@@ -241,9 +243,16 @@ void EnsureCapabilities(ProcResolver resolver) {
     if (version) {
         int major = 1;
         int minor = 1;
-        if (std::sscanf(version, "%d.%d", &major, &minor) == 2) {
-            t_caps.major = major;
-            t_caps.minor = minor;
+        char* end = nullptr;
+        const long majorLong = std::strtol(version, &end, 10);
+        if (end != version && *end == '.') {
+            char* minorEnd = nullptr;
+            const long minorLong = std::strtol(end + 1, &minorEnd, 10);
+            if (minorEnd != end + 1 && *minorEnd == '\0' && majorLong >= INT_MIN && majorLong <= INT_MAX &&
+                minorLong >= INT_MIN && minorLong <= INT_MAX) {
+                t_caps.major = static_cast<int>(majorLong);
+                t_caps.minor = static_cast<int>(minorLong);
+            }
         }
     }
 

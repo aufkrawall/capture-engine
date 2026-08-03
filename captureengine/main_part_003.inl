@@ -158,6 +158,7 @@ int ControllerMain(HINSTANCE hInstance) {
         iterRateLogCount++;
         const int64_t rateLogElapsedUs = iterNowUs - iterRateLogStartUs;
         if (rateLogElapsedUs > 5000000) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
             LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
                      (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,

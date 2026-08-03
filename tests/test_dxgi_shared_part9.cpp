@@ -26,7 +26,7 @@ TEST(DXGISharedTest, SteamDX12InitVtableRehookFailureSafety) {
 
     // Make vtable read-only to simulate failed re-hook (VirtualProtect fails)
     DWORD oldProtect;
-    ASSERT_NE(0, VirtualProtect(vtable, vtableBytes, PAGE_READONLY, &oldProtect));
+    ASSERT_NE(0, VirtualProtect(reinterpret_cast<void*>(vtable), vtableBytes, PAGE_READONLY, &oldProtect));
 
     // Attempt re-hook without VirtualProtect (simulates the failure)
     // This should NOT crash — it just won't write (vtable[8] stays as dxgi!Present)
@@ -35,7 +35,7 @@ TEST(DXGISharedTest, SteamDX12InitVtableRehookFailureSafety) {
 
     // Verify page stays read-only and vtable[8] still has a valid value
     MEMORY_BASIC_INFORMATION mbi;
-    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_NE(0u, VirtualQuery(reinterpret_cast<const void*>(vtable), &mbi, sizeof(mbi)));
     EXPECT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
 
     // vtable[8] should still have the unhooked value (dxgi!Present)
@@ -287,17 +287,17 @@ TEST(DXGISharedTest, ConfirmedRenderThisEpochBypassesRemainingReactivationWarmup
     //
     // Pre-fix this returned false (all the older proofs are false once the retained
     // swapchain is gone); with the confirmed-this-epoch leg it stays bypassed.
-    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*confirmedThisEpoch=*/true));
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*postSLConfirmedRenderInCurrentEpoch=*/true));
 
     // Route-agnostic: a confirmed render is equally authoritative on the post-FSR
     // path (hadFSR=true) once its first ECL has landed, even without safeBootstrap.
-    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*confirmedThisEpoch=*/true));
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*postSLConfirmedRenderInCurrentEpoch=*/true));
 
     // The GTA GetState-only cold-start hang family stays protected: it gets no
     // frame-1 bypass, so it produces NO confirmed render during the warmup, and with
     // confirmedThisEpoch=false (and all other proofs false) the full warmup is kept.
-    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*confirmedThisEpoch=*/false));
-    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*confirmedThisEpoch=*/false));
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*postSLConfirmedRenderInCurrentEpoch=*/false));
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*postSLConfirmedRenderInCurrentEpoch=*/false));
 }
 
 // Source invariant (session 20260613_032326): the retained Streamline

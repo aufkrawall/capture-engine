@@ -168,6 +168,7 @@ void ApplyFramePacing(SharedMemoryLayout* shm) {
     // Ramp-up: Gradually increase limiter strength for smooth entry
     if (g_FrameCount < RAMP_UP_FRAMES && ticksUntilTarget > 0) {
         double rampFactor = (double)g_FrameCount / (double)RAMP_UP_FRAMES;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ticksUntilTarget = (int64_t)(ticksUntilTarget * rampFactor);
     }
 

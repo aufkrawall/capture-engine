@@ -165,8 +165,8 @@ TEST(CapturePipelinePolicyTest, WgcCoverageLossSuppressionHonorsEncoderOnlyShort
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);
-    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*reserve=*/1, /*contentDelay=*/4), 6u);
-    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*reserve=*/0, /*contentDelay=*/0), 3u);
+    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*injectReserveFrames=*/1, /*contentDelayFrames=*/4), 6u);
+    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*injectReserveFrames=*/0, /*contentDelayFrames=*/0), 3u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(0, false), 0u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(1, true), 1u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, false), 3u);

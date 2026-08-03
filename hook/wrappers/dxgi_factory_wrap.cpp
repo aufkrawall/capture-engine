@@ -31,7 +31,7 @@ bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* ca
     char vtableModulePath[MAX_PATH] = {};
     char executeModulePath[MAX_PATH] = {};
     const bool vtableModuleResolved =
-        vtbl && ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl, vtableModulePath, sizeof(vtableModulePath));
+        vtbl && ce::overlay_compat::TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(vtbl), vtableModulePath, sizeof(vtableModulePath));
     const bool executeModuleResolved =
         vtbl && vtbl[10] &&
         ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl[10], executeModulePath, sizeof(executeModulePath));

@@ -578,18 +578,21 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
 
     HookLog("VulkanBackend::CreatePipeline - Setting up pipeline stages...");
     // Pipeline stages - MUST zero-initialize all structures
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkPipelineShaderStageCreateInfo vertStage = {};
     vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertStage.module = vertShaderModule;
     vertStage.pName = "main";
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkPipelineShaderStageCreateInfo fragStage = {};
     fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     fragStage.module = fragShaderModule;
     fragStage.pName = "main";
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkPipelineShaderStageCreateInfo fragSolidStage = {};
     fragSolidStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     fragSolidStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;

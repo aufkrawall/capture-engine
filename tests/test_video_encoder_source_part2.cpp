@@ -3,6 +3,7 @@
 TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
     ce::ComGuard<ID3D11Device> baseDevice;
     ce::ComGuard<ID3D11DeviceContext> context;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D_FEATURE_LEVEL featureLevel = {};
     const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -88,6 +89,7 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
     ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(chromaBlob->GetBufferPointer(), chromaBlob->GetBufferSize(),
                                                     nullptr, chromaShader.addressof())));
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -130,7 +132,9 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
     context->PSSetShader(lumaShader.get(), nullptr, 0);
     context->Draw(3, 0);
 
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Width = static_cast<float>(kWidth / 2);
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Height = static_cast<float>(kHeight / 2);
     ID3D11RenderTargetView* chromaViewRaw = chromaView.get();
     context->RSSetViewports(1, &viewport);
@@ -169,6 +173,7 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
 TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
     ce::ComGuard<ID3D11Device> baseDevice;
     ce::ComGuard<ID3D11DeviceContext> context;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D_FEATURE_LEVEL featureLevel = {};
     const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -256,6 +261,8 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
     ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(chromaBlob->GetBufferPointer(), chromaBlob->GetBufferSize(), nullptr,
                                                     chromaShader.addressof())));
 
+// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -297,7 +304,9 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
     context->PSSetShader(lumaShader.get(), nullptr, 0);
     context->Draw(3, 0);
 
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Width = static_cast<float>(kWidth / 2);
+    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
     viewport.Height = static_cast<float>(kHeight / 2);
     ID3D11RenderTargetView* chromaViewRaw = chromaView.get();
     context->RSSetViewports(1, &viewport);

@@ -93,9 +93,11 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveT
 
     if (localFrameCount_ % 120 == 0) {
         const int64_t intervalUs = ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         result.avgFps = (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
         if (lastApplyEntryQpc_ != 0) {
             const int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             result.instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
         }
         result.statsWaitedFrames = localStatsWaitedFrames_;

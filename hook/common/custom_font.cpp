@@ -28,6 +28,7 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     }
 
     dpiScale = scale;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     int scaledSize = (int)(fontSize * scale);
 
     // Create DC for font metrics
@@ -300,12 +301,14 @@ void FontAtlas::CalcTextSize(const char* text, float* outWidth, float* outHeight
         if (c == '\n') {
             width = (width > lineWidth) ? width : lineWidth;
             lineWidth = 0;
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             height += lineHeight;
             continue;
         }
 
         const Glyph* g = GetGlyph(c);
         if (g) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             lineWidth += g->xAdvance;
         }
     }

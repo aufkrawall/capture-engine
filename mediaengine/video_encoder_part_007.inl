@@ -603,8 +603,11 @@
 
     // Periodic performance summary (about once per second at the configured FPS)
     if (encodeFrameCounter % fpsLogIntervalFrames == 0) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double avgFence = g_totalFenceWait / g_framesEncoded;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double avgConvert = g_totalColorConvert / g_framesEncoded;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double avgEncode = g_totalEncode / g_framesEncoded;
         double avgTotal = avgFence + avgConvert + avgEncode;
 

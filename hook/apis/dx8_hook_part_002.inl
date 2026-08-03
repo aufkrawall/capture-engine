@@ -62,6 +62,7 @@
         }
 
         // Create D3D9Ex device
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DPRESENT_PARAMETERS d3dpp = {};
         d3dpp.Windowed = TRUE;
         d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -124,6 +125,7 @@
             return false;
         }
 
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3D8_SURFACE_DESC_LOCAL desc = {};
         hr = D3D8SurfaceGetDesc(backBuffer, &desc);
         ReleaseD3D8Surface(backBuffer);
@@ -477,6 +479,7 @@
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc;
                 adapter->GetDesc(&desc);
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
 

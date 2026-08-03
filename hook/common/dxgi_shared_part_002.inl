@@ -25,7 +25,7 @@
             auto** slot = reinterpret_cast<void**>(instr + 7 + disp);
             const uintptr_t slotAddress = reinterpret_cast<uintptr_t>(slot);
             if (slotAddress >= steamStart && slotAddress + sizeof(void*) <= steamEnd &&
-                IsReadableMemory(slot, sizeof(void*)) && *slot == nullptr) {
+                IsReadableMemory(reinterpret_cast<const void*>(slot), sizeof(void*)) && *slot == nullptr) {
                 return slot;
             }
         }
@@ -144,16 +144,16 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     }
     const uintptr_t resolvedRva = reinterpret_cast<uintptr_t>(nullFnPtr) - steamStart;
     void* callbackBefore = nullptr;
-    const bool callbackSlotReadable = IsReadableMemory(nullFnPtr, sizeof(void*));
+    const bool callbackSlotReadable = IsReadableMemory(reinterpret_cast<const void*>(nullFnPtr), sizeof(void*));
     if (callbackSlotReadable) {
         callbackBefore = *nullFnPtr;
     }
     bool patched = false;
     if (callbackSlotReadable && callbackBefore == nullptr) {
         DWORD oldProtect;
-        if (VirtualProtect(nullFnPtr, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (VirtualProtect(reinterpret_cast<void*>(nullFnPtr), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             *nullFnPtr = const_cast<void*>(patchTarget);
-            VirtualProtect(nullFnPtr, sizeof(void*), oldProtect, &oldProtect);
+            VirtualProtect(reinterpret_cast<void*>(nullFnPtr), sizeof(void*), oldProtect, &oldProtect);
             patched = true;
             HookLogImportant(
                 "SteamOverlayInitVehHandler: Patched NULL callback at %p (steam+0x%zX) "

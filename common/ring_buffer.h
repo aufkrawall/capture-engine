@@ -493,4 +493,4 @@ using PendingFrameRingBuffer = LockFreeRingBuffer<T, N>;
 
 // For use in shared memory layouts
 #define CE_RING_BUFFER_SIZE_CHECK(buf, expected_size) \
-    static_assert(sizeof(buf) == expected_size, "Ring buffer size mismatch")
+    static_assert(sizeof(buf) == (expected_size), "Ring buffer size mismatch")

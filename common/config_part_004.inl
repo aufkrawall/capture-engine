@@ -105,13 +105,10 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
             hk.vkey = VK_F1 + (fnum - 1);
         }
     }
-    // Parse number keys 0-9
-    else if (key.length() == 1 && key[0] >= '0' && key[0] <= '9') {
-        hk.vkey = key[0];  // '0'-'9' match their VK codes
-    }
-    // Parse letter keys A-Z
-    else if (key.length() == 1 && key[0] >= 'A' && key[0] <= 'Z') {
-        hk.vkey = key[0];  // 'A'-'Z' match their VK codes
+    // Parse single keys 0-9 and A-Z; both map directly to their VK codes
+    else if (key.length() == 1 &&
+             ((key[0] >= '0' && key[0] <= '9') || (key[0] >= 'A' && key[0] <= 'Z'))) {
+        hk.vkey = static_cast<unsigned char>(key[0]);
     }
     // Named keys
     else if (key == "SPACE" || key == "SPACEBAR") {

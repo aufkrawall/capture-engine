@@ -412,10 +412,12 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
 //
 // Rule: When acquiring multiple locks, always acquire in order above.
 //       Use std::lock_guard with std::adopt_lock when using try_lock().
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::recursive_mutex g_OverlayMutex;
 
 static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue,
                                                           const char* context);
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 static std::recursive_mutex g_DX12CaptureMutex;
 
 static OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm) {
@@ -547,6 +549,7 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
         const bool ringWasEmpty = wIdx == shm->frameRing.ingestIndex.load(std::memory_order_acquire);
         FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
         slot.fenceValue = desc.fenceValue;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         slot.timestamp = desc.presentTime;
         slot.frameIndex = desc.frameNumber;
         slot.textureIndex = desc.textureIndex;
@@ -587,6 +590,7 @@ static std::atomic<int> s_framesBeforeInit{0};
 // (Explorer fix)
 DX12Hook* g_dx12HookInstance = nullptr;
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_DeviceQueuesMutex;
 std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 

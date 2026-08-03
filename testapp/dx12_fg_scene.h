@@ -244,6 +244,7 @@ private:
 
 inline ComPtr<ID3D12Resource> SceneRenderer::CreateUploadBuffer(ID3D12Device* device, UINT64 size,
                                                                 const void* initialData) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -281,6 +282,7 @@ inline bool SceneRenderer::CreatePipeline(ID3D12Device* device, const void* vs, 
         {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature_.Get();
     psoDesc.VS = {vs, vsSize};
@@ -630,6 +632,7 @@ inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, D3D12_
     commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[floorSlot]->GetGPUVirtualAddress());
     commandList->DrawIndexedInstanced(floorIndexCount_, 1, 0, 0, 0);
     commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[cubeSlot]->GetGPUVirtualAddress());
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     commandList->DrawIndexedInstanced(cubeIndexCount_, 1, floorIndexCount_, cubeBaseVertex_, 0);
 }
 

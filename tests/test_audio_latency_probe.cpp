@@ -24,7 +24,8 @@ std::vector<float> MakeSyntheticCapture(int sampleRate, double markerFreqHz, int
     const double w = 2.0 * kPi * markerFreqHz / sampleRate;
     for (int i = 0; i < markerFrames; ++i) {
         const double hann = 0.5 - 0.5 * std::cos(2.0 * kPi * i / std::max(1, markerFrames - 1));
-        buf[static_cast<size_t>(preFrames + i)] += static_cast<float>(markerAmp * hann * std::sin(w * i));
+        buf[static_cast<size_t>(preFrames) + static_cast<size_t>(i)] +=
+            static_cast<float>(markerAmp * hann * std::sin(w * i));
     }
     return buf;
 }
@@ -75,7 +76,7 @@ TEST(AudioLatencyProbeTest, DetectCenterMatchesKnownPeakCleanSignal) {
     ASSERT_GE(center, 0);
     // The Hann burst peaks at its midpoint; detection should land within ~1 window of it.
     const int trueCenter = preFrames + spec.markerFrames / 2;
-    EXPECT_NEAR(center, trueCenter, rate / 200);  // ~1 detection window (5 ms)
+    EXPECT_NEAR(center, trueCenter, rate / 200.0);  // ~1 detection window (5 ms)
 }
 
 TEST(AudioLatencyProbeTest, DetectCenterSurvivesUnrelatedAudioAndNoise) {
@@ -93,7 +94,7 @@ TEST(AudioLatencyProbeTest, DetectCenterSurvivesUnrelatedAudioAndNoise) {
     const int center = DetectMarkerCenterFrame(cap.data(), cap.size(), rate, spec.markerFreqHz);
     ASSERT_GE(center, 0);
     const int trueCenter = preFrames + spec.markerFrames / 2;
-    EXPECT_NEAR(center, trueCenter, rate / 100);  // ~2 detection windows
+    EXPECT_NEAR(center, trueCenter, rate / 100.0);  // ~2 detection windows
 }
 
 TEST(AudioLatencyProbeTest, DetectCenterReturnsNegativeWhenMarkerAbsent) {

@@ -138,11 +138,15 @@ std::string GetDialogIdentity(const DialogInfo& info) {
 }
 }  // namespace
 
-FreezeWatchdog::FreezeWatchdog() : processId_(GetCurrentProcessId()) {
+FreezeWatchdog::FreezeWatchdog() noexcept : processId_(GetCurrentProcessId()) {
+    try {
     char name[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, name, MAX_PATH);
     processName_ = std::filesystem::path(name).filename().string();
     InitializeDbgHelp();
+    } catch (...) {
+        processName_.clear();
+    }
 }
 
 FreezeWatchdog::~FreezeWatchdog() {
@@ -254,8 +258,10 @@ void FreezeWatchdog::SetFreezeCallback(FreezeCallback callback) {
 bool FreezeWatchdog::IsFrozen() const {
     uint64_t last = lastHeartbeat_.load();
     uint64_t now = GetCurrentMicros();
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double elapsed = (now - last) / 1'000'000.0;
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
     if (sinceStartup < STARTUP_GRACE_PERIOD) {
         return false;
@@ -487,7 +493,9 @@ void FreezeWatchdog::WatchdogThread() {
 
         uint64_t now = GetCurrentMicros();
         uint64_t lastBeat = lastHeartbeat_.load(std::memory_order_acquire);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double elapsed = (now - lastBeat) / 1'000'000.0;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double sinceStartup = (now - startupTime_.load(std::memory_order_acquire)) / 1'000'000.0;
         DialogInfo dialogInfo = {};
         bool hasDialog = FindBlockingDialogWindow(processId_, dialogInfo);
@@ -536,6 +544,7 @@ void FreezeWatchdog::WatchdogThread() {
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             double dialogElapsed = (now - dialogSeenSince) / 1'000'000.0;
             const bool isErrGfxStateDialog = dialogDescription.find("ERR_GFX_STATE") != std::string::npos;
             const double requiredDialogDumpDelay = isErrGfxStateDialog ? 0.0 : kDialogDumpDelaySeconds;
@@ -546,6 +555,7 @@ void FreezeWatchdog::WatchdogThread() {
                     HookLogImportant(
                         "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured "
                         "%.1fs ago",
+                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                         dialogDescription.c_str(), (now - lastDialogDumpTime) / 1'000'000.0);
                     dialogDumpWritten = true;
                     continue;

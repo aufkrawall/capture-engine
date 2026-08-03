@@ -121,6 +121,7 @@ void RenderFrame() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += frameIndex * g_RtvDescriptorSize;
 
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const float bg[] = {state.color.r / 255.0f, state.color.g / 255.0f, state.color.b / 255.0f, 1.0f};
     const float preStart[] = {0.0f, 0.0f, 0.0f, 1.0f};
     for (int pass = 0; pass < g_GpuLoadPasses; ++pass) {

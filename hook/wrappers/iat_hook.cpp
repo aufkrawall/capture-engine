@@ -345,9 +345,9 @@ bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* func
         if (it->targetModule == targetModule && _stricmp(it->sourceModule.c_str(), sourceModule) == 0 &&
             it->functionName == functionName) {
             DWORD oldProtect;
-            if (VirtualProtect(it->iatEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            if (VirtualProtect(reinterpret_cast<void*>(it->iatEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                 *it->iatEntry = originalFunction ? originalFunction : it->originalFunction;
-                VirtualProtect(it->iatEntry, sizeof(void*), oldProtect, &oldProtect);
+                VirtualProtect(reinterpret_cast<void*>(it->iatEntry), sizeof(void*), oldProtect, &oldProtect);
 
                 g_PatchedEntries.erase(it);
                 return true;

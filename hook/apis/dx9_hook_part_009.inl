@@ -509,6 +509,7 @@ void DX9Hook::Init() {
 
                 if (SUCCEEDED(create9Ex(D3D_SDK_VERSION, &d3d9ex))) {
                     LogDirect("Direct3DCreate9Ex succeeded, creating device...");
+                    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                     D3DPRESENT_PARAMETERS pp = {0};
                     pp.Windowed = TRUE;
                     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -537,6 +538,7 @@ void DX9Hook::Init() {
 
                 if (d3d9) {
                     LogDirect("Direct3DCreate9 succeeded, creating device...");
+                    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                     D3DPRESENT_PARAMETERS pp = {0};
                     pp.Windowed = TRUE;
                     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;

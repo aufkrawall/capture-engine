@@ -90,6 +90,7 @@ std::vector<DisplayConfigIdentity> QueryActiveDisplayIdentities() {
         paths.resize(pathCount);
 
         for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
             source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
             source.header.size = sizeof(source);
@@ -98,6 +99,7 @@ std::vector<DisplayConfigIdentity> QueryActiveDisplayIdentities() {
             if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || !source.viewGdiDeviceName[0])
                 continue;
 
+            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
             DISPLAYCONFIG_TARGET_DEVICE_NAME target = {};
             target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
             target.header.size = sizeof(target);

@@ -103,7 +103,7 @@ static uint64_t ChooseFSRUpscaleVersionOverride() {
             while (*p && (*p < '0' || *p > '9')) {
                 ++p;
             }
-            major = atoi(p);
+            major = testapp::ParseIntOrZero(p);
         }
         testapp::Log("[FG-DIAG] FSR upscale provider[%llu] id=0x%llx name='%s' major=%d\n",
                      static_cast<unsigned long long>(i), static_cast<unsigned long long>(ids[i]),

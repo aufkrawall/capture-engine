@@ -81,21 +81,25 @@ int AllocateConfiguredHdrBsf(const AVCodecParameters* parameters, AVRational tim
     bsf->time_base_in = timeBase;
 
     const int fullRange = parameters->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+    auto setFailed = [&](int rc) {
+        result = rc;
+        return result < 0;
+    };
     if (parameters->codec_id == AV_CODEC_ID_HEVC) {
-        if ((result = SetBsfInt(bsf, "video_full_range_flag", fullRange)) < 0 ||
-            (result = SetBsfInt(bsf, "colour_primaries", parameters->color_primaries)) < 0 ||
-            (result = SetBsfInt(bsf, "transfer_characteristics", parameters->color_trc)) < 0 ||
-            (result = SetBsfInt(bsf, "matrix_coefficients", parameters->color_space)) < 0 ||
-            (result = SetBsfInt(bsf, "chroma_sample_loc_type", 2)) < 0) {
+        if (setFailed(SetBsfInt(bsf, "video_full_range_flag", fullRange)) ||
+            setFailed(SetBsfInt(bsf, "colour_primaries", parameters->color_primaries)) ||
+            setFailed(SetBsfInt(bsf, "transfer_characteristics", parameters->color_trc)) ||
+            setFailed(SetBsfInt(bsf, "matrix_coefficients", parameters->color_space)) ||
+            setFailed(SetBsfInt(bsf, "chroma_sample_loc_type", 2))) {
             av_bsf_free(&bsf);
             return result;
         }
     } else {
-        if ((result = SetBsfInt(bsf, "color_range", fullRange)) < 0 ||
-            (result = SetBsfInt(bsf, "color_primaries", parameters->color_primaries)) < 0 ||
-            (result = SetBsfInt(bsf, "transfer_characteristics", parameters->color_trc)) < 0 ||
-            (result = SetBsfInt(bsf, "matrix_coefficients", parameters->color_space)) < 0 ||
-            (result = av_opt_set(bsf->priv_data, "chroma_sample_position", "colocated", 0)) < 0) {
+        if (setFailed(SetBsfInt(bsf, "color_range", fullRange)) ||
+            setFailed(SetBsfInt(bsf, "color_primaries", parameters->color_primaries)) ||
+            setFailed(SetBsfInt(bsf, "transfer_characteristics", parameters->color_trc)) ||
+            setFailed(SetBsfInt(bsf, "matrix_coefficients", parameters->color_space)) ||
+            setFailed(av_opt_set(bsf->priv_data, "chroma_sample_position", "colocated", 0))) {
             av_bsf_free(&bsf);
             return result;
         }

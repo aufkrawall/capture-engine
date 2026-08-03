@@ -199,7 +199,7 @@ std::string GetAutoProfile(const EncoderKind& kind, bool use10Bit, std::string_v
 }
 
 std::string CanonicalizeRequestedProfile(const EncoderKind& kind, std::string_view requested, bool* recognized) {
-    const std::string lower = ToLowerAscii(TrimAscii(requested));
+    std::string lower = ToLowerAscii(TrimAscii(requested));
     if (recognized) {
         *recognized = true;
     }
@@ -362,7 +362,7 @@ std::optional<std::string> CanonicalizeNvencMultipass(const std::string& value) 
 }
 
 std::optional<std::string> CanonicalizeNvencSplitEncode(const std::string& value) {
-    const std::string lower = CanonicalizeEnumValue(value);
+    std::string lower = CanonicalizeEnumValue(value);
     if (lower.empty() || lower == "0" || lower == "disabled") {
         return "disabled";
     }
@@ -423,7 +423,7 @@ std::optional<std::string> CanonicalizeNvencTune(const std::string& value) {
 }
 
 std::optional<std::string> CanonicalizeNvencPreset(const std::string& value) {
-    const std::string lower = CanonicalizeEnumValue(value);
+    std::string lower = CanonicalizeEnumValue(value);
     if (lower.empty()) {
         return std::optional<std::string>();
     }
