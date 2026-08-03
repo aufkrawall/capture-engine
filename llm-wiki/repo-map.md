@@ -1,6 +1,6 @@
 # Repo Map
 
-Last cross-checked: 2026-07-29
+Last cross-checked: 2026-08-03
 
 Primary sources:
 - top-level repo layout
@@ -41,7 +41,7 @@ Primary sources:
 
 ## High-Risk / High-Value Files
 - `common/shared_defs.h`
-  - Shared-memory ABI. Current shared-memory version is `22`.
+  - Shared-memory ABI. Current shared-memory version is `38` (source-verified).
 - `captureengine/injection.cpp`
   - Host-side injection timing and delayed-injection logic.
 - `captureengine/inject_main.cpp`

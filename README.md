@@ -21,9 +21,41 @@ ImGui or another external overlay framework.
 - Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
-- General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
+  and NVIDIA Smooth Motion status, plus a non-injected desktop recording indicator for WGC/DXGI sessions
+- General FPS limiting and recording-aware capture sync through a local timer, NVIDIA Reflex, AMD Anti-Lag 2, or
+  Intel XeLL
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
+- Best-effort privacy blackout for WGC/DXGI capture while the captured target is not focused fullscreen
+- Fail-closed configuration/IPC validation with fuzz-tested parsers, secure DLL loading, and restricted child processes
+
+## Requirements
+
+- Windows 10 1803 or newer for WGC capture. Per-application audio through the process-loopback API additionally
+  requires Windows 10 build 20348 or newer, or Windows 11.
+- A GPU and driver that provide the selected hardware encoder (NVENC, AMD AMF, Intel Quick Sync/oneVPL, or Media
+  Foundation). CaptureEngine never silently switches encoders; if the selected encoder is unavailable, encoding fails
+  with a clear log entry.
+- Administrator rights are not required for normal use. Some `[Performance]` options (for example `high` or
+  `realtime` GPU scheduling priority) may require them.
+- MKV is the default and the only actively tested container. MP4 and MOV are available as compatibility options.
+- An x64 host. 32-bit games are supported through the x86 compatibility hook.
+
+## Quick start
+
+Unpack the release folder and start `CaptureEngine.exe`. On first run it creates `config.ini` next to the executable;
+an existing file is never overwritten. The generated file is the full user reference and ends with safe/unsafe
+application-profile examples.
+
+Default hotkeys: Ctrl+9 starts/stops a recording (F9 is the fallback if the hotkey is disabled), Ctrl+8 toggles the FPS
+display, Ctrl+0 takes a screenshot, and Ctrl+Minus records audio only. Recordings and screenshots go to `captures/`
+and `screenshots/` next to the executable unless `[Output]` redirects them; logs go to `logs/`. Run
+`CaptureEngine.exe --list-monitors` to print copyable stable monitor IDs for `monitor=id:<stable-id>`.
+
+The default configuration records through WGC or DXGI Desktop Duplication without injection, and the non-injected
+desktop overlay can show recording status while those paths are active. Before enabling injected capture, overlays, or
+graphics overrides with any software, read [Anti-cheat safety](#anti-cheat-safety) and the profile examples at the end
+of `config.ini`.
 
 ## Anti-cheat safety
 
@@ -113,6 +145,16 @@ GPU blit, or the final encoder-surface handoff can still be required. The import
 GPU-to-CPU readback followed by a CPU-to-GPU upload in the normal hardware path. Classic D3D9 devices are deliberately
 not promoted to D3D9Ex because that changes resource, reset, presentation, and COM behavior.
 
+## Privacy
+
+- **[Capture] black_when_no_fullscreen_focus:** best-effort privacy blackout for WGC and DXGI capture. While the
+  selected window is not focused and fullscreen-like, output video is opaque black, including cursor and overlays.
+  The check uses passive window-state APIs only; it never inspects or injects into the captured application, and
+  Windows focus/bounds detection is not 100% reliable, so this is not a guaranteed redaction boundary.
+- **Logs and dumps:** session logs, manifests, and crash dumps can contain process names, paths, window titles,
+  memory, or other private data. Review them before sharing; see
+  [Debug logging and crash dumps](#debug-logging-and-crash-dumps).
+
 ## Video, screenshots, and audio recording
 
 - **HDR video:** `[Video] color_space=auto` preserves a detected HDR source as BT.2020/PQ through supported HEVC or
@@ -134,9 +176,13 @@ arrive:
 - Output timestamps follow an immutable rational CFR grid. Matroska uses 1 microsecond timestamp precision, so 120 FPS
   intervals are represented as 8,333/8,334 microseconds instead of being quantized to 8/9 milliseconds.
 - WGC and DXGI keep a bounded source-history reservoir and choose the nearest monotonic source frame for each scheduled
-  content timestamp. Inject capture uses the same nearest-timestamp principle with a smaller, GPU-native queue.
+  content timestamp. Startup can briefly pre-fill the reservoir after prewarm so the first live seconds do not start
+  with avoidable repeats. Inject capture uses the same nearest-timestamp principle with a smaller, GPU-native queue.
 - Game hitches and mismatched source rates are represented by evenly placed repeats or decimation. A repeated desktop
   frame can still re-render a newly positioned hardware cursor.
+- DXGI pointer-only acquisitions carry their own exact-QPC cursor history, so hardware-cursor motion stays smooth even
+  when desktop content updates slowly. Cursor positions are selected at the same delayed content target as the frame,
+  and repeats re-render the current cursor without full-frame copies, readbacks, or software-cursor substitution.
 - Encoder overload never authorizes skipping CFR packet slots or accelerating audio. The scheduler preserves the
   output grid with cached repeats and, when safe, grid-matched historical frames. Measured fresh/repeat service time
   controls how aggressively recovery can run without creating another overload oscillation.
@@ -173,7 +219,12 @@ Capture sync can limit an injected application's rendered rate to a multiple of 
 | Basic | Hook-local rational-QPC timer cadence |
 | Reflex | NVIDIA Reflex sleep-mode/low-latency integration, with game-owned sleep handoff when stable |
 | FG fallback | Timer cadence scaled to the confirmed frame-generation multiplier |
+| Anti-Lag 2 | AMD driver-extension latency reduction and FPS cap (DX12) |
+| XeLL | Intel Xe Low Latency sleep-mode integration (DX12) |
 | Auto | Game-activated Reflex → FG fallback → Basic |
+
+Anti-Lag 2 and XeLL require the vendor runtime (`amdxc64.dll` / `libxell.dll`) and DX12; they are used only when the
+game exposes them.
 
 The timer path uses a Bresenham-style rational QPC grid rather than rounding every frame to one integer tick interval.
 It arms a high-resolution waitable timer early, adapts its fine-wait margin from the observed p99 wake overshoot, and
@@ -196,6 +247,13 @@ direct-import seams. FSR Frame Generation integration observes FidelityFX contex
 application's present-callback contract. Explicit transition state machines and trace-replay tests cover off, DLSS FG,
 and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
 runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
+
+NVIDIA Smooth Motion is recognized alongside DLSS and FSR frame generation, and the FG status line follows the same
+transition state machines.
+
+For non-injected WGC or DXGI sessions, a small desktop overlay window can show recording state, a NOT RECORDING warning
+when the configured target is not being captured, and live encoder-overload/recovery/degraded health warnings. It is a
+separate corner window that never requires the hook DLL; see `[DesktopOverlay]` in `config.ini`.
 
 ## Known issues and limitations
 
@@ -235,6 +293,18 @@ Hardware-frame paths are available for NVENC, AMD AMF, and Intel Quick Sync/oneV
 BT.2020/PQ signaling contract across codec frames, bitstreams, and the container rather than inferring HDR from an
 FP16 or 10-bit texture.
 
+Backend behavior is explicit rather than emulated:
+
+- NVENC HEVC/AV1 can split each frame across multiple physical encoder engines while still producing one ordinary
+  stream (`[NVENC] split_encode=0..4`); H.264 never splits.
+- Quick Sync derives its encoder and dynamic-frame context from the exact capture D3D11 device and maps surfaces
+  directly, with no VAAPI layer or CPU frame transfer. AMF consumes the D3D11 hardware pool directly.
+- Media Foundation is a deliberate NV12/SDR compatibility fallback and does not carry HDR. H.264 HDR fails closed;
+  HDR sources require HEVC or AV1.
+- HDR signaling is one explicit contract: BT.2020-NCL/PQ, limited range, top-left co-sited 4:2:0 (Rec.2100 chroma
+  phase), and a nominal peak (default 1000 nits, `hdr_nominal_peak_nits`) written consistently to the codec context,
+  frames, container, and HEVC/AV1 headers. AV1 NVENC's unsafe SMPTE ST 12-1 timecode path is disabled.
+
 See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for the exact patches:
 
 - Configurable Matroska timestamp precision, including duration/default-duration scaling and safe cluster rollover
@@ -246,6 +316,12 @@ See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for the exact patches:
 Each run receives a timestamped session directory. It contains a controller manifest, per-process logs, performance
 metrics, and immutable recording-specific media logs/manifests, so a later recording cannot overwrite the evidence for
 an earlier one.
+
+Session directories live under `logs/` next to the executable; crash dumps can be redirected with
+`[Logging] crash_dump_dir`. Recordings are staged under a reserved name and renamed to their final name only after the
+mux trailer is written, the duration is positive, and at least one video packet exists; interrupted or failed
+recordings therefore never publish a partial or header-only file. Each recording carries an immutable manifest with
+its final status, health state, and timeline debt.
 
 The hook publishes bounded log records through a lock-free shared ring to the logger process. Hot paths use
 rate-limited state-transition, ownership, and failure diagnostics rather than unbounded per-frame noise. Depending on
@@ -264,6 +340,11 @@ injected hook also has a freeze watchdog that can capture the monitored thread's
 and selected GPU-removal paths without immediately terminating the game. Successful external
 `MiniDumpWriteDump` calls made by a game/runtime crash handler can be mirrored into the active session, covering crash
 families that bypass CaptureEngine's unhandled-exception filter.
+
+The freeze watchdog scales its timeout to the detected engine/runtime class (for example Unreal Engine 5 or DLSS
+frame generation), and the crash handler also covers recoverable execute faults such as lazy trampoline-pool DEP
+faults. Repeated identical external dump storms terminate the crashing process with a dedicated exit code instead of
+generating an endless dump sequence.
 
 Windows builds emit PDBs, and every session snapshots the matching CaptureEngine PE/PDB set beside its dumps. A dump
 therefore remains symbolizable after a newer build has replaced the installed binaries. CDB, WinDbg, or Visual Studio
@@ -345,6 +426,43 @@ frame-generation transitions, shared-memory/IPC validation, graphics overrides, 
 configuration parsing. Native x86/x64 test applications exercise DirectDraw, D3D6-D3D12, OpenGL, Vulkan, frame
 generation, and deterministic A/V markers. The verification pipeline also checks tool self-tests, static analysis,
 sanitizers, PE hardening/architecture, import closure, and PDB availability.
+
+Robustness is exercised beyond unit tests: libFuzzer harnesses fuzz the configuration parser and IPC deserializer
+against byte-exact seed corpora (`build.py --run-fuzz`), DX12 frame-generation transitions are validated with
+trace-replay and transition-sequence tests, and the A/V sync matrix decodes finished recordings and correlates content
+across the entire duration rather than only checking endpoints. ASan/UBSan validation runs in isolated output roots,
+and clang-tidy/file-size findings are content-addressed and ratcheted so regressions cannot silently return.
+
+## Technical notes
+
+- **Interception:** the hook stack is custom rather than MinHook-based: IAT patching, vtable hooks, and
+  trampoline-based inline detours for x64/x86 with an instruction-length decoder and deep hooks that wrap external
+  JMP patches. Trampolines can be published before a target becomes live, and D3D9-D3D12/DXGI COM wrappers forward
+  explicitly so raw vtable hooks cannot run the same logic twice.
+- **Vulkan:** capture and overlay run as a real explicit Vulkan layer (`VK_LAYER_CE_overlay`, x86 and x64),
+  registered per-user or all-users with both registry views, and bridge into the same shared-memory/IPC contract as
+  the hook DLL. DXVK transport uses encoder-owned KMT textures with no CPU round trip.
+- **Shared-memory ABI:** the layout is versioned (currently 38) and every field offset is mixed into a fingerprint
+  hash, so mixed or stale binaries fail closed instead of reading shifted fields. Configuration reloads use sequence
+  locks; the inject frame ring publishes only the longest contiguous completed prefix so out-of-order GPU work can
+  never recycle encoder-owned textures; the log path is a bounded lock-free ring.
+- **CFR and A/V:** an immutable rational output grid, exact-QPC DXGI cursor history, wall-anchored startup
+  reservoirs, grid-matched historical-frame recovery, an adaptive audio ingestion reservoir, and a source-clock
+  resampler correction capped at 0.05%. Finalization decodes every audio stream to verify exact endpoints, and the
+  capture analyzer correlates full-duration content between tracks.
+- **HDR color pipeline:** presentation color is tracked from swap-chain state (`SetColorSpace1`, `VkColorSpaceKHR`)
+  instead of texture formats; overlay HDR10 draws transform Rec.709 to Rec.2020 before PQ using the Windows
+  SDR-white calibration; HDR video output writes BT.2020-NCL P010 directly rather than relying on fixed-function
+  conversion.
+- **Crash and dump engineering:** rich minidump flags with automatic compatibility fallback, out-of-stack dump
+  workers, an engine-aware freeze watchdog, mirroring of external `MiniDumpWriteDump` calls with storm protection,
+  and recoverable execute-fault handling for lazy trampoline DEP faults.
+- **Security:** DLLs load only from application, System32, and one private runtime directory—never the current
+  directory or PATH; child processes inherit only explicitly listed handles; private channels are authenticated per
+  child with a 128-bit nonce; config and IPC parsers are fuzz-tested and fail closed.
+- **Scheduling:** capture/encoder workers use checked MMCSS QoS, D3D11 device priority is persisted, process
+  scheduling priority resolves against the adapter's actual HAGS state, and sub-processes opt out of Windows 11
+  power throttling to avoid jitter.
 
 ## Possible future work
 
