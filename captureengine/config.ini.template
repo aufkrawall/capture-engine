@@ -390,7 +390,7 @@ foreground_acquire_grace_ms=2000
 capture_sync_enabled=false
 ; 1-8. For example, 2 limits a game to 120 fps while recording at 60 fps.
 capture_sync_multiplier=2
-; auto, basic, fg_fallback, reflex, anti_lag2, or xell.
+; auto, basic, fg_fallback, or reflex.
 capture_sync_limiter_mode=basic
 ; The general limiter applies whenever CaptureEngine is injected, including while
 ; no recording is running.

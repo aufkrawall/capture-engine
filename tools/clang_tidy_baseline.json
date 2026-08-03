@@ -24,7 +24,7 @@
     "bugprone-argument-comment": 171,
     "bugprone-assignment-in-if-condition": 10,
     "bugprone-bitwise-pointer-cast": 51,
-    "bugprone-branch-clone": 39,
+    "bugprone-branch-clone": 26,
     "bugprone-casting-through-void": 1,
     "bugprone-exception-escape": 30,
     "bugprone-forward-declaration-namespace": 2,
@@ -50,7 +50,7 @@
     "performance-no-automatic-move": 5,
     "performance-unnecessary-value-param": 7
   },
-  "total": 1554,
+  "total": 1541,
   "scope": {
     "entries": 272,
     "translation_units": [

@@ -125,10 +125,6 @@ inline void FpsLimiter::Shutdown() {
     reflexRecentPresentGap_ = false;
     ResetReflexNativePacingState();
     g_ReflexLimiter.Shutdown();
-    antilag2InitAttempted_ = false;
-    g_AntiLag2Limiter.Shutdown();
-    xellInitAttempted_ = false;
-    g_XeLLLimiter.Shutdown();
 }
 
 inline void FpsLimiter::RecordTimerOvershoot(int64_t overshootUs) {
@@ -142,29 +138,6 @@ inline void FpsLimiter::RecordTimerOvershoot(int64_t overshootUs) {
     std::sort(sorted.begin(), sorted.begin() + timerOvershootSampleCount_);
     const size_t p99Index = timerOvershootSampleCount_ > 1 ? ((timerOvershootSampleCount_ * 99 + 99) / 100) - 1 : 0;
     adaptiveFineMarginUs_ = std::clamp<int64_t>(sorted[p99Index] + 25, 50, 250);
-}
-
-inline void FpsLimiter::TryInitializeDx12NativeLimiters(uint32_t configuredMode) {
-    auto* ctx = ce::GetHookContext();
-    if (!ctx || ctx->activeAPI != ce::ActiveGraphicsAPI::DX12) {
-        return;
-    }
-    auto* device = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
-    if (!device) {
-        return;
-    }
-
-    const bool autoMode = configuredMode == LimiterModeValues::kAuto;
-    if (!antilag2InitAttempted_ &&
-        (configuredMode == LimiterModeValues::kAntiLag2 || (autoMode && GetModuleHandleA("amd_ags_x64.dll")))) {
-        g_AntiLag2Limiter.Init(device);
-        antilag2InitAttempted_ = true;
-    }
-    if (!xellInitAttempted_ &&
-        (configuredMode == LimiterModeValues::kXeLL || (autoMode && GetModuleHandleW(L"libxell.dll")))) {
-        g_XeLLLimiter.Init(device);
-        xellInitAttempted_ = true;
-    }
 }
 
 inline void FpsLimiter::ResetReflexNativePacingState() {

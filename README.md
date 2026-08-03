@@ -22,8 +22,7 @@ ImGui or another external overlay framework.
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
   and NVIDIA Smooth Motion status, plus a non-injected desktop recording indicator for WGC/DXGI sessions
-- General FPS limiting and recording-aware capture sync through a local timer, NVIDIA Reflex, AMD Anti-Lag 2, or
-  Intel XeLL
+- General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
 - Best-effort privacy blackout for WGC/DXGI capture while the captured target is not focused fullscreen
@@ -238,13 +237,7 @@ Capture sync can limit an injected application's rendered rate to a multiple of 
 | Basic | Hook-local rational-QPC timer cadence |
 | Reflex | NVIDIA Reflex sleep-mode/low-latency integration, with game-owned sleep handoff when stable |
 | FG fallback | Timer cadence scaled to the confirmed frame-generation multiplier |
-| Anti-Lag 2 | AMD driver-extension latency reduction and FPS cap (DX12) |
-| XeLL | Intel Xe Low Latency sleep-mode integration (DX12) |
 | Auto | Game-activated Reflex → FG fallback → Basic |
-
-Anti-Lag 2 and XeLL require the vendor runtime (`amdxc64.dll` / `libxell.dll`) and DX12. Their entry points are
-resolved at runtime through `GetProcAddress` with no import-lib dependency, and they are used only when the game
-exposes them.
 
 Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
 entry points directly. CaptureEngine deliberately does not patch NvAPI code bytes, because some DLSS FG integrations

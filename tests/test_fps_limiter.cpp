@@ -227,12 +227,6 @@ TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
 
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
     EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 3u);
-
-    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAntiLag2));
-    EXPECT_EQ(mockShm->fpsLimiter.GetCaptureSyncLimiterMode(), 4u);
-
-    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kXeLL));
-    EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 5u);
 }
 
 // Test that FG fallback mode doubles interval via capture sync local limiter
@@ -623,11 +617,6 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("reflex"), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode(" Reflex "), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode("nvidia-reflex"), LimiterMode::kNative);
-    EXPECT_EQ(ParseLimiterMode("anti_lag2"), LimiterMode::kAntiLag2);
-    EXPECT_EQ(ParseLimiterMode("antilag2"), LimiterMode::kAntiLag2);
-    EXPECT_EQ(ParseLimiterMode("Anti-Lag2"), LimiterMode::kAntiLag2);
-    EXPECT_EQ(ParseLimiterMode("xell"), LimiterMode::kXeLL);
-    EXPECT_EQ(ParseLimiterMode("intel"), LimiterMode::kXeLL);
     EXPECT_EQ(ParseLimiterMode("auto"), LimiterMode::kAuto);
     EXPECT_EQ(ParseLimiterMode(""), LimiterMode::kAuto);         // Default
     EXPECT_EQ(ParseLimiterMode("invalid"), LimiterMode::kAuto);  // Default

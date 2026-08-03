@@ -9,14 +9,12 @@
 #include <array>
 #include <atomic>
 #include <mutex>
-#include "antilag2_limiter.h"
 #include "fg_detection.h"
 #include "fps_limiter_policy.h"
 #include "hook_common.h"
 #include "hook_context.h"
 #include "ipc_client.h"
 #include "reflex_limiter.h"
-#include "xell_limiter.h"
 
 // LimiterMode values matching the enum in config.h (duplicated here to avoid
 // config.h dependency in the hook DLL which has no STL string support at load).
@@ -25,8 +23,6 @@ constexpr uint32_t kBasic = 0;
 constexpr uint32_t kFGFallback = 1;
 constexpr uint32_t kNative = 2;  // NVIDIA Reflex
 constexpr uint32_t kAuto = 3;
-constexpr uint32_t kAntiLag2 = 4;  // AMD Anti-Lag 2
-constexpr uint32_t kXeLL = 5;      // Intel XeLL
 }  // namespace LimiterModeValues
 
 // Shared FPS limiter - event-based synchronization with limiter process
@@ -124,8 +120,6 @@ public:
 private:
     void RecordTimerOvershoot(int64_t overshootUs);
 
-    void TryInitializeDx12NativeLimiters(uint32_t configuredMode);
-
     void ResetReflexNativePacingState();
 
     IPCClient* ipc = nullptr;
@@ -166,8 +160,6 @@ private:
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps
-    bool antilag2InitAttempted_ = false;           // Lazy init flag for Anti-Lag 2
-    bool xellInitAttempted_ = false;               // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
     int localIntervalFps_ = 0;                     // Denominator of the rational QPC cadence

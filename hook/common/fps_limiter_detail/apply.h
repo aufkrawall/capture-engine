@@ -76,7 +76,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
         HookLog("FPS Limiter: Published Session ID: %u", sid);
     }
 
-    // Periodically check for native low-latency APIs (Reflex, AntiLag2, XeLL).
+    // Periodically check for native low-latency APIs (Reflex).
     // Games may load these dynamically (e.g., user enables Reflex in settings).
     // Re-check every ~250ms (15 frames at 60fps) to catch late-loaded APIs
     // and in-game Reflex toggles faster.
@@ -185,24 +185,14 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
 
     uint32_t effectiveMode = configuredMode;
 
-    TryInitializeDx12NativeLimiters(configuredMode);
     if (configuredMode == LimiterModeValues::kAuto) {
-        // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) →
-        //            XeLL (Intel, game-activated) → FG fallback → basic
-        // Native modes require the game to have activated the API, not just API availability
+        // Priority: Reflex (NVIDIA, game-activated) → FG fallback → basic
+        // Native mode requires the game to have activated the API, not just API availability
         bool reflexAvail = g_ReflexLimiter.IsAvailable();
         bool reflexActive = g_ReflexLimiter.IsGameActivated();
-        bool al2Avail = g_AntiLag2Limiter.IsAvailable();
-        bool al2Active = g_AntiLag2Limiter.IsGameActivated();
-        bool xellAvail = g_XeLLLimiter.IsAvailable();
-        bool xellActive = g_XeLLLimiter.IsGameActivated();
 
         if (reflexAvail && reflexActive) {
             effectiveMode = LimiterModeValues::kNative;
-        } else if (al2Avail && al2Active) {
-            effectiveMode = LimiterModeValues::kAntiLag2;
-        } else if (xellAvail && xellActive) {
-            effectiveMode = LimiterModeValues::kXeLL;
         } else if (fgActive) {
             // No native low-latency API but FG active → FG-compatible fallback
             effectiveMode = LimiterModeValues::kFGFallback;
@@ -217,22 +207,14 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
             const char* reason = "";
             if (effectiveMode == LimiterModeValues::kNative)
                 reason = "reflex available + game activated";
-            else if (effectiveMode == LimiterModeValues::kAntiLag2)
-                reason = "anti-lag2 available + game activated";
-            else if (effectiveMode == LimiterModeValues::kXeLL)
-                reason = "xell available + game activated";
             else if (effectiveMode == LimiterModeValues::kFGFallback)
                 reason = "frame generation active";
             else if (effectiveMode == LimiterModeValues::kBasic)
                 reason = "no native API active";
 
-            HookLog("FPS Limiter [AUTO]: reflex=%s(%s) antiLag2=%s(%s) xell=%s(%s) fg=%s → selected=%s (%s)",
-                    reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive", al2Avail ? "avail" : "n/a",
-                    al2Active ? "active" : "inactive", xellAvail ? "avail" : "n/a",
-                    xellActive ? "active" : "inactive", fgActive ? "yes" : "no",
+            HookLog("FPS Limiter [AUTO]: reflex=%s(%s) fg=%s → selected=%s (%s)",
+                    reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive", fgActive ? "yes" : "no",
                     (effectiveMode == LimiterModeValues::kNative)       ? "reflex"
-                    : (effectiveMode == LimiterModeValues::kAntiLag2)   ? "anti_lag2"
-                    : (effectiveMode == LimiterModeValues::kXeLL)       ? "xell"
                     : (effectiveMode == LimiterModeValues::kFGFallback) ? "fg_fallback"
                                                                         : "basic",
                     reason);
@@ -246,12 +228,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
     if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable()) {
         effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
     }
-    if (effectiveMode == LimiterModeValues::kAntiLag2 && !g_AntiLag2Limiter.IsAvailable()) {
-        effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
-    }
-    if (effectiveMode == LimiterModeValues::kXeLL && !g_XeLLLimiter.IsAvailable()) {
-        effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
-    }
     if (effectiveMode != LimiterModeValues::kNative) {
         loggedNativeFallback_ = false;
         reflexSleepBaselineCount_ = 0;
@@ -262,9 +238,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
     // When FG is active, the output frame rate is fgMultiplier × base rate.
     // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
     int effectiveTargetFps = targetFps;
-    bool isNativeMode =
-        (effectiveMode == LimiterModeValues::kNative || effectiveMode == LimiterModeValues::kAntiLag2 ||
-         effectiveMode == LimiterModeValues::kXeLL);
+    bool isNativeMode = effectiveMode == LimiterModeValues::kNative;
     const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
     g_ReflexLimiter.SetManualLimiterConfiguredOrActive(limiterActive && explicitReflexMode);
     if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode) &&
@@ -305,20 +279,12 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
             modeStr = "fg_fallback";
         else if (effectiveMode == LimiterModeValues::kNative)
             modeStr = "reflex";
-        else if (effectiveMode == LimiterModeValues::kAntiLag2)
-            modeStr = "anti_lag2";
-        else if (effectiveMode == LimiterModeValues::kXeLL)
-            modeStr = "xell";
         else if (effectiveMode == LimiterModeValues::kAuto)
             modeStr = "auto";
 
         // Check if native API is actually available (not just selected)
         const char* availNote = "";
         if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable())
-            availNote = " [API UNAVAILABLE - will fallback]";
-        else if (effectiveMode == LimiterModeValues::kAntiLag2 && !g_AntiLag2Limiter.IsAvailable())
-            availNote = " [API UNAVAILABLE - will fallback]";
-        else if (effectiveMode == LimiterModeValues::kXeLL && !g_XeLLLimiter.IsAvailable())
             availNote = " [API UNAVAILABLE - will fallback]";
 
         TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
@@ -547,62 +513,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
         ResetReflexNativePacingState();
     } else if (!explicitReflexMode) {
         g_ReflexLimiter.SetManualLimiterConfiguredOrActive(false);
-    }
-
-    // =====================================================================
-    // AMD Anti-Lag 2 mode: delegate pacing to AMD driver extension
-    // =====================================================================
-    if (effectiveMode == LimiterModeValues::kAntiLag2) {
-        // Lazy init: Anti-Lag 2 requires a DX12 device (DX12 only)
-        if (!antilag2InitAttempted_) {
-            auto* ctx = ce::GetHookContext();
-            if (ctx && ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
-                auto* dev = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
-                g_AntiLag2Limiter.Init(dev);
-            }
-            antilag2InitAttempted_ = true;
-        }
-
-        g_AntiLag2Limiter.SetTargetFps(effectiveTargetFps);
-
-        if (g_AntiLag2Limiter.Update()) {
-            isActivelyLimiting_.store(false, std::memory_order_relaxed);
-            lastActualWaitUs_ = 0;
-            LARGE_INTEGER retQpc;
-            QueryPerformanceCounter(&retQpc);
-            lastApplyReturnQpc = retQpc.QuadPart;
-            return;
-        }
-
-        // Anti-Lag 2 update failed — fall through to timer-based limiting
-    }
-
-    // =====================================================================
-    // Intel XeLL mode: delegate pacing to Intel Arc driver
-    // =====================================================================
-    if (effectiveMode == LimiterModeValues::kXeLL) {
-        // Lazy init: XeLL requires a DX12 device (DX12 only)
-        if (!xellInitAttempted_) {
-            auto* ctx = ce::GetHookContext();
-            if (ctx && ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
-                auto* dev = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
-                g_XeLLLimiter.Init(dev);
-            }
-            xellInitAttempted_ = true;
-        }
-
-        g_XeLLLimiter.SetTargetFps(effectiveTargetFps);
-
-        if (g_XeLLLimiter.Sleep()) {
-            isActivelyLimiting_.store(false, std::memory_order_relaxed);
-            lastActualWaitUs_ = 0;
-            LARGE_INTEGER retQpc;
-            QueryPerformanceCounter(&retQpc);
-            lastApplyReturnQpc = retQpc.QuadPart;
-            return;
-        }
-
-        // XeLL sleep failed — fall through to timer-based limiting
     }
 
     // =====================================================================

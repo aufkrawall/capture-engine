@@ -108,7 +108,7 @@
 
     // Transition cooldown: after CreateSwapChainForHwnd, pause overlay D3D12
     // work so we don't interfere with the game's internal state machine (FG
-    // switch, Anti-Lag2 teardown, etc.).
+    // switch, native limiter teardown, etc.).
     bool inTransitionCooldown = false;
     {
         int64_t cooldownEnd = g_OverlayCooldownUntilQpc.load(std::memory_order_acquire);

@@ -97,9 +97,6 @@ Primary sources:
   general cap.
 - Frame-generation scaling depends on the captured source. WGC/DXGI see final presented/generated frames and scale the
   base target; inject capture publishes application-rendered frames and does not divide its capture-sync target.
-- Anti-Lag 2 and XeLL are initialized before auto/explicit availability selection once a DX12 device and matching game
-  module exist; selection must not reject an API before its lazy initialization attempt.
-
 ## Diagnostics and stale-risk
 
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate

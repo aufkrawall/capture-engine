@@ -138,8 +138,6 @@ enum class LimiterMode : uint32_t {
     kFGFallback = 1,  // FG-compatible: double interval when frame generation detected
     kNative = 2,      // NVIDIA Reflex: delegate pacing to Reflex pipeline via nvapi64.dll
     kAuto = 3,        // Auto: try native → FG fallback → basic (picks best available)
-    kAntiLag2 = 4,    // AMD Anti-Lag 2: delegate pacing to AMD driver via amdxc64.dll
-    kXeLL = 5,        // Intel XeLL: delegate pacing to Intel driver via libxell.dll
 };
 
 inline LimiterMode ParseLimiterMode(const std::string& val) {
@@ -161,10 +159,6 @@ inline LimiterMode ParseLimiterMode(const std::string& val) {
     if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" || normalized == "nvidia_reflex" ||
         normalized == "nvidia-reflex")
         return LimiterMode::kNative;
-    if (normalized == "anti_lag2" || normalized == "antilag2" || normalized == "anti-lag2")
-        return LimiterMode::kAntiLag2;
-    if (normalized == "xell" || normalized == "intel")
-        return LimiterMode::kXeLL;
     if (normalized == "auto")
         return LimiterMode::kAuto;
     return LimiterMode::kAuto;  // Default to auto
