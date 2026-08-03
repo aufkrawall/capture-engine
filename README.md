@@ -197,6 +197,19 @@ application's present-callback contract. Explicit transition state machines and 
 and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
 runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
 
+## Known issues and limitations
+
+The following issues are currently known. They are not hidden by the feature descriptions elsewhere in this
+document:
+
+- The frame-generation overlay indicator can show a stale FPS value in some configurations.
+- The overlay can have issues after frame-generation switching sequences (for example switching between DLSS
+  Frame Generation and FSR Frame Generation). Recovery is not guaranteed in every game, runtime, driver, and
+  transition-sequence combination.
+- Smooth capture with DLSS 4.0+ frame generation is hard to fix and possibly impossible with the currently
+  available public interfaces, because frame pacing there is largely controlled by the game, Streamline, and the
+  driver rather than by CaptureEngine.
+
 ## Anisotropic filtering and sampler overrides
 
 Forced AF follows each graphics API's native sampler model. It is not one generic per-draw replacement hack:
@@ -335,11 +348,16 @@ sanitizers, PE hardening/architecture, import closure, and PDB availability.
 
 ## Possible future work
 
-These are exploratory directions, not promises or a release schedule:
+These are exploratory directions, not promises or a release schedule. Items are only implemented if they prove
+feasible:
 
-- LibreHardwareMonitor integration for broader sensor support
+- LibreHardwareMonitor integration for proper hardware sensor data in the overlay and session logs
 - PresentMon plug-in support
-- managed loading of ReShade or OptiScaler as DLL add-ons
+- managed loading of OptiScaler, ReShade, or Special K DLLs as add-ons
+- webcam overlay support (exploratory)
+- investigating YouTube/Twitch live-streaming support
+- XeSS frame generation support
+- evaluating Unreal Engine settings overrides
 - further capture, overlay-coexistence, encoder, and hardware-monitoring improvements discovered through testing
 
 Some ideas may prove unsafe, too costly, incompatible with upstream runtimes, or simply not work well enough to ship.
@@ -348,11 +366,13 @@ They may change substantially or be abandoned.
 ## Bug reports and support expectations
 
 Useful, reproducible bug reports are welcome—especially with the relevant session logs, configuration, reproduction
-steps, and dumps where available. Please remove private information before attaching diagnostics.
+steps, and dumps where available. Before uploading anything, check logs and dumps for private data such as process
+names, paths, window titles, or memory contents, and redact or remove anything you do not want to share; see
+[Debug logging and crash dumps](#debug-logging-and-crash-dumps).
 
-I intend to investigate and fix bugs, but this is a free-time project: I cannot guarantee a fix, compatibility with
-every game/driver/runtime combination, or a response or timeline for every report. Difficult fixes may take a while,
-and some reports may receive no individual reply even when the information is useful.
+Reports are usually addressed, but this is a free-time project with many remaining tasks: fixes may take a while,
+and I cannot guarantee a fix, compatibility with every game/driver/runtime combination, or a response or timeline
+for every report. Some reports may receive no individual reply even when the information is useful.
 
 ## Other projects
 
@@ -368,6 +388,13 @@ More projects are available on [my GitHub profile](https://github.com/aufkrawall
 
 Donations are welcome if CaptureEngine or my other projects are useful to you. You can support development through
 [GitHub Sponsors](https://github.com/sponsors/aufkrawall).
+
+## Disclaimer
+
+CaptureEngine is provided "as is", without warranty of any kind, express or implied. You use it at your own risk
+and are solely responsible for any consequences, including anti-cheat actions such as account bans in online games,
+or damage to your system, data, or hardware. Injected features carry additional risk; see
+[Anti-cheat safety](#anti-cheat-safety).
 
 ## License
 
