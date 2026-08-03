@@ -10,8 +10,9 @@ limiter integrations.
 If you find the project useful and would like to support its development, see [Donations](#donations).
 
 The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
-container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay does not use Dear
-ImGui or another external overlay framework.
+container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay and its frame-time
+graph are rendered entirely by first-party code with no third-party overlay or UI library — no Dear ImGui or
+anything similar.
 
 ## Highlights
 
@@ -261,7 +262,8 @@ rate, while injected capture targets the application's real rendered frames.
 
 ## Overlay and frame generation
 
-The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders.
+The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders;
+the frame-time graph is drawn by the same custom renderer and shader set.
 Its layout and font rendering support automatic Windows per-monitor DPI scaling, including fractional scale factors.
 It tracks presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling,
 so native HDR does not look oversaturated or washed out; texture format alone is not treated as proof of HDR.
