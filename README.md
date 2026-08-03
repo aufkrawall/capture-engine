@@ -262,9 +262,15 @@ rate, while injected capture targets the application's real rendered frames.
 ## Overlay and frame generation
 
 The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders.
-Its layout and font rendering support Windows per-monitor DPI scaling, including fractional scale factors. It tracks
-presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling; texture
-format alone is not treated as proof of HDR.
+Its layout and font rendering support automatic Windows per-monitor DPI scaling, including fractional scale factors.
+It tracks presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling,
+so native HDR does not look oversaturated or washed out; texture format alone is not treated as proof of HDR.
+
+The frame-time graph scales its vertical ceiling dynamically instead of using a fixed 0-to-X axis: the ceiling
+follows the recent average and minimum with at least 50% headroom above the average, a minimum 33 ms range so the
+30 FPS threshold stays visible, and padding below the lowest samples so the line stays vertically centered. The
+current ceiling is shown as a small scale marker next to the graph and refreshes at most every two seconds to avoid
+flicker.
 
 DLSS Frame Generation integration observes NVIDIA Streamline and NGX through inline, wrapper, dynamic-resolution, and
 direct-import seams. FSR Frame Generation integration observes FidelityFX context/configuration state and the
