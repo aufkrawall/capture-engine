@@ -7,12 +7,23 @@ Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-
 custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application profiles, and native FPS
 limiter integrations.
 
-If you find the project useful and would like to support its development, see [Donations](#donations).
-
 The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
 container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay and its frame-time
 graph are rendered entirely by first-party code with no third-party overlay or UI library — no Dear ImGui or
 anything similar.
+
+## Support
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
+
+Sponsorships help with development time, hardware, and tooling. My other open-source projects would also profit
+from donations; they are listed in [Other projects](#other-projects) at the bottom of this page.
+
+## Contributing
+
+Pull requests are currently disabled. This may change once a viable workflow with LLM-agent-based PR reviews is in
+place. Bug reports and other feedback remain welcome — see [Bug reports and support
+expectations](#bug-reports-and-support-expectations).
 
 ## Highlights
 
@@ -531,17 +542,21 @@ for every report. Some reports may receive no individual reply even when the inf
 ## Other projects
 
 - [green-curve](https://github.com/aufkrawall/green-curve) — open-source GPU curve undervolting and overclocking
+- [testsmem4u](https://github.com/aufkrawall/testsmem4u) — cross-platform RAM testing tool using proven patterns
+- [Shader-Stress](https://github.com/aufkrawall/Shader-Stress) — CPU stress test with shader-compilation-like
+  workloads
 - [GreenPostInstallDebloatNative](https://github.com/aufkrawall/GreenPostInstallDebloatNative) — removes optional
   driver bloat after a regular installation
+- [green-scripts](https://github.com/aufkrawall/green-scripts) — PowerShell scripts for various NVIDIA driver
+  control panel features
 - [DpcLatencyMon](https://github.com/aufkrawall/DpcLatencyMon) — Windows DPC latency monitoring
 - [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
+- [mpv-winbuild-python](https://github.com/aufkrawall/mpv-winbuild-python) — Python script that builds `mpv.exe` at
+  the push of a button
+- [pybecrasher](https://github.com/aufkrawall/pybecrasher) — Python-based CPU stress test mimicking UE5 workloads
 
-More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories).
-
-## Donations
-
-Donations are welcome if CaptureEngine or my other projects are useful to you. You can support development through
-[GitHub Sponsors](https://github.com/sponsors/aufkrawall).
+More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories). All of these
+projects would also profit from donations — see [Support](#support) at the top of this page.
 
 ## Disclaimer
 
