@@ -242,12 +242,24 @@ Capture sync can limit an injected application's rendered rate to a multiple of 
 | XeLL | Intel Xe Low Latency sleep-mode integration (DX12) |
 | Auto | Game-activated Reflex → FG fallback → Basic |
 
-Anti-Lag 2 and XeLL require the vendor runtime (`amdxc64.dll` / `libxell.dll`) and DX12; they are used only when the
-game exposes them.
+Anti-Lag 2 and XeLL require the vendor runtime (`amdxc64.dll` / `libxell.dll`) and DX12. Their entry points are
+resolved at runtime through `GetProcAddress` with no import-lib dependency, and they are used only when the game
+exposes them.
+
+Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
+entry points directly. CaptureEngine deliberately does not patch NvAPI code bytes, because some DLSS FG integrations
+validate those prologues during Reflex setup. The driver's `minimumIntervalUs` is pushed to enforce the cap, and once
+the game's own Reflex sleep loop is confirmed stable, pacing hands over to the game-owned sleep path.
 
 The timer path uses a Bresenham-style rational QPC grid rather than rounding every frame to one integer tick interval.
-It arms a high-resolution waitable timer early, adapts its fine-wait margin from the observed p99 wake overshoot, and
-uses a tight spin only for the final 50 microseconds. Missing a deadline never produces a short catch-up frame.
+The exact fractional remainder is accumulated instead of being truncated, so fractional target rates stay correct and
+the cadence remains phase-locked to the CFR selector over long runs. Missing a deadline never produces a short
+catch-up frame; the limiter skips whole grid slots, counts them, and continues on the next grid deadline.
+
+Waiting is a hybrid sleep/spin strategy: timer resolution is raised with `timeBeginPeriod(1)`, a high-resolution
+waitable timer (Windows 10 1803+) is armed early, the fine-wait margin adapts from the observed p99 wake overshoot,
+and a tight spin is used only for the final 50 microseconds. This keeps idle CPU use low while still landing on the
+grid.
 
 Capture-sync recovery advances by whole grid slots until the next deadline has useful headroom, preserving phase with
 the CFR selector after a hitch. Re-entrant or concurrent Present calls cannot advance the same cadence twice: one

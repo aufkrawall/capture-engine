@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-29
+Last cross-checked: 2026-08-03
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -88,6 +88,10 @@ Primary sources:
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
   general limiting retains now-relative recovery. The fine margin is `clamp(p99 timer wake overshoot + 25us, 50us,
   250us)`; only the final 50us is a tight spin.
+- Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
+  entry points directly. NvAPI code bytes/prologues are deliberately not patched because some DLSS FG integrations
+  validate them during Reflex setup; `minimumIntervalUs` is pushed proactively, and pacing hands to the game-owned
+  Reflex sleep path once stable.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.
