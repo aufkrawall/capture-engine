@@ -1,6 +1,6 @@
 # Native D3D9 Capture
 
-Last cross-checked: 2026-07-12
+Last cross-checked: 2026-08-03
 
 Primary sources:
 - `hook/apis/dx9_hook.cpp`
@@ -15,6 +15,8 @@ Classic `Direct3DCreate9` applications keep a classic `IDirect3D9` factory and d
 The Windows Vista D3D9 documentation describes shared resources through `pSharedHandle`, including opening them through D3D9 or D3D9Ex. This is not a portable guarantee for a classic device in current drivers. Local NVIDIA x64 and x86 probes returned `D3DERR_INVALIDCALL` when a classic device created a shared texture and when it opened an Ex-helper texture, despite the caps bit and format checks succeeding. Inject zero-copy is therefore opportunistic for classic D3D9, not an invariant.
 
 Zero-copy here means no GPU-to-CPU readback or CPU re-upload. A shareable inject path still requires one asynchronous GPU `StretchRect`. GPU-based WGC is the reliable no-CPU-readback alternative when a classic runtime rejects sharing, while overlay-only injection can remain active independently.
+
+Capture performance for classic D3D9 is therefore usually much worse than for D3D9Ex. When sharing fails, injected capture falls back to the D3D11 staging path (GPU `StretchRect`, deferred GPU→CPU readback after Present, `LockRect`, and D3D11 upload); the readback is deferred so Present is not blocked, but the per-frame CPU/GPU work remains. Observed 4K/120 staging capture is really slow and severely affects game performance. For old classic-D3D9 games, running them through DXVK is recommended: D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport, while native D3D9Ex already gets the fast GPU-only path without DXVK.
 
 ## Shared-ring architecture
 

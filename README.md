@@ -86,6 +86,7 @@ flowchart LR
     Media["Disposable media process<br/>capture, mix, encode, mux, validate"]
     Limiter["Optional limiter process"]
     Aux["Logger and sensor processes"]
+    AppAudio["App audio workers<br/>disposable per-source process-loopback workers"]
     Hook["Hook DLL<br/>inside the game"]
     Shared["Exact-version shared-memory ABI<br/>state, telemetry, frame leases, log ring"]
 
@@ -93,6 +94,7 @@ flowchart LR
     Controller -->|"authenticated private pipe"| Media
     Controller -->|"authenticated private pipe"| Limiter
     Controller -->|"restricted child processes"| Aux
+    Media <-->|"spawns; ordered packet ring"| AppAudio
     Inject -->|"injects"| Hook
     Inject <--> Shared
     Media <--> Shared
@@ -106,9 +108,14 @@ flowchart LR
 - **Hook DLL:** intercepts graphics and frame-generation APIs inside the target, renders the injected overlay, publishes
   GPU frame leases, and runs latency-sensitive pacing locally.
 - **Media process:** is disposable per recording. It owns WGC/DXGI capture when selected, audio capture/mixing, encoding,
-  muxing, post-write validation, and the recording's immutable diagnostic files.
+  muxing, post-write validation, and the recording's immutable diagnostic files. System-output and microphone sources
+  are captured in-process through WASAPI loopback/input devices.
 - **Logger and sensor processes:** consume the shared ABI for hook logs and CPU/GPU/RAM/VRAM telemetry without putting
   that work on the game's render thread.
+- **App audio workers:** per-application process-loopback capture runs in disposable CaptureEngine worker processes
+  spawned by the media process. The AudioSes COM graph stays out of the long-lived media process; only ordered packet
+  records cross a private shared-ring/event boundary, and workers are recycled on target-process or activation
+  lifecycle changes.
 - **Limiter process:** provides the optional process-side limiter role; basic and fallback timer cadence itself remains
   hook-local, so it does not pay a cross-process round trip per frame.
 
@@ -134,7 +141,7 @@ The principal capture-to-encoder paths keep frames GPU-resident wherever the API
 | Source API | Transport |
 | --- | --- |
 | D3D9Ex | Asynchronous GPU blit to shareable textures, imported by D3D11 |
-| Classic D3D9 | Opportunistic native sharing; otherwise a GPU-based screen-capture fallback |
+| Classic D3D9 | Opportunistic native sharing; otherwise GPU→CPU readback staging or GPU-based WGC fallback |
 | D3D10/11 | Shared D3D11 textures with query/fence and lease ownership |
 | D3D12 | Shared resources/fences through the D3D11 hardware-frame handoff |
 | Vulkan and DXVK | Encoder-owned KMT textures imported into Vulkan |
@@ -144,6 +151,18 @@ The principal capture-to-encoder paths keep frames GPU-resident wherever the API
 GPU blit, or the final encoder-surface handoff can still be required. The important boundary is avoiding a
 GPU-to-CPU readback followed by a CPU-to-GPU upload in the normal hardware path. Classic D3D9 devices are deliberately
 not promoted to D3D9Ex because that changes resource, reset, presentation, and COM behavior.
+
+Classic D3D9 is the path where that boundary is commonly crossed, and capture performance is usually much worse than
+with D3D9Ex. D3D9Ex capture stays GPU-resident: an asynchronous GPU blit publishes shareable textures that D3D11
+imports directly. Classic `Direct3DCreate9` devices, in contrast, usually cannot create or open shared resources on
+current drivers (NVIDIA x64/x86 probes return `D3DERR_INVALIDCALL` despite advertised caps), so sharing is only
+opportunistic. When sharing fails, injected capture falls back to a D3D11 staging path: GPU `StretchRect`, a deferred
+GPU→CPU readback after Present, `LockRect`, and a CPU→D3D11 upload. The readback is deferred so Present itself is not
+blocked, but the per-frame CPU/GPU work remains; at high resolutions and frame rates (for example 4K/120) this is
+really slow and can severely affect game performance. GPU-based WGC capture is the preferred no-readback alternative
+when sharing is unavailable. For old classic-D3D9 games, running them through DXVK is therefore recommended:
+D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport instead of the readback staging path.
+Native D3D9Ex applications already get the fast GPU-only path without DXVK.
 
 ## Privacy
 
@@ -267,6 +286,10 @@ document:
 - Smooth capture with DLSS 4.0+ frame generation is hard to fix and possibly impossible with the currently
   available public interfaces, because frame pacing there is largely controlled by the game, Streamline, and the
   driver rather than by CaptureEngine.
+- Classic D3D9 inject capture commonly falls back to a GPU→CPU readback staging path, which is slow at high
+  resolutions and frame rates (for example 4K/120) and can severely affect game performance. Running the game through
+  DXVK avoids this staging path; native D3D9Ex is already fast without DXVK. See
+  [Capture paths and GPU transport](#capture-paths-and-gpu-transport).
 
 ## Anisotropic filtering and sampler overrides
 
