@@ -35,7 +35,8 @@ expectations](#bug-reports-and-support-expectations).
 - Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
-  and NVIDIA Smooth Motion status, plus a non-injected desktop recording indicator for WGC/DXGI sessions
+  and NVIDIA Smooth Motion (driver-based frame generation) status, plus a non-injected desktop recording indicator
+  for WGC/DXGI sessions
 - General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
@@ -296,6 +297,10 @@ Capture sync can limit an injected application's rendered rate to a multiple of 
 | FG fallback | Timer cadence scaled to the confirmed frame-generation multiplier |
 | Auto | Game-activated Reflex → FG fallback → Basic |
 
+FPS limiting combined with frame generation is still incomplete and subject to change: the FG-aware path (`FG
+fallback`, and `auto` when it resolves to that) scales cadence to the confirmed frame-generation multiplier, but
+holding the intended pace is not yet guaranteed across every game, runtime, and frame-generation combination.
+
 Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
 entry points directly. CaptureEngine deliberately does not patch NvAPI code bytes, because some DLSS FG integrations
 validate those prologues during Reflex setup. The driver's `minimumIntervalUs` is pushed to enforce the cap, and once
@@ -336,8 +341,8 @@ application's present-callback contract. Explicit transition state machines and 
 and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
 runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
 
-NVIDIA Smooth Motion is recognized alongside DLSS and FSR frame generation, and the FG status line follows the same
-transition state machines.
+NVIDIA Smooth Motion (driver-based frame generation) is recognized alongside DLSS and FSR frame generation, and the
+FG status line follows the same transition state machines.
 
 For non-injected WGC or DXGI sessions, a small desktop overlay window can show recording state, a NOT RECORDING warning
 when the configured target is not being captured, and live encoder-overload/recovery/degraded health warnings. It is a
@@ -349,6 +354,8 @@ The following issues are currently known. They are not hidden by the feature des
 document:
 
 - The frame-generation overlay indicator can show a stale FPS value in some configurations.
+- FPS limiting with frame generation is still incomplete and subject to change; FG-aware pacing may not hold the
+  intended cadence in every game, runtime, or frame-generation combination.
 - The overlay can have issues after frame-generation switching sequences (for example switching between DLSS
   Frame Generation and FSR Frame Generation). Recovery is not guaranteed in every game, runtime, driver, and
   transition-sequence combination.
