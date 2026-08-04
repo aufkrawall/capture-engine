@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "source_fragment_reader.h"
 
@@ -156,6 +157,72 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinal
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("recordingFinalizationNotification"), std::string::npos);
     EXPECT_NE(overlay.find("recordingState == ce::recording_indicator::State::Idle"), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, MediaPublishesFailureNotificationOnStartFailure) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t publish = source.find("void PublishRecordingStartFailure(");
+    ASSERT_NE(publish, std::string::npos);
+    EXPECT_NE(source.find("OverlayNotificationType::RecordingFailed", publish), std::string::npos);
+    EXPECT_NE(source.find("notificationExpiry.store(GetTickCount64() + 7000ULL", publish), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnFailureCode) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("void PublishRecordingFailureOverlayNotification("), std::string::npos);
+    const size_t check = source.find("void CheckRecordingFailureState()");
+    ASSERT_NE(check, std::string::npos);
+    const size_t notif = source.find("PublishRecordingFailureOverlayNotification(\"recording failure\")", check);
+    EXPECT_NE(notif, std::string::npos);
+    const size_t reset = source.find("recordingFailureCode.store(", check);
+    EXPECT_NE(reset, std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnStartAborts) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    const std::vector<std::string> reasons = {
+        "\"media readiness failure\"",
+        "\"limiter readiness failure\"",
+        "\"inject start command failure\"",
+        "\"inject unavailable\"",
+        "\"audio-only media readiness failure\"",
+        "\"audio-only start command failure\"",
+    };
+    for (const std::string& reason : reasons) {
+        const size_t intent = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, " + reason + ")");
+        ASSERT_NE(intent, std::string::npos) << reason;
+        const size_t notif = source.find("PublishRecordingFailureOverlayNotification(" + reason + ")", intent);
+        EXPECT_NE(notif, std::string::npos) << reason;
+    }
+}
+
+TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenChildDiesBeforeLive) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t block = source.find("\"required child exited before recording live\"");
+    ASSERT_NE(block, std::string::npos);
+    EXPECT_NE(source.find("PublishRecordingFailureOverlayNotification(\"required child exited before recording live\")",
+                          block),
+              std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenMediaDiesLive) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t block = source.find("if (mediaGoneWhileLive) {");
+    ASSERT_NE(block, std::string::npos);
+    EXPECT_NE(source.find(
+                  "PublishRecordingFailureOverlayNotification(\"media process exited while recording live\")",
+                  block),
+              std::string::npos);
+    EXPECT_NE(source.find("runtimeState.isRecording.store(false", block), std::string::npos);
+    EXPECT_NE(source.find(
+                  "PublishRecordingStartIntent(RecordingStartIntent::Idle, \"media process exited while recording live\")",
+                  block),
+              std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {

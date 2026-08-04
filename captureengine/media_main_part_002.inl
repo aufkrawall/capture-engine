@@ -299,6 +299,13 @@ void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* 
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
         StoreRelease(g_pSharedMem->runtimeState.recordingFailureCode, static_cast<uint32_t>(failureCode));
+        // Surface the failed start in the inject and pseudo overlays through the
+        // same transient notification channel finalization uses. Both overlays
+        // show the notification only in the idle state, which the intent and
+        // isRecording resets above have already established.
+        g_pSharedMem->runtimeState.notificationType.store(
+            static_cast<uint32_t>(OverlayNotificationType::RecordingFailed), std::memory_order_release);
+        g_pSharedMem->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
     }
     LogError("[Media] Recording start failed: %s (code=%u)", reason ? reason : "unspecified",
              static_cast<uint32_t>(failureCode));

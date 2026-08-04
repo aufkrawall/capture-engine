@@ -195,6 +195,19 @@ static bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeou
     return stopAccepted;
 }
 
+// Publish a recording-failure notification through the inject shared-memory
+// channel that both the inject overlay and the pseudo overlay consume. The
+// notification is transient (7 s, matching the finalization failure duration)
+// and is only shown once the overlays are back in the idle recording state.
+void PublishRecordingFailureOverlayNotification(const char* reason) {
+    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+        sharedMemory->runtimeState.notificationType.store(
+            static_cast<uint32_t>(OverlayNotificationType::RecordingFailed), std::memory_order_release);
+        sharedMemory->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
+    });
+    LogInfo("[Controller] Recording failure notification published (%s)", reason ? reason : "unspecified");
+}
+
 void CheckRecordingFailureState() {
     if (!g_Recording)
         return;
@@ -212,6 +225,13 @@ void CheckRecordingFailureState() {
 
     g_Recording = false;
     PublishRecordingStartIntent(RecordingStartIntent::Idle, "recording failure");
+    PublishRecordingFailureOverlayNotification("recording failure");
+    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+        // Consume the code so a stale value cannot fail a later recording start
+        // before the media process resets it itself.
+        sharedMemory->runtimeState.recordingFailureCode.store(
+            static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_release);
+    });
     if (g_AutoRecordEnabled) {
         LogError("[Controller] Auto-record disabled after a recording-integrity failure");
         g_AutoRecordEnabled = false;
@@ -242,6 +262,7 @@ void ToggleRecording() {
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
             PublishRecordingStartIntent(RecordingStartIntent::Idle, "media readiness failure");
+            PublishRecordingFailureOverlayNotification("media readiness failure");
             return;
         }
 
@@ -256,6 +277,7 @@ void ToggleRecording() {
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
             PublishRecordingStartIntent(RecordingStartIntent::Idle, "limiter readiness failure");
+            PublishRecordingFailureOverlayNotification("limiter readiness failure");
             return;
         }
 
@@ -273,12 +295,14 @@ void ToggleRecording() {
                     LogError("[Controller] Recording start failed");
                     g_Recording = false;
                     PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject start command failure");
+                    PublishRecordingFailureOverlayNotification("inject start command failure");
                 }
             }
         } else {
             LogError("[Controller] Inject process is not connected, cannot start recording");
             g_Recording = false;
             PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject unavailable");
+            PublishRecordingFailureOverlayNotification("inject unavailable");
         }
     } else {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
@@ -325,6 +349,7 @@ void ToggleAudioOnlyRecording() {
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
             PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only media readiness failure");
+            PublishRecordingFailureOverlayNotification("audio-only media readiness failure");
             return;
         }
 
@@ -361,6 +386,7 @@ void ToggleAudioOnlyRecording() {
             LogError("[Controller] Audio-only recording start failed");
             g_Recording = false;
             PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only start command failure");
+            PublishRecordingFailureOverlayNotification("audio-only start command failure");
         }
     } else {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
@@ -556,6 +582,40 @@ void CheckChildProcessHealth() {
         RequestRecordingStopAndReleaseMedia("required child exited before recording live", 1000);
         g_Recording = false;
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "required child exited before recording live");
+        PublishRecordingFailureOverlayNotification("required child exited before recording live");
+        if (g_Tray) {
+            g_Tray->SetRecordingState(false);
+        }
+    }
+
+    // A live recording whose media process died cannot finalize through the
+    // normal stop path: no failure code and no completion notification will
+    // ever arrive from it. Report the failed capture in both overlays and clear
+    // the hook-facing recording state so the REC indicator cannot stay stuck
+    // after the process is gone; the recovery below still respawns an idle
+    // media process for the next recording.
+    bool recordingLive = false;
+    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+        recordingLive = sharedMemory->runtimeState.isRecording.load(std::memory_order_acquire);
+    });
+    const bool mediaGoneWhileLive =
+        g_Recording && recordingLive && (!g_hMediaProcess || !IsProcessRunning(g_hMediaProcess));
+    if (mediaGoneWhileLive) {
+        LogError("[Controller] Media process exited while recording was live; recording failed");
+        g_Recording = false;
+        WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+            sharedMemory->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+            sharedMemory->runtimeState.captureRequested.store(false, std::memory_order_release);
+            sharedMemory->runtimeState.isRecording.store(false, std::memory_order_release);
+            sharedMemory->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        });
+        PublishRecordingStartIntent(RecordingStartIntent::Idle, "media process exited while recording live");
+        PublishRecordingFailureOverlayNotification("media process exited while recording live");
+        if (g_AutoRecordEnabled) {
+            LogError("[Controller] Auto-record disabled after the media process exited during recording");
+            g_AutoRecordEnabled = false;
+            g_AutoRecordStartTime = 0;
+        }
         if (g_Tray) {
             g_Tray->SetRecordingState(false);
         }

@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-08-04 - Overlays now report failed captures, including start failures and process loss
+
+- **Change:** the inject overlay and pseudo/desktop overlay already showed
+  `RecordingFailed` for finalization that did not publish output; they now also
+  report every other capture failure. Media-side `PublishRecordingStartFailure`
+  publishes the transient `RecordingFailed` shared-memory notification (7 s
+  expiry) after clearing the start intent and `isRecording`, so WGC/MediaEngine
+  init failures, unavailable targets, and corrupt shared rings surface in both
+  overlays. The controller republishes the notification when it consumes a
+  recorded `recordingFailureCode` (and then resets the code so a stale value
+  cannot fail a later start), on every controller-owned start abort (media or
+  limiter readiness, inject command failure, inject unavailable, audio-only
+  variants), on pre-live child exit, and when the media process dies while a
+  recording is live. The live-loss path additionally clears the hook-facing
+  recording state so the REC indicator cannot stay stuck, disables auto-record
+  like the integrity-failure path, and still lets child recovery respawn an idle
+  media process. No shared-memory ABI/layout change; the existing notification
+  channel is reused.
+- **Source anchors:** `captureengine/main_part_002.inl`
+  (`PublishRecordingFailureOverlayNotification`, `CheckRecordingFailureState`,
+  `ToggleRecording`, `ToggleAudioOnlyRecording`, `CheckChildProcessHealth`),
+  `captureengine/media_main_part_002.inl` (`PublishRecordingStartFailure`),
+  `tests/test_recording_start_feedback.cpp` (five new source-contract tests).
+- **Open / stale-risk:** runtime observation of the failure notification on a
+  real failed start or crashed media process remains pending; the source-level
+  tests pin the publication contract only.
+
 ### 2026-08-03 - clang-tidy baseline driven to zero and verify made robust at full CPU load
 
 - **Change:** all 1,541 previously accepted clang-tidy warnings were eliminated.
