@@ -525,9 +525,6 @@ feasible:
 - evaluating Unreal Engine settings overrides
 - further capture, overlay-coexistence, encoder, and hardware-monitoring improvements discovered through testing
 
-Some ideas may prove unsafe, too costly, incompatible with upstream runtimes, or simply not work well enough to ship.
-They may change substantially or be abandoned.
-
 ## Bug reports and support expectations
 
 Useful, reproducible bug reports are welcome—especially with the relevant session logs, configuration, reproduction
