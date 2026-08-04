@@ -46,7 +46,7 @@ ALLOWED_USER_COMPONENTS = frozenset(
     }
 )
 
-# C:\Users\name\... (any drive letter, backslash spelling).
+# C:\Users\<name>\... (any drive letter, backslash spelling).
 USER_PATH_RE = re.compile(r"[A-Za-z]:\\Users\\([^\\\r\n\s\"'`]+)")
 # MSYS/Cygwin private-use-area colon spelling: C<U+F03A/U+FF1A>Users<name>.
 PUA_USER_RE = re.compile(r"[A-Za-z][\uf03a\uff1a]Users([A-Za-z0-9_]+)")
