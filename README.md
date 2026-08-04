@@ -73,22 +73,41 @@ example](#app-profile-example) below; the generated `config.ini` also ends with 
 ## App profile example
 
 Per-game configuration is easier than it looks: add a small `[Profile.<name>]` block at the end of `config.ini` and
-only set the keys that should differ for that game. For example, record `MyGame.exe` at 60 fps through WGC without
-injection and show the desktop recording indicator while it is running:
+only set the keys that should differ for that game.
+
+For online and anti-cheat-protected games, stay non-injected. This example records `OnlineGame.exe` at 60 fps
+through WGC and shows the desktop recording indicator:
 
 ```ini
-[Profile.My Game]
-process=MyGame.exe
+[Profile.Online Game]
+process=OnlineGame.exe
 video_capture=wgc
 dll_injection=never
 Video.fps=60
 DesktopOverlay.enabled=true
 ```
 
+For single-player games, injection unlocks the FPS limiter, the injected overlay, and graphics overrides. This
+example records `SinglePlayerGame.exe` through the injected hook, limits it to 120 fps, and applies V-Sync-off, 16x
+anisotropic filtering, a negative mip bias, and DLSS frame generation:
+
+```ini
+[Profile.Single Player]
+process=SinglePlayerGame.exe
+video_capture=inject
+FpsLimiter.general_enabled=true
+FpsLimiter.general_fps=120
+Graphics.vsync_mode=off
+Graphics.anisotropic_filtering=16x
+Graphics.mip_bias=-1.5
+DLSS.dlss_fg_factor=3x
+```
+
 `process=` is the executable name and is matched case-insensitively; the profile name is only a label. Any setting
-from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` shows. FPS limiting
-requires DLL injection and therefore does not belong in a no-injection profile. The generated `config.ini` ends with
-further safe and unsafe profile examples.
+from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` and
+`Graphics.vsync_mode=off` show. Injection is what anti-cheat software detects — see
+[Anti-cheat safety](#anti-cheat-safety) — and the generated `config.ini` ends with further safe/unsafe profile
+examples.
 
 ## Anti-cheat safety
 
