@@ -8,7 +8,7 @@ from tools.ffmpeg_patch_utils import CustomPatchTargetError, normalize_custom_pa
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PATCH_DIR = PROJECT_ROOT / "patches" / "ffmpeg"
+PATCH_DIR = PROJECT_ROOT / "tools" / "patches" / "ffmpeg"
 PINNED_FFMPEG = PROJECT_ROOT / "ffmpeg_build" / "repos" / "ffmpeg"
 
 

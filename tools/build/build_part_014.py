@@ -190,14 +190,14 @@ if False:
     # Copy License files
     log("Copying License files...")
 
-    licenses_src = os.path.join(PROJECT_ROOT, "licenses")
+    licenses_src = os.path.join(PROJECT_ROOT, "tools", "licenses")
     licenses_dst = os.path.join(BIN_DIR, "licenses")
     if os.path.exists(licenses_src):
         if os.path.exists(licenses_dst):
             shutil.rmtree(licenses_dst)
         shutil.copytree(licenses_src, licenses_dst)
         copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
-        log("Copied licenses/ directory to installed/captureengine/")
+        log("Copied license files to installed/captureengine/")
 
     assert_no_obsolete_process_loopback_helper_artifacts()
 

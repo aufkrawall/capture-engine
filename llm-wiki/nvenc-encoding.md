@@ -9,8 +9,8 @@ Primary sources:
 - `mediaengine/video_encoder.{h,cpp}`
 - `mediaengine/video_encoder_options.{h,cpp}`
 - `mediaengine/video_metadata.{h,cpp}`
-- `patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
-- `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
+- `tools/patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
+- `tools/patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`
 - `tests/test_{config,video_encoder_options,video_encoder_source}.cpp`
 - `tests/test_recording_health.cpp`

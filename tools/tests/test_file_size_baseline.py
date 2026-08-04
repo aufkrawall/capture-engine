@@ -114,11 +114,11 @@ class FileSizeBaselineTest(unittest.TestCase):
         # READMEs and design notes next to code are not the wiki's rolling log
         # and are deliberately left out, so the scope stays predictable.
         self.write_source("README.md", 10)
-        self.write_source("patches/ffmpeg/README.md", 10)
+        self.write_source("tools/patches/ffmpeg/README.md", 10)
 
         measured = build.collect_source_file_sizes()
         self.assertNotIn("README.md", measured)
-        self.assertNotIn("patches/ffmpeg/README.md", measured)
+        self.assertNotIn("tools/patches/ffmpeg/README.md", measured)
 
     def test_an_unrotated_wiki_log_fails_the_ceiling(self) -> None:
         # The exact regression that went unnoticed: recent.md growing without

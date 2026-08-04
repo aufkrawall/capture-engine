@@ -414,8 +414,8 @@ class FFmpegBuilder:
             shutil.rmtree(build_dir, onerror=self.rmtree_onerror)
         shutil.copytree(src_dir, build_dir)
 
-        # Apply custom patches (LGPL 2.1) from patches/ffmpeg/
-        patches_dir = os.path.join(PROJECT_ROOT, "patches", "ffmpeg")
+        # Apply custom patches (LGPL 2.1) from tools/patches/ffmpeg/
+        patches_dir = os.path.join(PROJECT_ROOT, "tools", "patches", "ffmpeg")
         if os.path.isdir(patches_dir):
             git_exe = self.get_tool_path("git")
             patch_files = sorted(f for f in os.listdir(patches_dir) if f.endswith(".patch"))
@@ -549,7 +549,7 @@ def ffmpeg_build_configuration_fingerprint():
     digest = hashlib.sha256(f"configure-v{FFMPEG_BUILD_CONFIGURATION_VERSION}\n".encode("ascii"))
     digest.update(b"dependency-manifest\n")
     digest.update(dependency_manifest_fingerprint(FFMPEG_DEPENDENCY_MANIFEST).encode("ascii"))
-    patches_dir = os.path.join(PROJECT_ROOT, "patches", "ffmpeg")
+    patches_dir = os.path.join(PROJECT_ROOT, "tools", "patches", "ffmpeg")
     if os.path.isdir(patches_dir):
         for patch_name in sorted(name for name in os.listdir(patches_dir) if name.endswith(".patch")):
             digest.update(patch_name.encode("utf-8"))

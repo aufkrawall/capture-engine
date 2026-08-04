@@ -393,7 +393,7 @@ Backend behavior is explicit rather than emulated:
   phase), and a nominal peak (default 1000 nits, `hdr_nominal_peak_nits`) written consistently to the codec context,
   frames, container, and HEVC/AV1 headers. AV1 NVENC's unsafe SMPTE ST 12-1 timecode path is disabled.
 
-See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for the exact patches:
+See [tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md) for the exact patches:
 
 - Configurable Matroska timestamp precision, including duration/default-duration scaling and safe cluster rollover
 - Deterministic NVENC lookahead/AQ disablement, capability-aware B-reference resolution, additional picture-type
@@ -609,4 +609,5 @@ or damage to your system, data, or hardware. Injected features carry additional 
 ## License
 
 CaptureEngine is licensed under the [MIT License](LICENSE). Bundled FFmpeg components and the FFmpeg patches retain
-their applicable LGPL licensing; see [licenses/](licenses/) and [patches/ffmpeg/README.md](patches/ffmpeg/README.md).
+their applicable LGPL licensing; see [tools/licenses/](tools/licenses/) and
+[tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md).

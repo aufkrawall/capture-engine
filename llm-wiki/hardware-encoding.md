@@ -13,7 +13,7 @@ Primary sources:
 - `ffmpeg_build/working/ffmpeg/libavcodec/{amfenc,qsvenc,mfenc}*`
 - `ffmpeg_build/working/ffmpeg/libavutil/hwcontext_qsv.c`
 - `build.py`
-- `licenses/FFmpeg_NOTICE.txt`
+- `tools/licenses/FFmpeg_NOTICE.txt`
 
 ## Summary and device ownership
 
@@ -50,7 +50,7 @@ runtime notice copied as `MIT_libvpl.txt`. Intel hardware implementations such
 as `libmfx64-gen.dll` and `libmfxhw64.dll` remain driver-provided and are not
 part of the product bundle. Codec patent obligations remain separate from these
 copyright licenses and require market-specific review, as recorded in
-`licenses/FFmpeg_NOTICE.txt`.
+`tools/licenses/FFmpeg_NOTICE.txt`.
 
 Windows VAAPI and D3D12 Video Encode are not intermediary backends here. VAAPI
 is not the native Windows Quick Sync route, while the bundled FFmpeg vendor

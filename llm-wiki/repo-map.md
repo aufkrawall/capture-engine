@@ -28,7 +28,9 @@ Primary sources:
 ## Important Support and Output Paths
 - `external/ffmpeg/`
   - Local FFmpeg install root used by the custom Windows build flow.
-- `patches/ffmpeg/`
+- `tools/licenses/`
+  - Bundled third-party license texts and the FFmpeg vendor runtime notice.
+- `tools/patches/ffmpeg/`
   - Patch set applied during the custom FFmpeg build.
 - `installed/captureengine/`
   - Main runtime output directory for CaptureEngine binaries, logs, and `ffmpeg/` runtime DLLs.

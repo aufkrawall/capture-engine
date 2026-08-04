@@ -54,7 +54,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
                     build.copy_bundled_runtime_licenses(str(licenses), str(ffmpeg))
 
     def test_ffmpeg_notice_documents_vendor_runtime_boundary(self) -> None:
-        notice = (Path(build.__file__).parent / "licenses/FFmpeg_NOTICE.txt").read_text(encoding="utf-8")
+        notice = (Path(build.__file__).parent / "tools" / "licenses" / "FFmpeg_NOTICE.txt").read_text(encoding="utf-8")
         self.assertIn("MIT_ffnvcodec.txt", notice)
         self.assertIn("nvEncodeAPI64.dll", notice)
         self.assertIn("MIT_AMF-Headers.txt", notice)
@@ -64,7 +64,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("standards and patent disclaimer", notice)
 
     def test_ffnvcodec_license_file_exists(self) -> None:
-        license_file = Path(build.__file__).parent / "licenses" / "MIT_ffnvcodec.txt"
+        license_file = Path(build.__file__).parent / "tools" / "licenses" / "MIT_ffnvcodec.txt"
         self.assertTrue(license_file.exists(), f"Missing {license_file}")
         content = license_file.read_text(encoding="utf-8")
         self.assertIn("NVIDIA Corporation", content)
