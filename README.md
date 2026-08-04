@@ -1,4 +1,4 @@
-# CaptureEngine
+# Capture Engine
 
 Game capture, recording, overlays, graphics overrides, and frame pacing for Windows.
 
@@ -87,16 +87,20 @@ Video.fps=60
 DesktopOverlay.enabled=true
 ```
 
-For single-player games, injection unlocks the FPS limiter, the injected overlay, and graphics overrides. This
-example records `SinglePlayerGame.exe` through the injected hook, limits it to 120 fps, and applies V-Sync-off, 16x
-anisotropic filtering, a negative mip bias, and DLSS frame generation:
+For single-player games, injection unlocks the capture-sync FPS limiter, the injected overlay, and graphics
+overrides. This example records `SinglePlayerGame.exe` through the injected hook at 60 fps with capture sync
+limiting the game to 120 fps while recording (2x multiplier; `auto` prefers Reflex and falls back to FG-aware
+pacing or basic), and applies V-Sync-off, 16x anisotropic filtering, a negative mip bias, and DLSS frame
+generation:
 
 ```ini
 [Profile.Single Player]
 process=SinglePlayerGame.exe
 video_capture=inject
-FpsLimiter.general_enabled=true
-FpsLimiter.general_fps=120
+Video.fps=60
+FpsLimiter.capture_sync_enabled=true
+FpsLimiter.capture_sync_multiplier=2
+FpsLimiter.capture_sync_limiter_mode=auto
 Graphics.vsync_mode=off
 Graphics.anisotropic_filtering=16x
 Graphics.mip_bias=-1.5
@@ -514,9 +518,12 @@ source-built dependencies when required.
 
 The repository contains GoogleTest coverage for capture scheduling, audio timing and codecs, FPS limiting,
 frame-generation transitions, shared-memory/IPC validation, graphics overrides, crash-dump policy, mux invariants, and
-configuration parsing. Native x86/x64 test applications exercise DirectDraw, D3D6-D3D12, OpenGL, Vulkan, frame
-generation, and deterministic A/V markers. The verification pipeline also checks tool self-tests, static analysis,
-sanitizers, PE hardening/architecture, import closure, and PDB availability.
+configuration parsing. Synthetic x86/x64 test applications cover every supported graphics API (DirectDraw,
+D3D6-D3D12, OpenGL, Vulkan) and every frame-generation path (FSR FG, DLSS FG, and DX12/Vulkan FG switching), plus a
+deterministic A/V stimulus harness. DirectDraw and the D3D6-D3D8 range are exercised only through those synthetic
+applications — the prehistoric APIs have not been validated against real games yet. The verification pipeline also
+checks tool self-tests, static analysis, sanitizers, PE hardening/architecture, import closure, and PDB
+availability.
 
 Robustness is exercised beyond unit tests: libFuzzer harnesses fuzz the configuration parser and IPC deserializer
 against byte-exact seed corpora (`build.py --run-fuzz`), DX12 frame-generation transitions are validated with
