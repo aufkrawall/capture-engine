@@ -2,6 +2,8 @@
 
 Game capture, recording, overlays, graphics overrides, and frame pacing for Windows.
 
+![CaptureEngine recording screenshot](.github/crrec.png)
+
 CaptureEngine records game video and multiple audio sources to Matroska files. It supports non-injected Windows
 Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-aware capture path. The project includes
 custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application profiles, and native FPS
