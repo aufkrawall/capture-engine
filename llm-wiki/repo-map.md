@@ -12,6 +12,8 @@ Primary sources:
   - Canonical build, lint, format, and test entry point; facade executing ordered fragments from `tools/build/`.
 - `tools/build/`
   - Ordered `build_part_*.py` source fragments executed by the `build.py` facade.
+- `tools/config/`
+  - Committed tool configuration (clang-format, clang-tidy, clangd, editorconfig, flake8, pyright), consumed via explicit paths by the build and lint drivers.
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
 - `captureengine/`

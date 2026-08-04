@@ -21,7 +21,7 @@ import build
 
 class ClangTidyConfigPolicyTest(unittest.TestCase):
     def test_clang_tidy_excludes_external_and_generated_headers(self) -> None:
-        config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
+        config = (Path(build.__file__).parent / "tools" / "config" / ".clang-tidy").read_text(encoding="utf-8")
         self.assertIn("HeaderFilterRegex:", config)
         self.assertIn("ExcludeHeaderFilterRegex:", config)
         for tree in ("external", "installed", "ffmpeg_build"):
@@ -36,13 +36,13 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
         findings were invisible. Both patterns must also accept backslashes,
         because clang-tidy reports included files with native separators.
         """
-        config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
+        config = (Path(build.__file__).parent / "tools" / "config" / ".clang-tidy").read_text(encoding="utf-8")
         include = re.search(r"^HeaderFilterRegex:\s*'(.+)'\s*$", config, re.MULTILINE)
         exclude = re.search(r"^ExcludeHeaderFilterRegex:\s*'(.+)'\s*$", config, re.MULTILINE)
         if include is None:
-            self.fail("HeaderFilterRegex not found in .clang-tidy")
+            self.fail("HeaderFilterRegex not found in tools/config/.clang-tidy")
         if exclude is None:
-            self.fail("ExcludeHeaderFilterRegex not found in .clang-tidy")
+            self.fail("ExcludeHeaderFilterRegex not found in tools/config/.clang-tidy")
         include_re = re.compile(include.group(1))
         exclude_re = re.compile(exclude.group(1))
 

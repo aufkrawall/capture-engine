@@ -18,6 +18,40 @@
         "--cross-file-rename"
     ],
 
+    // EditorConfig mirror: the committed config lives in tools/config/.editorconfig,
+    // which editors cannot discover from a non-root location.
+    "files.eol": "\n",
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true,
+    "[bat]": {
+        "files.eol": "\r\n"
+    },
+    "[powershell]": {
+        "files.eol": "\r\n"
+    },
+    "[markdown]": {
+        "files.trimTrailingWhitespace": false
+    },
+
+    // Pyright mirror: tools/config/pyrightconfig.json is authoritative for
+    // build lint; these settings keep the editor on the same scope.
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.pythonVersion": "3.10",
+    "python.analysis.include": [
+        "build.py",
+        "tools",
+        "testapp"
+    ],
+    "python.analysis.exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        "build/msys64",
+        ".venv",
+        "build",
+        "installed",
+        "**/*_part_*.py"
+    ],
+
     // File-association helpers so VS Code treats headers consistently
     "files.associations": {
         "*.h": "cpp",

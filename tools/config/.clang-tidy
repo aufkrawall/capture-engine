@@ -30,4 +30,4 @@ CheckOptions:
 # 195 header locations, were invisible until this was narrowed.
 HeaderFilterRegex: '[\\/](common|hook|captureengine|mediaengine|testapp|tests)[\\/]'
 ExcludeHeaderFilterRegex: '[\\/](external|installed|ffmpeg_build)[\\/]|[\\/]build[\\/](msys64|obj|tmp|fg_sdk_include|verification)[\\/]'
-FormatStyle: file
+FormatStyle: file:tools/config/.clang-format

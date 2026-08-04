@@ -92,7 +92,12 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
             format_issue_files = set()
             for index in range(0, len(files), chunk_size):
                 chunk = files[index : index + chunk_size]
-                command = [clang_format, "--dry-run", "-Werror"] + chunk
+                command = [
+                    clang_format,
+                    "--dry-run",
+                    "-Werror",
+                    f"--style=file:{os.path.join(b.PROJECT_ROOT, 'tools', 'config', '.clang-format')}",
+                ] + chunk
                 result = subprocess.run(command, capture_output=True, text=True, env=env)
                 combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
                 if combined:
@@ -136,7 +141,15 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
         has_flake8 = False
     if has_flake8:
         b.log("Running flake8...")
-        command = [sys.executable, "-m", "flake8", "build.py", "tools", "testapp"]
+        command = [
+            sys.executable,
+            "-m",
+            "flake8",
+            f"--config={os.path.join(b.PROJECT_ROOT, 'tools', 'config', '.flake8')}",
+            "build.py",
+            "tools",
+            "testapp",
+        ]
         result = subprocess.run(command, capture_output=True, text=True)
         b.write_process_diagnostics_artifact("flake8_diagnostics", "flake8.log", command, result)
         if result.returncode:
@@ -165,7 +178,7 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
             "-m",
             "pyright",
             "-p",
-            os.path.join(b.PROJECT_ROOT, "pyrightconfig.json"),
+            os.path.join(b.PROJECT_ROOT, "tools", "config", "pyrightconfig.json"),
         ]
         result = subprocess.run(command, capture_output=True, text=True)
         b.write_process_diagnostics_artifact("pyright_diagnostics", "pyright.log", command, result)

@@ -4,9 +4,9 @@ Last cross-checked: 2026-07-28
 
 Primary sources:
 - `AGENTS.md`
-- `.clang-format`
-- `.flake8`
-- `pyrightconfig.json`
+- `tools/config/.clang-format`
+- `tools/config/.flake8`
+- `tools/config/pyrightconfig.json`
 - `common/raii_helpers.h`
 - representative headers such as `common/shared_defs.h`, `hook/common/dx12_overlay_policy.h`, and `hook/wrappers/custom_hook.h`
 
@@ -16,7 +16,7 @@ This page records the style rules that are either tool-backed or strongly reflec
 ## Tool-Backed Rules
 
 ### C++
-- `.clang-format` is based on Google style, but it is descriptive guidance for existing files rather than permission to rewrite them wholesale.
+- `tools/config/.clang-format` is based on Google style, but it is descriptive guidance for existing files rather than permission to rewrite them wholesale.
 - Column limit is 120.
 - Indent width is 4 spaces and tabs are disabled.
 - Brace style is attached / K&R.

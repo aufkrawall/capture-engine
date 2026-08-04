@@ -20,8 +20,9 @@ class ClangTidyCacheTest(unittest.TestCase):
         self.source = self.root / "source.cpp"
         self.header = self.root / "shared.h"
         self.depfile = self.root / "source.o.d"
-        self.config = self.root / ".clang-tidy"
+        self.config = self.root / "tools" / "config" / ".clang-tidy"
         self.tool.write_bytes(b"clang-tidy")
+        self.config.parent.mkdir(parents=True, exist_ok=True)
         self.source.write_text('#include "shared.h"\nint value = SHARED;\n', encoding="utf-8")
         self.header.write_text("#define SHARED 1\n", encoding="utf-8")
         self.config.write_text("Checks: bugprone-*\n", encoding="utf-8")

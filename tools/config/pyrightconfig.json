@@ -2,15 +2,15 @@
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",
   "pythonPlatform": "Windows",
-  "include": ["build.py", "tools", "testapp"],
+  "include": ["../../build.py", "..", "../../testapp"],
   "exclude": [
-    "**/node_modules",
-    "**/__pycache__",
-    "build/msys64",
-    ".venv",
-    "build",
-    "installed",
-    "**/*_part_*.py"
+    "../../**/node_modules",
+    "../../**/__pycache__",
+    "../../build/msys64",
+    "../../.venv",
+    "../../build",
+    "../../installed",
+    "../../**/*_part_*.py"
   ],
   "ignore": [],
   "strict": [],
@@ -19,7 +19,7 @@
   },
   "executionEnvironments": [
     {
-      "root": "."
+      "root": "../.."
     }
   ],
   "analyzeUnannotatedFunctions": true,

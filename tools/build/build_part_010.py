@@ -188,7 +188,11 @@ def run_format(env):
             chunk_size = 50
             for i in range(0, len(files), chunk_size):
                 chunk = files[i : i + chunk_size]
-                cmd = [clang_format, "-i"] + chunk
+                cmd = [
+                    clang_format,
+                    "-i",
+                    f"--style=file:{os.path.join(PROJECT_ROOT, 'tools', 'config', '.clang-format')}",
+                ] + chunk
                 subprocess.run(cmd, env=env, check=True)
             log("C++ files formatted.")
     else:

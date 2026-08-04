@@ -684,7 +684,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_windows_sdk_headers_are_in_safe_include_order(self) -> None:
         project_root = Path(build.__file__).parent
-        format_config = (project_root / ".clang-format").read_text(encoding="utf-8")
+        format_config = (project_root / "tools" / "config" / ".clang-format").read_text(encoding="utf-8")
         self.assertIn("SortIncludes: Never", format_config)
         for relative_path, dependent_header in (
             ("common/module_enumeration.h", "#include <psapi.h>"),

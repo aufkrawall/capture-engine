@@ -160,7 +160,7 @@ def write_compile_commands_json() -> Optional[str]:
             f"{'Generated' if changed else 'Validated'} compile_commands.json ({len(unique_commands)} entries)",
             detail=not changed,
         )
-        if os.path.exists(os.path.join(PROJECT_ROOT, ".clangd")):
+        if os.path.exists(os.path.join(PROJECT_ROOT, "tools", "config", ".clangd")):
             log("LSP: leaving .clangd unchanged; compile_commands.json is authoritative", detail=True)
         return compile_commands_path
     except Exception as e:

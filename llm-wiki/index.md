@@ -5,9 +5,9 @@ Last cross-checked: 2026-08-01 (latched recording-capacity health and truthful a
 Primary sources:
 - `AGENTS.md`
 - `build.py`
-- `.clang-format`
-- `.flake8`
-- `pyrightconfig.json`
+- `tools/config/.clang-format`
+- `tools/config/.flake8`
+- `tools/config/pyrightconfig.json`
 - `captureengine/*`
 - `hook/*`
 - `tests/*`

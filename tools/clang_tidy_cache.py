@@ -104,19 +104,8 @@ def _parse_depfile(path: Path, directory: Path) -> Optional[List[Path]]:
 
 def _config_files(source: Path, project_root: Path) -> List[Path]:
     """Return clang-tidy configuration files that can affect this source."""
-    configs: List[Path] = []
-    current = source.parent
-    root = project_root.resolve()
-    while True:
-        candidate = current / ".clang-tidy"
-        if candidate.is_file():
-            configs.append(candidate)
-            # clang-tidy stops at the first config unless InheritParentConfig is
-            # enabled. Hashing every ancestor remains conservative and cheap.
-        if current == root or current.parent == current:
-            break
-        current = current.parent
-    return configs
+    config = project_root.resolve() / "tools" / "config" / ".clang-tidy"
+    return [config] if config.is_file() else []
 
 
 def _entry_fingerprint(
@@ -242,6 +231,7 @@ def run_cached_clang_tidy(
         command = [
             clang_tidy,
             *RUN_FLAGS,
+            f"--config-file={root / 'tools' / 'config' / '.clang-tidy'}",
             f"-p={database_dir}",
             str(source),
         ]
@@ -351,6 +341,7 @@ def run_snapshot_preflight(
     command = (
         clang_tidy,
         *RUN_FLAGS,
+        f"--config-file={Path(project_root).resolve() / 'tools' / 'config' / '.clang-tidy'}",
         f"-p={snapshot_dir}",
         "<content-addressed preflight translation units>",
     )
