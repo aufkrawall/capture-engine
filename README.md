@@ -57,8 +57,8 @@ expectations](#bug-reports-and-support-expectations).
 ## Quick start
 
 Unpack the release folder and start `CaptureEngine.exe`. On first run it creates `config.ini` next to the executable;
-an existing file is never overwritten. The generated file is the full user reference and ends with safe/unsafe
-application-profile examples.
+an existing file is never overwritten. Left-click the tray icon to open `config.ini`; right-click exits the program.
+The generated file is the full user reference and ends with safe/unsafe application-profile examples.
 
 Default hotkeys: Ctrl+9 starts/stops a recording (F9 is the fallback if the hotkey is disabled), Ctrl+8 toggles the FPS
 display, Ctrl+0 takes a screenshot, and Ctrl+Minus records audio only. Recordings and screenshots go to `captures/`
@@ -67,8 +67,29 @@ and `screenshots/` next to the executable unless `[Output]` redirects them; logs
 
 The default configuration records through WGC or DXGI Desktop Duplication without injection, and the non-injected
 desktop overlay can show recording status while those paths are active. Before enabling injected capture, overlays, or
-graphics overrides with any software, read [Anti-cheat safety](#anti-cheat-safety) and the profile examples at the end
-of `config.ini`.
+graphics overrides with any software, read [Anti-cheat safety](#anti-cheat-safety) and the [app profile
+example](#app-profile-example) below; the generated `config.ini` also ends with more safe/unsafe profile examples.
+
+## App profile example
+
+Per-game configuration is easier than it looks: add a small `[Profile.<name>]` block at the end of `config.ini` and
+only set the keys that should differ for that game. For example, record `MyGame.exe` at 60 fps through WGC without
+injection and limit it to 120 fps while recording:
+
+```ini
+[Profile.My Game]
+process=MyGame.exe
+video_capture=wgc
+dll_injection=never
+Video.fps=60
+FpsLimiter.general_enabled=true
+FpsLimiter.general_fps=120
+DesktopOverlay.enabled=true
+```
+
+`process=` is the executable name and is matched case-insensitively; the profile name is only a label. Any setting
+from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` shows. The generated
+`config.ini` ends with further safe and unsafe profile examples.
 
 ## Anti-cheat safety
 
@@ -409,6 +430,8 @@ There is no separate usage wiki. The generated `config.ini` is the user referenc
 valid values, safety notes, and complete application-profile examples. The authored source is
 [captureengine/config.ini.template](captureengine/config.ini.template), and its exact contents are embedded into
 CaptureEngine for first-run creation.
+
+See the [app profile example](#app-profile-example) for a minimal per-game setup.
 
 If anti-cheat is involved, consult the safe/unsafe examples at the end before enabling a profile. The decisive boundary
 is whether CaptureEngine loads its hook DLL, not whether video itself comes from WGC, DXGI, or injected capture.
