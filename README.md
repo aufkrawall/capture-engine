@@ -15,9 +15,11 @@ anything similar.
 ## Support
 
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-%23FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/aufkrawall)
 
-Sponsorships help with development time, hardware, and tooling. My other open-source projects would also profit
-from donations; they are listed in [Other projects](#other-projects) at the bottom of this page.
+Support through GitHub Sponsors or Buy Me a Coffee helps with development time, hardware, and tooling. My other
+open-source projects would also profit from donations; they are listed in [Other projects](#other-projects) at the
+bottom of this page.
 
 ## Contributing
 
