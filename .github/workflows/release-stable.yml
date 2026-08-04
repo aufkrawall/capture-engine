@@ -109,7 +109,7 @@ jobs:
 
       - name: Run build policy tests
         shell: pwsh
-        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening
+        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening tools.tests.test_privacy_paths
 
       - name: Resolve release version
         id: version

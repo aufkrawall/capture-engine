@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-04 - Scrubbed developer path from release-workflow history; added privacy-path gate
+
+- **Change:** a literal `C:\Users\<developer>\Programme\build\captureproject` example in
+  `.github/workflows/release-stable.yml` (introduced 2026-08-02, present in HEAD and five
+  commits including the `v0.1.5268` tag tree) was replaced with
+  `%USERPROFILE%\Programme\build\captureproject` across all reachable history via
+  `git filter-repo` in a scratch clone; `main` and the `v0.1.5268` tag were force-pushed
+  and the release notes updated. A full-object scan of all 21,084 reachable objects on a
+  fresh remote clone found zero remaining developer-profile literals.
+- **Guard:** new `tools/tests/test_privacy_paths.py` fails closed whenever a tracked file
+  contains `C:\Users\<name>` (or the MSYS/Cygwin PUA-colon spelling) with a user component
+  outside the placeholder allowlist (`TestUser`, `dev`, `<developer>`, ...). It runs in
+  the release workflow's "Run build policy tests" step and as the `privacy_paths` Python
+  tool self-test inside `--verify`; the working tree is scanned rather than history
+  because a leak that reaches origin/main is present in the tree that the release
+  workflow checks out.
+- **Lesson:** release-prep commits that mention local toolchain paths are exactly where
+  scrubbed identifiers reappear; the release path now fails closed on them.
+
 ### 2026-08-04 - Overlays now report failed captures, including start failures and process loss
 
 - **Change:** the inject overlay and pseudo/desktop overlay already showed
