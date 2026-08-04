@@ -593,15 +593,7 @@ for every report. Some reports may receive no individual reply even when the inf
 - [testsmem4u](https://github.com/aufkrawall/testsmem4u) — cross-platform RAM testing tool using proven patterns
 - [Shader-Stress](https://github.com/aufkrawall/Shader-Stress) — CPU stress test with shader-compilation-like
   workloads
-- [GreenPostInstallDebloatNative](https://github.com/aufkrawall/GreenPostInstallDebloatNative) — removes optional
-  driver bloat after a regular installation
-- [green-scripts](https://github.com/aufkrawall/green-scripts) — PowerShell scripts for various NVIDIA driver
-  control panel features
-- [DpcLatencyMon](https://github.com/aufkrawall/DpcLatencyMon) — Windows DPC latency monitoring
 - [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
-- [mpv-winbuild-python](https://github.com/aufkrawall/mpv-winbuild-python) — Python script that builds `mpv.exe` at
-  the push of a button
-- [pybecrasher](https://github.com/aufkrawall/pybecrasher) — Python-based CPU stress test mimicking UE5 workloads
 
 More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories). All of these
 projects would also profit from donations — see [Support](#support) at the top of this page.
