@@ -343,6 +343,10 @@ application's present-callback contract. Explicit transition state machines and 
 and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
 runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
 
+The injected overlay is compatible with various third-party overlays, such as Steam or Rockstar Social, but
+incompatible with others like RTSS. Whether a combination works still depends on the game, runtime, driver, and
+the overlay versions involved.
+
 NVIDIA Smooth Motion (driver-based frame generation) is recognized alongside DLSS and FSR frame generation, and the
 FG status line follows the same transition state machines.
 
