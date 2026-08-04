@@ -74,7 +74,7 @@ example](#app-profile-example) below; the generated `config.ini` also ends with 
 
 Per-game configuration is easier than it looks: add a small `[Profile.<name>]` block at the end of `config.ini` and
 only set the keys that should differ for that game. For example, record `MyGame.exe` at 60 fps through WGC without
-injection and limit it to 120 fps while recording:
+injection and show the desktop recording indicator while it is running:
 
 ```ini
 [Profile.My Game]
@@ -82,14 +82,13 @@ process=MyGame.exe
 video_capture=wgc
 dll_injection=never
 Video.fps=60
-FpsLimiter.general_enabled=true
-FpsLimiter.general_fps=120
 DesktopOverlay.enabled=true
 ```
 
 `process=` is the executable name and is matched case-insensitively; the profile name is only a label. Any setting
-from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` shows. The generated
-`config.ini` ends with further safe and unsafe profile examples.
+from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` shows. FPS limiting
+requires DLL injection and therefore does not belong in a no-injection profile. The generated `config.ini` ends with
+further safe and unsafe profile examples.
 
 ## Anti-cheat safety
 
