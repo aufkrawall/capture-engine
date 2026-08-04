@@ -1,6 +1,6 @@
 # Repo Map
 
-Last cross-checked: 2026-08-03
+Last cross-checked: 2026-08-04
 
 Primary sources:
 - top-level repo layout
@@ -9,7 +9,9 @@ Primary sources:
 
 ## Core Tree
 - `build.py`
-  - Canonical build, lint, format, and test entry point.
+  - Canonical build, lint, format, and test entry point; facade executing ordered fragments from `tools/build/`.
+- `tools/build/`
+  - Ordered `build_part_*.py` source fragments executed by the `build.py` facade.
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
 - `captureengine/`

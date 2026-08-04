@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/msys64_linux
-          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'build_part_*.py') }}
+          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'tools/build/build_part_*.py') }}
 
       - name: Install Linux build dependencies
         shell: bash

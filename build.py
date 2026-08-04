@@ -3,29 +3,29 @@
 from pathlib import Path as _SourcePath
 
 _SOURCE_PARTS = (
-    'build_part_001.py',
-    'build_part_002.py',
-    'build_part_003.py',
-    'build_part_004.py',
-    'build_part_005.py',
-    'build_part_006.py',
-    'build_part_007.py',
-    'build_part_008.py',
-    'build_part_009.py',
-    'build_part_010.py',
-    'build_part_011.py',
-    'build_part_012.py',
-    'build_part_013.py',
-    'build_part_014.py',
-    'build_part_015.py',
-    'build_part_016.py',
+    'tools/build/build_part_001.py',
+    'tools/build/build_part_002.py',
+    'tools/build/build_part_003.py',
+    'tools/build/build_part_004.py',
+    'tools/build/build_part_005.py',
+    'tools/build/build_part_006.py',
+    'tools/build/build_part_007.py',
+    'tools/build/build_part_008.py',
+    'tools/build/build_part_009.py',
+    'tools/build/build_part_010.py',
+    'tools/build/build_part_011.py',
+    'tools/build/build_part_012.py',
+    'tools/build/build_part_013.py',
+    'tools/build/build_part_014.py',
+    'tools/build/build_part_015.py',
+    'tools/build/build_part_016.py',
 )
 _SOURCE_BODY_PARTS = (
-    'build_part_014.py',
+    'tools/build/build_part_014.py',
 )
 _SOURCE_TEXT = ""
 for _source_name in _SOURCE_PARTS:
-    _source_part = (_SourcePath(__file__).with_name(_source_name)).read_text(encoding="utf-8")
+    _source_part = (_SourcePath(__file__).parent / _source_name).read_text(encoding="utf-8")
     if _source_name in _SOURCE_BODY_PARTS:
         _source_part = _source_part.split("\n", 1)[1]
     _SOURCE_TEXT += _source_part
@@ -39,7 +39,7 @@ def read_source_text(
 ) -> str:
     source_text = ""
     for name in _source_parts:
-        part = (_source_path(__file__).with_name(name)).read_text(encoding="utf-8")
+        part = (_source_path(__file__).parent / name).read_text(encoding="utf-8")
         if name in _source_body_parts:
             part = part.split("\n", 1)[1]
         source_text += part

@@ -463,7 +463,8 @@ the current template for newly added settings and examples.
 analysis, binary verification, and packaging. On Windows it manages a project-local MSYS2 `clang64` environment,
 which supplies the package manager, Clang/LLD, build tools, headers, and libraries. MSYS2 is the controlled build
 environment; CaptureEngine itself is built as native Windows PE executables and DLLs and does not need to be launched
-through an MSYS shell.
+through an MSYS shell. `build.py` is a small compatibility facade; its ordered source fragments live under
+`tools/build/`.
 
 The build covers the x64 application and hook, the x86 compatibility hook, MediaEngine, both Vulkan layers, shaders
 and resources, the native graphics test applications, and the unit-test binaries. Shipping files are staged under
