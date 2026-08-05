@@ -698,10 +698,10 @@ TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedI
 
     const size_t processFrameQueueRouting = text.find("FSR FG: FSR creates a NEW swapchain");
     ASSERT_NE(processFrameQueueRouting, std::string::npos);
-    const size_t normalRoute = text.find("ID3D12CommandQueue* gameQueue = nullptr;", processFrameQueueRouting);
+    const size_t normalRoute = text.find("gameQueue = nullptr;", processFrameQueueRouting);
     ASSERT_NE(normalRoute, std::string::npos);
     const size_t protectedBranch = text.find("if (protectedOfficialFFXStartupOverlayOnly) {", normalRoute);
-    const size_t protectedReturn = text.find("return;", protectedBranch);
+    const size_t protectedReturn = text.find("return ProcessFrameFlow::kReturn;", protectedBranch);
     const size_t normalRouting = text.find("DecideSwapchainOverlayRouting(", protectedBranch);
     ASSERT_NE(protectedBranch, std::string::npos);
     ASSERT_NE(protectedReturn, std::string::npos);
