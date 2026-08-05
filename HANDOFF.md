@@ -1,8 +1,8 @@
 # Hand-off: remaining semantic-unit conversion (<800 lines per file)
 
-Last updated: 2026-08-05, before a context compaction. Everything below is
-committed and green at `60995f72` (incremental build + 1928 native unit tests +
-Python tool self-tests all pass). Resume directly with **Step 1** below.
+Last updated: 2026-08-06. Everything below is committed; the tree is clean at
+`10b2a723` (incremental build + native unit tests + Python tool self-tests all
+pass). Resume directly with the highest remaining tier below.
 
 ## Goal
 
@@ -24,22 +24,12 @@ scope. No `.inl` fragments may return - new code files must be `.cpp`.
 | `captureengine/media_main` module | internal header 2401 | header 598; +`media_main_wgc/recording/window/priority.cpp` | d405b0ec |
 | `captureengine/media_main_start.cpp` | 1950 | 634 + loop/targets/shutdown units (`MediaProcessSession`) | a9816048 |
 | `captureengine/media_main_threads.cpp` | 9437 | 15 semantic units + `media_main_encoder_session.h` (728); `EncoderThreadFunc` -> `MediaEncoderSession` | 1cce877b |
+| `hook/apis/dx12_hook_internal.h` | 12183 | 10 `dx12_hook_0_internal_helpers*.cpp` + `dx12_hook_internal_globals.cpp` + `dx12_hook_types.h` (624) + `dx12_hook_types_impl.cpp` + `dx12_hook_postsl_*` units; header -> 184 | 7f29da60 |
+| `hook/apis/dx12_hook_*.cpp` (main/overlay/ffx/ecl) | 1823/1915/404 | semantic parts (`_main`, `_overlay`, `_ffx`, `_ecl` + `_2.._4`, shared headers) | 10b2a723 |
 
 ## Remaining files (all > 800 lines)
 
-### Tier 1 - the two mega-monsters (highest risk, do first)
-
-1. **`captureengine/media_main_threads.cpp` 8574** - **DONE** at 1cce877b
-   (`MediaEncoderSession`, 15 units + header, all <=800; source-policy anchors
-   updated to qualified signatures; units numbered 00..09 so logical-source
-   order matches execution order).
-
-2. **`hook/apis/dx12_hook_process.cpp` 5578** - only `ProcessFrame` (5414).
-   Same session-class treatment. Part of the bigger `dx12_hook` module (see
-   Tier 2); do the module re-split first or together.
-
-### Tier 2 - dx12_hook module (facade-based re-split + decomposition)
-### Tier 3 - video_encoder module
+### Tier 1 - video_encoder module
 
 - `mediaengine/video_encoder_encode.cpp` 2511 (`EncodeFrame` 1040),
   `video_encoder_conversion.cpp` 1416, `video_encoder_configure.cpp` 1197,
@@ -48,7 +38,7 @@ scope. No `.inl` fragments may return - new code files must be `.cpp`.
 - Facade: parent of a2a7a853 (i.e. a4d3578a) - `git restore --source a4d3578a
   -- mediaengine/video_encoder.cpp mediaengine/video_encoder_part_*.inl` (12 parts).
 
-### Tier 4 - class-heavy internal headers (de-inline classes into units)
+### Tier 2 - class-heavy internal headers (de-inline classes into units)
 
 `mediaengine_internal.h` 6667 (class `MediaEngine`, ~6579 inline),
 `wgc_capture_internal.h` 3924 (`WGCCapture::Impl` ~3285),
@@ -64,7 +54,7 @@ inline member-function body out to a unit `.cpp` as an out-of-line definition
 to declarations only. The splitter does NOT do this automatically - it hoists
 whole classes - so this part is manual/semi-scripted.
 
-### Tier 5 - remaining over-800 units (facade re-splits)
+### Tier 3 - remaining over-800 units (facade re-splits)
 
 `dx11_hook_present.cpp` 809 (parent of a4d3578a), `opengl_sampler_override.cpp`
 1126 (8ff0b9cd), `fg_session_state.cpp` 1037 (never split - first-time split
@@ -72,15 +62,17 @@ from current tree), `dxgi_swapchain_wrap_present.cpp` 1022 (e7361204),
 `custom_overlay_dx12.cpp` 894 (never split), `overlay_adapter_render.cpp` 857
 (8ff0b9cd), `app_audio_capture_loop.cpp` 808 (652d85f0).
 
-### Tier 6 - test apps
+### Tier 4 - test apps
 
 `testapp/dx12_av_sync_test.cpp` 1159, `dx12_fg_switch_render.cpp` 1033,
-`dx12_fsr_fg_test.cpp` 862, `vulkan_fg_switch_renderer.cpp` 1025,
-`vulkan_fg_switch_test.cpp` 963, `vulkan_fg_switch_test_internal.h` 973,
-`vulkan_fg_switch_fidelityfx.cpp` 837, `vulkan_fg_switch_streamline.cpp` 827,
-`tests/test_dxgi_shared_part3.cpp` 807. Multi-source test-app builds are
-registered in `tools/build/build_part_011.py`
+`vulkan_fg_switch_renderer.cpp` 1025, `vulkan_fg_switch_test.cpp` 963,
+`vulkan_fg_switch_test_internal.h` 973, `vulkan_fg_switch_fidelityfx.cpp` 837,
+`vulkan_fg_switch_streamline.cpp` 827, `tests/test_dxgi_shared_part3.cpp` 807.
+Multi-source test-app builds are registered in `tools/build/build_part_011.py`
 (`testapp_object_path(cmd, arch, source_index)`); keep one object per source.
+
+`dx12_dlss_fg_test.cpp` 787 and `cursor_renderer.cpp` 793 are close to the
+ceiling; they are legal today (<=800) and need no work.
 
 ## Tooling (tools/refactor/source_splitter.py)
 
@@ -175,12 +167,12 @@ them.
 
 ## Resumption order
 
-1. `media_main_threads.cpp` (`EncoderThreadFunc` session class).
-2. `dx12_hook` module (incl. `ProcessFrame` + `PostSLOverlayRender`).
-3. `video_encoder` module.
-4. Class-heavy internal headers (Tier 4).
-5. Remaining units (Tier 5), test apps (Tier 6).
-6. Final `--verify`, baselines, wiki, one last commit.
+1. `video_encoder` module (Tier 1).
+2. Class-heavy internal headers (Tier 2): mediaengine 6667, dx9 4631,
+   dx11 3989, wgc 3924, streamline 3868, ddraw 2770, dx8 1809, ffx 1549,
+   layer_capture 1285, opengl 1218.
+3. Remaining units (Tier 3), test apps (Tier 4).
+4. Final `--verify`, baselines, wiki, one last commit.
 
 Commit after every finished file/module - never leave the tree dirty across a
 compaction.
