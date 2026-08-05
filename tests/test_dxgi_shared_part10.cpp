@@ -552,8 +552,8 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     ASSERT_NE(legacyForward, std::string::npos);
     EXPECT_LT(legacyRecord, legacyForward)
         << "global tags must receive the same official-UI record before Streamline observes them";
-    EXPECT_NE(streamline.find("g_SLSetTagTarget"), std::string::npos);
-    EXPECT_NE(streamline.find("{\"slSetTag\", &g_SLSetTagTarget"), std::string::npos)
+    EXPECT_NE(streamline.find("streamline_hook_g_SLSetTagTarget"), std::string::npos);
+    EXPECT_NE(streamline.find("{\"slSetTag\", &streamline_hook_g_SLSetTagTarget"), std::string::npos)
         << "legacy tag hook state must invalidate safely across Streamline unload/reload";
 
     const size_t evaluateDeclaration = streamline.find("slResult Hooked_slEvaluateFeature");
@@ -562,9 +562,9 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     ASSERT_NE(evaluateHook, std::string::npos);
     const size_t evaluateGate = streamline.find("dx12_streamline_ui_overlay::OnFrameTag(frameToken)", evaluateHook);
     const size_t evaluateLocalTag =
-        streamline.find("StructTypesEqual(input->structType, kResourceTagStructType)", evaluateGate);
+        streamline.find("StructTypesEqual(input->structType, streamline_hook_kResourceTagStructType)", evaluateGate);
     const size_t evaluateRecord =
-        streamline.find("TryRecordOfficialUiResourceTag(frameToken, tag, commandBuffer)", evaluateLocalTag);
+        streamline.find("TryRecordOfficialUiResourceTag(frameToken, tag, streamline_hook_commandBuffer)", evaluateLocalTag);
     const size_t evaluateForward = streamline.find("return originalEvaluateFeature", evaluateRecord);
     ASSERT_NE(evaluateGate, std::string::npos);
     ASSERT_NE(evaluateLocalTag, std::string::npos);
@@ -573,7 +573,7 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     EXPECT_LT(evaluateGate, evaluateLocalTag)
         << "steady-state evaluate calls must remain one atomic bootstrap gate before input scanning";
     EXPECT_LT(evaluateRecord, evaluateForward) << "Streamline's local volatile-tag use/copy must include CE's UI draw";
-    EXPECT_NE(streamline.find("{\"slEvaluateFeature\", &g_SLEvaluateFeatureTarget"), std::string::npos)
+    EXPECT_NE(streamline.find("{\"slEvaluateFeature\", &streamline_hook_g_SLEvaluateFeatureTarget"), std::string::npos)
         << "evaluate hook state must invalidate safely across Streamline unload/reload";
 
     EXPECT_NE(renderer.find("slot.target = request.uiResource"), std::string::npos);
@@ -605,7 +605,7 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     const std::string renderer = readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
 
-    const size_t getStateLookup = streamline.find("strcmp(functionName, \"slDLSSGGetState\")");
+    const size_t getStateLookup = streamline.find("strcmp(streamline_hook_functionName, \"slDLSSGGetState\")");
     ASSERT_NE(getStateLookup, std::string::npos);
     const size_t lookupStandby = streamline.find("BeginPreactivationStandby(2)", getStateLookup);
     const size_t lookupReturn = streamline.find("return result;", getStateLookup);
@@ -632,7 +632,7 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     const size_t getStateHook = streamline.find("slResult Hooked_slDLSSGGetState", getStateDeclaration + 1);
     ASSERT_NE(getStateHook, std::string::npos);
     const size_t callStandby = streamline.find("BeginPreactivationStandby(requestedOutputs)", getStateHook);
-    const size_t callOriginal = streamline.find("originalGetState(viewport, state, options)", getStateHook);
+    const size_t callOriginal = streamline.find("originalGetState(viewport, state, streamline_hook_options)", getStateHook);
     ASSERT_NE(callStandby, std::string::npos);
     ASSERT_NE(callOriginal, std::string::npos);
     EXPECT_LT(callStandby, callOriginal)

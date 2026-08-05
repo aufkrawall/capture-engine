@@ -594,10 +594,10 @@ class Scanner:
                     and pending[2].text == "="
                 )
             if (
-                any(t.text == "=" for t in pending)
-                or is_static
-                or (anon_region is not None and not is_decl_stmt)
-            ) and not is_ns_alias:
+                (any(t.text == "=" for t in pending) or is_static or anon_region is not None)
+                and not is_decl_stmt
+                and not is_ns_alias
+            ):
                 emit("var", _var_name(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
             else:
                 emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
@@ -805,7 +805,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             return True
         if c.kind == "func" and c.template:
             return True
-        if c.kind == "class" and idx not in classes_in_units and c.anon_region is None:
+        if c.kind == "class" and idx not in classes_in_units:
             return True
         if c.kind == "extern" and idx not in extern_in_units:
             return True
@@ -872,6 +872,8 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         ns = () if c.ns_path == ("",) else c.ns_path
         if c.kind == "var":
             header_parts.append(_wrap_ns(comments + "inline " + body, ns))
+        elif body.lstrip().startswith("template"):
+            header_parts.append(_wrap_ns(comments + body, ns))
         else:
             header_parts.append(_wrap_ns(comments + "inline " + body, ns))
 
@@ -883,8 +885,8 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     for idx, c in enumerate(chunks):
         if idx in keep_in_units or idx in header_idx:
             continue
-        if c.kind == "class" and idx not in classes_in_units and c.anon_region is None:
-            ns = () if c.ns_path == ("",) else c.ns_path
+        if c.kind == "class" and idx not in classes_in_units:
+            ns = c.ns_path
             prefix = "class" if c.text.lstrip().startswith("class") else "struct"
             header_parts.append(_wrap_ns(f"{prefix} {c.name};", ns))
 
