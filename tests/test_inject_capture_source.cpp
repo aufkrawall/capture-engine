@@ -64,10 +64,14 @@ TEST(InjectCaptureSourceTest, VulkanCaptureFailureCannotPoisonFenceOrPublishUnsu
 TEST(InjectCaptureSourceTest, VulkanQueueFamilyChangesDoNotWaitForTheWholeDevice) {
     const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
     ASSERT_FALSE(source.empty());
-    const std::string body = FunctionBody(source,
-                                          "inline VulkanCaptureState::CommandResources* "
-                                          "EnsureCaptureCommandResources(",
-                                          "// Helper to get LUID from Vulkan Physical Device");
+    // The internal header now carries declarations only; anchor on the
+    // out-of-line definition in the layer_capture_impl units (rfind: the
+    // header prototype would otherwise match first).
+    const size_t begin = source.rfind("VulkanCaptureState::CommandResources* EnsureCaptureCommandResources(");
+    const size_t end = source.find("bool GetLUIDFromPhysicalDevice(", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = source.substr(begin, end - begin);
     ASSERT_FALSE(body.empty());
 
     EXPECT_EQ(body.find("fp_vkDeviceWaitIdle"), std::string::npos);
