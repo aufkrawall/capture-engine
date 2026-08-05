@@ -596,3 +596,68 @@ private:
     HANDLE handle_ = nullptr;
     const char* role_ = "Thread";
 };
+
+class MediaProcessSession {
+public:
+    int Run(const AppConfig& initialConfig);
+
+private:
+    AppConfig config;
+    ProcessIPCServer ipc{ProcessMode::Media};
+    bool mediaEngineReady = false;
+    std::string exeDir;
+    std::string configPath;
+    std::string mediaCacheDir;
+    ID3D11Device* d3dDevice = nullptr;
+    ID3D11DeviceContext* d3dContext = nullptr;
+    LARGE_INTEGER qpcFreq{};
+    int64_t recordingStartTime = 0;
+    DWORD lastEarlyWgcScan = 0;
+    DWORD lastWindowScanTime = 0;
+    HWND currentCapturedWindow = NULL;
+    std::string currentCapturedMonitorStableId;
+    bool currentTargetPrefersInject = false;
+    WgcRetargetRequest pendingWgcRetarget;
+    uint32_t lastSourcePid = 0;
+    uint32_t activeConfigSourcePid = 0;
+    std::string activeConfigProcessName;
+    ce::capture_handoff::InjectToWgcHandoff autoWgcHandoff;
+    uint32_t autoWgcHandoffBaselineFrames = 0;
+    uint64_t autoWgcHandoffDeadlineTick = 0;
+    static constexpr uint64_t kAutoWgcHandoffReadyTimeoutMs = 2000;
+
+    void unloadMediaEngineIdle();
+    bool ensureMediaEngineReady();
+    bool isExplicitInjectConfig();
+    bool isExplicitWgcConfig();
+    bool isExplicitDxgiDupConfig();
+    bool isExplicitScreenGrabConfig();
+    bool isAutoCaptureConfig();
+    void setWgcPreferenceAfterFailure();
+    bool isInjectCaptureTarget(const std::string& processName);
+    std::string resolveSourceProcessName(uint32_t sourcePid, const std::string& knownName = std::string{});
+    bool isInjectCaptureTargetForSource(uint32_t sourcePid, const std::string& knownName = std::string{});
+    void applyWgcOptions(WGCCapture* capture);
+    bool ensureWgcDevice();
+    void releaseIdleWgcResources();
+    void clearCurrentWgcTarget();
+    void discardCurrentWgcTarget(const char* reason);
+    void queueWgcRetarget(HWND targetWindow, HMONITOR targetMonitor, bool preferMonitor, const char* reason);
+    std::string refreshActiveConfig(bool forceReload, HWND targetWindow = NULL, uint32_t confirmedPid = 0,
+                                   const std::string& confirmedProcessName = std::string{});
+    bool markInjectPreferredTarget(HWND targetWindow, uint32_t sourcePid, const char* reason);
+    bool primeWgcMonitorTarget(HMONITOR targetMonitor);
+    bool primeConfiguredMonitorTarget(HWND targetWindow, HMONITOR targetHint, const std::string& selectorText,
+                                            const char* context);
+    bool primePinnedMonitorTarget(HMONITOR previousMonitor, const char* context);
+    bool monitorSelectorIsExplicit(const std::string& selectorText);
+    bool primeDxgiDupForWindowMonitor(HWND targetWindow, const std::string& selectorText,
+                                            const char* reason);
+    bool primeWgcWindowTarget(HWND targetWindow, bool logPrimed, bool allowMonitorFallback = true);
+    bool applyPendingWgcRetarget();
+    void prepareCaptureForRecordingStart();
+    int Init();
+    void Loop();
+    void Shutdown();
+};
+

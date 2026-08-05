@@ -349,8 +349,10 @@ TEST(CaptureCoordinatorSourceTest, MonitorSelectionIsStableAndNeverFallsBackAcro
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t monitorPrime = source.find("auto primeWgcMonitorTarget");
-    const size_t configuredPrime = source.find("auto primeConfiguredMonitorTarget", monitorPrime);
+    // The monitor-target methods live in the media_main_start_targets unit;
+    // anchor on the definitions (the internal header carries the prototypes).
+    const size_t monitorPrime = source.find("MediaProcessSession::primeWgcMonitorTarget(");
+    const size_t configuredPrime = source.find("MediaProcessSession::primeConfiguredMonitorTarget(");
     ASSERT_NE(monitorPrime, std::string::npos);
     ASSERT_NE(configuredPrime, std::string::npos);
     const std::string monitorPrimeBody = source.substr(monitorPrime, configuredPrime - monitorPrime);
