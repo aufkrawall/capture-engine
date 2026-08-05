@@ -113,9 +113,9 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t resolver = source.find("auto selectCursorStateForScheduledQpc");
-    const size_t repeat = source.find("auto repeatLastFrameForScheduledQpc", resolver);
-    const size_t recovery = source.find("auto recoverScheduledFreshEncodeFailure", repeat);
+    const size_t resolver = source.find("MediaEncoderSession::selectCursorStateForScheduledQpc");
+    const size_t repeat = source.find("MediaEncoderSession::repeatLastFrameForScheduledQpc", resolver);
+    const size_t recovery = source.find("MediaEncoderSession::recoverScheduledFreshEncodeFailure", repeat);
     ASSERT_NE(resolver, std::string::npos);
     ASSERT_NE(repeat, std::string::npos);
     ASSERT_NE(recovery, std::string::npos);
@@ -192,7 +192,7 @@ TEST(CaptureCoordinatorSourceTest, CfrRecoverySeparatesOutputGridFromWakeDeadlin
     ASSERT_FALSE(source.empty());
 
     const size_t wgcOutputGrid = source.find("scheduledOutputQpc = ce::capture_policy::GetNextCfrOutputQpc");
-    const size_t wgcSelection = source.find("auto computeWgcSelectionTargetForTick", wgcOutputGrid);
+    const size_t wgcSelection = source.find("MediaEncoderSession::computeWgcSelectionTargetForTick", wgcOutputGrid);
     ASSERT_NE(wgcOutputGrid, std::string::npos);
     ASSERT_NE(wgcSelection, std::string::npos);
     EXPECT_LT(wgcOutputGrid, wgcSelection);
@@ -475,7 +475,7 @@ TEST(CaptureCoordinatorSourceTest, WgcStartupSmoothnessHistoryIsProtectedBeforeL
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t pruneHelper = source.find("auto pruneStaleWgcVisualDebt");
+    const size_t pruneHelper = source.find("MediaEncoderSession::pruneStaleWgcVisualDebt");
     const size_t startupProtection = source.find("ShouldProtectWgcStartupSmoothnessHistory", pruneHelper);
     const size_t liveDebtFloor = source.find("GetWgcLiveVisualDebtFloorQpcForMode", startupProtection);
     const size_t gridPrune = source.find("ShouldPruneWgcVisualDebtFrameForGrid", liveDebtFloor);
@@ -527,8 +527,8 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyGatesEveryVideoSubmissionSha
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t repeatBegin = source.find("auto repeatLastFrameForScheduledQpc");
-    const size_t repeatEnd = source.find("auto recoverScheduledFreshEncodeFailure", repeatBegin);
+    const size_t repeatBegin = source.find("MediaEncoderSession::repeatLastFrameForScheduledQpc");
+    const size_t repeatEnd = source.find("MediaEncoderSession::recoverScheduledFreshEncodeFailure", repeatBegin);
     ASSERT_NE(repeatBegin, std::string::npos);
     ASSERT_NE(repeatEnd, std::string::npos);
     const std::string repeat = source.substr(repeatBegin, repeatEnd - repeatBegin);
