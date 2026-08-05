@@ -40,8 +40,11 @@ This page records the style rules that are either tool-backed or strongly reflec
 - C++ modules are split into semantic `.cpp` units plus a generated `<module>_internal.h` that holds the hoisted
   includes, class forward declarations, prototypes of non-static functions, and shared file-scope state. Shared
   variables are renamed with a `<module>_` prefix (string/comment aware); shared static functions become `inline`
-  at global scope (preserving overload resolution). See `tools/refactor/source_splitter.py` and its grouping JSONs
-  under `build/refactor/`.
+  at global scope (preserving overload resolution). Grouping JSONs under `build/refactor/` can also mark function
+  chunks `destatic` (turning file-static functions into unique non-static units with header prototypes) and
+  `hoist_regions` (hoisting `#if`-regions that hoisted classes depend on). See `tools/refactor/source_splitter.py`.
+- Multi-unit test apps (e.g. `dx12_fg_switch_test`, `vulkan_fg_switch_test`) compile one object per unit and link
+  them together via the per-source object paths in `tools/build/build_part_011.py`.
 - A file that is genuinely one cohesive unit may exceed the ceiling and be registered in
   `tools/file_size_baseline.json` as deliberate debt; keep such entries rare.
 - Python compatibility facades execute ordered fragments in one module-global namespace. This preserves direct scripts,

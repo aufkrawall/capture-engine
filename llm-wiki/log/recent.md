@@ -1,29 +1,32 @@
 # llm-wiki Log
 
-### 2026-08-05 - Source-fragment (.inl) conversion to semantic .cpp units (in progress)
+### 2026-08-05 - Source-fragment (.inl) conversion to semantic .cpp units (COMPLETE)
 
-The mechanical 650-line `.inl` splits (commits `fdc0977d`/`02e3bafa`) are being converted back into
-semantic `.cpp` units. Completed so far (commits `1a886ccc`, `8ff0b9cd`, `652d85f0`, `e7361204`,
-`c74d4239`, `2951183c`): config; hook/common custom_overlay_dx12/gl/vk, fg_session_state,
-system_metrics, overlay_adapter (dxgi_shared NOT yet); hook/apis nvngx, dx8, ffx, opengl,
-opengl_sampler_override, ddraw, streamline; hook/wrappers dxgi_swapchain_wrap; hook/vulkan_layer
-vulkan_layer + layer_capture; mediaengine audio_capture, audio_encoder, app_audio_capture,
-video_encoder_options; captureengine injection, main, pseudo_overlay; reflex fold into
-`reflex_limiter.h`; testapp av_sync/fsr_fg merges.
+The mechanical 650-line `.inl` splits (commits `fdc0977d`/`02e3bafa`) are fully converted back
+into semantic `.cpp` units; **zero first-party `.inl` files remain**. Commits: `1a886ccc`,
+`8ff0b9cd`, `652d85f0`, `e7361204`, `c74d4239`, `2951183c`, `a4d3578a` (dx9/dx11/dxgi_shared),
+`a2a7a853` (mediaengine/video_encoder), `a7e934c4` (wgc_capture/media_main), `81a66743` +
+`aa92bbb0` (dx12_hook), `eb927200` (hook/main), `eee9554b` (dx12/vulkan FG switch test apps).
 
-Remaining (143 first-party `.inl` files): hook/apis dx9/dx11/dx12_hook/dxgi_shared, mediaengine
-mediaengine/video_encoder, captureengine wgc_capture/media_main, hook/main (reverted: extern "C"
-block placement + extern decl emission for shared globals need tool fixes first), testapp
-dx12_fg_switch/vulkan_fg_switch (need multi-source link changes in `tools/build/build_part_011.py`).
+Per-module unit layout: one `.cpp` per semantic entity (`<module>_<area>.cpp`), plus a generated
+`<module>_internal.h` holding hoisted includes/directives, class definitions, prototypes, and
+shared state. The test apps now compile multi-source: `tools/build/build_part_011.py` compiles
+one object per source and links them (`testapp_object_path` is per-source).
 
 Tooling: `tools/refactor/source_splitter.py` (reassemble/map/split) + `tools/refactor/reapply.py`
-(regenerate from grouping JSONs; `--source <commit>` restores pre-conversion facades). Generated
-`<module>_internal.h` headers carry hoisted includes, class forward declarations, prototypes, and
-shared state (variables renamed `<module>_`-prefixed, string/comment aware; static functions kept
-as `inline` at global scope to preserve overload resolution). `tests/source_fragment_reader.h`
-assembles logical sources from the internal header plus sibling units. `hook/main.cpp` was reverted
-to its `.inl` facade after the split exposed tool gaps; the remaining conversions follow the same
-grouping-JSON workflow.
+(regenerate from grouping JSONs in `build/refactor/`; `--source <commit>` restores
+pre-conversion facades). Splitter capabilities added during this effort: `destatic` (convert
+file-static functions to unique non-static units with header prototypes), `hoist_regions`
+(hoist `#if`-regions that hoisted classes depend on), extern-C function/block classification,
+`inline`-function sharing, declaration-only prototype emission, comment-safe default-arg
+stripping, and qualified namespace (`testapp::vkfg`) parsing. Grouping JSONs carry `module`,
+`header`, `units` (chunk index lists, `rest`), `destatic`, `hoist_regions`, `delete`, `facade`.
+
+Over-800-line files (internal headers and genuinely cohesive units such as
+`media_main_threads.cpp` with the 8.5k-line `EncoderThreadFunc`, `dx12_hook_process.cpp` with
+the 5.4k-line `ProcessFrame`) are registered in `tools/file_size_baseline.json` (49 entries).
+`tests/source_fragment_reader.h` assembles logical sources from the internal header plus sibling
+units; source-policy tests pattern-match the `<module>_`-prefixed shared statics.
 
 ### 2026-08-05 - Screen-grab recordings no longer open with a privacy blackout or CE's own startup status
 
