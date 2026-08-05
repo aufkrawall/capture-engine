@@ -616,12 +616,12 @@ class Scanner:
                 )
             )
 
-        def flush_statement() -> None:
+        def flush_statement(stmt_line: Optional[int] = None) -> None:
             nonlocal pending, pending_is_dir
             if not pending:
                 return
             start = pending_line
-            end = pending[-1].line
+            end = stmt_line if stmt_line is not None else pending[-1].line
             if pending_is_dir:
                 emit("directive", "", start, end + 1)
             else:
@@ -710,7 +710,7 @@ class Scanner:
                 continue
             if t.text == ";":
                 if pending:
-                    flush_statement()
+                    flush_statement(t.line)
                 i += 1
                 continue
             if t.text == "{":
