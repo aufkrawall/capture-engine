@@ -97,6 +97,10 @@ class MemberDef:
     head: str
     body: str
     name: str
+    before_dirs: list = field(default_factory=list)
+    after_dirs: list = field(default_factory=list)
+    nested_type_ret: str = ""
+    pp_guards: list = field(default_factory=list)
 
 
 @dataclass
@@ -106,10 +110,47 @@ class ClassInfo:
     body_open: int
     body_close: int
     members: list = field(default_factory=list)
+    nested_types: set = field(default_factory=set)
 
 
 TYPE_KEYWORDS = ("struct", "class", "enum", "union", "using", "typedef", "friend", "namespace")
 ACCESS_RE = re.compile(r"^\s*(public|private|protected)\s*:")
+
+
+def rebalance_directives(body: str) -> tuple[str, list[str], list[str]]:
+    """Move preprocessor directives that cross the member boundary out of the
+    body. Returns (new_body, before_directives, after_directives)."""
+    lines = body.split("\n")
+    balance = 0
+    before: list[str] = []
+    after: list[str] = []
+    kept: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if s.startswith(("#if", "#ifdef", "#ifndef")):
+            balance += 1
+            kept.append(line)
+        elif s.startswith("#endif"):
+            if balance == 0:
+                before.append(line)
+            else:
+                balance -= 1
+                kept.append(line)
+        elif s.startswith(("#else", "#elif")):
+            if balance == 0:
+                before.append(line)
+            else:
+                kept.append(line)
+        else:
+            kept.append(line)
+    if balance > 0:
+        opens = [i for i, l in enumerate(kept) if l.strip().startswith(("#if", "#ifdef", "#ifndef"))]
+        move = opens[-balance:]
+        for idx in move:
+            after.append(kept[idx])
+        for idx in sorted(move, reverse=True):
+            del kept[idx]
+    return "\n".join(kept), before, after
 
 
 def find_top_level_classes(text: str, sc: Scanner, only: set | None) -> list[ClassInfo]:
@@ -153,6 +194,14 @@ def find_top_level_classes(text: str, sc: Scanner, only: set | None) -> list[Cla
 
 def extract_member_definitions(text: str, sc: Scanner, cls: ClassInfo) -> None:
     """Fill cls.members with member-function definitions found in the class body."""
+    # Pass 1: collect nested type names declared in the class body.
+    body_text = text[cls.body_open + 1 : cls.body_close - 1]
+    for nm in re.finditer(
+        r"(?m)^\s*(?:struct|class|enum(?:\s+class)?)\s+([A-Za-z_]\w*)", body_text
+    ):
+        cls.nested_types.add(nm.group(1))
+    # Pass 1b: preprocessor guard stack at class level.
+    pp_stack: list[tuple[str, int]] = []  # (directive text, branch)
     i = cls.body_open + 1
     end = cls.body_close - 1
     depth = 1
@@ -170,6 +219,23 @@ def extract_member_definitions(text: str, sc: Scanner, cls: ClassInfo) -> None:
             j = text.find("*/", i + 2)
             i = end if j < 0 else j + 2
             continue
+        line = text[i : text.find("\n", i) if text.find("\n", i) >= 0 else end]
+        ls = line.strip()
+        if depth == 1 and ls.startswith(("#if", "#ifdef", "#ifndef")):
+            pp_stack.append((ls, 0))
+            i += len(line)
+            continue
+        if depth == 1 and ls.startswith("#endif"):
+            if pp_stack:
+                pp_stack.pop()
+            i += len(line)
+            continue
+        if depth == 1 and ls.startswith(("#else", "#elif")):
+            if pp_stack:
+                cond, branch = pp_stack[-1]
+                pp_stack[-1] = (cond, 1)
+            i += len(line)
+            continue
         if ch == "{" and depth == 1:
             stmt = text[last_term:i]
             stripped = stmt.strip()
@@ -180,14 +246,24 @@ def extract_member_definitions(text: str, sc: Scanner, cls: ClassInfo) -> None:
                     head = stmt
                     name = method_name(head)
                     if name:
+                        ret, _, _, _, _ = split_head(head)
+                        nested_ret = ret if ret and ret in cls.nested_types else ""
+                        # Keep the body verbatim: preprocessor directives inside
+                        # it balance against the per-member guard wrapper.
+                        body = text[i + 1 : close - 1]
+                        before_dirs, after_dirs = [], []
                         cls.members.append(
                             MemberDef(
                                 start=last_term,
                                 body_open=i,
                                 body_close=close,
                                 head=head,
-                                body=text[i + 1 : close - 1],
+                                body=body,
                                 name=name,
+                                before_dirs=before_dirs,
+                                after_dirs=after_dirs,
+                                nested_type_ret=nested_ret,
+                                pp_guards=list(pp_stack),
                             )
                         )
                         i = close
@@ -241,6 +317,11 @@ def param_open_index(head: str) -> int:
                     break
                 i += 1
             continue
+        if c == "#":
+            # Skip preprocessor lines (directives never open an init list).
+            j = h.find("\n", i)
+            i = len(h) if j < 0 else j + 1
+            continue
         if c in "([{<":
             depth += 1
         elif c in ")]}>":
@@ -249,6 +330,10 @@ def param_open_index(head: str) -> int:
             if i + 1 < len(h) and h[i + 1] == ":":
                 i += 1
             else:
+                line = h[h.rfind("\n", 0, i) + 1 : i]
+                if ACCESS_RE.match(line):
+                    i += 1
+                    continue
                 cut = i
                 break
         i += 1
@@ -388,6 +473,8 @@ def declaration_for(m: MemberDef) -> str:
 
 def definition_for(m: MemberDef, cls_name: str) -> str:
     ret, name, params, tail, init_list = split_head(m.head)
+    if ret and ret == m.nested_type_ret:
+        ret = f"{cls_name}::{ret}"
     tail = re.sub(r"\b(override|final)\b", "", tail)
     tail = re.sub(r"\s+", " ", tail).strip()
     params = strip_defaults(params)
@@ -399,13 +486,43 @@ def definition_for(m: MemberDef, cls_name: str) -> str:
     return defn + " {"
 
 
+def negate_pp(cond: str) -> str:
+    m = re.match(r"^#if\s+defined\s*\(\s*(\w+)\s*\)\s*$", cond)
+    if m:
+        return f"#if !defined({m.group(1)})"
+    m = re.match(r"^#if\s*!defined\s*\(\s*(\w+)\s*\)\s*$", cond)
+    if m:
+        return f"#if defined({m.group(1)})"
+    m = re.match(r"^#ifdef\s+(\w+)\s*$", cond)
+    if m:
+        return f"#ifndef {m.group(1)}"
+    m = re.match(r"^#ifndef\s+(\w+)\s*$", cond)
+    if m:
+        return f"#ifdef {m.group(1)}"
+    m = re.match(r"^#if\s+!(.*)$", cond)
+    if m:
+        return "#if " + m.group(1).strip()
+    m = re.match(r"^#if\s+(.*)$", cond)
+    if m:
+        return "#if !(" + m.group(1).strip() + ")"
+    return cond
+
+
+def guard_open_lines(m: MemberDef) -> list[str]:
+    return [cond if branch == 0 else negate_pp(cond) for cond, branch in m.pp_guards]
+
+
 def rebuild_class_body(text: str, cls: ClassInfo) -> str:
     out: list[str] = []
     cursor = cls.body_open + 1
     for m in sorted(cls.members, key=lambda x: x.start):
         out.append(text[cursor : m.start])
         comments = re.match(r"^(?:\s*(?://[^\n]*(?:\n|$)|/\*.*?\*/\s*))*", m.head, flags=re.S).group(0)
+        if m.before_dirs:
+            out.append("\n" + "\n".join(m.before_dirs) + "\n")
         out.append(comments + declaration_for(m))
+        if m.after_dirs:
+            out.append("\n" + "\n".join(m.after_dirs) + "\n")
         cursor = m.body_close
     out.append(text[cursor : cls.body_close - 1])
     return "".join(out)
@@ -421,6 +538,7 @@ def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
     last_term = 0
     depth = 0
     ns_stack: list[tuple[int, str | None]] = []  # (open_depth, name|None for anon)
+    pp_stack: list[tuple[str, int]] = []
     while i < n:
         ch = text[i]
         if ch == '"' or ch == "'":
@@ -434,6 +552,23 @@ def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
             j = text.find("*/", i + 2)
             i = n if j < 0 else j + 2
             continue
+        line = text[i : text.find("\n", i) if text.find("\n", i) >= 0 else n]
+        ls = line.strip()
+        if depth == len(ns_stack) and ls.startswith(("#if", "#ifdef", "#ifndef")):
+            pp_stack.append((ls, 0))
+            i += len(line)
+            continue
+        if depth == len(ns_stack) and ls.startswith("#endif"):
+            if pp_stack:
+                pp_stack.pop()
+            i += len(line)
+            continue
+        if depth == len(ns_stack) and ls.startswith(("#else", "#elif")):
+            if pp_stack:
+                cond, branch = pp_stack[-1]
+                pp_stack[-1] = (cond, 1)
+            i += len(line)
+            continue
         if ch == "{" and depth == len(ns_stack):
             stmt = text[last_term:i]
             code = re.sub(r"^(?:\s*(?://[^\n]*(?:\n|$)|/\*.*?\*/\s*))*", "", stmt, flags=re.S)
@@ -444,20 +579,33 @@ def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
                 i += 1
                 last_term = i
                 continue
-            if re.match(r"^\s*inline\s+(?!.*\btemplate\b)", code, flags=re.S) and "(" in code:
+            is_func = (
+                not re.match(r"^\s*(struct|class|enum|union|using|typedef|friend|namespace)\b", code)
+                and not re.match(r"^\s*static\b", code)
+                and not re.match(r"^\s*template\b", code)
+                and not re.match(r"^\s*(extern)\b", code)
+                and "(" in code
+                and re.search(r"[A-Za-z_~]\w*\s*\([^;{]*$", code, flags=re.S)
+            )
+            if is_func:
                 close = sc.match_brace(i)
                 name = method_name(code)
                 if name:
+                    body = text[i + 1 : close - 1]
+                    before_dirs, after_dirs = [], []
                     members.append(
                         (MemberDef(
                             start=last_term,
                             body_open=i,
                             body_close=close,
                             head=stmt,
-                            body=text[i + 1 : close - 1],
+                            body=body,
                             name=name,
+                            before_dirs=before_dirs,
+                            after_dirs=after_dirs,
                         ), tuple(comp for _, comp in ns_stack if comp))
                     )
+                    members[-1][0].pp_guards = list(pp_stack)
                     i = close
                     last_term = close
                     continue
@@ -509,7 +657,11 @@ def main() -> int:
         for m, _ in extracted:
             new_text += text[cursor : m.start]
             comments = re.match(r"^(?:\s*(?://[^\n]*(?:\n|$)|/\*.*?\*/\s*))*", m.head, flags=re.S).group(0)
+            if m.before_dirs:
+                new_text += "\n" + "\n".join(m.before_dirs) + "\n"
             new_text += comments + declaration_for(m)
+            if m.after_dirs:
+                new_text += "\n" + "\n".join(m.after_dirs) + "\n"
             cursor = m.body_close
         new_text += text[cursor:]
         # A pre-existing `inline` declaration for an extracted function would
@@ -560,6 +712,9 @@ def main() -> int:
     for path, members in units:
         parts = [include]
         for cls, m in members:
+            opens = guard_open_lines(m)
+            if opens:
+                parts.append("\n".join(opens))
             if cls.name:
                 parts.append(definition_for(m, cls.name))
             else:
@@ -577,6 +732,8 @@ def main() -> int:
                              + " {")
             parts.append(m.body.rstrip())
             parts.append("}")
+            if opens:
+                parts.append("\n".join("#endif" for _ in opens))
             if not cls.name and pseudo_namespaces.get(m.name, ()):
                 parts.append("".join("}" for _ in pseudo_namespaces[m.name]))
         unit_path = Path(path)
