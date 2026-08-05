@@ -1,3 +1,38 @@
+#include "audio_capture_internal.h"
+
+void AudioCapture::CaptureLoop() {
+    workerThreadId_ = GetCurrentThreadId();
+    const HRESULT coInitHr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
+        DLL_Log("[AudioCapture] CaptureLoop CoInitializeEx failed: 0x%x", coInitHr);
+        isCapturing.store(false, std::memory_order_release);
+        CompleteStartup(false);
+        workerThreadId_ = 0;
+        return;
+    }
+    const bool coInitNeedsUninitialize = SUCCEEDED(coInitHr);
+
+    bool startupSucceeded = false;
+    try {
+        HRESULT hr = CoCreateInstance(audio_capture_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, audio_capture_IID_IMMDeviceEnumerator,
+                                      reinterpret_cast<void**>(&pEnumerator));
+        if (FAILED(hr) || !pEnumerator) {
+            DLL_Log("[AudioCapture] Worker CoCreateInstance(MMDeviceEnumerator) failed: 0x%x", hr);
+        } else if (!isCapturing.load(std::memory_order_acquire)) {
+            DLL_Log("[AudioCapture] Worker initialization cancelled before endpoint resolution");
+        } else if (!ResolveCaptureDevice()) {
+            DLL_Log("[AudioCapture] Worker could not resolve the requested endpoint");
+        } else if (!isCapturing.load(std::memory_order_acquire)) {
+            DLL_Log("[AudioCapture] Worker initialization cancelled before client activation");
+        } else if (!ActivateAndStartClientOnDevice()) {
+            DLL_Log("[AudioCapture] Worker could not activate/start the requested endpoint");
+        } else if (!isCapturing.load(std::memory_order_acquire)) {
+            DLL_Log("[AudioCapture] Worker initialization cancelled after client activation");
+        } else {
+            startupSucceeded = true;
+        }
+    } catch (const std::exception& error) {
+
         DLL_Log("[AudioCapture] Worker initialization threw an exception: %s", error.what());
     } catch (...) {
         DLL_Log("[AudioCapture] Worker initialization threw an unknown exception");
@@ -341,7 +376,7 @@
 
             // Build packet with format info
             AudioPacket packet{};
-            FillPacketFormatFromWaveFormat(pwfx, &packet);
+            audio_capture_FillPacketFormatFromWaveFormat(pwfx, &packet);
             packet.captureEpoch = captureEpoch_.load(std::memory_order_acquire);
             packet.devicePosition = devicePosition;      // Store for debugging if needed
             packet.rawQpcPosition = rawQpcPosition;      // Store unmodified WASAPI timestamp for debugging

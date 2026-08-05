@@ -1,3 +1,105 @@
+#include "overlay_adapter_internal.h"
+
+void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    static int renderLogCount = 0;
+    if (renderLogCount < 5) {
+        HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d", renderLogCount,
+                initialized ? 1 : 0, (void*)renderer, (void*)ipc, ipc ? (void*)ipc->GetSharedMem() : nullptr,
+                (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1, viewportWidth,
+                viewportHeight);
+        renderLogCount++;
+    }
+
+    if (!initialized || !renderer) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - not initialized or no renderer");
+        return;
+    }
+
+    if (!ipc || !ipc->GetSharedMem()) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - no IPC or shared memory");
+        return;
+    }
+    auto* sharedMem = ipc->GetSharedMem();
+    auto cfg = sharedMem->ReadOverlayConfig();
+    if (!cfg.showOverlay) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
+        return;
+    }
+
+    // Update throttling
+    DWORD now = GetTickCount();
+    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval;
+    if (shouldUpdate) {
+        lastUpdateTime = now;
+        if (metrics) {
+            cachedFPS = metrics->GetCurrentFPS();
+            cachedAvgFPS = metrics->GetAverageFPS();
+            cached1PercentLow = metrics->Get1PercentLowFPS();
+            cached01PercentLow = metrics->Get01PercentLowFPS();
+        }
+        if (cfg.showCPU || cfg.showRAM || cfg.showGPU || cfg.showVRAM) {
+            SystemMetricsCollector::Get().Update();
+            cachedSystemMetrics = SystemMetricsCollector::Get().GetMetrics();
+        }
+    }
+
+    FrameLayoutSnapshot frameLayout = {};
+    frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
+    frameLayout.reserveFGSpace = cfg.showFG && reserveInactiveFGSpace;
+    if (frameLayout.fgActive && metrics) {
+        frameLayout.fgMultiplier = metrics->GetFGMultiplier();
+        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "%s", metrics->GetFGTypeLabel());
+        frameLayout.fgBaseFPS = metrics->GetFGBaseFPS();
+        frameLayout.fgOutputFPS = metrics->GetFGOutputFPS();
+    } else if (frameLayout.reserveFGSpace) {
+        frameLayout.fgMultiplier = 4;
+        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "DLSS FG");
+    }
+    if (frameLayout.fgOutputFPS < 1.0f)
+        frameLayout.fgOutputFPS = cachedFPS;
+    if (frameLayout.fgBaseFPS < 1.0f) {
+        frameLayout.fgBaseFPS =
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+            frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier : cachedFPS;
+    }
+
+    frameLayout.recordingActive = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
+    frameLayout.recordingAudioOnly = sharedMem->runtimeState.audioOnly.load(std::memory_order_acquire);
+    const RecordingStartIntent recordingStartIntent = sharedMem->runtimeState.GetRecordingStartIntent();
+    frameLayout.recordingState = ce::recording_indicator::SelectState(
+        frameLayout.recordingActive, frameLayout.recordingAudioOnly, recordingStartIntent);
+    frameLayout.recordingStatusDark =
+        sharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture) &&
+        ce::recording_indicator::IsStarting(frameLayout.recordingState);
+    uint64_t nowTick64 = GetTickCount64();
+    if (cfg.showRecording && frameLayout.recordingActive) {
+        int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
+        if (startTime > 0) {
+            frameLayout.recordingSeconds = (nowTick64 - startTime) / 1000;
+        }
+        uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        const uint32_t captureHealthFlags =
+            sharedMem->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t recordingHealthFlags =
+            sharedMem->runtimeState.recordingHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(
+            overloadFlags, captureHealthFlags, recordingHealthFlags);
+        if (warningKind == ce::capture_policy::kOverlayWarningNone &&
+            ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+            lastEncoderOverloadTick = 0;
+            lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
+            lastEncoderOverloadTick = nowTick64;
+            lastRecordingWarningKind = warningKind;
+        }
+    } else {
+        lastEncoderOverloadTick = 0;
+        lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+
     }
     frameLayout.showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
     frameLayout.recordingWarningKind =
@@ -36,7 +138,7 @@
     bool showGraph = cfg.showFrameTime && metrics;
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
-    bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
+    bool configChanged = !hasRenderedConfig || !overlay_adapter_OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
     const bool fgIdentityChanged = !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
                                    frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
@@ -70,12 +172,12 @@
     if (backend) {
         float paperWhite = cfg.hdrPaperWhite;
         if (paperWhite <= 0.0f) {
-            const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
+            const HWND referenceHwnd = overlay_adapter_ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
             HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
             if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
                 ULONG rawLevel = 0;
                 float queriedNits = 0.0f;
-                if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
+                if (overlay_adapter_QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
                     resolvedHdrPaperWhiteNits = queriedNits;
                     HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
                                      static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
@@ -684,3 +786,72 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark) {
             renderer->DrawTextWithShadow(labelCol, cursorY,
                                          ce::recording_indicator::GetStartingText(frameLayout.recordingState),
+
+                                         Colors::LabelYellow, shadowColor);
+        } else {
+            const char* recLabel = frameLayout.recordingAudioOnly ? "AUDIO" : "REC";
+            int hours = (int)(frameLayout.recordingSeconds / 3600);
+            int minutes = (int)((frameLayout.recordingSeconds % 3600) / 60);
+            int seconds = (int)(frameLayout.recordingSeconds % 60);
+
+            if (frameLayout.showOverloadWarning) {
+                const std::string overloadLabel =
+                    overlay_adapter_FormatRecordingHealthLabel(frameLayout.recordingWarningKind,
+                                               frameLayout.recordingSustainFpsX100,
+                                               frameLayout.recordingTargetFps);
+                std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
+                              overloadLabel.c_str());
+                renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            } else {
+                // Normal recording display
+                snprintf(buf, 64, "%s %02d:%02d:%02d", recLabel, hours, minutes, seconds);
+                renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            }
+        }
+        cursorY += lineHeight;
+    }
+
+    // Frame time graph labels and markers
+    if (showGraph) {
+        uint32_t graphLabelColor = Colors::Green;
+        uint32_t grayColor = 0xFFB0B0B0;  // Light gray for scale marker
+        float smallFontScale = 0.75f;     // Smaller font for graph labels
+
+        // Scale marker: small gray line at top left with ceiling value (with ms
+        // unit)
+        float scaleLineLength = 15.0f * dpiScale;
+        float scaleLineY = graphY + 1.0f * dpiScale;
+        renderer->DrawLine(graphX + 4 * dpiScale, scaleLineY, graphX + 4 * dpiScale + scaleLineLength, scaleLineY,
+                           grayColor, 1.0f * dpiScale);
+
+        // Scale marker text (ceiling value with ms unit in small gray font)
+        snprintf(buf, 64, "%.0f ms", graphMaxVal);
+        float scaleTextWidth = 0, scaleTextHeight = 0;
+        renderer->CalcTextSizeScaled(buf, &scaleTextWidth, &scaleTextHeight, smallFontScale);
+        renderer->DrawTextScaledWithShadow(graphX + 6 * dpiScale + scaleLineLength, scaleLineY - scaleTextHeight * 0.5f,
+                                           buf, grayColor, shadowColor, smallFontScale);
+
+        // Current frame time display at top right of graph
+        // Color based on comparison with average: green (close), yellow (spike),
+        // red (stutter)
+        uint32_t frameTimeColor = Colors::Green;
+        if (recentAvgFrameTime > 0.001f) {
+            float ratio = recentMaxFrameTime / recentAvgFrameTime;
+            if (ratio > 2.0f) {
+                frameTimeColor = Colors::Red;  // Bad stutter (2x average)
+            } else if (ratio > 1.5f) {
+                frameTimeColor = Colors::Yellow;  // Moderate spike (1.5x average)
+            }
+        }
+
+        snprintf(buf, 64, "%.1f ms", recentMaxFrameTime);
+        float ftTextWidth = 0, ftTextHeight = 0;
+        renderer->CalcTextSizeScaled(buf, &ftTextWidth, &ftTextHeight, smallFontScale);
+        renderer->DrawTextScaledWithShadow(graphX + graphWidth - ftTextWidth - 4 * dpiScale,
+                                           scaleLineY - ftTextHeight * 0.5f, buf, frameTimeColor, shadowColor,
+                                           smallFontScale);
+    }
+
+    (void)viewportWidth;
+    (void)viewportHeight;
+}

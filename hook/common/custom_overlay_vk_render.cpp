@@ -1,3 +1,163 @@
+#include "custom_overlay_vk_internal.h"
+
+namespace CustomOverlay {
+bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
+    HookLog("VulkanBackend::CreatePipeline - ENTRY, renderPass=%p", renderPass);
+
+    DeviceDispatch* disp = static_cast<DeviceDispatch*>(deviceDispatch);
+    if (!disp) {
+        HookLog("VulkanBackend::CreatePipeline - ERROR: deviceDispatch is null");
+        return false;
+    }
+
+    if (!disp->fp_vkCreateGraphicsPipelines) {
+        HookLog(
+            "VulkanBackend::CreatePipeline - ERROR: "
+            "fp_vkCreateGraphicsPipelines is null");
+        return false;
+    }
+
+    if (!disp->fp_vkCreateShaderModule) {
+        HookLog(
+            "VulkanBackend::CreatePipeline - ERROR: fp_vkCreateShaderModule is "
+            "null");
+        return false;
+    }
+
+    if (pipelineLayout == VK_NULL_HANDLE) {
+        HookLog("VulkanBackend::CreatePipeline - ERROR: pipelineLayout is null");
+        return false;
+    }
+
+    if (renderPass == VK_NULL_HANDLE) {
+        HookLog("VulkanBackend::CreatePipeline - ERROR: renderPass is null");
+        return false;
+    }
+
+    HookLog(
+        "VulkanBackend::CreatePipeline - All prerequisites valid, creating "
+        "shader modules...");
+
+    // Create shader modules
+    HookLog("VulkanBackend::CreatePipeline - Creating vertex shader module...");
+    VkShaderModuleCreateInfo vertShaderInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    vertShaderInfo.codeSize = sizeof(g_VertexShaderSpv);
+    vertShaderInfo.pCode = g_VertexShaderSpv;
+
+    VkShaderModule vertShaderModule = VK_NULL_HANDLE;
+    VkResult result = disp->fp_vkCreateShaderModule(device, &vertShaderInfo, nullptr, &vertShaderModule);
+    if (result != VK_SUCCESS) {
+        HookLog("VulkanBackend: Failed to create vertex shader module: %d", result);
+        return false;
+    }
+    HookLog("VulkanBackend::CreatePipeline - Vertex shader module created");
+
+    HookLog("VulkanBackend::CreatePipeline - Creating fragment shader module...");
+    VkShaderModule fragShaderModule = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo fragShaderInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    fragShaderInfo.codeSize = sizeof(g_FragmentShaderSpv);
+    fragShaderInfo.pCode = g_FragmentShaderSpv;
+
+    result = disp->fp_vkCreateShaderModule(device, &fragShaderInfo, nullptr, &fragShaderModule);
+    if (result != VK_SUCCESS) {
+        HookLog("VulkanBackend: Failed to create fragment shader module: %d", result);
+        disp->fp_vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        return false;
+    }
+    HookLog("VulkanBackend::CreatePipeline - Fragment shader module created");
+
+    HookLog(
+        "VulkanBackend::CreatePipeline - Creating solid fragment shader "
+        "module...");
+    VkShaderModule fragShaderSolidModule = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo fragSolidInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    fragSolidInfo.codeSize = sizeof(g_FragmentShaderSolidSpv);
+    fragSolidInfo.pCode = g_FragmentShaderSolidSpv;
+
+    result = disp->fp_vkCreateShaderModule(device, &fragSolidInfo, nullptr, &fragShaderSolidModule);
+    if (result != VK_SUCCESS) {
+        HookLog("VulkanBackend: Failed to create solid fragment shader module: %d", result);
+        disp->fp_vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        disp->fp_vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        return false;
+    }
+    HookLog("VulkanBackend::CreatePipeline - Solid fragment shader module created");
+
+    HookLog("VulkanBackend::CreatePipeline - Setting up pipeline stages...");
+    // Pipeline stages - MUST zero-initialize all structures
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    VkPipelineShaderStageCreateInfo vertStage = {};
+    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertStage.module = vertShaderModule;
+    vertStage.pName = "main";
+
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    VkPipelineShaderStageCreateInfo fragStage = {};
+    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragStage.module = fragShaderModule;
+    fragStage.pName = "main";
+
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    VkPipelineShaderStageCreateInfo fragSolidStage = {};
+    fragSolidStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragSolidStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragSolidStage.module = fragShaderSolidModule;
+    fragSolidStage.pName = "main";
+
+    // Vertex input
+    VkVertexInputBindingDescription bindingDesc = {};
+    bindingDesc.binding = 0;
+    bindingDesc.stride = sizeof(DrawVertex);
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attributeDescs[3] = {};
+    // Position (vec2)
+    attributeDescs[0].binding = 0;
+    attributeDescs[0].location = 0;
+    attributeDescs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescs[0].offset = offsetof(DrawVertex, x);
+    // TexCoord (vec2)
+    attributeDescs[1].binding = 0;
+    attributeDescs[1].location = 1;
+    attributeDescs[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescs[1].offset = offsetof(DrawVertex, u);
+    // Color (uint32 packed RGBA)
+    attributeDescs[2].binding = 0;
+    attributeDescs[2].location = 2;
+    attributeDescs[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+    attributeDescs[2].offset = offsetof(DrawVertex, color);
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescs;
+
+    // Input assembly
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    // Viewport and scissor (dynamic)
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    // Rasterizer
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
 
     // Multisampling
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
@@ -117,7 +277,9 @@
     HookLog("VulkanBackend: Pipelines created successfully");
     return true;
 }
+}
 
+namespace CustomOverlay {
 bool VulkanBackend::CreatePipelineForRenderPass(VkRenderPass renderPass) {
     HookLog("VulkanBackend::CreatePipelineForRenderPass - ENTRY, renderPass=%p", renderPass);
 
@@ -152,7 +314,9 @@ bool VulkanBackend::CreatePipelineForRenderPass(VkRenderPass renderPass) {
     HookLog("VulkanBackend::CreatePipelineForRenderPass - CreatePipeline returned %d", result);
     return result;
 }
+}
 
+namespace CustomOverlay {
 bool VulkanBackend::CreateBuffers() {
     DeviceDispatch* disp = static_cast<DeviceDispatch*>(deviceDispatch);
     if (!disp || !disp->fp_vkCreateBuffer || !disp->fp_vkAllocateMemory || !disp->fp_vkMapMemory)
@@ -234,7 +398,9 @@ bool VulkanBackend::CreateBuffers() {
 
     return true;
 }
+}
 
+namespace CustomOverlay {
 bool VulkanBackend::CreateFontTexture(int width, int height, const uint8_t* data) {
     DeviceDispatch* disp = static_cast<DeviceDispatch*>(deviceDispatch);
     InstanceDispatch* instDisp = static_cast<InstanceDispatch*>(instanceDispatch);
@@ -505,122 +671,4 @@ bool VulkanBackend::CreateFontTexture(int width, int height, const uint8_t* data
     HookLog("VulkanBackend: Font texture created (%dx%d)", width, height);
     return true;
 }
-
-void VulkanBackend::SetRenderContext(VkCommandBuffer cmdBuffer, VkRenderPass renderPass, VkFramebuffer framebuffer,
-                                     VkExtent2D extent) {
-    currentCmdBuffer = cmdBuffer;
-    currentRenderPass = renderPass;
-    currentFramebuffer = framebuffer;
-    currentExtent = extent;
 }
-
-void VulkanBackend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
-                           const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
-    // Fast-path validation (no logging in hot path)
-    if (!initialized || !deviceDispatch || currentCmdBuffer == VK_NULL_HANDLE || currentRenderPass == VK_NULL_HANDLE)
-        return;
-
-    DeviceDispatch* disp = static_cast<DeviceDispatch*>(deviceDispatch);
-    if (!disp || vertices.empty() || indices.empty() || commands.empty())
-        return;
-
-    // Ensure pipeline is created for current render pass
-    if (!pipelineCreated) {
-        if (!CreatePipelineForRenderPass(currentRenderPass))
-            return;
-    }
-
-    if (pipeline == VK_NULL_HANDLE)
-        return;
-
-    // Advance to the next pool slot for this frame
-    int slot = frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
-
-    // Check buffer sizes
-    size_t vertexDataSize = vertices.size() * sizeof(DrawVertex);
-    size_t indexDataSize = indices.size() * sizeof(uint16_t);
-    if (vertexDataSize > vertexBufferSize[slot] || indexDataSize > indexBufferSize[slot])
-        return;
-
-    // Update vertex buffer
-    if (vertexBufferPtr[slot]) {
-        memcpy(vertexBufferPtr[slot], vertices.data(), vertexDataSize);
-    }
-
-    // Update index buffer
-    if (indexBufferPtr[slot]) {
-        memcpy(indexBufferPtr[slot], indices.data(), indexDataSize);
-    }
-
-    // Set viewport (standard setup - shader handles NDC conversion)
-    VkViewport viewport = {};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float)viewportWidth;
-    viewport.height = (float)viewportHeight;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    disp->fp_vkCmdSetViewport(currentCmdBuffer, 0, 1, &viewport);
-
-    // Set scissor
-    VkRect2D scissor = {};
-    scissor.offset = {0, 0};
-    scissor.extent = {(uint32_t)viewportWidth, (uint32_t)viewportHeight};
-    disp->fp_vkCmdSetScissor(currentCmdBuffer, 0, 1, &scissor);
-
-    // Bind vertex buffer
-    VkDeviceSize vertexOffset = 0;
-    disp->fp_vkCmdBindVertexBuffers(currentCmdBuffer, 0, 1, &vertexBuffer[slot], &vertexOffset);
-
-    // Bind index buffer
-    disp->fp_vkCmdBindIndexBuffer(currentCmdBuffer, indexBuffer[slot], 0, VK_INDEX_TYPE_UINT16);
-
-    // Push constants: viewport size + HDR params
-    float pushConstants[4] = {(float)viewportWidth, (float)viewportHeight, (float)hdrMode, paperWhiteNits};
-    disp->fp_vkCmdPushConstants(currentCmdBuffer, pipelineLayout,
-                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants),
-                                pushConstants);
-
-    if (pipelineLayout == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE)
-        return;
-
-    // Bind descriptor set (font texture)
-    disp->fp_vkCmdBindDescriptorSets(currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
-                                     &descriptorSet, 0, nullptr);
-
-    // Draw commands with pipeline binding cache
-    VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
-    for (const auto& cmd : commands) {
-        VkPipeline pipelineToUse = cmd.useTexture ? pipeline : pipelineSolid;
-        if (pipelineToUse == VK_NULL_HANDLE)
-            pipelineToUse = pipeline;
-        if (pipelineToUse == VK_NULL_HANDLE)
-            continue;
-
-        if (pipelineToUse != lastBoundPipeline) {
-            disp->fp_vkCmdBindPipeline(currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
-            lastBoundPipeline = pipelineToUse;
-        }
-
-        disp->fp_vkCmdDrawIndexed(currentCmdBuffer, cmd.indexCount, 1, cmd.indexOffset, 0, 0);
-    }
-}
-
-uint32_t VulkanBackend::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-    InstanceDispatch* instDisp = static_cast<InstanceDispatch*>(instanceDispatch);
-    if (!instDisp || !instDisp->fp_vkGetPhysicalDeviceMemoryProperties)
-        return UINT32_MAX;
-
-    VkPhysicalDeviceMemoryProperties memProperties;
-    instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
-    }
-
-    return UINT32_MAX;
-}
-
-}  // namespace CustomOverlay

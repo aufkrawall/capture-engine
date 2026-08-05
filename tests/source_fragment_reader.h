@@ -1,8 +1,10 @@
 #pragma once
 
 // Source-policy tests read the logical translation unit, not only the small
-// forwarding file that includes its ordered .inl fragments.
+// forwarding file that includes its ordered .inl fragments (legacy split) or
+// its generated internal header plus sibling units (semantic .cpp split).
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -81,7 +83,8 @@ inline std::string ReadLogicalSource(const std::filesystem::path& path) {
         }
     }
 
-    const std::string includePrefix = "#include \"" + path.stem().string() + "_part_";
+    const std::string stem = path.stem().string();
+    const std::string includePrefix = "#include \"" + stem + "_part_";
     std::istringstream lines(wrapper);
     std::ostringstream logical;
     std::string line;
@@ -97,6 +100,27 @@ inline std::string ReadLogicalSource(const std::filesystem::path& path) {
             }
         }
         logical << line << '\n';
+    }
+    if (path.extension() == ".cpp") {
+        const std::string internalName = stem + "_internal.h";
+        const auto internalPath = path.parent_path() / internalName;
+        if (std::filesystem::exists(internalPath)) {
+            std::ostringstream combined;
+            combined << ReadFile(internalPath) << '\n' << logical.str();
+            std::vector<std::filesystem::path> siblings;
+            for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
+                const std::string name = entry.path().filename().string();
+                if (name.size() > stem.size() + 1 && name.rfind(stem + "_", 0) == 0 &&
+                    name.ends_with(".cpp") && name != internalName) {
+                    siblings.push_back(entry.path());
+                }
+            }
+            std::sort(siblings.begin(), siblings.end());
+            for (const auto& sibling : siblings) {
+                combined << ReadFile(sibling) << '\n';
+            }
+            return combined.str();
+        }
     }
     return logical.str();
 }

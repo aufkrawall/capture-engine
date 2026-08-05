@@ -44,10 +44,31 @@ INL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+\.inl)"')
 COND_DIRECTIVE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b")
 USING_OR_TYPEDEF = re.compile(r"^\s*(using|typedef)\b")
 EXTERN_DECL = re.compile(r"^\s*extern\b")
+FWD_DECL = re.compile(r"^\s*(struct|class|union|enum)\s+[A-Za-z_][\w:]*\s*;")
+COMMENT_LINE = re.compile(r"^\s*(//|/\*|\*)")
 
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _code_text(text: str) -> str:
+    """Strip leading comment lines so text-based classification sees the code."""
+    lines = text.split("\n")
+    idx = 0
+    while idx < len(lines) and COMMENT_LINE.match(lines[idx]):
+        idx += 1
+    return "\n".join(lines[idx:])
+
+
+def _split_comments(text: str) -> Tuple[str, str]:
+    """Split leading comment lines from code; returns (comments, code)."""
+    lines = text.split("\n")
+    idx = 0
+    while idx < len(lines) and COMMENT_LINE.match(lines[idx]):
+        idx += 1
+    comments = "\n".join(lines[:idx])
+    return (comments + "\n" if comments else ""), "\n".join(lines[idx:])
 
 
 def reassemble(facade: Path) -> str:
@@ -204,6 +225,53 @@ def _last_ident(tokens: Sequence[Token]) -> str:
     return ""
 
 
+TYPE_KEYWORDS = {
+    "static",
+    "const",
+    "constexpr",
+    "consteval",
+    "volatile",
+    "inline",
+    "thread_local",
+    "extern",
+    "unsigned",
+    "signed",
+    "long",
+    "short",
+    "struct",
+    "class",
+    "enum",
+    "union",
+    "typename",
+    "auto",
+    "void",
+    "bool",
+    "char",
+    "wchar_t",
+    "int",
+    "float",
+    "double",
+    "nullptr",
+    "true",
+    "false",
+    "NULL",
+    "nullptr_t",
+}
+
+
+def _var_name(tokens: Sequence[Token]) -> str:
+    """Name of a top-level variable statement: last identifier before the initializer."""
+    cutoff = len(tokens)
+    for i, t in enumerate(tokens):
+        if t.text in ("=", "{", "["):
+            cutoff = i
+            break
+    for t in reversed(tokens[:cutoff]):
+        if t.kind == "IDENT" and t.text not in TYPE_KEYWORDS:
+            return t.text
+    return ""
+
+
 def _func_name(pending: Sequence[Token]) -> str:
     for i, t in enumerate(pending):
         if t.text == "(" and i > 0:
@@ -220,6 +288,38 @@ def _func_name(pending: Sequence[Token]) -> str:
                     parts.append(op.text)
                 return "".join(parts)
     return _last_ident(pending)
+
+
+def _looks_like_block_start(pending: Sequence[Token]) -> bool:
+    """True when '{' starts a parameter-list block (function, lambda, ctor)."""
+    last_paren = -1
+    for i, t in enumerate(pending):
+        if t.text == "(":
+            last_paren = i
+    if last_paren < 0:
+        return False
+    depth = 0
+    close = -1
+    for j in range(last_paren, len(pending)):
+        if pending[j].text == "(":
+            depth += 1
+        elif pending[j].text == ")":
+            depth -= 1
+            if depth == 0:
+                close = j
+                break
+    if close < 0:
+        return True
+    tail = pending[close + 1 :]
+    if not tail:
+        return True
+    for t in tail:
+        if t.text in ("const", "noexcept", "override", "final", "volatile", "&", "*", "->", "<", ">", "::", "[", "]"):
+            continue
+        if t.kind == "IDENT":
+            continue
+        return False
+    return True
 
 
 def _classify_block(pending: Sequence[Token]) -> Tuple[str, str, bool]:
@@ -366,13 +466,24 @@ class Scanner:
 
         def emit(kind: str, name: str, p_line: int, e_line: int, sig: str = "", is_tmpl: bool = False,
                  is_static: bool = False, anon: Optional[int] = None) -> None:
+            abs_start = start_line + p_line
+            while abs_start > 0:
+                stripped = self.lines[abs_start - 1].strip()
+                if not (
+                    stripped.startswith("//")
+                    or stripped.startswith("/*")
+                    or stripped.startswith("*")
+                    or stripped.endswith("*/")
+                ):
+                    break
+                abs_start -= 1
             self.chunks.append(
                 Chunk(
                     kind=kind,
                     name=name,
-                    start=start_line + p_line,
+                    start=abs_start,
                     end=start_line + e_line,
-                    text=self._slice(start_line + p_line, start_line + e_line),
+                    text=self._slice(abs_start, start_line + e_line),
                     ns_path=ns_path,
                     anon_region=anon_region,
                     template=is_tmpl,
@@ -392,10 +503,10 @@ class Scanner:
             else:
                 is_static = any(t.text == "static" for t in pending)
                 is_tmpl = pending[0].text == "template"
-                if any(t.text == "=" for t in pending) or is_static:
-                    emit("var", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
-                else:
-                    emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+            if any(t.text == "=" for t in pending) or is_static:
+                emit("var", _var_name(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+            else:
+                emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
             pending = []
             pending_is_dir = False
 
@@ -412,7 +523,13 @@ class Scanner:
                     pending_is_dir = False
                     continue
                 if not pending and not m:
-                    emit("directive", "", t.line, t.line + 1)
+                    end_line = t.line + 1
+                    while (
+                        end_line - 1 < len(self.lines)
+                        and self.lines[end_line - 1].rstrip().endswith("\\")
+                    ):
+                        end_line += 1
+                    emit("directive", "", t.line, end_line)
                     i += 1
                     continue
                 if pending:
@@ -430,9 +547,29 @@ class Scanner:
                 continue
             if t.text == "{":
                 if pending:
+                    is_decl_block = any(
+                        t2.text in ("class", "struct", "namespace", "enum", "union") for t2 in pending
+                    ) or (
+                        pending[0].text == "extern"
+                        and any(t2.kind == "OTHER" and t2.text.startswith('"') for t2 in pending[1:3])
+                    )
+                    is_type_block = any(
+                        t2.text in ("class", "struct", "enum", "union") for t2 in pending
+                    )
+                    if not _looks_like_block_start(pending) and not is_decl_block:
+                        # braced-initializer statement: keep it in pending and flush at ';'
+                        pending.append(t)
+                        i += 1
+                        continue
                     depth = 0
                     j = i
                     while j < n:
+                        if tokens[j].kind == "DIR":
+                            dm = COND_DIRECTIVE.match(tokens[j].text)
+                            if dm and dm.group(1) in ("if", "ifdef", "ifndef"):
+                                j = _find_matching_endif(tokens, j)
+                            j += 1
+                            continue
                         if tokens[j].text == "{":
                             depth += 1
                         elif tokens[j].text == "}":
@@ -444,7 +581,14 @@ class Scanner:
                         raise RuntimeError("unbalanced braces")
                     start = pending_line
                     end = tokens[j].line
-                    if j + 1 < n and tokens[j + 1].text == ";":
+                    if is_type_block:
+                        k = j + 1
+                        while k < n and tokens[k].text != ";":
+                            k += 1
+                        if k < n:
+                            end = tokens[k].line
+                            j = k
+                    elif j + 1 < n and tokens[j + 1].text == ";":
                         end = tokens[j + 1].line
                         j += 1
                     kind, name, is_tmpl = _classify_block(pending)
@@ -552,8 +696,11 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             return False
         if c.kind == "directive" and not c.ns_path:
             return True
-        if c.kind == "other" and not c.ns_path and (USING_OR_TYPEDEF.match(c.text) or EXTERN_DECL.match(c.text)):
-            return True
+        anon_scope = c.ns_path == ("",)
+        if c.kind == "other" and (not c.ns_path or anon_scope):
+            code = _code_text(c.text)
+            if USING_OR_TYPEDEF.match(code) or EXTERN_DECL.match(code) or FWD_DECL.match(code):
+                return True
         if c.kind == "enum":
             return True
         if c.kind == "func" and c.template:
@@ -569,8 +716,18 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     while changed:
         changed = False
         for idx, c in enumerate(chunks):
-            if idx in shared or not c.static or not c.name or c.kind not in ("var", "func"):
+            if (
+                idx in shared
+                or not c.name
+                or c.kind not in ("var", "func")
+                or c.name in TYPE_KEYWORDS
+                or not re.fullmatch(r"[A-Za-z_]\w*", c.name)
+            ):
                 continue
+            if c.kind == "func" and not c.static and c.anon_region is None:
+                continue  # non-static functions get header prototypes, not renames
+            if c.kind == "var" and not c.static and not re.search(r"\b(constexpr|const)\b", c.text):
+                continue  # mutable external globals stay in their unit
             if any(
                 j != idx
                 and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
@@ -603,10 +760,10 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             if c.text.strip() != "#pragma once":
                 header_parts.append(c.text)
             header_idx.add(idx)
-        elif c.kind == "other" and not c.ns_path and USING_OR_TYPEDEF.match(c.text):
-            header_parts.append(renamed(c.text))
-            header_idx.add(idx)
-        elif c.kind == "other" and not c.ns_path and EXTERN_DECL.match(c.text):
+        elif c.kind == "other" and (not c.ns_path or c.ns_path == ("",)):
+            code = _code_text(c.text)
+            if not (USING_OR_TYPEDEF.match(code) or EXTERN_DECL.match(code) or FWD_DECL.match(code)):
+                continue
             header_parts.append(renamed(c.text))
             header_idx.add(idx)
         elif c.kind == "enum":
@@ -624,18 +781,26 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     for idx, c in enumerate(chunks):
         if idx in header_idx:
             continue
-        if c.kind != "func" or c.template or c.static or "" in c.ns_path:
+        if c.kind != "func" or c.template or c.static or "" in c.ns_path or "::" in c.signature:
             continue
         if not c.signature:
             continue
         proto = renamed(c.signature.rstrip())
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
     for _, c in sorted(shared_statics, key=lambda p: p[0]):
-        body = re.sub(r"^\s*static\s+", "", renamed(c.text), count=1)
-        header_parts.append(_wrap_ns("inline " + body.strip(), c.ns_path))
+        text = renamed(c.text)
+        comments, body = _split_comments(text)
+        body = re.sub(r"^\s*static\s+", "", body, count=1)
+        body = re.sub(r"^\s*inline\s+", "", body, count=1)
+        ns = () if c.ns_path == ("",) else c.ns_path
+        header_parts.append(_wrap_ns(comments + "inline " + body.strip(), ns))
     for _, c in sorted(shared_funcs, key=lambda p: p[0]):
-        body = re.sub(r"^\s*static\s+", "inline ", renamed(c.text), count=1)
-        header_parts.append(_wrap_ns(body, c.ns_path))
+        text = renamed(c.text)
+        comments, body = _split_comments(text)
+        body = re.sub(r"^\s*static\s+", "", body, count=1)
+        body = re.sub(r"^\s*inline\s+", "", body, count=1)
+        ns = () if c.ns_path == ("",) else c.ns_path
+        header_parts.append(_wrap_ns(comments + "inline " + body, ns))
 
     if dry_run:
         for name in unit_names:

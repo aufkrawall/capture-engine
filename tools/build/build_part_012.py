@@ -42,8 +42,10 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # CustomOverlay system for full overlay rendering
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay_vk.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay_vk_render.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_font.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter_render.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "cached_overlay_renderer.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "screenshot_hook.cpp"),
     ]

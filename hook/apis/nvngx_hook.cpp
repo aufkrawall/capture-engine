@@ -1,3 +1,4 @@
-#include "nvngx_hook_part_001.inl"
-#include "nvngx_hook_part_002.inl"
-#include "nvngx_hook_part_003.inl"
+#include "nvngx_hook_internal.h"
+
+// Feature IDs for DLSS components
+const int NVSDK_NGX_Feature_DLSS_SR = 1;                // Super Resolution

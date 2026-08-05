@@ -223,6 +223,7 @@ LD_OPT_FLAGS_X64 = [
 STRICT_FP_MEDIA_SOURCES = {
     "app_audio_capture.cpp",
     "audio_capture.cpp",
+    "audio_capture_loop.cpp",
     "audio_encoder.cpp",
     "audio_latency_probe.cpp",
     "audio_resampler.cpp",
