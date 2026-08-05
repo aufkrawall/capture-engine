@@ -92,11 +92,12 @@ def _extern_decl(text: str, name: str) -> Optional[str]:
     decl = decl.strip()
     if re.search(r"[A-Za-z_]\w*::" + re.escape(name) + r"\b", decl):
         return None  # qualified name: out-of-line member definition, not a global
+    name_pos = decl.find(name)
     cut = len(decl)
-    for i, ch in enumerate(decl):
-        if ch in "={":
-            cut = i
-            break
+    for marker in ("=", "{", "("):
+        pos = decl.find(marker, name_pos if marker == "(" else 0)
+        if pos != -1 and pos < cut:
+            cut = pos
     decl = decl[:cut]
     decl = decl.rstrip("; \t\r\n") + ";"
     if not re.search(r"\b" + re.escape(name) + r"\b", decl):
@@ -846,12 +847,14 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     # their units); unstatic does the same for individual file-scope statics.
     unscope_anon = set(grouping.get("unscope_anon", []))
     unstatic = set(grouping.get("unstatic", []))
+    keep_static = set(grouping.get("keep_static", []))
     unscoped_idx: set = set()
     for idx, c in enumerate(chunks):
-        if grouping.get("statics_in_units") and c.static:
+        is_const_var = c.kind == "var" and re.search(r"\b(constexpr|const)\b", c.text)
+        if grouping.get("statics_in_units") and c.static and not is_const_var and idx not in keep_static:
             unscoped_idx.add(idx)
             c.static = False
-        if c.anon_region is not None and c.anon_region in unscope_anon:
+        if c.anon_region is not None and c.anon_region in unscope_anon and not is_const_var:
             unscoped_idx.add(idx)
             c.ns_path = tuple(part for part in c.ns_path if part != "")
             c.anon_region = None
@@ -988,7 +991,11 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     # Shared variables are renamed with a module prefix; shared functions keep
     # their names (as inline) so overload sets declared in other headers keep
     # resolving exactly as before.
-    renames = {c.name: f"{module}_{c.name}" for _, c in shared_statics if c.name}
+    renames = {
+        c.name: f"{module}_{c.name}"
+        for _, c in shared_statics
+        if c.name and not c.name.startswith(module + "_")
+    }
     define_rewrites = grouping.get("define_prefix_rewrites", [])
 
     def rename_text(text: str) -> str:
@@ -1022,6 +1029,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         if idx_by_id[id(c)] in destatic or idx_by_id[id(c)] in unscoped_idx:
             comments, body = _split_comments(text)
             body = re.sub(r"^\s*static\s+", "", body, count=1)
+            body = re.sub(r"^\s*inline\s+", "", body, count=1)
             text = comments + body
         if (
             c.kind == "func"
@@ -1090,6 +1098,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         proto = rename_text(c.signature.rstrip().rstrip(";"))
         if idx in destatic or idx in unscoped_idx:
             proto = re.sub(r"^\s*static\s+", "", proto, count=1)
+            proto = re.sub(r"^\s*inline\s+", "", proto, count=1)
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
         if "{" not in c.text:
             header_idx.add(idx)  # declaration-only: prototype replaces it in units

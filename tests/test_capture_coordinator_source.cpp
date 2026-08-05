@@ -161,8 +161,10 @@ TEST(CaptureCoordinatorSourceTest, DxgiPointerOnlyUpdatesFeedAuthoritativeCursor
     EXPECT_NE(capture.find("callback(observation, originLeft, originTop, frameWidth_, frameHeight_"),
               std::string::npos);
 
-    const size_t publish = coordinator.find("void QueueWgcCursorObservation(");
-    const size_t frameQueue = coordinator.find("void QueueWgcFrame(", publish);
+    // The internal header carries the prototypes; anchor on the definitions,
+    // which live in the media_main_wgc unit assembled after the header.
+    const size_t publish = coordinator.rfind("void QueueWgcCursorObservation(");
+    const size_t frameQueue = coordinator.rfind("void QueueWgcFrame(");
     ASSERT_NE(publish, std::string::npos);
     ASSERT_NE(frameQueue, std::string::npos);
     const std::string publishBody = coordinator.substr(publish, frameQueue - publish);
@@ -176,8 +178,8 @@ TEST(CaptureCoordinatorSourceTest, DxgiPointerOnlyUpdatesFeedAuthoritativeCursor
     EXPECT_NE(coordinator.find("SetDirectCursorCallback(config.video.captureCursor ? QueueWgcCursorObservation"),
               std::string::npos);
 
-    const size_t advanceEpoch = coordinator.find("uint64_t AdvanceWgcSourceEpoch(");
-    const size_t publishCapture = coordinator.find("void PublishWgcCapture(", advanceEpoch);
+    const size_t advanceEpoch = coordinator.rfind("uint64_t AdvanceWgcSourceEpoch(");
+    const size_t publishCapture = coordinator.rfind("void PublishWgcCapture(");
     ASSERT_NE(advanceEpoch, std::string::npos);
     ASSERT_NE(publishCapture, std::string::npos);
     const std::string epochBody = coordinator.substr(advanceEpoch, publishCapture - advanceEpoch);
