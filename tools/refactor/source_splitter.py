@@ -84,17 +84,21 @@ def _is_pure_directive_region(text: str) -> bool:
 
 def _extern_decl(text: str, name: str) -> Optional[str]:
     """Build an extern declaration for a mutable global definition."""
-    decl = re.sub(r"^\s*(static|inline)\s+", "", text, count=1)
+    comments, body = _split_comments(text)
+    decl = re.sub(r"^\s*(static|inline)\s+", "", body, count=1)
     decl = decl.strip()
-    if "::" in decl:
-        return None  # out-of-line member definition, not a global
-    eq = decl.find("=")
-    if eq >= 0:
-        decl = decl[:eq]
+    if re.search(r"[A-Za-z_]\w*::" + re.escape(name) + r"\b", decl):
+        return None  # qualified name: out-of-line member definition, not a global
+    cut = len(decl)
+    for i, ch in enumerate(decl):
+        if ch in "={":
+            cut = i
+            break
+    decl = decl[:cut]
     decl = decl.rstrip("; \t\r\n") + ";"
     if not re.search(r"\b" + re.escape(name) + r"\b", decl):
         return None
-    return "extern " + decl
+    return comments + "extern " + decl
 
 
 def _rename_ident(text: str, old: str, new: str) -> str:
@@ -593,12 +597,28 @@ class Scanner:
                     and pending[1].kind == "IDENT"
                     and pending[2].text == "="
                 )
+                first_paren = next((i for i, t in enumerate(pending) if t.text == "("), None)
+                first_eq = next((i for i, t in enumerate(pending) if t.text == "="), None)
+                is_func_decl = (
+                    not is_decl_stmt
+                    and not is_ns_alias
+                    and first_paren is not None
+                    and first_paren > 0
+                    and pending[first_paren - 1].kind == "IDENT"
+                    and pending[first_paren - 1].text != "operator"
+                    and (first_eq is None or first_eq > first_paren)
+                )
             if (
                 (any(t.text == "=" for t in pending) or is_static or anon_region is not None)
                 and not is_decl_stmt
                 and not is_ns_alias
+                and not is_func_decl
             ):
                 emit("var", _var_name(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+            elif is_func_decl:
+                sig = re.sub(r"\s+", " ", self._slice(start_line + start, start_line + end + 1)).strip()
+                emit("func", _func_name(pending), start, end + 1, sig=sig, is_tmpl=is_tmpl,
+                     is_static=is_static)
             else:
                 emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
             pending = []
@@ -675,11 +695,15 @@ class Scanner:
                         raise RuntimeError("unbalanced braces")
                     start = pending_line
                     end = tokens[j].line
+                    trailing_ident = ""
                     if is_type_block:
                         k = j + 1
                         while k < n and tokens[k].text != ";":
                             k += 1
                         if k < n:
+                            for t2 in tokens[j + 1 : k]:
+                                if t2.kind == "IDENT" and t2.text not in TYPE_KEYWORDS:
+                                    trailing_ident = t2.text
                             end = tokens[k].line
                             j = k
                     elif j + 1 < n and tokens[j + 1].text == ";":
@@ -687,6 +711,10 @@ class Scanner:
                         j += 1
                     kind, name, is_tmpl = _classify_block(pending)
                     is_static = any(t2.text == "static" for t2 in pending)
+                    if is_type_block and trailing_ident:
+                        # `static thread_local struct X {...} var;` defines a
+                        # variable, not just a type; track it like one.
+                        kind, name = "var", trailing_ident
                     if kind == "namespace":
                         open_abs = start_line + start
                         close_abs = start_line + end
@@ -887,7 +915,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             continue
         if c.kind == "class" and idx not in classes_in_units:
             ns = c.ns_path
-            prefix = "class" if c.text.lstrip().startswith("class") else "struct"
+            prefix = "class" if _code_text(c.text).lstrip().startswith("class") else "struct"
             header_parts.append(_wrap_ns(f"{prefix} {c.name};", ns))
 
     # Pass 1: types and declarations in original order.
@@ -900,21 +928,48 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             if c.text.strip() != "#pragma once":
                 header_parts.append(c.text)
             header_idx.add(idx)
-        elif c.kind == "other" and (not c.ns_path or c.ns_path == ("",)):
+        elif c.kind == "other":
             code = _code_text(c.text)
-            if not (
+            if (
                 USING_OR_TYPEDEF.match(code)
                 or EXTERN_DECL.match(code)
                 or FWD_DECL.match(code)
                 or NS_ALIAS.match(code)
             ):
+                header_parts.append(rename_text(c.text))
+                header_idx.add(idx)
+            elif (
+                c.name
+                and not c.static
+                and c.anon_region is None
+                and not re.search(r"\b(constexpr|const)\b", c.text)
+            ):
+                if any(
+                    j != idx
+                    and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
+                    and _count_ident(chunks[j].text, c.name) > 0
+                    for j in range(len(chunks))
+                ):
+                    extern = _extern_decl(rename_text(c.text), c.name)
+                    if extern:
+                        header_parts.append(_wrap_ns(extern, c.ns_path))
+        elif c.kind == "var" and c.name:
+            if c.static or c.anon_region is not None or re.search(r"\b(constexpr|const)\b", c.text):
                 continue
-            header_parts.append(rename_text(c.text))
-            header_idx.add(idx)
+            if not any(
+                j != idx
+                and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
+                and _count_ident(chunks[j].text, c.name) > 0
+                for j in range(len(chunks))
+            ):
+                continue
+            extern = _extern_decl(rename_text(c.text), c.name)
+            if extern:
+                header_parts.append(_wrap_ns(extern, c.ns_path))
         elif c.kind == "enum":
             header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
-        elif c.kind == "pp_region" and _is_pure_directive_region(c.text) and not c.ns_path:
+        elif c.kind == "pp_region" and _is_pure_directive_region(c.text):
             header_parts.append(rename_text(c.text))
             header_idx.add(idx)
 
@@ -932,8 +987,10 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             continue
         if not c.signature:
             continue
-        proto = rename_text(c.signature.rstrip())
+        proto = rename_text(c.signature.rstrip().rstrip(";"))
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
+        if "{" not in c.text:
+            header_idx.add(idx)  # declaration-only: prototype replaces it in units
 
     # Pass 3: definitions in original order (templates, classes, extern blocks,
     # shared statics/functions at their original positions).
@@ -952,22 +1009,6 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         elif c.kind == "extern" and idx not in extern_in_units:
             header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
-    for idx, c in enumerate(chunks):
-        if idx in header_idx or c.kind not in ("var", "other") or not c.name:
-            continue
-        if c.static or c.anon_region is not None or re.search(r"\b(constexpr|const)\b", c.text):
-            continue
-        if not any(
-            j != idx
-            and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
-            and _count_ident(chunks[j].text, c.name) > 0
-            for j in range(len(chunks))
-        ):
-            continue
-        extern = _extern_decl(rename_text(c.text), c.name)
-        if extern:
-            header_parts.append(_wrap_ns(extern, c.ns_path))
-
     if dry_run:
         for name in unit_names:
             print(f"=== {name}: {len(unit_chunks[name])} chunks ===")

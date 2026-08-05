@@ -193,7 +193,8 @@ TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesShared
     ASSERT_FALSE(source.empty());
 
     const std::string createDevice =
-        FunctionBody(source, "static HRESULT STDMETHODCALLTYPE DetourCreateDevice(", "// Hook: Direct3DCreate9");
+        FunctionBody(source, "HRESULT STDMETHODCALLTYPE DetourCreateDevice(",
+                     "inline IDirect3D9* WINAPI DetourDirect3DCreate9(");
     const std::string sharedSetup =
         FunctionBody(source, "bool SetupDirectD3D9SharedRing(", "bool HasPublishedGeneration() const");
     ASSERT_FALSE(createDevice.empty());
