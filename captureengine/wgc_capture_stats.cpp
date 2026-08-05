@@ -1,3 +1,238 @@
+#include "wgc_capture_internal.h"
+
+uint32_t WGCCapture::GetCallbackFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackFrameCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetInputFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->inputFrameCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetLastCopyTimeUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->lastCopyUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceIntervalAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceIntervalAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceJitterAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceJitterAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceJitterMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceJitterMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceToCopyLatencyAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceToCopyLatencyAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceToCopyLatencyMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceToCopyLatencyMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredRatePerSec() const {
+#if HAS_WGC
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredRatePerSec_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 1000)
+                 : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredMin250Fps() const {
+#if HAS_WGC
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredMin250Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 250)
+                 : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredMin500Fps() const {
+#if HAS_WGC
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredMin500Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 500)
+                 : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetInputMin250Fps() const {
+#if HAS_WGC
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->inputMin250Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastInputRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 250)
+                 : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetInputMin500Fps() const {
+#if HAS_WGC
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->inputMin500Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastInputRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 500)
+                 : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPacingSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->pacingSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetThrottleSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->throttleSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleDuplicateTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleDuplicateTimestampCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleOutOfOrderTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleOutOfOrderTimestampCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetCursorOnlySkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->cursorOnlySkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolDropCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->poolDropCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetNormalizedDuplicateTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->normalizedDuplicateTimestampCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDuplicateTimestampSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->duplicateTimestampSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetKeyedMutexAcquireFailCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexAcquireFailCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetKeyedMutexReleaseFailCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexReleaseFailCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetKeyedMutexAbandonedReclaimCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexAbandonedReclaimCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSplitDeviceFlushCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->splitDeviceFlushCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSplitDeviceFlushSkippedCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->splitDeviceFlushSkippedCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolSlotFastRewriteCount() const {
+
 #if HAS_WGC
     return impl_ ? impl_->poolSlotFastRewriteCount_.load(std::memory_order_relaxed) : 0;
 #else
@@ -387,267 +622,3 @@ uint32_t WGCCapture::GetIngressAdmissionReasonCode() const {
     return 0;
 #endif
 }
-
-void WGCCapture::SetGpuPriority(int priority) {
-#if HAS_WGC
-    if (!impl_) {
-        return;
-    }
-    impl_->desiredGpuPriority_.store(std::clamp(priority, -7, 7), std::memory_order_relaxed);
-    impl_->ApplyConfiguredGpuPriority("runtime-update");
-#else
-    (void)priority;
-#endif
-}
-
-void WGCCapture::ResetStats() {
-    droppedFrames.store(0, std::memory_order_relaxed);
-#if HAS_WGC
-    if (impl_) {
-        impl_->ResetStats();
-    }
-#endif
-}
-
-void WGCCapture::SetTargetFps(uint32_t fps) {
-#if HAS_WGC
-    if (impl_) {
-        impl_->targetFps_ = fps;
-        impl_->producerTargetFps_ = fps;
-        impl_->ApplyFrameThrottleInterval();
-        impl_->ApplyProducerInterval();
-        impl_->ApplyMinUpdateInterval();
-
-        if (fps > 0) {
-            if (impl_->targetIntervalQPC_ > 0) {
-                LogInfo("[WGC] Frame throttle set to %u fps (interval=%lld QPC ticks)", fps,
-                        (long long)impl_->targetIntervalQPC_);
-            } else {
-                LogInfo("[WGC] Frame throttle armed for %u fps (pending capture start)", fps);
-            }
-        } else {
-            LogInfo("[WGC] Frame throttle disabled");
-        }
-    }
-#endif
-}
-
-uint32_t WGCCapture::GetTargetFps() const {
-#if HAS_WGC
-    return impl_ ? impl_->targetFps_ : 0;
-#else
-    return 0;
-#endif
-}
-
-void WGCCapture::SetProducerTargetFps(uint32_t fps) {
-#if HAS_WGC
-    if (impl_) {
-        impl_->producerTargetFps_ = fps;
-        impl_->ApplyProducerInterval();
-        impl_->ApplyMinUpdateInterval();
-
-        if (fps > 0) {
-            if (impl_->producerIntervalQPC_ > 0) {
-                LogInfo("[WGC] Producer cadence target set to %u fps (interval=%lld QPC ticks)", fps,
-                        static_cast<long long>(impl_->producerIntervalQPC_));
-            } else {
-                LogInfo("[WGC] Producer cadence target armed for %u fps (pending capture start)", fps);
-            }
-        } else {
-            LogInfo("[WGC] Producer cadence target disabled (max rate)");
-        }
-    }
-#endif
-}
-
-uint32_t WGCCapture::GetProducerTargetFps() const {
-#if HAS_WGC
-    return impl_ ? impl_->producerTargetFps_ : 0;
-#else
-    return 0;
-#endif
-}
-
-uint32_t WGCCapture::GetSkippedFrameCount() const {
-#if HAS_WGC
-    return impl_ ? impl_->skippedFrameCount_.load(std::memory_order_relaxed) : 0;
-#else
-    return 0;
-#endif
-}
-
-int32_t WGCCapture::GetInflightCallbackCount() const {
-#if HAS_WGC
-    return impl_ ? static_cast<int32_t>(impl_->frameCallbackState_->ActiveCount()) : 0;
-#else
-    return 0;
-#endif
-}
-
-bool WGCCapture::IsHighPrecisionSource() const {
-#if HAS_WGC
-    if (impl_) {
-        return impl_->useHighPrecisionCapture_;
-    }
-#endif
-    return false;
-}
-
-bool WGCCapture::IsWindowTarget() const {
-#if HAS_WGC
-    return impl_ && impl_->targetWindow_ != nullptr;
-#else
-    return false;
-#endif
-}
-
-bool WGCCapture::IsTargetWindowValid() const {
-#if HAS_WGC
-    return impl_ && (!impl_->targetWindow_ || IsWindow(impl_->targetWindow_));
-#else
-    return false;
-#endif
-}
-
-void WGCCapture::GetTargetIdentity(HWND* hwnd, HMONITOR* hmonitor) const {
-#if HAS_WGC
-    if (hwnd) {
-        *hwnd = impl_ ? impl_->targetWindow_ : nullptr;
-    }
-    if (hmonitor) {
-        *hmonitor = impl_ ? impl_->targetMonitor_ : nullptr;
-    }
-#else
-    if (hwnd) {
-        *hwnd = nullptr;
-    }
-    if (hmonitor) {
-        *hmonitor = nullptr;
-    }
-#endif
-}
-
-bool WGCCapture::NeedsReset() const {
-#if HAS_WGC
-    if (impl_) {
-        // VFR uses the direct callback path and does not drain the internal
-        // frame queue, so service deferred output/HDR probes here as well as
-        // from DrainPendingFrames. This remains on the owner/media thread.
-        impl_->MaybePerformDeferredHDRRecheck();
-        return impl_->NeedsReset();
-    }
-    return false;
-#else
-    return false;
-#endif
-}
-
-std::string WGCCapture::ConsumeResetReason() {
-#if HAS_WGC
-    return impl_ ? impl_->ConsumeResetReason() : std::string();
-#else
-    return {};
-#endif
-}
-
-void WGCCapture::ForceReset() {
-#if HAS_WGC
-    capturing_ = false;
-
-    if (impl_) {
-        HWND targetWindow = impl_->targetWindow_;
-        HMONITOR targetMonitor = impl_->targetMonitor_;
-        const bool wasWindowCapture = targetWindow != nullptr;
-        const bool wasMonitorCapture = targetMonitor != nullptr && targetWindow == nullptr;
-        const bool wasDuplicationBackend = impl_->useDuplicationBackend_;
-        const bool smoothnessBufferEnabled = impl_->smoothnessBufferEnabled_;
-        const uint32_t smoothnessOutputFps = impl_->smoothnessOutputFps_;
-        const uint32_t smoothnessMaxMs = impl_->smoothnessMaxMs_;
-        const uint32_t smoothnessVramBudgetMb = impl_->smoothnessVramBudgetMb_;
-        const uint32_t smoothnessSyncDelayFrames = impl_->smoothnessSyncDelayFrames_;
-        const bool skipSplitDeviceFlush = impl_->skipSplitDeviceFlush_;
-        const bool sameDeviceCapture = impl_->sameDeviceCapture_;
-        const bool allowLossyBgra8Pool = impl_->allowLossyBgra8Pool_;
-        const bool requireHighPrecisionCapture = impl_->requireHighPrecisionCapture_;
-        const bool allowDuplicationFallback = impl_->allowDuplicationFallback_;
-        const uint32_t targetFps = impl_->targetFps_;
-        const uint32_t producerTargetFps = impl_->producerTargetFps_;
-        const auto* throttleFlag = impl_->throttleFlag_;
-        const auto directFrameCallback = impl_->frameCallback_.load(std::memory_order_acquire);
-        const auto directCursorCallback = impl_->cursorCallback_.load(std::memory_order_acquire);
-        const uint64_t sourceEpoch = impl_->sourceEpoch_.load(std::memory_order_acquire);
-
-        // Stop all producers and synchronously drain the per-instance callback
-        // epoch before destroying Impl. A queued WinRT callback can retain the
-        // shared gate, but cannot reacquire this owner after StopCapture.
-        impl_->frameCallback_.store(nullptr, std::memory_order_release);
-        impl_->cursorCallback_.store(nullptr, std::memory_order_release);
-        impl_->alive_.store(false, std::memory_order_release);
-        impl_->StopCapture();
-
-        impl_.reset();
-        impl_ = std::make_unique<Impl>();
-        impl_->smoothnessBufferEnabled_ = smoothnessBufferEnabled;
-        impl_->smoothnessOutputFps_ = smoothnessOutputFps;
-        impl_->smoothnessMaxMs_ = smoothnessMaxMs;
-        impl_->smoothnessVramBudgetMb_ = smoothnessVramBudgetMb;
-        impl_->smoothnessSyncDelayFrames_ = smoothnessSyncDelayFrames;
-        impl_->skipSplitDeviceFlush_ = skipSplitDeviceFlush;
-        impl_->sameDeviceCapture_ = wasDuplicationBackend ? false : sameDeviceCapture;
-        impl_->allowLossyBgra8Pool_ = allowLossyBgra8Pool;
-        impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
-        impl_->allowDuplicationFallback_ = allowDuplicationFallback;
-        impl_->targetFps_ = targetFps;
-        impl_->producerTargetFps_ = producerTargetFps;
-        impl_->throttleFlag_ = throttleFlag;
-        impl_->sourceEpoch_.store(sourceEpoch, std::memory_order_release);
-        impl_->frameCallback_.store(directFrameCallback, std::memory_order_release);
-        impl_->cursorCallback_.store(directCursorCallback, std::memory_order_release);
-        if (!impl_->InitializeDevices(device_)) {
-            LogError("[WGC] ForceReset failed to reinitialize capture devices");
-            return;
-        }
-
-        if (device_) {
-            if (!impl_->CreateWinRTDevice()) {
-                LogError("[WGC] ForceReset failed to rebuild WinRT device");
-                return;
-            }
-            if (wasWindowCapture && targetWindow) {
-                if (!impl_->CreateForWindow(targetWindow)) {
-                    LogWarn("[WGC] ForceReset failed to recreate window target");
-                }
-            } else if (wasDuplicationBackend && targetMonitor) {
-                if (!impl_->CreateForMonitorDuplication(targetMonitor)) {
-                    if (!impl_->allowDuplicationFallback_) {
-                        LogError(
-                            "[WGC] ForceReset failed to recreate strict duplication target; WGC fallback disabled");
-                    } else {
-                        LogWarn("[WGC] ForceReset failed to recreate duplication target; trying WGC monitor item");
-                    }
-                    if (impl_->allowDuplicationFallback_ && !impl_->CreateForMonitor(targetMonitor)) {
-                        LogWarn("[WGC] ForceReset failed to recreate monitor target");
-                    }
-                }
-            } else if (wasMonitorCapture && targetMonitor) {
-                if (!impl_->CreateForMonitor(targetMonitor)) {
-                    LogWarn("[WGC] ForceReset failed to recreate monitor target");
-                }
-            }
-        }
-
-        LogWarn("[WGC] ForceReset complete - WGC session recreated");
-    }
-#endif
-}
-
-void WGCCapture::SetThrottleFlag(const std::atomic<bool>* flag) {
-#if HAS_WGC
-    if (impl_) {
-        impl_->throttleFlag_ = flag;
-    }
-#endif
-}
-
-void WGCCapture::SetSkipSplitDeviceFlush(bool enabled) {

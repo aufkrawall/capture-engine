@@ -625,9 +625,21 @@ class Scanner:
                 )
                 first_paren = next((i for i, t in enumerate(pending) if t.text == "("), None)
                 first_eq = next((i for i, t in enumerate(pending) if t.text == "="), None)
+                first_param_literal = (
+                    first_paren is not None
+                    and first_paren + 1 < len(pending)
+                    and (
+                        pending[first_paren + 1].kind == "OTHER"
+                        and (
+                            pending[first_paren + 1].text[:1].isdigit()
+                            or pending[first_paren + 1].text[:1] in ("'", '"')
+                        )
+                    )
+                )
                 is_func_decl = (
                     not is_decl_stmt
                     and not is_ns_alias
+                    and not first_param_literal
                     and first_paren is not None
                     and first_paren > 0
                     and pending[first_paren - 1].kind == "IDENT"
@@ -838,6 +850,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     keep_in_units = set(grouping.get("keep_in_units", []))
     classes_in_units = set(grouping.get("classes_in_units", []))
     extern_in_units = set(grouping.get("extern_in_units", []))
+    hoist_regions = set(grouping.get("hoist_regions", []))
 
     def hoisted_by_rule(idx: int) -> bool:
         c = chunks[idx]
@@ -995,7 +1008,9 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         elif c.kind == "enum":
             header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
-        elif c.kind == "pp_region" and _is_pure_directive_region(c.text):
+        elif c.kind == "pp_region" and (
+            idx in hoist_regions or _is_pure_directive_region(c.text)
+        ):
             header_parts.append(rename_text(c.text))
             header_idx.add(idx)
 

@@ -1,21 +1,12 @@
-#include "media_main_part_001.inl"
-#include "media_main_part_002.inl"
-#include "media_main_part_003.inl"
-#include "media_main_part_004.inl"
-#include "media_main_part_005.inl"
-#include "media_main_part_006.inl"
-#include "media_main_part_007.inl"
-#include "media_main_part_008.inl"
-#include "media_main_part_009.inl"
-#include "media_main_part_010.inl"
-#include "media_main_part_011.inl"
-#include "media_main_part_012.inl"
-#include "media_main_part_013.inl"
-#include "media_main_part_014.inl"
-#include "media_main_part_015.inl"
-#include "media_main_part_016.inl"
-#include "media_main_part_017.inl"
-#include "media_main_part_018.inl"
-#include "media_main_part_019.inl"
-#include "media_main_part_020.inl"
-#include "media_main_part_021.inl"
+#include "media_main_internal.h"
+
+BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
+    // Handle all console events including Windows shutdown/logoff
+    LogInfo("[Media] Console event %lu received, shutting down...", ctrlType);
+    media_main_g_Running = false;
+    return TRUE;
+}
+
+void MediaLogCallback(const char* msg) {
+    LogInfo("[Media] %s", msg);
+}
