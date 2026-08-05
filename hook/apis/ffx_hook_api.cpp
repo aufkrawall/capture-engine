@@ -8,7 +8,7 @@ void* GetPresentCallbackBridgeKey(void* ffx_hook_context) {
 
 namespace FFXHook {
 void RegisterDynamicHooks() {
-    RegisterDynamicHooksOnce();
+    ffx_hook_RegisterDynamicHooksOnce();
 }
 }
 
@@ -29,7 +29,7 @@ void Init() {
         HookLog("FFX Hook: Initializing...");
     }
 
-    RegisterDynamicHooksOnce();
+    ffx_hook_RegisterDynamicHooksOnce();
 
     // Try to find FFX modules.
     // These cover both the older explicit FG DLL names and newer generic
@@ -77,7 +77,7 @@ void Init() {
                 HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
             }
             g_FGCompat.SetFSRFGSupportPresent(true);
-            if (InstallHooksForModule(hMod, ffxModuleNames[i])) {
+            if (ffx_hook_InstallHooksForModule(hMod, ffxModuleNames[i])) {
                 foundSupportedModule = true;
                 continue;
             }

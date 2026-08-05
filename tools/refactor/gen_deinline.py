@@ -412,12 +412,15 @@ def rebuild_class_body(text: str, cls: ClassInfo) -> str:
 
 
 def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
-    """Extract top-level inline function definitions (not templates/vars)."""
-    members: list[MemberDef] = []
+    """Extract inline function definitions (not templates/vars) from file
+    scope and named namespaces. Returns (members, ns_path) pairs via a wrapper
+    list of (MemberDef, tuple) -- kept simple by storing ns on the member."""
+    members: list[tuple[MemberDef, tuple]] = []
     i = 0
     n = len(text)
     last_term = 0
     depth = 0
+    ns_stack: list[tuple[int, str | None]] = []  # (open_depth, name|None for anon)
     while i < n:
         ch = text[i]
         if ch == '"' or ch == "'":
@@ -431,22 +434,29 @@ def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
             j = text.find("*/", i + 2)
             i = n if j < 0 else j + 2
             continue
-        if ch == "{" and depth == 0:
+        if ch == "{" and depth == len(ns_stack):
             stmt = text[last_term:i]
             code = re.sub(r"^(?:\s*(?://[^\n]*(?:\n|$)|/\*.*?\*/\s*))*", "", stmt, flags=re.S)
+            ns_m = re.match(r"^\s*namespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)", code)
+            if re.match(r"^\s*namespace\b", code) or re.match(r'^\s*extern\s+"C"', code):
+                ns_stack.append((depth, ns_m.group(1) if ns_m else None))
+                depth += 1
+                i += 1
+                last_term = i
+                continue
             if re.match(r"^\s*inline\s+(?!.*\btemplate\b)", code, flags=re.S) and "(" in code:
                 close = sc.match_brace(i)
                 name = method_name(code)
                 if name:
                     members.append(
-                        MemberDef(
+                        (MemberDef(
                             start=last_term,
                             body_open=i,
                             body_close=close,
                             head=stmt,
                             body=text[i + 1 : close - 1],
                             name=name,
-                        )
+                        ), tuple(comp for _, comp in ns_stack if comp))
                     )
                     i = close
                     last_term = close
@@ -460,7 +470,9 @@ def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
             continue
         if ch == "}":
             depth -= 1
-            if depth == 0:
+            if ns_stack and depth == ns_stack[-1][0]:
+                ns_stack.pop()
+            elif depth == 0:
                 last_term = i + 1
             i += 1
             continue
@@ -488,11 +500,13 @@ def main() -> int:
             top_level = True
     text = read_text(header)
     sc = Scanner(text)
+    pseudo_namespaces: dict[str, tuple] = {}
     if top_level:
-        members = extract_top_level(text, sc)
+        extracted = extract_top_level(text, sc)
+        members = [m for m, _ in extracted]
         new_text = ""
         cursor = 0
-        for m in members:
+        for m, _ in extracted:
             new_text += text[cursor : m.start]
             comments = re.match(r"^(?:\s*(?://[^\n]*(?:\n|$)|/\*.*?\*/\s*))*", m.head, flags=re.S).group(0)
             new_text += comments + declaration_for(m)
@@ -501,15 +515,17 @@ def main() -> int:
         # A pre-existing `inline` declaration for an extracted function would
         # make its out-of-line definition inline again (clang may then drop the
         # cross-TU symbol). Strip `inline` from declarations of extracted names.
-        for m in members:
+        for m, _ in extracted:
             pattern = re.compile(
                 r"\binline\s+([A-Za-z_:<>,\s*&]*\b" + re.escape(m.name) + r"\s*)\("
             )
             new_text = pattern.sub(r"\1(", new_text)
         classes: list[ClassInfo] = []
-        pseudo = ClassInfo(name="", start=0, body_open=0, body_close=0)
-        pseudo.members = members
-        classes.append(pseudo)
+        for m, ns in extracted:
+            pseudo = ClassInfo(name="", start=0, body_open=0, body_close=0)
+            pseudo.members = [m]
+            pseudo_namespaces[m.name] = ns
+            classes.append(pseudo)
     else:
         classes = find_top_level_classes(text, sc, only)
         if not classes:
@@ -551,11 +567,18 @@ def main() -> int:
                 tail = re.sub(r"\b(override|final)\b", "", tail)
                 tail = re.sub(r"\s+", " ", tail).strip()
                 params = strip_defaults(params)
+                ns = pseudo_namespaces.get(m.name, ())
+                wrap_open = "\n".join(f"namespace {comp} {{" for comp in ns)
+                wrap_close = "\n".join("}" for _ in ns)
+                if wrap_open:
+                    parts.append(wrap_open)
                 parts.append(f"{ret + ' ' if ret else ''}{name}({params})"
                              + (f" {tail}" if tail else "")
                              + " {")
             parts.append(m.body.rstrip())
             parts.append("}")
+            if not cls.name and pseudo_namespaces.get(m.name, ()):
+                parts.append("".join("}" for _ in pseudo_namespaces[m.name]))
         unit_path = Path(path)
         unit_path.parent.mkdir(parents=True, exist_ok=True)
         unit_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8", newline="\n")
