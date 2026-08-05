@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-05 - 800-line semantic-unit conversion (IN PROGRESS; hand-off in HANDOFF.md)
+
+The remaining goal is every first-party C++ file <= 800 lines as a proper semantic unit.
+Committed this effort: `af42d025` (system_metrics, custom_overlay_gl), `76ec7086` (hook/main),
+`d87e500c` (dxgi_shared + DetourPresent decomposition), `3bcbf8e5` (config_load),
+`d405b0ec` (media_main re-split), `a9816048` (MediaProcessSession), `60995f72`
+(media_main_threads split). The splitter gained `statics_in_units` / `unscope_anon` /
+`unstatic` / `keep_static` (definitions stay in units, headers keep prototypes/externs).
+Remaining: `EncoderThreadFunc` (media_main_threads.cpp, 8571 lines), `ProcessFrame`
+(dx12_hook_process.cpp, 5414), the dx12_hook/video_encoder modules, class-heavy internal
+headers, and several smaller units/testapps. Full recipe + per-file plan: **`HANDOFF.md`**
+at the repo root.
+
 ### 2026-08-05 - Source-fragment (.inl) conversion to semantic .cpp units (COMPLETE)
 
 The mechanical 650-line `.inl` splits (commits `fdc0977d`/`02e3bafa`) are fully converted back
