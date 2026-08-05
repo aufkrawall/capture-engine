@@ -19,6 +19,7 @@
     "hook/apis/ffx_hook_internal.h": 1549,
     "hook/apis/opengl_hook_internal.h": 1218,
     "hook/apis/opengl_sampler_override.cpp": 1126,
+    "hook/apis/streamline_hook_internal.h": 3868,
     "hook/common/custom_overlay_dx12.cpp": 894,
     "hook/common/custom_overlay_gl.cpp": 950,
     "hook/common/fg_session_state.cpp": 1037,
@@ -28,8 +29,10 @@
     "hook/wrappers/dxgi_swapchain_wrap_present.cpp": 1022,
     "mediaengine/app_audio_capture_loop.cpp": 808,
     "mediaengine/video_encoder_options.cpp": 876,
-    "tools/refactor/source_splitter.py": 1032
+    "testapp/dx12_av_sync_test.cpp": 1159,
+    "testapp/dx12_fsr_fg_test.cpp": 862,
+    "tools/refactor/source_splitter.py": 1034
   },
-  "count": 16,
-  "total": 19679
+  "count": 19,
+  "total": 25570
 }
