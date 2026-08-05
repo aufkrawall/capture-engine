@@ -615,10 +615,11 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_LT(lookupStandby, lookupReturn)
         << "standby must arm while the GetState pointer is delivered, before the caller tags activation inputs";
 
-    const size_t setDeviceDeclaration = streamline.find("slResult Hooked_slSetD3DDevice");
+    // The internal header carries prototypes; anchor on the out-of-line
+    // definition in the streamline_hook_helpers units (rfind).
+    const size_t setDeviceDeclaration = streamline.rfind("slResult Hooked_slSetD3DDevice");
     ASSERT_NE(setDeviceDeclaration, std::string::npos);
-    const size_t setDeviceHook = streamline.find("slResult Hooked_slSetD3DDevice", setDeviceDeclaration + 1);
-    ASSERT_NE(setDeviceHook, std::string::npos);
+    const size_t setDeviceHook = setDeviceDeclaration;
     const size_t deviceStandby = streamline.find("BeginPreactivationStandby(2)", setDeviceHook);
     const size_t deviceFeatureResolve = streamline.find("TryResolveDLSSGFeatureHooks()", setDeviceHook);
     ASSERT_NE(deviceStandby, std::string::npos);
@@ -628,10 +629,9 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_NE(streamline.find("Official UI tag record opportunity", setDeviceHook), std::string::npos)
         << "early tag shape/call ordering needs bounded diagnostics when no usable UI record is produced";
 
-    const size_t getStateDeclaration = streamline.find("slResult Hooked_slDLSSGGetState");
+    const size_t getStateDeclaration = streamline.rfind("slResult Hooked_slDLSSGGetState");
     ASSERT_NE(getStateDeclaration, std::string::npos);
-    const size_t getStateHook = streamline.find("slResult Hooked_slDLSSGGetState", getStateDeclaration + 1);
-    ASSERT_NE(getStateHook, std::string::npos);
+    const size_t getStateHook = getStateDeclaration;
     const size_t callStandby = streamline.find("BeginPreactivationStandby(requestedOutputs)", getStateHook);
     const size_t callOriginal = streamline.find("originalGetState(viewport, state, streamline_hook_options)", getStateHook);
     ASSERT_NE(callStandby, std::string::npos);
