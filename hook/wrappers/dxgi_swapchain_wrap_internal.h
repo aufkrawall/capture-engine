@@ -26,6 +26,12 @@ struct ScopedResizeGuard;
 
 #include "../apis/graphics_hook.h"
 
+// Declared here for the DXGI wrapper TU (defined in dx12_hook_internal_helpers10.cpp);
+// the dx12 hook internal header carries the same declaration for the hook TUs.
+bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr);
+
+
+
 #include "../common/dx12_overlay_policy.h"
 
 #include "../common/dxgi_shared.h"
@@ -204,22 +210,6 @@ inline bool IsD3D12PresentDeviceLostHRESULT(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
 }
 
-inline bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut, DWORD* foregroundPidOut) {
-    HWND foregroundWindow = GetForegroundWindow();
-    DWORD foregroundPid = 0;
-    bool processHasForeground = false;
-    if (foregroundWindow) {
-        GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
-        processHasForeground = (foregroundPid == GetCurrentProcessId());
-    }
-    if (foregroundWindowOut) {
-        *foregroundWindowOut = foregroundWindow;
-    }
-    if (foregroundPidOut) {
-        *foregroundPidOut = foregroundPid;
-    }
-    return processHasForeground;
-}
 
 inline ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo FlushDeferredDX12OverlaySignalAfterWrappedPresent(
     bool isD3D12, const char* presentName, int callCount, bool focusLostForSwapchain) {
@@ -287,3 +277,4 @@ inline const char* WaitResultName(DWORD waitResult) {
 extern // Thread-local flag to track when we're inside the wrapper's Present
 // This prevents vtable hooks from also processing the frame
 thread_local bool g_InWrapperPresent;
+

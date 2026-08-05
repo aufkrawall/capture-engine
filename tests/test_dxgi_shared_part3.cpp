@@ -282,7 +282,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     EXPECT_LT(normalIdentityLock, rememberNormalIdentity)
         << "normal queue verification and exact native identity publication must share one lock boundary";
 
-    const size_t postSLRender = text.find("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
     ASSERT_NE(postSLRender, std::string::npos);
     const size_t postSubmitHealth = text.find("HRESULT postDevReason = dev->GetDeviceRemovedReason();", postSLRender);
     const size_t healthySuccessfulSubmit =
@@ -312,7 +312,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
-    const size_t postSLRender = text.find("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
     const size_t exactQueueSelection =
         text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", postSLRender);
     const size_t staleLockedQueueFallback =
@@ -762,7 +762,7 @@ TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershi
         dx12.find("DX12_IsNativeFSRInternalNoCallbackCompositionActive()", staleOwnershipHelper);
     const size_t clearNoCallback = dx12.find("ForceClearNativeFSRInternalNoCallbackComposition(", staleOwnershipPolicy);
     const size_t implementation =
-        dx12.find("void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed()", clearNoCallback);
+        dx12.find("void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed() {");
     const size_t helperCall =
         dx12.find("ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(", implementation);
     ASSERT_NE(staleOwnershipHelper, std::string::npos);
