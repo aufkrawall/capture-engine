@@ -521,13 +521,14 @@ def _strip_defaults(sig: str) -> str:
 
 def _strip_definition_defaults(chunk_text: str) -> str:
     """Remove default argument initializers from a definition's signature."""
+    comments, body = _split_comments(chunk_text)
     depth = 0
-    for idx, ch in enumerate(chunk_text):
+    for idx, ch in enumerate(body):
         if ch == "{":
             if depth == 0:
-                sig = chunk_text[:idx]
+                sig = body[:idx]
                 stripped = _strip_defaults(sig)
-                return stripped + chunk_text[idx:]
+                return comments + stripped + body[idx:]
             depth += 1
         elif ch == "}":
             depth -= 1
@@ -658,7 +659,12 @@ class Scanner:
                 emit("func", _func_name(pending), start, end + 1, sig=sig, is_tmpl=is_tmpl,
                      is_static=is_static)
             else:
-                emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+                name = (
+                    _var_name(pending)
+                    if any(t.text in ("{", "=") for t in pending)
+                    else _last_ident(pending)
+                )
+                emit("other", name, start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
             pending = []
             pending_is_dir = False
 
@@ -891,7 +897,12 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
                 or not re.fullmatch(r"[A-Za-z_]\w*", c.name)
             ):
                 continue
-            if c.kind == "func" and not c.static and c.anon_region is None:
+            if (
+                c.kind == "func"
+                and not c.static
+                and c.anon_region is None
+                and not re.search(r"^\s*(inline|constexpr)\b", c.text)
+            ):
                 continue  # non-static functions get header prototypes, not renames
             if (
                 c.kind == "var"
@@ -908,6 +919,30 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             ):
                 shared.add(idx)
                 changed = True
+
+    # A non-static definition whose name matches a shared static declaration
+    # had internal linkage in the original single-TU source (the earlier
+    # `static` declaration governs). Hoist the definition as inline too so
+    # every unit sees the same entity.
+    static_decl_names = {
+        chunks[i].name
+        for i in shared
+        if chunks[i].kind == "func" and "{" not in chunks[i].text
+    }
+    if static_decl_names:
+        for idx, c in enumerate(chunks):
+            if (
+                c.kind == "func"
+                and c.name in static_decl_names
+                and idx not in shared
+                and any(
+                    j != idx
+                    and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
+                    and _count_ident(chunks[j].text, c.name) > 0
+                    for j in range(len(chunks))
+                )
+            ):
+                shared.add(idx)
 
     shared_statics = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "var"]
     shared_funcs = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "func"]
