@@ -1,0 +1,416 @@
+#pragma once
+
+namespace {
+struct ExternalDumpStormRecord;
+}
+
+namespace {
+struct ExternalDumpGateDecision;
+}
+
+struct ChildInjectParams;
+
+namespace UE5 {
+class IConsoleVariable;
+}
+
+#include "../common/utils/scanner.h"
+
+#include "apis/ddraw_hook.h"
+
+#include "apis/dx11_hook.h"
+
+#include "apis/dx12_hook.h"
+
+#include "apis/dx8_hook.h"
+
+#include "apis/dx9_hook.h"
+
+#include "apis/opengl_hook.h"
+
+#include "apis/streamline_hook.h"
+
+// CRITICAL: windows.h MUST come before psapi.h and intrin.h
+#include <windows.h>
+
+#include <winternl.h>
+
+#include <cstdio>
+
+#include <intrin.h> // For __builtin_return_address
+
+#include <psapi.h>
+
+// Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
+#include "../common/crash_dump_policy.h"
+
+#include "../common/crash_handler.h"
+
+#include "apis/ffx_hook.h" // FSR Frame Generation hook
+
+#include "apis/nvngx_hook.h"
+
+#include "capture/shared_capture.h"
+
+#include "common/dll_utils.h"
+
+#include "common/dxgi_shared.h"
+
+#include "common/fg_detection.h"
+
+#include "common/hook_common.h"
+
+#include "common/hook_context.h"
+
+#include "common/input_manager.h"
+
+#include "common/ipc_client.h"
+
+#include "common/overlay_compat.h"
+
+#include "common/perf_logger.h"
+
+#include "common/screenshot_hook.h"
+
+#include "common/streamline_runtime_policy.h"
+
+#include "common/reflex_limiter.h"
+
+#include "common/system_metrics.h"
+
+#include "wrappers/d3dkmt_hook.h"
+
+#include "wrappers/dxgi_swapchain_wrap.h"
+
+#include "wrappers/iat_hook.h"
+
+#include "wrappers/inline_hook.h"
+
+#include "wrappers/wrapper_hooks.h"
+
+#include <algorithm>
+
+#include <atomic>
+
+#include <cctype>
+
+#include <cstddef>
+
+#include <cstring>
+
+#include <dbghelp.h>
+
+#include <filesystem>
+
+#include <fstream>
+
+#include <memory>
+
+#include <mutex>
+
+#include <string>
+
+#include <string_view>
+
+#include <thread>
+
+#include <unordered_map>
+
+#include <vector>
+
+extern HMODULE g_hModule;
+
+using MiniDumpWriteDump_t = decltype(&MiniDumpWriteDump);
+
+using RaiseFailFastException_t = VOID(WINAPI*)(PEXCEPTION_RECORD, PCONTEXT, DWORD);
+
+using TerminateProcess_t = BOOL(WINAPI*)(HANDLE, UINT);
+
+using ExitProcess_t = VOID(WINAPI*)(UINT);
+
+using RtlExitUserProcess_t = VOID(NTAPI*)(NTSTATUS);
+
+using NtTerminateProcess_t = NTSTATUS(NTAPI*)(HANDLE, NTSTATUS);
+
+using InvalidParameterNoInfoNoReturn_t = void(__cdecl*)();
+
+using InvokeWatson_t = void(__cdecl*)(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t);
+
+using Abort_t = void(__cdecl*)();
+
+using Terminate_t = void(__cdecl*)();
+
+using Purecall_t = int(__cdecl*)();
+
+namespace {
+enum class ExternalPreTerminationDumpResult { kUnavailable, kCaptured, kFailed, kTimedOut };
+}
+
+enum class ProcessCategory {
+  PotentialGame,
+  Launcher,
+  InternalTool,
+  Blacklisted
+};
+
+// Global Local Config
+extern AppConfig *g_pLocalConfig;
+
+#include "../common/logging.h"
+
+// LoadLibrary Hook Typedefs
+typedef HMODULE(WINAPI *LoadLibraryA_t)(LPCSTR lpLibFileName);
+
+typedef HMODULE(WINAPI *LoadLibraryW_t)(LPCWSTR lpLibFileName);
+
+typedef HMODULE(WINAPI *LoadLibraryExA_t)(LPCSTR lpLibFileName, HANDLE hFile,
+                                          DWORD dwFlags);
+
+typedef HMODULE(WINAPI *LoadLibraryExW_t)(LPCWSTR lpLibFileName, HANDLE hFile,
+                                          DWORD dwFlags);
+
+typedef NTSTATUS(NTAPI *LdrLoadDll_t)(PWSTR SearchPath,
+                                      PULONG DllCharacteristics,
+                                      PUNICODE_STRING DllName,
+                                      PVOID *BaseAddress);
+
+extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
+
+extern std::atomic<LoadLibraryW_t> OriginalLoadLibraryW;
+
+extern std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA;
+
+extern std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW;
+
+extern std::atomic<LdrLoadDll_t> OriginalLdrLoadDll;
+
+typedef LPSTR(WINAPI *GetCommandLineA_t)();
+
+typedef LPWSTR(WINAPI *GetCommandLineW_t)();
+
+extern std::atomic<GetCommandLineA_t> OriginalGetCommandLineA;
+
+extern std::atomic<GetCommandLineW_t> OriginalGetCommandLineW;
+
+// CreateProcess Hook Typedefs for child process injection
+typedef BOOL(WINAPI *CreateProcessA_t)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES,
+
+                                       LPSECURITY_ATTRIBUTES, BOOL, DWORD,
+                                       LPVOID, LPCSTR, LPSTARTUPINFOA,
+                                       LPPROCESS_INFORMATION);
+
+typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
+                                       LPSECURITY_ATTRIBUTES, BOOL, DWORD,
+                                       LPVOID, LPCWSTR, LPSTARTUPINFOW,
+                                       LPPROCESS_INFORMATION);
+
+extern std::atomic<CreateProcessA_t> OriginalCreateProcessA;
+
+extern std::atomic<CreateProcessW_t> OriginalCreateProcessW;
+
+// Registry Hook Typedefs (for DLSS Debug Overlay)
+typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
+                                            LPDWORD lpReserved, LPDWORD lpType,
+                                            LPBYTE lpData, LPDWORD lpcbData);
+
+// ----------------------------------------------------------------------------
+// LdrRegisterDllNotification: authoritative, loader-safe DLL load/unload tracking
+// for third-party-overlay detection. Fires for ALL load mechanisms (LoadLibrary,
+// LdrLoadDll, static-import resolution) and — crucially — for UNLOADs, which the
+// LoadLibrary/LdrLoadDll hooks do not see. The callback runs UNDER the loader lock,
+// so it must stay loader-safe: read the notification's base-name UNICODE_STRING,
+// match it against the static overlay list, and update an atomic. No GetModuleHandle,
+// no LoadLibrary, no heap-heavy work. This keeps the Present hot path loader-free
+// (it only reads the atomic) — the root-cause fix for the x86 Alt+Tab freeze.
+// ----------------------------------------------------------------------------
+#ifndef LDR_DLL_NOTIFICATION_REASON_LOADED
+#define LDR_DLL_NOTIFICATION_REASON_LOADED 1
+#define LDR_DLL_NOTIFICATION_REASON_UNLOADED 2
+typedef struct _LDR_DLL_NOTIFICATION_DATA {
+  ULONG Flags;
+  const UNICODE_STRING *FullDllName;
+  const UNICODE_STRING *BaseDllName;
+  PVOID DllBase;
+  ULONG SizeOfImage;
+} LDR_DLL_NOTIFICATION_DATA, *PLDR_DLL_NOTIFICATION_DATA;
+typedef const LDR_DLL_NOTIFICATION_DATA *PCLDR_DLL_NOTIFICATION_DATA;
+#endif
+
+typedef VOID(CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(
+    ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData, PVOID Context);
+
+typedef NTSTATUS(NTAPI *PFN_LdrRegisterDllNotification)(
+    ULONG Flags, PLDR_DLL_NOTIFICATION_FUNCTION NotificationFunction, PVOID Context, PVOID *Cookie);
+
+typedef void *(*FindConsoleVariable_t)(void *mgr, const wchar_t *name);
+
+typedef void (*Set_t)(void *cvar, const wchar_t *value, uint32_t setBy);
+
+bool IsProcessTerminating();
+
+void InjectIntoChild(HANDLE hProcess, HANDLE hThread);
+
+bool ShouldInjectChild(const char *exePath);
+
+BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd, LPSECURITY_ATTRIBUTES lpPA, LPSECURITY_ATTRIBUTES lpTA, BOOL bInherit, DWORD dwFlags, LPVOID lpEnv, LPCSTR lpDir, LPSTARTUPINFOA lpSI, LPPROCESS_INFORMATION lpPI);
+
+BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd, LPSECURITY_ATTRIBUTES lpPA, LPSECURITY_ATTRIBUTES lpTA, BOOL bInherit, DWORD dwFlags, LPVOID lpEnv, LPCWSTR lpDir, LPSTARTUPINFOW lpSI, LPPROCESS_INFORMATION lpPI);
+
+void CheckAndInstallHooks();
+
+std::string GetRedirectedPath(const std::string &requestedPath);
+
+LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData);
+
+void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
+
+LPSTR WINAPI HookedGetCommandLineA();
+
+LPWSTR WINAPI HookedGetCommandLineW();
+
+HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
+
+HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName);
+
+HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
+
+HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
+
+NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics, PUNICODE_STRING DllName, PVOID *BaseAddress);
+
+namespace UE5 {
+void EnforceRR();
+}
+
+void CheckAndInstallHooks();
+
+DWORD WINAPI HookThread(LPVOID lpParam);
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpReserved);
+
+extern "C" {
+NTSYSAPI VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
+NTSYSAPI VOID NTAPI RtlRaiseStatus(NTSTATUS Status);
+NTSYSAPI VOID NTAPI RtlExitUserProcess(NTSTATUS ExitStatus);
+NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord,
+                                         BOOLEAN FirstChance);
+NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
+}
+
+namespace {
+template <typename Function>
+void PublishFatalHookTrampoline(void* trampoline, void* context) {
+  auto* originalSlot = static_cast<std::atomic<Function>*>(context);
+  originalSlot->store(reinterpret_cast<Function>(trampoline), std::memory_order_release);
+}
+}
+
+namespace {
+struct ExternalDumpStormRecord {
+  ULONGLONG firstHitMs = 0;
+  ULONGLONG lastHitMs = 0;
+  uint32_t hitCount = 0;
+  bool strongSignature = false;
+  bool mirrorAttempted = false;
+  bool supplementalAttempted = false;
+  bool supplementalCaptured = false;
+  bool terminationRequested = false;
+};
+}
+
+namespace {
+struct ExternalDumpGateDecision {
+  std::string key;
+  uint32_t hitCount = 0;
+  bool strongSignature = false;
+  bool mirrorAllowed = false;
+  bool supplementalAllowed = false;
+  bool terminateProcess = false;
+};
+}
+
+// Helper to safely delete hooks
+template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
+  if (hook) {
+    HookLog("DLL_DETACH: Shutting down %s...", name);
+    hook->Shutdown();
+    HookLog("DLL_DETACH: Deleting %s...", name);
+    delete hook;
+    hook = nullptr;
+    HookLog("DLL_DETACH: %s shutdown complete", name);
+  }
+}
+
+template <typename T>
+T ResolveOriginalProc(std::atomic<T> &slot, const char *moduleName,
+                      const char *procName) {
+  T original = slot.load(std::memory_order_acquire);
+  if (original) {
+    return original;
+  }
+
+  HMODULE module = GetModuleHandleA(moduleName);
+  if (!module) {
+    return nullptr;
+  }
+
+  T resolved = reinterpret_cast<T>(GetProcAddress(module, procName));
+  if (!resolved) {
+    return nullptr;
+  }
+
+  T expected = nullptr;
+  if (slot.compare_exchange_strong(expected, resolved,
+                                   std::memory_order_release,
+                                   std::memory_order_acquire)) {
+    return resolved;
+  }
+
+  return slot.load(std::memory_order_acquire);
+}
+
+inline CreateProcessA_t GetOriginalCreateProcessA() {
+  return ResolveOriginalProc(OriginalCreateProcessA, "kernel32.dll",
+                             "CreateProcessA");
+}
+
+inline CreateProcessW_t GetOriginalCreateProcessW() {
+  return ResolveOriginalProc(OriginalCreateProcessW, "kernel32.dll",
+                             "CreateProcessW");
+}
+
+// Helper: Inject our DLL into a suspended child process.
+// Runs on a dedicated worker thread so the calling thread (possibly render
+// thread) is not blocked by the 5-second WaitForSingleObject.
+struct ChildInjectParams {
+  HANDLE hProcess;
+  HANDLE hThread;
+  char dllPath[MAX_PATH];
+};
+
+// Hooked Functions - Signal Event & Redirect
+inline std::string main_g_SpoofedCmdLineA;
+
+inline std::wstring main_g_SpoofedCmdLineW;
+
+namespace UE5 {
+class IConsoleVariable {
+public:
+  virtual ~IConsoleVariable() {}
+  virtual void Set(const wchar_t *Value, uint32_t SetBy = 0) = 0;
+  virtual void Set(const char *Value, uint32_t SetBy = 0) = 0;
+  virtual void Set(int32_t Value, uint32_t SetBy = 0) = 0;
+  virtual void Set(float Value, uint32_t SetBy = 0) = 0;
+  // The above is a GUESS. The actual interface has overloads.
+  // Usually Set(const TCHAR* InValue, EConsoleVariableSetBy InSetBy) is the
+  // main one. EConsoleVariableSetBy: SetByCommandline = 0x00000002.
+};
+}
+
+namespace UE5 {
+// We will use a "manual vtable call" helper to avoid interface mismatches.
+template <typename T> T GetVFunc(void *instance, int index) {
+  uintptr_t *vtable = *((uintptr_t **)instance);
+  return (T)vtable[index];
+}
+}
