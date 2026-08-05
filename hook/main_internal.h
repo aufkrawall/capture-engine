@@ -1,12 +1,8 @@
 #pragma once
 
-namespace {
 struct ExternalDumpStormRecord;
-}
 
-namespace {
 struct ExternalDumpGateDecision;
-}
 
 struct ChildInjectParams;
 
@@ -118,8 +114,6 @@ class IConsoleVariable;
 
 #include <vector>
 
-extern HMODULE g_hModule;
-
 using MiniDumpWriteDump_t = decltype(&MiniDumpWriteDump);
 
 using RaiseFailFastException_t = VOID(WINAPI*)(PEXCEPTION_RECORD, PCONTEXT, DWORD);
@@ -142,9 +136,7 @@ using Terminate_t = void(__cdecl*)();
 
 using Purecall_t = int(__cdecl*)();
 
-namespace {
 enum class ExternalPreTerminationDumpResult { kUnavailable, kCaptured, kFailed, kTimedOut };
-}
 
 enum class ProcessCategory {
   PotentialGame,
@@ -152,9 +144,6 @@ enum class ProcessCategory {
   InternalTool,
   Blacklisted
 };
-
-// Global Local Config
-extern AppConfig *g_pLocalConfig;
 
 #include "../common/logging.h"
 
@@ -174,23 +163,9 @@ typedef NTSTATUS(NTAPI *LdrLoadDll_t)(PWSTR SearchPath,
                                       PUNICODE_STRING DllName,
                                       PVOID *BaseAddress);
 
-extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
-
-extern std::atomic<LoadLibraryW_t> OriginalLoadLibraryW;
-
-extern std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA;
-
-extern std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW;
-
-extern std::atomic<LdrLoadDll_t> OriginalLdrLoadDll;
-
 typedef LPSTR(WINAPI *GetCommandLineA_t)();
 
 typedef LPWSTR(WINAPI *GetCommandLineW_t)();
-
-extern std::atomic<GetCommandLineA_t> OriginalGetCommandLineA;
-
-extern std::atomic<GetCommandLineW_t> OriginalGetCommandLineW;
 
 // CreateProcess Hook Typedefs for child process injection
 typedef BOOL(WINAPI *CreateProcessA_t)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES,
@@ -203,10 +178,6 @@ typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
                                        LPSECURITY_ATTRIBUTES, BOOL, DWORD,
                                        LPVOID, LPCWSTR, LPSTARTUPINFOW,
                                        LPPROCESS_INFORMATION);
-
-extern std::atomic<CreateProcessA_t> OriginalCreateProcessA;
-
-extern std::atomic<CreateProcessW_t> OriginalCreateProcessW;
 
 // Registry Hook Typedefs (for DLSS Debug Overlay)
 typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
@@ -246,7 +217,113 @@ typedef void *(*FindConsoleVariable_t)(void *mgr, const wchar_t *name);
 
 typedef void (*Set_t)(void *cvar, const wchar_t *value, uint32_t setBy);
 
+BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType, PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam, PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam, PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+
+VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags);
+
+VOID WINAPI HookedRaiseException(DWORD ExceptionCode, DWORD ExceptionFlags, DWORD NumberOfArguments, const ULONG_PTR* Arguments);
+
+VOID NTAPI HookedRtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
+
+VOID NTAPI HookedRtlRaiseStatus(NTSTATUS Status);
+
+NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance);
+
+BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode);
+
+VOID WINAPI HookedExitProcess(UINT uExitCode);
+
+VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus);
+
+NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
+
+void __cdecl HookedInvalidParameterNoInfoNoReturn();
+
+void __cdecl HookedInvokeWatson(const wchar_t* expression, const wchar_t* functionName, const wchar_t* fileName, unsigned int line, uintptr_t reserved);
+
+void __cdecl HookedAbort();
+
+void __cdecl HookedTerminate();
+
+int __cdecl HookedPurecall();
+
+void* ResolveModuleExport(const char* moduleName, const char* functionName);
+
+bool IsUcrtDynamicHookModule(const char* moduleBaseName, HMODULE module);
+
+bool IsApplicationFatalIatModule(HMODULE, const wchar_t* modulePath);
+
+bool IsCurrentProcessHandle(HANDLE processHandle);
+
+bool IsFrameGenerationRuntimeActiveForTerminationDump();
+
+void DescribeAddressModule(void* address, char* buffer, size_t bufferSize);
+
+void LogFatalExitCallerStack(const char* source, DWORD exitCode, void* callerAddress);
+
+std::string QuoteCommandLineArgument(const std::string& value);
+
+std::filesystem::path GetInstalledCaptureEnginePath();
+
+ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(const char* source, const char* dumpHint);
+
+bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess, PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord, void* callerAddress = nullptr);
+
+bool ShouldCaptureExplicitFatalRaise(DWORD code);
+
+bool CaptureExplicitFatalRaiseIfNeeded(const char* source, DWORD code, PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord, void* callerAddress = nullptr);
+
+VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags);
+
+VOID WINAPI HookedRaiseException(DWORD ExceptionCode, DWORD ExceptionFlags, DWORD NumberOfArguments, const ULONG_PTR* Arguments);
+
+VOID NTAPI HookedRtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
+
+VOID NTAPI HookedRtlRaiseStatus(NTSTATUS Status);
+
+NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance);
+
+BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode);
+
+VOID WINAPI HookedExitProcess(UINT uExitCode);
+
+VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus);
+
+NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
+
+void __cdecl HookedInvalidParameterNoInfoNoReturn();
+
+void __cdecl HookedInvokeWatson(const wchar_t* expression, const wchar_t* functionName, const wchar_t* fileName, unsigned int line, uintptr_t reserved);
+
+void __cdecl HookedAbort();
+
+void __cdecl HookedTerminate();
+
+int __cdecl HookedPurecall();
+
+void TryInstallFatalTerminationDumpHooks();
+
+ce::crash_dump_policy::ExternalDumpSignature BuildExternalDumpSignature( const char* sourcePath, DWORD processId, PMINIDUMP_EXCEPTION_INFORMATION exceptionParam);
+
+ExternalDumpGateDecision BeginExternalDumpCaptureForSignature( const ce::crash_dump_policy::ExternalDumpSignature& signature);
+
+void MarkExternalSupplementalDumpCaptured(const std::string& key);
+
+void TerminateProcessAfterExternalDumpStorm(const ExternalDumpGateDecision& decision);
+
+std::string BuildExternalDumpMirrorPath(const char* sourcePath);
+
+void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess, DWORD processId, MINIDUMP_TYPE dumpType, PMINIDUMP_EXCEPTION_INFORMATION exceptionParam, PMINIDUMP_USER_STREAM_INFORMATION userStreamParam, PMINIDUMP_CALLBACK_INFORMATION callbackParam);
+
+void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* moduleNameOrPath);
+
+BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType, PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam, PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam, PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+
 bool IsProcessTerminating();
+
+bool IsDXVKD3D11WrapperLoaded();
+
+void EnsureLocalConfigAllocated();
 
 void InjectIntoChild(HANDLE hProcess, HANDLE hThread);
 
@@ -256,13 +333,23 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd, LPSECURITY_ATTRIBUTE
 
 BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd, LPSECURITY_ATTRIBUTES lpPA, LPSECURITY_ATTRIBUTES lpTA, BOOL bInherit, DWORD dwFlags, LPVOID lpEnv, LPCWSTR lpDir, LPSTARTUPINFOW lpSI, LPPROCESS_INFORMATION lpPI);
 
+void CloseCheckHooksEvent();
+
 void CheckAndInstallHooks();
 
 std::string GetRedirectedPath(const std::string &requestedPath);
 
+bool NeedsLoaderRedirectionHook();
+
+bool NeedsLowLevelModuleLoadObservationHook();
+
 LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData);
 
+void InitializeThirdPartyOverlayDetection();
+
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
+
+void ArmManualReflexQueryHookIfConfigured(const char *source);
 
 LPSTR WINAPI HookedGetCommandLineA();
 
@@ -286,7 +373,100 @@ void CheckAndInstallHooks();
 
 DWORD WINAPI HookThread(LPVOID lpParam);
 
+bool isProcessWhitelistedFast(const char *name);
+
+bool IsServiceProcess(const char *name);
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpReserved);
+
+inline ProcessCategory main_g_ProcessCategory = ProcessCategory::PotentialGame;
+
+inline bool main_g_isDormant = false;
+
+inline bool main_g_isSkippedProcess = false;
+
+// Hooked Functions - Signal Event & Redirect
+inline std::string main_g_SpoofedCmdLineA;
+
+inline std::wstring main_g_SpoofedCmdLineW;
+
+extern HMODULE g_hModule;
+
+extern std::atomic<bool> g_ProcessTerminating;
+
+extern std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump;
+
+extern std::atomic<bool> g_MiniDumpWriteDumpHookInstalled;
+
+extern std::once_flag g_MiniDumpWriteDumpHookOnce;
+
+extern std::atomic<RaiseFailFastException_t> g_OriginalRaiseFailFastException;
+
+extern std::atomic<TerminateProcess_t> g_OriginalTerminateProcess;
+
+extern std::atomic<ExitProcess_t> g_OriginalExitProcess;
+
+extern std::atomic<RtlExitUserProcess_t> g_OriginalRtlExitUserProcess;
+
+extern std::atomic<NtTerminateProcess_t> g_OriginalNtTerminateProcess;
+
+extern std::atomic<InvalidParameterNoInfoNoReturn_t> g_OriginalInvalidParameterNoInfoNoReturn;
+
+extern std::atomic<InvokeWatson_t> g_OriginalInvokeWatson;
+
+extern std::atomic<Abort_t> g_OriginalAbort;
+
+extern std::atomic<Terminate_t> g_OriginalTerminate;
+
+extern std::atomic<Purecall_t> g_OriginalPurecall;
+
+extern std::once_flag g_FatalTerminationDumpHookOnce;
+
+extern thread_local bool t_InMiniDumpWriteDumpHook;
+
+extern std::atomic<bool> g_HookThreadRunning;
+
+// Global Hook Pointers
+extern DX12Hook *g_DX12Hook;
+
+extern DX11Hook *g_DX11Hook;
+
+extern DX9Hook *g_DX9Hook;
+
+extern DDrawHook *g_DDrawHook;
+
+extern DX8Hook *g_DX8Hook;
+
+extern OpenGLHook *g_OpenGLHook;
+
+// Global Local Config
+extern AppConfig *g_pLocalConfig;
+
+extern std::unique_ptr<AppConfig> g_LocalConfigOwner;
+
+extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
+
+extern std::atomic<LoadLibraryW_t> OriginalLoadLibraryW;
+
+extern std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA;
+
+extern std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW;
+
+extern std::atomic<LdrLoadDll_t> OriginalLdrLoadDll;
+
+extern std::atomic<GetCommandLineA_t> OriginalGetCommandLineA;
+
+extern std::atomic<GetCommandLineW_t> OriginalGetCommandLineW;
+
+extern std::atomic<CreateProcessA_t> OriginalCreateProcessA;
+
+extern std::atomic<CreateProcessW_t> OriginalCreateProcessW;
+
+extern RegQueryValueExW_t OriginalRegQueryValueExW;
+
+extern std::mutex g_HookMutex;
+
+extern HANDLE g_hCheckHooksEvent;
 
 extern "C" {
 NTSYSAPI VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
@@ -297,15 +477,12 @@ NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCON
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
 }
 
-namespace {
 template <typename Function>
 void PublishFatalHookTrampoline(void* trampoline, void* context) {
   auto* originalSlot = static_cast<std::atomic<Function>*>(context);
   originalSlot->store(reinterpret_cast<Function>(trampoline), std::memory_order_release);
 }
-}
 
-namespace {
 struct ExternalDumpStormRecord {
   ULONGLONG firstHitMs = 0;
   ULONGLONG lastHitMs = 0;
@@ -316,9 +493,7 @@ struct ExternalDumpStormRecord {
   bool supplementalCaptured = false;
   bool terminationRequested = false;
 };
-}
 
-namespace {
 struct ExternalDumpGateDecision {
   std::string key;
   uint32_t hitCount = 0;
@@ -327,7 +502,6 @@ struct ExternalDumpGateDecision {
   bool supplementalAllowed = false;
   bool terminateProcess = false;
 };
-}
 
 // Helper to safely delete hooks
 template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
@@ -388,11 +562,6 @@ struct ChildInjectParams {
   char dllPath[MAX_PATH];
 };
 
-// Hooked Functions - Signal Event & Redirect
-inline std::string main_g_SpoofedCmdLineA;
-
-inline std::wstring main_g_SpoofedCmdLineW;
-
 namespace UE5 {
 class IConsoleVariable {
 public:
@@ -413,4 +582,10 @@ template <typename T> T GetVFunc(void *instance, int index) {
   uintptr_t *vtable = *((uintptr_t **)instance);
   return (T)vtable[index];
 }
+}
+
+// Helper for QueueUserWorkItem (requires DWORD return, LPVOID param)
+inline DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
+  timeBeginPeriod(1);
+  return HookThread(lpParam);
 }

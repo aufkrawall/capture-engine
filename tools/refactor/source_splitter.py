@@ -26,6 +26,9 @@ Grouping schema (see split_source()):
   },
   "classes_in_units": [5],
   "keep_in_units": [6],
+  "unscope_anon": [1],
+  "unstatic": [7],
+  "destatic": [8],
   "delete": ["config_part_001.inl", "config_part_002.inl"]
 }
 """
@@ -836,6 +839,24 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     header_name = grouping["header"]
     units: Dict[str, Dict] = grouping["units"]
     unit_names = list(units)
+
+    # Chunks inside anonymous namespaces keep internal linkage per unit, so
+    # they cannot be shared across units. unscope_anon promotes whole anon
+    # regions to file scope (prototypes/externs in the header, definitions in
+    # their units); unstatic does the same for individual file-scope statics.
+    unscope_anon = set(grouping.get("unscope_anon", []))
+    unstatic = set(grouping.get("unstatic", []))
+    unscoped_idx: set = set()
+    for idx, c in enumerate(chunks):
+        if c.anon_region is not None and c.anon_region in unscope_anon:
+            unscoped_idx.add(idx)
+            c.ns_path = ()
+            c.anon_region = None
+            c.static = False
+        elif idx in unstatic:
+            unscoped_idx.add(idx)
+            c.static = False
+
     assignment: Dict[int, str] = {}
     for unit_name, spec in units.items():
         for idx in spec.get("chunks", []):
@@ -994,7 +1015,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
 
     def unit_body_text(c: Chunk) -> str:
         text = rename_text(c.text)
-        if idx_by_id[id(c)] in destatic:
+        if idx_by_id[id(c)] in destatic or idx_by_id[id(c)] in unscoped_idx:
             comments, body = _split_comments(text)
             body = re.sub(r"^\s*static\s+", "", body, count=1)
             text = comments + body
@@ -1070,30 +1091,37 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             header_idx.add(idx)  # declaration-only: prototype replaces it in units
 
     # Pass 3: definitions in original order (templates, classes, extern blocks,
-    # shared statics/functions at their original positions).
-    for idx, c in enumerate(chunks):
-        if idx in keep_in_units or idx in header_idx:
-            continue
-        if idx in shared_idx:
-            emit_shared(idx, c)
-            header_idx.add(idx)
-        elif c.kind == "func" and c.template:
-            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
-            header_idx.add(idx)
-        elif c.kind == "class" and idx not in classes_in_units:
-            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
-            header_idx.add(idx)
-        elif c.kind == "extern" and idx not in extern_in_units:
-            if not re.search(r"\)\s*\{", c.text):
-                # Declaration-only extern block: safe to share via the header.
+    # shared statics/functions at their original positions). Shared static
+    # variables are emitted first so extern declarations (Pass 4) and inline
+    # functions/classes that reference renamed constants or extern globals see
+    # them in order.
+    def pass3(kinds: set) -> None:
+        for idx, c in enumerate(chunks):
+            if idx in keep_in_units or idx in header_idx or c.kind not in kinds:
+                continue
+            if idx in shared_idx:
+                emit_shared(idx, c)
+                header_idx.add(idx)
+            elif c.kind == "func" and c.template:
                 header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
                 header_idx.add(idx)
-            # Definition blocks (function bodies inside extern "C") stay in
-            # their unit; hoisting them would duplicate the definitions.
+            elif c.kind == "class" and idx not in classes_in_units:
+                header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
+                header_idx.add(idx)
+            elif c.kind == "extern" and idx not in extern_in_units:
+                if not re.search(r"\)\s*\{", c.text):
+                    # Declaration-only extern block: safe to share via the header.
+                    header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
+                    header_idx.add(idx)
+                # Definition blocks (function bodies inside extern "C") stay in
+                # their unit; hoisting them would duplicate the definitions.
+
+    pass3({"var"})
 
     # Pass 4: extern declarations for mutable globals used from other units.
     # Emitted after shared statics so declarations that reference renamed
-    # inline constants (e.g. array bounds) see their definitions.
+    # inline constants (e.g. array bounds) see their definitions, and before
+    # inline functions/classes that reference the globals themselves.
     for idx, c in enumerate(chunks):
         if idx in header_idx or c.kind not in ("var", "other") or not c.name:
             continue
@@ -1109,6 +1137,8 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         extern = _extern_decl(rename_text(c.text), c.name)
         if extern:
             header_parts.append(_wrap_ns(extern, c.ns_path))
+
+    pass3({"func", "class", "extern"})
 
     if dry_run:
         for name in unit_names:

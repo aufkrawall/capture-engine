@@ -10,6 +10,7 @@ behaviour: raw-string bodies stay inside their declaration chunk.
 from __future__ import annotations
 
 import unittest
+import tempfile
 from pathlib import Path
 
 from tools.refactor import source_splitter
@@ -53,6 +54,54 @@ class SourceSplitterScanTest(unittest.TestCase):
         chunks = source_splitter.scan(text)
         covered = {line for chunk in chunks for line in range(chunk.start, chunk.end)}
         self.assertEqual(covered, {0, 1, 2, 3, 4})
+
+
+class SourceSplitterSplitTest(unittest.TestCase):
+    def _split(self, text: str, grouping: dict) -> tuple[Path, dict]:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        facade = root / "m.cpp"
+        facade.write_text(text, encoding="utf-8", newline="\n")
+        source_splitter.split_source(facade, grouping)
+        return root, grouping
+
+    def test_unscope_anon_moves_definition_to_unit_with_prototype(self) -> None:
+        root, grouping = self._split(
+            "int A() { return 1; }\nnamespace {\nint B() { return A(); }\n}\n",
+            {
+                "module": "m",
+                "header": "m_internal.h",
+                "units": {"m.cpp": {"rest": True}, "m_b.cpp": {"chunks": [1]}},
+                "unscope_anon": [1],
+                "delete": [],
+            },
+        )
+        header = (root / "m_internal.h").read_text(encoding="utf-8")
+        unit_b = (root / "m_b.cpp").read_text(encoding="utf-8")
+        unit_main = (root / "m.cpp").read_text(encoding="utf-8")
+        self.assertIn("int B();", header)
+        self.assertIn("int B() {", unit_b)
+        self.assertNotIn("namespace {", unit_b)
+        self.assertIn("int A() {", unit_main)
+
+    def test_unstatic_var_gets_extern_after_inline_use(self) -> None:
+        root, grouping = self._split(
+            "static int g_value = 7;\ninline int Read() { return g_value; }\nint Use() { return Read(); }\n",
+            {
+                "module": "m",
+                "header": "m_internal.h",
+                "units": {"m.cpp": {"rest": True}, "m_use.cpp": {"chunks": [2]}},
+                "unstatic": [0],
+                "delete": [],
+            },
+        )
+        header = (root / "m_internal.h").read_text(encoding="utf-8")
+        unit_main = (root / "m.cpp").read_text(encoding="utf-8")
+        unit_use = (root / "m_use.cpp").read_text(encoding="utf-8")
+        self.assertLess(header.find("extern int g_value;"), header.find("inline int Read() {"))
+        self.assertIn("int g_value = 7;", unit_main)
+        self.assertIn("int Use() {", unit_use)
 
 
 if __name__ == "__main__":
