@@ -235,6 +235,10 @@ STRICT_FP_MEDIA_SOURCES = {
     "process_loopback_capture.cpp",
     "process_loopback_worker.cpp",
     "video_encoder.cpp",
+    "video_encoder_configure.cpp",
+    "video_encoder_conversion.cpp",
+    "video_encoder_encode.cpp",
+    "video_encoder_lifecycle.cpp",
 }
 STRICT_FP_SCREENSHOT_SOURCES = {"screenshot_encoding.cpp", "screenshot_hdr_encoding.cpp"}
 CLANG_STRICT_FP_FLAGS = ["-ffp-model=strict"]

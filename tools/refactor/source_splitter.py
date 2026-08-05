@@ -228,6 +228,7 @@ def lex(text: str) -> List[Token]:
             if j >= n:
                 raise RuntimeError("unterminated string literal")
             line += text.count("\n", i, j + 1)
+            tokens.append(Token("OTHER", text[i : j + 1], line))
             i = j + 1
             continue
         if c == "'":
@@ -414,8 +415,32 @@ def _classify_block(pending: Sequence[Token]) -> Tuple[str, str, bool]:
     idx, is_tmpl = _skip_template(pending, 0)
     while idx < len(pending) and pending[idx].kind == "DIR":
         idx += 1
-    while idx < len(pending) and pending[idx].text == "__declspec":
+    is_extern_c = (
+        idx < len(pending)
+        and pending[idx].text == "extern"
+        and idx + 1 < len(pending)
+        and pending[idx + 1].kind == "OTHER"
+        and pending[idx + 1].text.startswith('"')
+    )
+    if is_extern_c:
         idx += 2
+    while (
+        idx < len(pending)
+        and pending[idx].text == "__declspec"
+        and idx + 1 < len(pending)
+        and pending[idx + 1].text == "("
+    ):
+        depth = 0
+        i = idx + 1
+        while i < len(pending):
+            if pending[i].text == "(":
+                depth += 1
+            elif pending[i].text == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        idx = i + 1
     if idx < len(pending) and pending[idx].text in ("class", "struct"):
         name = pending[idx + 1].text if idx + 1 < len(pending) and pending[idx + 1].kind == "IDENT" else ""
         return "class", name, is_tmpl
@@ -428,15 +453,16 @@ def _classify_block(pending: Sequence[Token]) -> Tuple[str, str, bool]:
             if t.kind == "IDENT":
                 return "enum", t.text, False
         return "enum", "", False
-    if idx < len(pending) and pending[idx].text == "extern" and any(
-        t.kind == "OTHER" and t.text.startswith('"') for t in pending[idx + 1 : idx + 3]
-    ):
+    if is_extern_c and idx >= len(pending):
         return "extern", "", False
-    for i, t in enumerate(pending):
+    for i in range(idx, len(pending)):
+        t = pending[i]
         if t.text == "(" and i > 0 and (
             pending[i - 1].kind == "IDENT" or pending[i - 1].text in (">", "~", ")", "=")
         ):
-            return "func", _func_name(pending), is_tmpl
+            return "func", _func_name(pending[idx:]), is_tmpl
+    if is_extern_c:
+        return "extern", "", False
     if any(t.text == "=" for t in pending):
         return "var", _last_ident(pending), False
     return "other", "", False
@@ -1007,8 +1033,12 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
         elif c.kind == "extern" and idx not in extern_in_units:
-            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
-            header_idx.add(idx)
+            if not re.search(r"\)\s*\{", c.text):
+                # Declaration-only extern block: safe to share via the header.
+                header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
+                header_idx.add(idx)
+            # Definition blocks (function bodies inside extern "C") stay in
+            # their unit; hoisting them would duplicate the definitions.
     if dry_run:
         for name in unit_names:
             print(f"=== {name}: {len(unit_chunks[name])} chunks ===")
