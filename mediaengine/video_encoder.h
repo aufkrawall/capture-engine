@@ -32,6 +32,7 @@ extern "C" {
 }
 
 class CursorRenderer;  // Forward declaration
+struct FrameStats;     // Forward declaration (defined in video_encoder_internal.h)
 
 // Logging interval constants (in frames)
 constexpr int kCacheLogIntervalFrames = 500;  // Log cache hits periodically
@@ -171,6 +172,24 @@ private:
     uint64_t GetWrittenVideoPacketCount() const;
     bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
     bool NormalizeHdrPacketIfNeeded(AVPacket* packet);
+    // EncodeFrame phase helpers (keep EncodeFrame itself a semantic unit).
+    bool ReinitForFormatModeChange(bool isHDR, bool wants10BitInput, int width, int height);
+    bool HandleResolutionChange(int width, int height);
+    bool OpenOutputAndWriteHeader();
+    void LogFrameRateStats(int64_t timestamp, int fpsLogIntervalFrames);
+    bool ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
+                           int format, bool isShmem, int shmemSlot, ID3D11Texture2D** outBgraTex,
+                           ID3D11Fence** outD3d11Fence);
+    bool WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceValue, ID3D11Texture2D* bgraTex,
+                           FrameStats& stats, std::chrono::high_resolution_clock::time_point& afterFence);
+    bool ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgbPath, AVFrame** outFrame, FrameStats& stats,
+                           std::chrono::high_resolution_clock::time_point& afterConvert);
+    bool SubmitFrameForEncode(AVFrame* d3d11Frame, int64_t timestamp, int64_t effectiveStartPts,
+                              std::chrono::high_resolution_clock::time_point frameStart,
+                              std::chrono::high_resolution_clock::time_point afterOpen,
+                              std::chrono::high_resolution_clock::time_point afterConvert,
+                              std::chrono::high_resolution_clock::time_point afterFence, FrameStats& stats);
+    void LogFramePerformance(const FrameStats& stats, double expectedFrameMs, int fpsLogIntervalFrames);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;

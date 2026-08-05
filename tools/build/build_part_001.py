@@ -235,10 +235,20 @@ STRICT_FP_MEDIA_SOURCES = {
     "process_loopback_capture.cpp",
     "process_loopback_worker.cpp",
     "video_encoder.cpp",
+    "video_encoder_codec.cpp",
     "video_encoder_configure.cpp",
+    "video_encoder_convert_bgra.cpp",
+    "video_encoder_convert_shaders.cpp",
     "video_encoder_conversion.cpp",
     "video_encoder_encode.cpp",
+    "video_encoder_encode_input.cpp",
+    "video_encoder_finalize.cpp",
+    "video_encoder_format.cpp",
+    "video_encoder_framegrab.cpp",
     "video_encoder_lifecycle.cpp",
+    "video_encoder_start.cpp",
+    "video_encoder_textures.cpp",
+    "video_encoder_write.cpp",
 }
 STRICT_FP_SCREENSHOT_SOURCES = {"screenshot_encoding.cpp", "screenshot_hdr_encoding.cpp"}
 CLANG_STRICT_FP_FLAGS = ["-ffp-model=strict"]

@@ -1,5 +1,7 @@
 #include "video_encoder_internal.h"
 
+HandleFailureCache video_encoder_g_HandleFailureCache;
+
 // Forward declarations - dllexport forces LTO to keep these functions
 // D3D11 OpenShared* calls can throw SEH exceptions (0xE06D7363) for invalid handles.
 // On MinGW, catch(...) CANNOT catch SEH exceptions. The failure cache pre-validates
@@ -67,7 +69,109 @@ extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource1(ID3D11D
     return hr;
 }
 
-static void FreeScopedAvFrame(AVFrame** frame) {
+HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
+#if defined(_WIN64)
+    if (!handle || sourcePid == 0) {
+        return handle;
+    }
+
+    static std::mutex s_bitnessMutex;
+    static std::unordered_map<uint32_t, bool> s_isWow64ByPid;
+
+    bool isWow64Source = false;
+    {
+        std::lock_guard<std::mutex> lock(s_bitnessMutex);
+        auto it = s_isWow64ByPid.find(sourcePid);
+        if (it != s_isWow64ByPid.end()) {
+            isWow64Source = it->second;
+        } else {
+            ce::HandleGuard hProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, sourcePid));
+            if (hProcess) {
+                BOOL wow64 = FALSE;
+                if (IsWow64Process(hProcess.get(), &wow64)) {
+                    isWow64Source = (wow64 == TRUE);
+                }
+            }
+            s_isWow64ByPid[sourcePid] = isWow64Source;
+        }
+    }
+
+    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+    if (!isWow64Source) {
+        // Some drivers publish KMT handles with bit31 set but without canonical
+        // sign-extension in 64-bit IPC transport.
+        if ((rawHandle >> 32) == 0 && (rawHandle & 0x80000000ull) != 0) {
+            const int64_t signExtended = static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(rawHandle)));
+            if (signExtended != static_cast<int64_t>(rawHandle)) {
+                static std::atomic<int> s_canonicalizeLogCount{0};
+                if (s_canonicalizeLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+                    DLL_Log("[VideoEncoder] Canonicalizing shared handle for PID %u: %p -> %p", sourcePid,
+                            (HANDLE)(uintptr_t)rawHandle, (HANDLE)(uint64_t)signExtended);
+                }
+                return reinterpret_cast<HANDLE>(static_cast<uint64_t>(signExtended));
+            }
+        }
+        return handle;
+    }
+
+    const int64_t signExtended = static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(rawHandle)));
+    if (signExtended != static_cast<int64_t>(rawHandle)) {
+        static std::atomic<int> s_normalizeLogCount{0};
+        if (s_normalizeLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+            DLL_Log("[VideoEncoder] WOW64 handle normalized for PID %u: %p -> %p", sourcePid,
+                    (HANDLE)(uintptr_t)rawHandle, (HANDLE)(uint64_t)signExtended);
+        }
+    }
+    return reinterpret_cast<HANDLE>(static_cast<uint64_t>(signExtended));
+#else
+    (void)sourcePid;
+    return handle;
+#endif
+}
+
+ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoConfig& config) {
+    const fs::path exeDir = ce::capture_output::GetExecutableDirectory();
+    const fs::path outDir = ce::capture_output::ResolveCaptureDirectory(config.outputDir, exeDir);
+    const std::wstring ext(config.container.begin(), config.container.end());
+    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", ext);
+    if (reservation) {
+        DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s", reservation.Utf8Path().c_str());
+    } else {
+        DLL_Log("[VideoEncoder] ERROR: Could not reserve a collision-safe staging output in: %s",
+                outDir.string().c_str());
+    }
+    return reservation;
+}
+
+int AllocateOutputContextForContainer(AVFormatContext** formatContext, const VideoConfig& config) {
+    const std::string formatHint = "capture." + config.container;
+    return avformat_alloc_output_context2(formatContext, nullptr, nullptr, formatHint.c_str());
+}
+
+int64_t RoundUsToMs(int64_t valueUs) {
+    if (valueUs >= 0) {
+        return (valueUs + 500) / 1000;
+    }
+    return (valueUs - 500) / 1000;
+}
+
+// Global stats for frame analysis
+int64_t video_encoder_g_lastFramePts = -1;
+
+int64_t video_encoder_g_framesEncoded = 0;
+
+// static int64_t g_framesDropped = 0;
+double video_encoder_g_totalFenceWait = 0;
+
+double video_encoder_g_totalColorConvert = 0;
+
+double video_encoder_g_totalEncode = 0;
+
+double video_encoder_g_maxFrameTime = 0;
+
+int video_encoder_g_slowFrameCount = 0;  // Frames taking > 2x expected time
+
+void FreeScopedAvFrame(AVFrame** frame) {
     if (frame && *frame) {
         av_frame_free(frame);
     }

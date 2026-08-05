@@ -78,7 +78,8 @@ TEST(VideoEncoderSourceTest, EveryCfrSubmissionAdvancesOneContiguousPacketTick) 
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t function = source.find("int64_t ComputeTargetVideoPts");
+    // The internal header carries the prototype; anchor on the definition.
+    const size_t function = source.rfind("int64_t ComputeTargetVideoPts");
     const size_t nextFunction = source.find("bool IsConfiguredNvencLookaheadActive", function);
     ASSERT_NE(function, std::string::npos);
     ASSERT_NE(nextFunction, std::string::npos);
