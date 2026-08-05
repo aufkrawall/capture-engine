@@ -1,18 +1,7 @@
-// Included by vulkan_fg_switch_test.cpp; Vulkan instance/device/queue creation and diagnostics.
+#include "vulkan_fg_switch_test_internal.h"
 
 namespace testapp::vkfg {
 namespace {
-
-template <typename T>
-bool ContainsName(const std::vector<T>& values, const char* name) {
-    for (const T& value : values) {
-        if (std::strcmp(value.extensionName, name) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void AppendUnique(std::vector<const char*>* values, const char* name) {
     if (!name || !*name) {
         return;
@@ -24,21 +13,11 @@ void AppendUnique(std::vector<const char*>* values, const char* name) {
     }
     values->push_back(name);
 }
-
-template <typename T>
-bool RequiredFeatureTailSupported(const T& requested, const T& supported,
-                                  const VkBool32* requestedFirst, const VkBool32* supportedFirst) {
-    const auto* end = reinterpret_cast<const uint8_t*>(&requested) + sizeof(T);
-    const size_t count = static_cast<size_t>(end - reinterpret_cast<const uint8_t*>(requestedFirst)) /
-                         sizeof(VkBool32);
-    for (size_t index = 0; index < count; ++index) {
-        if (requestedFirst[index] && !supportedFirst[index]) {
-            return false;
-        }
-    }
-    return true;
+}
 }
 
+namespace testapp::vkfg {
+namespace {
 std::vector<const char*> FeatureNamePointers(const std::vector<std::string>& names) {
     std::vector<const char*> pointers;
     pointers.reserve(names.size());
@@ -47,7 +26,11 @@ std::vector<const char*> FeatureNamePointers(const std::vector<std::string>& nam
     }
     return pointers;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                    VkDebugUtilsMessageTypeFlagsEXT type,
                                                    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
@@ -69,7 +52,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(VkDebugUtilsMessageSeverityFla
     }
     return VK_FALSE;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VkDebugUtilsMessengerCreateInfoEXT MakeDebugMessengerCreateInfo() {
     VkDebugUtilsMessengerCreateInfoEXT info = {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
     info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
@@ -81,7 +68,11 @@ VkDebugUtilsMessengerCreateInfoEXT MakeDebugMessengerCreateInfo() {
     info.pfnUserCallback = DebugUtilsCallback;
     return info;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 std::vector<VkExtensionProperties> EnumerateInstanceExtensions() {
     uint32_t count = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
@@ -92,7 +83,11 @@ std::vector<VkExtensionProperties> EnumerateInstanceExtensions() {
     }
     return values;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 std::vector<VkLayerProperties> EnumerateInstanceLayers() {
     uint32_t count = 0;
     vkEnumerateInstanceLayerProperties(&count, nullptr);
@@ -103,7 +98,11 @@ std::vector<VkLayerProperties> EnumerateInstanceLayers() {
     }
     return values;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool ContainsLayer(const std::vector<VkLayerProperties>& layers, const char* name) {
     for (const VkLayerProperties& layer : layers) {
         if (std::strcmp(layer.layerName, name) == 0) {
@@ -112,7 +111,11 @@ bool ContainsLayer(const std::vector<VkLayerProperties>& layers, const char* nam
     }
     return false;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 std::vector<VkExtensionProperties> EnumerateDeviceExtensions(VkPhysicalDevice physicalDevice) {
     uint32_t count = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
@@ -123,7 +126,11 @@ std::vector<VkExtensionProperties> EnumerateDeviceExtensions(VkPhysicalDevice ph
     }
     return values;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VulkanWsiDispatch LoaderWsiDispatch() {
     VulkanWsiDispatch wsi{};
     wsi.route = VulkanWsiRoute::Loader;
@@ -135,7 +142,11 @@ VulkanWsiDispatch LoaderWsiDispatch() {
     wsi.deviceWaitIdle = vkDeviceWaitIdle;
     return wsi;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VkQueue QueueFromRef(const VulkanQueueRef& ref) {
     VkQueue queue = VK_NULL_HANDLE;
     if (ref.Valid()) {
@@ -143,7 +154,11 @@ VkQueue QueueFromRef(const VulkanQueueRef& ref) {
     }
     return queue;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool IsPhysicalDeviceUsable(VkPhysicalDevice device) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device, &properties);
@@ -156,7 +171,11 @@ bool IsPhysicalDeviceUsable(VkPhysicalDevice device) {
     const auto extensions = EnumerateDeviceExtensions(device);
     return ContainsName(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void LogQueuePlan(const std::vector<VulkanQueueFamilyCaps>& caps) {
     for (const VulkanQueueFamilyCaps& family : caps) {
         testapp::Log(
@@ -187,9 +206,10 @@ void LogQueuePlan(const std::vector<VulkanQueueFamilyCaps>& caps) {
         logRef("streamline-optical-flow", ref);
     }
 }
+}
+}
 
-}  // namespace
-
+namespace testapp::vkfg {
 bool InitializeVulkanDevice() {
     uint32_t loaderVersion = VK_API_VERSION_1_0;
     vkEnumerateInstanceVersion(&loaderVersion);
@@ -570,21 +590,27 @@ bool InitializeVulkanDevice() {
     g_App.swapchain.wsi = LoaderWsiDispatch();
     return true;
 }
+}
 
+namespace testapp::vkfg {
 VkQueue ApplicationPresentQueue() {
     if (g_App.vk.asyncPresentActive && g_App.vk.asyncPresentQueue != VK_NULL_HANDLE) {
         return g_App.vk.asyncPresentQueue;
     }
     return g_App.vk.gameQueue;
 }
+}
 
+namespace testapp::vkfg {
 const VulkanQueueRef& ApplicationPresentQueueRef() {
     if (g_App.vk.asyncPresentActive && g_App.vk.queuePlan.asyncPresent.Valid()) {
         return g_App.vk.queuePlan.asyncPresent;
     }
     return g_App.vk.queuePlan.game;
 }
+}
 
+namespace testapp::vkfg {
 void QueryMemoryBudgetStress() {
     if (!g_App.config.videoMemoryQueryStress || !g_App.vk.memoryBudgetEnabled ||
         g_App.vk.physicalDevice == VK_NULL_HANDLE) {
@@ -613,7 +639,9 @@ void QueryMemoryBudgetStress() {
                      static_cast<double>(totalBudget) / (1024.0 * 1024.0));
     }
 }
+}
 
+namespace testapp::vkfg {
 void ReleaseVulkanSurfaceBeforeStreamlineShutdown() {
     if (g_App.vk.surface != VK_NULL_HANDLE) {
         if (g_App.vk.surfaceCreatedByStreamline && g_App.sl.proxyDestroySurface) {
@@ -627,7 +655,9 @@ void ReleaseVulkanSurfaceBeforeStreamlineShutdown() {
         g_App.vk.surfaceCreatedByStreamline = false;
     }
 }
+}
 
+namespace testapp::vkfg {
 void ShutdownVulkanDevice() {
     ReleaseVulkanSurfaceBeforeStreamlineShutdown();
     if (g_App.vk.device != VK_NULL_HANDLE) {
@@ -650,5 +680,4 @@ void ShutdownVulkanDevice() {
         g_App.vk.instance = VK_NULL_HANDLE;
     }
 }
-
-}  // namespace testapp::vkfg
+}

@@ -4,6 +4,8 @@
 #include <fstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 #include "../testapp/fg_switch_transition.h"
 
 using testapp::fg::CanCommitFsrPresentationBreak;
@@ -61,22 +63,16 @@ TEST(FsrExitTransitionTest, DlssActivationWaitsForSuccessfulReplacementPresent) 
 }
 
 TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBreak) {
-    // This asserts an ordering within the dx12_fg_switch_test translation unit:
+    // This asserts an ordering inside SwitchMode (dx12_fg_switch_render.cpp):
     // SwitchMode prepares DLSS before the FSR presentation break, and Render()
-    // only presents afterwards. Both halves moved into .inl files that
-    // dx12_fg_switch_test.cpp includes in this order, so read them in that
-    // order to reconstruct the span the assertions are about.
-    const std::filesystem::path testappDir = std::filesystem::current_path() / "testapp";
-    std::string text;
-    for (const char* part : {"dx12_fg_switch_runtime.inl", "dx12_fg_switch_render.inl"}) {
-        const std::filesystem::path source = testappDir / part;
-        ASSERT_TRUE(std::filesystem::exists(source)) << part;
-        std::ifstream stream(source, std::ios::binary);
-        ASSERT_TRUE(stream.good()) << part;
-        text.append((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-    }
+    // only presents afterwards. The whole SwitchMode body lives in this unit,
+    // so the span is self-contained.
+    const std::string text =
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "testapp" /
+                                           "dx12_fg_switch_render.cpp");
+    ASSERT_FALSE(text.empty());
 
-    const size_t switchMode = text.find("static bool SwitchMode(");
+    const size_t switchMode = text.find("bool SwitchMode(");
     const size_t disable = text.find("ConfigureFSR(false, nullptr, \"leave FSR mode\"", switchMode);
     const size_t pending = text.find("FsrExitTransitionStage::PresentPending", disable);
     const size_t deferredReturn = text.find("return true;", pending);

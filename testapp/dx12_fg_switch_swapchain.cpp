@@ -1,10 +1,8 @@
-// Included by dx12_fg_switch_test.cpp; shares that file's static DX12/FG state.
+#include "dx12_fg_switch_test_internal.h"
 
 static const wchar_t* kBootstrapNativeSwapchainWindowClass = L"CaptureTestDX12FGSwitchBootstrap";
 
-static bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory);
-
-static LRESULT CALLBACK BootstrapNativeSwapchainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK BootstrapNativeSwapchainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_CLOSE) {
         DestroyWindow(hWnd);
         return 0;
@@ -12,7 +10,7 @@ static LRESULT CALLBACK BootstrapNativeSwapchainWndProc(HWND hWnd, UINT msg, WPA
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-static HWND CreateBootstrapNativeSwapchainWindow(int index) {
+HWND CreateBootstrapNativeSwapchainWindow(int index) {
     HINSTANCE instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -37,7 +35,7 @@ static HWND CreateBootstrapNativeSwapchainWindow(int index) {
     return hwnd;
 }
 
-static void DestroyBootstrapNativeSwapchainWindow(HWND hwnd) {
+void DestroyBootstrapNativeSwapchainWindow(HWND hwnd) {
     if (!hwnd) {
         return;
     }
@@ -49,14 +47,14 @@ static void DestroyBootstrapNativeSwapchainWindow(HWND hwnd) {
     }
 }
 
-static void RunBootstrapNativeSwapchainStress() {
-    if (g_BootstrapNativeSwapchainStressCount <= 0) {
+void RunBootstrapNativeSwapchainStress() {
+    if (dx12_fg_switch_test_g_BootstrapNativeSwapchainStressCount <= 0) {
         return;
     }
 
-    for (int i = 0; i < g_BootstrapNativeSwapchainStressCount; ++i) {
+    for (int i = 0; i < dx12_fg_switch_test_g_BootstrapNativeSwapchainStressCount; ++i) {
         testapp::Log("[FG-DIAG] Bootstrap native swapchain wrapper stress %d/%d begin\n", i + 1,
-                     g_BootstrapNativeSwapchainStressCount);
+                     dx12_fg_switch_test_g_BootstrapNativeSwapchainStressCount);
 
         ComPtr<ID3D12Device> device;
         HRESULT deviceHr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
@@ -87,14 +85,14 @@ static void RunBootstrapNativeSwapchainStress() {
         HWND probeHwnd = CreateBootstrapNativeSwapchainWindow(i);
         if (!probeHwnd) {
             testapp::Log("[FG-DIAG] Bootstrap native helper window unavailable; skipping probe %d/%d\n", i + 1,
-                         g_BootstrapNativeSwapchainStressCount);
+                         dx12_fg_switch_test_g_BootstrapNativeSwapchainStressCount);
             continue;
         }
 
         DXGI_SWAP_CHAIN_DESC1 desc = {};
-        desc.BufferCount = kRequestedBackBuffers;
-        desc.Width = g_WindowWidth;
-        desc.Height = g_WindowHeight;
+        desc.BufferCount = dx12_fg_switch_test_kRequestedBackBuffers;
+        desc.Width = dx12_fg_switch_test_g_WindowWidth;
+        desc.Height = dx12_fg_switch_test_g_WindowHeight;
         desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -116,7 +114,7 @@ static void RunBootstrapNativeSwapchainStress() {
         factory->MakeWindowAssociation(probeHwnd, DXGI_MWA_NO_ALT_ENTER);
         ComPtr<IDXGISwapChain2> swapChain2;
         if (SUCCEEDED(swapChain1.As(&swapChain2)) && swapChain2) {
-            HRESULT latencyHr = swapChain2->SetMaximumFrameLatency(kRequestedBackBuffers);
+            HRESULT latencyHr = swapChain2->SetMaximumFrameLatency(dx12_fg_switch_test_kRequestedBackBuffers);
             HANDLE waitable = swapChain2->GetFrameLatencyWaitableObject();
             testapp::Log("[FG-DIAG] Bootstrap native SetMaximumFrameLatency hr=0x%08lx waitable=%d\n",
                          static_cast<unsigned long>(latencyHr), waitable ? 1 : 0);
@@ -127,7 +125,7 @@ static void RunBootstrapNativeSwapchainStress() {
         testapp::Log("[FG-DIAG] Bootstrap native QI IDXGISwapChain3 hr=0x%08lx sc3=%p\n",
                      static_cast<unsigned long>(qiHr), swapChain3.Get());
 
-        HRESULT presentHr = swapChain1->Present(g_VSync, 0);
+        HRESULT presentHr = swapChain1->Present(dx12_fg_switch_test_g_VSync, 0);
         testapp::Log("[FG-DIAG] Bootstrap native Present hr=0x%08lx\n", static_cast<unsigned long>(presentHr));
 
         swapChain3.Reset();
@@ -138,24 +136,24 @@ static void RunBootstrapNativeSwapchainStress() {
         device.Reset();
         DestroyBootstrapNativeSwapchainWindow(probeHwnd);
         testapp::Log("[FG-DIAG] Bootstrap native swapchain wrapper stress %d/%d released all local refs\n", i + 1,
-                     g_BootstrapNativeSwapchainStressCount);
+                     dx12_fg_switch_test_g_BootstrapNativeSwapchainStressCount);
         testapp::LogFlush();
     }
 }
 
-static void ReleaseSwapChainResources() {
+void ReleaseSwapChainResources() {
     g_FrameLatencyWaitHandle = nullptr;
-    g_SwapChainUsesStreamline = false;
-    g_CurrentSwapChainAllowTearing = false;
+    dx12_fg_switch_test_g_SwapChainUsesStreamline = false;
+    dx12_fg_switch_test_g_CurrentSwapChainAllowTearing = false;
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }
     g_RtvHeap.Reset();
     g_SwapChain.Reset();
-    g_SwapChainBufferCount = kRequestedBackBuffers;
+    g_SwapChainBufferCount = dx12_fg_switch_test_kRequestedBackBuffers;
 }
 
-static bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory) {
+bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory) {
     if (!factory) {
         return false;
     }
@@ -170,11 +168,11 @@ static bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory) {
     return false;
 }
 
-static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reason) {
+bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reason) {
     ComPtr<IDXGIFactory4> factory;
     PFun_CreateDXGIFactory1 createFactory =
-        (!useFfxSwapChain && g_SlCreateDXGIFactory1) ? g_SlCreateDXGIFactory1 : CreateDXGIFactory1;
-    const bool usingStreamlineFactory = createFactory == g_SlCreateDXGIFactory1 && g_SlCreateDXGIFactory1 != nullptr;
+        (!useFfxSwapChain && dx12_fg_switch_test_g_SlCreateDXGIFactory1) ? dx12_fg_switch_test_g_SlCreateDXGIFactory1 : CreateDXGIFactory1;
+    const bool usingStreamlineFactory = createFactory == dx12_fg_switch_test_g_SlCreateDXGIFactory1 && dx12_fg_switch_test_g_SlCreateDXGIFactory1 != nullptr;
     HRESULT factoryHr = createFactory(IID_PPV_ARGS(&factory));
     testapp::Log("[FG-DIAG] %s CreateDXGIFactory1(%s) hr=0x%08lx factory=%p useFfx=%d\n",
                  usingStreamlineFactory ? "Streamline" : "Native", reason ? reason : "swapchain",
@@ -182,23 +180,23 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
     if (FAILED(factoryHr) || !factory) {
         return false;
     }
-    g_TearingSupported = CheckPresentAllowTearingSupport(factory.Get());
+    dx12_fg_switch_test_g_TearingSupported = CheckPresentAllowTearingSupport(factory.Get());
 
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-    swapChainDesc.BufferCount = kRequestedBackBuffers;
-    swapChainDesc.Width = g_WindowWidth;
-    swapChainDesc.Height = g_WindowHeight;
+    swapChainDesc.BufferCount = dx12_fg_switch_test_kRequestedBackBuffers;
+    swapChainDesc.Width = dx12_fg_switch_test_g_WindowWidth;
+    swapChainDesc.Height = dx12_fg_switch_test_g_WindowHeight;
     swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-    if (g_TearingSupported) {
+    if (dx12_fg_switch_test_g_TearingSupported) {
         swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
 
     bool usingFfxSwapChain = false;
-    if (useFfxSwapChain && g_FfxCreateContext) {
+    if (useFfxSwapChain && dx12_fg_switch_test_g_FfxCreateContext) {
         usingFfxSwapChain = CreateFSRSwapChainForHwndContext(factory.Get(), hwnd, swapChainDesc);
     }
     if (!usingFfxSwapChain) {
@@ -213,19 +211,19 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
         testapp::Log("[FG-DIAG] Native DXGI swapchain created for %s\n", reason ? reason : "swapchain");
     }
 
-    g_SwapChainOwner = usingFfxSwapChain ? SwapChainOwner::FSR : SwapChainOwner::Native;
-    g_SwapChainUsesStreamline = usingStreamlineFactory;
-    g_CurrentSwapChainAllowTearing = (swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
+    dx12_fg_switch_test_g_SwapChainOwner = usingFfxSwapChain ? SwapChainOwner::FSR : SwapChainOwner::Native;
+    dx12_fg_switch_test_g_SwapChainUsesStreamline = usingStreamlineFactory;
+    dx12_fg_switch_test_g_CurrentSwapChainAllowTearing = (swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
 
     DXGI_SWAP_CHAIN_DESC fullDesc = {};
     if (SUCCEEDED(g_SwapChain->GetDesc(&fullDesc)) && fullDesc.BufferCount > 0) {
         g_SwapChainBufferCount = fullDesc.BufferCount;
-        if (g_SwapChainBufferCount > kMaxSwapChainBuffers) {
+        if (g_SwapChainBufferCount > dx12_fg_switch_test_kMaxSwapChainBuffers) {
             testapp::Log("[FG-DIAG] WARN swapchain buffer count %u exceeds max %d; clamping\n", g_SwapChainBufferCount,
-                         kMaxSwapChainBuffers);
-            g_SwapChainBufferCount = kMaxSwapChainBuffers;
+                         dx12_fg_switch_test_kMaxSwapChainBuffers);
+            g_SwapChainBufferCount = dx12_fg_switch_test_kMaxSwapChainBuffers;
         }
     }
 
@@ -241,7 +239,7 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
         HRESULT latencyHr = swapChain2->SetMaximumFrameLatency(g_MaxFrameLatency);
         g_FrameLatencyWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
         testapp::Log("[FG-DIAG] SetMaximumFrameLatency owner=%s value=%u hr=0x%08lx waitable=%d\n",
-                     SwapChainOwnerName(g_SwapChainOwner), g_MaxFrameLatency, static_cast<unsigned long>(latencyHr),
+                     SwapChainOwnerName(dx12_fg_switch_test_g_SwapChainOwner), g_MaxFrameLatency, static_cast<unsigned long>(latencyHr),
                      g_FrameLatencyWaitHandle ? 1 : 0);
     }
 
@@ -280,21 +278,21 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
     testapp::Log(
         "[FG-DIAG] Swapchain ready: reason=%s owner=%s %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d "
         "format=RGBA8 vsync=%d fullscreen=%d streamline=%d tearing=%d flags=0x%x\n",
-        reason ? reason : "swapchain", SwapChainOwnerName(g_SwapChainOwner), g_WindowWidth, g_WindowHeight,
-        g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency, g_FrameLatencyWaitHandle ? 1 : 0, g_VSync,
-        g_Fullscreen, g_SwapChainUsesStreamline ? 1 : 0, g_CurrentSwapChainAllowTearing ? 1 : 0,
+        reason ? reason : "swapchain", SwapChainOwnerName(dx12_fg_switch_test_g_SwapChainOwner), dx12_fg_switch_test_g_WindowWidth, dx12_fg_switch_test_g_WindowHeight,
+        g_SwapChainBufferCount, dx12_fg_switch_test_kRequestedBackBuffers, g_MaxFrameLatency, g_FrameLatencyWaitHandle ? 1 : 0, dx12_fg_switch_test_g_VSync,
+        dx12_fg_switch_test_g_Fullscreen, dx12_fg_switch_test_g_SwapChainUsesStreamline ? 1 : 0, dx12_fg_switch_test_g_CurrentSwapChainAllowTearing ? 1 : 0,
         swapChainDesc.Flags);
     testapp::LogFlush();
     return true;
 }
 
-static bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
+bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
     WaitForGpu();
     ReleaseSwapChainResources();
-    bool ok = CreateSwapChainResources(g_Hwnd, useFfxSwapChain, reason);
+    bool ok = CreateSwapChainResources(dx12_fg_switch_test_g_Hwnd, useFfxSwapChain, reason);
     if (ok && g_Fence) {
         const UINT64 nextFenceValue = g_Fence->GetCompletedValue() + 1;
-        for (UINT i = 0; i < kMaxSwapChainBuffers; ++i) {
+        for (UINT i = 0; i < dx12_fg_switch_test_kMaxSwapChainBuffers; ++i) {
             g_FenceValues[i] = nextFenceValue;
         }
         testapp::Log("[FG-DIAG] Reset swapchain fence timeline after recreation: nextFence=%llu frameIndex=%u\n",
@@ -304,18 +302,18 @@ static bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
     return ok;
 }
 
-static bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason = "initial native") {
-    PFun_D3D12CreateDevice createDevice = g_SlD3D12CreateDevice ? g_SlD3D12CreateDevice : D3D12CreateDevice;
+bool InitDX12(HWND hwnd, bool useFfxSwapChain , const char* reason ) {
+    PFun_D3D12CreateDevice createDevice = dx12_fg_switch_test_g_SlD3D12CreateDevice ? dx12_fg_switch_test_g_SlD3D12CreateDevice : D3D12CreateDevice;
     HRESULT deviceHr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device));
     testapp::Log("[FG-DIAG] %s D3D12CreateDevice hr=0x%08lx device=%p\n",
-                 g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr), g_Device.Get());
+                 dx12_fg_switch_test_g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr), g_Device.Get());
     if (FAILED(deviceHr) || !g_Device) {
         return false;
     }
     InitDxgiVideoMemoryQueryStressAdapter("initial device");
-    if (g_SlSetD3DDevice && g_SlInitialized) {
-        sl::Result deviceResult = g_SlSetD3DDevice(g_Device.Get());
-        g_SlDeviceSet = deviceResult == sl::Result::eOk;
+    if (dx12_fg_switch_test_g_SlSetD3DDevice && dx12_fg_switch_test_g_SlInitialized) {
+        sl::Result deviceResult = dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get());
+        dx12_fg_switch_test_g_SlDeviceSet = deviceResult == sl::Result::eOk;
         testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n", static_cast<int>(deviceResult),
                      SlResultName(deviceResult));
     }
@@ -339,19 +337,19 @@ static bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     // The scene -> upscaler -> hudless chain runs in FP16 linear (band-free temporal accumulation);
     // the present blit dithers down to the 8-bit backbuffer.
-    testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
-                                              static_cast<UINT>(g_WindowHeight), g_FgInputs,
-                                              static_cast<UINT>(g_RenderWidth), static_cast<UINT>(g_RenderHeight),
+    testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(dx12_fg_switch_test_g_WindowWidth),
+                                              static_cast<UINT>(dx12_fg_switch_test_g_WindowHeight), g_FgInputs,
+                                              static_cast<UINT>(dx12_fg_switch_test_g_RenderWidth), static_cast<UINT>(dx12_fg_switch_test_g_RenderHeight),
                                               testapp::dx12fg::kHdrColorFormat);
     if (!g_Scene.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
         testapp::Log("[FG-DIAG] WARN SceneRenderer init failed; scene will fall back to a flat clear (%s)\n",
                      reason ? reason : "init");
     }
-    if (UpscalingActive() && !g_Taa.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
+    if (UpscalingActive() && !dx12_fg_switch_test_g_Taa.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
         testapp::Log("[FG-DIAG] WARN TemporalUpscaler init failed; OFF-mode/fallback output would stay black (%s)\n",
                      reason ? reason : "init");
     }
-    if (!g_PresentBlit.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
+    if (!dx12_fg_switch_test_g_PresentBlit.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
         testapp::Log("[FG-DIAG] WARN PresentBlitPass init failed; backbuffer would stay black (%s)\n",
                      reason ? reason : "init");
     }

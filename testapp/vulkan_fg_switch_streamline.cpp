@@ -1,8 +1,7 @@
-// Included by vulkan_fg_switch_test.cpp; Streamline 2.11.1 Vulkan manual-hook integration.
+#include "vulkan_fg_switch_test_internal.h"
 
 namespace testapp::vkfg {
 namespace {
-
 std::wstring ExecutableDirectory() {
     wchar_t path[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -10,28 +9,19 @@ std::wstring ExecutableDirectory() {
     const size_t slash = directory.find_last_of(L"\\/");
     return slash == std::wstring::npos ? L"." : directory.substr(0, slash);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void SlLogCallback(sl::LogType type, const char* message) {
     testapp::Log("[SL-LOG] type=%u %s\n", static_cast<unsigned>(type), message ? message : "");
 }
-
-template <typename T>
-T* SlExport(const char* name) {
-    return reinterpret_cast<T*>(GetProcAddress(g_App.sl.module, name));
+}
 }
 
-template <typename T>
-T* SlFeatureFunction(sl::Feature feature, const char* name) {
-    if (!g_App.sl.getFeatureFunction) {
-        return nullptr;
-    }
-    void* function = nullptr;
-    const sl::Result result = g_App.sl.getFeatureFunction(feature, name, function);
-    testapp::Log("[FG-DIAG] slGetFeatureFunction feature=%u name=%s result=%d(%s) function=%p\n",
-                 static_cast<unsigned>(feature), name, static_cast<int>(result), SlResultName(result), function);
-    return result == sl::Result::eOk ? reinterpret_cast<T*>(function) : nullptr;
-}
-
+namespace testapp::vkfg {
+namespace {
 bool ResolveStreamlineFeatureFunctions() {
     g_App.sl.dlssSetOptions = SlFeatureFunction<PFun_slDLSSSetOptions>(sl::kFeatureDLSS, "slDLSSSetOptions");
     g_App.sl.dlssGetOptimalSettings =
@@ -48,7 +38,11 @@ bool ResolveStreamlineFeatureFunctions() {
     g_App.sl.pclSetMarker = SlFeatureFunction<PFun_slPCLSetMarker>(sl::kFeaturePCL, "slPCLSetMarker");
     return g_App.sl.dlssgSetOptions && g_App.sl.dlssgGetState;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 const SlFeatureRequirementCopy* FindRequirement(sl::Feature feature) {
     for (const SlFeatureRequirementCopy& requirement : g_App.sl.requirements) {
         if (requirement.feature == feature) {
@@ -57,14 +51,22 @@ const SlFeatureRequirementCopy* FindRequirement(sl::Feature feature) {
     }
     return nullptr;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool FeatureRequirementsAvailable(sl::Feature feature) {
     const SlFeatureRequirementCopy* requirement = FindRequirement(feature);
     return requirement && requirement->instanceExtensionsAvailable && requirement->deviceExtensionsAvailable &&
            requirement->deviceFeaturesAvailable &&
            (requirement->flags & sl::FeatureRequirementFlags::eVulkanSupported);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 sl::DLSSMode DlssQualityMode() {
     if (g_App.config.upscaleScalePercent > 0) {
         const float ratio = 100.0f / static_cast<float>(g_App.config.upscaleScalePercent);
@@ -88,7 +90,11 @@ sl::DLSSMode DlssQualityMode() {
             return sl::DLSSMode::eDLAA;
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 sl::DLSSPreset DlssPreset() {
     switch (g_App.config.dlssPreset) {
         case 'j':
@@ -103,7 +109,11 @@ sl::DLSSPreset DlssPreset() {
             return sl::DLSSPreset::eDefault;
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 sl::float4x4 IdentitySlMatrix() {
     sl::float4x4 matrix{};
     matrix[0] = sl::float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -112,7 +122,11 @@ sl::float4x4 IdentitySlMatrix() {
     matrix[3] = sl::float4(0.0f, 0.0f, 0.0f, 1.0f);
     return matrix;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 sl::float4x4 MakeSlMatrix(const std::array<float, 16>& values) {
     sl::float4x4 matrix{};
     for (uint32_t row = 0; row < 4; ++row) {
@@ -121,7 +135,11 @@ sl::float4x4 MakeSlMatrix(const std::array<float, 16>& values) {
     }
     return matrix;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 sl::Resource MakeSlResource(const ImageResource& image) {
     sl::Resource resource(sl::ResourceType::eTex2d, NativeHandleToVoid(image.image),
                           NativeHandleToVoid(image.memory), NativeHandleToVoid(image.view),
@@ -135,7 +153,11 @@ sl::Resource MakeSlResource(const ImageResource& image) {
     resource.usage = image.createInfo.usage;
     return resource;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool SetReflexMode(bool enabled, const char* reason) {
     if (!g_App.sl.reflexSetOptions || !g_App.sl.reflexSupported) {
         return !enabled;
@@ -158,7 +180,11 @@ bool SetReflexMode(bool enabled, const char* reason) {
     testapp::LogFlush();
     return result == sl::Result::eOk;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void PollReflexState(bool force) {
     if (!g_App.sl.reflexGetState || !g_App.sl.reflexSupported ||
         (!force && (g_App.frameId % 120) != 0)) {
@@ -174,9 +200,10 @@ void PollReflexState(bool force) {
         state.latencyReportAvailable ? 1 : 0,
         g_App.sl.reflexActive ? "low-latency" : "off");
 }
+}
+}
 
-}  // namespace
-
+namespace testapp::vkfg {
 bool InitializeStreamlineBeforeVulkan() {
     const std::wstring modulePath = ExecutableDirectory() + L"\\sl.interposer.dll";
     g_App.sl.module = LoadLibraryW(modulePath.c_str());
@@ -290,7 +317,9 @@ bool InitializeStreamlineBeforeVulkan() {
     testapp::LogFlush();
     return true;
 }
+}
 
+namespace testapp::vkfg {
 bool ConfigureStreamlineAfterDevice() {
     if (!g_App.sl.initialized || !g_App.sl.setVulkanInfo || g_App.vk.device == VK_NULL_HANDLE) {
         return false;
@@ -382,7 +411,9 @@ bool ConfigureStreamlineAfterDevice() {
     testapp::LogFlush();
     return wsiComplete;
 }
+}
 
+namespace testapp::vkfg {
 bool SetStreamlineFeaturesLoaded(bool loaded, const char* reason) {
     if (!g_App.sl.initialized || !g_App.sl.setFeatureLoaded) {
         return false;
@@ -428,7 +459,9 @@ bool SetStreamlineFeaturesLoaded(bool loaded, const char* reason) {
     testapp::LogFlush();
     return success;
 }
+}
 
+namespace testapp::vkfg {
 bool ConfigureDlssSuperResolution(bool enabled) {
     g_App.sl.dlssSrConfigured = false;
     if (!g_App.sl.dlssSetOptions || !g_App.sl.dlssSrSupported) {
@@ -468,7 +501,9 @@ bool ConfigureDlssSuperResolution(bool enabled) {
         SlResultName(result));
     return result == sl::Result::eOk;
 }
+}
 
+namespace testapp::vkfg {
 bool PrepareStreamlineMode() {
     if (!g_App.sl.initialized || !g_App.sl.vulkanInfoSet || !g_App.sl.dlssFgSupported) {
         testapp::Log("[FG-DIAG] DLSS preparation unavailable initialized=%d vkInfo=%d fgSupported=%d\n",
@@ -482,7 +517,9 @@ bool PrepareStreamlineMode() {
     ConfigureDlssSuperResolution(true);
     return g_App.sl.wsi.createSwapchain && g_App.sl.wsi.queuePresent && g_App.sl.dlssgSetOptions;
 }
+}
 
+namespace testapp::vkfg {
 bool RetireStreamlinePresentation(SwapchainOwner nextOwner, const char* reason) {
     if (!g_App.sl.initialized) {
         return true;
@@ -501,7 +538,9 @@ bool RetireStreamlinePresentation(SwapchainOwner nextOwner, const char* reason) 
     testapp::LogFlush();
     return reflexDisabled && pluginsReady;
 }
+}
 
+namespace testapp::vkfg {
 bool SetDlssFrameGeneration(bool enabled, const char* reason) {
     if (!g_App.sl.dlssgSetOptions || !g_App.sl.dlssFgSupported) {
         return !enabled;
@@ -553,7 +592,9 @@ bool SetDlssFrameGeneration(bool enabled, const char* reason) {
     testapp::LogFlush();
     return result == sl::Result::eOk;
 }
+}
 
+namespace testapp::vkfg {
 sl::FrameToken* BeginStreamlineFrame() {
     if (!g_App.sl.initialized || !g_App.sl.featuresLoaded || !g_App.sl.getNewFrameToken) {
         return nullptr;
@@ -584,7 +625,9 @@ sl::FrameToken* BeginStreamlineFrame() {
     }
     return token;
 }
+}
 
+namespace testapp::vkfg {
 void SetStreamlineMarker(sl::FrameToken* token, sl::PCLMarker marker, const char* name) {
     if (!token || !g_App.sl.pclSetMarker) {
         return;
@@ -595,7 +638,9 @@ void SetStreamlineMarker(sl::FrameToken* token, sl::PCLMarker marker, const char
                      static_cast<int>(result), SlResultName(result));
     }
 }
+}
 
+namespace testapp::vkfg {
 bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResources& resources,
                                      sl::FrameToken* frameToken, const JitterOffset& jitter,
                                      uint32_t backbufferIndex) {
@@ -708,7 +753,9 @@ bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResour
     return constantsResult == sl::Result::eOk && tagResult == sl::Result::eOk &&
            evaluateResult == sl::Result::eOk;
 }
+}
 
+namespace testapp::vkfg {
 void PollStreamlineState() {
     PollReflexState(false);
     if (!g_App.sl.dlssgGetState || g_App.swapchain.owner != SwapchainOwner::Streamline) {
@@ -755,7 +802,9 @@ void PollStreamlineState() {
                 : 0);
     }
 }
+}
 
+namespace testapp::vkfg {
 void ShutdownStreamline() {
     if (!g_App.sl.initialized) {
         if (g_App.sl.module) {
@@ -775,5 +824,4 @@ void ShutdownStreamline() {
     }
     testapp::LogFlush();
 }
-
-}  // namespace testapp::vkfg
+}

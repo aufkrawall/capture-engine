@@ -1,8 +1,7 @@
-// Included by vulkan_fg_switch_test.cpp; owner-typed swapchain creation, replacement, and WSI calls.
+#include "vulkan_fg_switch_test_internal.h"
 
 namespace testapp::vkfg {
 namespace {
-
 VkPresentModeKHR ToVkPresentMode(PresentMode mode) {
     switch (mode) {
         case PresentMode::Immediate:
@@ -16,7 +15,11 @@ VkPresentModeKHR ToVkPresentMode(PresentMode mode) {
             return VK_PRESENT_MODE_FIFO_KHR;
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 PresentMode FromVkPresentMode(VkPresentModeKHR mode) {
     switch (mode) {
         case VK_PRESENT_MODE_IMMEDIATE_KHR:
@@ -30,7 +33,11 @@ PresentMode FromVkPresentMode(VkPresentModeKHR mode) {
             return PresentMode::Fifo;
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VulkanWsiDispatch NativeWsi() {
     VulkanWsiDispatch wsi{};
     wsi.route = VulkanWsiRoute::Loader;
@@ -42,7 +49,11 @@ VulkanWsiDispatch NativeWsi() {
     wsi.deviceWaitIdle = vkDeviceWaitIdle;
     return wsi;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VulkanWsiDispatch DispatchForOwner(SwapchainOwner owner) {
     if (owner == SwapchainOwner::Streamline) {
         return g_App.sl.wsi;
@@ -62,7 +73,11 @@ VulkanWsiDispatch DispatchForOwner(SwapchainOwner owner) {
     }
     return NativeWsi();
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VkResult WsiCreate(const VulkanWsiDispatch& wsi, const VkSwapchainCreateInfoKHR* createInfo,
                    VkSwapchainKHR* swapchain) {
     if (wsi.route == VulkanWsiRoute::FidelityFXReplacement) {
@@ -73,7 +88,11 @@ VkResult WsiCreate(const VulkanWsiDispatch& wsi, const VkSwapchainCreateInfoKHR*
     return wsi.createSwapchain ? wsi.createSwapchain(g_App.vk.device, createInfo, nullptr, swapchain)
                                : VK_ERROR_INITIALIZATION_FAILED;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void WsiDestroy(const VulkanWsiDispatch& wsi, VkSwapchainKHR swapchain) {
     if (swapchain == VK_NULL_HANDLE) {
         return;
@@ -86,7 +105,11 @@ void WsiDestroy(const VulkanWsiDispatch& wsi, VkSwapchainKHR swapchain) {
         wsi.destroySwapchain(g_App.vk.device, swapchain, nullptr);
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void DestroySwapchainViews(SwapchainState* state) {
     if (!state || g_App.vk.device == VK_NULL_HANDLE) {
         return;
@@ -113,31 +136,11 @@ void DestroySwapchainViews(SwapchainState* state) {
     state->layouts.clear();
     state->imageFences.clear();
 }
-
-bool CreateSwapchainFramebuffers(SwapchainState* state) {
-    if (!state || g_App.renderer.swapchainRenderPass == VK_NULL_HANDLE) {
-        return true;
-    }
-    state->framebuffers.resize(state->views.size(), VK_NULL_HANDLE);
-    for (size_t index = 0; index < state->views.size(); ++index) {
-        VkFramebufferCreateInfo framebufferInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        framebufferInfo.renderPass = g_App.renderer.swapchainRenderPass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = &state->views[index];
-        framebufferInfo.width = state->extent.width;
-        framebufferInfo.height = state->extent.height;
-        framebufferInfo.layers = 1;
-        const VkResult result =
-            vkCreateFramebuffer(g_App.vk.device, &framebufferInfo, nullptr, &state->framebuffers[index]);
-        if (result != VK_SUCCESS) {
-            testapp::Log("[FG-DIAG] vkCreateFramebuffer(swapchain index=%zu) result=%s(%d)\n", index,
-                         VkResultName(result), static_cast<int>(result));
-            return false;
-        }
-    }
-    return true;
+}
 }
 
+namespace testapp::vkfg {
+namespace {
 bool PopulateSwapchainImages(SwapchainState* state) {
     uint32_t imageCount = 0;
     VkResult result = state->wsi.getSwapchainImages(g_App.vk.device, state->handle, &imageCount, nullptr);
@@ -184,7 +187,11 @@ bool PopulateSwapchainImages(SwapchainState* state) {
     }
     return CreateSwapchainFramebuffers(state);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool BuildSwapchainDescription(VkSwapchainKHR oldSwapchain, VkSwapchainCreateInfoKHR* createInfo,
                                VkFormat* selectedFormat, VkColorSpaceKHR* selectedColorSpace,
                                VkPresentModeKHR* selectedPresentMode, VkExtent2D* selectedExtent) {
@@ -296,7 +303,11 @@ bool BuildSwapchainDescription(VkSwapchainKHR oldSwapchain, VkSwapchainCreateInf
         static_cast<unsigned>(usage), reinterpret_cast<void*>(oldSwapchain));
     return true;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool RestoreSwapchainAfterFailedFfxTakeover(SwapchainState* state, bool oldHandleConsumed,
                                             const char* reason) {
     if (!state) {
@@ -338,7 +349,11 @@ bool RestoreSwapchainAfterFailedFfxTakeover(SwapchainState* state, bool oldHandl
     testapp::LogFlush();
     return restored;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void DestroyFailedFfxTakeover(SwapchainState* replacement, const char* reason) {
     if (!replacement) {
         return;
@@ -359,9 +374,10 @@ void DestroyFailedFfxTakeover(SwapchainState* replacement, const char* reason) {
     replacement->handle = VK_NULL_HANDLE;
     g_App.swapchain = std::move(transactionScratch);
 }
+}
+}
 
-}  // namespace
-
+namespace testapp::vkfg {
 bool DrainSwapchainBoundWork(const char* reason) {
     if (g_App.vk.device == VK_NULL_HANDLE) {
         return true;
@@ -385,7 +401,9 @@ bool DrainSwapchainBoundWork(const char* reason) {
     testapp::LogFlush();
     return result == VK_SUCCESS;
 }
+}
 
+namespace testapp::vkfg {
 void DestroySwapchainState(bool destroyHandle) {
     DestroySwapchainViews(&g_App.swapchain);
     if (destroyHandle && g_App.swapchain.handle != VK_NULL_HANDLE) {
@@ -393,7 +411,9 @@ void DestroySwapchainState(bool destroyHandle) {
         g_App.swapchain.handle = VK_NULL_HANDLE;
     }
 }
+}
 
+namespace testapp::vkfg {
 bool CreateOrReplaceSwapchain(SwapchainOwner owner, const char* reason) {
     if (!IsOwnerDispatchPairValid(owner, ExpectedWsiRoute(owner))) {
         return false;
@@ -632,7 +652,9 @@ bool CreateOrReplaceSwapchain(SwapchainOwner owner, const char* reason) {
     testapp::LogFlush();
     return true;
 }
+}
 
+namespace testapp::vkfg {
 bool RecreateCurrentSwapchain(const char* reason) {
     if (!DrainSwapchainBoundWork(reason)) {
         return false;
@@ -658,7 +680,9 @@ bool RecreateCurrentSwapchain(const char* reason) {
     }
     return result;
 }
+}
 
+namespace testapp::vkfg {
 VkResult AcquireSwapchainImage(FrameContext& frame, uint32_t* imageIndex) {
     const VkResult result = g_App.swapchain.wsi.acquireNextImage(
         g_App.vk.device, g_App.swapchain.handle, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, imageIndex);
@@ -676,7 +700,9 @@ VkResult AcquireSwapchainImage(FrameContext& frame, uint32_t* imageIndex) {
     }
     return result;
 }
+}
 
+namespace testapp::vkfg {
 VkResult PresentSwapchainImage(uint32_t imageIndex) {
     if (imageIndex >= g_App.swapchain.presentReadySemaphores.size()) {
         testapp::Log(
@@ -724,5 +750,4 @@ VkResult PresentSwapchainImage(uint32_t imageIndex) {
     }
     return result;
 }
-
-}  // namespace testapp::vkfg
+}

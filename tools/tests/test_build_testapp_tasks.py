@@ -122,7 +122,10 @@ class TestAppTaskTest(unittest.TestCase):
         self.assertTrue(objects)
         object_paths = [entry["object"] for entry in objects]
         self.assertEqual(len(object_paths), len(set(object_paths)))
-        self.assertEqual(len(objects), len(links))
+        # Multi-unit test apps compile one object per source but link exactly
+        # one binary per task.
+        self.assertEqual(len(links), len({entry["output"] for entry in links}))
+        self.assertGreaterEqual(len(objects), len(links))
 
     def test_linux_x86_test_apps_do_not_reuse_the_x64_object_path(self) -> None:
         objects, _ = self.run_testapps()
@@ -231,8 +234,10 @@ class TestAppTaskTest(unittest.TestCase):
 
         source = build.read_source_text()
         # The object directory must come from the recorded architecture, never
-        # from re-reading the command flags.
-        self.assertIn("object_path = testapp_object_path(cmd, arch)", source)
+        # from re-reading the command flags, and must be unique per source
+        # file (multi-unit test apps compile one object per source).
+        self.assertIn("object_path = testapp_object_path(cmd, arch, source_index)", source)
+        self.assertIn("object_paths.append(object_path)", source)
         self.assertIn("return TestAppCommand(", source)
 
 

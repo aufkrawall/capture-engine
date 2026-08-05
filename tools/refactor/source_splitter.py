@@ -446,7 +446,17 @@ def _classify_block(pending: Sequence[Token]) -> Tuple[str, str, bool]:
         return "class", name, is_tmpl
     if idx < len(pending) and pending[idx].text == "namespace":
         if idx + 1 < len(pending) and pending[idx + 1].kind == "IDENT":
-            return "namespace", pending[idx + 1].text, False
+            parts = [pending[idx + 1].text]
+            i = idx + 2
+            while (
+                i + 2 < len(pending)
+                and pending[i].text == ":"
+                and pending[i + 1].text == ":"
+                and pending[i + 2].kind == "IDENT"
+            ):
+                parts.append(pending[i + 2].text)
+                i += 3
+            return "namespace", "::".join(parts), False
         return "namespace", "", False
     if idx < len(pending) and pending[idx].text == "enum":
         for t in pending[idx + 1 :]:
@@ -661,7 +671,7 @@ class Scanner:
             else:
                 name = (
                     _var_name(pending)
-                    if any(t.text in ("{", "=") for t in pending)
+                    if any(t.text in ("{", "=", "[") for t in pending)
                     else _last_ident(pending)
                 )
                 emit("other", name, start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
@@ -857,6 +867,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     classes_in_units = set(grouping.get("classes_in_units", []))
     extern_in_units = set(grouping.get("extern_in_units", []))
     hoist_regions = set(grouping.get("hoist_regions", []))
+    destatic = set(grouping.get("destatic", []))
 
     def hoisted_by_rule(idx: int) -> bool:
         c = chunks[idx]
@@ -904,6 +915,8 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
                 and not re.search(r"^\s*(inline|constexpr)\b", c.text)
             ):
                 continue  # non-static functions get header prototypes, not renames
+            if c.kind == "func" and idx in destatic:
+                continue  # destatic functions stay in their unit as prototypes
             if (
                 c.kind == "var"
                 and not c.static
@@ -927,7 +940,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     static_decl_names = {
         chunks[i].name
         for i in shared
-        if chunks[i].kind == "func" and "{" not in chunks[i].text
+        if chunks[i].kind == "func" and "{" not in chunks[i].text and i not in destatic
     }
     if static_decl_names:
         for idx, c in enumerate(chunks):
@@ -979,6 +992,20 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         else:
             header_parts.append(_wrap_ns(comments + "inline " + body, ns))
 
+    def unit_body_text(c: Chunk) -> str:
+        text = rename_text(c.text)
+        if idx_by_id[id(c)] in destatic:
+            comments, body = _split_comments(text)
+            body = re.sub(r"^\s*static\s+", "", body, count=1)
+            text = comments + body
+        if (
+            c.kind == "func"
+            and c.anon_region is None
+            and (not c.static or idx_by_id[id(c)] in destatic)
+        ):
+            text = _strip_definition_defaults(text)
+        return text
+
     header_parts: List[str] = ["#pragma once"]
     header_idx: set = set()
 
@@ -1012,34 +1039,6 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             ):
                 header_parts.append(rename_text(c.text))
                 header_idx.add(idx)
-            elif (
-                c.name
-                and not c.static
-                and c.anon_region is None
-                and not re.search(r"\b(constexpr|const)\b", c.text)
-            ):
-                if any(
-                    j != idx
-                    and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
-                    and _count_ident(chunks[j].text, c.name) > 0
-                    for j in range(len(chunks))
-                ):
-                    extern = _extern_decl(rename_text(c.text), c.name)
-                    if extern:
-                        header_parts.append(_wrap_ns(extern, c.ns_path))
-        elif c.kind == "var" and c.name:
-            if c.static or c.anon_region is not None or re.search(r"\b(constexpr|const)\b", c.text):
-                continue
-            if not any(
-                j != idx
-                and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
-                and _count_ident(chunks[j].text, c.name) > 0
-                for j in range(len(chunks))
-            ):
-                continue
-            extern = _extern_decl(rename_text(c.text), c.name)
-            if extern:
-                header_parts.append(_wrap_ns(extern, c.ns_path))
         elif c.kind == "enum":
             header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
@@ -1056,7 +1055,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         if (
             c.kind != "func"
             or c.template
-            or c.static
+            or (c.static and idx not in destatic)
             or "" in c.ns_path
             or re.search(r"[A-Za-z_]\w*::[~A-Za-z_]\w*\s*\(", c.signature)
         ):
@@ -1064,6 +1063,8 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         if not c.signature:
             continue
         proto = rename_text(c.signature.rstrip().rstrip(";"))
+        if idx in destatic:
+            proto = re.sub(r"^\s*static\s+", "", proto, count=1)
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
         if "{" not in c.text:
             header_idx.add(idx)  # declaration-only: prototype replaces it in units
@@ -1089,6 +1090,26 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
                 header_idx.add(idx)
             # Definition blocks (function bodies inside extern "C") stay in
             # their unit; hoisting them would duplicate the definitions.
+
+    # Pass 4: extern declarations for mutable globals used from other units.
+    # Emitted after shared statics so declarations that reference renamed
+    # inline constants (e.g. array bounds) see their definitions.
+    for idx, c in enumerate(chunks):
+        if idx in header_idx or c.kind not in ("var", "other") or not c.name:
+            continue
+        if c.static or c.anon_region is not None or re.search(r"\b(constexpr|const)\b", c.text):
+            continue
+        if not any(
+            j != idx
+            and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
+            and _count_ident(chunks[j].text, c.name) > 0
+            for j in range(len(chunks))
+        ):
+            continue
+        extern = _extern_decl(rename_text(c.text), c.name)
+        if extern:
+            header_parts.append(_wrap_ns(extern, c.ns_path))
+
     if dry_run:
         for name in unit_names:
             print(f"=== {name}: {len(unit_chunks[name])} chunks ===")
@@ -1101,12 +1122,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     (out_dir / header_name).write_text("\n\n".join(header_parts) + "\n", encoding="utf-8", newline="\n")
     for name in unit_names:
         body = "\n\n".join(
-            _wrap_ns(
-                _strip_definition_defaults(rename_text(c.text))
-                if c.kind == "func" and not c.static
-                else rename_text(c.text),
-                c.ns_path,
-            )
+            _wrap_ns(unit_body_text(c), c.ns_path)
             for c in unit_chunks[name]
             if idx_by_id[id(c)] not in header_idx
         )

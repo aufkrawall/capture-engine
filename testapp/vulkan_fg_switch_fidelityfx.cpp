@@ -1,8 +1,7 @@
-// Included by vulkan_fg_switch_test.cpp; FidelityFX SDK 1.1.4 Vulkan SR/FG integration.
+#include "vulkan_fg_switch_test_internal.h"
 
 namespace testapp::vkfg {
 namespace {
-
 std::wstring FidelityFxRuntimePath() {
     wchar_t executable[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, executable, MAX_PATH);
@@ -13,23 +12,39 @@ std::wstring FidelityFxRuntimePath() {
     }
     return directory + L"\\amd_fidelityfx_vk.dll";
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void FidelityFxMessage(uint32_t type, const wchar_t* message) {
     testapp::Log("[FFX-LOG] type=%u %S\n", type, message ? message : L"");
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool MandatoryFidelityFxFunctionsAvailable(const ffxFunctions& functions) {
     return functions.CreateContext && functions.DestroyContext && functions.Configure &&
            functions.Query && functions.Dispatch;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 FfxApiResource MakeFfxResource(const ImageResource& image, uint32_t state,
                                uint32_t additionalUsage = 0) {
     FfxApiResourceDescription description =
         ffxApiGetImageResourceDescriptionVK(image.image, image.createInfo, additionalUsage);
     return ffxApiGetResourceVK(NativeHandleToVoid(image.image), description, state);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VkImageLayout LayoutForFfxState(uint32_t state) {
     const FfxResourceStateBits bits{
         FFX_API_RESOURCE_STATE_PRESENT,
@@ -55,7 +70,11 @@ VkImageLayout LayoutForFfxState(uint32_t state) {
             return VK_IMAGE_LAYOUT_GENERAL;
     }
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void CallbackImageBarrier(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout,
                           VkImageLayout newLayout, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess) {
     VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -72,7 +91,11 @@ void CallbackImageBarrier(VkCommandBuffer commandBuffer, VkImage image, VkImageL
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 ffxReturnCode_t FidelityFxPresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {
     if (!params || !params->commandList || !params->currentBackBuffer.resource ||
         !params->outputSwapChainBuffer.resource) {
@@ -117,7 +140,11 @@ ffxReturnCode_t FidelityFxPresentCallback(ffxCallbackDescFrameGenerationPresent*
     }
     return FFX_API_RETURN_OK;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 ffxReturnCode_t FidelityFxFrameGenerationCallback(ffxDispatchDescFrameGeneration* params, void* userContext) {
     if (!params || !userContext || !g_App.ffx.functions.Dispatch) {
         return FFX_API_RETURN_ERROR_PARAMETER;
@@ -135,7 +162,11 @@ ffxReturnCode_t FidelityFxFrameGenerationCallback(ffxDispatchDescFrameGeneration
     }
     return result;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool ShouldUsePresentCallback(bool enabled) {
     if (!g_App.config.fsrPresentCallbackStress) {
         return true;
@@ -148,7 +179,11 @@ bool ShouldUsePresentCallback(bool enabled) {
     const int interval = std::max(1, g_App.config.fsrPresentCallbackToggleIntervalSeconds);
     return (static_cast<int>(elapsed) / interval) % 2 != 0;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 void LogFfxProvider(const char* role, ffxContext* context) {
     if (!g_App.ffx.functions.Query || !context || !*context) {
         return;
@@ -160,7 +195,11 @@ void LogFfxProvider(const char* role, ffxContext* context) {
                  result, FfxResultName(result), static_cast<unsigned long long>(query.versionId),
                  query.versionName ? query.versionName : "unknown");
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FidelityFxGetDeviceProcAddr(VkDevice device,
                                                                      const char* name) {
     PFN_vkVoidFunction function = vkGetDeviceProcAddr(device, name);
@@ -172,7 +211,11 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FidelityFxGetDeviceProcAddr(VkDevice de
     }
     return function;
 }
+}
+}
 
+namespace testapp::vkfg {
+namespace {
 bool CreateFidelityFxEffectContexts() {
     if (g_App.ffx.upscaleContext && g_App.ffx.frameGenerationContext) {
         return true;
@@ -276,9 +319,10 @@ bool CreateFidelityFxEffectContexts() {
     LogFfxProvider("frame-generation", &g_App.ffx.frameGenerationContext);
     return true;
 }
+}
+}
 
-}  // namespace
-
+namespace testapp::vkfg {
 void StartFidelityFxRuntimePreload(const char* reason) {
     if (!g_App.config.asyncRuntimePreload || g_App.ffx.runtimeLoaded ||
         g_App.ffx.preloadInProgress.load() || g_App.ffx.preloadStarted.exchange(true)) {
@@ -321,7 +365,9 @@ void StartFidelityFxRuntimePreload(const char* reason) {
         }
     });
 }
+}
 
+namespace testapp::vkfg {
 void JoinFidelityFxRuntimePreload(const char* reason) {
     if (!g_App.ffx.preloadThread.joinable()) {
         return;
@@ -332,7 +378,9 @@ void JoinFidelityFxRuntimePreload(const char* reason) {
         g_App.ffx.preloadSucceeded.load() ? 1 : 0);
     g_App.ffx.preloadThread.join();
 }
+}
 
+namespace testapp::vkfg {
 bool LoadFidelityFxRuntime(const char* reason) {
     if (g_App.ffx.runtimeLoaded) {
         return true;
@@ -382,7 +430,9 @@ bool LoadFidelityFxRuntime(const char* reason) {
     testapp::LogFlush();
     return true;
 }
+}
 
+namespace testapp::vkfg {
 bool PrepareFidelityFxMode() {
     if (!LoadFidelityFxRuntime("prepare FSR mode") || !g_App.renderer.initialized) {
         return false;
@@ -399,7 +449,9 @@ bool PrepareFidelityFxMode() {
     }
     return true;
 }
+}
 
+namespace testapp::vkfg {
 bool RecreateFidelityFxEffectsForExtent() {
     if (!g_App.ffx.runtimeLoaded) {
         return false;
@@ -407,7 +459,9 @@ bool RecreateFidelityFxEffectsForExtent() {
     ReleaseFidelityFxEffectsForExtent("recreate FidelityFX effects for extent");
     return CreateFidelityFxEffectContexts();
 }
+}
 
+namespace testapp::vkfg {
 void ReleaseFidelityFxEffectsForExtent(const char* reason) {
     if (g_App.ffx.frameGenerationContext) {
         if (g_App.ffx.frameGenerationConfigured) {
@@ -427,7 +481,9 @@ void ReleaseFidelityFxEffectsForExtent(const char* reason) {
         "[FG-DIAG] FidelityFX extent-bound effects released reason=%s; renderer images may now be retired\n",
         reason ? reason : "unknown");
 }
+}
 
+namespace testapp::vkfg {
 bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain,
                                const VkSwapchainCreateInfoKHR& createInfo,
                                VkSwapchainKHR* replacement, bool* oldSwapchainConsumed) {
@@ -526,7 +582,9 @@ bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain,
     }
     return true;
 }
+}
 
+namespace testapp::vkfg {
 bool SetFsrFrameGeneration(bool enabled, const char* reason, bool forceLog) {
     if (!g_App.ffx.functions.Configure || !g_App.ffx.frameGenerationContext) {
         return !enabled;
@@ -569,7 +627,9 @@ bool SetFsrFrameGeneration(bool enabled, const char* reason, bool forceLog) {
     }
     return result == FFX_API_RETURN_OK;
 }
+}
 
+namespace testapp::vkfg {
 bool WaitForFsrPresents(const char* reason) {
     if (!g_App.ffx.swapchainContext || !g_App.ffx.functions.Dispatch) {
         return true;
@@ -586,7 +646,9 @@ bool WaitForFsrPresents(const char* reason) {
     }
     return result == FFX_API_RETURN_OK;
 }
+}
 
+namespace testapp::vkfg {
 void RegisterFsrUiResource(FrameResources& resources) {
     if (!g_App.ffx.swapchainContext || !g_App.ffx.functions.Configure) {
         return;
@@ -609,7 +671,9 @@ void RegisterFsrUiResource(FrameResources& resources) {
             ui.flags, degenerate ? 1 : 0, result, FfxResultName(result));
     }
 }
+}
 
+namespace testapp::vkfg {
 bool RecordFsrUpscaleAndPrepare(VkCommandBuffer commandBuffer, FrameResources& resources,
                                const JitterOffset& jitter) {
     if (!g_App.ffx.frameGenerationContext || !g_App.ffx.functions.Dispatch ||
@@ -710,7 +774,9 @@ bool RecordFsrUpscaleAndPrepare(VkCommandBuffer commandBuffer, FrameResources& r
     SetFsrFrameGeneration(g_App.ffx.frameGenerationConfigured, "per-frame configuration", false);
     return true;
 }
+}
 
+namespace testapp::vkfg {
 void DestroyFidelityFxContexts(bool unloadRuntime, const char* reason,
                                bool presentationAlreadyRetired) {
     JoinFidelityFxRuntimePreload(reason);
@@ -768,5 +834,4 @@ void DestroyFidelityFxContexts(bool unloadRuntime, const char* reason,
     }
     testapp::LogFlush();
 }
-
-}  // namespace testapp::vkfg
+}

@@ -1,7 +1,6 @@
-// Included by vulkan_fg_switch_test.cpp; shares the global AppState.
+#include "vulkan_fg_switch_test_internal.h"
 
 namespace testapp::vkfg {
-
 const char* VkResultName(VkResult result) {
     switch (result) {
         case VK_SUCCESS:
@@ -58,7 +57,9 @@ const char* VkResultName(VkResult result) {
             return "VK_RESULT_UNKNOWN";
     }
 }
+}
 
+namespace testapp::vkfg {
 const char* SlResultName(sl::Result result) {
     switch (result) {
         case sl::Result::eOk:
@@ -91,7 +92,9 @@ const char* SlResultName(sl::Result result) {
             return "sl::Result(unknown)";
     }
 }
+}
 
+namespace testapp::vkfg {
 const char* FfxResultName(ffxReturnCode_t result) {
     switch (result) {
         case FFX_API_RETURN_OK:
@@ -112,7 +115,9 @@ const char* FfxResultName(ffxReturnCode_t result) {
             return "FFX_API_RETURN_UNKNOWN";
     }
 }
+}
 
+namespace testapp::vkfg {
 const char* ModeName(FgMode mode) {
     switch (mode) {
         case FgMode::Off:
@@ -125,7 +130,9 @@ const char* ModeName(FgMode mode) {
             return "UNKNOWN";
     }
 }
+}
 
+namespace testapp::vkfg {
 const char* TransitionStageName(TransitionStage stage) {
     switch (stage) {
         case TransitionStage::Idle:
@@ -148,7 +155,9 @@ const char* TransitionStageName(TransitionStage stage) {
             return "unknown";
     }
 }
+}
 
+namespace testapp::vkfg {
 void LogTransition(const char* event, bool flush) {
     const FgTransitionState& transition = g_App.transition;
     testapp::Log(
@@ -164,7 +173,9 @@ void LogTransition(const char* event, bool flush) {
         testapp::LogFlush();
     }
 }
+}
 
+namespace testapp::vkfg {
 void LogDeviceFault(const char* reason) {
     testapp::Log("[FG-DIAG] DEVICE_LOST reason=%s frameID=%llu owner=%s swapchain=%p\n",
                  reason ? reason : "unknown", static_cast<unsigned long long>(g_App.frameId),
@@ -211,5 +222,4 @@ void LogDeviceFault(const char* reason) {
     }
     testapp::LogFlush();
 }
-
-}  // namespace testapp::vkfg
+}

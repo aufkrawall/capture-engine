@@ -135,7 +135,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         else:
             effective_linker_flags.extend(get_x86_testapp_cfg_link_flags(compiler))
         append_windows_pdb_linker_flag(effective_linker_flags, output)
-        return TestAppCommand([compiler] + flags + [source] + effective_linker_flags + ["-o", output], arch)
+        sources = [source] if isinstance(source, str) else list(source)
+        return TestAppCommand(
+            [compiler] + flags + sources + effective_linker_flags + ["-o", output], arch
+        )
 
     def make_cmd_x86(compiler, flags, source, linker_flags, output):
         return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output, arch="x86")
@@ -220,12 +223,30 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     # DLSS/FSR FG Switching DX12 Test App
     fg_switch_src = os.path.join(testapp_src_dir, "dx12_fg_switch_test.cpp")
+    fg_switch_units = [
+        os.path.join(testapp_src_dir, name)
+        for name in (
+            "dx12_fg_switch_config.cpp",
+            "dx12_fg_switch_dred.cpp",
+            "dx12_fg_switch_hud.cpp",
+            "dx12_fg_switch_input.cpp",
+            "dx12_fg_switch_common.cpp",
+            "dx12_fg_switch_fsr.cpp",
+            "dx12_fg_switch_streamline.cpp",
+            "dx12_fg_switch_swapchain.cpp",
+            "dx12_fg_switch_upscale.cpp",
+            "dx12_fg_switch_render.cpp",
+        )
+    ]
     fg_switch_exe = os.path.join(testapp_bin_dir, "dx12_fg_switch_test.exe")
     if os.path.exists(fg_switch_src):
         fg_switch_ldflags = list(dx12_ldflags)
+        fg_switch_sources = [fg_switch_src] + [
+            unit for unit in fg_switch_units if os.path.exists(unit)
+        ]
         add_task(
             "dx12_fg_switch_test.exe",
-            make_cmd(clang_exe, fg_sdk_cflags, fg_switch_src, fg_switch_ldflags, fg_switch_exe),
+            make_cmd(clang_exe, fg_sdk_cflags, fg_switch_sources, fg_switch_ldflags, fg_switch_exe),
         )
         if have_x86:
             log("Skipping dx12_fg_switch_test.exe (x86): FG SDK runtime DLLs are x64-only")
@@ -385,9 +406,23 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 "-lavrt",
                 "-lversion",
             ]
+            vulkan_fg_sources = [vulkan_fg_src] + [
+                os.path.join(testapp_src_dir, name)
+                for name in (
+                    "vulkan_fg_switch_diagnostics.cpp",
+                    "vulkan_fg_switch_streamline.cpp",
+                    "vulkan_fg_switch_device.cpp",
+                    "vulkan_fg_switch_fidelityfx.cpp",
+                    "vulkan_fg_switch_wsi.cpp",
+                    "vulkan_fg_switch_renderer.cpp",
+                )
+                if os.path.exists(os.path.join(testapp_src_dir, name))
+            ]
             add_task(
                 "vulkan_fg_switch_test.exe",
-                make_cmd(clang_exe, vulkan_fg_cflags, vulkan_fg_src, vulkan_fg_ldflags, vulkan_fg_exe),
+                make_cmd(
+                    clang_exe, vulkan_fg_cflags, vulkan_fg_sources, vulkan_fg_ldflags, vulkan_fg_exe
+                ),
             )
         elif IS_LINUX:
             log("Linux host: skipping vulkan_fg_switch_test.exe - Vulkan import library unavailable")
@@ -592,29 +627,39 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     log("Test app compiler temp directories are isolated per task to avoid parallel temp-file collisions")
 
     def split_task_command(cmd):
-        source_index = next(index for index, argument in enumerate(cmd) if argument.endswith(".cpp"))
-        output_index = cmd.index("-o", source_index + 1)
-        return source_index, output_index
+        first_source = next(index for index, argument in enumerate(cmd) if argument.endswith(".cpp"))
+        output_index = cmd.index("-o", first_source + 1)
+        sources = [i for i in range(first_source, output_index) if cmd[i].endswith(".cpp")]
+        return sources, output_index
 
-    def testapp_object_path(cmd, arch):
-        _, output_index = split_task_command(cmd)
+    def testapp_object_path(cmd, arch, source_index):
+        output_index = cmd.index("-o", source_index)
         output = cmd[output_index + 1]
+        exe_stem = os.path.splitext(os.path.basename(output))[0]
+        src_stem = os.path.splitext(os.path.basename(cmd[source_index]))[0]
         object_dir = os.path.join(OBJ_DIR, "testapps", arch)
-        return os.path.join(object_dir, os.path.splitext(os.path.basename(output))[0] + ".o")
+        if src_stem == exe_stem:
+            return os.path.join(object_dir, exe_stem + ".o")
+        return os.path.join(object_dir, exe_stem + "__" + src_stem + ".o")
 
     def compile_app(t):
         desc, cmd, cwd, tenv, arch = t
-        source_index, output_index = split_task_command(cmd)
+        sources, output_index = split_task_command(cmd)
         compiler = cmd[0]
-        compile_flags = cmd[1:source_index]
-        source = cmd[source_index]
-        linker_flags = cmd[source_index + 1 : output_index]
+        compile_flags = cmd[1 : sources[0]]
+        linker_flags = cmd[sources[-1] + 1 : output_index]
         output = cmd[output_index + 1]
-        object_path = testapp_object_path(cmd, arch)
-        os.makedirs(os.path.dirname(object_path), exist_ok=True)
-
-        log(f"Building {desc}...", detail=True)
-        compiled = compile_object(tenv, compiler, compile_flags, source, object_path)
+        object_paths = []
+        compiled = False
+        for source_index in sources:
+            object_path = testapp_object_path(cmd, arch, source_index)
+            object_paths.append(object_path)
+            os.makedirs(os.path.dirname(object_path), exist_ok=True)
+            log(f"Building {desc} ({cmd[source_index]})...", detail=True)
+            compiled = (
+                compile_object(tenv, compiler, compile_flags, cmd[source_index], object_path)
+                or compiled
+            )
 
         # On Linux, log the resolved linker path for diagnostic purposes.
         if IS_LINUX:
@@ -633,7 +678,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             if flag.startswith(("--target=", "--sysroot=", "-stdlib=", "-fsanitize="))
             or flag in ("-m32", "-m64")
         ]
-        link_command = [compiler] + link_driver_flags + [object_path] + linker_flags + ["-o", output]
+        link_command = [compiler] + link_driver_flags + object_paths + linker_flags + ["-o", output]
         required_outputs = [output]
         if IS_WINDOWS:
             required_outputs.append(pdb_path_for_binary(output))
@@ -649,7 +694,11 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         return compiled, linked
 
     ensure_unique_testapp_objects(
-        [(desc, testapp_object_path(command, arch)) for desc, command, _, _, arch in tasks]
+        [
+            (desc, testapp_object_path(command, arch, source_index))
+            for desc, command, _, _, arch in tasks
+            for source_index in split_task_command(command)[0]
+        ]
     )
 
     for _, command, _, _, _ in tasks:

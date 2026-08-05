@@ -1,69 +1,58 @@
-// Included by dx12_fg_switch_test.cpp; shares that file's static DX12/FG state.
-//
-// Super-resolution upscaling stage: fills the display-resolution g_FgInputs.hudlessColor from the
-// render-resolution scene inputs (sceneColor/motionVectors/depth + masks), per run mode:
-//   OFF  -> hand-rolled TAA/TAAU (testapp/dx12_fg_taa.h, pure DX12)
-//   DLSS -> Streamline kFeatureDLSS (slEvaluateFeature on the app command list)
-//   FSR  -> FFX API upscale context (amd_fidelityfx_upscaler_dx12.dll, loaded ISOLATED from the
-//           validated FG runtime; every FFX kit DLL exports the full ffx* entry points)
-// If a vendor upscaler is unavailable, the mode falls back to TAA/TAAU so the image stays correct
-// and frame generation keeps working.
+#include "dx12_fg_switch_test_internal.h"
 
-static bool UpscalingActive() {
-    return g_UpscalingEnabled;
+bool UpscalingActive() {
+    return dx12_fg_switch_test_g_UpscalingEnabled;
 }
 
-// ---- FSR upscaler runtime (isolated module; never reload-stressed like the FG runtime) ----
-
-static bool LoadFSRUpscalerRuntime() {
-    if (g_FfxUpscalerModule) {
+bool LoadFSRUpscalerRuntime() {
+    if (dx12_fg_switch_test_g_FfxUpscalerModule) {
         return true;
     }
-    g_FfxUpscalerModule = LoadLibraryW(L"amd_fidelityfx_upscaler_dx12.dll");
-    if (!g_FfxUpscalerModule) {
+    dx12_fg_switch_test_g_FfxUpscalerModule = LoadLibraryW(L"amd_fidelityfx_upscaler_dx12.dll");
+    if (!dx12_fg_switch_test_g_FfxUpscalerModule) {
         testapp::Log("[FG-DIAG] FSR upscaler DLL not found (amd_fidelityfx_upscaler_dx12.dll, err=%lu)\n",
                      GetLastError());
         return false;
     }
-    g_FfxUpCreateContext =
-        reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(g_FfxUpscalerModule, "ffxCreateContext"));
-    g_FfxUpDispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(g_FfxUpscalerModule, "ffxDispatch"));
-    g_FfxUpQuery = reinterpret_cast<PfnFfxQuery>(GetProcAddress(g_FfxUpscalerModule, "ffxQuery"));
-    g_FfxUpDestroyContext =
-        reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_FfxUpscalerModule, "ffxDestroyContext"));
-    if (!g_FfxUpCreateContext || !g_FfxUpDispatch || !g_FfxUpQuery || !g_FfxUpDestroyContext) {
+    dx12_fg_switch_test_g_FfxUpCreateContext =
+        reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(dx12_fg_switch_test_g_FfxUpscalerModule, "ffxCreateContext"));
+    dx12_fg_switch_test_g_FfxUpDispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(dx12_fg_switch_test_g_FfxUpscalerModule, "ffxDispatch"));
+    dx12_fg_switch_test_g_FfxUpQuery = reinterpret_cast<PfnFfxQuery>(GetProcAddress(dx12_fg_switch_test_g_FfxUpscalerModule, "ffxQuery"));
+    dx12_fg_switch_test_g_FfxUpDestroyContext =
+        reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(dx12_fg_switch_test_g_FfxUpscalerModule, "ffxDestroyContext"));
+    if (!dx12_fg_switch_test_g_FfxUpCreateContext || !dx12_fg_switch_test_g_FfxUpDispatch || !dx12_fg_switch_test_g_FfxUpQuery || !dx12_fg_switch_test_g_FfxUpDestroyContext) {
         testapp::Log("[FG-DIAG] FSR upscaler DLL missing ffx exports\n");
-        FreeLibrary(g_FfxUpscalerModule);
-        g_FfxUpscalerModule = nullptr;
-        g_FfxUpCreateContext = nullptr;
-        g_FfxUpDispatch = nullptr;
-        g_FfxUpQuery = nullptr;
-        g_FfxUpDestroyContext = nullptr;
+        FreeLibrary(dx12_fg_switch_test_g_FfxUpscalerModule);
+        dx12_fg_switch_test_g_FfxUpscalerModule = nullptr;
+        dx12_fg_switch_test_g_FfxUpCreateContext = nullptr;
+        dx12_fg_switch_test_g_FfxUpDispatch = nullptr;
+        dx12_fg_switch_test_g_FfxUpQuery = nullptr;
+        dx12_fg_switch_test_g_FfxUpDestroyContext = nullptr;
         return false;
     }
     testapp::Log("[FG-DIAG] FSR upscaler runtime loaded base=%p create=%p dispatch=%p query=%p\n",
-                 g_FfxUpscalerModule, reinterpret_cast<void*>(g_FfxUpCreateContext),
-                 reinterpret_cast<void*>(g_FfxUpDispatch), reinterpret_cast<void*>(g_FfxUpQuery));
+                 dx12_fg_switch_test_g_FfxUpscalerModule, reinterpret_cast<void*>(dx12_fg_switch_test_g_FfxUpCreateContext),
+                 reinterpret_cast<void*>(dx12_fg_switch_test_g_FfxUpDispatch), reinterpret_cast<void*>(dx12_fg_switch_test_g_FfxUpQuery));
     return true;
 }
 
-static void UnloadFSRUpscalerRuntime(const char* reason) {
-    if (g_FfxUpscaleCtx) {
+void UnloadFSRUpscalerRuntime(const char* reason) {
+    if (dx12_fg_switch_test_g_FfxUpscaleCtx) {
         testapp::Log("[FG-DIAG] WARN unloading FSR upscaler with live context (%s)\n", reason ? reason : "unknown");
     }
-    if (g_FfxUpscalerModule) {
-        testapp::Log("[FG-DIAG] Unloading FSR upscaler runtime base=%p reason=%s\n", g_FfxUpscalerModule,
+    if (dx12_fg_switch_test_g_FfxUpscalerModule) {
+        testapp::Log("[FG-DIAG] Unloading FSR upscaler runtime base=%p reason=%s\n", dx12_fg_switch_test_g_FfxUpscalerModule,
                      reason ? reason : "unknown");
-        FreeLibrary(g_FfxUpscalerModule);
+        FreeLibrary(dx12_fg_switch_test_g_FfxUpscalerModule);
     }
-    g_FfxUpscalerModule = nullptr;
-    g_FfxUpCreateContext = nullptr;
-    g_FfxUpDispatch = nullptr;
-    g_FfxUpQuery = nullptr;
-    g_FfxUpDestroyContext = nullptr;
+    dx12_fg_switch_test_g_FfxUpscalerModule = nullptr;
+    dx12_fg_switch_test_g_FfxUpCreateContext = nullptr;
+    dx12_fg_switch_test_g_FfxUpDispatch = nullptr;
+    dx12_fg_switch_test_g_FfxUpQuery = nullptr;
+    dx12_fg_switch_test_g_FfxUpDestroyContext = nullptr;
 }
 
-static void FfxUpscaleMessageCallback(uint32_t type, const wchar_t* message) {
+void FfxUpscaleMessageCallback(uint32_t type, const wchar_t* message) {
     testapp::Log("[FG-DIAG] FFX upscale message type=%u %S\n", type, message ? message : L"");
 }
 
@@ -71,8 +60,8 @@ static void FfxUpscaleMessageCallback(uint32_t type, const wchar_t* message) {
 // auto-selects FSR 3.1.x. Config fsr_version=3|4 forces a provider whose name carries that major
 // version; if no match exists the runtime default is used with a warning (graceful FSR4->FSR3
 // fallback on unsupported hardware).
-static uint64_t ChooseFSRUpscaleVersionOverride() {
-    if (!g_FfxUpQuery || !g_Device) {
+uint64_t ChooseFSRUpscaleVersionOverride() {
+    if (!dx12_fg_switch_test_g_FfxUpQuery || !g_Device) {
         return 0;
     }
     ffxQueryDescGetVersions versionsQuery = {};
@@ -81,7 +70,7 @@ static uint64_t ChooseFSRUpscaleVersionOverride() {
     versionsQuery.device = g_Device.Get();
     uint64_t count = 0;
     versionsQuery.outputCount = &count;
-    ffxReturnCode_t ret = g_FfxUpQuery(nullptr, &versionsQuery.header);
+    ffxReturnCode_t ret = dx12_fg_switch_test_g_FfxUpQuery(nullptr, &versionsQuery.header);
     if (ret != FFX_API_RETURN_OK || count == 0 || count > 16) {
         testapp::Log("[FG-DIAG] FSR upscale version enumeration result=%u (%s) count=%llu\n", ret, FfxReturnName(ret),
                      static_cast<unsigned long long>(count));
@@ -91,7 +80,7 @@ static uint64_t ChooseFSRUpscaleVersionOverride() {
     const char* names[16] = {};
     versionsQuery.versionIds = ids;
     versionsQuery.versionNames = names;
-    ret = g_FfxUpQuery(nullptr, &versionsQuery.header);
+    ret = dx12_fg_switch_test_g_FfxUpQuery(nullptr, &versionsQuery.header);
     if (ret != FFX_API_RETURN_OK) {
         return 0;
     }
@@ -108,27 +97,27 @@ static uint64_t ChooseFSRUpscaleVersionOverride() {
         testapp::Log("[FG-DIAG] FSR upscale provider[%llu] id=0x%llx name='%s' major=%d\n",
                      static_cast<unsigned long long>(i), static_cast<unsigned long long>(ids[i]),
                      names[i] ? names[i] : "?", major);
-        if (g_FsrUpscaleVersionConfig != 0 && major == g_FsrUpscaleVersionConfig && override == 0) {
+        if (dx12_fg_switch_test_g_FsrUpscaleVersionConfig != 0 && major == dx12_fg_switch_test_g_FsrUpscaleVersionConfig && override == 0) {
             override = ids[i];
         }
     }
-    if (g_FsrUpscaleVersionConfig != 0 && override == 0) {
+    if (dx12_fg_switch_test_g_FsrUpscaleVersionConfig != 0 && override == 0) {
         testapp::Log("[FG-DIAG] WARN requested FSR upscale major version %d not available; using runtime default\n",
-                     g_FsrUpscaleVersionConfig);
+                     dx12_fg_switch_test_g_FsrUpscaleVersionConfig);
     }
     return override;
 }
 
-static void DestroyFSRUpscaleContext() {
-    if (g_FfxUpDestroyContext && g_FfxUpscaleCtx) {
-        g_FfxUpDestroyContext(&g_FfxUpscaleCtx, nullptr);
+void DestroyFSRUpscaleContext() {
+    if (dx12_fg_switch_test_g_FfxUpDestroyContext && dx12_fg_switch_test_g_FfxUpscaleCtx) {
+        dx12_fg_switch_test_g_FfxUpDestroyContext(&dx12_fg_switch_test_g_FfxUpscaleCtx, nullptr);
         testapp::Log("[FG-DIAG] FSR upscale context destroyed\n");
     }
-    g_FfxUpscaleCtx = nullptr;
+    dx12_fg_switch_test_g_FfxUpscaleCtx = nullptr;
 }
 
-static bool TryInitFSRUpscaleContext() {
-    if (g_FfxUpscaleCtx) {
+bool TryInitFSRUpscaleContext() {
+    if (dx12_fg_switch_test_g_FfxUpscaleCtx) {
         return true;
     }
     if (!g_Device || !LoadFSRUpscalerRuntime()) {
@@ -160,36 +149,36 @@ static bool TryInitFSRUpscaleContext() {
     // unchanged): neither HIGH_DYNAMIC_RANGE (scene-referred HDR) nor NON_LINEAR_COLORSPACE
     // (gamma-encoded) applies. Exposure is derived automatically (no exposure texture provided).
     createDesc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
-    createDesc.maxRenderSize = {static_cast<uint32_t>(g_RenderWidth), static_cast<uint32_t>(g_RenderHeight)};
-    createDesc.maxUpscaleSize = {static_cast<uint32_t>(g_WindowWidth), static_cast<uint32_t>(g_WindowHeight)};
+    createDesc.maxRenderSize = {static_cast<uint32_t>(dx12_fg_switch_test_g_RenderWidth), static_cast<uint32_t>(dx12_fg_switch_test_g_RenderHeight)};
+    createDesc.maxUpscaleSize = {static_cast<uint32_t>(dx12_fg_switch_test_g_WindowWidth), static_cast<uint32_t>(dx12_fg_switch_test_g_WindowHeight)};
     createDesc.fpMessage = FfxUpscaleMessageCallback;
 
-    ffxReturnCode_t ret = g_FfxUpCreateContext(&g_FfxUpscaleCtx, &createDesc.header, nullptr);
-    if (ret != FFX_API_RETURN_OK || !g_FfxUpscaleCtx) {
+    ffxReturnCode_t ret = dx12_fg_switch_test_g_FfxUpCreateContext(&dx12_fg_switch_test_g_FfxUpscaleCtx, &createDesc.header, nullptr);
+    if (ret != FFX_API_RETURN_OK || !dx12_fg_switch_test_g_FfxUpscaleCtx) {
         testapp::Log("[FG-DIAG] ffxCreateContext(UPSCALE) FAILED code=%u (%s) render=%dx%d display=%dx%d\n", ret,
-                     FfxReturnName(ret), g_RenderWidth, g_RenderHeight, g_WindowWidth, g_WindowHeight);
-        g_FfxUpscaleCtx = nullptr;
+                     FfxReturnName(ret), dx12_fg_switch_test_g_RenderWidth, dx12_fg_switch_test_g_RenderHeight, dx12_fg_switch_test_g_WindowWidth, dx12_fg_switch_test_g_WindowHeight);
+        dx12_fg_switch_test_g_FfxUpscaleCtx = nullptr;
         return false;
     }
 
     ffxQueryGetProviderVersion providerQuery = {};
     providerQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
-    if (g_FfxUpQuery(&g_FfxUpscaleCtx, &providerQuery.header) == FFX_API_RETURN_OK) {
+    if (dx12_fg_switch_test_g_FfxUpQuery(&dx12_fg_switch_test_g_FfxUpscaleCtx, &providerQuery.header) == FFX_API_RETURN_OK) {
         testapp::Log("[FG-DIAG] ffxCreateContext(UPSCALE) OK ctx=%p provider id=0x%llx name='%s' "
                      "render=%dx%d display=%dx%d quality=%s\n",
-                     (void*)g_FfxUpscaleCtx, static_cast<unsigned long long>(providerQuery.versionId),
-                     providerQuery.versionName ? providerQuery.versionName : "?", g_RenderWidth, g_RenderHeight,
-                     g_WindowWidth, g_WindowHeight, testapp::fg::UpscaleQualityName(g_UpscaleQuality));
+                     (void*)dx12_fg_switch_test_g_FfxUpscaleCtx, static_cast<unsigned long long>(providerQuery.versionId),
+                     providerQuery.versionName ? providerQuery.versionName : "?", dx12_fg_switch_test_g_RenderWidth, dx12_fg_switch_test_g_RenderHeight,
+                     dx12_fg_switch_test_g_WindowWidth, dx12_fg_switch_test_g_WindowHeight, testapp::fg::UpscaleQualityName(dx12_fg_switch_test_g_UpscaleQuality));
     } else {
         testapp::Log("[FG-DIAG] ffxCreateContext(UPSCALE) OK ctx=%p (provider version query failed)\n",
-                     (void*)g_FfxUpscaleCtx);
+                     (void*)dx12_fg_switch_test_g_FfxUpscaleCtx);
     }
     testapp::LogFlush();
     return true;
 }
 
-static void DispatchFSRUpscale(float frameDeltaMs, bool reset) {
-    if (!g_FfxUpDispatch || !g_FfxUpscaleCtx || !g_FgInputs.valid) {
+void DispatchFSRUpscale(float frameDeltaMs, bool reset) {
+    if (!dx12_fg_switch_test_g_FfxUpDispatch || !dx12_fg_switch_test_g_FfxUpscaleCtx || !g_FgInputs.valid) {
         return;
     }
     const testapp::dx12fg::SceneCamera& camera = g_Scene.Camera();
@@ -212,13 +201,13 @@ static void DispatchFSRUpscale(float frameDeltaMs, bool reset) {
     upscale.transparencyAndComposition =
         ffxApiGetResourceDX12(g_FgInputs.transparencyMask.Get(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
     upscale.output = ffxApiGetResourceDX12(g_FgInputs.hudlessColor.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-    upscale.jitterOffset = {g_CurrentJitter.x, g_CurrentJitter.y};
+    upscale.jitterOffset = {dx12_fg_switch_test_g_CurrentJitter.x, dx12_fg_switch_test_g_CurrentJitter.y};
     // Scene motion is UV-space prevUV - curUV; FFX expects pixel-space motion at render res.
-    upscale.motionVectorScale = {static_cast<float>(g_RenderWidth), static_cast<float>(g_RenderHeight)};
-    upscale.renderSize = {static_cast<uint32_t>(g_RenderWidth), static_cast<uint32_t>(g_RenderHeight)};
-    upscale.upscaleSize = {static_cast<uint32_t>(g_WindowWidth), static_cast<uint32_t>(g_WindowHeight)};
-    upscale.enableSharpening = g_FsrSharpeningEnabled;
-    upscale.sharpness = static_cast<float>(g_FsrSharpnessPercent) / 100.0f;
+    upscale.motionVectorScale = {static_cast<float>(dx12_fg_switch_test_g_RenderWidth), static_cast<float>(dx12_fg_switch_test_g_RenderHeight)};
+    upscale.renderSize = {static_cast<uint32_t>(dx12_fg_switch_test_g_RenderWidth), static_cast<uint32_t>(dx12_fg_switch_test_g_RenderHeight)};
+    upscale.upscaleSize = {static_cast<uint32_t>(dx12_fg_switch_test_g_WindowWidth), static_cast<uint32_t>(dx12_fg_switch_test_g_WindowHeight)};
+    upscale.enableSharpening = dx12_fg_switch_test_g_FsrSharpeningEnabled;
+    upscale.sharpness = static_cast<float>(dx12_fg_switch_test_g_FsrSharpnessPercent) / 100.0f;
     upscale.frameTimeDelta = frameDeltaMs;
     upscale.preExposure = 1.0f;
     upscale.reset = reset;
@@ -228,25 +217,23 @@ static void DispatchFSRUpscale(float frameDeltaMs, bool reset) {
     upscale.viewSpaceToMetersFactor = 1.0f;
     upscale.flags = 0;
 
-    ffxReturnCode_t ret = g_FfxUpDispatch(&g_FfxUpscaleCtx, &upscale.header);
-    if (ret != FFX_API_RETURN_OK || g_FrameIdCounter < 5 || (g_FrameIdCounter % 240) == 0) {
+    ffxReturnCode_t ret = dx12_fg_switch_test_g_FfxUpDispatch(&dx12_fg_switch_test_g_FfxUpscaleCtx, &upscale.header);
+    if (ret != FFX_API_RETURN_OK || dx12_fg_switch_test_g_FrameIdCounter < 5 || (dx12_fg_switch_test_g_FrameIdCounter % 240) == 0) {
         testapp::Log("[FG-DIAG] ffxDispatch(upscale) frameID=%llu result=%u (%s) render=%dx%d jitter=(%.3f,%.3f) "
                      "reset=%d deltaMs=%.2f\n",
-                     static_cast<unsigned long long>(g_FrameIdCounter), ret, FfxReturnName(ret), g_RenderWidth,
-                     g_RenderHeight, g_CurrentJitter.x, g_CurrentJitter.y, reset ? 1 : 0, frameDeltaMs);
+                     static_cast<unsigned long long>(dx12_fg_switch_test_g_FrameIdCounter), ret, FfxReturnName(ret), dx12_fg_switch_test_g_RenderWidth,
+                     dx12_fg_switch_test_g_RenderHeight, dx12_fg_switch_test_g_CurrentJitter.x, dx12_fg_switch_test_g_CurrentJitter.y, reset ? 1 : 0, frameDeltaMs);
     }
 
     testapp::dx12fg::Transition(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState,
                                 testapp::dx12fg::kColorReadState);
 }
 
-// ---- DLSS Super Resolution (Streamline kFeatureDLSS) ----
-
-static sl::DLSSMode MapDLSSSRMode() {
+sl::DLSSMode MapDLSSSRMode() {
     // With a custom scale override pick the DLSS quality mode whose ratio is closest; DLSS accepts
     // any render size within the optimal-settings min/max for the chosen mode.
-    if (g_UpscaleScalePercent > 0) {
-        const double ratio = 100.0 / static_cast<double>(g_UpscaleScalePercent);
+    if (dx12_fg_switch_test_g_UpscaleScalePercent > 0) {
+        const double ratio = 100.0 / static_cast<double>(dx12_fg_switch_test_g_UpscaleScalePercent);
         if (ratio < 1.05) {
             return sl::DLSSMode::eDLAA;
         }
@@ -261,7 +248,7 @@ static sl::DLSSMode MapDLSSSRMode() {
         }
         return sl::DLSSMode::eUltraPerformance;
     }
-    switch (g_UpscaleQuality) {
+    switch (dx12_fg_switch_test_g_UpscaleQuality) {
         case testapp::fg::UpscaleQuality::Quality:
             return sl::DLSSMode::eMaxQuality;
         case testapp::fg::UpscaleQuality::Balanced:
@@ -276,8 +263,8 @@ static sl::DLSSMode MapDLSSSRMode() {
     }
 }
 
-static sl::DLSSPreset MapDLSSPreset() {
-    switch (g_DlssPresetConfig) {
+sl::DLSSPreset MapDLSSPreset() {
+    switch (dx12_fg_switch_test_g_DlssPresetConfig) {
         case 'j':
             return sl::DLSSPreset::ePresetJ;
         case 'k':
@@ -293,9 +280,9 @@ static sl::DLSSPreset MapDLSSPreset() {
 
 // Configures DLSS SR for the current quality/preset; logs the optimal settings so a mismatch
 // between the app-chosen render size and the DLSS-supported range is visible in the log.
-static bool SetDLSSSROptions(bool enable) {
-    g_DlssSrActive = false;
-    if (!g_SlDLSSSetOptions) {
+bool SetDLSSSROptions(bool enable) {
+    dx12_fg_switch_test_g_DlssSrActive = false;
+    if (!dx12_fg_switch_test_g_SlDLSSSetOptions) {
         if (enable) {
             testapp::Log("[FG-DIAG] DLSS SR unavailable (slDLSSSetOptions unresolved); TAA fallback active\n");
         }
@@ -304,8 +291,8 @@ static bool SetDLSSSROptions(bool enable) {
 
     sl::DLSSOptions options = {};
     options.mode = enable ? MapDLSSSRMode() : sl::DLSSMode::eOff;
-    options.outputWidth = static_cast<uint32_t>(g_WindowWidth);
-    options.outputHeight = static_cast<uint32_t>(g_WindowHeight);
+    options.outputWidth = static_cast<uint32_t>(dx12_fg_switch_test_g_WindowWidth);
+    options.outputHeight = static_cast<uint32_t>(dx12_fg_switch_test_g_WindowHeight);
     // The FP16 chain carries display-referred SDR values (presented unchanged), so the truthful
     // hint is eFalse (eTrue declares scene-referred linear HDR and routes DLSS through its
     // tonemap/inverse-tonemap path). A/B-tested 2026-06-11: NO visible difference for the
@@ -313,7 +300,7 @@ static bool SetDLSSSROptions(bool enable) {
     // preset K model itself (FSR/TAAU on identical inputs are clean; preset M is clean;
     // dlss_preset=m or a newer nvngx_dlss.dll are the remedies). eFalse stays as the
     // semantically correct default; dlss_hdr=1 remains for future A/Bs against DLSS updates.
-    options.colorBuffersHDR = g_DlssHdrInput ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    options.colorBuffersHDR = dx12_fg_switch_test_g_DlssHdrInput ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     options.useAutoExposure = sl::Boolean::eTrue;
     const sl::DLSSPreset preset = MapDLSSPreset();
     options.dlaaPreset = preset;
@@ -323,73 +310,71 @@ static bool SetDLSSSROptions(bool enable) {
     options.ultraPerformancePreset = preset;
     options.ultraQualityPreset = preset;
 
-    if (enable && g_SlDLSSGetOptimalSettings) {
+    if (enable && dx12_fg_switch_test_g_SlDLSSGetOptimalSettings) {
         sl::DLSSOptimalSettings optimal = {};
-        if (g_SlDLSSGetOptimalSettings(options, optimal) == sl::Result::eOk) {
+        if (dx12_fg_switch_test_g_SlDLSSGetOptimalSettings(options, optimal) == sl::Result::eOk) {
             testapp::Log("[FG-DIAG] DLSS SR optimal: render=%ux%u min=%ux%u max=%ux%u (app render=%dx%d)%s\n",
                          optimal.optimalRenderWidth, optimal.optimalRenderHeight, optimal.renderWidthMin,
-                         optimal.renderHeightMin, optimal.renderWidthMax, optimal.renderHeightMax, g_RenderWidth,
-                         g_RenderHeight,
-                         (static_cast<uint32_t>(g_RenderWidth) < optimal.renderWidthMin ||
-                          static_cast<uint32_t>(g_RenderWidth) > optimal.renderWidthMax)
+                         optimal.renderHeightMin, optimal.renderWidthMax, optimal.renderHeightMax, dx12_fg_switch_test_g_RenderWidth,
+                         dx12_fg_switch_test_g_RenderHeight,
+                         (static_cast<uint32_t>(dx12_fg_switch_test_g_RenderWidth) < optimal.renderWidthMin ||
+                          static_cast<uint32_t>(dx12_fg_switch_test_g_RenderWidth) > optimal.renderWidthMax)
                              ? " WARN app render width outside DLSS range"
                              : "");
         }
     }
 
-    sl::Result ret = g_SlDLSSSetOptions(g_SlViewport, options);
+    sl::Result ret = dx12_fg_switch_test_g_SlDLSSSetOptions(dx12_fg_switch_test_g_SlViewport, options);
     testapp::Log("[FG-DIAG] slDLSSSetOptions(mode=%u preset=%u hdr=%d) output=%ux%u result=%d (%s)\n",
-                 static_cast<uint32_t>(options.mode), static_cast<uint32_t>(preset), g_DlssHdrInput ? 1 : 0,
+                 static_cast<uint32_t>(options.mode), static_cast<uint32_t>(preset), dx12_fg_switch_test_g_DlssHdrInput ? 1 : 0,
                  options.outputWidth, options.outputHeight, static_cast<int>(ret), SlResultName(ret));
     testapp::LogFlush();
-    g_DlssSrActive = enable && ret == sl::Result::eOk;
-    return g_DlssSrActive;
+    dx12_fg_switch_test_g_DlssSrActive = enable && ret == sl::Result::eOk;
+    return dx12_fg_switch_test_g_DlssSrActive;
 }
 
 // Runs the DLSS SR pass on the app command list. Requires the frame's constants + resource tags
 // (incl. kBufferTypeScalingInputColor/kBufferTypeScalingOutputColor) to be set for this frame
 // token BEFORE the call -- SubmitStreamlineFrameInputs runs earlier in the frame.
-static void EvaluateDLSSSR(sl::FrameToken* frameToken) {
-    if (!frameToken || !g_SlEvaluateFeature || !g_DlssSrActive) {
+void EvaluateDLSSSR(sl::FrameToken* frameToken) {
+    if (!frameToken || !dx12_fg_switch_test_g_SlEvaluateFeature || !dx12_fg_switch_test_g_DlssSrActive) {
         return;
     }
-    const sl::BaseStructure* inputs[] = {&g_SlViewport};
-    sl::Result ret = g_SlEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), g_CommandList.Get());
-    if (ret != sl::Result::eOk || g_FrameIdCounter < 5 || (g_FrameIdCounter % 240) == 0) {
+    const sl::BaseStructure* inputs[] = {&dx12_fg_switch_test_g_SlViewport};
+    sl::Result ret = dx12_fg_switch_test_g_SlEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), g_CommandList.Get());
+    if (ret != sl::Result::eOk || dx12_fg_switch_test_g_FrameIdCounter < 5 || (dx12_fg_switch_test_g_FrameIdCounter % 240) == 0) {
         testapp::Log("[FG-DIAG] slEvaluateFeature(DLSS) frameID=%llu result=%d (%s) render=%dx%d jitter=(%.3f,%.3f)\n",
-                     static_cast<unsigned long long>(g_FrameIdCounter), static_cast<int>(ret), SlResultName(ret),
-                     g_RenderWidth, g_RenderHeight, g_CurrentJitter.x, g_CurrentJitter.y);
+                     static_cast<unsigned long long>(dx12_fg_switch_test_g_FrameIdCounter), static_cast<int>(ret), SlResultName(ret),
+                     dx12_fg_switch_test_g_RenderWidth, dx12_fg_switch_test_g_RenderHeight, dx12_fg_switch_test_g_CurrentJitter.x, dx12_fg_switch_test_g_CurrentJitter.y);
     }
 }
 
 // Heartbeat/diagnostics: which upscaler actually serves the current mode this frame.
-static const char* ActiveUpscalerName() {
+const char* ActiveUpscalerName() {
     if (!UpscalingActive()) {
         return "off";
     }
-    if (g_CurrentMode == FGMode::DLSS) {
-        return g_DlssSrActive ? "dlss-sr" : "taa-fallback";
+    if (dx12_fg_switch_test_g_CurrentMode == FGMode::DLSS) {
+        return dx12_fg_switch_test_g_DlssSrActive ? "dlss-sr" : "taa-fallback";
     }
-    if (g_CurrentMode == FGMode::FSR) {
-        return g_FfxUpscaleCtx ? "fsr" : "taa-fallback";
+    if (dx12_fg_switch_test_g_CurrentMode == FGMode::FSR) {
+        return dx12_fg_switch_test_g_FfxUpscaleCtx ? "fsr" : "taa-fallback";
     }
     return "taa";
 }
 
-// ---- Per-frame upscale stage dispatcher ----
-
-static void RunUpscaleStage(sl::FrameToken* frameToken, UINT frameIndex, float frameDeltaMs) {
+void RunUpscaleStage(sl::FrameToken* frameToken, UINT frameIndex, float frameDeltaMs) {
     if (!UpscalingActive() || !g_FgInputs.valid) {
         return;
     }
     const bool reset =
-        g_FrameIdCounter < 4 || (g_LastModeSwitchFrameId != 0 && g_FrameIdCounter - g_LastModeSwitchFrameId <= 1);
+        dx12_fg_switch_test_g_FrameIdCounter < 4 || (dx12_fg_switch_test_g_LastModeSwitchFrameId != 0 && dx12_fg_switch_test_g_FrameIdCounter - dx12_fg_switch_test_g_LastModeSwitchFrameId <= 1);
 
-    if (g_CurrentMode == FGMode::DLSS && g_DlssSrActive) {
+    if (dx12_fg_switch_test_g_CurrentMode == FGMode::DLSS && dx12_fg_switch_test_g_DlssSrActive) {
         EvaluateDLSSSR(frameToken);
         return;
     }
-    if (g_CurrentMode == FGMode::FSR && g_FfxUpscaleCtx) {
+    if (dx12_fg_switch_test_g_CurrentMode == FGMode::FSR && dx12_fg_switch_test_g_FfxUpscaleCtx) {
         DispatchFSRUpscale(frameDeltaMs, reset);
         return;
     }
@@ -397,14 +382,14 @@ static void RunUpscaleStage(sl::FrameToken* frameToken, UINT frameIndex, float f
     // OFF mode, and the graceful fallback when a vendor upscaler is unavailable.
     static FGMode s_lastFallbackLogMode = FGMode::Off;
     static bool s_loggedFallback = false;
-    if (g_CurrentMode != FGMode::Off && (!s_loggedFallback || s_lastFallbackLogMode != g_CurrentMode)) {
+    if (dx12_fg_switch_test_g_CurrentMode != FGMode::Off && (!s_loggedFallback || s_lastFallbackLogMode != dx12_fg_switch_test_g_CurrentMode)) {
         s_loggedFallback = true;
-        s_lastFallbackLogMode = g_CurrentMode;
+        s_lastFallbackLogMode = dx12_fg_switch_test_g_CurrentMode;
         testapp::Log("[FG-DIAG] Upscale stage: %s has no vendor upscaler context; using TAA/TAAU fallback\n",
-                     ModeName(g_CurrentMode));
+                     ModeName(dx12_fg_switch_test_g_CurrentMode));
     }
     if (reset) {
-        g_Taa.Reset();
+        dx12_fg_switch_test_g_Taa.Reset();
     }
-    g_Taa.Render(g_CommandList.Get(), g_FgInputs, frameIndex, g_CurrentJitter.x, g_CurrentJitter.y);
+    dx12_fg_switch_test_g_Taa.Render(g_CommandList.Get(), g_FgInputs, frameIndex, dx12_fg_switch_test_g_CurrentJitter.x, dx12_fg_switch_test_g_CurrentJitter.y);
 }

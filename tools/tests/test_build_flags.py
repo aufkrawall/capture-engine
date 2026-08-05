@@ -181,7 +181,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         sampler_source = (project_root / "hook/common/dx12_sampler_policy.cpp").read_text(encoding="utf-8")
         dred_source = (project_root / "hook/common/dx12_dred.cpp").read_text(encoding="utf-8")
         fg_resource_source = (project_root / "testapp/dx12_fg_resources.h").read_text(encoding="utf-8")
-        fg_dred_source = (project_root / "testapp/dx12_fg_switch_dred.inl").read_text(encoding="utf-8")
+        fg_dred_source = (project_root / "testapp/dx12_fg_switch_dred.cpp").read_text(encoding="utf-8")
         overlay_sources = (
             (project_root / "hook/apis/dx12_streamline_ui_overlay.cpp").read_text(encoding="utf-8"),
             (project_root / "hook/apis/dx12_ffx_suspend_overlay.cpp").read_text(encoding="utf-8"),
@@ -206,7 +206,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("#elif CE_TESTAPP_HAS_D3D12_DRED_SETTINGS", fg_dred_source)
         self.assertIn("#elif CE_TESTAPP_HAS_D3D12_DRED_DATA", fg_dred_source)
         self.assertIn("Compiler headers expose no DRED data interface", fg_dred_source)
-        self.assertIn("static const char* DredOpName(UINT op)", fg_dred_source)
+        self.assertIn("const char* DredOpName(UINT op)", fg_dred_source)
         self.assertNotIn("case D3D12_AUTO_BREADCRUMB_OP_", fg_dred_source)
         for source in overlay_sources:
             self.assertNotIn(
@@ -699,11 +699,12 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_vulkan_fg_embedded_sources_keep_dependency_order(self) -> None:
         project_root = Path(build.__file__).parent
-        source = (project_root / "testapp/vulkan_fg_switch_test.cpp").read_text(encoding="utf-8")
-        self.assertLess(
-            source.index('#include "vulkan_fg_switch_wsi.inl"'),
-            source.index('#include "vulkan_fg_switch_resources.inl"'),
-        )
+        # The per-unit .cpp files replaced the interleaved .inl includes; the
+        # dependency order is now the test app's source list in the build.
+        build_part = (project_root / "tools/build/build_part_011.py").read_text(encoding="utf-8")
+        wsi_index = build_part.index("vulkan_fg_switch_wsi.cpp")
+        renderer_index = build_part.index("vulkan_fg_switch_renderer.cpp")
+        self.assertLess(wsi_index, renderer_index)
 
     def test_vulkan_layer_build_has_no_registry_side_effects(self) -> None:
         source = build.read_source_text()

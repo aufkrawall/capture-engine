@@ -1,52 +1,10 @@
-// Included by dx12_fg_switch_test.cpp; shares that file's static DX12/FG state.
-// DRED (Device Removed Extended Data) diagnostics for GPU device-hung/TDR root-causing.
-
-// Ubuntu's MinGW 11 headers expose only the base DRED settings interface. Capability-gate every
-// newer declaration so the switch app retains full Settings1/Data1 diagnostics with current
-// Windows headers, base arming/data with intermediate headers, and an explicit diagnostic when
-// the compile-time SDK cannot describe the data interface at all.
-#ifndef CE_TESTAPP_HAS_D3D12_DRED_SETTINGS
-#if defined(__ID3D12DeviceRemovedExtendedDataSettings_INTERFACE_DEFINED__)
-#define CE_TESTAPP_HAS_D3D12_DRED_SETTINGS 1
-#else
-#define CE_TESTAPP_HAS_D3D12_DRED_SETTINGS 0
-#endif
-#endif
-#ifndef CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1
-#if defined(__ID3D12DeviceRemovedExtendedDataSettings1_INTERFACE_DEFINED__)
-#define CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1 1
-#else
-#define CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1 0
-#endif
-#endif
-#ifndef CE_TESTAPP_HAS_D3D12_DRED_DATA
-#if defined(__ID3D12DeviceRemovedExtendedData_INTERFACE_DEFINED__)
-#define CE_TESTAPP_HAS_D3D12_DRED_DATA 1
-#else
-#define CE_TESTAPP_HAS_D3D12_DRED_DATA 0
-#endif
-#endif
-#ifndef CE_TESTAPP_HAS_D3D12_DRED_DATA1
-#if defined(__ID3D12DeviceRemovedExtendedData1_INTERFACE_DEFINED__)
-#define CE_TESTAPP_HAS_D3D12_DRED_DATA1 1
-#else
-#define CE_TESTAPP_HAS_D3D12_DRED_DATA1 0
-#endif
-#endif
-#if !CE_TESTAPP_HAS_D3D12_DRED_SETTINGS
-#undef CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1
-#define CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1 0
-#endif
-#if !CE_TESTAPP_HAS_D3D12_DRED_DATA
-#undef CE_TESTAPP_HAS_D3D12_DRED_DATA1
-#define CE_TESTAPP_HAS_D3D12_DRED_DATA1 0
-#endif
+#include "dx12_fg_switch_test_internal.h"
 
 // Force-on breadcrumbs + page-fault BEFORE any device is created so a device-removed/hung (TDR)
 // dumps the last GPU op per command queue. Opt-in (--dred) because auto-breadcrumbs add per-op
 // overhead. Used to pin down which command list hangs the GPU in suspended DLSS FG.
-static void EnableDredIfRequested() {
-    if (!g_EnableDred) {
+void EnableDredIfRequested() {
+    if (!dx12_fg_switch_test_g_EnableDred) {
         return;
     }
 #if CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1
@@ -73,7 +31,7 @@ static void EnableDredIfRequested() {
 #endif
 }
 
-static const char* DredOpName(UINT op) {
+const char* DredOpName(UINT op) {
     // DRED operation values are stable ABI constants. Numeric cases avoid requiring newer enum
     // members from the compile-time Windows SDK while retaining useful breadcrumb names.
     switch (op) {
@@ -98,14 +56,14 @@ static const char* DredOpName(UINT op) {
     }
 }
 
-static bool IsDeviceRemovedHr(HRESULT hr) {
+bool IsDeviceRemovedHr(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
 
 // Dumps once per process: callable from every device-removed detection site (Present hr, stalled
 // fence waits) without duplicating the breadcrumb walk in the log.
-static void DumpDredOnDeviceRemoved(const char* reason) {
+void DumpDredOnDeviceRemoved(const char* reason) {
     if (!g_Device) {
         return;
     }

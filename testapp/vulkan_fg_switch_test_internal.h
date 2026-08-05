@@ -1,11 +1,333 @@
-// Included by vulkan_fg_switch_test.cpp; Vulkan images, descriptors, render passes, and pipelines.
+#pragma once
+
+namespace testapp::vkfg {
+namespace {
+struct LayoutAccess;
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+struct CpuTimingAccumulator;
+}
+}
+
+#if defined(__clang__)
+// Vulkan's canonical {sType} initialization intentionally zero-initializes every remaining field.
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+// testapp_common.h owns the printf-style logger and is shared with existing test applications.
+#pragma clang diagnostic ignored "-Wmissing-format-attribute"
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+
+#include "vulkan_fg_switch_common.h"
+
+#include <algorithm>
+
+#include <cstdio>
+
+#include <cstdlib>
+
+#include <cstring>
+
+using testapp::vkfg::g_App;
 
 #include "vulkan_fg_shaders.h"
 
 namespace testapp::vkfg {
-namespace {
+const char* VkResultName(VkResult result);
+}
 
-uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) {
+namespace testapp::vkfg {
+const char* SlResultName(sl::Result result);
+}
+
+namespace testapp::vkfg {
+const char* FfxResultName(ffxReturnCode_t result);
+}
+
+namespace testapp::vkfg {
+const char* ModeName(FgMode mode);
+}
+
+namespace testapp::vkfg {
+const char* TransitionStageName(TransitionStage stage);
+}
+
+namespace testapp::vkfg {
+void LogTransition(const char* event, bool flush);
+}
+
+namespace testapp::vkfg {
+void LogDeviceFault(const char* reason);
+}
+
+namespace testapp::vkfg {
+bool InitializeStreamlineBeforeVulkan();
+}
+
+namespace testapp::vkfg {
+bool ConfigureStreamlineAfterDevice();
+}
+
+namespace testapp::vkfg {
+bool SetStreamlineFeaturesLoaded(bool loaded, const char* reason);
+}
+
+namespace testapp::vkfg {
+bool ConfigureDlssSuperResolution(bool enabled);
+}
+
+namespace testapp::vkfg {
+bool PrepareStreamlineMode();
+}
+
+namespace testapp::vkfg {
+bool RetireStreamlinePresentation(SwapchainOwner nextOwner, const char* reason);
+}
+
+namespace testapp::vkfg {
+bool SetDlssFrameGeneration(bool enabled, const char* reason);
+}
+
+namespace testapp::vkfg {
+sl::FrameToken* BeginStreamlineFrame();
+}
+
+namespace testapp::vkfg {
+void SetStreamlineMarker(sl::FrameToken* token, sl::PCLMarker marker, const char* name);
+}
+
+namespace testapp::vkfg {
+bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResources& resources, sl::FrameToken* frameToken, const JitterOffset& jitter, uint32_t backbufferIndex);
+}
+
+namespace testapp::vkfg {
+void PollStreamlineState();
+}
+
+namespace testapp::vkfg {
+void ShutdownStreamline();
+}
+
+namespace testapp::vkfg {
+bool InitializeVulkanDevice();
+}
+
+namespace testapp::vkfg {
+VkQueue ApplicationPresentQueue();
+}
+
+namespace testapp::vkfg {
+const VulkanQueueRef& ApplicationPresentQueueRef();
+}
+
+namespace testapp::vkfg {
+void QueryMemoryBudgetStress();
+}
+
+namespace testapp::vkfg {
+void ReleaseVulkanSurfaceBeforeStreamlineShutdown();
+}
+
+namespace testapp::vkfg {
+void ShutdownVulkanDevice();
+}
+
+namespace testapp::vkfg {
+void StartFidelityFxRuntimePreload(const char* reason);
+}
+
+namespace testapp::vkfg {
+void JoinFidelityFxRuntimePreload(const char* reason);
+}
+
+namespace testapp::vkfg {
+bool LoadFidelityFxRuntime(const char* reason);
+}
+
+namespace testapp::vkfg {
+bool PrepareFidelityFxMode();
+}
+
+namespace testapp::vkfg {
+bool RecreateFidelityFxEffectsForExtent();
+}
+
+namespace testapp::vkfg {
+void ReleaseFidelityFxEffectsForExtent(const char* reason);
+}
+
+namespace testapp::vkfg {
+bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain, const VkSwapchainCreateInfoKHR& createInfo, VkSwapchainKHR* replacement, bool* oldSwapchainConsumed);
+}
+
+namespace testapp::vkfg {
+bool SetFsrFrameGeneration(bool enabled, const char* reason, bool forceLog);
+}
+
+namespace testapp::vkfg {
+bool WaitForFsrPresents(const char* reason);
+}
+
+namespace testapp::vkfg {
+void RegisterFsrUiResource(FrameResources& resources);
+}
+
+namespace testapp::vkfg {
+bool RecordFsrUpscaleAndPrepare(VkCommandBuffer commandBuffer, FrameResources& resources, const JitterOffset& jitter);
+}
+
+namespace testapp::vkfg {
+void DestroyFidelityFxContexts(bool unloadRuntime, const char* reason, bool presentationAlreadyRetired);
+}
+
+namespace testapp::vkfg {
+bool DrainSwapchainBoundWork(const char* reason);
+}
+
+namespace testapp::vkfg {
+void DestroySwapchainState(bool destroyHandle);
+}
+
+namespace testapp::vkfg {
+bool CreateOrReplaceSwapchain(SwapchainOwner owner, const char* reason);
+}
+
+namespace testapp::vkfg {
+bool RecreateCurrentSwapchain(const char* reason);
+}
+
+namespace testapp::vkfg {
+VkResult AcquireSwapchainImage(FrameContext& frame, uint32_t* imageIndex);
+}
+
+namespace testapp::vkfg {
+VkResult PresentSwapchainImage(uint32_t imageIndex);
+}
+
+namespace testapp::vkfg {
+bool InitializeRenderer();
+}
+
+namespace testapp::vkfg {
+void ShutdownRenderer();
+}
+
+namespace testapp::vkfg {
+bool RecreateRendererForExtent();
+}
+
+namespace testapp::vkfg {
+bool SetModeFeatureState(FgMode mode, bool enabled, const char* reason);
+}
+
+namespace testapp::vkfg {
+bool RequestMode(FgMode mode, const char* reason);
+}
+
+namespace testapp::vkfg {
+void DriveTransitionBeforeFrame();
+}
+
+namespace testapp::vkfg {
+void OnFramePresentedSuccessfully();
+}
+
+namespace testapp::vkfg {
+bool RenderFrame();
+}
+
+int main(int argc, char* argv[]);
+
+namespace testapp::vkfg {
+namespace {
+template <typename T>
+T* SlExport(const char* name) {
+    return reinterpret_cast<T*>(GetProcAddress(g_App.sl.module, name));
+}
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+template <typename T>
+T* SlFeatureFunction(sl::Feature feature, const char* name) {
+    if (!g_App.sl.getFeatureFunction) {
+        return nullptr;
+    }
+    void* function = nullptr;
+    const sl::Result result = g_App.sl.getFeatureFunction(feature, name, function);
+    testapp::Log("[FG-DIAG] slGetFeatureFunction feature=%u name=%s result=%d(%s) function=%p\n",
+                 static_cast<unsigned>(feature), name, static_cast<int>(result), SlResultName(result), function);
+    return result == sl::Result::eOk ? reinterpret_cast<T*>(function) : nullptr;
+}
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+template <typename T>
+bool ContainsName(const std::vector<T>& values, const char* name) {
+    for (const T& value : values) {
+        if (std::strcmp(value.extensionName, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+template <typename T>
+bool RequiredFeatureTailSupported(const T& requested, const T& supported,
+                                  const VkBool32* requestedFirst, const VkBool32* supportedFirst) {
+    const auto* end = reinterpret_cast<const uint8_t*>(&requested) + sizeof(T);
+    const size_t count = static_cast<size_t>(end - reinterpret_cast<const uint8_t*>(requestedFirst)) /
+                         sizeof(VkBool32);
+    for (size_t index = 0; index < count; ++index) {
+        if (requestedFirst[index] && !supportedFirst[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+inline bool CreateSwapchainFramebuffers(SwapchainState* state) {
+    if (!state || g_App.renderer.swapchainRenderPass == VK_NULL_HANDLE) {
+        return true;
+    }
+    state->framebuffers.resize(state->views.size(), VK_NULL_HANDLE);
+    for (size_t index = 0; index < state->views.size(); ++index) {
+        VkFramebufferCreateInfo framebufferInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        framebufferInfo.renderPass = g_App.renderer.swapchainRenderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = &state->views[index];
+        framebufferInfo.width = state->extent.width;
+        framebufferInfo.height = state->extent.height;
+        framebufferInfo.layers = 1;
+        const VkResult result =
+            vkCreateFramebuffer(g_App.vk.device, &framebufferInfo, nullptr, &state->framebuffers[index]);
+        if (result != VK_SUCCESS) {
+            testapp::Log("[FG-DIAG] vkCreateFramebuffer(swapchain index=%zu) result=%s(%d)\n", index,
+                         VkResultName(result), static_cast<int>(result));
+            return false;
+        }
+    }
+    return true;
+}
+}
+}
+
+namespace testapp::vkfg {
+namespace {
+inline uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) {
     for (uint32_t index = 0; index < g_App.vk.memoryProperties.memoryTypeCount; ++index) {
         if ((typeBits & (1u << index)) != 0 &&
             (g_App.vk.memoryProperties.memoryTypes[index].propertyFlags & required) == required) {
@@ -14,8 +336,12 @@ uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) {
     }
     return UINT32_MAX;
 }
+}
+}
 
-void SetObjectName(VkObjectType type, uint64_t handle, const char* name) {
+namespace testapp::vkfg {
+namespace {
+inline void SetObjectName(VkObjectType type, uint64_t handle, const char* name) {
     if (!g_App.config.apiDebug || !name || !handle) {
         return;
     }
@@ -30,8 +356,12 @@ void SetObjectName(VkObjectType type, uint64_t handle, const char* name) {
     info.pObjectName = name;
     setName(g_App.vk.device, &info);
 }
+}
+}
 
-bool CreateImageResource(ImageResource* resource, uint32_t width, uint32_t height, VkFormat format,
+namespace testapp::vkfg {
+namespace {
+inline bool CreateImageResource(ImageResource* resource, uint32_t width, uint32_t height, VkFormat format,
                          VkImageUsageFlags usage, VkImageAspectFlags aspect, const char* name) {
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     resource->createInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -89,8 +419,12 @@ bool CreateImageResource(ImageResource* resource, uint32_t width, uint32_t heigh
     SetObjectName(VK_OBJECT_TYPE_IMAGE_VIEW, NativeHandleToUint64(resource->view), name);
     return true;
 }
+}
+}
 
-void DestroyImageResource(ImageResource* resource) {
+namespace testapp::vkfg {
+namespace {
+inline void DestroyImageResource(ImageResource* resource) {
     if (resource->view != VK_NULL_HANDLE) {
         vkDestroyImageView(g_App.vk.device, resource->view, nullptr);
     }
@@ -102,8 +436,12 @@ void DestroyImageResource(ImageResource* resource) {
     }
     *resource = {};
 }
+}
+}
 
-bool CheckFormat(VkFormat format, VkFormatFeatureFlags required, const char* role) {
+namespace testapp::vkfg {
+namespace {
+inline bool CheckFormat(VkFormat format, VkFormatFeatureFlags required, const char* role) {
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(g_App.vk.physicalDevice, format, &properties);
     const bool supported = (properties.optimalTilingFeatures & required) == required;
@@ -112,8 +450,12 @@ bool CheckFormat(VkFormat format, VkFormatFeatureFlags required, const char* rol
                  static_cast<unsigned>(properties.optimalTilingFeatures), supported ? 1 : 0);
     return supported;
 }
+}
+}
 
-VkRenderPass CreateSingleColorRenderPass(VkFormat format) {
+namespace testapp::vkfg {
+namespace {
+inline VkRenderPass CreateSingleColorRenderPass(VkFormat format) {
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     VkAttachmentDescription attachment{};
     attachment.format = format;
@@ -157,8 +499,12 @@ VkRenderPass CreateSingleColorRenderPass(VkFormat format) {
     }
     return renderPass;
 }
+}
+}
 
-VkRenderPass CreateSceneRenderPass() {
+namespace testapp::vkfg {
+namespace {
+inline VkRenderPass CreateSceneRenderPass() {
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     std::array<VkAttachmentDescription, 5> attachments{};
     const VkFormat formats[] = {kSceneColorFormat, kMotionFormat, kMaskFormat, kMaskFormat, kDepthFormat};
@@ -217,8 +563,12 @@ VkRenderPass CreateSceneRenderPass() {
     }
     return renderPass;
 }
+}
+}
 
-VkDescriptorSetLayout CreateSampledSetLayout(uint32_t bindingCount) {
+namespace testapp::vkfg {
+namespace {
+inline VkDescriptorSetLayout CreateSampledSetLayout(uint32_t bindingCount) {
     std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
     for (uint32_t binding = 0; binding < bindingCount; ++binding) {
         bindings[binding].binding = binding;
@@ -233,8 +583,12 @@ VkDescriptorSetLayout CreateSampledSetLayout(uint32_t bindingCount) {
     const VkResult result = vkCreateDescriptorSetLayout(g_App.vk.device, &createInfo, nullptr, &layout);
     return result == VK_SUCCESS ? layout : VK_NULL_HANDLE;
 }
+}
+}
 
-VkPipelineLayout CreatePipelineLayout(VkDescriptorSetLayout setLayout, uint32_t pushConstantSize,
+namespace testapp::vkfg {
+namespace {
+inline VkPipelineLayout CreatePipelineLayout(VkDescriptorSetLayout setLayout, uint32_t pushConstantSize,
                                       VkShaderStageFlags pushStages) {
     VkPushConstantRange range{};
     range.stageFlags = pushStages;
@@ -248,8 +602,12 @@ VkPipelineLayout CreatePipelineLayout(VkDescriptorSetLayout setLayout, uint32_t 
     return vkCreatePipelineLayout(g_App.vk.device, &createInfo, nullptr, &layout) == VK_SUCCESS ? layout
                                                                                                 : VK_NULL_HANDLE;
 }
+}
+}
 
-VkShaderModule CreateShaderModule(const uint32_t* words, size_t byteSize) {
+namespace testapp::vkfg {
+namespace {
+inline VkShaderModule CreateShaderModule(const uint32_t* words, size_t byteSize) {
     VkShaderModuleCreateInfo createInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     createInfo.codeSize = byteSize;
     createInfo.pCode = words;
@@ -257,8 +615,12 @@ VkShaderModule CreateShaderModule(const uint32_t* words, size_t byteSize) {
     return vkCreateShaderModule(g_App.vk.device, &createInfo, nullptr, &module) == VK_SUCCESS ? module
                                                                                               : VK_NULL_HANDLE;
 }
+}
+}
 
-VkPipeline CreateGraphicsPipeline(VkRenderPass renderPass, VkPipelineLayout layout, const uint32_t* fragmentCode,
+namespace testapp::vkfg {
+namespace {
+inline VkPipeline CreateGraphicsPipeline(VkRenderPass renderPass, VkPipelineLayout layout, const uint32_t* fragmentCode,
                                   size_t fragmentSize, uint32_t colorAttachmentCount, bool depthEnabled) {
     VkShaderModule vertexModule =
         CreateShaderModule(shaders::kFullscreenVertexSpirv, sizeof(shaders::kFullscreenVertexSpirv));
@@ -333,8 +695,12 @@ VkPipeline CreateGraphicsPipeline(VkRenderPass renderPass, VkPipelineLayout layo
     }
     return pipeline;
 }
+}
+}
 
-bool CreateFrameResources(FrameResources* resources, uint32_t frameIndex) {
+namespace testapp::vkfg {
+namespace {
+inline bool CreateFrameResources(FrameResources* resources, uint32_t frameIndex) {
     const VkImageUsageFlags sampledColor = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -387,8 +753,12 @@ bool CreateFrameResources(FrameResources* resources, uint32_t frameIndex) {
     }
     return created;
 }
+}
+}
 
-void DestroyFrameResources(FrameResources* resources) {
+namespace testapp::vkfg {
+namespace {
+inline void DestroyFrameResources(FrameResources* resources) {
     if (resources->sceneFramebuffer) vkDestroyFramebuffer(g_App.vk.device, resources->sceneFramebuffer, nullptr);
     if (resources->hudlessFramebuffer)
         vkDestroyFramebuffer(g_App.vk.device, resources->hudlessFramebuffer, nullptr);
@@ -407,8 +777,12 @@ void DestroyFrameResources(FrameResources* resources) {
     DestroyImageResource(&resources->presentationColor);
     *resources = {};
 }
+}
+}
 
-VkFramebuffer CreateFramebuffer(VkRenderPass renderPass, const std::vector<VkImageView>& views, uint32_t width,
+namespace testapp::vkfg {
+namespace {
+inline VkFramebuffer CreateFramebuffer(VkRenderPass renderPass, const std::vector<VkImageView>& views, uint32_t width,
                                 uint32_t height) {
     VkFramebufferCreateInfo createInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     createInfo.renderPass = renderPass;
@@ -421,8 +795,12 @@ VkFramebuffer CreateFramebuffer(VkRenderPass renderPass, const std::vector<VkIma
     return vkCreateFramebuffer(g_App.vk.device, &createInfo, nullptr, &framebuffer) == VK_SUCCESS ? framebuffer
                                                                                                  : VK_NULL_HANDLE;
 }
+}
+}
 
-bool CreateFramebuffers(FrameResources* resources) {
+namespace testapp::vkfg {
+namespace {
+inline bool CreateFramebuffers(FrameResources* resources) {
     resources->sceneFramebuffer = CreateFramebuffer(
         g_App.renderer.sceneRenderPass,
         {resources->sceneColor.view, resources->motionVectors.view, resources->reactiveMask.view,
@@ -439,8 +817,12 @@ bool CreateFramebuffers(FrameResources* resources) {
     return resources->sceneFramebuffer && resources->hudlessFramebuffer && resources->uiFramebuffer &&
            resources->presentationFramebuffer;
 }
+}
+}
 
-bool AllocateAndWriteDescriptors() {
+namespace testapp::vkfg {
+namespace {
+inline bool AllocateAndWriteDescriptors() {
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight * 6};
     VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = kFramesInFlight * 3;
@@ -511,8 +893,12 @@ bool AllocateAndWriteDescriptors() {
     }
     return true;
 }
+}
+}
 
-bool CreateFrameContexts() {
+namespace testapp::vkfg {
+namespace {
+inline bool CreateFrameContexts() {
     for (uint32_t index = 0; index < kFramesInFlight; ++index) {
         FrameContext& frame = g_App.frames[index];
         VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -541,8 +927,12 @@ bool CreateFrameContexts() {
     }
     return true;
 }
+}
+}
 
-void DestroyFrameContexts() {
+namespace testapp::vkfg {
+namespace {
+inline void DestroyFrameContexts() {
     for (FrameContext& frame : g_App.frames) {
         if (frame.fence) vkDestroyFence(g_App.vk.device, frame.fence, nullptr);
         if (frame.imageAvailable) vkDestroySemaphore(g_App.vk.device, frame.imageAvailable, nullptr);
@@ -550,159 +940,34 @@ void DestroyFrameContexts() {
         frame = {};
     }
 }
-
-}  // namespace
-
-bool InitializeRenderer() {
-    const testapp::fg::RenderSize renderSize = testapp::fg::ComputeRenderSize(
-        g_App.swapchain.extent.width, g_App.swapchain.extent.height, g_App.config.upscaleQuality,
-        g_App.config.upscaleScalePercent);
-    g_App.renderer.renderWidth = g_App.config.upscalingEnabled ? renderSize.width : g_App.swapchain.extent.width;
-    g_App.renderer.renderHeight =
-        g_App.config.upscalingEnabled ? renderSize.height : g_App.swapchain.extent.height;
-    if (!CheckFormat(kSceneColorFormat,
-                     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT,
-                     "scene/hudless RGBA16F") ||
-        !CheckFormat(kMotionFormat, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
-                     "motion RG16F") ||
-        !CheckFormat(kDepthFormat,
-                     VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
-                     "depth D32") ||
-        !CheckFormat(kMaskFormat, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
-                     "mask R8") ||
-        !CheckFormat(g_App.swapchain.format,
-                     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
-                     "8-bit dithered presentation/FFX HUDless")) {
-        return false;
-    }
-    g_App.renderer.sceneRenderPass = CreateSceneRenderPass();
-    g_App.renderer.hdrRenderPass = CreateSingleColorRenderPass(kSceneColorFormat);
-    g_App.renderer.uiRenderPass = CreateSingleColorRenderPass(kUiFormat);
-    g_App.renderer.swapchainRenderPass = CreateSingleColorRenderPass(g_App.swapchain.format);
-    if (!g_App.renderer.sceneRenderPass || !g_App.renderer.hdrRenderPass ||
-        !g_App.renderer.uiRenderPass || !g_App.renderer.swapchainRenderPass) {
-        return false;
-    }
-    g_App.renderer.taaSetLayout = CreateSampledSetLayout(3);
-    g_App.renderer.composeSetLayout = CreateSampledSetLayout(2);
-    g_App.renderer.presentSetLayout = CreateSampledSetLayout(1);
-    g_App.renderer.scenePipelineLayout = CreatePipelineLayout(VK_NULL_HANDLE, 32, VK_SHADER_STAGE_FRAGMENT_BIT);
-    g_App.renderer.taaPipelineLayout =
-        CreatePipelineLayout(g_App.renderer.taaSetLayout, 16, VK_SHADER_STAGE_FRAGMENT_BIT);
-    g_App.renderer.uiPipelineLayout = CreatePipelineLayout(VK_NULL_HANDLE, 40, VK_SHADER_STAGE_FRAGMENT_BIT);
-    g_App.renderer.composePipelineLayout =
-        CreatePipelineLayout(g_App.renderer.composeSetLayout, 0, VK_SHADER_STAGE_FRAGMENT_BIT);
-    g_App.renderer.presentPipelineLayout =
-        CreatePipelineLayout(g_App.renderer.presentSetLayout, 4, VK_SHADER_STAGE_FRAGMENT_BIT);
-    g_App.renderer.scenePipeline =
-        CreateGraphicsPipeline(g_App.renderer.sceneRenderPass, g_App.renderer.scenePipelineLayout,
-                               shaders::kSceneFragmentSpirv, sizeof(shaders::kSceneFragmentSpirv), 4, true);
-    g_App.renderer.taaPipeline =
-        CreateGraphicsPipeline(g_App.renderer.hdrRenderPass, g_App.renderer.taaPipelineLayout,
-                               shaders::kTaaFragmentSpirv, sizeof(shaders::kTaaFragmentSpirv), 1, false);
-    g_App.renderer.uiPipeline =
-        CreateGraphicsPipeline(g_App.renderer.uiRenderPass, g_App.renderer.uiPipelineLayout,
-                               shaders::kUiFragmentSpirv, sizeof(shaders::kUiFragmentSpirv), 1, false);
-    g_App.renderer.composePipeline =
-        CreateGraphicsPipeline(g_App.renderer.swapchainRenderPass, g_App.renderer.composePipelineLayout,
-                               shaders::kComposeFragmentSpirv, sizeof(shaders::kComposeFragmentSpirv), 1, false);
-    g_App.renderer.presentPipeline =
-        CreateGraphicsPipeline(g_App.renderer.swapchainRenderPass, g_App.renderer.presentPipelineLayout,
-                               shaders::kPresentFragmentSpirv, sizeof(shaders::kPresentFragmentSpirv), 1, false);
-    if (!g_App.renderer.scenePipeline || !g_App.renderer.taaPipeline || !g_App.renderer.uiPipeline ||
-        !g_App.renderer.composePipeline || !g_App.renderer.presentPipeline) {
-        return false;
-    }
-    VkSamplerCreateInfo samplerInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.maxLod = 0.0f;
-    if (vkCreateSampler(g_App.vk.device, &samplerInfo, nullptr, &g_App.renderer.linearSampler) != VK_SUCCESS) {
-        return false;
-    }
-    for (uint32_t frame = 0; frame < kFramesInFlight; ++frame) {
-        if (!CreateFrameResources(&g_App.renderer.resources[frame], frame) ||
-            !CreateFramebuffers(&g_App.renderer.resources[frame])) {
-            return false;
-        }
-    }
-    if (!AllocateAndWriteDescriptors() || !CreateFrameContexts()) {
-        return false;
-    }
-    if (!CreateSwapchainFramebuffers(&g_App.swapchain)) {
-        return false;
-    }
-    g_App.renderer.initialized = true;
-    testapp::Log(
-        "[FG-DIAG] Renderer initialized framesInFlight=%u display=%ux%u render=%ux%u resources="
-        "RGBA16F/RG16F/D32/R8/RGBA8 presentationFormat=%d\n",
-        kFramesInFlight, g_App.swapchain.extent.width, g_App.swapchain.extent.height,
-        g_App.renderer.renderWidth, g_App.renderer.renderHeight, static_cast<int>(g_App.swapchain.format));
-    const SceneCameraPolicy camera = BuildSceneCameraPolicy(
-        static_cast<float>(g_App.renderer.renderWidth) /
-        static_cast<float>(std::max(g_App.renderer.renderHeight, 1u)));
-    testapp::Log(
-        "[FG-DIAG] Scene camera eye=(%.3f,%.3f,%.3f) right=(%.3f,%.3f,%.3f) "
-        "up=(%.3f,%.3f,%.3f) forward=(%.3f,%.3f,%.3f) near=%.3f far=%.1f fovY=%.6f "
-        "motion=UV(prev-current) SLscale=(2,-2) FFXscale=%ux%u\n",
-        camera.position[0], camera.position[1], camera.position[2], camera.right[0],
-        camera.right[1], camera.right[2], camera.up[0], camera.up[1], camera.up[2],
-        camera.forward[0], camera.forward[1], camera.forward[2], camera.nearPlane,
-        camera.farPlane, camera.verticalFov, g_App.renderer.renderWidth,
-        g_App.renderer.renderHeight);
-    return true;
+}
 }
 
-void ShutdownRenderer() {
-    if (g_App.vk.device == VK_NULL_HANDLE) {
-        return;
-    }
-    DestroyFrameContexts();
-    for (FrameResources& resources : g_App.renderer.resources) {
-        DestroyFrameResources(&resources);
-    }
-    if (g_App.renderer.descriptorPool)
-        vkDestroyDescriptorPool(g_App.vk.device, g_App.renderer.descriptorPool, nullptr);
-    if (g_App.renderer.linearSampler) vkDestroySampler(g_App.vk.device, g_App.renderer.linearSampler, nullptr);
-    const VkPipeline pipelines[] = {g_App.renderer.scenePipeline, g_App.renderer.taaPipeline,
-                                    g_App.renderer.uiPipeline, g_App.renderer.composePipeline,
-                                    g_App.renderer.presentPipeline};
-    for (VkPipeline pipeline : pipelines) {
-        if (pipeline) vkDestroyPipeline(g_App.vk.device, pipeline, nullptr);
-    }
-    const VkPipelineLayout pipelineLayouts[] = {
-        g_App.renderer.scenePipelineLayout, g_App.renderer.taaPipelineLayout,
-        g_App.renderer.uiPipelineLayout, g_App.renderer.composePipelineLayout,
-        g_App.renderer.presentPipelineLayout};
-    for (VkPipelineLayout layout : pipelineLayouts) {
-        if (layout) vkDestroyPipelineLayout(g_App.vk.device, layout, nullptr);
-    }
-    const VkDescriptorSetLayout descriptorLayouts[] = {
-        g_App.renderer.taaSetLayout, g_App.renderer.composeSetLayout, g_App.renderer.presentSetLayout};
-    for (VkDescriptorSetLayout layout : descriptorLayouts) {
-        if (layout) vkDestroyDescriptorSetLayout(g_App.vk.device, layout, nullptr);
-    }
-    const VkRenderPass renderPasses[] = {g_App.renderer.sceneRenderPass, g_App.renderer.hdrRenderPass,
-                                         g_App.renderer.uiRenderPass, g_App.renderer.swapchainRenderPass};
-    for (VkRenderPass renderPass : renderPasses) {
-        if (renderPass) vkDestroyRenderPass(g_App.vk.device, renderPass, nullptr);
-    }
-    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-    g_App.renderer = {};
+namespace testapp::vkfg {
+namespace {
+struct LayoutAccess {
+    VkPipelineStageFlags stage;
+    VkAccessFlags access;
+};
+}
 }
 
-bool RecreateRendererForExtent() {
-    for (VkFramebuffer framebuffer : g_App.swapchain.framebuffers) {
-        if (framebuffer) vkDestroyFramebuffer(g_App.vk.device, framebuffer, nullptr);
-    }
-    g_App.swapchain.framebuffers.clear();
-    ShutdownRenderer();
-    return InitializeRenderer();
+namespace testapp::vkfg {
+namespace {
+struct CpuTimingAccumulator {
+    double reflexStartMs = 0.0;
+    double frameFenceMs = 0.0;
+    double acquireMs = 0.0;
+    double imageFenceMs = 0.0;
+    double recordSubmitMs = 0.0;
+    double presentMs = 0.0;
+    double streamlinePollMs = 0.0;
+    uint64_t samples = 0;
+};
+}
 }
 
-}  // namespace testapp::vkfg
+namespace testapp::vkfg {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
+extern AppState g_App;
+}

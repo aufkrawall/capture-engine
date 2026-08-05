@@ -1,6 +1,6 @@
-// Included by dx12_fg_switch_test.cpp; shares that file's static DX12/FG state.
+#include "dx12_fg_switch_test_internal.h"
 
-static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
+void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
     if (!g_Fence || g_Fence->GetCompletedValue() >= fenceValue) {
         return;
     }
@@ -26,8 +26,8 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
                          reason ? reason : "unknown", static_cast<unsigned long long>(elapsedMs),
                          static_cast<unsigned long long>(fenceValue),
                          static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex,
-                         ModeName(g_CurrentMode), g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0,
-                         static_cast<unsigned long long>(g_FrameIdCounter),
+                         ModeName(dx12_fg_switch_test_g_CurrentMode), dx12_fg_switch_test_g_FsrSuspended ? 1 : 0, dx12_fg_switch_test_g_DlssSuspended ? 1 : 0,
+                         static_cast<unsigned long long>(dx12_fg_switch_test_g_FrameIdCounter),
                          static_cast<unsigned long>(removedReason));
             testapp::LogFlush();
             if (removedReason != S_OK) {
@@ -37,25 +37,25 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
                 testapp::Log("[FG-DIAG] Abandoning fence wait (%s) after device removal; stopping main loop\n",
                              reason ? reason : "unknown");
                 testapp::LogFlush();
-                g_Running = false;
+                dx12_fg_switch_test_g_Running = false;
                 return;
             }
         }
     }
 }
 
-static void WaitForSwapChainFrameLatency() {
+void WaitForSwapChainFrameLatency() {
     if (g_FrameLatencyWaitHandle) {
         static bool s_loggedFsrNonBlockingWait = false;
         static bool s_loggedNativeWaitTimeout = false;
-        if (g_SwapChainOwner == SwapChainOwner::FSR) {
+        if (dx12_fg_switch_test_g_SwapChainOwner == SwapChainOwner::FSR) {
             const DWORD probe = WaitForSingleObject(g_FrameLatencyWaitHandle, 0);
             if (!s_loggedFsrNonBlockingWait) {
                 s_loggedFsrNonBlockingWait = true;
                 testapp::Log("[FG-DIAG] FSR proxy swapchain uses non-blocking frame-latency probe "
                              "(waitable=%p firstProbe=%lu mode=%s enabled=%d suspended=%d)\n",
-                             g_FrameLatencyWaitHandle, static_cast<unsigned long>(probe), ModeName(g_CurrentMode),
-                             g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0);
+                             g_FrameLatencyWaitHandle, static_cast<unsigned long>(probe), ModeName(dx12_fg_switch_test_g_CurrentMode),
+                             dx12_fg_switch_test_g_FsrEnabled ? 1 : 0, dx12_fg_switch_test_g_FsrSuspended ? 1 : 0);
                 testapp::LogFlush();
             }
             return;
@@ -66,14 +66,14 @@ static void WaitForSwapChainFrameLatency() {
             s_loggedNativeWaitTimeout = true;
             testapp::Log("[FG-DIAG] WARN native/proxy frame-latency wait timed out once; continuing to avoid a "
                          "self-induced startup stall (waitable=%p mode=%s enabled=%d suspended=%d owner=%s)\n",
-                         g_FrameLatencyWaitHandle, ModeName(g_CurrentMode), g_FsrEnabled ? 1 : 0,
-                         g_FsrSuspended ? 1 : 0, SwapChainOwnerName(g_SwapChainOwner));
+                         g_FrameLatencyWaitHandle, ModeName(dx12_fg_switch_test_g_CurrentMode), dx12_fg_switch_test_g_FsrEnabled ? 1 : 0,
+                         dx12_fg_switch_test_g_FsrSuspended ? 1 : 0, SwapChainOwnerName(dx12_fg_switch_test_g_SwapChainOwner));
             testapp::LogFlush();
         }
     }
 }
 
-static void WaitForGpu() {
+void WaitForGpu() {
     std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
     if (!g_CommandQueue || !g_Fence) {
         return;
@@ -84,7 +84,7 @@ static void WaitForGpu() {
     g_FenceValues[g_FrameIndex]++;
 }
 
-static void MoveToNextFrame() {
+void MoveToNextFrame() {
     std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
     const UINT64 currentFenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), currentFenceValue);
@@ -103,7 +103,7 @@ static void MoveToNextFrame() {
     g_FenceValues[g_FrameIndex] = currentFenceValue + 1;
 }
 
-static std::wstring ExeDirectoryW() {
+std::wstring ExeDirectoryW() {
     wchar_t path[MAX_PATH] = {};
     GetModuleFileNameW(NULL, path, MAX_PATH);
     std::wstring dir = path;
@@ -112,4 +112,16 @@ static std::wstring ExeDirectoryW() {
         dir.resize(pos);
     }
     return dir;
+}
+
+void PreloadAmdCompanionDlls() {
+    const wchar_t* companionDlls[] = {L"amd_ags_x64.dll", L"amd_acs_x64.dll"};
+    for (const wchar_t* dllName : companionDlls) {
+        HMODULE companion = LoadLibraryW(dllName);
+        if (companion) {
+            testapp::Log("  Preloaded AMD companion: %S\n", dllName);
+        } else {
+            testapp::Log("  Failed to preload AMD companion %S (err=%lu)\n", dllName, GetLastError());
+        }
+    }
 }

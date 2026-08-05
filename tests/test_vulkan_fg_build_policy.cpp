@@ -57,8 +57,8 @@ TEST(VulkanFgBuildPolicyTest, EnforcesX64PdbAndOptInRuntimeMatrix) {
 
 TEST(VulkanFgBuildPolicyTest, RuntimeKeepsOwnerRoutingAndDiagnosticsExplicit) {
     const std::string common = ReadProjectFile("testapp/vulkan_fg_switch_common.h");
-    const std::string wsi = ReadProjectFile("testapp/vulkan_fg_switch_wsi.inl");
-    const std::string diagnostics = ReadProjectFile("testapp/vulkan_fg_switch_diagnostics.inl");
+    const std::string wsi = ReadProjectFile("testapp/vulkan_fg_switch_wsi.cpp");
+    const std::string diagnostics = ReadProjectFile("testapp/vulkan_fg_switch_diagnostics.cpp");
     const std::string app = ReadProjectFile("testapp/vulkan_fg_switch_test.cpp");
     ExpectContains(common, "struct VulkanWsiDispatch");
     ExpectContains(common, "SwapchainOwner owner");
@@ -73,7 +73,7 @@ TEST(VulkanFgBuildPolicyTest, RuntimeKeepsOwnerRoutingAndDiagnosticsExplicit) {
     ExpectContains(wsi, "bridgeInfo.oldSwapchain");
     ExpectContains(wsi, "FidelityFX same-owner proxy retired before recreation");
     ExpectContains(wsi, "FidelityFX proxy retired after drained passthrough for owner");
-    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.inl");
+    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.cpp");
     ExpectContains(fidelityfx, "presentationAlreadyRetired");
     ExpectContains(fidelityfx, "skipping configure/wait");
     ExpectContains(wsi, "replacement.wsi = DispatchForOwner(owner)");
@@ -84,8 +84,8 @@ TEST(VulkanFgBuildPolicyTest, RuntimeKeepsOwnerRoutingAndDiagnosticsExplicit) {
 }
 
 TEST(VulkanFgBuildPolicyTest, ProvisionsFidelityFxPromotedMemoryRequirementsEntryPoint) {
-    const std::string device = ReadProjectFile("testapp/vulkan_fg_switch_device.inl");
-    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.inl");
+    const std::string device = ReadProjectFile("testapp/vulkan_fg_switch_device.cpp");
+    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.cpp");
     ExpectContains(device, "VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME");
     ExpectContains(device, "VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME");
     ExpectContains(fidelityfx, "FidelityFxGetDeviceProcAddr");
@@ -96,8 +96,10 @@ TEST(VulkanFgBuildPolicyTest, ProvisionsFidelityFxPromotedMemoryRequirementsEntr
 
 TEST(VulkanFgBuildPolicyTest, FidelityFxHudlessUsesMatchingEightBitPresentationTarget) {
     const std::string common = ReadProjectFile("testapp/vulkan_fg_switch_common.h");
-    const std::string resources = ReadProjectFile("testapp/vulkan_fg_switch_resources.inl");
-    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.inl");
+    // The resource helpers hoisted into the shared internal header; read the
+    // logical translation unit so the header content is included.
+    const std::string resources = ReadProjectFile("testapp/vulkan_fg_switch_test.cpp");
+    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.cpp");
     ExpectContains(common, "ImageResource presentationColor");
     ExpectContains(resources, "g_App.swapchain.format, sampledColor");
     ExpectContains(fidelityfx, "ffxApiGetSurfaceFormatVK(g_App.swapchain.format)");
@@ -126,7 +128,7 @@ TEST(VulkanFgBuildPolicyTest, VisualShadersMirrorDx12SceneAndPixelHud) {
 }
 
 TEST(VulkanFgBuildPolicyTest, StreamlineTagsBackbufferUiAndExplicitExtents) {
-    const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.inl");
+    const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.cpp");
     ExpectContains(streamline, "sl::kBufferTypeUIColorAndAlpha");
     ExpectContains(streamline, "sl::kBufferTypeBackbuffer");
     ExpectContains(streamline, "&renderExtent");
@@ -135,8 +137,8 @@ TEST(VulkanFgBuildPolicyTest, StreamlineTagsBackbufferUiAndExplicitExtents) {
 }
 
 TEST(VulkanFgBuildPolicyTest, ReflexKeepsAutomaticDriverPacingUnmodified) {
-    const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.inl");
-    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.inl");
+    const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.cpp");
+    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.cpp");
     ExpectContains(streamline, "slReflexGetState");
     ExpectContains(streamline, "bIsVsyncSupportAvailable");
     ExpectContains(streamline, "frameLimitUs=0");
@@ -152,10 +154,10 @@ TEST(VulkanFgBuildPolicyTest, ReflexKeepsAutomaticDriverPacingUnmodified) {
 
 TEST(VulkanFgBuildPolicyTest, AsyncPresentUsesValidQueueAndPerImageSemaphoreOwnership) {
     const std::string app = ReadProjectFile("testapp/vulkan_fg_switch_test.cpp");
-    const std::string device = ReadProjectFile("testapp/vulkan_fg_switch_device.inl");
-    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.inl");
-    const std::string wsi = ReadProjectFile("testapp/vulkan_fg_switch_wsi.inl");
-    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.inl");
+    const std::string device = ReadProjectFile("testapp/vulkan_fg_switch_device.cpp");
+    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.cpp");
+    const std::string wsi = ReadProjectFile("testapp/vulkan_fg_switch_wsi.cpp");
+    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.cpp");
     ExpectContains(app, "--vk-async-present");
     ExpectContains(app, "--no-vk-async-present");
     ExpectContains(app, "--vk-no-vsync");
