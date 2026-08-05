@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+"""Reassemble .inl source fragments and split logical sources into .cpp units.
+
+Subcommands:
+  reassemble <facade.cpp> [--out <path>]
+      Inline every '#include "*.inl"' (recursively) into the facade text.
+  map <facade.cpp>
+      Print a structural map of the reassembled source: top-level chunks
+      (functions, classes, variables, preprocessor regions, ...) with line
+      ranges, names and namespace paths.
+  split <facade.cpp> <grouping.json> [--dry-run]
+      Apply a grouping of chunk indexes to target .cpp units, generate the
+      module internal header, and delete the fragment .inl files.
+
+The tool is intentionally conservative: it only moves whole balanced
+constructs between files and never rewrites a chunk's text. The compiler is
+the authority; run a build after every split.
+
+Grouping schema (see split_source()):
+{
+  "module": "config",
+  "header": "config_internal.h",
+  "units": {
+    "config.cpp":          {"chunks": [0, 1, 2], "rest": true},
+    "config_profiles.cpp": {"chunks": [3, 4]}
+  },
+  "classes_in_units": [5],
+  "keep_in_units": [6],
+  "delete": ["config_part_001.inl", "config_part_002.inl"]
+}
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+
+INL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+\.inl)"')
+COND_DIRECTIVE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b")
+USING_OR_TYPEDEF = re.compile(r"^\s*(using|typedef)\b")
+EXTERN_DECL = re.compile(r"^\s*extern\b")
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def reassemble(facade: Path) -> str:
+    """Inline nested .inl includes, preserving everything else verbatim."""
+
+    def load(path: Path, seen: set) -> List[str]:
+        key = str(path.resolve())
+        if key in seen:
+            raise RuntimeError(f"cyclic .inl include: {path}")
+        seen = seen | {key}
+        out: List[str] = []
+        for line in read_text(path).split("\n"):
+            m = INL_INCLUDE.match(line)
+            if m:
+                out.extend(load(path.parent / m.group(1), seen))
+            else:
+                out.append(line)
+        return out
+
+    return "\n".join(load(facade, set()))
+
+
+@dataclass
+class Token:
+    kind: str
+    text: str
+    line: int
+
+
+def lex(text: str) -> List[Token]:
+    """Tokenize C++ text; comments and string contents become opaque."""
+    tokens: List[Token] = []
+    i = 0
+    n = len(text)
+    line = 0
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        if c in " \t\r":
+            i += 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise RuntimeError("unterminated block comment")
+            line += text.count("\n", i, j + 2)
+            i = j + 2
+            continue
+        if text.startswith('R"', i) or text.startswith('LR"', i):
+            j = text.find("(", i)
+            if 0 <= j < i + 32 and "\\" not in text[i : j + 1] and text[i : j + 1].count('"') == 1:
+                delim = text[i + 2 : j] if text.startswith('R"', i) else text[i + 3 : j]
+                end = text.find(")" + delim + '"', j)
+                if end < 0:
+                    raise RuntimeError("unterminated raw string")
+                line += text.count("\n", i, end + 1)
+                i = end + len(delim) + 2
+                continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                raise RuntimeError("unterminated string literal")
+            line += text.count("\n", i, j + 1)
+            i = j + 1
+            continue
+        if c == "'":
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "'":
+                    break
+                j += 1
+            if j >= n:
+                raise RuntimeError("unterminated char literal")
+            line += text.count("\n", i, j + 1)
+            i = j + 1
+            continue
+        if c == "#":
+            j = i
+            while j < n and text[j] != "\n":
+                if text[j] == "\\" and j + 1 < n and text[j + 1] == "\n":
+                    j += 2
+                    continue
+                j += 1
+            tokens.append(Token("DIR", text[i:j].strip(), line))
+            line += text.count("\n", i, j)
+            i = j
+            continue
+        if c in "{}();":
+            tokens.append(Token(c, c, line))
+            i += 1
+            continue
+        if c.isalpha() or c == "_":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            tokens.append(Token("IDENT", text[i:j], line))
+            i = j
+            continue
+        tokens.append(Token("OTHER", c, line))
+        i += 1
+    return tokens
+
+
+@dataclass
+class Chunk:
+    kind: str  # func | var | class | namespace | enum | extern | pp_region | directive | other
+    name: str
+    start: int  # 0-based line
+    end: int  # exclusive
+    text: str
+    ns_path: Tuple[str, ...] = ()
+    anon_region: Optional[int] = None
+    template: bool = False
+    static: bool = False
+    signature: str = ""
+
+
+def _skip_template(tokens: Sequence[Token], idx: int) -> Tuple[int, bool]:
+    if idx < len(tokens) and tokens[idx].text == "template":
+        depth = 0
+        i = idx
+        while i < len(tokens):
+            if tokens[i].text == "<":
+                depth += 1
+            elif tokens[i].text == ">":
+                depth -= 1
+                if depth == 0:
+                    return i + 1, True
+            i += 1
+    return idx, False
+
+
+def _last_ident(tokens: Sequence[Token]) -> str:
+    for t in reversed(tokens):
+        if t.kind == "IDENT":
+            return t.text
+    return ""
+
+
+def _func_name(pending: Sequence[Token]) -> str:
+    for i, t in enumerate(pending):
+        if t.text == "(" and i > 0:
+            prev = pending[i - 1]
+            if prev.kind == "IDENT" and prev.text != "operator":
+                if i >= 2 and pending[i - 2].text == "~":
+                    return "~" + prev.text
+                return prev.text
+            if prev.text == "operator":
+                parts = ["operator"]
+                for op in pending[i:]:
+                    if op.text == "(":
+                        break
+                    parts.append(op.text)
+                return "".join(parts)
+    return _last_ident(pending)
+
+
+def _classify_block(pending: Sequence[Token]) -> Tuple[str, str, bool]:
+    """Classify a top-level '{...}' block from its leading tokens."""
+    idx, is_tmpl = _skip_template(pending, 0)
+    while idx < len(pending) and pending[idx].kind == "DIR":
+        idx += 1
+    while idx < len(pending) and pending[idx].text == "__declspec":
+        idx += 2
+    if idx < len(pending) and pending[idx].text in ("class", "struct"):
+        name = pending[idx + 1].text if idx + 1 < len(pending) and pending[idx + 1].kind == "IDENT" else ""
+        return "class", name, is_tmpl
+    if idx < len(pending) and pending[idx].text == "namespace":
+        if idx + 1 < len(pending) and pending[idx + 1].kind == "IDENT":
+            return "namespace", pending[idx + 1].text, False
+        return "namespace", "", False
+    if idx < len(pending) and pending[idx].text == "enum":
+        for t in pending[idx + 1 :]:
+            if t.kind == "IDENT":
+                return "enum", t.text, False
+        return "enum", "", False
+    if idx < len(pending) and pending[idx].text == "extern" and any(
+        t.kind == "OTHER" and t.text.startswith('"') for t in pending[idx + 1 : idx + 3]
+    ):
+        return "extern", "", False
+    for i, t in enumerate(pending):
+        if t.text == "(" and i > 0 and (
+            pending[i - 1].kind == "IDENT" or pending[i - 1].text in (">", "~", ")", "=")
+        ):
+            return "func", _func_name(pending), is_tmpl
+    if any(t.text == "=" for t in pending):
+        return "var", _last_ident(pending), False
+    return "other", "", False
+
+
+def _signature_of(chunk_text: str) -> str:
+    depth = 0
+    for idx, ch in enumerate(chunk_text):
+        if ch == "{":
+            if depth == 0:
+                sig = re.sub(r"\s+", " ", chunk_text[:idx]).strip()
+                sig = re.sub(r"\s*,\s*", ", ", sig)
+                sig = re.sub(r"\s*;\s*", "; ", sig)
+                return sig
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    return re.sub(r"\s+", " ", chunk_text).strip()
+
+
+def _strip_defaults(sig: str) -> str:
+    """Remove '= default' argument initializers from a function signature."""
+    out: List[str] = []
+    depth = 0
+    skip = False
+    i = 0
+    n = len(sig)
+    while i < n:
+        ch = sig[i]
+        if skip:
+            if depth == 1 and ch in ",)":
+                skip = False
+                out.append(ch)
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            out.append(ch)
+        elif ch == ")":
+            depth -= 1
+            out.append(ch)
+        elif ch == "=" and depth == 1:
+            skip = True
+            if out and out[-1] == " ":
+                out.pop()
+            out.append(" ")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _strip_definition_defaults(chunk_text: str) -> str:
+    """Remove default argument initializers from a definition's signature."""
+    depth = 0
+    for idx, ch in enumerate(chunk_text):
+        if ch == "{":
+            if depth == 0:
+                sig = chunk_text[:idx]
+                stripped = _strip_defaults(sig)
+                return stripped + chunk_text[idx:]
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    return chunk_text
+
+
+def _find_matching_endif(tokens: Sequence[Token], start: int) -> int:
+    depth = 0
+    for i in range(start, len(tokens)):
+        t = tokens[i]
+        if t.kind != "DIR":
+            continue
+        m = COND_DIRECTIVE.match(t.text)
+        if not m:
+            continue
+        d = m.group(1)
+        if d in ("if", "ifdef", "ifndef"):
+            depth += 1
+        elif d == "endif":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise RuntimeError("unterminated #if region")
+
+
+class Scanner:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.lines = text.split("\n")
+        self.chunks: List[Chunk] = []
+        self.next_anon = 1
+
+    def scan(self) -> List[Chunk]:
+        self._scan_region(0, len(self.lines), ())
+        return self.chunks
+
+    def _slice(self, start_line: int, end_line: int) -> str:
+        return "\n".join(self.lines[start_line:end_line])
+
+    def _scan_region(self, start_line: int, end_line: int, ns_path: Tuple[str, ...],
+                     anon: Optional[int] = None) -> None:
+        tokens = lex(self._slice(start_line, end_line))
+        pending: List[Token] = []
+        pending_line = 0
+        pending_is_dir = False
+        anon_region = anon
+        i = 0
+        n = len(tokens)
+
+        def emit(kind: str, name: str, p_line: int, e_line: int, sig: str = "", is_tmpl: bool = False,
+                 is_static: bool = False, anon: Optional[int] = None) -> None:
+            self.chunks.append(
+                Chunk(
+                    kind=kind,
+                    name=name,
+                    start=start_line + p_line,
+                    end=start_line + e_line,
+                    text=self._slice(start_line + p_line, start_line + e_line),
+                    ns_path=ns_path,
+                    anon_region=anon_region,
+                    template=is_tmpl,
+                    static=is_static,
+                    signature=sig,
+                )
+            )
+
+        def flush_statement() -> None:
+            nonlocal pending, pending_is_dir
+            if not pending:
+                return
+            start = pending_line
+            end = pending[-1].line
+            if pending_is_dir:
+                emit("directive", "", start, end + 1)
+            else:
+                is_static = any(t.text == "static" for t in pending)
+                is_tmpl = pending[0].text == "template"
+                if any(t.text == "=" for t in pending) or is_static:
+                    emit("var", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+                else:
+                    emit("other", _last_ident(pending), start, end + 1, is_tmpl=is_tmpl, is_static=is_static)
+            pending = []
+            pending_is_dir = False
+
+        while i < n:
+            t = tokens[i]
+            if t.kind == "DIR":
+                m = COND_DIRECTIVE.match(t.text)
+                if m and not pending and m.group(1) in ("if", "ifdef", "ifndef"):
+                    end_tok = _find_matching_endif(tokens, i)
+                    end_line = tokens[end_tok].line
+                    emit("pp_region", "", t.line, end_line + 1)
+                    i = end_tok + 1
+                    pending = []
+                    pending_is_dir = False
+                    continue
+                if not pending and not m:
+                    emit("directive", "", t.line, t.line + 1)
+                    i += 1
+                    continue
+                if pending:
+                    pending.append(t)
+                else:
+                    pending = [t]
+                    pending_line = t.line
+                    pending_is_dir = True
+                i += 1
+                continue
+            if t.text == ";":
+                if pending:
+                    flush_statement()
+                i += 1
+                continue
+            if t.text == "{":
+                if pending:
+                    depth = 0
+                    j = i
+                    while j < n:
+                        if tokens[j].text == "{":
+                            depth += 1
+                        elif tokens[j].text == "}":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        j += 1
+                    if j >= n:
+                        raise RuntimeError("unbalanced braces")
+                    start = pending_line
+                    end = tokens[j].line
+                    if j + 1 < n and tokens[j + 1].text == ";":
+                        end = tokens[j + 1].line
+                        j += 1
+                    kind, name, is_tmpl = _classify_block(pending)
+                    is_static = any(t2.text == "static" for t2 in pending)
+                    if kind == "namespace":
+                        open_abs = start_line + start
+                        close_abs = start_line + end
+                        inner_start = None
+                        for ln in range(open_abs, close_abs):
+                            if "{" in self.lines[ln]:
+                                inner_start = ln + 1
+                                break
+                        if inner_start is None:
+                            raise RuntimeError("namespace without brace")
+                        child_ns = ns_path + (name,) if name else ns_path + ("",)
+                        if name:
+                            self._scan_region(inner_start, close_abs, child_ns, anon_region)
+                        else:
+                            anon = self.next_anon
+                            self.next_anon += 1
+                            self._scan_region(inner_start, close_abs, child_ns, anon)
+                    else:
+                        chunk_slice = self._slice(start_line + start, start_line + end + 1)
+                        sig = _signature_of(chunk_slice) if kind == "func" else ""
+                        emit(kind, name, start, end + 1, sig=sig, is_tmpl=is_tmpl, is_static=is_static)
+                    i = j + 1
+                    pending = []
+                    pending_is_dir = False
+                    continue
+            if not pending:
+                pending_line = t.line
+            pending.append(t)
+            pending_is_dir = pending_is_dir and t.kind == "DIR"
+            i += 1
+        if pending:
+            flush_statement()
+
+
+def scan(text: str) -> List[Chunk]:
+    return Scanner(text).scan()
+
+
+def _count_ident(text: str, name: str) -> int:
+    return len(re.findall(r"\b" + re.escape(name) + r"\b", text))
+
+
+def _wrap_ns(text: str, ns_path: Tuple[str, ...]) -> str:
+    if not ns_path:
+        return text
+    open_braces = "\n".join("namespace {" if p == "" else f"namespace {p} {{" for p in ns_path)
+    close_braces = "\n".join("}" for _ in ns_path)
+    return f"{open_braces}\n{text}\n{close_braces}"
+
+
+def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
+    """Split a logical source into .cpp units plus a generated internal header.
+
+    The generated header receives: top-level non-conditional directives,
+    using/typedef/extern statements, enums, template functions, classes (unless
+    overridden), shared file-scope statics and shared static functions, both
+    converted to `inline` and renamed with a module prefix so they cannot
+    collide with same-named statics of other modules, and prototypes of every
+    non-static top-level function. Chunks inside one #if/#endif region or one
+    anonymous namespace are atomic: they must all land in the same unit.
+    """
+    text = reassemble(facade)
+    chunks = scan(text)
+    module = grouping["module"]
+    header_name = grouping["header"]
+    units: Dict[str, Dict] = grouping["units"]
+    unit_names = list(units)
+    assignment: Dict[int, str] = {}
+    for unit_name, spec in units.items():
+        for idx in spec.get("chunks", []):
+            if idx in assignment:
+                raise RuntimeError(f"chunk {idx} assigned twice")
+            assignment[idx] = unit_name
+    rest_unit = next((n for n, s in units.items() if s.get("rest")), unit_names[0])
+    for idx in range(len(chunks)):
+        if idx not in assignment:
+            assignment[idx] = rest_unit
+
+    # Anonymous-namespace integrity: all chunks of one anon region share a unit.
+    by_anon: Dict[int, str] = {}
+    for idx, c in enumerate(chunks):
+        if c.anon_region is None:
+            continue
+        prev = by_anon.get(c.anon_region)
+        if prev is not None and prev != assignment[idx]:
+            raise RuntimeError(f"anonymous namespace chunk {idx} split across units")
+        by_anon[c.anon_region] = assignment[idx]
+
+    unit_chunks: Dict[str, List[Chunk]] = {name: [] for name in unit_names}
+    for idx, c in enumerate(chunks):
+        unit_chunks[assignment[idx]].append(c)
+    idx_by_id = {id(c): idx for idx, c in enumerate(chunks)}
+
+    keep_in_units = set(grouping.get("keep_in_units", []))
+    classes_in_units = set(grouping.get("classes_in_units", []))
+    extern_in_units = set(grouping.get("extern_in_units", []))
+
+    def hoisted_by_rule(idx: int) -> bool:
+        c = chunks[idx]
+        if idx in keep_in_units:
+            return False
+        if c.kind == "directive" and not c.ns_path:
+            return True
+        if c.kind == "other" and not c.ns_path and (USING_OR_TYPEDEF.match(c.text) or EXTERN_DECL.match(c.text)):
+            return True
+        if c.kind == "enum":
+            return True
+        if c.kind == "func" and c.template:
+            return True
+        if c.kind == "class" and idx not in classes_in_units:
+            return True
+        if c.kind == "extern" and idx not in extern_in_units:
+            return True
+        return False
+
+    shared: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for idx, c in enumerate(chunks):
+            if idx in shared or not c.static or not c.name or c.kind not in ("var", "func"):
+                continue
+            if any(
+                j != idx
+                and (hoisted_by_rule(j) or j in shared or assignment[j] != assignment[idx])
+                and _count_ident(chunks[j].text, c.name) > 0
+                for j in range(len(chunks))
+            ):
+                shared.add(idx)
+                changed = True
+
+    shared_statics = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "var"]
+    shared_funcs = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "func"]
+    renames = {c.name: f"{module}_{c.name}" for _, c in shared_statics + shared_funcs if c.name}
+
+    def renamed(text: str) -> str:
+        for old, new in renames.items():
+            text = re.sub(r"(?<![:.>])\b" + re.escape(old) + r"\b", new, text)
+        return text
+
+    header_parts: List[str] = ["#pragma once"]
+    header_idx: set = set()
+    for idx, c in enumerate(chunks):
+        if idx in keep_in_units:
+            continue
+        if idx in header_idx:
+            continue
+        if idx in {i for i, _ in shared_statics} or idx in {i for i, _ in shared_funcs}:
+            header_idx.add(idx)
+            continue  # emitted below in original order via shared lists
+        if c.kind == "directive" and not c.ns_path:
+            if c.text.strip() != "#pragma once":
+                header_parts.append(c.text)
+            header_idx.add(idx)
+        elif c.kind == "other" and not c.ns_path and USING_OR_TYPEDEF.match(c.text):
+            header_parts.append(renamed(c.text))
+            header_idx.add(idx)
+        elif c.kind == "other" and not c.ns_path and EXTERN_DECL.match(c.text):
+            header_parts.append(renamed(c.text))
+            header_idx.add(idx)
+        elif c.kind == "enum":
+            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_idx.add(idx)
+        elif c.kind == "func" and c.template:
+            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_idx.add(idx)
+        elif c.kind == "class" and idx not in classes_in_units:
+            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_idx.add(idx)
+        elif c.kind == "extern" and idx not in extern_in_units:
+            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_idx.add(idx)
+    for idx, c in enumerate(chunks):
+        if idx in header_idx:
+            continue
+        if c.kind != "func" or c.template or c.static or "" in c.ns_path:
+            continue
+        if not c.signature:
+            continue
+        proto = renamed(c.signature.rstrip())
+        header_parts.append(_wrap_ns(proto + ";", c.ns_path))
+    for _, c in sorted(shared_statics, key=lambda p: p[0]):
+        body = re.sub(r"^\s*static\s+", "", renamed(c.text), count=1)
+        header_parts.append(_wrap_ns("inline " + body.strip(), c.ns_path))
+    for _, c in sorted(shared_funcs, key=lambda p: p[0]):
+        body = re.sub(r"^\s*static\s+", "inline ", renamed(c.text), count=1)
+        header_parts.append(_wrap_ns(body, c.ns_path))
+
+    if dry_run:
+        for name in unit_names:
+            print(f"=== {name}: {len(unit_chunks[name])} chunks ===")
+            for c in unit_chunks[name]:
+                print(f"  {c.kind:<10} {c.name:<38} lines {c.start + 1}-{c.end}")
+        print(f"=== header: {len(header_parts)} parts; renames: {sorted(renames)} ===")
+        return
+
+    out_dir = facade.parent
+    (out_dir / header_name).write_text("\n\n".join(header_parts) + "\n", encoding="utf-8", newline="\n")
+    for name in unit_names:
+        body = "\n\n".join(
+            _wrap_ns(
+                _strip_definition_defaults(renamed(c.text)) if c.kind == "func" and not c.static else renamed(c.text),
+                c.ns_path,
+            )
+            for c in unit_chunks[name]
+            if idx_by_id[id(c)] not in header_idx
+        )
+        unit_text = f'#include "{header_name}"\n\n{body}\n'
+        (out_dir / name).write_text(unit_text, encoding="utf-8", newline="\n")
+    for frag in grouping.get("delete", []):
+        (out_dir / frag).unlink(missing_ok=True)
+    print(f"split {module}: {len(chunks)} chunks -> {unit_names}")
+
+
+def main(argv: List[str]) -> int:
+    if len(argv) < 3:
+        print(__doc__)
+        return 1
+    cmd = argv[1]
+    facade = Path(argv[2])
+    if cmd == "reassemble":
+        out: Optional[Path] = None
+        if len(argv) > 4 and argv[3] == "--out":
+            out = Path(argv[4])
+        text = reassemble(facade)
+        if out:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text, encoding="utf-8", newline="\n")
+            print(f"wrote {out} ({len(text.splitlines())} lines)")
+        else:
+            sys.stdout.write(text)
+        return 0
+    if cmd == "map":
+        for i, c in enumerate(scan(reassemble(facade))):
+            print(
+                f"{i:4d} {c.kind:<10} {c.name:<38} lines {c.start + 1:6d}-{c.end:6d} "
+                f"ns={'.'.join(c.ns_path) or '-'} anon={c.anon_region} tmpl={int(c.template)} "
+                f"static={int(c.static)}"
+            )
+        return 0
+    if cmd == "split":
+        grouping = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
+        split_source(facade, grouping, dry_run=len(argv) > 4 and argv[4] == "--dry-run")
+        return 0
+    print(f"unknown command: {cmd}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
