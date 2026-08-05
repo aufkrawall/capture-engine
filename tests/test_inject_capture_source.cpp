@@ -105,8 +105,12 @@ TEST(InjectCaptureSourceTest, VulkanCaptureUsesTheFullSharedTextureLeaseSpace) {
 TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeAndFenceCompletion) {
     const std::string source = ReadSource("hook/apis/opengl_hook.cpp");
     ASSERT_FALSE(source.empty());
-    const std::string initBody = FunctionBody(source, "void Init(HDC hDC)", "void CaptureFrame(HDC hDC)");
-    const std::string captureBody = FunctionBody(source, "void CaptureFrame(HDC hDC)", "static GLsizei ParseGLMSAA");
+    // The internal header now carries declarations only; anchor on the
+    // out-of-line definitions in the opengl_hook_capture_impl units.
+    const std::string initBody =
+        FunctionBody(source, "void OpenGLCapture::Init(HDC hDC)", "void OpenGLCapture::CaptureFrame(HDC hDC)");
+    const std::string captureBody = FunctionBody(source, "void OpenGLCapture::CaptureFrame(HDC hDC)",
+                                                 "// End of the OpenGLCapture logical source");
     ASSERT_FALSE(initBody.empty());
     ASSERT_FALSE(captureBody.empty());
 
