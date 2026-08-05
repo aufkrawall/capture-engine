@@ -23,49 +23,22 @@ scope. No `.inl` fragments may return - new code files must be `.cpp`.
 | `common/config_load.cpp` | 1492 | `ConfigReader` + 8 section loaders, all <350 | 3bcbf8e5 |
 | `captureengine/media_main` module | internal header 2401 | header 598; +`media_main_wgc/recording/window/priority.cpp` | d405b0ec |
 | `captureengine/media_main_start.cpp` | 1950 | 634 + loop/targets/shutdown units (`MediaProcessSession`) | a9816048 |
-| `captureengine/media_main_threads.cpp` | 9437 | 8574 (only `EncoderThreadFunc`) + inject/wgc units | 60995f72 |
+| `captureengine/media_main_threads.cpp` | 9437 | 15 semantic units + `media_main_encoder_session.h` (728); `EncoderThreadFunc` -> `MediaEncoderSession` | 1cce877b |
 
 ## Remaining files (all > 800 lines)
 
 ### Tier 1 - the two mega-monsters (highest risk, do first)
 
-1. **`captureengine/media_main_threads.cpp` 8574** - only `EncoderThreadFunc`
-   (8571 lines). Plan:
-   - Parse the ~394 depth-1 locals + 40 lambdas (inventories already taken;
-     only 13 `const` locals, none reference/array-typed).
-   - Put the class skeleton in a NEW header `captureengine/media_main_encoder_session.h`
-     (the ~430 member/method declarations will NOT fit in `media_main_internal.h`,
-     which is 663 lines).
-   - Convert locals to members (default-init, assignment `x = expr;` stays in
-     place at the original position), lambdas to private methods (strip `[&]`,
-     keep explicit return types, strip default args in out-of-line definitions).
-   - Split into `Run`/`Init`/`Loop`/`Shutdown` + ~9 loop-phase member functions.
-     Old line numbers (pre-60995f72 file): Init 866-2135, loop 2136-8734,
-     shutdown 8735-9436. **New file offset: old line N -> new line N-863.**
-   - Loop-body phases (old 1-based ranges, several need sub-splitting because
-     they exceed 800 alone): uniform-CFR selection `if (!config.video.useVFR)`
-     3876-5059 (1184!), warmup block 5620-6531 (912!), catchup loop 6750-7310,
-     WGC drain 2920-3338, second selection block 5068-5353, logging tail
-     8472-8734, etc. Depth-2 locals that span phases must also become members.
+1. **`captureengine/media_main_threads.cpp` 8574** - **DONE** at 1cce877b
+   (`MediaEncoderSession`, 15 units + header, all <=800; source-policy anchors
+   updated to qualified signatures; units numbered 00..09 so logical-source
+   order matches execution order).
+
 2. **`hook/apis/dx12_hook_process.cpp` 5578** - only `ProcessFrame` (5414).
    Same session-class treatment. Part of the bigger `dx12_hook` module (see
    Tier 2); do the module re-split first or together.
 
 ### Tier 2 - dx12_hook module (facade-based re-split + decomposition)
-
-- `hook/apis/dx12_hook.cpp` 1824, `dx12_hook_ffx.cpp` 2504,
-  `dx12_hook_overlay.cpp` 1169, `dx12_hook_ecl.cpp` 1066,
-  `dx12_hook_internal.h` 12183 (includes `PostSLOverlayRender` 2696 inline -
-   must be decomposed, not just moved).
-- Facade restore: `git restore --source 81a66743^ -- hook/apis/dx12_hook.cpp
-  hook/apis/dx12_hook_part_*.inl` (37 parts). Chunk map: `python
-  tools/refactor/source_splitter.py map hook/apis/dx12_hook.cpp` (see
-  `build/refactor/dx12_hook.map2.txt` for the pre-analysis).
-- Design units by theme; the ~100 shared statics must be distributed to units
-  (with `statics_in_units` they stay in units, externs go to the header).
-- `ProcessFrame` (chunk 755) is one chunk - decompose in the facade text
-  BEFORE splitting (like DetourPresent), or after via session-class.
-
 ### Tier 3 - video_encoder module
 
 - `mediaengine/video_encoder_encode.cpp` 2511 (`EncodeFrame` 1040),
