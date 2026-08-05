@@ -52,7 +52,7 @@
   },
   "total": 0,
   "scope": {
-    "entries": 272,
+    "entries": 273,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -72,6 +72,7 @@
       "captureengine/screenshot_encoding.cpp",
       "captureengine/screenshot_hdr_encoding.cpp",
       "captureengine/sensor_service.cpp",
+      "captureengine/status_overlay_sync.cpp",
       "captureengine/tray.cpp",
       "captureengine/wgc_capture.cpp",
       "captureengine/windows_gpu_scheduling.cpp",

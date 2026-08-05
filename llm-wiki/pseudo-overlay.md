@@ -1,6 +1,6 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-08-01 (recording-health/recovery and truthful asynchronous-finalization feedback, application-profile settings, instant recording-start feedback, and dedicated UI thread)
+Last cross-checked: 2026-08-05 (capture-dark handshake before screen-grab capture start, recording-health/recovery and truthful asynchronous-finalization feedback, application-profile settings, instant recording-start feedback, and dedicated UI thread)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
@@ -16,6 +16,7 @@ Primary sources:
 - `common/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
 - `tests/test_pseudo_overlay_thread.cpp`
 - `tests/test_pseudo_overlay_visibility.cpp`
+- `captureengine/status_overlay_sync.{h,cpp}` (media half of the capture-dark protocol)
 
 ## Overview
 
@@ -40,6 +41,7 @@ Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to p
 
 - A thread timer fires every **500ms** and drives shared-state polling, focus/anchor policy, warning blinking, notifications, and rendering.
 - Controller intent, config, screenshot, and overload changes post `kMsgRefresh` to the UI thread, so hotkey feedback does not wait for the next timer tick.
+- Media-owned status changes (live recording, terminal failure, capture-dark request) arrive through the status-sync event below instead of the 500 ms poll. See "Capture-Dark Handshake".
 - `Init` waits at most five seconds for a readiness event after the thread creates its message queue and UI resources. `Shutdown` posts `kMsgShutdown`, joins the thread, and leaves all window/GDI/shared-memory teardown on the owning thread.
 
 ## Visibility Policy & Mode-2 "Inactive While Recording" Contract
@@ -51,7 +53,7 @@ wrapper in `pseudo_overlay.cpp` just fills the inputs and delegates.
 
 Visibility terms:
 - **Indicator** — pending or live recording state and `mode != 2`.
-- **Startup text** — pending video/audio state and `mode != 0`.
+- **Startup text** — pending video/audio state and `mode != 0`, unless the media-owned capture-dark request is set (see "Capture-Dark Handshake").
 - **NOT-RECORDING warning** — `warnVisible` only while the resolved state is idle.
 - **Recording-health warning** — `showEncoderOverloadWarn && now < overloadWarnUntil`; active overload, recovery debt, and latched degradation have distinct text.
 - **Recording-finalization notification** — idle-only finalizing/saved/degraded/canceled/failed feedback from the shared media-owned notification.
@@ -63,6 +65,22 @@ no `UpdateLayeredWindow`/`SetWindowPos`, no `EnsureOverlayWindows`) **except** s
 recording-health and screenshot notifications. Those may spawn a short-lived topmost
 window mid-recording (accepted as singular slight-stutter events). The steady-state timer does NOT
 call `UpdateOverlay` in this state; only lightweight CPU polling runs (no window/plane work).
+
+## Capture-Dark Handshake (2026-08-05)
+
+A screen-grab recording captures the composited desktop, so this overlay's own recording-start status is captured with it. Two independent latencies used to put `STARTING RECORDING...` into the recorded file:
+
+1. The live transition is published by the **media** child into shared memory, and the overlay only observed it on its next **500 ms** poll (160 ms measured in a real session).
+2. The first live frame's content predates the live handoff by the whole WGC/DXGI content delay (332 ms measured), because the look-ahead reservoir is captured during warmup and preserved across the handoff.
+
+Roughly half a second of amber startup status therefore ended up at the start of recorded files, whatever the notification latency. The fix cuts at the only correct point: **the status must be off screen before the capture pipeline starts**, not when file output goes live.
+
+- **Flag:** `kCaptureRuntimeFlagStatusOverlayDarkForCapture` (media-owned, `runtimeFlags`). While set, the pending startup status renders nothing — text *and* amber indicator circle, all modes (`OverlayVisibilityInputs::statusDarkForCapture`, unit-tested in `tests/test_pseudo_overlay_visibility.cpp`). Live indicators are never affected: media releases the request in the same publication that turns the state live.
+- **Events:** `Local\CE_StatusSync_<controllerPid>` and `Local\CE_StatusDark_<controllerPid>` (`GenerateStatusOverlaySyncEventName` / `GenerateStatusOverlayDarkAckEventName`). The overlay keys them on its own PID; media uses the controller PID its IPC endpoint authenticated against the pipe server (`ProcessIPCServer::ControllerPid()`), so the pair cannot bind to a foreign process and a unit-test process gets its own isolated pair.
+- **Flow:** media sets the flag and signals sync immediately before `StartWgcRecordingCapture` / the encoder thread (`ce::status_overlay::RequestDarkForCapture`), then waits up to **300 ms** for the ack. A dedicated watcher thread in `PseudoOverlay` waits on the sync event and posts `kMsgStatusSync`; the **UI thread** — the only thread that owns windows and GDI — updates the overlay, calls `DwmFlush()` twice, and only then sets the ack. Two flushes because hiding a layered window is asynchronous to composition: the first flush can still return for the pass that was already in flight with the window in it.
+- **Fail-open everywhere:** no overlay (disabled by config, never created) means no events, so media logs `No controller status consumer` and continues with no wait at all. An unresponsive consumer costs the bounded 300 ms and a `[StatusOverlayDark]` warning; a recording start is never blocked.
+- **Release:** `SetRecordingVisibleState` (both directions) and `PublishRecordingStartFailure` clear the flag and signal sync, so the live REC indicator also stops waiting for the 500 ms poll.
+- **Inject overlay:** `overlay_adapter` honors the same flag (`FrameLayoutSnapshot::recordingStatusDark`) so an injected game captured through WGC does not draw the startup status into the frames capture is about to read. Best-effort: the hook picks the flag up on its next present and does not participate in the acknowledgement.
 
 ## Recording Health And Finalization Feedback
 
@@ -209,6 +227,8 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 | Visibility policy (pure) | `common/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
 | Recording-state policy | `common/recording_indicator_policy.h` | full |
+| Capture-dark protocol (media) | `captureengine/status_overlay_sync.cpp` | full |
+| Capture-dark watcher/ack | `captureengine/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
 | Instant intent publication | `captureengine/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
 | Thread lifecycle / refresh | `captureengine/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
 | UI-thread stall diagnostic | `captureengine/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |

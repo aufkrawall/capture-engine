@@ -136,6 +136,24 @@ inline void GenerateShutdownEventName(wchar_t* outName, size_t maxLen, uint32_t 
     swprintf(outName, maxLen, L"Local\\CE_Shutdown_%08X", controllerPid);
 }
 
+// Recording-status overlay synchronization between the media child and the controller's
+// pseudo-overlay, keyed to the controller PID that owns the overlay. The controller uses
+// its own PID; the media child uses the controller PID its IPC endpoint authenticated
+// against the pipe server, so the pair can never bind to a foreign process.
+//
+// Media signals the sync event whenever it changes recording status ownership, so the
+// overlay updates immediately instead of on its next poll. Before a screen-grab capture
+// pipeline starts, media additionally waits on the dark-ack event, which the overlay sets
+// once its startup status has actually left the composited screen (see
+// kCaptureRuntimeFlagStatusOverlayDarkForCapture).
+inline void GenerateStatusOverlaySyncEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
+    swprintf(outName, maxLen, L"Local\\CE_StatusSync_%08X", controllerPid);
+}
+
+inline void GenerateStatusOverlayDarkAckEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
+    swprintf(outName, maxLen, L"Local\\CE_StatusDark_%08X", controllerPid);
+}
+
 inline void GenerateInjectFrameReadyEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
     swprintf(outName, maxLen, L"Local\\CE_InjectFrame_%08X", controllerPid);
 }
@@ -395,6 +413,12 @@ enum CaptureRuntimeFlags : uint32_t {
     // or the start attempt reaches a terminal failure/cancel path.
     kCaptureRuntimeFlagRecordingStartPending = 1u << 4,
     kCaptureRuntimeFlagRecordingStartAudioOnly = 1u << 5,
+    // Media-owned: the screen-grab capture pipeline is about to record the desktop, so
+    // every CE-owned recording-start status indicator must stay dark. Screen capture
+    // records whatever the compositor shows, so the startup status has to be gone before
+    // the first captured frame - not when file output goes live, which is a full
+    // look-ahead reservoir later. Cleared when the recording is live or the start ends.
+    kCaptureRuntimeFlagStatusOverlayDarkForCapture = 1u << 6,
 };
 
 enum class RecordingStartIntent : uint8_t {

@@ -42,6 +42,7 @@
 #include "mediaengine_loader.h"
 #include "recording_manifest.h"
 #include "screen_grab_privacy_runtime.h"
+#include "status_overlay_sync.h"
 #include "wgc_capture.h"
 #include "windows_gpu_scheduling.h"
 

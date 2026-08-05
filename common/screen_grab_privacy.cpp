@@ -150,15 +150,8 @@ void FocusPrivacyGate::ResetTarget() {
     safeFrameThresholdQpc_ = 0;
 }
 
-GateDecision FocusPrivacyGate::Evaluate(bool activeScreenGrab, bool reliableFocusObservation,
-                                        bool matchingFullscreenFocus, int64_t observationQpc, bool hasFreshFrame,
-                                        int64_t freshFrameQpc) {
-    GateDecision decision;
-    if (!enabled_ || !activeScreenGrab) {
-        decision.useBlackFrame = false;
-        return decision;
-    }
-
+void FocusPrivacyGate::UpdateFocusTracking(bool reliableFocusObservation, bool matchingFullscreenFocus,
+                                           int64_t observationQpc, GateDecision& decision) {
     if (!reliableFocusObservation || !matchingFullscreenFocus) {
         if (!reliableFocusObservation) {
             ++ambiguousObservations_;
@@ -171,9 +164,7 @@ GateDecision FocusPrivacyGate::Evaluate(bool activeScreenGrab, bool reliableFocu
         blackoutActive_ = true;
         waitingForSafeFrame_ = true;
         safeFrameThresholdQpc_ = 0;
-        decision.useBlackFrame = true;
-        decision.waitingForSafeFrame = true;
-        return decision;
+        return;
     }
 
     if (!focusAccepted_) {
@@ -186,6 +177,36 @@ GateDecision FocusPrivacyGate::Evaluate(bool activeScreenGrab, bool reliableFocu
         waitingForSafeFrame_ = true;
         safeFrameThresholdQpc_ = std::max<int64_t>(1, observationQpc);
         decision.focusReacquired = true;
+    }
+}
+
+GateDecision FocusPrivacyGate::Observe(bool activeScreenGrab, bool reliableFocusObservation,
+                                       bool matchingFullscreenFocus, int64_t observationQpc) {
+    GateDecision decision;
+    if (!enabled_ || !activeScreenGrab) {
+        return decision;
+    }
+
+    UpdateFocusTracking(reliableFocusObservation, matchingFullscreenFocus, observationQpc, decision);
+    decision.waitingForSafeFrame = waitingForSafeFrame_;
+    return decision;
+}
+
+GateDecision FocusPrivacyGate::Evaluate(bool activeScreenGrab, bool reliableFocusObservation,
+                                        bool matchingFullscreenFocus, int64_t observationQpc, bool hasFreshFrame,
+                                        int64_t freshFrameQpc) {
+    GateDecision decision;
+    if (!enabled_ || !activeScreenGrab) {
+        decision.useBlackFrame = false;
+        return decision;
+    }
+
+    UpdateFocusTracking(reliableFocusObservation, matchingFullscreenFocus, observationQpc, decision);
+
+    if (!focusAccepted_) {
+        decision.useBlackFrame = true;
+        decision.waitingForSafeFrame = true;
+        return decision;
     }
 
     if (waitingForSafeFrame_) {

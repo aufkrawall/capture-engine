@@ -23,6 +23,62 @@ bool ScreenGrabPrivacyRuntime::PrepareTexture(ID3D11Texture2D* referenceTexture)
     return !gate_.IsEnabled() || blackTexture_.Prepare(referenceTexture);
 }
 
+ScreenGrabPrivacyRuntime::FocusObservation ScreenGrabPrivacyRuntime::SampleFocusObservation(
+    HWND targetWindow, HMONITOR targetMonitor, bool stableCaptureTarget, const FullscreenFocusSnapshot& focus) {
+    LARGE_INTEGER observationQpc = {};
+    QueryPerformanceCounter(&observationQpc);
+    FocusObservation observation;
+    observation.observationQpc = observationQpc.QuadPart;
+    observation.reliable = stableCaptureTarget && focus.stable && focus.classificationReliable &&
+                           IsCaptureTargetValid(targetWindow, targetMonitor);
+    observation.matchingFullscreen =
+        observation.reliable && SnapshotMatchesCaptureTarget(focus, targetWindow, targetMonitor);
+    return observation;
+}
+
+void ScreenGrabPrivacyRuntime::LogGateTransitions(const GateDecision& decision, const FocusObservation& observation,
+                                                  HWND targetWindow, HMONITOR targetMonitor, const char* phase,
+                                                  bool hasFreshFrame, int64_t freshFrameQpc) const {
+    // Transition-only logging: each branch fires once per gate state change, so this
+    // stays quiet even at full output rate.
+    if (decision.enteredBlackout) {
+        const char* reason = decision.focusReacquired ? "awaiting-first-focus-verified-frame"
+                             : observation.reliable   ? "no-matching-fullscreen-focus"
+                                                      : "ambiguous-focus-or-target";
+        LogInfo(
+            "[PrivacyBlackout] Entered: phase=%s reason=%s target=%s; output remains opaque black and audio/PTS "
+            "continue unchanged",
+            phase, reason, targetWindow ? "window" : (targetMonitor ? "monitor" : "unresolved"));
+    }
+    if (decision.focusReacquired) {
+        LogInfo(
+            "[PrivacyBlackout] Matching fullscreen focus acquired during %s; frames with sourceQpc >= %lld may "
+            "reveal pixels",
+            phase, static_cast<long long>(gate_.SafeFrameThresholdQpc()));
+    }
+    if (decision.exitedBlackout) {
+        LogInfo(
+            "[PrivacyBlackout] Exited on a post-focus source frame: phase=%s hasFreshFrame=%d sourceQpc=%lld "
+            "thresholdQpc=%lld (audio/PTS unchanged)",
+            phase, hasFreshFrame ? 1 : 0, static_cast<long long>(freshFrameQpc),
+            static_cast<long long>(gate_.SafeFrameThresholdQpc()));
+    }
+}
+
+GateDecision ScreenGrabPrivacyRuntime::ObserveWarmup(bool activeScreenGrab, HWND targetWindow, HMONITOR targetMonitor,
+                                                     bool stableCaptureTarget, const FullscreenFocusSnapshot& focus) {
+    if (!gate_.IsEnabled()) {
+        return {};
+    }
+
+    const FocusObservation observation =
+        SampleFocusObservation(targetWindow, targetMonitor, stableCaptureTarget, focus);
+    const GateDecision decision = gate_.Observe(activeScreenGrab, observation.reliable, observation.matchingFullscreen,
+                                                observation.observationQpc);
+    LogGateTransitions(decision, observation, targetWindow, targetMonitor, "warmup", false, 0);
+    return decision;
+}
+
 GateDecision ScreenGrabPrivacyRuntime::Evaluate(bool activeScreenGrab, HWND targetWindow, HMONITOR targetMonitor,
                                                 bool stableCaptureTarget, const FullscreenFocusSnapshot& focus,
                                                 bool hasFreshFrame, int64_t freshFrameQpc) {
@@ -30,35 +86,12 @@ GateDecision ScreenGrabPrivacyRuntime::Evaluate(bool activeScreenGrab, HWND targ
         return {};
     }
 
-    LARGE_INTEGER observationQpc = {};
-    QueryPerformanceCounter(&observationQpc);
-    const bool reliableObservation =
-        stableCaptureTarget && focus.stable && focus.classificationReliable &&
-        IsCaptureTargetValid(targetWindow, targetMonitor);
-    const bool matchingFullscreen =
-        reliableObservation && SnapshotMatchesCaptureTarget(focus, targetWindow, targetMonitor);
+    const FocusObservation observation =
+        SampleFocusObservation(targetWindow, targetMonitor, stableCaptureTarget, focus);
     const GateDecision decision =
-        gate_.Evaluate(activeScreenGrab, reliableObservation, matchingFullscreen, observationQpc.QuadPart,
-                       hasFreshFrame, freshFrameQpc);
-    if (decision.enteredBlackout) {
-        LogInfo(
-            "[PrivacyBlackout] Entered: reason=%s target=%s; output remains opaque black and audio/PTS continue "
-            "unchanged",
-            reliableObservation ? "no-matching-fullscreen-focus" : "ambiguous-focus-or-target",
-            targetWindow ? "window" : (targetMonitor ? "monitor" : "unresolved"));
-    }
-    if (decision.focusReacquired) {
-        LogInfo(
-            "[PrivacyBlackout] Matching fullscreen focus reacquired; waiting for sourceQpc >= %lld before revealing "
-            "pixels",
-            static_cast<long long>(gate_.SafeFrameThresholdQpc()));
-    }
-    if (decision.exitedBlackout) {
-        LogInfo(
-            "[PrivacyBlackout] Exited on a post-focus source frame: sourceQpc=%lld thresholdQpc=%lld (audio/PTS "
-            "unchanged)",
-            static_cast<long long>(freshFrameQpc), static_cast<long long>(gate_.SafeFrameThresholdQpc()));
-    }
+        gate_.Evaluate(activeScreenGrab, observation.reliable, observation.matchingFullscreen,
+                       observation.observationQpc, hasFreshFrame, freshFrameQpc);
+    LogGateTransitions(decision, observation, targetWindow, targetMonitor, "live", hasFreshFrame, freshFrameQpc);
     return decision;
 }
 

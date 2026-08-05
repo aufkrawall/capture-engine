@@ -118,6 +118,10 @@ private:
         float fgBaseFPS = 0.0f;
         float fgOutputFPS = 0.0f;
         ce::recording_indicator::State recordingState = ce::recording_indicator::State::Idle;
+        // Media armed a screen-grab capture pipeline that records the composited screen,
+        // so this overlay's recording-start status must not be drawn into the game frames
+        // that capture is about to read. Cleared when the recording goes live.
+        bool recordingStatusDark = false;
         bool recordingActive = false;
         bool recordingAudioOnly = false;
         uint64_t recordingSeconds = 0;

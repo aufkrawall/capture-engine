@@ -38,6 +38,12 @@ class FocusPrivacyGate {
 public:
     void Reset(bool enabled);
     void ResetTarget();
+    // Focus tracking for capture that is already running but does not produce output yet
+    // (recording warmup). Warmup frames are discarded, but the look-ahead reservoir they
+    // build is handed to the live output, so the verified-focus interval has to start at
+    // the first warmup tick instead of at the first emitted frame. Never requests output.
+    GateDecision Observe(bool activeScreenGrab, bool reliableFocusObservation, bool matchingFullscreenFocus,
+                         int64_t observationQpc);
     GateDecision Evaluate(bool activeScreenGrab, bool reliableFocusObservation, bool matchingFullscreenFocus,
                           int64_t observationQpc, bool hasFreshFrame, int64_t freshFrameQpc);
     void CommitOutput(bool blackFrame);
@@ -68,6 +74,9 @@ public:
     }
 
 private:
+    void UpdateFocusTracking(bool reliableFocusObservation, bool matchingFullscreenFocus, int64_t observationQpc,
+                             GateDecision& decision);
+
     bool enabled_ = false;
     bool focusAccepted_ = false;
     bool blackoutActive_ = false;

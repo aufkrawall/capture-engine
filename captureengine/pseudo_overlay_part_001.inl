@@ -16,7 +16,9 @@
 
 namespace {
 typedef HRESULT(WINAPI* DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
+typedef HRESULT(WINAPI* DwmFlushFn)(void);
 DwmSetWindowAttributeFn g_DwmSetWindowAttribute = nullptr;
+DwmFlushFn g_DwmFlush = nullptr;
 bool g_DwmApiInitialized = false;
 
 void EnsureDwmApi() {
@@ -26,7 +28,22 @@ void EnsureDwmApi() {
     HMODULE mod = ce::security::LoadSystemLibrary(L"dwmapi.dll");
     if (mod) {
         g_DwmSetWindowAttribute = (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
+        g_DwmFlush = (DwmFlushFn)GetProcAddress(mod, "DwmFlush");
     }
+}
+
+// Block until DWM has finished composing a frame that no longer contains whatever this
+// process just hid. Hiding a layered window is asynchronous to composition, so the first
+// flush can still return for the pass that was already in flight with the window in it;
+// the second returns only for a pass that started after the hide was submitted. Bounded
+// by two refresh intervals and paid once per recording start.
+void DwmFlushComposition() {
+    EnsureDwmApi();
+    if (!g_DwmFlush) {
+        return;
+    }
+    g_DwmFlush();
+    g_DwmFlush();
 }
 }  // namespace
 
@@ -202,7 +219,7 @@ bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_ind
                              ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
                              ULONGLONG recordingNotifyUntil,
                              ce::pseudo_overlay::RecordingNotificationKind recordingNotification,
-                             bool ghostActive) {
+                             bool ghostActive, bool statusDarkForCapture) {
     // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
     // warning on the resolved idle state so it can never leak into pending or active recording (see
     // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
@@ -217,6 +234,7 @@ bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_ind
     in.screenshotNotifyUntilMs = screenshotNotifyUntil;
     in.recordingNotifyUntilMs = recordingNotifyUntil;
     in.recordingNotification = recordingNotification;
+    in.statusDarkForCapture = statusDarkForCapture;
     return ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(in);
 }
 }  // namespace
@@ -499,12 +517,24 @@ bool PseudoOverlay::IsInjectOverlayPending() {
 bool PseudoOverlay::RefreshRecordingState() {
     bool recordingActive = false;
     bool recordingAudioOnly = false;
+    bool statusDarkForCapture = false;
     RecordingStartIntent sharedIntent = RecordingStartIntent::Idle;
     const bool haveSharedState = EnsureSharedMemoryMapping() && pSharedMem_;
     if (haveSharedState) {
         recordingActive = pSharedMem_->runtimeState.isRecording.load(std::memory_order_acquire);
         recordingAudioOnly = pSharedMem_->runtimeState.audioOnly.load(std::memory_order_acquire);
         sharedIntent = pSharedMem_->runtimeState.GetRecordingStartIntent();
+        statusDarkForCapture =
+            pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture);
+    }
+#ifdef CE_UNIT_TESTS
+    statusDarkForCapture = statusDarkForCapture || forcedStatusDarkForCapture_.load(std::memory_order_acquire);
+#endif
+    const bool statusDarkChanged = statusDarkForCapture != statusDarkForCapture_;
+    if (statusDarkChanged) {
+        LogInfo("[PseudoOverlay] Capture-dark request %s (media armed screen-grab capture)",
+                statusDarkForCapture ? "engaged" : "released");
+        statusDarkForCapture_ = statusDarkForCapture;
     }
 
     RecordingStartIntent startIntent = sharedIntent;
@@ -518,7 +548,7 @@ bool PseudoOverlay::RefreshRecordingState() {
     }
 
     if (nextState == recordingIndicatorState_) {
-        return false;
+        return statusDarkChanged;
     }
 
     LogInfo("[PseudoOverlay] Recording indicator state %u -> %u",

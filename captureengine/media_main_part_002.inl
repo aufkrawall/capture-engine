@@ -272,6 +272,27 @@ void SetInjectVideoCaptureRequestedState(bool enabled, const char* reason) {
     }
 }
 
+// The media half of the recording-status overlay protocol lives in
+// captureengine/status_overlay_sync.h; these thin wrappers keep the shared-memory
+// null-check with the rest of the publication helpers.
+void SignalStatusOverlaySync() {
+    ce::status_overlay::SignalSync();
+}
+
+void RequestStatusOverlayDarkForCapture(const char* reason) {
+    if (!g_pSharedMem) {
+        return;
+    }
+    ce::status_overlay::RequestDarkForCapture(g_pSharedMem->runtimeState, reason);
+}
+
+void ReleaseStatusOverlayDarkForCapture(const char* reason) {
+    if (!g_pSharedMem) {
+        return;
+    }
+    ce::status_overlay::ReleaseDarkForCapture(g_pSharedMem->runtimeState, reason);
+}
+
 void SetRecordingVisibleState(bool enabled) {
     if (!g_pSharedMem) {
         return;
@@ -286,15 +307,20 @@ void SetRecordingVisibleState(bool enabled) {
         // Propagate audio-only flag so overlay can show AUDIO vs REC
         g_pSharedMem->runtimeState.audioOnly.store(g_AudioOnly, std::memory_order_release);
         g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+        ReleaseStatusOverlayDarkForCapture("recording live");
     } else {
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
         g_pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
+        ReleaseStatusOverlayDarkForCapture("recording not live");
     }
+    // Publish the resolved status before waking the overlay so it renders the final state.
+    SignalStatusOverlaySync();
 }
 
 void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* reason) {
     if (g_pSharedMem) {
+        ReleaseStatusOverlayDarkForCapture("recording start failure");
         g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
@@ -306,6 +332,7 @@ void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* 
         g_pSharedMem->runtimeState.notificationType.store(
             static_cast<uint32_t>(OverlayNotificationType::RecordingFailed), std::memory_order_release);
         g_pSharedMem->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
+        SignalStatusOverlaySync();
     }
     LogError("[Media] Recording start failed: %s (code=%u)", reason ? reason : "unspecified",
              static_cast<uint32_t>(failureCode));

@@ -11,6 +11,10 @@
             UpdateOverlay();
             continue;
         }
+        if (msg.message == kMsgStatusSync) {
+            HandleStatusSyncOnUiThread();
+            continue;
+        }
 #ifdef CE_UNIT_TESTS
         if (msg.message == kMsgTestBarrier) {
             SetEvent(reinterpret_cast<HANDLE>(msg.wParam));
@@ -79,6 +83,7 @@ bool PseudoOverlay::InitializeOnUiThread() {
 }
 
 void PseudoOverlay::Shutdown() {
+    StopStatusSyncWatcher();
     if (!uiThread_.joinable())
         return;
 
@@ -133,6 +138,7 @@ void PseudoOverlay::ShutdownOnUiThread() {
     warnVisible_ = false;
     warnCycleStart_ = 0;
     lastTimerTickMs_ = 0;
+    statusDarkForCapture_ = false;
     mappedInjectPid_ = 0;
     lastEncoderOverloadFlags_ = 0;
     lastCaptureHealthFlags_ = 0;
@@ -266,6 +272,97 @@ void PseudoOverlay::PostRefresh() {
     if (threadId != 0) {
         PostThreadMessageW(threadId, kMsgRefresh, 0, 0);
     }
+}
+
+// Media -> controller status synchronization.
+//
+// Screen-grab recordings capture the composited desktop, so a startup status that is still
+// on screen when capture arms ends up in the file: the look-ahead reservoir handed to the
+// live output is captured before file output goes live, and the overlay's own 500ms poll
+// would notice the live transition later still. Media therefore publishes the capture-dark
+// request and waits here for proof that the status is gone from the composited screen
+// before it starts the capture pipeline.
+bool PseudoOverlay::StartStatusSyncWatcher() {
+    // The overlay always runs inside the controller, so its own PID is the key the media
+    // child authenticates against its IPC pipe server.
+    wchar_t syncEventName[64] = {};
+    wchar_t ackEventName[64] = {};
+    const uint32_t controllerPid = static_cast<uint32_t>(GetCurrentProcessId());
+    GenerateStatusOverlaySyncEventName(syncEventName, 64, controllerPid);
+    GenerateStatusOverlayDarkAckEventName(ackEventName, 64, controllerPid);
+
+    statusSyncStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    statusSyncEvent_ = CreateEventW(nullptr, FALSE, FALSE, syncEventName);
+    statusDarkAckEvent_ = CreateEventW(nullptr, FALSE, FALSE, ackEventName);
+    if (!statusSyncStopEvent_ || !statusSyncEvent_ || !statusDarkAckEvent_) {
+        LogError("[PseudoOverlay] Failed to create status-sync events (error=%lu); media falls back to polling",
+                 GetLastError());
+        StopStatusSyncWatcher();
+        return false;
+    }
+
+    statusSyncThread_ = std::thread([this]() { StatusSyncWatcherMain(); });
+    return true;
+}
+
+void PseudoOverlay::StatusSyncWatcherMain() {
+    const HANDLE waitHandles[2] = {statusSyncStopEvent_, statusSyncEvent_};
+    for (;;) {
+        const DWORD wait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+        if (wait != WAIT_OBJECT_0 + 1) {
+            if (wait != WAIT_OBJECT_0) {
+                LogWarn("[PseudoOverlay] Status-sync watcher wait failed (result=%lu error=%lu)", wait,
+                        GetLastError());
+            }
+            return;
+        }
+        const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
+        // The watcher never touches windows or GDI; the UI thread that owns them does the
+        // update and only it can truthfully acknowledge that the status is off screen.
+        if (threadId == 0 || !PostThreadMessageW(threadId, kMsgStatusSync, 0, 0)) {
+            LogWarn("[PseudoOverlay] Status-sync notification could not reach the UI thread (threadId=%lu)",
+                    threadId);
+        }
+    }
+}
+
+void PseudoOverlay::StopStatusSyncWatcher() {
+    if (statusSyncStopEvent_) {
+        SetEvent(statusSyncStopEvent_);
+    }
+    if (statusSyncThread_.joinable()) {
+        statusSyncThread_.join();
+    }
+    if (statusSyncStopEvent_) {
+        CloseHandle(statusSyncStopEvent_);
+        statusSyncStopEvent_ = NULL;
+    }
+    if (statusSyncEvent_) {
+        CloseHandle(statusSyncEvent_);
+        statusSyncEvent_ = NULL;
+    }
+    if (statusDarkAckEvent_) {
+        CloseHandle(statusDarkAckEvent_);
+        statusDarkAckEvent_ = NULL;
+    }
+}
+
+void PseudoOverlay::HandleStatusSyncOnUiThread() {
+    ApplyPendingConfig();
+    RefreshRecordingState();
+    RefreshActiveProfileConfig();
+    UpdateOverlay();
+
+    if (!statusDarkForCapture_ || !statusDarkAckEvent_) {
+        return;
+    }
+
+    // UpdateOverlay() has hidden or destroyed the status windows, but the compositor still
+    // owns the frame they were last drawn into. Flushing composition is what makes the
+    // acknowledgement true for a capture that reads the composited screen.
+    DwmFlushComposition();
+    SetEvent(statusDarkAckEvent_);
+    LogInfo("[PseudoOverlay] Capture-dark acknowledged: startup status is off the composited screen");
 }
 
 void PseudoOverlay::TriggerRecordingHealthWarning(uint32_t warningKind, uint32_t sustainFpsX100) {

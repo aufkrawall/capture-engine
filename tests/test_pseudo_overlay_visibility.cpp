@@ -54,6 +54,58 @@ TEST(PseudoOverlayVisibilityTest, Mode1RecordingWithStaleWarnStillShowsIndicator
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
 }
 
+// ---- Capture-dark request (screen-grab recordings capture the composited screen) ----
+
+TEST(PseudoOverlayVisibilityTest, CaptureDarkRemovesEveryPendingStartupElement) {
+    // The bug this guards: the amber startup status stayed on screen while the screen-grab
+    // capture pipeline was already recording the desktop, so the recorded file began with
+    // CE's own "STARTING RECORDING..." text burned into it.
+    for (const int mode : {0, 1, 2}) {
+        for (const auto state :
+             {ce::recording_indicator::State::StartingVideo, ce::recording_indicator::State::StartingAudio}) {
+            auto in = Base();
+            in.mode = mode;
+            in.recordingState = state;
+            in.statusDarkForCapture = true;
+            EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::None) << mode;
+            EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in)) << mode;
+        }
+    }
+}
+
+TEST(PseudoOverlayVisibilityTest, CaptureDarkKeepsStartupStatusWhenNotRequested) {
+    auto in = Base();
+    in.mode = 1;
+    in.recordingState = ce::recording_indicator::State::StartingVideo;
+    in.statusDarkForCapture = false;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::Starting);
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, CaptureDarkNeverSuppressesTheLiveRecordingIndicator) {
+    // Media releases the request in the same publication that turns the state live, but a
+    // stale request bit must never be able to hide an established recording indicator.
+    auto in = Base();
+    in.mode = 1;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
+    in.statusDarkForCapture = true;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, CaptureDarkDoesNotRevivePendingSuppressedIdleText) {
+    // Going dark is not the same as going idle: the NOT-RECORDING warning and idle
+    // finalization feedback stay suppressed while a recording start is pending.
+    auto in = Base();
+    in.mode = 1;
+    in.recordingState = ce::recording_indicator::State::StartingVideo;
+    in.statusDarkForCapture = true;
+    in.warnVisible = true;
+    in.recordingNotifyUntilMs = in.nowMs + 1000;
+    in.recordingNotification = pov::RecordingNotificationKind::Saved;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::None);
+    EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
 // ---- Sanctioned exceptions still work during recording ----
 
 TEST(PseudoOverlayVisibilityTest, Mode2RecordingOverloadWarningStillShows) {

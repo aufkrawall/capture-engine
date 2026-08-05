@@ -117,6 +117,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         LogError("[Media] Failed to initialize IPC");
         return 1;
     }
+    // Authenticated owner of the controller-side status overlay; keys the status-sync and
+    // capture-dark events so they can never bind to a foreign process.
+    ce::status_overlay::SetControllerPid(ipc.ControllerPid());
 
     if (!ensureMediaEngineReady()) {
         return 1;

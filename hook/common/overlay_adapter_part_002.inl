@@ -26,7 +26,8 @@
     rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
     rowInputs.showRecording = cfg.showRecording;
     rowInputs.recordingActive = frameLayout.recordingActive;
-    rowInputs.recordingStarting = ce::recording_indicator::IsStarting(frameLayout.recordingState);
+    rowInputs.recordingStarting =
+        ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
     rowInputs.notificationVisible = frameLayout.notificationVisible;
     frameLayout.rowMask = ce::overlay_layout::BuildOverlayRowMask(rowInputs);
     frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
@@ -43,6 +44,7 @@
                                    std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
     const bool recordingChanged = !hasLastFrameLayout ||
                                   frameLayout.recordingState != lastFrameLayout.recordingState ||
+                                  frameLayout.recordingStatusDark != lastFrameLayout.recordingStatusDark ||
                                   frameLayout.recordingActive != lastFrameLayout.recordingActive ||
                                   frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
                                   frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
@@ -679,6 +681,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Recording status line
     if (rowRecording) {
-        if (ce::recording_indicator::IsStarting(frameLayout.recordingState)) {
+        if (ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark) {
             renderer->DrawTextWithShadow(labelCol, cursorY,
                                          ce::recording_indicator::GetStartingText(frameLayout.recordingState),

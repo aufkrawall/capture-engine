@@ -98,6 +98,11 @@ public:
     bool HasFatalDisconnect() const {
         return fatalDisconnect_.load(std::memory_order_acquire);
     }
+    // Controller PID from the startup arguments, accepted only after it matched the
+    // authenticated pipe server process. 0 until ReadStartupArguments has validated it.
+    uint32_t ControllerPid() const {
+        return controllerPid_;
+    }
 
 private:
     bool ReadStartupArguments();

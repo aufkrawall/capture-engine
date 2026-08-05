@@ -68,6 +68,51 @@ TEST(RecordingStartFeedbackSourceTest, MediaOwnsLiveAndTerminalIntentTransitions
     EXPECT_NE(source.find("ackRecordingStarted.store(true"), std::string::npos);
 }
 
+// Regression: a screen-grab recording captures the composited desktop, so CE's own
+// recording-start status has to be off screen before the capture pipeline starts. Doing it
+// when file output goes live is a full look-ahead reservoir too late, which is exactly how
+// "STARTING RECORDING..." ended up burned into the first frames of recorded files.
+TEST(RecordingStartFeedbackSourceTest, MediaTakesTheStatusOverlayDarkBeforeScreenGrabCaptureStarts) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t startRecording = source.find("bool StartRecording(const AppConfig& config)");
+    ASSERT_NE(startRecording, std::string::npos);
+    const size_t darkRequest =
+        source.find("RequestStatusOverlayDarkForCapture(\"screen-grab capture start\")", startRecording);
+    const size_t encoderThread = source.find("EncoderThreadFunc(*configSnapshot)", startRecording);
+    const size_t wgcCaptureStart = source.find("StartWgcRecordingCapture(config)", startRecording);
+    ASSERT_NE(darkRequest, std::string::npos);
+    ASSERT_NE(encoderThread, std::string::npos);
+    ASSERT_NE(wgcCaptureStart, std::string::npos);
+    EXPECT_LT(darkRequest, encoderThread);
+    EXPECT_LT(darkRequest, wgcCaptureStart);
+
+    // The request is bounded and fail-open: a missing or unresponsive consumer must never
+    // block a recording start.
+    const std::string protocol = ReadSource("captureengine/status_overlay_sync.cpp");
+    ASSERT_FALSE(protocol.empty());
+    EXPECT_NE(protocol.find("WaitForSingleObject(ackEvent, kDarkAckTimeoutMs)"), std::string::npos);
+    EXPECT_NE(protocol.find("No controller status consumer"), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, MediaReleasesTheCaptureDarkRequestOnEveryStatusPublication) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("ReleaseStatusOverlayDarkForCapture(\"recording live\")"), std::string::npos);
+    EXPECT_NE(source.find("ReleaseStatusOverlayDarkForCapture(\"recording not live\")"), std::string::npos);
+    EXPECT_NE(source.find("ReleaseStatusOverlayDarkForCapture(\"recording start failure\")"), std::string::npos);
+    // Media wakes the controller-side overlay on every status publication so the live REC
+    // state does not wait for the overlay's next poll either.
+    EXPECT_NE(source.find("SignalStatusOverlaySync()"), std::string::npos);
+
+    const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
+    ASSERT_FALSE(overlay.empty());
+    EXPECT_NE(overlay.find("kCaptureRuntimeFlagStatusOverlayDarkForCapture"), std::string::npos);
+    EXPECT_NE(overlay.find("frameLayout.recordingStatusDark"), std::string::npos);
+}
+
 TEST(RecordingStartFeedbackSourceTest, WarmupStopIsAcceptedAsCancellationBeforeLiveCommit) {
     const std::string captureSource = ReadSource("captureengine/media_main.cpp");
     const std::string mediaSource = ReadSource("mediaengine/mediaengine.cpp");

@@ -66,6 +66,11 @@ public:
     ce::recording_indicator::State GetRecordingIndicatorStateForTesting() const {
         return publishedRecordingIndicatorState_.load(std::memory_order_acquire);
     }
+    // Emulates the media-published capture-dark request so the notification and
+    // acknowledgement path can be exercised without an inject shared-memory instance.
+    void ForceStatusDarkForCaptureForTesting(bool dark) {
+        forcedStatusDarkForCapture_.store(dark, std::memory_order_release);
+    }
 #endif
 
 private:
@@ -108,6 +113,12 @@ private:
     void ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const std::string& profileSection);
     bool RefreshRecordingState();
     void PostRefresh();
+    // Media-signalled status synchronization. The watcher thread only waits and forwards;
+    // every window/GDI touch stays on the UI thread that owns those resources.
+    void StatusSyncWatcherMain();
+    bool StartStatusSyncWatcher();
+    void StopStatusSyncWatcher();
+    void HandleStatusSyncOnUiThread();
     // Evaluate focus-acquire grace for the current tick, update tracking state, and
     // log transitions. Called once per timer tick.
     void UpdateForegroundGraceState(bool currentHadTarget, uint32_t currentPid);
@@ -143,6 +154,12 @@ private:
     std::atomic<DWORD> uiThreadId_{0};
     HANDLE uiReadyEvent_ = NULL;
     std::atomic<bool> uiInitSucceeded_{false};
+    // Media -> controller status synchronization. The watcher owns only the wait; the
+    // acknowledgement is set by the UI thread once the status windows are composited away.
+    std::thread statusSyncThread_;
+    HANDLE statusSyncEvent_ = NULL;
+    HANDLE statusDarkAckEvent_ = NULL;
+    HANDLE statusSyncStopEvent_ = NULL;
     float scale_ = 1.0f;
 
     // Scale helper
@@ -163,6 +180,13 @@ private:
     std::atomic<ULONGLONG> recordingNotifyUntil_{0};
     std::atomic<ce::pseudo_overlay::RecordingNotificationKind> recordingNotification_{
         ce::pseudo_overlay::RecordingNotificationKind::None};
+    // Media-owned capture-dark request, resolved from shared memory on the UI thread.
+    // While set, the pending startup status must not be composited: a screen-grab
+    // recording captures whatever the compositor shows.
+    bool statusDarkForCapture_ = false;
+#ifdef CE_UNIT_TESTS
+    std::atomic<bool> forcedStatusDarkForCapture_{false};
+#endif
     // Warning blink state
     bool warnActive_ = false;
     bool warnVisible_ = false;
@@ -225,6 +249,7 @@ private:
     static constexpr UINT kMsgRefresh = WM_APP + 0x41;
     static constexpr UINT kMsgShutdown = WM_APP + 0x42;
     static constexpr UINT kMsgTestBarrier = WM_APP + 0x43;
+    static constexpr UINT kMsgStatusSync = WM_APP + 0x44;
 
     // Window procedures
     static LRESULT CALLBACK IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARAM l);

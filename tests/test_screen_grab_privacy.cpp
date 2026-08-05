@@ -110,6 +110,81 @@ TEST(ScreenGrabPrivacyTest, AmbiguousObservationAndTargetResetRemainFailClosed) 
     EXPECT_FALSE(decision.useBlackFrame);
 }
 
+// Regression: warmup builds the WGC look-ahead reservoir that the live handoff keeps.
+// Before warmup observation existed, the first live evaluation opened the verified-focus
+// interval at "now", which is newer than every reservoir frame, so a recording that was
+// started with the capture target already focused began with a reservoir-long blackout.
+TEST(ScreenGrabPrivacyTest, WarmupObservationRevealsTheReservoirItVerified) {
+    privacy::FocusPrivacyGate gate;
+    gate.Reset(true);
+
+    auto observed = gate.Observe(true, true, true, 100);
+    EXPECT_TRUE(observed.focusReacquired);
+    EXPECT_TRUE(observed.enteredBlackout);
+    EXPECT_FALSE(observed.useBlackFrame);
+    EXPECT_TRUE(observed.waitingForSafeFrame);
+    EXPECT_EQ(gate.SafeFrameThresholdQpc(), 100);
+
+    // Repeated warmup ticks with the same verified focus must not re-arm the interval.
+    observed = gate.Observe(true, true, true, 300);
+    EXPECT_FALSE(observed.focusReacquired);
+    EXPECT_FALSE(observed.enteredBlackout);
+    EXPECT_EQ(gate.SafeFrameThresholdQpc(), 100);
+
+    // The first live frame is reservoir content captured long before the handoff but
+    // after the verified interval opened, so it is revealed without a black frame.
+    const auto live = gate.Evaluate(true, true, true, 1000, true, 670);
+    EXPECT_TRUE(live.exitedBlackout);
+    EXPECT_FALSE(live.useBlackFrame);
+    EXPECT_EQ(gate.BlackFrames(), 0u);
+}
+
+TEST(ScreenGrabPrivacyTest, WarmupFocusLossStillBlanksTheReservoirCapturedWhileUnfocused) {
+    privacy::FocusPrivacyGate gate;
+    gate.Reset(true);
+
+    EXPECT_TRUE(gate.Observe(true, true, true, 100).focusReacquired);
+    // Focus left the capture target mid-warmup: everything buffered so far is unsafe.
+    auto observed = gate.Observe(true, true, false, 200);
+    EXPECT_TRUE(observed.waitingForSafeFrame);
+    EXPECT_EQ(gate.SafeFrameThresholdQpc(), 0);
+    // Reacquired later in warmup: the interval restarts at the reacquisition.
+    observed = gate.Observe(true, true, true, 400);
+    EXPECT_TRUE(observed.focusReacquired);
+    EXPECT_EQ(gate.SafeFrameThresholdQpc(), 400);
+
+    auto live = gate.Evaluate(true, true, true, 500, true, 150);
+    EXPECT_TRUE(live.useBlackFrame);
+    gate.CommitOutput(true);
+    live = gate.Evaluate(true, true, true, 520, true, 410);
+    EXPECT_TRUE(live.exitedBlackout);
+    EXPECT_FALSE(live.useBlackFrame);
+    EXPECT_EQ(gate.BlackFrames(), 1u);
+}
+
+TEST(ScreenGrabPrivacyTest, WarmupObservationNeverRevealsWithoutAVerifiedFocus) {
+    privacy::FocusPrivacyGate gate;
+    gate.Reset(true);
+
+    const auto ambiguous = gate.Observe(true, false, false, 100);
+    EXPECT_FALSE(ambiguous.useBlackFrame);
+    EXPECT_TRUE(ambiguous.waitingForSafeFrame);
+    EXPECT_EQ(gate.AmbiguousObservations(), 1u);
+    EXPECT_EQ(gate.SafeFrameThresholdQpc(), 0);
+
+    // A frame arriving while focus is still unverified stays black.
+    EXPECT_TRUE(gate.Evaluate(true, false, false, 200, true, 150).useBlackFrame);
+
+    // Disabled gate and inject paths never observe.
+    privacy::FocusPrivacyGate disabled;
+    disabled.Reset(false);
+    EXPECT_FALSE(disabled.Observe(true, true, true, 100).waitingForSafeFrame);
+    privacy::FocusPrivacyGate injectPath;
+    injectPath.Reset(true);
+    EXPECT_FALSE(injectPath.Observe(false, true, true, 100).waitingForSafeFrame);
+    EXPECT_EQ(injectPath.SafeFrameThresholdQpc(), 0);
+}
+
 TEST(ScreenGrabPrivacyTest, DisabledAndInjectPathsRemainVisible) {
     privacy::FocusPrivacyGate gate;
     gate.Reset(false);

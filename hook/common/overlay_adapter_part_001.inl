@@ -641,6 +641,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     const RecordingStartIntent recordingStartIntent = sharedMem->runtimeState.GetRecordingStartIntent();
     frameLayout.recordingState = ce::recording_indicator::SelectState(
         frameLayout.recordingActive, frameLayout.recordingAudioOnly, recordingStartIntent);
+    frameLayout.recordingStatusDark =
+        sharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture) &&
+        ce::recording_indicator::IsStarting(frameLayout.recordingState);
     uint64_t nowTick64 = GetTickCount64();
     if (cfg.showRecording && frameLayout.recordingActive) {
         int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);

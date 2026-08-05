@@ -378,28 +378,52 @@
             }
             return cursorState;
         };
-        auto evaluateScreenGrabPrivacy = [&](const QueuedFrame* freshFrame) {
-            if (!privacyRuntime.IsEnabled()) {
-                return ce::screen_grab_privacy::GateDecision{};
-            }
-            HWND targetWindow = nullptr, confirmedWindow = nullptr;
-            HMONITOR targetMonitor = nullptr, confirmedMonitor = nullptr;
+        struct ScreenGrabPrivacyContext {
+            HWND targetWindow = nullptr;
+            HMONITOR targetMonitor = nullptr;
+            bool stableCaptureTarget = false;
+            ce::screen_grab_privacy::FullscreenFocusSnapshot focus;
+        };
+        auto sampleScreenGrabPrivacyContext = [&]() {
+            ScreenGrabPrivacyContext context;
+            HWND confirmedWindow = nullptr;
+            HMONITOR confirmedMonitor = nullptr;
             const auto captureBefore = g_WgcCap.Read();
             if (captureBefore) {
-                captureBefore->GetTargetIdentity(&targetWindow, &targetMonitor);
+                captureBefore->GetTargetIdentity(&context.targetWindow, &context.targetMonitor);
             }
-            const auto focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
+            context.focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
             const auto captureAfter = g_WgcCap.Read();
             if (captureAfter) {
                 captureAfter->GetTargetIdentity(&confirmedWindow, &confirmedMonitor);
             }
-            const bool stableCaptureTarget = captureBefore && captureAfter &&
-                                             captureBefore.get() == captureAfter.get() &&
-                                             targetWindow == confirmedWindow && targetMonitor == confirmedMonitor;
+            context.stableCaptureTarget = captureBefore && captureAfter && captureBefore.get() == captureAfter.get() &&
+                                          context.targetWindow == confirmedWindow &&
+                                          context.targetMonitor == confirmedMonitor;
+            return context;
+        };
+        // Warmup frames never reach the file, but the WGC/DXGI look-ahead reservoir they
+        // build is handed to the live output intact. Tracking focus from the first warmup
+        // tick opens the verified-focus interval before that reservoir content is captured,
+        // so the live handoff no longer has to blank a reservoir it just filled.
+        auto observeScreenGrabPrivacyWarmup = [&]() {
+            if (!privacyRuntime.IsEnabled()) {
+                return;
+            }
+            const auto context = sampleScreenGrabPrivacyContext();
+            privacyRuntime.ObserveWarmup(useScreenGrab, context.targetWindow, context.targetMonitor,
+                                         context.stableCaptureTarget, context.focus);
+        };
+        auto evaluateScreenGrabPrivacy = [&](const QueuedFrame* freshFrame) {
+            if (!privacyRuntime.IsEnabled()) {
+                return ce::screen_grab_privacy::GateDecision{};
+            }
+            const auto context = sampleScreenGrabPrivacyContext();
             const int64_t freshFrameQpc =
                 freshFrame ? (freshFrame->rawTimestamp > 0 ? freshFrame->rawTimestamp : freshFrame->timestamp) : 0;
-            return privacyRuntime.Evaluate(useScreenGrab, targetWindow, targetMonitor, stableCaptureTarget, focus,
-                                           freshFrame != nullptr, freshFrameQpc);
+            return privacyRuntime.Evaluate(useScreenGrab, context.targetWindow, context.targetMonitor,
+                                           context.stableCaptureTarget, context.focus, freshFrame != nullptr,
+                                           freshFrameQpc);
         };
         auto requestPrivacyFailClosedStop = [&](const char* reason) {
             LogError(
@@ -533,6 +557,9 @@
         }
         startupWarmupStartTick = warmupState.startupWarmupStartTick;
         hiddenStartupFrames = warmupState.hiddenStartupFrames;
+        if (!recordingOutputLive && useScreenGrab) {
+            observeScreenGrabPrivacyWarmup();
+        }
         const size_t injectReserveFrames = (!useScreenGrab)
                                                ? ce::capture_policy::GetInjectReserveFrames(
                                                      config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs)

@@ -35,7 +35,19 @@ struct OverlayVisibilityInputs {
     uint64_t screenshotNotifyUntilMs = 0;  // 0 = no screenshot notification pending
     uint64_t recordingNotifyUntilMs = 0;  // 0 = no recording finalization notification pending
     RecordingNotificationKind recordingNotification = RecordingNotificationKind::None;
+    // Media has armed a screen-grab capture pipeline that is about to record the desktop.
+    // Screen capture records the composited screen, so the pending startup status must be
+    // dark before the first captured frame; the live REC indicator is unaffected because
+    // media clears the request at the same moment it publishes live recording.
+    bool statusDarkForCapture = false;
 };
+
+// The startup status is the only element suppressed by the capture-dark request: idle
+// feedback is not on screen during a recording start, and live indicators are governed by
+// the resolved recording state after media releases the request.
+inline bool IsStartupStatusDarkForCapture(const OverlayVisibilityInputs& in) {
+    return in.statusDarkForCapture && ce::recording_indicator::IsStarting(in.recordingState);
+}
 
 enum class OverlayTextKind : uint8_t {
     None = 0,
@@ -52,6 +64,9 @@ enum class OverlayTextKind : uint8_t {
 
 inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in) {
     if (ce::recording_indicator::IsStarting(in.recordingState)) {
+        if (in.statusDarkForCapture) {
+            return OverlayTextKind::None;
+        }
         return in.mode != 0 ? OverlayTextKind::Starting : OverlayTextKind::None;
     }
     if (in.screenshotNotifyUntilMs != 0 && in.nowMs < in.screenshotNotifyUntilMs) {
@@ -84,7 +99,8 @@ inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in
 }
 
 inline bool ShouldPseudoOverlayBeVisible(const OverlayVisibilityInputs& in) {
-    const bool showIndicator = ce::recording_indicator::IsVisible(in.recordingState) && in.mode != 2;
+    const bool showIndicator =
+        ce::recording_indicator::IsVisible(in.recordingState) && in.mode != 2 && !IsStartupStatusDarkForCapture(in);
     return showIndicator || SelectPseudoOverlayText(in) != OverlayTextKind::None || in.ghostActive;
 }
 

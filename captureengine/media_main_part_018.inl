@@ -542,6 +542,14 @@ bool StartRecording(const AppConfig& config) {
         return false;
     }
 
+    if (useScreenGrab) {
+        // Last point before any frame of this recording can be captured. Screen-grab
+        // capture records the composited desktop, so CE's own recording-start status has
+        // to be off screen now: the encoder thread's warmup reservoir is captured from
+        // here on and is handed to the live output intact.
+        RequestStatusOverlayDarkForCapture("screen-grab capture start");
+    }
+
     g_Recording = true;
     g_EncoderRunning = true;
     g_RecordingUsesVfr.store(config.video.useVFR, std::memory_order_release);

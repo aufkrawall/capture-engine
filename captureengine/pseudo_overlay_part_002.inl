@@ -142,13 +142,14 @@ void PseudoOverlay::UpdateOverlay() {
 
     const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
         config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
-        recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive);
+        recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive,
+        statusDarkForCapture_);
 
     LogDebug(
         "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
-        "shouldHaveVisible=%d",
+        "statusDark=%d shouldHaveVisible=%d",
         config_.mode, static_cast<unsigned>(recordingState), isRecording ? 1 : 0, warnVisible_ ? 1 : 0,
-        ghostActive ? 1 : 0, shouldHaveVisibleOverlay ? 1 : 0);
+        ghostActive ? 1 : 0, statusDarkForCapture_ ? 1 : 0, shouldHaveVisibleOverlay ? 1 : 0);
 
     if (!config_.enabled) {
         DestroyOverlayWindows();
@@ -306,7 +307,11 @@ void PseudoOverlay::UpdateOverlay() {
     }  // BR
 
     bool showInd = false;
-    if (ce::recording_indicator::IsVisible(recordingState) && config_.mode != 2)  // MODE_WARN_ONLY
+    // The amber pending circle is part of the startup status the capture-dark request
+    // takes off screen; the live red indicator is unaffected because media releases the
+    // request in the same publication that turns the state live.
+    if (ce::recording_indicator::IsVisible(recordingState) && config_.mode != 2 &&
+        !(statusDarkForCapture_ && isStarting))  // MODE_WARN_ONLY
         showInd = true;
 
     BYTE indAlpha = 0;
@@ -415,6 +420,7 @@ void PseudoOverlay::UpdateOverlay() {
     textInputs.recordingNotifyUntilMs = recordingNotifyUntil_.load();
     textInputs.recordingNotification = recordingNotification_.load(std::memory_order_relaxed);
     textInputs.nowMs = now;
+    textInputs.statusDarkForCapture = statusDarkForCapture_;
     const auto textKind = ce::pseudo_overlay::SelectPseudoOverlayText(textInputs);
     const bool showStarting = textKind == ce::pseudo_overlay::OverlayTextKind::Starting;
     const bool showScreenshot = textKind == ce::pseudo_overlay::OverlayTextKind::Screenshot;
@@ -670,6 +676,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
 
     CloseHandle(uiReadyEvent_);
     uiReadyEvent_ = NULL;
+    StartStatusSyncWatcher();
     return true;
 }
 

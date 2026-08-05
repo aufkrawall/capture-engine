@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-08-05 - Screen-grab recordings no longer open with a privacy blackout or CE's own startup status
+
+Both bugs shared one root cause shape: state was resolved at the **live handoff**, while the
+content that becomes the first live frames was captured a full look-ahead reservoir earlier.
+Real evidence from `logs/20260804_225115` (`media_r0002_22952.log`): warmup armed 00:38:26.573,
+live 00:38:27.636, `contentDelayUs=332397`, privacy blackout 27.636 -> 27.978 (~342 ms), and
+`[PseudoOverlay] Recording indicator state 1 -> 3` only at 27.796 (160 ms after live).
+
+- **Privacy blackout at video start:** `FocusPrivacyGate` opened its verified-focus interval
+  at the first *emitted* frame, so every preserved reservoir frame was older than its own
+  threshold and got blanked. The gate now also tracks focus during warmup
+  (`FocusPrivacyGate::Observe` / `ScreenGrabPrivacyRuntime::ObserveWarmup`, driven per encoder
+  tick from the warmup branch), so the interval is already open when that reservoir content is
+  captured. Focus tracking was refactored into one `UpdateFocusTracking` used by both paths;
+  live decision semantics are unchanged. A warmup focus loss still restarts the interval at the
+  reacquisition, so this is strictly *more* protective than before, not less.
+- **Startup status burned into the first frames:** screen capture records the composited
+  desktop, so the status had to be gone before capture starts. New media-owned
+  `kCaptureRuntimeFlagStatusOverlayDarkForCapture` plus a controller handshake over
+  `Local\CE_StatusSync_<controllerPid>` / `Local\CE_StatusDark_<controllerPid>`: media requests
+  dark right before the encoder thread and WGC capture start and waits up to 300 ms; the
+  pseudo-overlay UI thread hides its windows, double-`DwmFlush()`es, and acknowledges. Media
+  also signals sync on every status publication, so the live REC indicator no longer waits for
+  the overlay's 500 ms poll either. The inject overlay honors the same flag (best-effort, no
+  ack) for injected games captured through WGC.
+- **Fail-open:** no overlay means no events and no wait; an unresponsive consumer costs the
+  bounded 300 ms and a `[StatusOverlayDark]` warning. A recording start is never blocked.
+- **Source anchors:** `common/screen_grab_privacy.{h,cpp}`,
+  `captureengine/screen_grab_privacy_runtime.{h,cpp}`, `captureengine/media_main_part_012.inl`
+  (warmup observation), `captureengine/status_overlay_sync.{h,cpp}` (new, extracted so
+  `media_main_part_002.inl` stays under the 800-line ceiling),
+  `captureengine/media_main_part_018.inl` (request site), `captureengine/pseudo_overlay*`,
+  `common/pseudo_overlay_visibility.h`, `hook/common/overlay_adapter*`.
+- **Tests:** `tests/test_screen_grab_privacy.cpp` (warmup reveal, warmup focus loss still
+  blanks, unverified focus never reveals), `tests/test_pseudo_overlay_visibility.cpp`
+  (capture-dark suppression across all modes, live indicator never suppressed),
+  `tests/test_pseudo_overlay_thread.cpp` (end-to-end sync -> UI thread -> ack),
+  `tests/test_recording_start_feedback.cpp` (dark request ordered before capture start).
+- **Open:** real-game validation of both fixes is still pending; check that a recording started
+  with the game already focused opens with real pixels and no amber status, and that
+  `[StatusOverlayDark] Status overlay confirmed dark` appears with a small wait.
+
 ### 2026-08-04 - Scrubbed developer path from release-workflow history; added privacy-path gate
 
 - **Change:** a literal `C:\Users\<developer>\Programme\build\captureproject` example in
