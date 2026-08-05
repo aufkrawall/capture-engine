@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-05 - Source-fragment (.inl) conversion to semantic .cpp units (in progress)
+
+The mechanical 650-line `.inl` splits (commits `fdc0977d`/`02e3bafa`) are being converted back into
+semantic `.cpp` units. Completed so far (commits `1a886ccc`, `8ff0b9cd`, `652d85f0`, `e7361204`,
+`c74d4239`, `2951183c`): config; hook/common custom_overlay_dx12/gl/vk, fg_session_state,
+system_metrics, overlay_adapter (dxgi_shared NOT yet); hook/apis nvngx, dx8, ffx, opengl,
+opengl_sampler_override, ddraw, streamline; hook/wrappers dxgi_swapchain_wrap; hook/vulkan_layer
+vulkan_layer + layer_capture; mediaengine audio_capture, audio_encoder, app_audio_capture,
+video_encoder_options; captureengine injection, main, pseudo_overlay; reflex fold into
+`reflex_limiter.h`; testapp av_sync/fsr_fg merges.
+
+Remaining (143 first-party `.inl` files): hook/apis dx9/dx11/dx12_hook/dxgi_shared, mediaengine
+mediaengine/video_encoder, captureengine wgc_capture/media_main, hook/main (reverted: extern "C"
+block placement + extern decl emission for shared globals need tool fixes first), testapp
+dx12_fg_switch/vulkan_fg_switch (need multi-source link changes in `tools/build/build_part_011.py`).
+
+Tooling: `tools/refactor/source_splitter.py` (reassemble/map/split) + `tools/refactor/reapply.py`
+(regenerate from grouping JSONs; `--source <commit>` restores pre-conversion facades). Generated
+`<module>_internal.h` headers carry hoisted includes, class forward declarations, prototypes, and
+shared state (variables renamed `<module>_`-prefixed, string/comment aware; static functions kept
+as `inline` at global scope to preserve overload resolution). `tests/source_fragment_reader.h`
+assembles logical sources from the internal header plus sibling units. `hook/main.cpp` was reverted
+to its `.inl` facade after the split exposed tool gaps; the remaining conversions follow the same
+grouping-JSON workflow.
+
 ### 2026-08-05 - Screen-grab recordings no longer open with a privacy blackout or CE's own startup status
 
 Both bugs shared one root cause shape: state was resolved at the **live handoff**, while the

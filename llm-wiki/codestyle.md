@@ -35,16 +35,22 @@ This page records the style rules that are either tool-backed or strongly reflec
 
 ### Bounded source fragments
 
-- The governed source ceiling is 800 lines; split toward a working target near 650-750 and never pad a small file.
-- C++ `.inl` fragments are ordered includes inside the original `.cpp` translation unit. Keep anonymous/file-static state,
-  preprocessor groups, strict-FP source identity, hot paths, and explicit build lists intact.
+- The governed source ceiling is 800 lines; the working target is ~750. Splits must follow semantic boundaries
+  (one entity/module per file), never line-count cuts; `_part_NNN` fragments are deprecated.
+- C++ modules are split into semantic `.cpp` units plus a generated `<module>_internal.h` that holds the hoisted
+  includes, class forward declarations, prototypes of non-static functions, and shared file-scope state. Shared
+  variables are renamed with a `<module>_` prefix (string/comment aware); shared static functions become `inline`
+  at global scope (preserving overload resolution). See `tools/refactor/source_splitter.py` and its grouping JSONs
+  under `build/refactor/`.
+- A file that is genuinely one cohesive unit may exceed the ceiling and be registered in
+  `tools/file_size_baseline.json` as deliberate debt; keep such entries rare.
 - Python compatibility facades execute ordered fragments in one module-global namespace. This preserves direct scripts,
   `import build`, monkeypatching, constants, and CLI behavior. `*_part_*.py` files are excluded from standalone flake8/
   pyright discovery because their names/imports intentionally come from neighboring fragments; source reassembly tests,
   `compileall`, facade execution, and the full verification gate cover the logical program.
 - Before accepting a split, compare logical source reassembly, inspect symbol/state ownership, run focused tests, and use
-  `--verify` for build, parser/configuration, media/capture, audio, graphics, or FG changes. Keep
-  `tools/file_size_baseline.json` at zero rather than treating it as a permanent allowlist.
+  `--verify` for build, parser/configuration, media/capture, audio, graphics, or FG changes. The clang-tidy ratchet
+  must stay at zero warnings; NOLINT comments must stay attached to their statements.
 
 ## Common Tree Conventions
 - Headers generally use `#pragma once`.
