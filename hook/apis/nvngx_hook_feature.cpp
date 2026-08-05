@@ -112,7 +112,7 @@ static char GetPresetChar(int qualityValue) {
     }
 
     if (presetVal > 0) {
-        return nvngx_hook_PresetIDToChar(presetVal);
+        return PresetIDToChar(presetVal);
     }
 
     return '?';
@@ -126,14 +126,14 @@ static float CalculateScale(const NVSDK_NGX_DLSS_Create_Params* p) {
 }
 
 static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info) {
-    if (!nvngx_hook_IsSafePtr(info) || !g_IPC || !g_IPC->GetSharedMem())
+    if (!IsSafePtr(info) || !g_IPC || !g_IPC->GetSharedMem())
         return;
 
     auto& state = g_IPC->GetSharedMem()->dlssState;
     // Version is updated at install time now
 
     // Safety check for FeatureInfo
-    if (!nvngx_hook_IsSafePtr(info->FeatureInfo))
+    if (!IsSafePtr(info->FeatureInfo))
         return;
 
     if (info->FeatureID == 1) {  // Super Resolution
@@ -144,14 +144,14 @@ static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info) {
             state.srPreset = GetPresetChar(params->InPerfQualityValue);
 
             if (g_IPC->GetSharedMem()->GetDebugLogging()) {
-                nvngx_hook_LogOncePerParam("DLSS_SR_Create", "NVNGX: Created DLSS SR. Scale=%.2f, Quality=%d, Preset=%c",
+                LogOncePerParam("DLSS_SR_Create", "NVNGX: Created DLSS SR. Scale=%.2f, Quality=%d, Preset=%c",
                                 state.renderScale.load(), params->InPerfQualityValue, state.srPreset.load());
             }
         }
     } else if (info->FeatureID == 13) {  // Ray Reconstruction
         state.rrActive = true;
         if (g_IPC->GetSharedMem()->GetDebugLogging()) {
-            nvngx_hook_LogOncePerParam("DLSS_RR_Create", "NVNGX: Created DLSS RR.");
+            LogOncePerParam("DLSS_RR_Create", "NVNGX: Created DLSS RR.");
         }
     }
 }
@@ -187,7 +187,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
         if (g_IPC && g_IPC->GetSharedMem()) {
             auto& state = g_IPC->GetSharedMem()->dlssState;
-            const ParameterVTableOriginals parameterOriginals = nvngx_hook_GetParameterOriginals(params);
+            const ParameterVTableOriginals parameterOriginals = GetParameterOriginals(params);
 
             if (featureID == 1) {
                 state.srActive = true;
@@ -201,7 +201,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     if (parameterOriginals.getUI) {
                         getRes = parameterOriginals.getUI(params, name, &val);
                         if (getRes == NVSDK_NGX_Result_Success) {
-                            nvngx_hook_UpdatePresetHint(name, val, "SyncUI");
+                            UpdatePresetHint(name, val, "SyncUI");
                             return;
                         } else if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                             NVNGXLog("NVNGX: oGetUI(%s) returned %X", name, getRes);
@@ -210,7 +210,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     if (parameterOriginals.getI) {
                         getRes = parameterOriginals.getI(params, name, (int*)&val);
                         if (getRes == NVSDK_NGX_Result_Success) {
-                            nvngx_hook_UpdatePresetHint(name, val, "SyncI");
+                            UpdatePresetHint(name, val, "SyncI");
                         } else if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                             NVNGXLog("NVNGX: oGetI(%s) returned %X", name, getRes);
                         }
@@ -244,7 +244,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         NVSDK_NGX_Result probeRes = parameterOriginals.getUI(params, probeParams[i], &probedVal);
                         if (probeRes == NVSDK_NGX_Result_Success && probedVal > 0) {
                             NVNGXLog("NVNGX: PROBE SUCCESS! '%s' = %u ('%c')", probeParams[i], probedVal,
-                                     nvngx_hook_PresetIDToChar(probedVal));
+                                     PresetIDToChar(probedVal));
                         }
                     }
                     NVNGXLog("NVNGX: Undocumented parameter probe complete.");
@@ -290,7 +290,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     // Try to read the multiplier from parameters
                     int mfgMultiplier = 2;  // Default to 2x
                     const auto& cfg = GetActiveGraphicsConfig();
-                    const int configuredMultiplier = nvngx_hook_GetConfiguredFGMultiplier(cfg);
+                    const int configuredMultiplier = GetConfiguredFGMultiplier(cfg);
                     if (configuredMultiplier > 0) {
                         mfgMultiplier = configuredMultiplier;
                     }
@@ -341,7 +341,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
             }
             if (cfg.parsed.srPreset > 0) {
                 char oldP = state.srPreset.load();
-                state.srPreset = nvngx_hook_PresetIDToChar(cfg.parsed.srPreset);
+                state.srPreset = PresetIDToChar(cfg.parsed.srPreset);
                 if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                     NVNGXLog(
                         "NV_NGX: Final Force SR Preset: '%c' -> '%c' (Config ID %u, "
@@ -350,7 +350,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                 }
             }
             if (cfg.parsed.rrPreset > 0 && featureID == 13) {
-                state.rrPreset = nvngx_hook_PresetIDToChar(cfg.parsed.rrPreset);
+                state.rrPreset = PresetIDToChar(cfg.parsed.rrPreset);
                 if (g_IPC->GetSharedMem()->GetDebugLogging())
                     NVNGXLog("NV_NGX: Final Force RR Preset to '%c'", state.rrPreset.load());
             }
@@ -392,8 +392,8 @@ void NVNGXHook::Install() {
         // static state? Wait, 'state' is in shared mem. g_IPC might not be
         // connected if game just started. But GetSharedMem() checks connection.
         if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->dlssState.srPreset = nvngx_hook_PresetIDToChar(presetVal);
-            NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", nvngx_hook_PresetIDToChar(presetVal));
+            g_IPC->GetSharedMem()->dlssState.srPreset = PresetIDToChar(presetVal);
+            NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", PresetIDToChar(presetVal));
         } else {
             // Store it in a static backup if IPC isn't ready?
 

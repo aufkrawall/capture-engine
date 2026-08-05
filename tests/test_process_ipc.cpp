@@ -266,7 +266,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_NE(endpointRelease, std::string::npos);
     EXPECT_LT(mediaRequest, injectFallback);
     EXPECT_LT(injectFallback, endpointRelease);
-    EXPECT_NE(helper.find("mediaAccepted || main_RequestChildRecordingStop"), std::string::npos);
+    EXPECT_NE(helper.find("mediaAccepted || RequestChildRecordingStop"), std::string::npos);
 
     EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"record hotkey\", 5000)"),
               std::string::npos);

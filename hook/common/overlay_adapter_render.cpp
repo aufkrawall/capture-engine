@@ -138,7 +138,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool showGraph = cfg.showFrameTime && metrics;
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
-    bool configChanged = !hasRenderedConfig || !overlay_adapter_OverlayConfigEquals(cfg, lastRenderedConfig);
+    bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
     const bool fgIdentityChanged = !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
                                    frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
@@ -172,12 +172,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     if (backend) {
         float paperWhite = cfg.hdrPaperWhite;
         if (paperWhite <= 0.0f) {
-            const HWND referenceHwnd = overlay_adapter_ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
+            const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
             HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
             if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
                 ULONG rawLevel = 0;
                 float queriedNits = 0.0f;
-                if (overlay_adapter_QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
+                if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
                     resolvedHdrPaperWhiteNits = queriedNits;
                     HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
                                      static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
@@ -796,7 +796,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
             if (frameLayout.showOverloadWarning) {
                 const std::string overloadLabel =
-                    overlay_adapter_FormatRecordingHealthLabel(frameLayout.recordingWarningKind,
+                    FormatRecordingHealthLabel(frameLayout.recordingWarningKind,
                                                frameLayout.recordingSustainFpsX100,
                                                frameLayout.recordingTargetFps);
                 std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,

@@ -22,6 +22,18 @@
 
 #include <cfloat>  // FLT_MAX
 
+// Include backends based on build context
+// VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
+#ifndef VK_LAYER_CE_OVERLAY
+// Full backends for hook DLL
+#include "custom_overlay_dx10.h"
+#include "custom_overlay_dx11.h"
+#include "custom_overlay_dx12.h"
+#include "custom_overlay_dx8.h"
+#include "custom_overlay_dx9.h"
+#include "custom_overlay_gl.h"
+#endif
+
 #include "custom_overlay_vk.h"
 
 #include <algorithm>
@@ -35,6 +47,22 @@
 #include <vector>
 
 using namespace ce::overlay_layout;
+
+inline bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
+    return a.showOverlay == b.showOverlay && a.captureIncludeOverlay == b.captureIncludeOverlay &&
+           a.screenshotIncludeOverlay == b.screenshotIncludeOverlay && a.showFPS == b.showFPS &&
+           a.showFrameTime == b.showFrameTime && a.showCPU == b.showCPU && a.showGPU == b.showGPU &&
+           a.showRAM == b.showRAM && a.showVRAM == b.showVRAM && a.showRecording == b.showRecording &&
+           a.showFG == b.showFG && a.position == b.position && a.padding == b.padding &&
+           a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode && a.fontSize == b.fontSize &&
+           a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor && a.bgAlpha == b.bgAlpha &&
+           a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
+           a.ramColor == b.ramColor && a.vramColor == b.vramColor && a.frametimeColor == b.frametimeColor &&
+           a.textColor == b.textColor && a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
+           a.textOutlineThickness == b.textOutlineThickness && a.loadColorLow == b.loadColorLow &&
+           a.loadColorMed == b.loadColorMed && a.loadColorHigh == b.loadColorHigh &&
+           a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
+}
 
 namespace {
 class ScopedThreadDpiAwareness {
@@ -66,30 +94,7 @@ private:
 };
 }
 
-// Helper to detect Windows DPI scaling
-// A known-valid game window remembered from any adapter's SetHwnd, used as the DPI fallback before
-// GetForegroundWindow(). During game startup the foreground window can be a 96-DPI launcher/splash, which
-// made adapters that init without their own hwnd (the descriptor-free DX12 backend) render at 100% instead
-// of the Windows scale.
-inline std::atomic<HWND> overlay_adapter_g_SharedOverlayDpiHwnd{nullptr};
-
-inline bool overlay_adapter_OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
-    return a.showOverlay == b.showOverlay && a.captureIncludeOverlay == b.captureIncludeOverlay &&
-           a.screenshotIncludeOverlay == b.screenshotIncludeOverlay && a.showFPS == b.showFPS &&
-           a.showFrameTime == b.showFrameTime && a.showCPU == b.showCPU && a.showGPU == b.showGPU &&
-           a.showRAM == b.showRAM && a.showVRAM == b.showVRAM && a.showRecording == b.showRecording &&
-           a.showFG == b.showFG && a.position == b.position && a.padding == b.padding &&
-           a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode && a.fontSize == b.fontSize &&
-           a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor && a.bgAlpha == b.bgAlpha &&
-           a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
-           a.ramColor == b.ramColor && a.vramColor == b.vramColor && a.frametimeColor == b.frametimeColor &&
-           a.textColor == b.textColor && a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
-           a.textOutlineThickness == b.textOutlineThickness && a.loadColorLow == b.loadColorLow &&
-           a.loadColorMed == b.loadColorMed && a.loadColorHigh == b.loadColorHigh &&
-           a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
-}
-
-inline std::string overlay_adapter_FormatRecordingHealthLabel(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
+inline std::string FormatRecordingHealthLabel(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
     if (warningKind == ce::capture_policy::kOverlayWarningRecordingDegraded) {
         return "!VIDEO DEGRADED!";
     }
@@ -114,7 +119,14 @@ inline std::string overlay_adapter_FormatRecordingHealthLabel(uint32_t warningKi
     return buffer;
 }
 
-inline HWND overlay_adapter_ResolveOverlayReferenceHwnd(HWND targetHwnd) {
+// Helper to detect Windows DPI scaling
+// A known-valid game window remembered from any adapter's SetHwnd, used as the DPI fallback before
+// GetForegroundWindow(). During game startup the foreground window can be a 96-DPI launcher/splash, which
+// made adapters that init without their own hwnd (the descriptor-free DX12 backend) render at 100% instead
+// of the Windows scale.
+inline std::atomic<HWND> overlay_adapter_g_SharedOverlayDpiHwnd{nullptr};
+
+inline HWND ResolveOverlayReferenceHwnd(HWND targetHwnd) {
     HWND resolved = targetHwnd;
     if (!IsWindow(resolved))
         resolved = overlay_adapter_g_SharedOverlayDpiHwnd.load(std::memory_order_acquire);
@@ -125,7 +137,7 @@ inline HWND overlay_adapter_ResolveOverlayReferenceHwnd(HWND targetHwnd) {
     return resolved;
 }
 
-inline bool overlay_adapter_QueryWindowsSdrWhiteNits(HMONITOR monitor, float& nits, ULONG& rawLevel) {
+inline bool QueryWindowsSdrWhiteNits(HMONITOR monitor, float& nits, ULONG& rawLevel) {
     if (!monitor)
         return false;
     MONITORINFOEXW monitorInfo{};

@@ -40,7 +40,7 @@ inline DwmFlushFn pseudo_overlay_g_DwmFlush = nullptr;
 
 inline bool pseudo_overlay_g_DwmApiInitialized = false;
 
-inline void pseudo_overlay_EnsureDwmApi() {
+inline void EnsureDwmApi() {
     if (pseudo_overlay_g_DwmApiInitialized)
         return;
     pseudo_overlay_g_DwmApiInitialized = true;
@@ -56,8 +56,8 @@ inline void pseudo_overlay_EnsureDwmApi() {
 // flush can still return for the pass that was already in flight with the window in it;
 // the second returns only for a pass that started after the hide was submitted. Bounded
 // by two refresh intervals and paid once per recording start.
-inline void pseudo_overlay_DwmFlushComposition() {
-    pseudo_overlay_EnsureDwmApi();
+inline void DwmFlushComposition() {
+    EnsureDwmApi();
     if (!pseudo_overlay_g_DwmFlush) {
         return;
     }
@@ -74,7 +74,7 @@ inline constexpr COLORREF pseudo_overlay_kColScreenshotFailureText = RGB(255, 64
 
 inline constexpr COLORREF pseudo_overlay_kColStarting = RGB(255, 191, 0);
 
-inline std::string pseudo_overlay_NormalizeProcessName(std::string value) {
+inline std::string NormalizeProcessName(std::string value) {
     static constexpr const char* kTrimChars = " \t\r\n\"";
 
     const size_t first = value.find_first_not_of(kTrimChars);
@@ -88,12 +88,12 @@ inline std::string pseudo_overlay_NormalizeProcessName(std::string value) {
     return value;
 }
 
-inline std::string pseudo_overlay_QueryProcessName(DWORD pid) {
+inline std::string QueryProcessName(DWORD pid) {
     const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
-    return pseudo_overlay_NormalizeProcessName(identity.imageName);
+    return NormalizeProcessName(identity.imageName);
 }
 
-inline bool pseudo_overlay_PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {
+inline bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {
     return lhs.enabled == rhs.enabled && lhs.size == rhs.size && lhs.pad == rhs.pad && lhs.pos == rhs.pos &&
            lhs.mode == rhs.mode && lhs.alwaysRender == rhs.alwaysRender &&
            lhs.alwaysRenderOnlyWhenGame == rhs.alwaysRenderOnlyWhenGame &&
@@ -101,7 +101,7 @@ inline bool pseudo_overlay_PseudoOverlayConfigsEqual(const PseudoOverlayConfig& 
            lhs.foregroundAcquireGraceMs == rhs.foregroundAcquireGraceMs && lhs.processList == rhs.processList;
 }
 
-inline bool pseudo_overlay_GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
+inline bool GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
     if (!monitor || !rect) {
         return false;
     }
@@ -116,7 +116,7 @@ inline bool pseudo_overlay_GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect
     return true;
 }
 
-inline UINT pseudo_overlay_GetResolvedWindowDpi(HWND hwnd) {
+inline UINT GetResolvedWindowDpi(HWND hwnd) {
     UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0u;
     if (dpi == 0) {
         dpi = GetDpiForSystem();
@@ -124,7 +124,7 @@ inline UINT pseudo_overlay_GetResolvedWindowDpi(HWND hwnd) {
     return dpi == 0 ? 96u : dpi;
 }
 
-inline std::string pseudo_overlay_FormatRecordingHealthMessage(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
+inline std::string FormatRecordingHealthMessage(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
     if (warningKind == ce::capture_policy::kOverlayWarningRecordingDegraded) {
         return "Recording video degraded!";
     }
@@ -149,7 +149,7 @@ inline std::string pseudo_overlay_FormatRecordingHealthMessage(uint32_t warningK
     return buffer;
 }
 
-inline ce::pseudo_overlay::RecordingNotificationKind pseudo_overlay_ToPseudoRecordingNotification(uint32_t notificationType) {
+inline ce::pseudo_overlay::RecordingNotificationKind ToPseudoRecordingNotification(uint32_t notificationType) {
     switch (static_cast<OverlayNotificationType>(notificationType)) {
         case OverlayNotificationType::RecordingFinalizing:
             return ce::pseudo_overlay::RecordingNotificationKind::Finalizing;
@@ -166,7 +166,7 @@ inline ce::pseudo_overlay::RecordingNotificationKind pseudo_overlay_ToPseudoReco
     }
 }
 
-inline HBITMAP pseudo_overlay_CreateArgbDibSection(int width, int height, void** ppBits) {
+inline HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = width;
@@ -177,7 +177,7 @@ inline HBITMAP pseudo_overlay_CreateArgbDibSection(int width, int height, void**
     return CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, ppBits, NULL, 0);
 }
 
-inline void pseudo_overlay_ApplyPremultipliedAlpha(void* pBits, int width, int height) {
+inline void ApplyPremultipliedAlpha(void* pBits, int width, int height) {
     DWORD* px = static_cast<DWORD*>(pBits);
     for (int i = 0, n = width * height; i < n; ++i) {
         DWORD v = px[i];
@@ -200,7 +200,7 @@ struct WindowSearch {
 };
 }
 
-inline BOOL CALLBACK pseudo_overlay_EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
+inline BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
     auto* search = reinterpret_cast<WindowSearch*>(lParam);
     if (!search || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != 0) {
         return TRUE;
@@ -219,17 +219,17 @@ inline BOOL CALLBACK pseudo_overlay_EnumWindowsCallback(HWND hwnd, LPARAM lParam
     return TRUE;
 }
 
-inline HWND pseudo_overlay_GetMainWindowForProcess(DWORD pid) {
+inline HWND GetMainWindowForProcess(DWORD pid) {
     if (pid == 0) {
         return NULL;
     }
 
     WindowSearch search = {pid, NULL};
-    EnumWindows(pseudo_overlay_EnumWindowsCallback, reinterpret_cast<LPARAM>(&search));
+    EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&search));
     return search.hwnd;
 }
 
-inline bool pseudo_overlay_ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
+inline bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
                              bool warnVisible,
                              ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
                              ULONGLONG recordingNotifyUntil,

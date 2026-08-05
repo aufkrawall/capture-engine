@@ -106,7 +106,8 @@ TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHo
     ASSERT_FALSE(ffxText.empty());
     ASSERT_FALSE(dx12Text.empty());
 
-    const size_t createBlock = ffxText.find("if (parsedSwapChainCreate.recognized && context && *context");
+    const size_t createBlock =
+        ffxText.find("if (parsedSwapChainCreate.recognized && ffx_hook_context && *ffx_hook_context");
     ASSERT_NE(createBlock, std::string::npos);
     const size_t createQueueRegistration =
         ffxText.find("DX12_RegisterNativeFSRSwapchainPresentationQueue(", createBlock);
@@ -418,7 +419,7 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     // The substitute register is stored ONLY on the degenerate-substitute path (inside the substitution block).
     const size_t prepare = ffx.find("DX12_PrepareFFXUiOverlayTarget(");
     ASSERT_NE(prepare, std::string::npos);
-    const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", prepare);
+    const size_t store = ffx.find("StoreSubstituteUiReRegistration(ffx_hook_context, originalConfigure", prepare);
     ASSERT_NE(store, std::string::npos);
     // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
     // The re-assert consults the driver policy and refuses outside the proxy-present prework.
@@ -426,7 +427,7 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     ASSERT_NE(reRegFn, std::string::npos);
     const size_t guard = ffx.find("MayReassertSubstituteUiResource", reRegFn);
     const size_t reRegResult = ffx.find("const ffxReturnCode_t result =", reRegFn);
-    const size_t forward = ffx.find("g_SubstReRegConfigure(", reRegResult);
+    const size_t forward = ffx.find("ffx_hook_g_SubstReRegConfigure(", reRegResult);
     ASSERT_NE(reRegResult, std::string::npos);
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
@@ -448,7 +449,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
     const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
     const size_t forward = ffx.find("const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded");
     const size_t commit = ffx.find("DX12_CommitFFXUiOverlayTarget(&uiTargetPreparation)", forward);
-    const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", forward);
+    const size_t store = ffx.find("StoreSubstituteUiReRegistration(ffx_hook_context, originalConfigure", forward);
     const size_t discard = ffx.find("DX12_DiscardFFXUiOverlayTarget(&uiTargetPreparation)", forward);
     ASSERT_NE(forward, std::string::npos);
     ASSERT_NE(commit, std::string::npos);
@@ -489,8 +490,8 @@ TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndL
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
 
     EXPECT_NE(ffx.find("cachedRouteResult.routedRouteMask & kConfigureRouteBit"), std::string::npos);
-    EXPECT_NE(ffx.find("g_ffxConfigureVehPermanentlyDisarmed.store(true"), std::string::npos);
-    EXPECT_NE(ffx.find("g_DurableCachedConfigureRouteActive.exchange(true"), std::string::npos);
+    EXPECT_NE(ffx.find("ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true"), std::string::npos);
+    EXPECT_NE(ffx.find("ffx_hook_g_DurableCachedConfigureRouteActive.exchange(true"), std::string::npos);
     EXPECT_NE(ffx.find("durable cached ffxConfigure pointer route installed"), std::string::npos);
     EXPECT_NE(ffx.find("Kept protected ffxConfigure VEH retired across FG context destruction"), std::string::npos);
     EXPECT_NE(ffx.find("Frame Generation configure unchanged"), std::string::npos);

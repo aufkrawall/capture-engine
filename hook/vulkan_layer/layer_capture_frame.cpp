@@ -1,3 +1,42 @@
+#include "layer_capture_internal.h"
+
+void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
+                       VkExtent2D extent,
+                       uint32_t imageCount) {
+    LayerLog(
+        "Vulkan Layer: InitializeCapture(device=%p, images=%d, size=%dx%d, "
+        "vkFormat=%d)",
+        device, imageCount, extent.width, extent.height, format);
+
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp) {
+        LayerLog("Vulkan Layer: [Error] No dispatch for device %p", device);
+        return;
+    }
+    if (!disp->captureInteropEnabled) {
+        static std::atomic<int> s_captureCapabilityLogCount{0};
+        if (s_captureCapabilityLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            LayerLog(
+                "Vulkan Layer: Capture disabled for device %p because required Win32 external-memory/fence "
+                "features were unavailable at device creation",
+                device);
+        }
+        return;
+    }
+    if (swapchain == VK_NULL_HANDLE || imageCount == 0 || extent.width == 0 || extent.height == 0) {
+        LayerLog("Vulkan Layer: [Error] Invalid capture initialization inputs (swapchain=%p images=%u size=%ux%u)",
+                 swapchain, imageCount, extent.width, extent.height);
+        return;
+    }
+    if (VkFormatToDXGI(format) == DXGI_FORMAT_UNKNOWN) {
+        LayerLog("Vulkan Layer: [Error] Capture format %d has no byte-compatible DXGI shared format", format);
+        return;
+    }
+    auto* mem = g_IPCClient.GetSharedMem();
+    const auto presentationEncoding = ce::presentation_color::ResolveVulkan(format, colorSpace);
+
     if (mem) {
         mem->SetIsHDR(ce::presentation_color::IsHDR(presentationEncoding));
     }
@@ -23,15 +62,15 @@
     const bool retiredLeasesDrained =
         !generationSharedMem || generationSharedMem->frameRing.readIndex.load(std::memory_order_acquire) ==
                                     generationSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-    for (const auto& retired : g_RetiredCaptureStates) {
+    for (const auto& retired : layer_capture_g_RetiredCaptureStates) {
         if (retired.device == device && (!retiredLeasesDrained || !CaptureStateCopiesComplete(retired, disp))) {
             return;
         }
     }
 
     // Check for existing state
-    auto it = g_CaptureStates.find(device);
-    if (it != g_CaptureStates.end()) {
+    auto it = layer_capture_g_CaptureStates.find(device);
+    if (it != layer_capture_g_CaptureStates.end()) {
         const uint32_t normalizedFormat = NormalizeVkFormat(format);
         const size_t expectedSubmissionCount = std::max<size_t>(imageCount, SHARED_TEXTURE_SLOT_COUNT);
         if (it->second.initialized && it->second.luidKey == luidKey && it->second.swapchain == swapchain &&
@@ -58,8 +97,8 @@
         LayerLog("Vulkan Layer: Retiring capture state for replaced swapchain %p -> %p (%ux%u/%u -> %ux%u/%u)",
                  it->second.swapchain, swapchain, it->second.captureWidth, it->second.captureHeight,
                  it->second.captureFormat, extent.width, extent.height, normalizedFormat);
-        g_RetiredCaptureStates.emplace_back(std::move(it->second));
-        g_CaptureStates.erase(it);
+        layer_capture_g_RetiredCaptureStates.emplace_back(std::move(it->second));
+        layer_capture_g_CaptureStates.erase(it);
     }
 
     // Once old leases and GPU copies are complete, no capture state can still
@@ -67,13 +106,13 @@
     // them instead of accumulating VRAM across repeated resizes.
     {
         const uint32_t normalizedFormat = NormalizeVkFormat(format);
-        std::lock_guard<std::mutex> textureLock(g_InteropMutex);
-        for (auto textureIt = g_TextureCache.begin(); textureIt != g_TextureCache.end();) {
+        std::lock_guard<std::mutex> textureLock(layer_capture_g_InteropMutex);
+        for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
             if (textureIt->vkDevice == device &&
                 (textureIt->width != extent.width || textureIt->height != extent.height ||
                  textureIt->vkFormat != normalizedFormat)) {
                 DestroySharedTextureEntryResources(*textureIt, disp);
-                textureIt = g_TextureCache.erase(textureIt);
+                textureIt = layer_capture_g_TextureCache.erase(textureIt);
             } else {
                 ++textureIt;
             }
@@ -124,9 +163,9 @@
             HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
             if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,
                                          NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
-                std::lock_guard<std::mutex> texLock(g_InteropMutex);
-                g_TextureCache.push_back(std::move(encoderEntry));
-                sharedTextures = &g_TextureCache.back();
+                std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
+                layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
+                sharedTextures = &layer_capture_g_TextureCache.back();
 
                 // Publish encoder KMT handles to ring buffer
                 LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, extent.width, extent.height,
@@ -281,9 +320,9 @@
 
     // Set up D3D11 relay for IPC if needed (KMT path with relay textures)
     if (sharedTextures->hasIpcRelay && state.sharedFenceHandle) {
-        std::lock_guard<std::mutex> interopLock(g_InteropMutex);
+        std::lock_guard<std::mutex> interopLock(layer_capture_g_InteropMutex);
         D3D11InteropDevice* interopDev = nullptr;
-        for (auto& dev : g_D3D11Devices) {
+        for (auto& dev : layer_capture_g_D3D11Devices) {
             if (dev.luidKey == luidKey && dev.valid) {
                 interopDev = &dev;
                 break;
@@ -392,13 +431,13 @@
 
     state.initialized = true;
     LayerLog("Vulkan Layer: Zero-Copy Capture Initialized (%dx%d)", extent.width, extent.height);
-    g_CaptureStates[device] = std::move(state);
+    layer_capture_g_CaptureStates[device] = std::move(state);
 }
 
 void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex) {
-    std::lock_guard<std::mutex> lock(g_CaptureMutex);
-    auto current = g_CaptureStates.find(device);
-    if (current == g_CaptureStates.end() || current->second.swapchain != swapchain ||
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+    auto current = layer_capture_g_CaptureStates.find(device);
+    if (current == layer_capture_g_CaptureStates.end() || current->second.swapchain != swapchain ||
         imageIndex >= current->second.presentedImages.size()) {
         return;
     }
@@ -412,10 +451,10 @@ void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchai
     // wait was consumed. At that point capture semaphores from older swapchains
     // can no longer be referenced by the presentation engine.
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-    for (auto retired = g_RetiredCaptureStates.begin(); retired != g_RetiredCaptureStates.end();) {
+    for (auto retired = layer_capture_g_RetiredCaptureStates.begin(); retired != layer_capture_g_RetiredCaptureStates.end();) {
         if (retired->device == device && CaptureStateCopiesComplete(*retired, disp)) {
             DestroyCaptureStateResources(*retired, disp);
-            retired = g_RetiredCaptureStates.erase(retired);
+            retired = layer_capture_g_RetiredCaptureStates.erase(retired);
         } else {
             ++retired;
         }
@@ -425,33 +464,33 @@ void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchai
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
     if (device == VK_NULL_HANDLE || swapchain == VK_NULL_HANDLE)
         return;
-    std::lock_guard<std::mutex> lock(g_CaptureMutex);
-    auto it = g_CaptureStates.find(device);
-    if (it == g_CaptureStates.end() || it->second.swapchain != swapchain)
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+    auto it = layer_capture_g_CaptureStates.find(device);
+    if (it == layer_capture_g_CaptureStates.end() || it->second.swapchain != swapchain)
         return;
     it->second.initialized = false;
-    g_RetiredCaptureStates.emplace_back(std::move(it->second));
-    g_CaptureStates.erase(it);
+    layer_capture_g_RetiredCaptureStates.emplace_back(std::move(it->second));
+    layer_capture_g_CaptureStates.erase(it);
     LayerLog("Vulkan Layer: Retired capture state for destroyed swapchain %p", swapchain);
 }
 
 void CleanupCapture(VkDevice device) {
-    std::lock_guard<std::mutex> lock(g_CaptureMutex);
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     uint64_t luidKey = 0;
 
-    auto it = g_CaptureStates.find(device);
-    if (it != g_CaptureStates.end()) {
+    auto it = layer_capture_g_CaptureStates.find(device);
+    if (it != layer_capture_g_CaptureStates.end()) {
         luidKey = it->second.luidKey;
         DestroyCaptureStateResources(it->second, disp);
-        g_CaptureStates.erase(it);
+        layer_capture_g_CaptureStates.erase(it);
     }
-    for (auto retired = g_RetiredCaptureStates.begin(); retired != g_RetiredCaptureStates.end();) {
+    for (auto retired = layer_capture_g_RetiredCaptureStates.begin(); retired != layer_capture_g_RetiredCaptureStates.end();) {
         if (retired->device == device) {
             if (luidKey == 0)
                 luidKey = retired->luidKey;
             DestroyCaptureStateResources(*retired, disp);
-            retired = g_RetiredCaptureStates.erase(retired);
+            retired = layer_capture_g_RetiredCaptureStates.erase(retired);
         } else {
             ++retired;
         }
@@ -460,12 +499,12 @@ void CleanupCapture(VkDevice device) {
     if (luidKey != 0 && disp) {
         // CRITICAL FIX: Clean up texture cache entries for this device
         // This prevents memory leaks of D3D11 textures and Vulkan images
-        std::lock_guard<std::mutex> interopLock(g_InteropMutex);
-        for (auto entry = g_TextureCache.begin(); entry != g_TextureCache.end();) {
+        std::lock_guard<std::mutex> interopLock(layer_capture_g_InteropMutex);
+        for (auto entry = layer_capture_g_TextureCache.begin(); entry != layer_capture_g_TextureCache.end();) {
             if (entry->vkDevice == device) {
                 DestroySharedTextureEntryResources(*entry, disp);
                 LayerLog("Vulkan Layer: Cleaned up texture cache entry for LUID %llx", luidKey);
-                entry = g_TextureCache.erase(entry);
+                entry = layer_capture_g_TextureCache.erase(entry);
             } else {
                 ++entry;
             }
@@ -484,168 +523,12 @@ void CleanupCapture(VkDevice device) {
 }
 
 VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex) {
-    std::lock_guard<std::mutex> lock(g_CaptureMutex);
-    auto it = g_CaptureStates.find(device);
-    if (it != g_CaptureStates.end() && it->second.initialized && it->second.swapchain == swapchain) {
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+    auto it = layer_capture_g_CaptureStates.find(device);
+    if (it != layer_capture_g_CaptureStates.end() && it->second.initialized && it->second.swapchain == swapchain) {
         if (imageIndex < it->second.signalSemaphores.size()) {
             return it->second.signalSemaphores[imageIndex];
         }
     }
     return VK_NULL_HANDLE;
 }
-
-bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
-                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore) {
-    std::lock_guard<std::mutex> lock(g_CaptureMutex);
-
-    auto it = g_CaptureStates.find(device);
-    if (it == g_CaptureStates.end() || !it->second.initialized || it->second.swapchain != swapchain)
-        return false;
-
-    // Check if we should throttle capture (encoder is falling behind)
-    if (g_IPCClient.GetSharedMem()) {
-        if (g_IPCClient.GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
-            return false;
-        }
-    }
-
-    VulkanCaptureState& state = it->second;
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-    if (!disp)
-        return false;
-    if (signalSemaphore == VK_NULL_HANDLE || srcImage == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-        static std::atomic<int> s_unknownQueueLogCount{0};
-        if (s_unknownQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            LayerLog("Vulkan Layer: Capture skipped because present queue family is unknown");
-        }
-        return false;
-    }
-
-    if (!VulkanLayerState::Get().QueueSupportsTransfer(queue)) {
-        static std::atomic<int> s_nonTransferQueueLogCount{0};
-        if (s_nonTransferQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            LayerLog("Vulkan Layer: Capture skipped on queue family %u without transfer support", queueFamilyIndex);
-        }
-        return false;
-    }
-
-    VulkanCaptureState::CommandResources* commandResources =
-        EnsureCaptureCommandResources(state, disp, device, queueFamilyIndex);
-    if (!commandResources) {
-        return false;
-    }
-
-    auto* mem = g_IPCClient.GetSharedMem();
-    const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
-    const bool encoderAdoptionRequested = allowDxvkEncoderTextures && mem &&
-                                          !mem->useEncoderTextures.load(std::memory_order_acquire) &&
-                                          mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
-                                          state.captureFrameCounter >= state.nextEncoderImportRetryFrame;
-    if (encoderAdoptionRequested && mem->frameRing.readIndex.load(std::memory_order_acquire) !=
-                                        mem->frameRing.writeIndex.load(std::memory_order_acquire)) {
-        // Handles/fence are generation-global in shared memory. Stop producing
-        // briefly so every old-generation lease drains before replacing them.
-        static std::atomic<int> s_encoderAdoptionDrainLogCount{0};
-        if (s_encoderAdoptionDrainLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
-            LayerLog("Vulkan Layer: Deferring encoder-texture adoption until old capture leases drain");
-        }
-        return false;
-    }
-    if (encoderAdoptionRequested && !CaptureStateCopiesComplete(state, disp))
-        return false;
-    if (encoderAdoptionRequested) {
-        SharedTextureEntry encoderEntry;
-        HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
-        if (ImportEncoderKmtTextures(device, disp, state.luidKey, state.captureWidth, state.captureHeight,
-                                     state.captureFormat, mem, &encoderEntry, kmtHandles)) {
-            {
-                std::lock_guard<std::mutex> texLock(g_InteropMutex);
-                for (auto textureIt = g_TextureCache.begin(); textureIt != g_TextureCache.end();) {
-                    if (textureIt->vkDevice == device && textureIt->luidKey == state.luidKey &&
-                        textureIt->width == state.captureWidth && textureIt->height == state.captureHeight &&
-                        textureIt->vkFormat == state.captureFormat) {
-                        DestroySharedTextureEntryResources(*textureIt, disp);
-                        textureIt = g_TextureCache.erase(textureIt);
-                    } else {
-                        ++textureIt;
-                    }
-                }
-                g_TextureCache.push_back(std::move(encoderEntry));
-            }
-
-            LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, state.captureWidth, state.captureHeight,
-                                 VkFormatToDXGI((VkFormat)state.captureFormat));
-            mem->useEncoderTextures.store(true, std::memory_order_release);
-            state.sharedImageInitialized.fill(false);
-            state.relayCompletionValues.fill(0);
-            LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: adopted encoder KMT textures after media startup");
-        } else {
-            state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
-        }
-    }
-
-    // Get shared textures from cache
-    SharedTextureEntry* sharedTextures = nullptr;
-    for (auto& entry : g_TextureCache) {
-        if (entry.vkDevice == device && entry.luidKey == state.luidKey && entry.width == state.captureWidth &&
-            entry.height == state.captureHeight && entry.vkFormat == state.captureFormat && entry.valid) {
-            sharedTextures = &entry;
-            break;
-        }
-    }
-    if (!sharedTextures || !sharedTextures->valid)
-        return false;
-    if (state.copyFences.empty() || commandResources->buffers.empty() || state.signalSemaphores.empty() ||
-        sharedTextures->vkImages.empty()) {
-        LayerLog("Vulkan Layer: Capture skipped because synchronization/image resources are incomplete");
-        return false;
-    }
-
-    // Use a monotonic counter independent of swapchain image patterns, but
-    // rotate over the actual shared texture count rather than assuming four.
-    const uint32_t sharedTextureCount =
-        static_cast<uint32_t>(std::min<size_t>(sharedTextures->vkImages.size(), SHARED_TEXTURE_SLOT_COUNT));
-    if (sharedTextureCount == 0)
-        return false;
-    const bool doRelay = sharedTextures->hasIpcRelay && state.d3d11Fence && state.d3d11Context4;
-    ID3D11Fence* relayCompletionFence = state.d3d11IpcFence ? state.d3d11IpcFence : state.d3d11Fence;
-    const uint32_t firstSlot = static_cast<uint32_t>(state.captureFrameCounter++ % sharedTextureCount);
-    int32_t availableSlot = -1;
-    uint32_t cpuBusySlots = 0;
-    uint32_t gpuBusySlots = 0;
-    for (uint32_t offset = 0; offset < sharedTextureCount; ++offset) {
-        const uint32_t candidate = (firstSlot + offset) % sharedTextureCount;
-        if (IsCaptureTextureSlotOutstanding(mem, static_cast<int32_t>(candidate))) {
-            ++cpuBusySlots;
-            continue;
-        }
-        if (doRelay && state.relayCompletionValues[candidate] != 0) {
-            const uint64_t completedRelayValue = relayCompletionFence->GetCompletedValue();
-            if (completedRelayValue == UINT64_MAX) {
-                LayerLog("Vulkan Layer: IPC relay fence reported device removal; disabling capture state");
-                state.initialized = false;
-                return false;
-            }
-            if (completedRelayValue < state.relayCompletionValues[candidate]) {
-                ++gpuBusySlots;
-                continue;
-            }
-        }
-        const uint32_t candidateFenceIndex = candidate % state.copyFences.size();
-        const VkFence candidateFence = state.copyFences[candidateFenceIndex];
-        const VkResult fenceStatus = disp->fp_vkWaitForFences(device, 1, &candidateFence, VK_TRUE, 0);
-        if (fenceStatus != VK_SUCCESS) {
-            if (fenceStatus == VK_ERROR_DEVICE_LOST) {
-                state.initialized = false;
-                return false;
-            }
-            ++gpuBusySlots;
-            continue;
-        }
-        availableSlot = static_cast<int32_t>(candidate);
-        break;

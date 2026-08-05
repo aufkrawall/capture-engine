@@ -1,5 +1,7 @@
 #pragma once
 
+struct ScopedVulkanRegistration;
+
 // clang-format off
 #include <windows.h>
 
@@ -77,8 +79,6 @@ extern int SensorProcessMain(const AppConfig& config);
 #define HOTKEY_ID_SCREENSHOT 2
 
 #define HOTKEY_ID_AUDIO_ONLY 3
-
-struct ScopedVulkanRegistration;
 
 void LaunchGameSuspended(const std::string& path);
 
@@ -167,11 +167,11 @@ struct ControllerStartupTimingState {
 
 inline ControllerStartupTimingState main_g_ControllerStartupTiming;
 
-inline double main_QpcDeltaToMs(int64_t deltaUs) {
+inline double QpcDeltaToMs(int64_t deltaUs) {
     return static_cast<double>(deltaUs) / 1000.0;
 }
 
-inline void main_PumpStartupMessages() {
+inline void PumpStartupMessages() {
     MSG msg = {};
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -179,7 +179,7 @@ inline void main_PumpStartupMessages() {
     }
 }
 
-inline void main_PrimeStartupCursor() {
+inline void PrimeStartupCursor() {
     MSG msg = {};
     PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE);
     HCURSOR arrow = LoadCursor(nullptr, IDC_ARROW);
@@ -188,7 +188,7 @@ inline void main_PrimeStartupCursor() {
     }
 }
 
-inline bool main_HasExactCommandLineArgument(const wchar_t* expected) {
+inline bool HasExactCommandLineArgument(const wchar_t* expected) {
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
     if (!arguments)
@@ -204,7 +204,7 @@ inline bool main_HasExactCommandLineArgument(const wchar_t* expected) {
     return found;
 }
 
-inline bool main_TryParseAutoRecordValue(std::string_view value, DWORD& result) {
+inline bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
     uint32_t parsed = 0;
     if (!ce::TryParseUInt32(value, parsed))
         return false;
@@ -212,7 +212,7 @@ inline bool main_TryParseAutoRecordValue(std::string_view value, DWORD& result) 
     return true;
 }
 
-inline bool main_IsProcessRunning(HANDLE hProcess) {
+inline bool IsProcessRunning(HANDLE hProcess) {
     if (!hProcess) {
         return false;
     }
@@ -239,12 +239,12 @@ struct MainThreadBlockTimer {
 };
 }
 
-inline bool main_ShouldStartMediaProcessAtStartup() {
+inline bool ShouldStartMediaProcessAtStartup() {
     return main_g_AutoRecordEnabled;
 }
 
-inline void main_PrepareRecordingDiagnosticIdentity() {
-    if (main_g_hMediaProcess && main_IsProcessRunning(main_g_hMediaProcess) && !g_RecordingId.empty())
+inline void PrepareRecordingDiagnosticIdentity() {
+    if (main_g_hMediaProcess && IsProcessRunning(main_g_hMediaProcess) && !g_RecordingId.empty())
         return;
 
     char recordingId[24]{};
@@ -253,24 +253,24 @@ inline void main_PrepareRecordingDiagnosticIdentity() {
     LogInfo("[Controller] Recording diagnostic identity allocated: %s", g_RecordingId.c_str());
 }
 
-inline bool main_ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
+inline bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
     return config.fpsLimiter.generalEnabled || (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
 }
 
-inline bool main_ShouldKeepLimiterProcessRunning(const AppConfig& config) {
+inline bool ShouldKeepLimiterProcessRunning(const AppConfig& config) {
     return config.fpsLimiter.generalEnabled || (main_g_Recording && config.fpsLimiter.captureSyncEnabled) ||
            (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
 }
 
-inline bool main_ShouldStartLoggerProcess(const AppConfig& config) {
+inline bool ShouldStartLoggerProcess(const AppConfig& config) {
     return IsAnyLoggingEnabled(config.logLevel);
 }
 
-inline bool main_ShouldStartSensorProcess(const AppConfig& config) {
+inline bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
-inline std::vector<PseudoOverlayApplicationConfig> main_ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
+inline std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
     std::vector<PseudoOverlayApplicationConfig> profiles;
     profiles.reserve(baseConfig.applicationProfiles.size());
 
@@ -301,8 +301,8 @@ inline std::vector<PseudoOverlayApplicationConfig> main_ResolvePseudoOverlayAppl
     return profiles;
 }
 
-inline void main_SyncPseudoOverlayConfiguration(const char* reason) {
-    std::vector<PseudoOverlayApplicationConfig> profiles = main_ResolvePseudoOverlayApplicationConfigs(main_g_Config);
+inline void SyncPseudoOverlayConfiguration(const char* reason) {
+    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(main_g_Config);
     const bool anyProfileEnabled =
         std::any_of(profiles.begin(), profiles.end(), [](const PseudoOverlayApplicationConfig& profile) {
             return profile.settings.enabled;
@@ -329,7 +329,7 @@ inline void main_SyncPseudoOverlayConfiguration(const char* reason) {
     main_g_PseudoOverlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
 }
 
-inline void main_WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
+inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
     std::ofstream manifest(logsDir + "\\session_manifest.txt", std::ios::out | std::ios::trunc);
     if (!manifest.is_open()) {
         return;
@@ -359,8 +359,8 @@ inline void main_WriteSessionManifest(const std::string& logsDir, const AppConfi
     manifest << "ffx_loaded=0\n";
     manifest << "fg_shadow_state_enabled=1\n";
     manifest << "fg_state_schema_version=1\n";
-    manifest << "logger_enabled=" << (main_ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
-    manifest << "sensor_enabled=" << (main_ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
+    manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
+    manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";
     manifest << "overlay_whitelist_entries=" << config.overlayWhitelist.size() << "\n";
     manifest << "logs=" << GetLogFileName(mode) << "\n";
@@ -369,7 +369,7 @@ inline void main_WriteSessionManifest(const std::string& logsDir, const AppConfi
     manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
 }
 
-inline void main_WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
+inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
     if (g_RecordingId.empty())
         return;
 
@@ -391,7 +391,7 @@ inline void main_WriteRecordingManifest(const std::string& logsDir, const AppCon
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
-inline DWORD main_GetControllerLoopWaitMs(DWORD lastConfigCheck) {
+inline DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     DWORD waitMs = 2000;
     DWORD now = GetTickCount();
 
@@ -419,23 +419,23 @@ inline DWORD main_GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     return waitMs;
 }
 
-inline bool main_HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
+inline bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
     return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
 }
 
-inline void main_CloseProcessHandle(HANDLE& processHandle) {
+inline void CloseProcessHandle(HANDLE& processHandle) {
     if (processHandle) {
         CloseHandle(processHandle);
         processHandle = NULL;
     }
 }
 
-inline bool main_EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
+inline bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
                                  const char* processName) {
-    if (processHandle && main_IsProcessRunning(processHandle) && client && !client->IsConnected()) {
+    if (processHandle && IsProcessRunning(processHandle) && client && !client->IsConnected()) {
         const DWORD disconnectWaitMs = std::min<DWORD>(timeoutMs, 2000);
         const ULONGLONG deadline = GetTickCount64() + disconnectWaitMs;
-        while (main_IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
+        while (IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
             const ULONGLONG now = GetTickCount64();
             if (now >= deadline)
                 break;
@@ -446,16 +446,16 @@ inline bool main_EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHa
             if (wait == WAIT_OBJECT_0)
                 break;
             if (wait == WAIT_OBJECT_0 + 1)
-                main_PumpStartupMessages();
+                PumpStartupMessages();
             else
                 break;
         }
-        if (main_IsProcessRunning(processHandle)) {
+        if (IsProcessRunning(processHandle)) {
             LogWarn("[Controller] %s has not exited after its IPC channel broke; deferring respawn", processName);
             return false;
         }
     }
-    if (!processHandle || !main_IsProcessRunning(processHandle)) {
+    if (!processHandle || !IsProcessRunning(processHandle)) {
         if (client) {
             client->Disconnect();
         }
@@ -471,7 +471,7 @@ inline bool main_EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHa
             LogError("[Controller] Failed to spawn %s process on demand", processName);
             return false;
         }
-        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, main_QpcDeltaToMs(spawnUs));
+        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, QpcDeltaToMs(spawnUs));
     }
 
     if (!client || client->IsConnected()) {
@@ -482,16 +482,16 @@ inline bool main_EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHa
     return false;
 }
 
-inline bool main_EnsureMediaProcessReady(DWORD timeoutMs) {
-    return main_EnsureChildProcessConnected(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), timeoutMs, "media");
+inline bool EnsureMediaProcessReady(DWORD timeoutMs) {
+    return EnsureChildProcessConnected(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), timeoutMs, "media");
 }
 
-inline bool main_EnsureLimiterProcessReady(DWORD timeoutMs) {
-    return main_EnsureChildProcessConnected(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), timeoutMs,
+inline bool EnsureLimiterProcessReady(DWORD timeoutMs) {
+    return EnsureChildProcessConnected(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), timeoutMs,
                                        "limiter");
 }
 
-inline bool main_ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
+inline bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
                              DWORD timeoutMs) {
     if (!processHandle) {
         if (client) {
@@ -512,36 +512,36 @@ inline bool main_ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient
     if (waitResult != WAIT_OBJECT_0) {
         LogWarn("[Controller] Timed out waiting for %s process to exit", processName);
     }
-    main_CloseProcessHandle(processHandle);
+    CloseProcessHandle(processHandle);
     return waitResult == WAIT_OBJECT_0;
 }
 
-inline void main_SyncLimiterProcess(const AppConfig& config) {
-    if (main_ShouldKeepLimiterProcessRunning(config)) {
-        main_EnsureLimiterProcessReady(10000);
+inline void SyncLimiterProcess(const AppConfig& config) {
+    if (ShouldKeepLimiterProcessRunning(config)) {
+        EnsureLimiterProcessReady(10000);
         return;
     }
 
     if (main_g_hLimiterProcess) {
         LogInfo("[Controller] Limiter no longer needed; shutting it down");
-        main_ShutdownIpcChildProcess(main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter", 5000);
+        ShutdownIpcChildProcess(main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter", 5000);
     } else if (main_g_LimiterClient) {
         main_g_LimiterClient->Disconnect();
     }
 }
 
-inline void main_SyncLoggerAndSensorProcesses(const AppConfig& config) {
-    const bool wantLogger = main_ShouldStartLoggerProcess(config);
-    const bool wantSensor = main_ShouldStartSensorProcess(config);
-    const bool loggerRunning = main_IsProcessRunning(main_g_hLoggerProcess);
-    const bool sensorRunning = main_IsProcessRunning(main_g_hSensorProcess);
+inline void SyncLoggerAndSensorProcesses(const AppConfig& config) {
+    const bool wantLogger = ShouldStartLoggerProcess(config);
+    const bool wantSensor = ShouldStartSensorProcess(config);
+    const bool loggerRunning = IsProcessRunning(main_g_hLoggerProcess);
+    const bool sensorRunning = IsProcessRunning(main_g_hSensorProcess);
 
     if (loggerRunning == wantLogger && sensorRunning == wantSensor) {
         if (!loggerRunning) {
-            main_CloseProcessHandle(main_g_hLoggerProcess);
+            CloseProcessHandle(main_g_hLoggerProcess);
         }
         if (!sensorRunning) {
-            main_CloseProcessHandle(main_g_hSensorProcess);
+            CloseProcessHandle(main_g_hSensorProcess);
         }
         return;
     }
@@ -558,11 +558,11 @@ inline void main_SyncLoggerAndSensorProcesses(const AppConfig& config) {
 
     if (main_g_hLoggerProcess) {
         WaitForSingleObject(main_g_hLoggerProcess, 5000);
-        main_CloseProcessHandle(main_g_hLoggerProcess);
+        CloseProcessHandle(main_g_hLoggerProcess);
     }
     if (main_g_hSensorProcess) {
         WaitForSingleObject(main_g_hSensorProcess, 5000);
-        main_CloseProcessHandle(main_g_hSensorProcess);
+        CloseProcessHandle(main_g_hSensorProcess);
     }
 
     if (hShutdownEvent) {
@@ -586,7 +586,7 @@ inline void main_SyncLoggerAndSensorProcesses(const AppConfig& config) {
 
 // Remove old session directories from logs/, keeping the most recent maxKeep.
 // Also cleans up any stale flat .log/.csv files from pre-session-dir versions.
-inline void main_CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 20) {
+inline void CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 20) {
     namespace fs = std::filesystem;
     std::error_code ec;
 
@@ -643,7 +643,7 @@ struct DeferredLaunchCommand {
 
 // Helper: open inject's shared memory and run a callback with a writable view.
 // Returns true if the shared memory was opened and the callback executed.
-inline bool main_WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& fn) {
+inline bool WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& fn) {
     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (!hDisc)
         return false;
@@ -685,9 +685,9 @@ inline bool main_WithInjectSharedMem(const std::function<void(SharedMemoryLayout
     return true;
 }
 
-inline bool main_PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
+inline bool PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
     main_g_RecordingStartIntent.store(intent, std::memory_order_release);
-    const bool published = main_WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+    const bool published = WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
         sharedMemory->runtimeState.SetRecordingStartIntent(intent);
         if (intent != RecordingStartIntent::AudioOnly) {
             sharedMemory->runtimeState.audioOnly.store(false, std::memory_order_release);
@@ -706,7 +706,7 @@ inline bool main_PublishRecordingStartIntent(RecordingStartIntent intent, const 
     return published;
 }
 
-inline bool main_RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+inline bool RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
                                       DWORD timeoutMs) {
     if (!client || !client->IsConnected())
         return false;
@@ -723,14 +723,14 @@ inline bool main_RequestChildRecordingStop(ProcessIPCClient* client, const char*
     return true;
 }
 
-inline bool main_RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
+inline bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
     // Ask media first. It acknowledges before finalization, so controller UI work
     // does not wait for trailer writing or the post-mux probe. Media clears the
     // hook-facing shared state before acknowledging. The inject command is only a
     // fallback when the private media channel cannot accept the request.
-    const bool mediaAccepted = main_RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
+    const bool mediaAccepted = RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
     const bool stopAccepted =
-        mediaAccepted || main_RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+        mediaAccepted || RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
     if (!stopAccepted) {
         LogWarn("[Controller] No recording child accepted the stop (%s); process teardown is the final fallback",
                 reason ? reason : "unspecified");
@@ -740,11 +740,11 @@ inline bool main_RequestRecordingStopAndReleaseMedia(const char* reason, DWORD t
     // the next recording creates a fresh authenticated child.
     if (main_g_MediaClient)
         main_g_MediaClient->Disconnect();
-    main_CloseProcessHandle(main_g_hMediaProcess);
+    CloseProcessHandle(main_g_hMediaProcess);
     return stopAccepted;
 }
 
-inline ce::vulkan_layer::RegistrationPlan main_BuildControllerVulkanRegistrationPlan() {
+inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan() {
     std::filesystem::path baseDir;
     if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
         LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
@@ -760,7 +760,7 @@ inline ce::vulkan_layer::RegistrationPlan main_BuildControllerVulkanRegistration
 // plan then lets teardown remove only this instance's exact registrations.
 class ScopedVulkanRegistration {
 public:
-    ScopedVulkanRegistration() : plan_(main_BuildControllerVulkanRegistrationPlan()) {
+    ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan()) {
         ce::vulkan_layer::LogRegistrationPlan(plan_);
         if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
             LogWarn("[Controller] Vulkan layer registration repair was incomplete");

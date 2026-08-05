@@ -1,5 +1,6 @@
 #include "config_internal.h"
 
+// Helper to trim specific characters from both ends
 std::string Trim(const std::string& s, const char* chars ) {
     std::string res = s;
     res.erase(0, res.find_first_not_of(chars));
@@ -61,6 +62,7 @@ bool IsVideoCaptureDisabledMethod(const std::string& val) {
     return NormalizeCaptureMethod(val) == "none";
 }
 
+// Helper to parse bool
 bool ParseBool(const std::string& val) {
     std::string lower = val;
     std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -68,6 +70,8 @@ bool ParseBool(const std::string& val) {
     return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
 }
 
+// Helper to parse DLSS presets (A-Z -> 1-26, Default -> 0)
+// Accept the full alphabet so future NGX preset letters work without another update.
 uint32_t ParseDlssPreset(const std::string& val) {
     const std::string normalized = Trim(val, " \t\r\n\"");
     if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
@@ -80,10 +84,12 @@ uint32_t ParseDlssPreset(const std::string& val) {
     return 0;
 }
 
+// Helper to parse Ray Reconstruction presets (A-Z -> 1-26, Default -> 0)
 uint32_t ParseDlssRRPreset(const std::string& val) {
     return ParseDlssPreset(val);
 }
 
+// Helper to parse DLSS sharpening (-2.0 default, -1.0 off, 0.0-1.0 value)
 float ParseDlssSharpening(const std::string& val) {
     const std::string normalized = Trim(val, " \t\r\n\"");
     if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
@@ -109,6 +115,7 @@ int ParseDlssFGFactor(const std::string& val) {
     return 0;
 }
 
+// Helper to create default config if missing
 static bool LoadDefaultConfigResource(std::string& out) {
     out.clear();
 
@@ -127,6 +134,9 @@ static bool LoadDefaultConfigResource(std::string& out) {
     return true;
 }
 
+// Create the first-run configuration from the same UTF-8 template used by
+// packaging and tests. CREATE_NEW prevents simultaneous processes from
+// overwriting one another's file.
 void CreateDefaultConfig(const std::string& path) {
     std::string contents;
     if (!LoadDefaultConfigResource(contents)) {
@@ -155,6 +165,7 @@ void CreateDefaultConfig(const std::string& path) {
     }
 }
 
+// Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
     AppConfig::HotkeyConfig hk;
     if (val.empty())
@@ -185,7 +196,7 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
     // Parse function keys F1-F24
     if (key.length() >= 2 && key[0] == 'F') {
         int fnum = 0;
-        if (config_TryParseInt(key.substr(1), fnum) && fnum >= 1 && fnum <= 24) {
+        if (TryParseInt(key.substr(1), fnum) && fnum >= 1 && fnum <= 24) {
             hk.vkey = VK_F1 + (fnum - 1);
         }
     }

@@ -15,7 +15,7 @@ void PseudoOverlay::ApplyPendingConfig() {
 }
 
 void PseudoOverlay::ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const std::string& profileSection) {
-    if (pseudo_overlay_PseudoOverlayConfigsEqual(config_, cfg) && activeProfileSection_ == profileSection)
+    if (PseudoOverlayConfigsEqual(config_, cfg) && activeProfileSection_ == profileSection)
         return;
 
     bool wasEnabled = config_.enabled;
@@ -176,7 +176,7 @@ void PseudoOverlay::HandleStatusSyncOnUiThread() {
     // UpdateOverlay() has hidden or destroyed the status windows, but the compositor still
     // owns the frame they were last drawn into. Flushing composition is what makes the
     // acknowledgement true for a capture that reads the composited screen.
-    pseudo_overlay_DwmFlushComposition();
+    DwmFlushComposition();
     SetEvent(statusDarkAckEvent_);
     LogInfo("[PseudoOverlay] Capture-dark acknowledged: startup status is off the composited screen");
 }
@@ -247,7 +247,7 @@ bool PseudoOverlay::EnsureOverlayWindows() {
         }
     }
 
-    pseudo_overlay_EnsureDwmApi();
+    EnsureDwmApi();
     if (pseudo_overlay_g_DwmSetWindowAttribute) {
         BOOL peekExclude = TRUE;
         pseudo_overlay_g_DwmSetWindowAttribute(hOv_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));

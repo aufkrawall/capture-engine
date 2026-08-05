@@ -97,6 +97,58 @@ def _extern_decl(text: str, name: str) -> Optional[str]:
     return "extern " + decl
 
 
+def _rename_ident(text: str, old: str, new: str) -> str:
+    """Replace an identifier outside string literals and comments."""
+    pattern = re.compile(r"(?<![:.>])\b" + re.escape(old) + r"\b")
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(text[i:j])
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(text[i:j])
+            i = j
+            continue
+        if text[i] in "\"'":
+            quote = text[i]
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == quote:
+                    j += 1
+                    break
+                j += 1
+            out.append(text[i:j])
+            i = j
+            continue
+        if text.startswith('R"', i) or text.startswith('LR"', i):
+            j = text.find("(", i)
+            if 0 <= j < i + 32 and "\\" not in text[i : j + 1] and text[i : j + 1].count('"') == 1:
+                delim = text[i + 2 : j] if text.startswith('R"', i) else text[i + 3 : j]
+                end = text.find(")" + delim + '"', j)
+                end = n if end < 0 else end + len(delim) + 2
+                out.append(text[i:end])
+                i = end
+                continue
+        m = pattern.match(text, i)
+        if m:
+            out.append(new)
+            i = m.end()
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def reassemble(facade: Path) -> str:
     """Inline nested .inl includes, preserving everything else verbatim."""
 
@@ -714,9 +766,10 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             assignment[idx] = rest_unit
 
     # Anonymous-namespace integrity: all chunks of one anon region share a unit.
+    allow_anon_split = set(grouping.get("allow_anon_split", []))
     by_anon: Dict[int, str] = {}
     for idx, c in enumerate(chunks):
-        if c.anon_region is None:
+        if c.anon_region is None or c.anon_region in allow_anon_split:
             continue
         prev = by_anon.get(c.anon_region)
         if prev is not None and prev != assignment[idx]:
@@ -791,25 +844,49 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
 
     shared_statics = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "var"]
     shared_funcs = [(idx, chunks[idx]) for idx in shared if chunks[idx].kind == "func"]
-    renames = {c.name: f"{module}_{c.name}" for _, c in shared_statics + shared_funcs if c.name}
+    shared_idx = {i for i, _ in shared_statics} | {i for i, _ in shared_funcs}
+    # Shared variables are renamed with a module prefix; shared functions keep
+    # their names (as inline) so overload sets declared in other headers keep
+    # resolving exactly as before.
+    renames = {c.name: f"{module}_{c.name}" for _, c in shared_statics if c.name}
+    define_rewrites = grouping.get("define_prefix_rewrites", [])
 
-    def renamed(text: str) -> str:
+    def rename_text(text: str) -> str:
         for old, new in renames.items():
-            text = re.sub(r"(?<![:.>])\b" + re.escape(old) + r"\b", new, text)
+            text = _rename_ident(text, old, new)
+        if define_rewrites:
+            out_lines = []
+            for line in text.split("\n"):
+                for old_prefix, new_prefix in define_rewrites:
+                    if old_prefix in line:
+                        line = line.replace(old_prefix, new_prefix)
+                out_lines.append(line)
+            text = "\n".join(out_lines)
         return text
 
-    shared_idx = {i for i, _ in shared_statics} | {i for i, _ in shared_funcs}
-
     def emit_shared(idx: int, c: Chunk) -> None:
-        text = renamed(c.text)
+        text = rename_text(c.text)
         comments, body = _split_comments(text)
         body = re.sub(r"^\s*static\s+", "", body, count=1)
         body = re.sub(r"^\s*inline\s+", "", body, count=1)
         ns = () if c.ns_path == ("",) else c.ns_path
-        header_parts.append(_wrap_ns(comments + "inline " + body, ns))
+        if c.kind == "var":
+            header_parts.append(_wrap_ns(comments + "inline " + body, ns))
+        else:
+            header_parts.append(_wrap_ns(comments + "inline " + body, ns))
 
     header_parts: List[str] = ["#pragma once"]
     header_idx: set = set()
+
+    # Pass 0: forward declarations of hoisted classes so earlier typedefs and
+    # prototypes can reference them as incomplete types.
+    for idx, c in enumerate(chunks):
+        if idx in keep_in_units or idx in header_idx:
+            continue
+        if c.kind == "class" and idx not in classes_in_units and c.anon_region is None:
+            ns = () if c.ns_path == ("",) else c.ns_path
+            prefix = "class" if c.text.lstrip().startswith("class") else "struct"
+            header_parts.append(_wrap_ns(f"{prefix} {c.name};", ns))
 
     # Pass 1: types and declarations in original order.
     for idx, c in enumerate(chunks):
@@ -830,23 +907,14 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
                 or NS_ALIAS.match(code)
             ):
                 continue
-            header_parts.append(renamed(c.text))
+            header_parts.append(rename_text(c.text))
             header_idx.add(idx)
         elif c.kind == "enum":
-            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
         elif c.kind == "pp_region" and _is_pure_directive_region(c.text) and not c.ns_path:
-            header_parts.append(renamed(c.text))
+            header_parts.append(rename_text(c.text))
             header_idx.add(idx)
-
-    # Pass 1.5: forward declarations of hoisted classes so prototypes can use them.
-    for idx, c in enumerate(chunks):
-        if idx in keep_in_units or idx in header_idx:
-            continue
-        if c.kind == "class" and idx not in classes_in_units and c.anon_region is None:
-            ns = () if c.ns_path == ("",) else c.ns_path
-            prefix = "class" if c.text.lstrip().startswith("class") else "struct"
-            header_parts.append(_wrap_ns(f"{prefix} {c.name};", ns))
 
     # Pass 2: prototypes.
     for idx, c in enumerate(chunks):
@@ -862,7 +930,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             continue
         if not c.signature:
             continue
-        proto = renamed(c.signature.rstrip())
+        proto = rename_text(c.signature.rstrip())
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
 
     # Pass 3: definitions in original order (templates, classes, extern blocks,
@@ -874,13 +942,13 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             emit_shared(idx, c)
             header_idx.add(idx)
         elif c.kind == "func" and c.template:
-            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
         elif c.kind == "class" and idx not in classes_in_units:
-            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
         elif c.kind == "extern" and idx not in extern_in_units:
-            header_parts.append(_wrap_ns(renamed(c.text), c.ns_path))
+            header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
             header_idx.add(idx)
     for idx, c in enumerate(chunks):
         if idx in header_idx or c.kind not in ("var", "other") or not c.name:
@@ -894,7 +962,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             for j in range(len(chunks))
         ):
             continue
-        extern = _extern_decl(renamed(c.text), c.name)
+        extern = _extern_decl(rename_text(c.text), c.name)
         if extern:
             header_parts.append(_wrap_ns(extern, c.ns_path))
 
@@ -911,7 +979,9 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     for name in unit_names:
         body = "\n\n".join(
             _wrap_ns(
-                _strip_definition_defaults(renamed(c.text)) if c.kind == "func" and not c.static else renamed(c.text),
+                _strip_definition_defaults(rename_text(c.text))
+                if c.kind == "func" and not c.static
+                else rename_text(c.text),
                 c.ns_path,
             )
             for c in unit_chunks[name]

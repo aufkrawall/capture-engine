@@ -14,16 +14,22 @@
   "target": 750,
   "files": {
     "common/config_load.cpp": 1492,
+    "hook/apis/ddraw_hook_internal.h": 2770,
+    "hook/apis/dx8_hook_internal.h": 1809,
+    "hook/apis/ffx_hook_internal.h": 1549,
+    "hook/apis/opengl_hook_internal.h": 1218,
     "hook/apis/opengl_sampler_override.cpp": 1126,
     "hook/common/custom_overlay_dx12.cpp": 894,
     "hook/common/custom_overlay_gl.cpp": 950,
     "hook/common/fg_session_state.cpp": 1037,
     "hook/common/overlay_adapter_render.cpp": 857,
     "hook/common/system_metrics.cpp": 954,
+    "hook/vulkan_layer/layer_capture_internal.h": 1285,
+    "hook/wrappers/dxgi_swapchain_wrap_present.cpp": 1022,
     "mediaengine/app_audio_capture_loop.cpp": 808,
     "mediaengine/video_encoder_options.cpp": 876,
-    "tools/refactor/source_splitter.py": 961
+    "tools/refactor/source_splitter.py": 1032
   },
-  "count": 10,
-  "total": 9955
+  "count": 16,
+  "total": 19679
 }

@@ -25,13 +25,13 @@ inline const CLSID audio_capture_CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnu
 inline const IID audio_capture_IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
 
 // IEEE Float subformat GUID: {00000003-0000-0010-8000-00aa00389b71}
-inline bool audio_capture_IsIEEEFloat(const GUID& g) {
+inline bool IsIEEEFloat(const GUID& g) {
     return g.Data1 == 0x00000003 && g.Data2 == 0x0000 && g.Data3 == 0x0010 && g.Data4[0] == 0x80 &&
            g.Data4[1] == 0x00 && g.Data4[2] == 0x00 && g.Data4[3] == 0xaa && g.Data4[4] == 0x00 && g.Data4[5] == 0x38 &&
            g.Data4[6] == 0x9b && g.Data4[7] == 0x71;
 }
 
-inline uint32_t audio_capture_ExtractChannelMask(const WAVEFORMATEX* format) {
+inline uint32_t ExtractChannelMask(const WAVEFORMATEX* format) {
     if (!format) {
         return 0;
     }
@@ -49,7 +49,7 @@ inline uint32_t audio_capture_ExtractChannelMask(const WAVEFORMATEX* format) {
     return 0;
 }
 
-inline void audio_capture_FillPacketFormatFromWaveFormat(const WAVEFORMATEX* format, AudioPacket* packet) {
+inline void FillPacketFormatFromWaveFormat(const WAVEFORMATEX* format, AudioPacket* packet) {
     if (!format || !packet) {
         return;
     }
@@ -60,7 +60,7 @@ inline void audio_capture_FillPacketFormatFromWaveFormat(const WAVEFORMATEX* for
     packet->bitsPerSample = format->wBitsPerSample;
     packet->blockAlign = format->nBlockAlign;
     packet->validBitsPerSample = 0;
-    packet->channelMask = audio_capture_ExtractChannelMask(format);
+    packet->channelMask = ExtractChannelMask(format);
     packet->isFloat = format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
     packet->devicePosition = 0;
     packet->qpcPosition = 0;
@@ -70,7 +70,7 @@ inline void audio_capture_FillPacketFormatFromWaveFormat(const WAVEFORMATEX* for
     if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
         format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) {
         const auto* wfex = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
-        if (audio_capture_IsIEEEFloat(wfex->SubFormat)) {
+        if (IsIEEEFloat(wfex->SubFormat)) {
             packet->isFloat = true;
         }
         packet->validBitsPerSample = wfex->Samples.wValidBitsPerSample;

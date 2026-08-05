@@ -1,3 +1,161 @@
+#include "layer_capture_internal.h"
+
+bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
+                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore) {
+    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+
+    auto it = layer_capture_g_CaptureStates.find(device);
+    if (it == layer_capture_g_CaptureStates.end() || !it->second.initialized || it->second.swapchain != swapchain)
+        return false;
+
+    // Check if we should throttle capture (encoder is falling behind)
+    if (g_IPCClient.GetSharedMem()) {
+        if (g_IPCClient.GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+            return false;
+        }
+    }
+
+    VulkanCaptureState& state = it->second;
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp)
+        return false;
+    if (signalSemaphore == VK_NULL_HANDLE || srcImage == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        static std::atomic<int> s_unknownQueueLogCount{0};
+        if (s_unknownQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Capture skipped because present queue family is unknown");
+        }
+        return false;
+    }
+
+    if (!VulkanLayerState::Get().QueueSupportsTransfer(queue)) {
+        static std::atomic<int> s_nonTransferQueueLogCount{0};
+        if (s_nonTransferQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Capture skipped on queue family %u without transfer support", queueFamilyIndex);
+        }
+        return false;
+    }
+
+    VulkanCaptureState::CommandResources* commandResources =
+        EnsureCaptureCommandResources(state, disp, device, queueFamilyIndex);
+    if (!commandResources) {
+        return false;
+    }
+
+    auto* mem = g_IPCClient.GetSharedMem();
+    const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
+    const bool encoderAdoptionRequested = allowDxvkEncoderTextures && mem &&
+                                          !mem->useEncoderTextures.load(std::memory_order_acquire) &&
+                                          mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
+                                          state.captureFrameCounter >= state.nextEncoderImportRetryFrame;
+    if (encoderAdoptionRequested && mem->frameRing.readIndex.load(std::memory_order_acquire) !=
+                                        mem->frameRing.writeIndex.load(std::memory_order_acquire)) {
+        // Handles/fence are generation-global in shared memory. Stop producing
+        // briefly so every old-generation lease drains before replacing them.
+        static std::atomic<int> s_encoderAdoptionDrainLogCount{0};
+        if (s_encoderAdoptionDrainLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LayerLog("Vulkan Layer: Deferring encoder-texture adoption until old capture leases drain");
+        }
+        return false;
+    }
+    if (encoderAdoptionRequested && !CaptureStateCopiesComplete(state, disp))
+        return false;
+    if (encoderAdoptionRequested) {
+        SharedTextureEntry encoderEntry;
+        HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
+        if (ImportEncoderKmtTextures(device, disp, state.luidKey, state.captureWidth, state.captureHeight,
+                                     state.captureFormat, mem, &encoderEntry, kmtHandles)) {
+            {
+                std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
+                for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
+                    if (textureIt->vkDevice == device && textureIt->luidKey == state.luidKey &&
+                        textureIt->width == state.captureWidth && textureIt->height == state.captureHeight &&
+                        textureIt->vkFormat == state.captureFormat) {
+                        DestroySharedTextureEntryResources(*textureIt, disp);
+                        textureIt = layer_capture_g_TextureCache.erase(textureIt);
+                    } else {
+                        ++textureIt;
+                    }
+                }
+                layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
+            }
+
+            LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, state.captureWidth, state.captureHeight,
+                                 VkFormatToDXGI((VkFormat)state.captureFormat));
+            mem->useEncoderTextures.store(true, std::memory_order_release);
+            state.sharedImageInitialized.fill(false);
+            state.relayCompletionValues.fill(0);
+            LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: adopted encoder KMT textures after media startup");
+        } else {
+            state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
+        }
+    }
+
+    // Get shared textures from cache
+    SharedTextureEntry* sharedTextures = nullptr;
+    for (auto& entry : layer_capture_g_TextureCache) {
+        if (entry.vkDevice == device && entry.luidKey == state.luidKey && entry.width == state.captureWidth &&
+            entry.height == state.captureHeight && entry.vkFormat == state.captureFormat && entry.valid) {
+            sharedTextures = &entry;
+            break;
+        }
+    }
+    if (!sharedTextures || !sharedTextures->valid)
+        return false;
+    if (state.copyFences.empty() || commandResources->buffers.empty() || state.signalSemaphores.empty() ||
+        sharedTextures->vkImages.empty()) {
+        LayerLog("Vulkan Layer: Capture skipped because synchronization/image resources are incomplete");
+        return false;
+    }
+
+    // Use a monotonic counter independent of swapchain image patterns, but
+    // rotate over the actual shared texture count rather than assuming four.
+    const uint32_t sharedTextureCount =
+        static_cast<uint32_t>(std::min<size_t>(sharedTextures->vkImages.size(), SHARED_TEXTURE_SLOT_COUNT));
+    if (sharedTextureCount == 0)
+        return false;
+    const bool doRelay = sharedTextures->hasIpcRelay && state.d3d11Fence && state.d3d11Context4;
+    ID3D11Fence* relayCompletionFence = state.d3d11IpcFence ? state.d3d11IpcFence : state.d3d11Fence;
+    const uint32_t firstSlot = static_cast<uint32_t>(state.captureFrameCounter++ % sharedTextureCount);
+    int32_t availableSlot = -1;
+    uint32_t cpuBusySlots = 0;
+    uint32_t gpuBusySlots = 0;
+    for (uint32_t offset = 0; offset < sharedTextureCount; ++offset) {
+        const uint32_t candidate = (firstSlot + offset) % sharedTextureCount;
+        if (IsCaptureTextureSlotOutstanding(mem, static_cast<int32_t>(candidate))) {
+            ++cpuBusySlots;
+            continue;
+        }
+        if (doRelay && state.relayCompletionValues[candidate] != 0) {
+            const uint64_t completedRelayValue = relayCompletionFence->GetCompletedValue();
+            if (completedRelayValue == UINT64_MAX) {
+                LayerLog("Vulkan Layer: IPC relay fence reported device removal; disabling capture state");
+                state.initialized = false;
+                return false;
+            }
+            if (completedRelayValue < state.relayCompletionValues[candidate]) {
+                ++gpuBusySlots;
+                continue;
+            }
+        }
+        const uint32_t candidateFenceIndex = candidate % state.copyFences.size();
+        const VkFence candidateFence = state.copyFences[candidateFenceIndex];
+        const VkResult fenceStatus = disp->fp_vkWaitForFences(device, 1, &candidateFence, VK_TRUE, 0);
+        if (fenceStatus != VK_SUCCESS) {
+            if (fenceStatus == VK_ERROR_DEVICE_LOST) {
+                state.initialized = false;
+                return false;
+            }
+            ++gpuBusySlots;
+            continue;
+        }
+        availableSlot = static_cast<int32_t>(candidate);
+        break;
+
     }
     if (availableSlot < 0) {
         if (mem) {

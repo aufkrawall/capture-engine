@@ -1,5 +1,13 @@
 #pragma once
 
+struct NVSDK_NGX_Parameter;
+
+struct DLSSDims;
+
+struct ParameterVTableOriginals;
+
+struct NVSDK_NGX_DLSS_Create_Params;
+
 #include "nvngx_hook.h"
 
 #include <atomic>
@@ -26,10 +34,6 @@
 enum NVSDK_NGX_Result {
     NVSDK_NGX_Result_Success = 0x1,
     NVSDK_NGX_Result_FAIL_FeatureNotSupported = 0xBAD00001,
-};
-
-struct NVSDK_NGX_Parameter {
-    virtual ~NVSDK_NGX_Parameter() {}
 };
 
 struct NVSDK_NGX_FeatureDiscoveryInfo;
@@ -60,13 +64,6 @@ typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_NVSDK_NGX_GetFeatureRequirements
 #define NVSDK_NGX_Parameter_OutWidth "OutWidth"
 
 #define NVSDK_NGX_Parameter_OutHeight "OutHeight"
-
-struct DLSSDims {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t outWidth = 0;
-    uint32_t outHeight = 0;
-};
 
 // DLSS Preset Hints
 #define NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA "DLSS.Hint.Render.Preset.DLAA"
@@ -117,14 +114,6 @@ typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_GetI)(NVSDK_NGX_Parameter* pThis
 typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_GetUI)(NVSDK_NGX_Parameter* pThis, const char* InName,
                                                        unsigned int* OutValue);
 
-struct ParameterVTableOriginals {
-    PFN_SetI setI = nullptr;
-    PFN_SetUI setUI = nullptr;
-    PFN_SetF setF = nullptr;
-    PFN_GetI getI = nullptr;
-    PFN_GetUI getUI = nullptr;
-};
-
 // --- Factory Hooks ---
 typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_NVSDK_NGX_GetParameters)(NVSDK_NGX_Parameter** OutParameters);
 
@@ -160,18 +149,6 @@ typedef struct NVSDK_NGX_FeatureRequirement {
 // CreateFeature signature (4 args based on NGX docs/reversing)
 typedef NVSDK_NGX_Result(__cdecl* PFN_NVSDK_NGX_CreateFeature)(void* InCmdList, int InFeatureID,
                                                                NVSDK_NGX_Parameter* InParameters, void** OutHandle);
-
-// DLSS Create Params (Approximation based on common RE)
-struct NVSDK_NGX_DLSS_Create_Params {
-    unsigned int InFeatureCreateFlags;
-    unsigned int InEnableOutputSubrects;
-    unsigned int InRenderWidth;
-    unsigned int InRenderHeight;
-    unsigned int InTargetWidth;
-    unsigned int InTargetHeight;
-    int InPerfQualityValue;
-    int InDoSharpening;
-};
 
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue);
 
@@ -221,6 +198,10 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_D3D12(void* ctx, int featureID, NV
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN(void* ctx, int featureID, NVSDK_NGX_Parameter* params, void** handle);
 
+struct NVSDK_NGX_Parameter {
+    virtual ~NVSDK_NGX_Parameter() {}
+};
+
 inline PFN_NVSDK_NGX_GetFeatureRequirements nvngx_hook_oGetFeatureRequirements_D3D11 = nullptr;
 
 inline PFN_NVSDK_NGX_GetFeatureRequirements nvngx_hook_oGetFeatureRequirements_D3D12 = nullptr;
@@ -230,6 +211,13 @@ inline PFN_NVSDK_NGX_GetFeatureRequirements nvngx_hook_oGetFeatureRequirements_V
 inline std::mutex nvngx_hook_g_ParamMapMutex;
 
 inline std::map<void*, int> nvngx_hook_g_ParameterQualityMap;
+
+struct DLSSDims {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t outWidth = 0;
+    uint32_t outHeight = 0;
+};
 
 inline std::map<void*, DLSSDims> nvngx_hook_g_ParameterDimsMap;
 
@@ -247,37 +235,19 @@ inline const int nvngx_hook_NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 1 << 6;
 // Bit 5 in CreateFlags is DoSharpening
 inline const int nvngx_hook_NVSDK_NGX_DLSS_Feature_Flags_DoSharpening = 1 << 5;
 
+struct ParameterVTableOriginals {
+    PFN_SetI setI = nullptr;
+    PFN_SetUI setUI = nullptr;
+    PFN_SetF setF = nullptr;
+    PFN_GetI getI = nullptr;
+    PFN_GetUI getUI = nullptr;
+};
+
 inline std::mutex nvngx_hook_g_NVHookMutex;
 
 inline std::unordered_map<void**, ParameterVTableOriginals> nvngx_hook_g_ParameterVTableOriginals;
 
-// Track active hints per Quality Level (0=Perf, 1=Bal, 2=Qual, 3=UP, 4=UQ,
-// 5=DLAA) Initialize to '?'
-inline std::atomic<char> nvngx_hook_g_UserPresetHints[6] = {'?', '?', '?', '?', '?', '?'};
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_D3D11 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_D3D11 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_D3D11 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_D3D12 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_D3D12 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_D3D12 = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_VULKAN = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_VULKAN = nullptr;
-
-inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_VULKAN = nullptr;
-
-inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D11 = nullptr;
-
-inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D12 = nullptr;
-
-inline ParameterVTableOriginals nvngx_hook_GetParameterOriginals(NVSDK_NGX_Parameter* params) {
+inline ParameterVTableOriginals GetParameterOriginals(NVSDK_NGX_Parameter* params) {
     if (!params)
         return {};
     void** vtable = *reinterpret_cast<void***>(params);
@@ -286,14 +256,18 @@ inline ParameterVTableOriginals nvngx_hook_GetParameterOriginals(NVSDK_NGX_Param
     return it == nvngx_hook_g_ParameterVTableOriginals.end() ? ParameterVTableOriginals{} : it->second;
 }
 
-inline char nvngx_hook_PresetIDToChar(uint32_t id) {
+// Track active hints per Quality Level (0=Perf, 1=Bal, 2=Qual, 3=UP, 4=UQ,
+// 5=DLAA) Initialize to '?'
+inline std::atomic<char> nvngx_hook_g_UserPresetHints[6] = {'?', '?', '?', '?', '?', '?'};
+
+inline char PresetIDToChar(uint32_t id) {
     if (id >= 1 && id <= 26)
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         return 'A' + (id - 1);  // 1=A ... 26=Z
     return '?';
 }
 
-inline void nvngx_hook_UpdatePresetHint(const char* paramName, uint32_t presetVal, const char* source) {
+inline void UpdatePresetHint(const char* paramName, uint32_t presetVal, const char* source) {
     int idx = -1;
     if (strcmp(paramName, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance) == 0)
         idx = 0;
@@ -309,34 +283,34 @@ inline void nvngx_hook_UpdatePresetHint(const char* paramName, uint32_t presetVa
         idx = 5;
 
     if (idx >= 0) {
-        char c = nvngx_hook_PresetIDToChar(presetVal);
+        char c = PresetIDToChar(presetVal);
         nvngx_hook_g_UserPresetHints[idx].store(c);
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-            NVNGXLog("NVNGX: nvngx_hook_UpdatePresetHint [%s]: %s -> %u ('%c')", source, paramName, presetVal, c);
+            NVNGXLog("NVNGX: UpdatePresetHint [%s]: %s -> %u ('%c')", source, paramName, presetVal, c);
         }
     } else if (strstr(paramName, "RayReconstruction")) {
         // Log RR presets too for visibility
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-            NVNGXLog("NVNGX: nvngx_hook_UpdatePresetHint RR [%s]: %s -> %u", source, paramName, presetVal);
+            NVNGXLog("NVNGX: UpdatePresetHint RR [%s]: %s -> %u", source, paramName, presetVal);
         }
     }
 }
 
-inline bool nvngx_hook_IsSafePtr(const void* p) {
+inline bool IsSafePtr(const void* p) {
     if (!p || (uintptr_t)p < 0x10000)
         return false;
     return true;
 }
 
-inline bool nvngx_hook_IsSafeString(const char* s) {
-    return nvngx_hook_IsSafePtr(s);
+inline bool IsSafeString(const char* s) {
+    return IsSafePtr(s);
 }
 
-inline int nvngx_hook_GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
+inline int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
     return NormalizeDLSSFGFactor(cfg.parsed.dlssFGFactor);
 }
 
-inline void nvngx_hook_LogOncePerParam(const char* param, const char* msg, ...) {
+inline void LogOncePerParam(const char* param, const char* msg, ...) {
     static std::mutex s_mutex;
     static std::vector<std::pair<std::string, std::string>> s_LastLogs;
 
@@ -369,3 +343,37 @@ inline void nvngx_hook_LogOncePerParam(const char* param, const char* msg, ...) 
         NVNGXLog("%s", buffer);
     }
 }
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_D3D11 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_D3D11 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_D3D11 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_D3D12 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_D3D12 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_D3D12 = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetParameters_VULKAN = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oAllocateParameters_VULKAN = nullptr;
+
+inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_VULKAN = nullptr;
+
+inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D11 = nullptr;
+
+inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D12 = nullptr;
+
+// DLSS Create Params (Approximation based on common RE)
+struct NVSDK_NGX_DLSS_Create_Params {
+    unsigned int InFeatureCreateFlags;
+    unsigned int InEnableOutputSubrects;
+    unsigned int InRenderWidth;
+    unsigned int InRenderHeight;
+    unsigned int InTargetWidth;
+    unsigned int InTargetHeight;
+    int InPerfQualityValue;
+    int InDoSharpening;
+};

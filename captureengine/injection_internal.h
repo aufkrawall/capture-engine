@@ -54,12 +54,12 @@
 
 namespace fs = std::filesystem;
 
-inline double injection_QpcDeltaToMs(int64_t deltaUs) {
+inline double QpcDeltaToMs(int64_t deltaUs) {
     return static_cast<double>(deltaUs) / 1000.0;
 }
 
 // Read a null-terminated string from a remote process.
-inline bool injection_ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t bufferSize) {
+inline bool ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t bufferSize) {
     if (!buffer || bufferSize == 0)
         return false;
     buffer[0] = '\0';
@@ -79,7 +79,7 @@ inline bool injection_ReadRemoteString(HANDLE hProc, LPCVOID address, char* buff
 // Resolve a function address in a remote 32-bit (WoW64) module by manually
 // parsing its PE export directory. Used for cross-bitness injection where
 // GetProcAddress from the local 64-bit module returns the wrong address.
-inline LPVOID injection_GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* funcName) {
+inline LPVOID GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* funcName) {
     IMAGE_DOS_HEADER dosHeader;
     if (!ReadProcessMemory(hProc, hModule, &dosHeader, sizeof(dosHeader), NULL))
         return nullptr;
@@ -109,7 +109,7 @@ inline LPVOID injection_GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, cons
 
     for (DWORD i = 0; i < exportDir.NumberOfNames; i++) {
         char buffer[256];
-        if (injection_ReadRemoteString(hProc, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer))) {
+        if (ReadRemoteString(hProc, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer))) {
             if (strcmp(buffer, funcName) == 0) {
                 WORD ordinal;
                 if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNameOrdinals + (i * sizeof(WORD)),
@@ -129,8 +129,8 @@ inline LPVOID injection_GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, cons
 }
 
 // Resolve a function address in a remote 32-bit module by module name.
-// Opens the remote module enumeration and delegates to injection_GetRemoteProcAddress above.
-inline LPVOID injection_GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName, const char* funcName) {
+// Opens the remote module enumeration and delegates to GetRemoteProcAddress above.
+inline LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName, const char* funcName) {
     int maxRetries = 20;
     for (int retry = 0; retry < maxRetries; retry++) {
         std::vector<HMODULE> hMods;
@@ -151,7 +151,7 @@ inline LPVOID injection_GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* 
                                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                     if (modName.find(lowerTarget) != std::string::npos) {
-                        return injection_GetRemoteProcAddress(hProc, hMods[i], funcName);
+                        return GetRemoteProcAddress(hProc, hMods[i], funcName);
                     }
                 }
             }

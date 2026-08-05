@@ -217,7 +217,7 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
 
 ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(const std::string& name,
                                                                               bool logSelection) {
-    const auto processes = app_audio_capture_SnapshotProcessTree();
+    const auto processes = SnapshotProcessTree();
     const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name);
     if (logSelection && selection.selectedProcessId != 0) {
         DLL_Log(

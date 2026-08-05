@@ -153,7 +153,7 @@ bool AudioCapture::ProbeMixFormat(const std::string& deviceId, bool isLoopback, 
         return false;
     }
 
-    audio_capture_FillPacketFormatFromWaveFormat(waveFormat, format);
+    FillPacketFormatFromWaveFormat(waveFormat, format);
     DLL_Log("[AudioCapture] ProbeMixFormat: device=%s loopback=%d channels=%d rate=%d bits=%d mask=0x%x",
             deviceId.empty() ? "default" : deviceId.c_str(), isLoopback ? 1 : 0, format->channels, format->sampleRate,
             format->bitsPerSample, format->channelMask);

@@ -31,44 +31,44 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     config.applicationProfiles.clear();
-    const std::vector<std::string> iniSections = config_EnumerateIniSections(path);
+    const std::vector<std::string> iniSections = EnumerateIniSections(path);
     std::set<std::string> canonicalSuffixes;
 
     auto AddApplicationProfile = [&](const std::string& section, bool legacyProfile) -> bool {
         constexpr const char* kMissingProfileValue = "\x1d";
-        std::string processSpec = config_ReadLiteralIniValue(path, section, "Process", kMissingProfileValue);
+        std::string processSpec = ReadLiteralIniValue(path, section, "Process", kMissingProfileValue);
         if (processSpec == kMissingProfileValue)
-            processSpec = config_ReadLiteralIniValue(path, section, "ProcessName", "");
+            processSpec = ReadLiteralIniValue(path, section, "ProcessName", "");
 
         WhitelistEntry target;
         if (!processSpec.empty()) {
             if (processSpec.find(':') != std::string::npos) {
-                target = config_ParseEntry(processSpec);
+                target = ParseEntry(processSpec);
             } else {
-                target.pattern = Trim(config_StripOuterQuotes(processSpec));
+                target.pattern = Trim(StripOuterQuotes(processSpec));
             }
         }
 
         if (!legacyProfile) {
             const std::string windowTitle =
-                config_ReadLiteralIniValue(path, section, "window_title", kMissingProfileValue);
+                ReadLiteralIniValue(path, section, "window_title", kMissingProfileValue);
             if (windowTitle != kMissingProfileValue)
-                target.windowName = Trim(config_StripOuterQuotes(windowTitle));
+                target.windowName = Trim(StripOuterQuotes(windowTitle));
 
-            std::string windowMatch = config_ReadLiteralIniValue(path, section, "window_match", kMissingProfileValue);
+            std::string windowMatch = ReadLiteralIniValue(path, section, "window_match", kMissingProfileValue);
             if (windowMatch != kMissingProfileValue && !windowMatch.empty()) {
-                windowMatch = config_Lowercase(windowMatch);
-                if (config_IsMatchModeKeyword(windowMatch)) {
+                windowMatch = Lowercase(windowMatch);
+                if (IsMatchModeKeyword(windowMatch)) {
                     target.mode = ParseMatchMode(windowMatch);
                 } else {
-                    config_LogInvalidConfigBoundary(section.c_str(), "window_match", windowMatch, "exact");
+                    LogInvalidConfigBoundary(section.c_str(), "window_match", windowMatch, "exact");
                     target.mode = MatchMode::kExact;
                 }
             }
         }
 
         if (!target.HasProcess() && !target.HasWindow()) {
-            config_LogInvalidConfigBoundary(section.c_str(), "process/window_title", "", "an application target");
+            LogInvalidConfigBoundary(section.c_str(), "process/window_title", "", "an application target");
             return false;
         }
 
@@ -78,21 +78,21 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         profile.legacy = legacyProfile;
         if (legacyProfile) {
             profile.legacyInjectionSyntax = true;
-            profile.injectionMode = config_ParseLegacyApplicationInjectionMode(section, "capture", true);
+            profile.injectionMode = ParseLegacyApplicationInjectionMode(section, "capture", true);
         } else {
             const std::string dllInjectionValue =
-                config_ReadLiteralIniValue(path, section, "dll_injection", kMissingProfileValue);
+                ReadLiteralIniValue(path, section, "dll_injection", kMissingProfileValue);
             if (dllInjectionValue != kMissingProfileValue) {
-                profile.dllInjection = config_ParseApplicationDllInjection(section, dllInjectionValue);
+                profile.dllInjection = ParseApplicationDllInjection(section, dllInjectionValue);
             } else {
                 std::string injectionValue =
-                    config_ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
+                    ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
                 if (injectionValue == kMissingProfileValue)
-                    injectionValue = config_ReadLiteralIniValue(path, section, "injection", kMissingProfileValue);
+                    injectionValue = ReadLiteralIniValue(path, section, "injection", kMissingProfileValue);
                 if (injectionValue != kMissingProfileValue) {
                     profile.legacyInjectionSyntax = true;
                     profile.injectionMode =
-                        config_ParseLegacyApplicationInjectionMode(section, injectionValue, false);
+                        ParseLegacyApplicationInjectionMode(section, injectionValue, false);
                 }
             }
         }
@@ -102,7 +102,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                                           : profile.dllInjection == ApplicationDllInjection::kAlways;
         if (!profile.target.HasProcess() && unconditionalInjectionRequested) {
             const char* fallback = profile.legacyInjectionSyntax ? "injection_mode=none" : "dll_injection=never";
-            config_LogApplicationProfileWarning(section,
+            LogApplicationProfileWarning(section,
                                          std::string("cannot inject without a process name; using ") + fallback);
             profile.injectionMode = ApplicationInjectionMode::kNone;
             profile.dllInjection = ApplicationDllInjection::kNever;
@@ -110,26 +110,26 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         const std::string videoValue =
             legacyProfile ? kMissingProfileValue
-                          : config_ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
+                          : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
         profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
         const ApplicationVideoCapture compatibilityFallback =
             (legacyProfile || profile.legacyInjectionSyntax) ? ApplicationVideoCapture::kInherit
                                                              : ApplicationVideoCapture::kNone;
         profile.videoCapture = profile.videoCaptureExplicit
-                                   ? config_ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
+                                   ? ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
                                    : compatibilityFallback;
 
         std::string monitorValue = legacyProfile
                                        ? kMissingProfileValue
-                                       : config_ReadLiteralIniValue(path, section, "Capture.monitor", kMissingProfileValue);
+                                       : ReadLiteralIniValue(path, section, "Capture.monitor", kMissingProfileValue);
         if (monitorValue == kMissingProfileValue && !legacyProfile)
 
-            monitorValue = config_ReadLiteralIniValue(path, section, "monitor", kMissingProfileValue);
+            monitorValue = ReadLiteralIniValue(path, section, "monitor", kMissingProfileValue);
         profile.captureMonitorExplicit = monitorValue != kMissingProfileValue;
         if (profile.captureMonitorExplicit) {
             ce::monitor_selection::Selector monitorSelector;
             if (!ce::monitor_selection::TryParseSelector(monitorValue, monitorSelector)) {
-                config_LogInvalidConfigBoundary(section.c_str(), "monitor", monitorValue, "auto");
+                LogInvalidConfigBoundary(section.c_str(), "monitor", monitorValue, "auto");
             } else {
                 profile.captureMonitor = monitorSelector.canonical;
             }
@@ -137,15 +137,15 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         auto duplicate = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
                                       [&](const ApplicationProfile& existing) {
-                                          return config_TargetsOverlap(existing.target, profile.target);
+                                          return TargetsOverlap(existing.target, profile.target);
                                       });
         if (duplicate != config.applicationProfiles.end()) {
             if (legacyProfile && !duplicate->legacy) {
-                config_LogApplicationProfileWarning(
+                LogApplicationProfileWarning(
                     section, "overlaps canonical [" + duplicate->section + "]; ignoring the legacy profile");
                 return false;
             }
-            config_LogApplicationProfileWarning(section,
+            LogApplicationProfileWarning(section,
                                          "overlaps [" + duplicate->section + "]; the later profile wins");
             *duplicate = std::move(profile);
         } else {
@@ -155,14 +155,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     };
 
     for (const std::string& section : iniSections) {
-        const std::string lowered = config_Lowercase(section);
+        const std::string lowered = Lowercase(section);
         if (lowered.rfind("profile.", 0) == 0 && lowered.size() > strlen("profile.") &&
             AddApplicationProfile(section, false)) {
             canonicalSuffixes.insert(lowered.substr(strlen("profile.")));
         }
     }
     for (const std::string& section : iniSections) {
-        const std::string lowered = config_Lowercase(section);
+        const std::string lowered = Lowercase(section);
         if (lowered.rfind("app.", 0) != 0 || lowered.size() <= strlen("app."))
             continue;
         const std::string suffix = lowered.substr(strlen("app."));
@@ -172,7 +172,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     for (const ApplicationProfile& profile : config.applicationProfiles) {
         if (!procNameLower.empty() && profile.target.HasProcess() &&
-            config_Lowercase(profile.target.pattern) == procNameLower) {
+            Lowercase(profile.target.pattern) == procNameLower) {
             overrideSection = profile.section;
         }
     }
@@ -201,7 +201,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             //    the target process of the profile; treating them as
             //    overridable collapsed every app-audio source onto the running
             //    game and summed identical captures into one track (metallic audio).
-            if (!config_IsReservedOverrideSelectorKey(key)) {
+            if (!IsReservedOverrideSelectorKey(key)) {
                 GetPrivateProfileStringA(overrideSection.c_str(), key, "", buffer, 4096, path.c_str());
                 val = Trim(buffer);
                 if (!val.empty())
@@ -231,8 +231,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (valStr.empty())
             return def;
         int parsed = def;
-        if (!config_TryParseInt(valStr, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
+        if (!TryParseInt(valStr, parsed)) {
+            LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
             return def;
         }
         return parsed;
@@ -241,7 +241,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     auto GetBoundedInt = [&](const char* section, const char* key, int def, int minimum, int maximum) {
         const int value = GetInt(section, key, def);
         if (value < minimum || value > maximum) {
-            config_LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
+            LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
             return def;
         }
         return value;
@@ -255,7 +255,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             return true;
         if (s == "false" || s == "0" || s == "no" || s == "off")
             return false;
-        config_LogInvalidConfigBoundary(section, key, s, def ? "true" : "false");
+        LogInvalidConfigBoundary(section, key, s, def ? "true" : "false");
         return def;
     };
 
@@ -267,7 +267,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         std::replace(valStr.begin(), valStr.end(), ',', '.');
         float parsed = 0.0f;
         if (!ce::TryParseFiniteFloat(valStr, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
+            LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
             return def;
         }
         return parsed;
@@ -276,7 +276,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     auto GetBoundedFloat = [&](const char* section, const char* key, float def, float minimum, float maximum) {
         const float value = GetFloat(section, key, def);
         if (value < minimum || value > maximum) {
-            config_LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
+            LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
             return def;
         }
         return value;
@@ -288,8 +288,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (value.empty())
             return def;
         int parsed = def;
-        if (!config_TryParseInt(value, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+        if (!TryParseInt(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
             return def;
         }
         return parsed;
@@ -299,7 +299,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                                    const char* legacyKey, int def, int minimum, int maximum) {
         const int value = GetIntCompat(section, key, legacySection, legacyKey, def);
         if (value < minimum || value > maximum) {
-            config_LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
+            LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
             return def;
         }
         return value;
@@ -314,7 +314,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             return true;
         if (value == "false" || value == "0" || value == "no" || value == "off")
             return false;
-        config_LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
+        LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
         return def;
     };
 
@@ -326,7 +326,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         std::replace(value.begin(), value.end(), ',', '.');
         float parsed = 0.0f;
         if (!ce::TryParseFiniteFloat(value, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
             return def;
         }
         return parsed;
@@ -350,11 +350,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     constexpr const char* kMissingLiteralValue = "\x1d";
-    std::string globalCaptureMethod = config_ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
+    std::string globalCaptureMethod = ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
     if (globalCaptureMethod == kMissingLiteralValue)
-        globalCaptureMethod = config_ReadLiteralIniValue(path, "General", "capture_method", "auto");
+        globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
     globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod);
-    std::string globalCaptureMonitor = config_ReadLiteralIniValue(path, "Capture", "monitor", "auto");
+    std::string globalCaptureMonitor = ReadLiteralIniValue(path, "Capture", "monitor", "auto");
     {
         ce::monitor_selection::Selector monitorSelector;
         globalCaptureMonitor = ce::monitor_selection::TryParseSelector(globalCaptureMonitor, monitorSelector)
@@ -368,7 +368,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         const std::string monitorValue = GetStr("Capture", "monitor", "auto");
         ce::monitor_selection::Selector monitorSelector;
         if (!ce::monitor_selection::TryParseSelector(monitorValue, monitorSelector)) {
-            config_LogInvalidConfigBoundary("Capture", "monitor", monitorValue, "auto");
+            LogInvalidConfigBoundary("Capture", "monitor", monitorValue, "auto");
             config.captureMonitor = "auto";
         } else {
             config.captureMonitor = monitorSelector.canonical;
@@ -380,9 +380,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             profile.captureMonitor = globalCaptureMonitor;
         std::string profileCaptureMethod = globalCaptureMethod;
         std::string profileOverride =
-            config_ReadLiteralIniValue(path, profile.section, "Capture.capture_method", kMissingLiteralValue);
+            ReadLiteralIniValue(path, profile.section, "Capture.capture_method", kMissingLiteralValue);
         if (profileOverride == kMissingLiteralValue)
-            profileOverride = config_ReadLiteralIniValue(path, profile.section, "capture_method", kMissingLiteralValue);
+            profileOverride = ReadLiteralIniValue(path, profile.section, "capture_method", kMissingLiteralValue);
         if (profileOverride != kMissingLiteralValue)
             profileCaptureMethod = NormalizeCaptureMethod(profileOverride);
 
@@ -392,20 +392,20 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             (profile.legacyInjectionSyntax ? profile.injectionMode == ApplicationInjectionMode::kCapture
                                            : profile.dllInjection != ApplicationDllInjection::kNever);
         if (resolved == ApplicationVideoCapture::kInherit) {
-            resolved = config_CaptureMethodToApplicationMode(profileCaptureMethod);
+            resolved = CaptureMethodToApplicationMode(profileCaptureMethod);
             if (resolved == ApplicationVideoCapture::kInherit) {
                 resolved = injectedVideoAllowed ? ApplicationVideoCapture::kInject : ApplicationVideoCapture::kWgc;
             }
         }
 
         if (resolved == ApplicationVideoCapture::kInject && !profile.target.HasProcess()) {
-            config_LogApplicationProfileWarning(
+            LogApplicationProfileWarning(
                 profile.section, "requests injected video but has no process name; this profile has no video route");
             resolved = ApplicationVideoCapture::kNone;
         } else if (resolved == ApplicationVideoCapture::kInject && !injectedVideoAllowed) {
             const char* reason = profile.legacyInjectionSyntax ? "requires injection_mode=capture"
                                                                 : "is blocked by dll_injection=never";
-            config_LogApplicationProfileWarning(
+            LogApplicationProfileWarning(
                 profile.section,
                 std::string("requests injected video but ") + reason + "; this profile has no video route");
             resolved = ApplicationVideoCapture::kNone;
@@ -462,7 +462,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (config.wgcVideoMemoryReservation != "off" && config.wgcVideoMemoryReservation != "mandatory" &&
         config.wgcVideoMemoryReservation != "full") {
-        config_LogInvalidConfigBoundary("Diagnostics", "wgc_video_memory_reservation", config.wgcVideoMemoryReservation,
+        LogInvalidConfigBoundary("Diagnostics", "wgc_video_memory_reservation", config.wgcVideoMemoryReservation,
                                  "off");
         config.wgcVideoMemoryReservation = "off";
     }
@@ -478,9 +478,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.wgcSmoothnessFloorMs = 0;
         } else {
             int parsedFloor = 0;
-            if (!config_TryParseInt(floorRaw, parsedFloor) || parsedFloor < 0 ||
+            if (!TryParseInt(floorRaw, parsedFloor) || parsedFloor < 0 ||
                 static_cast<uint32_t>(parsedFloor) > config.wgcSmoothnessBufferMaxMs) {
-                config_LogInvalidConfigBoundary("WGC", "wgc_smoothness_floor_ms", floorRaw, "auto");
+                LogInvalidConfigBoundary("WGC", "wgc_smoothness_floor_ms", floorRaw, "auto");
                 config.wgcSmoothnessFloorAuto = true;
                 config.wgcSmoothnessFloorMs = 0;
             } else {
@@ -518,17 +518,17 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Performance (Priority Settings)
     config.processPriority =
-        config_NormalizePriorityString(GetStr("Performance", "process_priority", "high"), "above_normal", false);
+        NormalizePriorityString(GetStr("Performance", "process_priority", "high"), "above_normal", false);
     config.video.gpuPriority = GetBoundedInt("Performance", "gpu_priority", 7, -7, 7);
     config.gpuSchedulingPriority =
-        config_NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "auto"), "off", true);
+        NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "auto"), "off", true);
     config.copyQueuePriority =
         GetStrCompat("Overlay", "copy_queue_priority", "Performance", "copy_queue_priority", "normal");
     std::transform(config.copyQueuePriority.begin(), config.copyQueuePriority.end(), config.copyQueuePriority.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (config.copyQueuePriority != "low" && config.copyQueuePriority != "normal" &&
         config.copyQueuePriority != "high") {
-        config_LogInvalidConfigBoundary("Overlay", "copy_queue_priority", config.copyQueuePriority, "normal");
+        LogInvalidConfigBoundary("Overlay", "copy_queue_priority", config.copyQueuePriority, "normal");
         config.copyQueuePriority = "normal";
     }
 
@@ -553,14 +553,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     ce::mip_mapping::Mode mipMappingMode = ce::mip_mapping::Mode::Default;
     if (!ce::mip_mapping::TryParseMode(config.graphics.mipMapping, mipMappingMode)) {
-        config_LogInvalidConfigBoundary("Graphics", "mip_mapping", config.graphics.mipMapping, "default");
+        LogInvalidConfigBoundary("Graphics", "mip_mapping", config.graphics.mipMapping, "default");
         config.graphics.mipMapping = "default";
     }
     config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
     if (!config.graphics.mipBias.empty() && config.graphics.mipBias != "default") {
         float parsedMipBias = 0.0f;
         if (!ce::TryParseFiniteFloat(config.graphics.mipBias, parsedMipBias)) {
-            config_LogInvalidConfigBoundary("Graphics", "mip_bias", config.graphics.mipBias, "default");
+            LogInvalidConfigBoundary("Graphics", "mip_bias", config.graphics.mipBias, "default");
             config.graphics.mipBias = "default";
         }
     }
@@ -577,7 +577,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", -1);
     if (config.graphics.backbufferCount != -1 &&
         (config.graphics.backbufferCount < 2 || config.graphics.backbufferCount > 6)) {
-        config_LogInvalidConfigBoundary("Graphics", "backbuffer_count", std::to_string(config.graphics.backbufferCount), "-1");
+        LogInvalidConfigBoundary("Graphics", "backbuffer_count", std::to_string(config.graphics.backbufferCount), "-1");
         config.graphics.backbufferCount = -1;
     }
     config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
@@ -681,7 +681,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // newline-separated entries
     bool pseudoProcessListSet = false;
     std::string cfgText;
-    if (config_ReadTextFile(path, cfgText)) {
+    if (ReadTextFile(path, cfgText)) {
         std::stringstream cfgFile(cfgText);
         std::string line;
         bool inInjection = false;
@@ -693,7 +693,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         std::string pseudoProcessList;
 
         auto AddEntry = [&](const std::string& raw, std::vector<WhitelistEntry>& targetList) {
-            WhitelistEntry entry = config_ParseEntry(raw);
+            WhitelistEntry entry = ParseEntry(raw);
             if (!entry.pattern.empty() || !entry.windowName.empty()) {
                 // Check for duplicates
                 if (std::find(targetList.begin(), targetList.end(), entry) == targetList.end()) {
@@ -762,14 +762,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                     pseudoProcessList.clear();
                     pseudoProcessListSet = true;
                 } else if (!rest.empty() && rest != ")") {
-                    config.pseudoOverlay.processList = config_NormalizePseudoOverlayProcessList(rest);
+                    config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(rest);
                     pseudoProcessListSet = true;
                 }
             } else if (inPseudoProcessList) {
                 if (trimmed == ")" || trimmed.empty()) {
                     inPseudoProcessList = false;
                     if (!pseudoProcessList.empty()) {
-                        config.pseudoOverlay.processList = config_NormalizePseudoOverlayProcessList(pseudoProcessList);
+                        config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(pseudoProcessList);
                     }
 
                 } else if (trimmed.find('=') != std::string::npos) {
@@ -834,7 +834,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                                            std::vector<WhitelistEntry>& legacyEntries) {
         legacyEntries.erase(std::remove_if(legacyEntries.begin(), legacyEntries.end(),
                                            [&](const WhitelistEntry& legacyTarget) {
-                                               return config_TargetsOverlap(profileTarget, legacyTarget);
+                                               return TargetsOverlap(profileTarget, legacyTarget);
                                            }),
                             legacyEntries.end());
     };
@@ -884,11 +884,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             seg.erase(seg.find_last_not_of(" \t") + 1);
             if (!seg.empty()) {
                 int parsed = 0;
-                if (config_TryParseInt(seg, parsed) && parsed >= 1 && parsed <= 255) {
+                if (TryParseInt(seg, parsed) && parsed >= 1 && parsed <= 255) {
                     if (std::find(res.begin(), res.end(), parsed) == res.end())
                         res.push_back(parsed);
                 } else {
-                    config_LogInvalidConfigBoundary(section, key, seg, std::to_string(def));
+                    LogInvalidConfigBoundary(section, key, seg, std::to_string(def));
                 }
             }
         }
@@ -915,14 +915,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         uint32_t rgb = 0;
         if (clean.size() == 6 &&
             std::all_of(clean.begin(), clean.end(), [](unsigned char c) { return std::isxdigit(c) != 0; }) &&
-            config_TryParseUInt32(clean, rgb, 16)) {
+            TryParseUInt32(clean, rgb, 16)) {
             // Convert RRGGBB to 0xAABBGGRR (ImGui format)
             uint32_t r = (rgb >> 16) & 0xFF;
             uint32_t g = (rgb >> 8) & 0xFF;
             uint32_t b = rgb & 0xFF;
             return 0xFF000000 | (b << 16) | (g << 8) | r;
         }
-        config_LogInvalidConfigBoundary("Overlay", key, hexStr, "documented palette value");
+        LogInvalidConfigBoundary("Overlay", key, hexStr, "documented palette value");
         return defaultColor;
     };
 
@@ -1018,7 +1018,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (ce::TryParseFiniteFloat(paperWhiteStr, paperWhite) && paperWhite >= 1.0f && paperWhite <= 10000.0f) {
             config.overlay.hdrPaperWhite = paperWhite;
         } else {
-            config_LogInvalidConfigBoundary("Overlay", "hdr_paper_white", paperWhiteStr, "auto");
+            LogInvalidConfigBoundary("Overlay", "hdr_paper_white", paperWhiteStr, "auto");
             config.overlay.hdrPaperWhite = 0.0f;
         }
     }
@@ -1154,7 +1154,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (xPos != std::string::npos) {
             int parsedWidth = 0;
             int parsedHeight = 0;
-            if (config_TryParseInt(res.substr(0, xPos), parsedWidth) && config_TryParseInt(res.substr(xPos + 1), parsedHeight)) {
+            if (TryParseInt(res.substr(0, xPos), parsedWidth) && TryParseInt(res.substr(xPos + 1), parsedHeight)) {
                 config.video.scaling.outputWidth = parsedWidth;
                 config.video.scaling.outputHeight = parsedHeight;
             } else {
@@ -1177,7 +1177,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     sysAudio.device = GetStrCompat("SystemAudio", "device", "Audio", "device", "");
     sysAudio.codec = GetStrCompat("SystemAudio", "codec", "Audio", "codec", "aac");
     sysAudio.bitrate = GetIntCompat("SystemAudio", "bitrate", "Audio", "bitrate", 320);
-    sysAudio.sampleRate = config_NormalizeSampleRate(
+    sysAudio.sampleRate = NormalizeSampleRate(
         GetStrCompat("SystemAudio", "sample_rate", "Audio", "sample_rate", "default"), "SystemAudio");
     sysAudio.bitDepth = GetStrCompat("SystemAudio", "bit_depth", "Audio", "bit_depth", "default");
     sysAudio.downmix = GetBoolCompat("SystemAudio", "downmix", "Audio", "downmix", false);
@@ -1217,7 +1217,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.tracks = GetIntListCompat(section, "track", legacySection, "track", idx + 10);
         cfg.codec = GetStrCompat(section, "codec", legacySection, "codec", sysAudio.codec.c_str());
         cfg.bitrate = GetIntCompat(section, "bitrate", legacySection, "bitrate", sysAudio.bitrate);
-        cfg.sampleRate = config_NormalizeSampleRate(
+        cfg.sampleRate = NormalizeSampleRate(
             GetStrCompat(section, "sample_rate", legacySection, "sample_rate", sysAudio.sampleRate.c_str()), section);
         cfg.bitDepth = GetStrCompat(section, "bit_depth", legacySection, "bit_depth", sysAudio.bitDepth.c_str());
         cfg.downmix = GetBoolCompat(section, "downmix", legacySection, "downmix", sysAudio.downmix);
@@ -1236,7 +1236,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     micAudio.codec = GetStr("Microphone", "codec", sysAudio.codec.c_str());
     micAudio.bitrate = GetInt("Microphone", "bitrate", sysAudio.bitrate);
     micAudio.sampleRate =
-        config_NormalizeSampleRate(GetStr("Microphone", "sample_rate", sysAudio.sampleRate.c_str()), "Microphone");
+        NormalizeSampleRate(GetStr("Microphone", "sample_rate", sysAudio.sampleRate.c_str()), "Microphone");
     micAudio.bitDepth = GetStr("Microphone", "bit_depth", sysAudio.bitDepth.c_str());
     micAudio.downmix = GetBool("Microphone", "downmix", sysAudio.downmix);
     // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
@@ -1259,7 +1259,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.tracks = GetIntList(section, "track", idx + 20);
         cfg.codec = GetStr(section, "codec", micAudio.codec.c_str());
         cfg.bitrate = GetInt(section, "bitrate", micAudio.bitrate);
-        cfg.sampleRate = config_NormalizeSampleRate(GetStr(section, "sample_rate", micAudio.sampleRate.c_str()), section);
+        cfg.sampleRate = NormalizeSampleRate(GetStr(section, "sample_rate", micAudio.sampleRate.c_str()), section);
         cfg.bitDepth = GetStr(section, "bit_depth", micAudio.bitDepth.c_str());
         cfg.downmix = GetBool(section, "downmix", micAudio.downmix);
         // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
@@ -1285,7 +1285,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             return true;
         if (value == "false" || value == "0" || value == "no" || value == "off")
             return false;
-        config_LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
+        LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
         return def;
     };
     auto GetLiteralInt = [&](const char* section, const char* key, int def) {
@@ -1293,8 +1293,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (value.empty())
             return def;
         int parsed = def;
-        if (!config_TryParseInt(value, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+        if (!TryParseInt(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
             return def;
         }
         return parsed;
@@ -1306,7 +1306,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         std::replace(value.begin(), value.end(), ',', '.');
         float parsed = 0.0f;
         if (!ce::TryParseFiniteFloat(value, parsed)) {
-            config_LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
             return def;
         }
         return parsed;
@@ -1328,7 +1328,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         int numericSuffix = 0;
         const size_t dot = profile.section.find('.');
-        if (dot != std::string::npos && config_TryParseInt(profile.section.substr(dot + 1), numericSuffix) &&
+        if (dot != std::string::npos && TryParseInt(profile.section.substr(dot + 1), numericSuffix) &&
             numericSuffix >= 1 && numericSuffix <= kMaxAudioSections) {
             shadowedLegacyAppAudio.insert(numericSuffix);
         } else {
@@ -1343,7 +1343,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                                        "audio_track", defaultTrack);
         appAudio.codec = GetLiteralStr(profileSection, "audio_codec", sysAudio.codec.c_str());
         appAudio.bitrate = GetLiteralInt(profileSection, "audio_bitrate", sysAudio.bitrate);
-        appAudio.sampleRate = config_NormalizeSampleRate(
+        appAudio.sampleRate = NormalizeSampleRate(
             GetLiteralStr(profileSection, "audio_sample_rate", sysAudio.sampleRate.c_str()), profileSection);
         appAudio.bitDepth = GetLiteralStr(profileSection, "audio_bit_depth", sysAudio.bitDepth.c_str());
         appAudio.downmix = GetLiteralBool(profileSection, "audio_downmix", sysAudio.downmix);
@@ -1362,7 +1362,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                     appAudio.processName.c_str(), trackList.c_str());
             config.audioSources.push_back(appAudio);
         } else if (appAudio.enabled) {
-            config_LogInvalidConfigBoundary(profileSection, "process", profile.target.windowName, "executable name");
+            LogInvalidConfigBoundary(profileSection, "process", profile.target.windowName, "executable name");
         }
     }
 
@@ -1382,15 +1382,15 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         appAudio.processName = GetStr(section, "process", "");
         const std::string processIdText = GetStr(section, "process_id", "");
         uint32_t parsedProcessId = 0;
-        if (!processIdText.empty() && !config_TryParseUInt32(processIdText, parsedProcessId, 10)) {
-            config_LogInvalidConfigBoundary(section, "process_id", processIdText, "0");
+        if (!processIdText.empty() && !TryParseUInt32(processIdText, parsedProcessId, 10)) {
+            LogInvalidConfigBoundary(section, "process_id", processIdText, "0");
             parsedProcessId = 0;
         }
         appAudio.processId = static_cast<DWORD>(parsedProcessId);
         appAudio.tracks = GetIntList(section, "track", appIdx + 2);
         appAudio.codec = GetStr(section, "codec", sysAudio.codec.c_str());
         appAudio.bitrate = GetInt(section, "bitrate", sysAudio.bitrate);
-        appAudio.sampleRate = config_NormalizeSampleRate(GetStr(section, "sample_rate", sysAudio.sampleRate.c_str()), section);
+        appAudio.sampleRate = NormalizeSampleRate(GetStr(section, "sample_rate", sysAudio.sampleRate.c_str()), section);
         appAudio.bitDepth = GetStr(section, "bit_depth", sysAudio.bitDepth.c_str());
         appAudio.downmix = GetBool(section, "downmix", sysAudio.downmix);
         appAudio.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);
@@ -1452,7 +1452,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 GetStrCompat("DesktopOverlay", "process_list", "pseudo-overlay", "process_list", "");
             if (procList.size() > 2048)
                 procList.resize(2048);
-            config.pseudoOverlay.processList = config_NormalizePseudoOverlayProcessList(procList);
+            config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(procList);
         } else if (config.pseudoOverlay.processList.size() > 2048) {
             config.pseudoOverlay.processList.resize(2048);
         }
@@ -1484,9 +1484,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     config.screenshotDir = GetStrCompat("Output", "screenshot_dir", "Screenshot", "screenshot_dir", "");
-    config.screenshotColorSpace = config_Lowercase(Trim(GetStr("Screenshot", "color_space", "auto")));
+    config.screenshotColorSpace = Lowercase(Trim(GetStr("Screenshot", "color_space", "auto")));
     if (config.screenshotColorSpace != "auto" && config.screenshotColorSpace != "bt709") {
-        config_LogInvalidConfigBoundary("Screenshot", "color_space", config.screenshotColorSpace, "auto");
+        LogInvalidConfigBoundary("Screenshot", "color_space", config.screenshotColorSpace, "auto");
         config.screenshotColorSpace = "auto";
     }
 }

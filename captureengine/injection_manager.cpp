@@ -189,7 +189,7 @@ bool InjectionManager::InitializeWMI() {
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
     coInitUs = Log_GetQpcUs() - phaseStartUs;
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%lX)", injection_QpcDeltaToMs(coInitUs),
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%lX)", QpcDeltaToMs(coInitUs),
                 (unsigned long)hres);
         LogError("Failed to initialize COM library. Error code = 0x%lX", hres);
         return false;
@@ -214,7 +214,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeSecurity after %.3f ms (hr=0x%lX)",
-                injection_QpcDeltaToMs(securityUs), (unsigned long)hres);
+                QpcDeltaToMs(securityUs), (unsigned long)hres);
         LogError("Failed to initialize security. Error code = 0x%lX", hres);
         return false;  // Don't return false if RPC_E_TOO_LATE (already init)
     }
@@ -226,7 +226,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoCreateInstance after %.3f ms (hr=0x%lX)",
-                injection_QpcDeltaToMs(locatorUs), (unsigned long)hres);
+                QpcDeltaToMs(locatorUs), (unsigned long)hres);
         LogError("Failed to create IWbemLocator object. Err: 0x%lX", hres);
         return false;
     }
@@ -253,7 +253,7 @@ bool InjectionManager::InitializeWMI() {
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%lX)", injection_QpcDeltaToMs(connectUs),
+        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%lX)", QpcDeltaToMs(connectUs),
                 (unsigned long)hres);
         LogError("Could not connect. Error code = 0x%lX", hres);
         pLoc->Release();
@@ -276,7 +276,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoSetProxyBlanket after %.3f ms (hr=0x%lX)",
-                injection_QpcDeltaToMs(proxyBlanketUs), (unsigned long)hres);
+                QpcDeltaToMs(proxyBlanketUs), (unsigned long)hres);
         LogError("Could not set proxy blanket. Error code = 0x%lX", hres);
         pSvc->Release();
         pSvc = nullptr;
@@ -331,7 +331,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at ExecNotificationQueryAsync after %.3f ms (hr=0x%lX)",
-                injection_QpcDeltaToMs(notificationUs), (unsigned long)hres);
+                QpcDeltaToMs(notificationUs), (unsigned long)hres);
         LogError("ExecNotificationQueryAsync failed. Error code = 0x%lX", hres);
         return false;
     }
@@ -340,9 +340,9 @@ bool InjectionManager::InitializeWMI() {
         "[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
         "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
         "NotificationQuery=%.3f ms, total=%.3f ms",
-        injection_QpcDeltaToMs(coInitUs), injection_QpcDeltaToMs(securityUs), injection_QpcDeltaToMs(locatorUs), injection_QpcDeltaToMs(connectUs),
-        injection_QpcDeltaToMs(proxyBlanketUs), injection_QpcDeltaToMs(sinkSetupUs), injection_QpcDeltaToMs(notificationUs),
-        injection_QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
+        QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
+        QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
+        QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
     LogInfo("WMI Event Sink Initialized");
     return true;
 }

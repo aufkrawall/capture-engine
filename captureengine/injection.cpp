@@ -39,8 +39,8 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
     LogInfo(
         "[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
         "total=%.3f ms",
-        injection_QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, injection_QpcDeltaToMs(scanTotalUs),
-        injection_QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
+        QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
+        QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
 }
 
 InjectionManager::~InjectionManager() {

@@ -289,7 +289,7 @@ void InjectionManager::ScanExistingProcesses() {
     const int64_t snapshotUs = Log_GetQpcUs() - snapshotStartUs;
     if (hSnapshot == INVALID_HANDLE_VALUE) {
         LogInfo("[StartupPerf] ScanExistingProcesses: CreateToolhelp32Snapshot failed after %.3f ms (error=%lu)",
-                injection_QpcDeltaToMs(snapshotUs), GetLastError());
+                QpcDeltaToMs(snapshotUs), GetLastError());
         return;
     }
 
@@ -323,6 +323,6 @@ void InjectionManager::ScanExistingProcesses() {
     LogInfo(
         "[StartupPerf] ScanExistingProcesses: snapshot=%.3f ms, total=%.3f ms, scanned=%d, whitelisted=%d, "
         "injectAttempts=%d, queuedForDelayedInjection=%d",
-        injection_QpcDeltaToMs(snapshotUs), injection_QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
+        QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
         injectAttempts, injectSuccesses);
 }

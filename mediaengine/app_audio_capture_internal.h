@@ -1,5 +1,7 @@
 #pragma once
 
+class AppAudioCapture;
+
 #include "app_audio_capture.h"
 
 #include <combaseapi.h>
@@ -76,16 +78,14 @@ typedef struct AUDIOCLIENT_ACTIVATION_PARAMS {
     };
 } AUDIOCLIENT_ACTIVATION_PARAMS;
 
-class AppAudioCapture;
-
 // IEEE Float subformat GUID
-inline bool app_audio_capture_IsIEEEFloat(const GUID& g) {
+inline bool IsIEEEFloat(const GUID& g) {
     return g.Data1 == 0x00000003 && g.Data2 == 0x0000 && g.Data3 == 0x0010 && g.Data4[0] == 0x80 &&
            g.Data4[1] == 0x00 && g.Data4[2] == 0x00 && g.Data4[3] == 0xaa && g.Data4[4] == 0x00 && g.Data4[5] == 0x38 &&
            g.Data4[6] == 0x9b && g.Data4[7] == 0x71;
 }
 
-inline std::vector<ce::process_loopback::ProcessTreeEntry> app_audio_capture_SnapshotProcessTree() {
+inline std::vector<ce::process_loopback::ProcessTreeEntry> SnapshotProcessTree() {
     std::vector<ce::process_loopback::ProcessTreeEntry> processes;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {

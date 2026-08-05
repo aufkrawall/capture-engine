@@ -376,7 +376,7 @@ void AudioCapture::CaptureLoop() {
 
             // Build packet with format info
             AudioPacket packet{};
-            audio_capture_FillPacketFormatFromWaveFormat(pwfx, &packet);
+            FillPacketFormatFromWaveFormat(pwfx, &packet);
             packet.captureEpoch = captureEpoch_.load(std::memory_order_acquire);
             packet.devicePosition = devicePosition;      // Store for debugging if needed
             packet.rawQpcPosition = rawQpcPosition;      // Store unmodified WASAPI timestamp for debugging

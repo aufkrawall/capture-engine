@@ -44,7 +44,7 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
 
     if (foregroundPid != foregroundPid_ || (foregroundPid != 0 && foregroundProcessName_.empty())) {
         foregroundPid_ = foregroundPid;
-        foregroundProcessName_ = pseudo_overlay_QueryProcessName(foregroundPid);
+        foregroundProcessName_ = QueryProcessName(foregroundPid);
         LogDebug("[PseudoOverlay] Foreground process changed: pid=%lu process=%s", foregroundPid,
                  foregroundProcessName_.empty() ? "unknown" : foregroundProcessName_.c_str());
     }
@@ -66,7 +66,7 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
             if (sourcePid != 0) {
                 if (sourcePid != sourceProfilePid_ || sourceProcessName_.empty()) {
                     sourceProfilePid_ = sourcePid;
-                    sourceProcessName_ = pseudo_overlay_QueryProcessName(sourcePid);
+                    sourceProcessName_ = QueryProcessName(sourcePid);
                 }
                 sourceProfile = ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, sourceProcessName_);
                 if (sourceProfile && !sourceProfile->captureUsesInjection)
@@ -320,7 +320,7 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     HWND sourceWindow = NULL;
     if (EnsureSharedMemoryMapping() && pSharedMem_) {
-        sourceWindow = pseudo_overlay_GetMainWindowForProcess(pSharedMem_->GetSourcePid());
+        sourceWindow = GetMainWindowForProcess(pSharedMem_->GetSourcePid());
         if (!isUsableAnchorWindow(sourceWindow)) {
             sourceWindow = NULL;
         }
@@ -338,7 +338,7 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     if (!anchorMonitor && this->stickyAnchorMonitor_) {
         RECT stickyRect = {};
-        if (pseudo_overlay_GetMonitorRectForMonitor(this->stickyAnchorMonitor_, &stickyRect)) {
+        if (GetMonitorRectForMonitor(this->stickyAnchorMonitor_, &stickyRect)) {
             anchorMonitor = this->stickyAnchorMonitor_;
         }
     }
@@ -357,14 +357,14 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     anchor.window = anchorWindow;
     anchor.monitor = anchorMonitor;
-    if (!pseudo_overlay_GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
+    if (!GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
         anchor.monitorRect.left = 0;
         anchor.monitorRect.top = 0;
         anchor.monitorRect.right = GetSystemMetrics(SM_CXSCREEN);
         anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    anchor.dpi = anchorWindow ? pseudo_overlay_GetResolvedWindowDpi(anchorWindow)
+    anchor.dpi = anchorWindow ? GetResolvedWindowDpi(anchorWindow)
                               : (this->stickyAnchorDpi_ ? this->stickyAnchorDpi_ : GetDpiForSystem());
     anchor.fullscreenLike = IsWindowFullscreenLike(anchorWindow);
 

@@ -118,7 +118,7 @@ void PseudoOverlay::OnTimerTick() {
             pSharedMem_->runtimeState.notificationExpiry.load(std::memory_order_acquire);
         const uint32_t sharedNotificationType =
             pSharedMem_->runtimeState.notificationType.load(std::memory_order_relaxed);
-        const auto sharedRecordingNotification = pseudo_overlay_ToPseudoRecordingNotification(sharedNotificationType);
+        const auto sharedRecordingNotification = ToPseudoRecordingNotification(sharedNotificationType);
         if (recordingIndicatorState_ == ce::recording_indicator::State::Idle &&
             sharedRecordingNotification != ce::pseudo_overlay::RecordingNotificationKind::None &&
             sharedNotificationExpiry > GetTickCount64() &&
@@ -206,7 +206,7 @@ void PseudoOverlay::UpdateOverlay() {
     const bool isStarting = ce::recording_indicator::IsStarting(recordingState);
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
-    const bool shouldHaveVisibleOverlay = pseudo_overlay_ShouldOverlayBeVisible(
+    const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
         config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
         recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive,
         statusDarkForCapture_);
@@ -412,7 +412,7 @@ void PseudoOverlay::UpdateOverlay() {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
                 if (hdcMem) {
                     void* pBits = nullptr;
-                    HBITMAP hBm = pseudo_overlay_CreateArgbDibSection(fullS, fullS, &pBits);
+                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
@@ -428,7 +428,7 @@ void PseudoOverlay::UpdateOverlay() {
                         DeleteObject(hBrush);
                         DeleteObject(hPen);
 
-                        pseudo_overlay_ApplyPremultipliedAlpha(pBits, fullS, fullS);
+                        ApplyPremultipliedAlpha(pBits, fullS, fullS);
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
@@ -449,7 +449,7 @@ void PseudoOverlay::UpdateOverlay() {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
                 if (hdcMem) {
                     void* pBits = nullptr;
-                    HBITMAP hBm = pseudo_overlay_CreateArgbDibSection(fullS, fullS, &pBits);
+                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
                         memset(pBits, 0, fullS * fullS * 4);
@@ -501,7 +501,7 @@ void PseudoOverlay::UpdateOverlay() {
     if (showOverload && EnsureSharedMemoryMapping() && pSharedMem_) {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
-    const std::string overloadMsg = pseudo_overlay_FormatRecordingHealthMessage(
+    const std::string overloadMsg = FormatRecordingHealthMessage(
         overloadWarnKind_.load(std::memory_order_relaxed), overloadWarnSustainFpsX100, overloadTargetFps);
     const bool showRecordingFinalizing = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingFinalizing;
     const bool showRecordingSaved = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingSaved;

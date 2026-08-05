@@ -65,7 +65,7 @@ TEST(InjectCaptureSourceTest, VulkanQueueFamilyChangesDoNotWaitForTheWholeDevice
     const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body = FunctionBody(source,
-                                          "static VulkanCaptureState::CommandResources* "
+                                          "inline VulkanCaptureState::CommandResources* "
                                           "EnsureCaptureCommandResources(",
                                           "// Helper to get LUID from Vulkan Physical Device");
     ASSERT_FALSE(body.empty());
@@ -77,7 +77,11 @@ TEST(InjectCaptureSourceTest, VulkanQueueFamilyChangesDoNotWaitForTheWholeDevice
 TEST(InjectCaptureSourceTest, VulkanSwapchainInitIsNonPollingAndGenerationScoped) {
     const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
     ASSERT_FALSE(source.empty());
-    const std::string body = FunctionBody(source, "void InitializeCapture(", "void CleanupCapture(");
+    const size_t initBegin = source.rfind("void InitializeCapture(");
+    const size_t cleanupBegin = source.find("void CleanupCapture(VkDevice device) {", initBegin);
+    ASSERT_NE(initBegin, std::string::npos);
+    ASSERT_NE(cleanupBegin, std::string::npos);
+    const std::string body = source.substr(initBegin, cleanupBegin - initBegin);
     ASSERT_FALSE(body.empty());
 
     EXPECT_EQ(body.find("Sleep("), std::string::npos);
@@ -112,12 +116,12 @@ TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeA
     ASSERT_NE(cleanup, std::string::npos);
     EXPECT_LT(cleanup, fallback);
     EXPECT_NE(captureBody.find("Capture resize detected"), std::string::npos);
-    EXPECT_NE(captureBody.find("if (wglDXUnlockObjectsNV"), std::string::npos);
+    EXPECT_NE(captureBody.find("if (opengl_hook_wglDXUnlockObjectsNV"), std::string::npos);
     EXPECT_NE(captureBody.find("context4->Signal(fence"), std::string::npos);
     EXPECT_NE(captureBody.find("GL_READ_FRAMEBUFFER_BINDING"), std::string::npos);
     EXPECT_NE(captureBody.find("previousPixelPackBuffer"), std::string::npos);
     EXPECT_NE(captureBody.find("FindAvailableCaptureTextureSlot"), std::string::npos);
-    EXPECT_NE(captureBody.find("currentContext != g_CaptureContext"), std::string::npos);
+    EXPECT_NE(captureBody.find("currentContext != opengl_hook_g_CaptureContext"), std::string::npos);
 }
 
 TEST(InjectCaptureSourceTest, D3D11CleanupOwnsImmediateContextAndSerializesCapture) {

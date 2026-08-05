@@ -250,7 +250,7 @@ void AppAudioCapture::CaptureLoop() {
                 const bool activationHadObservedTargetSession =
                     activationHadObservedTargetSession_.load(std::memory_order_acquire);
                 const DWORD activePid = targetPID.load(std::memory_order_acquire);
-                const auto processTree = app_audio_capture_SnapshotProcessTree();
+                const auto processTree = SnapshotProcessTree();
                 for (size_t creationIndex = 0; creationIndex < sessionCreationCount; ++creationIndex) {
                     const auto& creation = sessionCreations[creationIndex];
                     if (!ce::process_loopback::ShouldRecycleCaptureForSessionCreation(
@@ -567,7 +567,7 @@ void AppAudioCapture::CaptureLoop() {
             } else if (pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
                 WAVEFORMATEXTENSIBLE* wfex = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pwfx);
                 packet.channelMask = static_cast<uint32_t>(wfex->dwChannelMask);
-                if (app_audio_capture_IsIEEEFloat(wfex->SubFormat)) {
+                if (IsIEEEFloat(wfex->SubFormat)) {
                     packet.isFloat = true;
                 }
                 packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;

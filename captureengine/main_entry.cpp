@@ -17,7 +17,7 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
 int ControllerMain(HINSTANCE hInstance) {
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
-    main_PrimeStartupCursor();
+    PrimeStartupCursor();
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
@@ -30,8 +30,8 @@ int ControllerMain(HINSTANCE hInstance) {
         []() { ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
     const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
     main_g_Tray = tray.get();
-    main_PrimeStartupCursor();
-    main_PumpStartupMessages();
+    PrimeStartupCursor();
+    PumpStartupMessages();
 
     // Ephemeral Registration (RAII)
     const int64_t vulkanRegStartUs = Log_GetQpcUs();
@@ -79,7 +79,7 @@ int ControllerMain(HINSTANCE hInstance) {
             const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
             LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
                      (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,
-                     main_GetControllerLoopWaitMs(lastConfigCheck), 0);
+                     GetControllerLoopWaitMs(lastConfigCheck), 0);
             iterRateLogCount = 0;
             iterRateLogStartUs = iterNowUs;
         }
@@ -193,7 +193,7 @@ int ControllerMain(HINSTANCE hInstance) {
                     LoadConfig(main_g_ConfigPath, main_g_Config);
                     Log_SetLevel(main_g_Config.logLevel);
 
-                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
                         if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop.GetModifiers(),
                                             main_g_Config.hotkeyStartStop.vkey)) {
@@ -201,7 +201,7 @@ int ControllerMain(HINSTANCE hInstance) {
                         }
                     }
 
-                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
                         if (main_g_Config.hotkeyScreenshot.vkey != 0) {
                             if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot.GetModifiers(),
@@ -211,7 +211,7 @@ int ControllerMain(HINSTANCE hInstance) {
                         }
                     }
 
-                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
                         if (main_g_Config.hotkeyAudioOnly.vkey != 0) {
                             if (!RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly.GetModifiers(),
@@ -223,12 +223,12 @@ int ControllerMain(HINSTANCE hInstance) {
 
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
-                        main_SyncLoggerAndSensorProcesses(main_g_Config);
-                        main_SyncLimiterProcess(main_g_Config);
+                        SyncLoggerAndSensorProcesses(main_g_Config);
+                        SyncLimiterProcess(main_g_Config);
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
 
-                    main_SyncPseudoOverlayConfiguration("config reload");
+                    SyncPseudoOverlayConfiguration("config reload");
                 }
             }
             lastConfigCheck = GetTickCount();
@@ -249,7 +249,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const int64_t preWaitUs = Log_GetQpcUs();
 
-        const DWORD waitMs = main_GetControllerLoopWaitMs(lastConfigCheck);
+        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck);
 
         // Log per-iteration timing breakdown at trace level when rate is logged
         if (iterRateLogCount == 0) {
@@ -316,14 +316,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
-    if (mode == ProcessMode::Controller && main_HasExactCommandLineArgument(L"--list-monitors")) {
+    if (mode == ProcessMode::Controller && HasExactCommandLineArgument(L"--list-monitors")) {
         return ce::monitor_selection::WriteMonitorListToStandardOutput();
     }
     if (mode == ProcessMode::Controller) {
         // An external launcher may have requested process-start feedback. Clear
         // it before config, logging, registration, or child startup; internal
         // roles must never change the user's current cursor themselves.
-        main_PrimeStartupCursor();
+        PrimeStartupCursor();
     }
 
     // Get paths
@@ -350,7 +350,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                  st.wSecond);
         g_SessionDirName = ts;
         if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
-            main_CleanupOldSessionDirs(logsRootDir);
+            CleanupOldSessionDirs(logsRootDir);
         }
     } else {
         g_SessionDirName = ParseSessionDir(lpCmdLine);
@@ -393,8 +393,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (commaPos != std::string::npos) {
             DWORD delayMs = 0;
             DWORD durationMs = 0;
-            if (main_TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
-                main_TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
+            if (TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
+                TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
                 main_g_AutoRecordDelayMs = delayMs;
                 main_g_AutoRecordDurationMs = durationMs;
                 main_g_AutoRecordEnabled = true;
@@ -439,9 +439,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         CreateDirectoryA(logsDir.c_str(), NULL);
         if (mode == ProcessMode::Controller)
-            main_WriteSessionManifest(logsDir, main_g_Config, mode);
+            WriteSessionManifest(logsDir, main_g_Config, mode);
         else if (mode == ProcessMode::Media)
-            main_WriteRecordingManifest(logsDir, main_g_Config, processLogName);
+            WriteRecordingManifest(logsDir, main_g_Config, processLogName);
     }
 
     if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {

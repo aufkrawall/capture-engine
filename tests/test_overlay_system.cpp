@@ -589,7 +589,7 @@ TEST(LegacyOverlayBackendSourceTest, OpenGLLegacyPathPreservesSentinelsWithoutPe
     EXPECT_EQ(hookSource.find("DetourWglSwapBuffers(0x%p) entering"), std::string::npos);
     EXPECT_EQ(hookSource.find("DetourWglSwapLayerBuffers(0x%p) entering"), std::string::npos);
     EXPECT_EQ(hookSource.find("OpenGL: wglMakeCurrent(HDC=0x%p"), std::string::npos);
-    EXPECT_NE(hookSource.find("perfMetrics.overlayUs = g_LastOverlayUs;"), std::string::npos);
+    EXPECT_NE(hookSource.find("perfMetrics.overlayUs = opengl_hook_g_LastOverlayUs;"), std::string::npos);
 }
 
 TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcrossTransitions) {

@@ -65,7 +65,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     }
 
     // Helper to find remote function address
-    auto injection_GetRemoteProcAddress = [&](HANDLE hProc, HMODULE hModule, const char* funcName) -> LPVOID {
+    auto GetRemoteProcAddress = [&](HANDLE hProc, HMODULE hModule, const char* funcName) -> LPVOID {
         // Read DOS Header
         IMAGE_DOS_HEADER dosHeader;
         if (!ReadProcessMemory(hProc, hModule, &dosHeader, sizeof(dosHeader), NULL))
@@ -152,7 +152,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
                         if (modName.find("kernel32.dll") != std::string::npos) {
                             // Found kernel32!
-                            pLoadLibrary = injection_GetRemoteProcAddress(hProcess.get(), hMods[i], "LoadLibraryA");
+                            pLoadLibrary = GetRemoteProcAddress(hProcess.get(), hMods[i], "LoadLibraryA");
 
                             if (pLoadLibrary)
                                 LogInfo("Resolved LoadLibraryA in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary,
@@ -268,7 +268,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
 
     LPVOID pLoadLibraryA = nullptr;
     if (isWow64Target) {
-        pLoadLibraryA = injection_GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "LoadLibraryA");
+        pLoadLibraryA = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "LoadLibraryA");
         if (!pLoadLibraryA) {
             LogError("[APC] Failed to resolve LoadLibraryA in WoW64 process");
             CloseHandle(hProcess);
@@ -413,7 +413,7 @@ void InjectionManager::Eject(DWORD pid) {
 
                     LPTHREAD_START_ROUTINE pFreeLibrary = nullptr;
                     if (isWow64Target) {
-                        LPVOID p = injection_GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "FreeLibrary");
+                        LPVOID p = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "FreeLibrary");
                         pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(p);
                     } else {
                         pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(

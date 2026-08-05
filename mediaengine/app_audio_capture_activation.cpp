@@ -311,7 +311,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         // placeholder packets even when process loopback was activated before
         // the target's first session existed, so packet arrival alone cannot
         // prove that this client attached to the target session.
-        const auto processTree = app_audio_capture_SnapshotProcessTree();
+        const auto processTree = SnapshotProcessTree();
         std::array<DWORD, 1024> observedSessionProcessIds{};
         size_t observedSessionProcessCount = 0;
         const uint64_t activationGeneration = audioSessionMonitor_.SnapshotGenerationAndObservedProcessIds(

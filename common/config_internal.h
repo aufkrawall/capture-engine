@@ -36,16 +36,6 @@
 
 #include "strict_integer_parse.h"
 
-template <typename T>
-T ParseValue(const std::string& val) {
-    if (val.empty())
-        return T{};
-    std::stringstream ss(val);
-    T res;
-    ss >> res;
-    return res;
-}
-
 std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()");
 
 std::string NormalizeCaptureMethod(const std::string& val);
@@ -78,7 +68,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val);
 
-inline void config_LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,
+inline void LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,
                                      const std::string& fallback) {
     static std::atomic<uint32_t> logged{0};
     const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
@@ -90,7 +80,7 @@ inline void config_LogInvalidConfigBoundary(const char* section, const char* key
     }
 }
 
-inline void config_LogApplicationProfileWarning(const std::string& section, const std::string& message) {
+inline void LogApplicationProfileWarning(const std::string& section, const std::string& message) {
     static std::atomic<uint32_t> logged{0};
     const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
     if (index < 32) {
@@ -100,7 +90,14 @@ inline void config_LogApplicationProfileWarning(const std::string& section, cons
     }
 }
 
-inline bool config_IsReservedOverrideSelectorKey(const char* key) {
+// Reserved per-process profile keys. These identify which process a profile
+// applies to, so they must never be
+// reused as override *values* for another section's same-named key. In
+// particular the per-source process name in [AppAudio.N] must not be rewritten
+// to the running game: doing so collapsed every app-audio source onto one PID
+// and summed identical captures into a track, producing comb-filter ("metallic")
+// audio. See the GetStr override fallback in LoadConfig.
+inline bool IsReservedOverrideSelectorKey(const char* key) {
     if (!key)
         return false;
     std::string lowered = key;
@@ -109,7 +106,7 @@ inline bool config_IsReservedOverrideSelectorKey(const char* key) {
     return lowered == "process" || lowered == "processname";
 }
 
-inline std::string config_NormalizePseudoOverlayProcessList(const std::string& raw) {
+inline std::string NormalizePseudoOverlayProcessList(const std::string& raw) {
     std::stringstream ss(raw);
     std::string item;
     std::string normalized;
@@ -129,7 +126,7 @@ inline std::string config_NormalizePseudoOverlayProcessList(const std::string& r
     return normalized;
 }
 
-inline std::string config_NormalizePriorityString(const std::string& val, const char* fallback, bool allowOff) {
+inline std::string NormalizePriorityString(const std::string& val, const char* fallback, bool allowOff) {
     std::string normalized = Trim(val);
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -150,7 +147,8 @@ inline std::string config_NormalizePriorityString(const std::string& val, const 
     return fallback;
 }
 
-inline std::vector<std::string> config_SplitUnquoted(const std::string& s) {
+// Split string by unquoted colons (quotes prevent splitting)
+inline std::vector<std::string> SplitUnquoted(const std::string& s) {
     std::vector<std::string> parts;
     std::string current;
     bool inQuotes = false;
@@ -170,14 +168,16 @@ inline std::vector<std::string> config_SplitUnquoted(const std::string& s) {
     return parts;
 }
 
-inline std::string config_StripOuterQuotes(const std::string& s) {
+// Strip surrounding quotes from a string
+inline std::string StripOuterQuotes(const std::string& s) {
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
         return s.substr(1, s.size() - 2);
     }
     return s;
 }
 
-inline bool config_IsMatchModeKeyword(const std::string& s) {
+// Check if string is a known match mode keyword
+inline bool IsMatchModeKeyword(const std::string& s) {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -186,9 +186,16 @@ inline bool config_IsMatchModeKeyword(const std::string& s) {
            lower == "title_class";
 }
 
-inline WhitelistEntry config_ParseEntry(const std::string& raw) {
+// Parse "process:window:mode" format into a WhitelistEntry
+// Examples:
+//   game.exe                     -> pattern=game.exe
+//   "Game.exe":"My Window"       -> pattern=Game.exe, windowName=My Window
+//   game.exe:exact               -> pattern=game.exe, mode=exact
+//   :"My Window":title_type      -> windowName=My Window, mode=title_type
+//   "Game: DX12.exe":"Win: dow":title_exec -> pattern=Game: DX12.exe, windowName=Win: dow, mode=title_executable
+inline WhitelistEntry ParseEntry(const std::string& raw) {
     WhitelistEntry entry;
-    std::vector<std::string> segments = config_SplitUnquoted(raw);
+    std::vector<std::string> segments = SplitUnquoted(raw);
 
     if (segments.empty())
         return entry;
@@ -196,18 +203,18 @@ inline WhitelistEntry config_ParseEntry(const std::string& raw) {
     // Check if last segment is a match mode keyword
     MatchMode mode = MatchMode::kExact;
     size_t count = segments.size();
-    if (count >= 2 && config_IsMatchModeKeyword(segments.back())) {
+    if (count >= 2 && IsMatchModeKeyword(segments.back())) {
         mode = ParseMatchMode(segments.back());
         --count;
     }
 
     // Map segments: last=window, second-last=process (if available)
     if (count >= 2) {
-        entry.pattern = Trim(config_StripOuterQuotes(segments[count - 2]));
-        entry.windowName = Trim(config_StripOuterQuotes(segments[count - 1]));
+        entry.pattern = Trim(StripOuterQuotes(segments[count - 2]));
+        entry.windowName = Trim(StripOuterQuotes(segments[count - 1]));
     } else if (count == 1) {
         // Single segment: determine if it's process or window
-        std::string val = Trim(config_StripOuterQuotes(segments[0]));
+        std::string val = Trim(StripOuterQuotes(segments[0]));
         std::string lower = val;
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -224,13 +231,13 @@ inline WhitelistEntry config_ParseEntry(const std::string& raw) {
     return entry;
 }
 
-inline std::string config_Lowercase(std::string value) {
+inline std::string Lowercase(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return value;
 }
 
-inline std::vector<std::string> config_EnumerateIniSections(const std::string& path) {
+inline std::vector<std::string> EnumerateIniSections(const std::string& path) {
     std::vector<char> names(4096, '\0');
     DWORD copied = 0;
     for (;;) {
@@ -247,14 +254,14 @@ inline std::vector<std::string> config_EnumerateIniSections(const std::string& p
     return sections;
 }
 
-inline std::string config_ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,
+inline std::string ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,
                                        const char* fallback) {
     char value[4096];
     GetPrivateProfileStringA(section.c_str(), key, fallback, value, sizeof(value), path.c_str());
     return Trim(value);
 }
 
-inline bool config_TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {
+inline bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {
     if (lhs.HasProcess() && rhs.HasProcess()) {
         if (_stricmp(lhs.pattern.c_str(), rhs.pattern.c_str()) == 0)
             return true;
@@ -265,12 +272,12 @@ inline bool config_TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntr
     return false;
 }
 
-inline ApplicationInjectionMode config_ParseLegacyApplicationInjectionMode(const std::string& section, std::string value,
+inline ApplicationInjectionMode ParseLegacyApplicationInjectionMode(const std::string& section, std::string value,
                                                                      bool legacy) {
     if (legacy)
         return ApplicationInjectionMode::kCapture;
 
-    value = config_Lowercase(Trim(value));
+    value = Lowercase(Trim(value));
     if (value == "capture" || value == "normal" || value == "inject")
         return ApplicationInjectionMode::kCapture;
     if (value == "overlay" || value == "overlay_only")
@@ -278,12 +285,12 @@ inline ApplicationInjectionMode config_ParseLegacyApplicationInjectionMode(const
     if (value.empty() || value == "none" || value == "off" || value == "disabled")
         return ApplicationInjectionMode::kNone;
 
-    config_LogInvalidConfigBoundary(section.c_str(), "injection_mode", value, "none");
+    LogInvalidConfigBoundary(section.c_str(), "injection_mode", value, "none");
     return ApplicationInjectionMode::kNone;
 }
 
-inline ApplicationDllInjection config_ParseApplicationDllInjection(const std::string& section, std::string value) {
-    value = config_Lowercase(Trim(value));
+inline ApplicationDllInjection ParseApplicationDllInjection(const std::string& section, std::string value) {
+    value = Lowercase(Trim(value));
     std::replace(value.begin(), value.end(), '-', '_');
     if (value == "when_needed")
         return ApplicationDllInjection::kWhenNeeded;
@@ -292,13 +299,13 @@ inline ApplicationDllInjection config_ParseApplicationDllInjection(const std::st
     if (value.empty() || value == "never")
         return ApplicationDllInjection::kNever;
 
-    config_LogInvalidConfigBoundary(section.c_str(), "dll_injection", value, "never");
+    LogInvalidConfigBoundary(section.c_str(), "dll_injection", value, "never");
     return ApplicationDllInjection::kNever;
 }
 
-inline ApplicationVideoCapture config_ParseApplicationVideoCapture(const std::string& section, std::string value,
+inline ApplicationVideoCapture ParseApplicationVideoCapture(const std::string& section, std::string value,
                                                              ApplicationVideoCapture fallback) {
-    value = config_Lowercase(Trim(value));
+    value = Lowercase(Trim(value));
     std::replace(value.begin(), value.end(), '-', '_');
     if (value == "inherit" || value == "global" || value == "default")
         return ApplicationVideoCapture::kInherit;
@@ -312,11 +319,11 @@ inline ApplicationVideoCapture config_ParseApplicationVideoCapture(const std::st
         return ApplicationVideoCapture::kNone;
 
     const char* fallbackName = fallback == ApplicationVideoCapture::kInherit ? "inherit" : "none";
-    config_LogInvalidConfigBoundary(section.c_str(), "video_capture", value, fallbackName);
+    LogInvalidConfigBoundary(section.c_str(), "video_capture", value, fallbackName);
     return fallback;
 }
 
-inline ApplicationVideoCapture config_CaptureMethodToApplicationMode(const std::string& method) {
+inline ApplicationVideoCapture CaptureMethodToApplicationMode(const std::string& method) {
     if (IsInjectCaptureMethod(method))
         return ApplicationVideoCapture::kInject;
     if (IsWgcCaptureMethod(method))
@@ -328,7 +335,18 @@ inline ApplicationVideoCapture config_CaptureMethodToApplicationMode(const std::
     return ApplicationVideoCapture::kInherit;
 }
 
-inline bool config_ReadTextFile(const std::string& path, std::string& out) {
+// Helper to parse generic
+template <typename T>
+T ParseValue(const std::string& val) {
+    if (val.empty())
+        return T{};
+    std::stringstream ss(val);
+    T res;
+    ss >> res;
+    return res;
+}
+
+inline bool ReadTextFile(const std::string& path, std::string& out) {
     out.clear();
     HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -354,7 +372,7 @@ inline bool config_ReadTextFile(const std::string& path, std::string& out) {
     return true;
 }
 
-inline bool config_TryParseInt(const std::string& value, int& out, int base = 10) {
+inline bool TryParseInt(const std::string& value, int& out, int base = 10) {
     int32_t parsed = 0;
     if (!ce::TryParseInt32(value, parsed, base))
         return false;
@@ -362,11 +380,17 @@ inline bool config_TryParseInt(const std::string& value, int& out, int base = 10
     return true;
 }
 
-inline bool config_TryParseUInt32(const std::string& value, uint32_t& out, int base = 10) {
+inline bool TryParseUInt32(const std::string& value, uint32_t& out, int base = 10) {
     return ce::TryParseUInt32(value, out, base);
 }
 
-inline std::string config_NormalizeSampleRate(const std::string& raw, const char* section) {
+// Validate a config sample_rate string at load time. Accepts the "default"
+// sentinel (or empty) and any positive integer; anything else (a hand-edited
+// typo such as "48kHz", a negative value, etc.) is logged once and normalized to
+// "default" so it can never reach - and crash - encoder init downstream. This is
+// the boundary defense; ce::audio::ParseSampleRateOr is the defense-in-depth at
+// the parse sites.
+inline std::string NormalizeSampleRate(const std::string& raw, const char* section) {
     if (raw.empty() || raw == "default") {
         return raw;
     }

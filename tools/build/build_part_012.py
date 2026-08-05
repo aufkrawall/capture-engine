@@ -22,9 +22,16 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     layer_only_sources = [
         os.path.join(layer_dir, "layer_main.cpp"),
         os.path.join(layer_dir, "vulkan_layer.cpp"),
+        os.path.join(layer_dir, "vulkan_layer_state.cpp"),
+        os.path.join(layer_dir, "vulkan_layer_hooks.cpp"),
+        os.path.join(layer_dir, "vulkan_layer_present.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),
         os.path.join(layer_dir, "layer_overlay.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
+        os.path.join(layer_dir, "layer_capture_textures.cpp"),
+        os.path.join(layer_dir, "layer_capture_state.cpp"),
+        os.path.join(layer_dir, "layer_capture_frame.cpp"),
+        os.path.join(layer_dir, "layer_capture_capture.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
         # The Vulkan layer intentionally links a selected source set instead of all common objects.

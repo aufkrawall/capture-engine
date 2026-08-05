@@ -1,17 +1,5 @@
 #include "overlay_adapter_internal.h"
 
-// Include backends based on build context
-// VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
-#ifndef VK_LAYER_CE_OVERLAY
-// Full backends for hook DLL
-#include "custom_overlay_dx10.h"
-#include "custom_overlay_dx11.h"
-#include "custom_overlay_dx12.h"
-#include "custom_overlay_dx8.h"
-#include "custom_overlay_dx9.h"
-#include "custom_overlay_gl.h"
-#endif
-
 // Global adapter instance
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 OverlayAdapter g_OverlayAdapter;
@@ -26,7 +14,7 @@ void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
 static float GetWindowsDpiScale(HWND targetHwnd) {
     // Prefer the target game window. Adapters without one reuse a known game
     // window before falling back to foreground/desktop state.
-    HWND hwnd = overlay_adapter_ResolveOverlayReferenceHwnd(targetHwnd);
+    HWND hwnd = ResolveOverlayReferenceHwnd(targetHwnd);
 
     ScopedThreadDpiAwareness dpiAwarenessScope;
 
