@@ -660,4 +660,3 @@ private:
     void Loop();
     void Shutdown();
 };
-
