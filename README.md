@@ -468,6 +468,10 @@ CaptureEngine for first-run creation.
 
 See the [app profile example](#app-profile-example) for a minimal per-game setup.
 
+While CaptureEngine is running, it checks `config.ini` for live changes and applies them where possible — for
+example switching the FPS limiter on or off or changing the target FPS. Settings that are used when a recording
+starts take effect the next time recording starts.
+
 If anti-cheat is involved, consult the safe/unsafe examples at the end before enabling a profile. The decisive boundary
 is whether CaptureEngine loads its hook DLL, not whether video itself comes from WGC, DXGI, or injected capture.
 
@@ -583,10 +587,15 @@ feasible:
 - LibreHardwareMonitor integration for proper hardware sensor data in the overlay and session logs
 - PresentMon plug-in support
 - managed loading of OptiScaler, ReShade, or Special K DLLs as add-ons
+- proper late inject / early deject support
 - webcam overlay support (exploratory)
+- improved compatibility with further third-party overlays, such as RTSS
 - investigating YouTube/Twitch live-streaming support
 - XeSS frame generation support
 - evaluating Unreal Engine settings overrides
+- evaluating a standalone GUI or an in-overlay GUI
+- D3D12VA video encoding
+- additionally offering an FFmpeg Vulkan video path instead of D3D11
 - further capture, overlay-coexistence, encoder, and hardware-monitoring improvements discovered through testing
 
 ## Bug reports and support expectations
