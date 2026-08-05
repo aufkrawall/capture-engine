@@ -199,7 +199,7 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
     ASSERT_FALSE(text.empty()) << source.string();
 
     const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
-    const size_t arm = text.find("g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarm);
+    const size_t arm = text.find("dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarm);
     const size_t lifetimeDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", arm);
     const size_t preserve =
         text.find("ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(", lifetimeDecision);
@@ -223,8 +223,8 @@ TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProo
 
     const size_t successfulSubmit =
         text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)");
-    const size_t latch = text.find("g_HadSuccessfulPostSLPhase.exchange(true", successfulSubmit);
-    const size_t handoffLoad = text.find("g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire)");
+    const size_t latch = text.find("dx12_hook_g_HadSuccessfulPostSLPhase.exchange(true", successfulSubmit);
+    const size_t handoffLoad = text.find("dx12_hook_g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire)");
     const size_t prewarmDecision = text.find("ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(", handoffLoad);
     const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(", prewarmDecision);
     ASSERT_NE(successfulSubmit, std::string::npos);
@@ -374,11 +374,13 @@ TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTrans
     ASSERT_NE(coverageGate, std::string::npos);
 
     const size_t drainGuard =
-        text.find("if (g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", outerOff);
+        text.find("if (dx12_hook_g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&",
+                  outerOff);
     const size_t drainNativeReturnGuard =
         text.find("!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn)", drainGuard);
     const size_t reinitBranch =
-        text.find("if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover", drainGuard);
+        text.find("if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover",
+                  drainGuard);
     const size_t reinitGuard = text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", reinitBranch);
     const size_t reinitNativeReturnGuard =
         text.find("!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn) {", reinitGuard);
@@ -602,10 +604,10 @@ TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAli
     // The pre-SL fallback uninstall must be guarded by the keep-alive latch,
     // and the keep-alive branch keeps the callback installed for warm re-ON.
     const size_t fallbackGuard =
-        text.find("g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr &&");
+        text.find("DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr &&");
     ASSERT_NE(fallbackGuard, std::string::npos);
     const size_t guardLatch =
-        text.find("!g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {", fallbackGuard);
+        text.find("!dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {", fallbackGuard);
     ASSERT_NE(guardLatch, std::string::npos);
     const size_t fallbackUninstall =
         text.find("SetPostSLCallbackInstalled(false, \"DX12: pre-SL fallback\")", guardLatch);
@@ -670,7 +672,8 @@ TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueF
 
     // The backbuffer composite must resolve against the actual target resource and use the selected owner
     // queue. It must not use the foreign dedicated-queue path or wait on the CPU.
-    const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(");
+    const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, "
+                                "const char* routeName) {");
     ASSERT_NE(fn, std::string::npos);
     size_t fnEnd = text.find("\n}\n", fn);
     if (fnEnd == std::string::npos) {

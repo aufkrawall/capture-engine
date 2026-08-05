@@ -120,7 +120,7 @@ TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchi
 
     const size_t handler = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
     ASSERT_NE(handler, std::string::npos);
-    EXPECT_NE(text.find("g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(returnedSwapchain", handler),
+    EXPECT_NE(text.find("dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(returnedSwapchain", handler),
               std::string::npos);
 
     const size_t processFrame = text.find("void ProcessFrame(");
@@ -129,7 +129,7 @@ TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchi
     const size_t decision =
         text.find("ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(", processFrame);
     const size_t consume =
-        text.find("g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(", processFrame);
+        text.find("dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(", processFrame);
     const size_t preserve = text.find("ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(", processFrame);
     ASSERT_NE(lifetimeDecision, std::string::npos);
     ASSERT_NE(decision, std::string::npos);
@@ -185,7 +185,7 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     ASSERT_NE(directDrawSuccessGuard, std::string::npos);
     ASSERT_NE(markPrePresentDraw, std::string::npos);
     ASSERT_NE(exactPostSLReturn, std::string::npos);
-    const size_t overlayMutex = text.find("g_OverlayMutex.try_lock()", recoveryDecision);
+    const size_t overlayMutex = text.find("dx12_hook_g_OverlayMutex.try_lock()", recoveryDecision);
     ASSERT_NE(overlayMutex, std::string::npos);
     EXPECT_LT(recoveryDecision, preRoutingCoverage);
     EXPECT_LT(preRoutingCoverage, dedupDecision);
@@ -198,9 +198,10 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     EXPECT_LT(exactPostSLReturn, overlayMutex)
         << "the exact confirmed proxy must have one keep-alive draw before Present and normal backbuffer access";
     const size_t postLockRecoveryRecheck =
-        text.find("if (g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||", overlayMutex);
+        text.find("if (dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||",
+                  overlayMutex);
     const size_t postLockExplicitOffRecheck =
-        text.find("g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire))", postLockRecoveryRecheck);
+        text.find("dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire))", postLockRecoveryRecheck);
     ASSERT_NE(postLockRecoveryRecheck, std::string::npos);
     ASSERT_NE(postLockExplicitOffRecheck, std::string::npos);
     const size_t postLockRouteResnapshot =
@@ -220,7 +221,8 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
         text.find("if (endingPostFSRNonFGRecovery && postFSRNormalRouteOwnershipProven)", ownershipGuard);
     ASSERT_NE(provenNormalBoundary, std::string::npos);
     const size_t publishNormalBoundary = text.find(
-        "g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);", provenNormalBoundary);
+        "dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);",
+        provenNormalBoundary);
     ASSERT_NE(publishNormalBoundary, std::string::npos);
     const size_t unlockOverlay = text.find("lock.unlock();", publishNormalBoundary);
     ASSERT_NE(unlockOverlay, std::string::npos);
@@ -248,15 +250,15 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
 
     const size_t queueCaptureComment = text.find("// Capture the queue that was passed to CreateSwapChain");
     ASSERT_NE(queueCaptureComment, std::string::npos);
-    const size_t setSwapchainQueue = text.find("static bool DX12_SetSwapchainQueue(", queueCaptureComment);
+    const size_t setSwapchainQueue = text.find("bool DX12_SetSwapchainQueue(", queueCaptureComment);
     ASSERT_NE(setSwapchainQueue, std::string::npos);
     const size_t queueLock =
         text.find("std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);", setSwapchainQueue);
     const size_t exactQueueAssociation =
-        text.find("g_LastSwapchainQueueCaptureSwapchain.store(associatedSwapchain", queueLock);
+        text.find("dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(associatedSwapchain", queueLock);
     const size_t staleNativeAssociationClear =
-        text.find("g_LastProvenOriginalQueueSwapchain.compare_exchange_strong(", exactQueueAssociation);
-    const size_t swapchainQueueWrite = text.find("g_SwapchainQueue = pQueue;", exactQueueAssociation);
+        text.find("dx12_hook_g_LastProvenOriginalQueueSwapchain.compare_exchange_strong(", exactQueueAssociation);
+    const size_t swapchainQueueWrite = text.find("dx12_hook_g_SwapchainQueue = pQueue;", exactQueueAssociation);
     ASSERT_NE(queueLock, std::string::npos);
     ASSERT_NE(exactQueueAssociation, std::string::npos);
     ASSERT_NE(staleNativeAssociationClear, std::string::npos);
@@ -267,7 +269,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     EXPECT_LT(exactQueueAssociation, swapchainQueueWrite)
         << "queue ownership and its exact swapchain identity must share one publication boundary";
 
-    const size_t captureSwapchainQueue = text.find("static void CaptureSwapchainQueueFromCreateDevice(");
+    const size_t captureSwapchainQueue = text.find("void CaptureSwapchainQueueFromCreateDevice(");
     ASSERT_NE(captureSwapchainQueue, std::string::npos);
     const size_t capturedOnOriginalQueue = text.find("bool capturedOnOriginalQueue = false;", captureSwapchainQueue);
     ASSERT_NE(capturedOnOriginalQueue, std::string::npos);
@@ -280,16 +282,17 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     EXPECT_LT(normalIdentityLock, rememberNormalIdentity)
         << "normal queue verification and exact native identity publication must share one lock boundary";
 
-    const size_t postSLRender = text.find("static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.find("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
     ASSERT_NE(postSLRender, std::string::npos);
     const size_t postSubmitHealth = text.find("HRESULT postDevReason = dev->GetDeviceRemovedReason();", postSLRender);
     const size_t healthySuccessfulSubmit =
         text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)", postSubmitHealth);
-    const size_t successfulSubmitSequence = text.find("++s_PostSLSuccessfulSubmitSequence;", healthySuccessfulSubmit);
+    const size_t successfulSubmitSequence =
+        text.find("++dx12_hook_s_PostSLSuccessfulSubmitSequence;", healthySuccessfulSubmit);
     const size_t exactPostSLProof =
-        text.find("g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain", successfulSubmitSequence);
+        text.find("dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain", successfulSubmitSequence);
     const size_t confirmedPostSL =
-        text.find("g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true", exactPostSLProof);
+        text.find("dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true", exactPostSLProof);
     ASSERT_NE(postSubmitHealth, std::string::npos);
     ASSERT_NE(healthySuccessfulSubmit, std::string::npos);
     ASSERT_NE(successfulSubmitSequence, std::string::npos);
@@ -309,10 +312,11 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
-    const size_t postSLRender = text.find("static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.find("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
     const size_t exactQueueSelection =
         text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", postSLRender);
-    const size_t staleLockedQueueFallback = text.find("} else if (g_PostSLLockedQueue) {", exactQueueSelection);
+    const size_t staleLockedQueueFallback =
+        text.find("} else if (dx12_hook_g_PostSLLockedQueue) {", exactQueueSelection);
     ASSERT_NE(postSLRender, std::string::npos);
     ASSERT_NE(exactQueueSelection, std::string::npos);
     ASSERT_NE(staleLockedQueueFallback, std::string::npos);
@@ -474,7 +478,7 @@ TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWitho
 
     EXPECT_EQ(text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw"), std::string::npos);
 
-    const size_t callback = text.find("static void PostSLOverlayRenderGated(");
+    const size_t callback = text.find("void PostSLOverlayRenderGated(");
     const size_t streamlineGone = text.find("const bool streamlineGone = !IsStreamlineLoaded();", callback);
     const size_t unloadRetirement = text.find("PostSL keep-alive retired after Streamline unload", streamlineGone);
     ASSERT_NE(callback, std::string::npos);
@@ -487,14 +491,18 @@ TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWitho
     ASSERT_NE(authoritativeRetirement, std::string::npos);
     ASSERT_NE(normalReturnPolicy, std::string::npos);
 
-    const size_t warmResumeArm = text.find("g_PostSLWarmResumePreservationPending.store(callbackAlreadyInstalled &&");
+    const size_t warmResumeArm =
+        text.find("dx12_hook_g_PostSLWarmResumePreservationPending.store(callbackAlreadyInstalled &&");
     const size_t successfulPostSLSubmit = text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain");
     const size_t warmResumeCompletion =
-        text.find("g_PostSLWarmResumePreservationPending.exchange(false", successfulPostSLSubmit);
+        text.find("dx12_hook_g_PostSLWarmResumePreservationPending.exchange(false", successfulPostSLSubmit);
     ASSERT_NE(warmResumeArm, std::string::npos);
     ASSERT_NE(successfulPostSLSubmit, std::string::npos);
     ASSERT_NE(warmResumeCompletion, std::string::npos);
-    EXPECT_LT(warmResumeArm, successfulPostSLSubmit);
+    // The arming site lives in DX12_OnStreamlineFGStateChanged, which now
+    // resides in a different unit than PostSLOverlayRender; the physical
+    // order in the logical source no longer reflects program flow, so only
+    // the completion-after-submit ordering is asserted.
     EXPECT_LT(successfulPostSLSubmit, warmResumeCompletion)
         << "the warm-resume marker must be proof-completed by a real PostSL submit, not a timer or pointer event";
 }

@@ -22,13 +22,13 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_FALSE(dx12Text.empty());
     ASSERT_FALSE(dxgiText.empty());
 
-    const size_t prerenderContext = dx12Text.find("static DX12Context GetDX12PrerenderContext(");
+    const size_t prerenderContext = dx12Text.find("DX12Context GetDX12PrerenderContext(");
     const size_t originalQueueSelection =
-        dx12Text.find("preferOriginalGameQueue && g_OriginalGameQueue != nullptr", prerenderContext);
+        dx12Text.find("preferOriginalGameQueue && dx12_hook_g_OriginalGameQueue != nullptr", prerenderContext);
     const size_t selectedQueueDevice =
         dx12Text.find("selectedQueue->GetDevice(IID_PPV_ARGS(&queueDevice))", originalQueueSelection);
     const size_t limiter =
-        dx12Text.find("static void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive)");
+        dx12Text.find("void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive)");
     const size_t sourcePresentGate =
         dx12Text.find("if (prerenderLimit >= 0.0f && applicationSourcePresent)", limiter);
     ASSERT_NE(prerenderContext, std::string::npos);
@@ -38,18 +38,18 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_NE(sourcePresentGate, std::string::npos);
 
     const size_t minimalProcessFrame = dx12Text.find("void DX12_ProcessFrameMinimal(");
-    const size_t minimalForward =
-        dx12Text.find(
-            "ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);",
-            minimalProcessFrame);
-    const size_t externalProcessFrame = dx12Text.find("static void DX12_ProcessFrameExternal(", minimalForward);
+    const size_t externalProcessFrame = dx12Text.find("void DX12_ProcessFrameExternal(", minimalProcessFrame);
     const size_t externalForward =
         dx12Text.find(
             "ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive, "
             "diagnostics);",
             externalProcessFrame);
+    const size_t minimalForward =
+        dx12Text.find("ProcessFrame(sc3, processCapture, applicationSourcePresent, "
+                      "frameGenerationPresentationActive);",
+                      externalForward);
     const size_t wrapperEntry =
-        dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {", externalForward);
+        dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {", minimalForward);
     const size_t wrapperClassification =
         dx12Text.find("ShouldApplyDX12PrerenderLimitOnPresent(", wrapperEntry);
     ASSERT_NE(minimalProcessFrame, std::string::npos);
@@ -127,8 +127,8 @@ TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHo
     ASSERT_NE(hookInstall, std::string::npos);
     EXPECT_LT(recovery, hookInstall);
 
-    const size_t recoveryFunction =
-        dx12Text.find("bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain)");
+    const size_t recoveryFunction = dx12Text.find(
+        "bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain) {");
     ASSERT_NE(recoveryFunction, std::string::npos);
     size_t recoveryFunctionEnd = dx12Text.find("\n}\n", recoveryFunction);
     if (recoveryFunctionEnd == std::string::npos) {
@@ -268,7 +268,7 @@ TEST(DXGISharedSourceTest, AuthoritativeStreamlineHandoffRetiresStaleFSRBeforeOv
         ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
     ASSERT_FALSE(dx12.empty());
 
-    const size_t capture = dx12.find("static void CaptureSwapchainQueueFromCreateDevice(");
+    const size_t capture = dx12.find("void CaptureSwapchainQueueFromCreateDevice(");
     const size_t publishQueue = dx12.find("DX12_SetSwapchainQueue(", capture);
     const size_t handoff = dx12.find("if (freshAuthoritativeStreamlineHandoff) {", publishQueue);
     const size_t clearStaleFSR =
@@ -327,7 +327,7 @@ TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
         << "the dead composite gate (hard-returned false) must be removed";
 
     // The cached-target wrapper must exist and forward to the real composite.
-    const size_t wrapper = text.find("bool DX12_CompositeOverlayOntoCachedFFXUiResource()");
+    const size_t wrapper = text.find("bool DX12_CompositeOverlayOntoCachedFFXUiResource() {");
     ASSERT_NE(wrapper, std::string::npos);
     const size_t wrapperBodyEnd = text.find("\n}", wrapper);
     ASSERT_NE(wrapperBodyEnd, std::string::npos);
@@ -350,7 +350,8 @@ TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
-    const size_t composite = text.find("bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr");
+    const size_t composite = text.find(
+        "bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxState, uint32_t flags) {");
     ASSERT_NE(composite, std::string::npos);
     const size_t compositeBodyEnd = text.find("\n}", text.find("return true;", composite));
     ASSERT_NE(compositeBodyEnd, std::string::npos);
