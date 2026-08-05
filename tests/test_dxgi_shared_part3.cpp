@@ -341,7 +341,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     const size_t present = text.find(
         "HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {");
     const size_t presentScope = text.find("BeginPostSLOffKeepAlivePresentScope();", present);
-    const size_t wrappedPassThrough = text.find("if (wrappedSwapchain) {", presentScope);
+    const size_t wrappedPassThrough = text.find("if (ctx.wrappedSwapchain) {", presentScope);
     const size_t wrappedKeepAlive =
         text.find("DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(", wrappedPassThrough);
     const size_t wrappedOriginalPresent = text.find("CallOriginalPresent(pSwapChain", wrappedKeepAlive);
@@ -368,7 +368,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
 
     const size_t present1 =
         text.find("HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,",
-                  processPresent);
+                  present);
     const size_t present1Scope = text.find("BeginPostSLOffKeepAlivePresentScope();", present1);
     const size_t wrappedPresent1PassThrough =
         text.find("pSwapChain->QueryInterface(IID_CWrapDXGISwapChain", present1Scope);
@@ -396,7 +396,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     EXPECT_LT(present1Scope, recursivePresent1Dedup);
     EXPECT_LT(present1Scope, processPresent1);
 
-    const size_t threadLocalScope = text.find("static thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth");
+    const size_t threadLocalScope = text.find("thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth");
     const size_t markFunction = text.find("void MarkPostSLOffKeepAlivePrePresentDrawn()", threadLocalScope);
     const size_t markOnlyInsideScope = text.find("if (s_postSLOffKeepAlivePresentScopeDepth != 0)", markFunction);
     ASSERT_NE(threadLocalScope, std::string::npos);

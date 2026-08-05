@@ -81,6 +81,7 @@ class SourceSplitterSplitTest(unittest.TestCase):
         unit_b = (root / "m_b.cpp").read_text(encoding="utf-8")
         unit_main = (root / "m.cpp").read_text(encoding="utf-8")
         self.assertIn("int B();", header)
+        self.assertNotIn("static int B();", header)
         self.assertIn("int B() {", unit_b)
         self.assertNotIn("namespace {", unit_b)
         self.assertIn("int A() {", unit_main)
@@ -99,8 +100,8 @@ class SourceSplitterSplitTest(unittest.TestCase):
         header = (root / "m_internal.h").read_text(encoding="utf-8")
         unit_main = (root / "m.cpp").read_text(encoding="utf-8")
         unit_use = (root / "m_use.cpp").read_text(encoding="utf-8")
-        self.assertLess(header.find("extern int g_value;"), header.find("inline int Read() {"))
-        self.assertIn("int g_value = 7;", unit_main)
+        self.assertLess(header.find("extern int m_g_value;"), header.find("inline int Read() {"))
+        self.assertIn("int m_g_value = 7;", unit_main)
         self.assertIn("int Use() {", unit_use)
 
 

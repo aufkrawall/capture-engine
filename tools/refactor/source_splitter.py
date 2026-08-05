@@ -848,9 +848,12 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
     unstatic = set(grouping.get("unstatic", []))
     unscoped_idx: set = set()
     for idx, c in enumerate(chunks):
+        if grouping.get("statics_in_units") and c.static:
+            unscoped_idx.add(idx)
+            c.static = False
         if c.anon_region is not None and c.anon_region in unscope_anon:
             unscoped_idx.add(idx)
-            c.ns_path = ()
+            c.ns_path = tuple(part for part in c.ns_path if part != "")
             c.anon_region = None
             c.static = False
         elif idx in unstatic:
@@ -943,6 +946,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
                 and not c.static
                 and c.anon_region is None
                 and not re.search(r"\b(constexpr|const)\b", c.text)
+                and idx not in unscoped_idx
             ):
                 continue  # mutable external globals stay in their unit
             if any(
@@ -1084,7 +1088,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
         if not c.signature:
             continue
         proto = rename_text(c.signature.rstrip().rstrip(";"))
-        if idx in destatic:
+        if idx in destatic or idx in unscoped_idx:
             proto = re.sub(r"^\s*static\s+", "", proto, count=1)
         header_parts.append(_wrap_ns(proto + ";", c.ns_path))
         if "{" not in c.text:
@@ -1100,8 +1104,13 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             if idx in keep_in_units or idx in header_idx or c.kind not in kinds:
                 continue
             if idx in shared_idx:
-                emit_shared(idx, c)
-                header_idx.add(idx)
+                if idx in unscoped_idx:
+                    # Definition stays in its unit (renamed); Pass 4 emits the
+                    # extern declaration for cross-unit references.
+                    pass
+                else:
+                    emit_shared(idx, c)
+                    header_idx.add(idx)
             elif c.kind == "func" and c.template:
                 header_parts.append(_wrap_ns(rename_text(c.text), c.ns_path))
                 header_idx.add(idx)
@@ -1134,7 +1143,7 @@ def split_source(facade: Path, grouping: Dict, dry_run: bool = False) -> None:
             for j in range(len(chunks))
         ):
             continue
-        extern = _extern_decl(rename_text(c.text), c.name)
+        extern = _extern_decl(rename_text(c.text), renames.get(c.name, c.name))
         if extern:
             header_parts.append(_wrap_ns(extern, c.ns_path))
 
