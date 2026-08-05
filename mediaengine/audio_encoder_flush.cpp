@@ -1,3 +1,69 @@
+#include "audio_encoder_internal.h"
+
+void AudioEncoder::Flush() {
+    if (!initDone || !codecCtx)
+        return;
+
+    DLL_Log("[AudioEncoder] Flushing encoder...");
+
+    // Calculate maximum samples to encode based on video duration
+    // This ensures audio ends exactly when video ends (Microsecond precision)
+    int64_t targetSamples = INT64_MAX;  // Exact video-authoritative duration
+    int64_t maxSamples = INT64_MAX;     // Samples submitted to the codec, including required padding
+    if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
+        int64_t durationUs = recordingEndUs - recordingStartUs;
+
+        // Use the same rounded sample target as MediaEngine stop diagnostics so
+        // final packets cannot extend beyond the CFR video timeline by a codec
+        // frame after metadata has already been clamped.
+        targetSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
+        maxSamples = targetSamples;
+
+        DLL_Log(
+            "[AudioEncoder] Video duration: %lld us, target audio samples: %lld, "
+            "current: %lld",
+            durationUs, targetSamples, samplesCount);
+    }
+
+    const int fixedFrameSize = codecCtx->frame_size;
+    const bool supportsVariableFrame =
+        codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE);
+    const bool supportsSmallLastFrame =
+        codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME);
+    const bool canSendShortFrame = allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame);
+
+    // Only round up to a frame boundary for codecs that need padded final
+    // submission. AAC/Opus use this path deliberately so their final packet
+    // timeline is clamped with explicit skip-samples metadata.
+    if (!canSendShortFrame && fixedFrameSize > 0 && maxSamples != INT64_MAX) {
+        int64_t rem = maxSamples % fixedFrameSize;
+        if (rem != 0) {
+            maxSamples += (fixedFrameSize - rem);
+        }
+    }
+
+    bool finalDiscardSideDataAttached = false;
+    int64_t finalDiscardSideDataSamples = 0;
+    auto attachEndSkipSideData = [&](AVPacket* pkt, int64_t endSkipSamples) {
+        if (!pkt || endSkipSamples <= 0 || endSkipSamples > UINT32_MAX) {
+            return false;
+        }
+        size_t existingSize = 0;
+        uint8_t* skipData = av_packet_get_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, &existingSize);
+        uint32_t startSkipSamples = 0;
+        uint32_t existingEndSkipSamples = 0;
+        uint8_t startSkipReason = 0;
+        if (skipData && existingSize >= 10) {
+            startSkipSamples = AV_RL32(skipData);
+            existingEndSkipSamples = AV_RL32(skipData + 4);
+            startSkipReason = skipData[8];
+        } else {
+            skipData = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        }
+        if (!skipData) {
+            DLL_Log("[AudioEncoder] WARNING: failed to add packet end-skip side data: stream=%d endSkip=%lld samples",
+                    streamIndex, endSkipSamples);
+
             return false;
         }
 

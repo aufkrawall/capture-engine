@@ -20,7 +20,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesIntentBeforeReadinessW
     const std::string source = ReadSource("captureengine/main.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t videoToggle = source.find("void ToggleRecording()");
+    const size_t videoToggle = source.find("void ToggleRecording() {");
     const size_t videoIntent = source.find(
         "PublishRecordingStartIntent(RecordingStartIntent::Video, \"record hotkey\")", videoToggle);
     const size_t videoReady = source.find("EnsureMediaProcessReady(10000)", videoToggle);
@@ -29,7 +29,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesIntentBeforeReadinessW
     ASSERT_NE(videoReady, std::string::npos);
     EXPECT_LT(videoIntent, videoReady);
 
-    const size_t audioToggle = source.find("void ToggleAudioOnlyRecording()");
+    const size_t audioToggle = source.find("void ToggleAudioOnlyRecording() {");
     const size_t audioIntent = source.find(
         "PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, \"audio-only hotkey\")", audioToggle);
     const size_t audioReady = source.find("EnsureMediaProcessReady(10000)", audioToggle);

@@ -1,3 +1,71 @@
+#include "pseudo_overlay_internal.h"
+
+void PseudoOverlay::InitGDI() {
+    HDC hdcScreen = GetDC(NULL);
+    hdcWarn_ = CreateCompatibleDC(hdcScreen);
+    if (hdcWarn_)
+        oldBmWarn_ = (HBITMAP)GetCurrentObject(hdcWarn_, OBJ_BITMAP);
+    ReleaseDC(NULL, hdcScreen);
+
+    UpdateScaleForDpi(currentDpi_);
+}
+
+void PseudoOverlay::OnTimerTick() {
+    if (!initialized_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const int64_t tickStartUs = Log_GetQpcUs();
+    ULONGLONG now = GetTickCount64();
+    ApplyPendingConfig();
+    const bool recordingStateChanged = RefreshRecordingState();
+    RefreshActiveProfileConfig();
+
+    // The pseudo-overlay owns this dedicated message thread. A large timer gap now
+    // diagnoses work on this thread itself; controller readiness waits cannot starve it.
+    if (lastTimerTickMs_ != 0 && now > lastTimerTickMs_) {
+        const ULONGLONG tickGapMs = now - lastTimerTickMs_;
+        if (tickGapMs >= kPumpStallWarnMs) {
+            LogWarn(
+                "[PseudoOverlay] UI-thread stall: %llums between timer ticks (interval=%ums)",
+                static_cast<unsigned long long>(tickGapMs), kTimerInterval);
+        }
+    }
+    lastTimerTickMs_ = now;
+
+    // Foreground-acquire grace tracking. The decision (suppress or render) is evaluated
+    // inside UpdateOverlay() so every entry path that calls UpdateOverlay() benefits
+    // from the same gate, but the tracking state only advances on the timer tick to
+    // avoid double-counting a transition.
+    const uint32_t rawFgPid = GetForegroundTargetPid();
+    const bool currentHadTarget = IsForegroundTarget();
+    UpdateForegroundGraceState(currentHadTarget, currentHadTarget ? rawFgPid : 0u);
+    (void)now;
+
+    if (recordingStateChanged) {
+        UpdateOverlay();
+    }
+
+    if (config_.mode == 1 || config_.mode == 2) {
+        bool warnTargetFocused = IsForegroundTarget();
+        const bool isRecording = ce::recording_indicator::IsRecording(recordingIndicatorState_);
+        const bool isStarting = ce::recording_indicator::IsStarting(recordingIndicatorState_);
+        bool condition = warnTargetFocused && !isRecording && !isStarting;
+
+        if (condition) {
+            if (!warnActive_) {
+                LogInfo("[PseudoOverlay] NOT RECORDING warning activated (foreground target focused, not recording)");
+                warnActive_ = true;
+                warnCycleStart_ = now;
+                warnVisible_ = true;
+                UpdateOverlay();
+            } else {
+                ULONGLONG elapsed = now - warnCycleStart_;
+                ULONGLONG cycleTime = elapsed % 3000;
+                bool shouldBeVisible = (cycleTime < 2000);
+                if (warnVisible_ != shouldBeVisible) {
+                    warnVisible_ = shouldBeVisible;
+
                     UpdateOverlay();
                 }
             }
@@ -50,7 +118,7 @@
             pSharedMem_->runtimeState.notificationExpiry.load(std::memory_order_acquire);
         const uint32_t sharedNotificationType =
             pSharedMem_->runtimeState.notificationType.load(std::memory_order_relaxed);
-        const auto sharedRecordingNotification = ToPseudoRecordingNotification(sharedNotificationType);
+        const auto sharedRecordingNotification = pseudo_overlay_ToPseudoRecordingNotification(sharedNotificationType);
         if (recordingIndicatorState_ == ce::recording_indicator::State::Idle &&
             sharedRecordingNotification != ce::pseudo_overlay::RecordingNotificationKind::None &&
             sharedNotificationExpiry > GetTickCount64() &&
@@ -129,8 +197,6 @@ void PseudoOverlay::CleanupGDI() {
     }
 }
 
-// ---- Main overlay update (ported from OBSIndicator UpdateOv) ----
-
 void PseudoOverlay::UpdateOverlay() {
     if (!initialized_.load(std::memory_order_acquire))
         return;
@@ -140,7 +206,7 @@ void PseudoOverlay::UpdateOverlay() {
     const bool isStarting = ce::recording_indicator::IsStarting(recordingState);
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
-    const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
+    const bool shouldHaveVisibleOverlay = pseudo_overlay_ShouldOverlayBeVisible(
         config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
         recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive,
         statusDarkForCapture_);
@@ -322,7 +388,7 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     // Determine color
-    COLORREF curCol = isStarting ? kColStarting : (isRecording ? RGB(255, 0, 0) : RGB(0, 100, 255));
+    COLORREF curCol = isStarting ? pseudo_overlay_kColStarting : (isRecording ? RGB(255, 0, 0) : RGB(0, 100, 255));
 
     // Change detection
     bool doUpdateInd = false;
@@ -346,7 +412,7 @@ void PseudoOverlay::UpdateOverlay() {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
                 if (hdcMem) {
                     void* pBits = nullptr;
-                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
+                    HBITMAP hBm = pseudo_overlay_CreateArgbDibSection(fullS, fullS, &pBits);
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
@@ -362,7 +428,7 @@ void PseudoOverlay::UpdateOverlay() {
                         DeleteObject(hBrush);
                         DeleteObject(hPen);
 
-                        ApplyPremultipliedAlpha(pBits, fullS, fullS);
+                        pseudo_overlay_ApplyPremultipliedAlpha(pBits, fullS, fullS);
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
@@ -383,7 +449,7 @@ void PseudoOverlay::UpdateOverlay() {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
                 if (hdcMem) {
                     void* pBits = nullptr;
-                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
+                    HBITMAP hBm = pseudo_overlay_CreateArgbDibSection(fullS, fullS, &pBits);
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
                         memset(pBits, 0, fullS * fullS * 4);
@@ -435,7 +501,7 @@ void PseudoOverlay::UpdateOverlay() {
     if (showOverload && EnsureSharedMemoryMapping() && pSharedMem_) {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
-    const std::string overloadMsg = FormatRecordingHealthMessage(
+    const std::string overloadMsg = pseudo_overlay_FormatRecordingHealthMessage(
         overloadWarnKind_.load(std::memory_order_relaxed), overloadWarnSustainFpsX100, overloadTargetFps);
     const bool showRecordingFinalizing = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingFinalizing;
     const bool showRecordingSaved = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingSaved;
@@ -530,13 +596,13 @@ void PseudoOverlay::UpdateOverlay() {
             DeleteObject(hK);
 
             SelectObject(hdcWarn_, fontWarn_);
-            SetTextColor(hdcWarn_, showStarting   ? kColStarting
-                                   : showScreenshot ? (screenshotSucceeded ? kColScreenshotText
-                                                                            : kColScreenshotFailureText)
-                                    : (showRecordingSavedDegraded || showRecordingFailed) ? kColWarnText
+            SetTextColor(hdcWarn_, showStarting   ? pseudo_overlay_kColStarting
+                                   : showScreenshot ? (screenshotSucceeded ? pseudo_overlay_kColScreenshotText
+                                                                            : pseudo_overlay_kColScreenshotFailureText)
+                                    : (showRecordingSavedDegraded || showRecordingFailed) ? pseudo_overlay_kColWarnText
                                     : (showRecordingFinalizing || showRecordingSaved || showRecordingCanceled)
-                                        ? kColScreenshotText
-                                        : kColWarnText);
+                                        ? pseudo_overlay_kColScreenshotText
+                                        : pseudo_overlay_kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};
@@ -584,8 +650,6 @@ void PseudoOverlay::UpdateOverlay() {
     }
 }
 
-// ---- Window procedures ----
-
 LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_MOUSEACTIVATE) {
         return MA_NOACTIVATE;
@@ -610,87 +674,3 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
     }
     return DefWindowProc(h, m, w, l);
 }
-
-LRESULT CALLBACK PseudoOverlay::WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_MOUSEACTIVATE) {
-        return MA_NOACTIVATE;
-    }
-    if (m == WM_ACTIVATE || m == WM_ACTIVATEAPP) {
-        return 0;
-    }
-    if (m == WM_SETFOCUS) {
-        SetFocus(NULL);
-        return 0;
-    }
-    if (m == WM_NCACTIVATE) {
-        return FALSE;
-    }
-    if (m == WM_NCHITTEST) {
-        return HTTRANSPARENT;
-    }
-    return DefWindowProc(h, m, w, l);
-}
-
-VOID CALLBACK PseudoOverlay::TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) {
-    if (timerId != 0 && instance_ && instance_->initialized_.load(std::memory_order_acquire)) {
-        instance_->OnTimerTick();
-    }
-}
-
-// ---- Init / Shutdown ----
-
-bool PseudoOverlay::Init(HINSTANCE hInstance) {
-    if (initialized_.load(std::memory_order_acquire))
-        return true;
-
-    if (uiThread_.joinable()) {
-        return false;
-    }
-
-    hInstance_ = hInstance;
-    uiReadyEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!uiReadyEvent_) {
-        LogError("[PseudoOverlay] Failed to create UI-thread readiness event");
-        return false;
-    }
-
-    uiInitSucceeded_.store(false, std::memory_order_release);
-    uiThread_ = std::thread([this]() { ThreadMain(); });
-    const DWORD readyResult = WaitForSingleObject(uiReadyEvent_, 5000);
-    const bool ready = readyResult == WAIT_OBJECT_0 && uiInitSucceeded_.load(std::memory_order_acquire);
-    if (!ready) {
-        LogError("[PseudoOverlay] UI thread failed to initialize (wait=%lu)", readyResult);
-        const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
-        if (threadId != 0) {
-            PostThreadMessageW(threadId, kMsgShutdown, 0, 0);
-        }
-        if (uiThread_.joinable()) {
-            uiThread_.join();
-        }
-        CloseHandle(uiReadyEvent_);
-        uiReadyEvent_ = NULL;
-        uiThreadId_.store(0, std::memory_order_release);
-        hInstance_ = NULL;
-        return false;
-    }
-
-    CloseHandle(uiReadyEvent_);
-    uiReadyEvent_ = NULL;
-    StartStatusSyncWatcher();
-    return true;
-}
-
-void PseudoOverlay::ThreadMain() {
-    uiThreadId_.store(GetCurrentThreadId(), std::memory_order_release);
-    MSG msg = {};
-    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-
-    const bool initialized = InitializeOnUiThread();
-    uiInitSucceeded_.store(initialized, std::memory_order_release);
-    if (uiReadyEvent_) {
-        SetEvent(uiReadyEvent_);
-    }
-    if (!initialized) {
-        instance_ = nullptr;
-        uiThreadId_.store(0, std::memory_order_release);
-        return;

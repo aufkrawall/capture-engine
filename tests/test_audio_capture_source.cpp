@@ -297,14 +297,17 @@ TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFresh
     EXPECT_EQ(sessionMonitorSource.find("std::deque<AudioSessionCreation>"), std::string::npos);
     const size_t activationFunction = appSource.find("bool AppAudioCapture::ActivateClientForPID");
     const size_t processTreeSnapshot =
-        appSource.find("const auto processTree = SnapshotProcessTree();", activationFunction);
+        appSource.find("const auto processTree =", activationFunction);
+    const size_t snapshotCall = appSource.find("SnapshotProcessTree()", processTreeSnapshot);
     const size_t generationBoundary = appSource.find("SnapshotGenerationAndObservedProcessIds(", activationFunction);
     const size_t activateInterface =
         appSource.find("ActivateAudioInterfaceForPID(pid, &activatedClient)", activationFunction);
     ASSERT_NE(processTreeSnapshot, std::string::npos);
+    ASSERT_NE(snapshotCall, std::string::npos);
     ASSERT_NE(generationBoundary, std::string::npos);
     ASSERT_NE(activateInterface, std::string::npos);
     EXPECT_LT(processTreeSnapshot, generationBoundary);
+    EXPECT_LT(snapshotCall, generationBoundary);
     EXPECT_LT(generationBoundary, activateInterface);
     EXPECT_NE(appSource.find("activationHadObservedTargetSession_.store("), std::string::npos);
     EXPECT_NE(selectionSource.find("ShouldRecycleCaptureForSessionCreation("), std::string::npos);

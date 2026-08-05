@@ -1,3 +1,6 @@
-#include "pseudo_overlay_part_001.inl"
-#include "pseudo_overlay_part_002.inl"
-#include "pseudo_overlay_part_003.inl"
+#include "pseudo_overlay_internal.h"
+
+// ---- Static instance pointer for wndproc routing ----
+PseudoOverlay* PseudoOverlay::instance_ = nullptr;
+
+PseudoOverlay::PseudoOverlay() = default;

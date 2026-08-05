@@ -253,20 +253,20 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
-    const size_t helperBegin = controllerSource.find("static bool RequestRecordingStopAndReleaseMedia(");
+    const size_t helperBegin = controllerSource.find("RequestRecordingStopAndReleaseMedia(");
     const size_t helperEnd = controllerSource.find("void CheckRecordingFailureState()", helperBegin);
     ASSERT_NE(helperBegin, std::string::npos);
     ASSERT_NE(helperEnd, std::string::npos);
     const std::string helper = controllerSource.substr(helperBegin, helperEnd - helperBegin);
-    const size_t mediaRequest = helper.find("RequestChildRecordingStop(g_MediaClient.get()");
-    const size_t injectFallback = helper.find("RequestChildRecordingStop(g_InjectClient.get()");
-    const size_t endpointRelease = helper.find("g_MediaClient->Disconnect()");
+    const size_t mediaRequest = helper.find("RequestChildRecordingStop(main_g_MediaClient.get()");
+    const size_t injectFallback = helper.find("RequestChildRecordingStop(main_g_InjectClient.get()");
+    const size_t endpointRelease = helper.find("main_g_MediaClient->Disconnect()");
     ASSERT_NE(mediaRequest, std::string::npos);
     ASSERT_NE(injectFallback, std::string::npos);
     ASSERT_NE(endpointRelease, std::string::npos);
     EXPECT_LT(mediaRequest, injectFallback);
     EXPECT_LT(injectFallback, endpointRelease);
-    EXPECT_NE(helper.find("mediaAccepted || RequestChildRecordingStop"), std::string::npos);
+    EXPECT_NE(helper.find("mediaAccepted || main_RequestChildRecordingStop"), std::string::npos);
 
     EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"record hotkey\", 5000)"),
               std::string::npos);

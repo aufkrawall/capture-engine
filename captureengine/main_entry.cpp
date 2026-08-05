@@ -1,96 +1,13 @@
-    RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
-    if (g_Config.hotkeyScreenshot.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
-                       g_Config.hotkeyScreenshot.vkey);
-    }
-    if (g_Config.hotkeyAudioOnly.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, g_Config.hotkeyAudioOnly.GetModifiers(),
-                       g_Config.hotkeyAudioOnly.vkey);
-    }
-    const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
-
-    SyncPseudoOverlayConfiguration("startup");
-
-    LogInfo("[Controller] Ready. Press hotkey to start recording.");
-    PrimeStartupCursor();
-    LogInfo(
-        "[StartupPerf] Controller startup: VulkanRegistration=%.3f ms, SpawnInject=%.3f ms, "
-        "SpawnMedia=%.3f ms, SpawnLimiter=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
-        "RegisterHotkeys=%.3f ms, TotalToReady=%.3f ms",
-        QpcDeltaToMs(g_ControllerStartupTiming.vulkanRegUs), QpcDeltaToMs(injectSpawnUs), QpcDeltaToMs(mediaSpawnUs),
-        QpcDeltaToMs(limiterSpawnUs), QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
-        QpcDeltaToMs(g_ControllerStartupTiming.trayCreateUs), QpcDeltaToMs(hotkeyUs),
-        QpcDeltaToMs(Log_GetQpcUs() - g_ControllerStartupTiming.controllerStartUs));
-
-    if (g_AutoRecordEnabled) {
-        LogInfo("[Controller] Auto-record enabled: delay=%lums, duration=%lums", g_AutoRecordDelayMs,
-                g_AutoRecordDurationMs);
-        g_AutoRecordStartTime = GetTickCount();
-    }
-
-    g_ControllerStartupTiming.complete = true;
-    return true;
-}
-
-static ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan() {
-    std::filesystem::path baseDir;
-    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
-        LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
-        return {};
-    }
-
-    return ce::vulkan_layer::BuildRegistrationPlan(baseDir, ce::vulkan_layer::RegistrationMode::Auto,
-                                                   ce::vulkan_layer::IsCurrentProcessElevated());
-}
-
-// RAII wrapper for exact registration ownership. Startup repairs superseded CE
-// entries only in registry scopes already writable by this process; the retained
-// plan then lets teardown remove only this instance's exact registrations.
-class ScopedVulkanRegistration {
-public:
-    ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan()) {
-        ce::vulkan_layer::LogRegistrationPlan(plan_);
-        if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
-            LogWarn("[Controller] Vulkan layer registration repair was incomplete");
-        }
-        active_ = ce::vulkan_layer::ApplyRegistrationPlan(plan_, true);
-        if (!active_) {
-            LogError("[Controller] Vulkan layer registration failed");
-        }
-    }
-    ~ScopedVulkanRegistration() {
-        Unregister();
-    }
-
-    bool IsActive() const {
-        return active_;
-    }
-
-    void Unregister() {
-        std::call_once(unregistrationOnce_, [this]() {
-            if (!ce::vulkan_layer::ApplyRegistrationPlan(plan_, false)) {
-                LogError("[Controller] Vulkan layer unregistration failed");
-            }
-        });
-    }
-
-private:
-    ce::vulkan_layer::RegistrationPlan plan_;
-    std::once_flag unregistrationOnce_;
-    bool active_ = false;
-};
-
-// Global pointer for emergency unregistration
-static ScopedVulkanRegistration* g_VulkanReg = nullptr;
+#include "main_internal.h"
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
         ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
         LogInfo("[Controller] Console event %lu received. Cleaning up...", ctrlType);
-        if (g_VulkanReg) {
-            g_VulkanReg->Unregister();
+        if (main_g_VulkanReg) {
+            main_g_VulkanReg->Unregister();
         }
-        g_Running = false;
+        main_g_Running = false;
         return TRUE;
     }
     return FALSE;
@@ -100,7 +17,7 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
 int ControllerMain(HINSTANCE hInstance) {
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
-    PrimeStartupCursor();
+    main_PrimeStartupCursor();
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
@@ -109,33 +26,33 @@ int ControllerMain(HINSTANCE hInstance) {
     LogInfo("[Controller] Creating tray icon...");
     const int64_t trayCreateStartUs = Log_GetQpcUs();
     auto tray = std::make_unique<TrayIcon>(
-        hInstance, []() { g_Running = false; },
-        []() { ShellExecuteA(NULL, "open", g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
+        hInstance, []() { main_g_Running = false; },
+        []() { ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
     const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
-    g_Tray = tray.get();
-    PrimeStartupCursor();
-    PumpStartupMessages();
+    main_g_Tray = tray.get();
+    main_PrimeStartupCursor();
+    main_PumpStartupMessages();
 
     // Ephemeral Registration (RAII)
     const int64_t vulkanRegStartUs = Log_GetQpcUs();
     ScopedVulkanRegistration vulkanReg;
     const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
-    g_VulkanReg = &vulkanReg;
+    main_g_VulkanReg = &vulkanReg;
     if (!vulkanReg.IsActive()) {
         LogWarn(
             "[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
     }
 
     // Create IPC clients
-    g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
-    g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
-    g_LimiterClient = std::make_unique<ProcessIPCClient>(ProcessMode::Limiter);
+    main_g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
+    main_g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
+    main_g_LimiterClient = std::make_unique<ProcessIPCClient>(ProcessMode::Limiter);
 
-    g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
-    g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
-    g_ControllerStartupTiming.trayCreateUs = trayCreateUs;
-    g_ControllerStartupTiming.complete = false;
-    PostThreadMessage(GetCurrentThreadId(), kMsgCompleteControllerStartup, 0, 0);
+    main_g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
+    main_g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
+    main_g_ControllerStartupTiming.trayCreateUs = trayCreateUs;
+    main_g_ControllerStartupTiming.complete = false;
+    PostThreadMessage(GetCurrentThreadId(), main_kMsgCompleteControllerStartup, 0, 0);
 
     // Main message loop
     MSG msg;
@@ -148,7 +65,7 @@ int ControllerMain(HINSTANCE hInstance) {
     static int64_t iterRateLogStartUs = Log_GetQpcUs();
     static DWORD lastConfigCheck = 0;
 
-    while (g_Running) {
+    while (main_g_Running) {
         iterCount++;
         const int64_t iterNowUs = Log_GetQpcUs();
         const int64_t iterDeltaUs = iterNowUs - loopStartUs;
@@ -162,7 +79,7 @@ int ControllerMain(HINSTANCE hInstance) {
             const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
             LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
                      (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,
-                     GetControllerLoopWaitMs(lastConfigCheck), 0);
+                     main_GetControllerLoopWaitMs(lastConfigCheck), 0);
             iterRateLogCount = 0;
             iterRateLogStartUs = iterNowUs;
         }
@@ -178,16 +95,16 @@ int ControllerMain(HINSTANCE hInstance) {
                 msgTimers++;
             else if (msg.message == WM_HOTKEY)
                 msgHotkeys++;
-            else if (msg.message != WM_QUIT && msg.message != kMsgCompleteControllerStartup)
+            else if (msg.message != WM_QUIT && msg.message != main_kMsgCompleteControllerStartup)
                 msgOthers++;
             if (msg.message == WM_QUIT) {
-                g_Running = false;
+                main_g_Running = false;
                 continue;
             }
-            if (msg.message == kMsgCompleteControllerStartup) {
+            if (msg.message == main_kMsgCompleteControllerStartup) {
                 if (!CompleteControllerStartup()) {
                     ShutdownChildProcesses();
-                    g_Running = false;
+                    main_g_Running = false;
                 }
                 continue;
             }
@@ -197,13 +114,13 @@ int ControllerMain(HINSTANCE hInstance) {
                 } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
                     ToggleAudioOnlyRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
-                    if (g_PseudoOverlay)
-                        g_PseudoOverlay->BeginScreenshotCapture();
+                    if (main_g_PseudoOverlay)
+                        main_g_PseudoOverlay->BeginScreenshotCapture();
                     const bool screenshotSaved =
-                        TakeScreenshot(g_Config.screenshotDir, g_Config.screenshotColorSpace);
-                    if (g_PseudoOverlay) {
-                        g_PseudoOverlay->EndScreenshotCapture();
-                        g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
+                        TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
+                    if (main_g_PseudoOverlay) {
+                        main_g_PseudoOverlay->EndScreenshotCapture();
+                        main_g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
                     }
                     // Show the same result in the inject overlay (hooked game).
                     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
@@ -266,39 +183,39 @@ int ControllerMain(HINSTANCE hInstance) {
         DWORD configNow = GetTickCount();
         if (configNow - lastConfigCheck >= 1000) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-            if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
+            if (GetFileAttributesExA(main_g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
                 if (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) > 0) {
                     LogInfo("[Controller] Config change detected, reloading...");
                     lastWriteTime = fileInfo.ftLastWriteTime;
 
-                    AppConfig oldConfig = g_Config;
-                    LoadConfig(g_ConfigPath, g_Config);
-                    Log_SetLevel(g_Config.logLevel);
+                    AppConfig oldConfig = main_g_Config;
+                    LoadConfig(main_g_ConfigPath, main_g_Config);
+                    Log_SetLevel(main_g_Config.logLevel);
 
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, g_Config.hotkeyStartStop)) {
+                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-                        if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(),
-                                            g_Config.hotkeyStartStop.vkey)) {
+                        if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop.GetModifiers(),
+                                            main_g_Config.hotkeyStartStop.vkey)) {
                             LogError("[Controller] Failed to re-register recording hotkey");
                         }
                     }
 
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, g_Config.hotkeyScreenshot)) {
+                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-                        if (g_Config.hotkeyScreenshot.vkey != 0) {
-                            if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
-                                                g_Config.hotkeyScreenshot.vkey)) {
+                        if (main_g_Config.hotkeyScreenshot.vkey != 0) {
+                            if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot.GetModifiers(),
+                                                main_g_Config.hotkeyScreenshot.vkey)) {
                                 LogError("[Controller] Failed to re-register screenshot hotkey");
                             }
                         }
                     }
 
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, g_Config.hotkeyAudioOnly)) {
+                    if (!main_HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-                        if (g_Config.hotkeyAudioOnly.vkey != 0) {
-                            if (!RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, g_Config.hotkeyAudioOnly.GetModifiers(),
-                                                g_Config.hotkeyAudioOnly.vkey)) {
+                        if (main_g_Config.hotkeyAudioOnly.vkey != 0) {
+                            if (!RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly.GetModifiers(),
+                                                main_g_Config.hotkeyAudioOnly.vkey)) {
                                 LogError("[Controller] Failed to re-register audio-only hotkey");
                             }
                         }
@@ -306,33 +223,33 @@ int ControllerMain(HINSTANCE hInstance) {
 
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
-                        SyncLoggerAndSensorProcesses(g_Config);
-                        SyncLimiterProcess(g_Config);
+                        main_SyncLoggerAndSensorProcesses(main_g_Config);
+                        main_SyncLimiterProcess(main_g_Config);
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
 
-                    SyncPseudoOverlayConfiguration("config reload");
+                    main_SyncPseudoOverlayConfiguration("config reload");
                 }
             }
             lastConfigCheck = GetTickCount();
         }
 
         // Auto-record logic
-        if (g_AutoRecordEnabled && g_AutoRecordStartTime > 0) {
-            DWORD elapsed = GetTickCount() - g_AutoRecordStartTime;
-            if (!g_Recording && elapsed >= g_AutoRecordDelayMs) {
+        if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
+            DWORD elapsed = GetTickCount() - main_g_AutoRecordStartTime;
+            if (!main_g_Recording && elapsed >= main_g_AutoRecordDelayMs) {
                 LogInfo("[Controller] Auto-record: starting recording...");
                 ToggleRecording();
-            } else if (g_Recording && elapsed >= (g_AutoRecordDelayMs + g_AutoRecordDurationMs)) {
+            } else if (main_g_Recording && elapsed >= (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs)) {
                 LogInfo("[Controller] Auto-record: stopping recording...");
                 ToggleRecording();
-                g_Running = false;  // Exit after auto-record completes
+                main_g_Running = false;  // Exit after auto-record completes
             }
         }
 
         const int64_t preWaitUs = Log_GetQpcUs();
 
-        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck);
+        const DWORD waitMs = main_GetControllerLoopWaitMs(lastConfigCheck);
 
         // Log per-iteration timing breakdown at trace level when rate is logged
         if (iterRateLogCount == 0) {
@@ -359,14 +276,14 @@ int ControllerMain(HINSTANCE hInstance) {
     // Keep tray icon alive during shutdown (animation already started by
     // right-click handler) Process messages during shutdown so animation
     // continues
-    if (g_Tray) {
-        g_Tray->StartShutdownAnimation();
+    if (main_g_Tray) {
+        main_g_Tray->StartShutdownAnimation();
     }
 
     // Shutdown pseudo-overlay before child processes
-    if (g_PseudoOverlay) {
-        g_PseudoOverlay->Shutdown();
-        g_PseudoOverlay.reset();
+    if (main_g_PseudoOverlay) {
+        main_g_PseudoOverlay->Shutdown();
+        main_g_PseudoOverlay.reset();
     }
 
     ShutdownChildProcesses();
@@ -374,13 +291,13 @@ int ControllerMain(HINSTANCE hInstance) {
     // Complete exact unregistration before invalidating the console handler's
     // non-owning pointer. The destructor is idempotent through call_once.
     vulkanReg.Unregister();
-    g_VulkanReg = nullptr;
+    main_g_VulkanReg = nullptr;
 
     // Now remove tray icon after shutdown is complete
     if (tray) {
         tray->Remove();
     }
-    g_Tray = nullptr;
+    main_g_Tray = nullptr;
     tray.reset();
 
     LogInfo("[Controller] Exiting");
@@ -399,14 +316,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
-    if (mode == ProcessMode::Controller && HasExactCommandLineArgument(L"--list-monitors")) {
+    if (mode == ProcessMode::Controller && main_HasExactCommandLineArgument(L"--list-monitors")) {
         return ce::monitor_selection::WriteMonitorListToStandardOutput();
     }
     if (mode == ProcessMode::Controller) {
         // An external launcher may have requested process-start feedback. Clear
         // it before config, logging, registration, or child startup; internal
         // roles must never change the user's current cursor themselves.
-        PrimeStartupCursor();
+        main_PrimeStartupCursor();
     }
 
     // Get paths
@@ -414,12 +331,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
     std::string exePath = buffer;
     std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
-    g_ConfigPath = baseDir + "\\config.ini";
+    main_g_ConfigPath = baseDir + "\\config.ini";
 
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
     // guarantee the logs/ tree stays absent and no debug machinery runs.
-    LoadConfig(g_ConfigPath, g_Config);
+    LoadConfig(main_g_ConfigPath, main_g_Config);
 
     std::string logsRootDir = baseDir + "\\logs";
 
@@ -432,8 +349,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
                  st.wSecond);
         g_SessionDirName = ts;
-        if (IsAnyLoggingEnabled(g_Config.logLevel)) {
-            CleanupOldSessionDirs(logsRootDir);
+        if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+            main_CleanupOldSessionDirs(logsRootDir);
         }
     } else {
         g_SessionDirName = ParseSessionDir(lpCmdLine);
@@ -447,7 +364,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         earlyLogsDir = logsRootDir;
     }
 
-    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         CreateDirectoryA(logsRootDir.c_str(), NULL);
         CreateDirectoryA(earlyLogsDir.c_str(), NULL);
         SetCrashDumpDirectory(earlyLogsDir);
@@ -476,11 +393,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (commaPos != std::string::npos) {
             DWORD delayMs = 0;
             DWORD durationMs = 0;
-            if (TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
-                TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
-                g_AutoRecordDelayMs = delayMs;
-                g_AutoRecordDurationMs = durationMs;
-                g_AutoRecordEnabled = true;
+            if (main_TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
+                main_TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
+                main_g_AutoRecordDelayMs = delayMs;
+                main_g_AutoRecordDurationMs = durationMs;
+                main_g_AutoRecordEnabled = true;
             } else {
                 LogWarn("[Controller] Ignoring malformed --auto-record value '%s'", params.c_str());
             }
@@ -500,13 +417,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
 
         if (valueStart < cmdLine.length()) {
-            g_DeferredLaunchPath = cmdLine.substr(valueStart);
+            main_g_DeferredLaunchPath = cmdLine.substr(valueStart);
 
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
-            if (IsAnyLoggingEnabled(g_Config.logLevel)) {
-                Log_Init(earlyLogsDir + "\\launcher.log", g_Config.logLevel);
-                LogInfo("[Launcher] Deferred launch path: %s", g_DeferredLaunchPath.c_str());
+            if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+                Log_Init(earlyLogsDir + "\\launcher.log", main_g_Config.logLevel);
+                LogInfo("[Launcher] Deferred launch path: %s", main_g_DeferredLaunchPath.c_str());
             }
 
             // Continue as Controller
@@ -518,17 +435,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string logsDir = earlyLogsDir;
     const std::string processLogName = GetProcessLogFileName(mode, g_RecordingId, GetCurrentProcessId());
     std::string logPath = logsDir + "\\" + processLogName;
-    g_Config.logFilePath = logPath;
-    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+    main_g_Config.logFilePath = logPath;
+    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         CreateDirectoryA(logsDir.c_str(), NULL);
         if (mode == ProcessMode::Controller)
-            WriteSessionManifest(logsDir, g_Config, mode);
+            main_WriteSessionManifest(logsDir, main_g_Config, mode);
         else if (mode == ProcessMode::Media)
-            WriteRecordingManifest(logsDir, g_Config, processLogName);
+            main_WriteRecordingManifest(logsDir, main_g_Config, processLogName);
     }
 
-    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
-        Log_Init(logPath, g_Config.logLevel);
+    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+        Log_Init(logPath, main_g_Config.logLevel);
         LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
         LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
                                     : mode == ProcessMode::Inject   ? "Inject"
@@ -558,8 +475,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Keep crash dumps under logs/. Config can only add a relative subfolder.
     std::string crashDir = logsDir;
-    if (!g_Config.crashDumpDir.empty()) {
-        std::filesystem::path configured = std::filesystem::path(g_Config.crashDumpDir).lexically_normal();
+    if (!main_g_Config.crashDumpDir.empty()) {
+        std::filesystem::path configured = std::filesystem::path(main_g_Config.crashDumpDir).lexically_normal();
         bool hasParentTraversal = false;
         for (const auto& part : configured) {
             if (part == std::filesystem::path("..")) {
@@ -571,7 +488,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             crashDir = (std::filesystem::path(logsDir) / configured).string();
         }
     }
-    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         SetCrashDumpDirectory(crashDir);
     }
 
@@ -582,19 +499,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             result = ControllerMain(hInstance);
             break;
         case ProcessMode::Inject:
-            result = InjectProcessMain(g_Config);
+            result = InjectProcessMain(main_g_Config);
             break;
         case ProcessMode::Media:
-            result = MediaProcessMain(g_Config);
+            result = MediaProcessMain(main_g_Config);
             break;
         case ProcessMode::Limiter:
-            result = LimiterProcessMain(g_Config);
+            result = LimiterProcessMain(main_g_Config);
             break;
         case ProcessMode::Logger:
-            result = LoggerProcessMain(g_Config);
+            result = LoggerProcessMain(main_g_Config);
             break;
         case ProcessMode::Sensors:
-            result = SensorProcessMain(g_Config);
+            result = SensorProcessMain(main_g_Config);
             break;
     }
 

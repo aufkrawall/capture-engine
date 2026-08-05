@@ -222,9 +222,13 @@ LD_OPT_FLAGS_X64 = [
 # GCC spelling, so use its explicit GCC equivalents on system MinGW GCC.
 STRICT_FP_MEDIA_SOURCES = {
     "app_audio_capture.cpp",
+    "app_audio_capture_activation.cpp",
+    "app_audio_capture_loop.cpp",
     "audio_capture.cpp",
     "audio_capture_loop.cpp",
     "audio_encoder.cpp",
+    "audio_encoder_encode.cpp",
+    "audio_encoder_flush.cpp",
     "audio_latency_probe.cpp",
     "audio_resampler.cpp",
     "mediaengine.cpp",

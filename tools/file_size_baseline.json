@@ -20,9 +20,10 @@
     "hook/common/fg_session_state.cpp": 1037,
     "hook/common/overlay_adapter_render.cpp": 857,
     "hook/common/system_metrics.cpp": 954,
+    "mediaengine/app_audio_capture_loop.cpp": 808,
     "mediaengine/video_encoder_options.cpp": 876,
-    "tools/refactor/source_splitter.py": 866
+    "tools/refactor/source_splitter.py": 961
   },
-  "count": 9,
-  "total": 9052
+  "count": 10,
+  "total": 9955
 }

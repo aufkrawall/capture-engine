@@ -1,188 +1,4 @@
-    }
-
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (msg.message == kMsgShutdown) {
-            break;
-        }
-        if (msg.message == kMsgRefresh) {
-            ApplyPendingConfig();
-            RefreshRecordingState();
-            RefreshActiveProfileConfig();
-            UpdateOverlay();
-            continue;
-        }
-        if (msg.message == kMsgStatusSync) {
-            HandleStatusSyncOnUiThread();
-            continue;
-        }
-#ifdef CE_UNIT_TESTS
-        if (msg.message == kMsgTestBarrier) {
-            SetEvent(reinterpret_cast<HANDLE>(msg.wParam));
-            continue;
-        }
-#endif
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-
-    ShutdownOnUiThread();
-    uiThreadId_.store(0, std::memory_order_release);
-}
-
-bool PseudoOverlay::InitializeOnUiThread() {
-    instance_ = this;
-
-    currentDpi_ = 96;
-    scale_ = 1.0f;
-    UpdateScaleForDpi(GetDpiForSystem());
-
-    InitGDI();
-
-    // Register indicator window class
-    WNDCLASSA wcInd = {};
-    wcInd.lpfnWndProc = IndicatorWndProc;
-    wcInd.hInstance = hInstance_;
-    wcInd.lpszClassName = kIndicatorClass;
-    if (!RegisterClassA(&wcInd) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        LogError("[PseudoOverlay] Failed to register indicator window class");
-        CleanupGDI();
-        return false;
-    }
-
-    // Register warning window class
-    WNDCLASSA wcWarn = {};
-    wcWarn.lpfnWndProc = WarningWndProc;
-    wcWarn.hInstance = hInstance_;
-    wcWarn.lpszClassName = kWarningClass;
-    if (!RegisterClassA(&wcWarn) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        LogError("[PseudoOverlay] Failed to register warning window class");
-        CleanupGDI();
-        return false;
-    }
-
-    timerHandle_ = SetTimer(NULL, kTimerId, kTimerInterval, TimerProc);
-    if (timerHandle_ == 0) {
-        LogError("[PseudoOverlay] Failed to start timer");
-        CleanupGDI();
-        return false;
-    }
-
-    const AnchorInfo anchor = ResolveAnchorInfo();
-    initialized_.store(true, std::memory_order_release);
-    ApplyPendingConfig();
-    RefreshRecordingState();
-    RefreshActiveProfileConfig();
-    LogInfo("[PseudoOverlay] Initialized (scale=%.2f)", scale_);
-    LogInfo("[PseudoOverlay] Initial anchor: monitor=%p window=%p dpi=%u fullscreenLike=%d", anchor.monitor,
-            anchor.window, currentDpi_, anchor.fullscreenLike ? 1 : 0);
-
-    // Initial render
-    UpdateOverlay();
-
-    return true;
-}
-
-void PseudoOverlay::Shutdown() {
-    StopStatusSyncWatcher();
-    if (!uiThread_.joinable())
-        return;
-
-    const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
-    if (threadId != 0) {
-        PostThreadMessageW(threadId, kMsgShutdown, 0, 0);
-    }
-    uiThread_.join();
-    uiThreadId_.store(0, std::memory_order_release);
-    hInstance_ = NULL;
-}
-
-void PseudoOverlay::ShutdownOnUiThread() {
-    if (!initialized_.load(std::memory_order_acquire))
-        return;
-
-    if (timerHandle_ != 0) {
-        KillTimer(NULL, timerHandle_);
-        timerHandle_ = 0;
-    }
-
-    DestroyOverlayWindows();
-
-    CleanupGDI();
-
-    // Release shared memory handles
-    if (pSharedMem_) {
-        UnmapViewOfFile(pSharedMem_);
-        pSharedMem_ = nullptr;
-    }
-    if (pDiscovery_) {
-        UnmapViewOfFile(pDiscovery_);
-        pDiscovery_ = nullptr;
-    }
-    if (hSharedMemMap_) {
-        CloseHandle(hSharedMemMap_);
-        hSharedMemMap_ = NULL;
-    }
-    if (hDiscoveryMap_) {
-        CloseHandle(hDiscoveryMap_);
-        hDiscoveryMap_ = NULL;
-    }
-
-    // Reset tracking state
-    lastOv_ = {};
-    lastCol_ = 0;
-    lastWarnVis_ = false;
-    recordingNotifyUntil_.store(0, std::memory_order_relaxed);
-    recordingNotification_.store(ce::pseudo_overlay::RecordingNotificationKind::None, std::memory_order_relaxed);
-    lastWarnMsg_.clear();
-    warnActive_ = false;
-    warnVisible_ = false;
-    warnCycleStart_ = 0;
-    lastTimerTickMs_ = 0;
-    statusDarkForCapture_ = false;
-    mappedInjectPid_ = 0;
-    lastEncoderOverloadFlags_ = 0;
-    lastCaptureHealthFlags_ = 0;
-    overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
-    overloadWarnKind_.store(ce::capture_policy::kOverlayWarningNone, std::memory_order_relaxed);
-    lastOverlaySuppressed_ = false;
-    lastFullscreenSuppressed_ = false;
-    stickyAnchorWindow_ = NULL;
-    stickyAnchorMonitor_ = NULL;
-    stickyAnchorDpi_ = 96;
-    lastForegroundAcquireTick_ = 0;
-    lastForegroundAcquirePid_ = 0;
-    hadForegroundTarget_ = false;
-    activeProfileSection_.clear();
-    pinnedProfileSection_.clear();
-    foregroundProcessName_.clear();
-    foregroundPid_ = 0;
-    sourceProcessName_.clear();
-    sourceProfilePid_ = 0;
-    foregroundIsTarget_ = false;
-    prevRecordingIndicatorState_ = ce::recording_indicator::State::Idle;
-    prevGraceActive_ = false;
-    foregroundGraceEverStarted_ = false;
-    recordingIndicatorState_ = ce::recording_indicator::State::Idle;
-    publishedRecordingIndicatorState_.store(ce::recording_indicator::State::Idle, std::memory_order_release);
-    isRecording_.store(false, std::memory_order_release);
-    initialized_.store(false, std::memory_order_release);
-    instance_ = nullptr;
-
-    LogInfo("[PseudoOverlay] Shutdown complete");
-}
-
-// ---- State updates ----
-
-void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg,
-                                 const std::vector<PseudoOverlayApplicationConfig>& profiles) {
-    {
-        std::lock_guard<std::mutex> lock(pendingConfigMutex_);
-        pendingConfig_ = cfg;
-        pendingProfileConfigs_ = profiles;
-        pendingConfigGeneration_.fetch_add(1, std::memory_order_release);
-    }
-    PostRefresh();
-}
+#include "pseudo_overlay_internal.h"
 
 void PseudoOverlay::ApplyPendingConfig() {
     const uint64_t generation = pendingConfigGeneration_.load(std::memory_order_acquire);
@@ -199,7 +15,7 @@ void PseudoOverlay::ApplyPendingConfig() {
 }
 
 void PseudoOverlay::ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const std::string& profileSection) {
-    if (PseudoOverlayConfigsEqual(config_, cfg) && activeProfileSection_ == profileSection)
+    if (pseudo_overlay_PseudoOverlayConfigsEqual(config_, cfg) && activeProfileSection_ == profileSection)
         return;
 
     bool wasEnabled = config_.enabled;
@@ -360,7 +176,7 @@ void PseudoOverlay::HandleStatusSyncOnUiThread() {
     // UpdateOverlay() has hidden or destroyed the status windows, but the compositor still
     // owns the frame they were last drawn into. Flushing composition is what makes the
     // acknowledgement true for a capture that reads the composited screen.
-    DwmFlushComposition();
+    pseudo_overlay_DwmFlushComposition();
     SetEvent(statusDarkAckEvent_);
     LogInfo("[PseudoOverlay] Capture-dark acknowledged: startup status is off the composited screen");
 }
@@ -431,11 +247,11 @@ bool PseudoOverlay::EnsureOverlayWindows() {
         }
     }
 
-    EnsureDwmApi();
-    if (g_DwmSetWindowAttribute) {
+    pseudo_overlay_EnsureDwmApi();
+    if (pseudo_overlay_g_DwmSetWindowAttribute) {
         BOOL peekExclude = TRUE;
-        g_DwmSetWindowAttribute(hOv_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
-        g_DwmSetWindowAttribute(hWarn_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
+        pseudo_overlay_g_DwmSetWindowAttribute(hOv_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
+        pseudo_overlay_g_DwmSetWindowAttribute(hWarn_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
     }
 
     return true;

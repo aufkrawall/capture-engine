@@ -1,256 +1,8 @@
-// Pseudo-overlay indicator for WGC capture (no injection required).
-// Ported from OBSIndicator with permission (MIT license).
-// Runs entirely in the captureengine controller process.
-
-#include "pseudo_overlay.h"
-#include "../common/capture_pipeline_policy.h"
-#include "../common/inject_overlay_policy.h"
-#include "../common/logging.h"
-#include "../common/process_identity.h"
-#include "../common/pseudo_overlay_profile_policy.h"
-#include "../common/pseudo_overlay_visibility.h"
-#include "../common/screen_grab_privacy.h"
-#include "../common/secure_dll_loading.h"
-
-#include <dwmapi.h>
-
-namespace {
-typedef HRESULT(WINAPI* DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
-typedef HRESULT(WINAPI* DwmFlushFn)(void);
-DwmSetWindowAttributeFn g_DwmSetWindowAttribute = nullptr;
-DwmFlushFn g_DwmFlush = nullptr;
-bool g_DwmApiInitialized = false;
-
-void EnsureDwmApi() {
-    if (g_DwmApiInitialized)
-        return;
-    g_DwmApiInitialized = true;
-    HMODULE mod = ce::security::LoadSystemLibrary(L"dwmapi.dll");
-    if (mod) {
-        g_DwmSetWindowAttribute = (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
-        g_DwmFlush = (DwmFlushFn)GetProcAddress(mod, "DwmFlush");
-    }
-}
-
-// Block until DWM has finished composing a frame that no longer contains whatever this
-// process just hid. Hiding a layered window is asynchronous to composition, so the first
-// flush can still return for the pass that was already in flight with the window in it;
-// the second returns only for a pass that started after the hide was submitted. Bounded
-// by two refresh intervals and paid once per recording start.
-void DwmFlushComposition() {
-    EnsureDwmApi();
-    if (!g_DwmFlush) {
-        return;
-    }
-    g_DwmFlush();
-    g_DwmFlush();
-}
-}  // namespace
-
-#include <algorithm>
-#include <cctype>
-#include <cstring>
-#include <string>
-
-using ce::screen_grab_privacy::IsWindowFullscreenLike;
-
-// ---- Palette (matching OBSIndicator exactly) ----
-static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
-static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
-static constexpr COLORREF kColScreenshotFailureText = RGB(255, 64, 64);
-static constexpr COLORREF kColStarting = RGB(255, 191, 0);
-
-namespace {
-std::string NormalizeProcessName(std::string value) {
-    static constexpr const char* kTrimChars = " \t\r\n\"";
-
-    const size_t first = value.find_first_not_of(kTrimChars);
-    if (first == std::string::npos)
-        return {};
-
-    const size_t last = value.find_last_not_of(kTrimChars);
-    value = value.substr(first, last - first + 1);
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
-
-std::string QueryProcessName(DWORD pid) {
-    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
-    return NormalizeProcessName(identity.imageName);
-}
-
-bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {
-    return lhs.enabled == rhs.enabled && lhs.size == rhs.size && lhs.pad == rhs.pad && lhs.pos == rhs.pos &&
-           lhs.mode == rhs.mode && lhs.alwaysRender == rhs.alwaysRender &&
-           lhs.alwaysRenderOnlyWhenGame == rhs.alwaysRenderOnlyWhenGame &&
-           lhs.showEncoderOverloadWarn == rhs.showEncoderOverloadWarn &&
-           lhs.foregroundAcquireGraceMs == rhs.foregroundAcquireGraceMs && lhs.processList == rhs.processList;
-}
-
-bool GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
-    if (!monitor || !rect) {
-        return false;
-    }
-
-    MONITORINFO monitorInfo = {};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!GetMonitorInfo(monitor, &monitorInfo)) {
-        return false;
-    }
-
-    *rect = monitorInfo.rcMonitor;
-    return true;
-}
-
-UINT GetResolvedWindowDpi(HWND hwnd) {
-    UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0u;
-    if (dpi == 0) {
-        dpi = GetDpiForSystem();
-    }
-    return dpi == 0 ? 96u : dpi;
-}
-
-std::string FormatRecordingHealthMessage(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {
-    if (warningKind == ce::capture_policy::kOverlayWarningRecordingDegraded) {
-        return "Recording video degraded!";
-    }
-    if (warningKind == ce::capture_policy::kOverlayWarningRecordingRecovering) {
-        return "Recording recovering...";
-    }
-
-    const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
-    if (targetFps == 0 || sustainFpsX100 == 0) {
-        return "Encoder overloaded!";
-    }
-
-    const double ratio = sustainFps / static_cast<double>(targetFps);
-    char buffer[96];
-    if (ratio >= 0.95) {
-        std::snprintf(buffer, sizeof(buffer), "Encoder near limit (%.1f/%ufps)", sustainFps, targetFps);
-    } else if (ratio >= 0.80) {
-        std::snprintf(buffer, sizeof(buffer), "Encoder overloaded (%.1f/%ufps)", sustainFps, targetFps);
-    } else {
-        std::snprintf(buffer, sizeof(buffer), "Encoder severely overloaded (%.1f/%ufps)", sustainFps, targetFps);
-    }
-    return buffer;
-}
-
-ce::pseudo_overlay::RecordingNotificationKind ToPseudoRecordingNotification(uint32_t notificationType) {
-    switch (static_cast<OverlayNotificationType>(notificationType)) {
-        case OverlayNotificationType::RecordingFinalizing:
-            return ce::pseudo_overlay::RecordingNotificationKind::Finalizing;
-        case OverlayNotificationType::RecordingSaved:
-            return ce::pseudo_overlay::RecordingNotificationKind::Saved;
-        case OverlayNotificationType::RecordingSavedDegraded:
-            return ce::pseudo_overlay::RecordingNotificationKind::SavedDegraded;
-        case OverlayNotificationType::RecordingCanceled:
-            return ce::pseudo_overlay::RecordingNotificationKind::Canceled;
-        case OverlayNotificationType::RecordingFailed:
-            return ce::pseudo_overlay::RecordingNotificationKind::Failed;
-        default:
-            return ce::pseudo_overlay::RecordingNotificationKind::None;
-    }
-}
-
-static HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    return CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, ppBits, NULL, 0);
-}
-
-static void ApplyPremultipliedAlpha(void* pBits, int width, int height) {
-    DWORD* px = static_cast<DWORD*>(pBits);
-    for (int i = 0, n = width * height; i < n; ++i) {
-        DWORD v = px[i];
-        BYTE r = static_cast<BYTE>(v & 0xFF);
-        BYTE g = static_cast<BYTE>((v >> 8) & 0xFF);
-        BYTE b = static_cast<BYTE>((v >> 16) & 0xFF);
-        BYTE a = r;
-        if (g > a)
-            a = g;
-        if (b > a)
-            a = b;
-        px[i] = (a << 24) | (v & 0x00FFFFFF);
-    }
-}
-
-struct WindowSearch {
-    DWORD pid = 0;
-    HWND hwnd = NULL;
-};
-
-BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
-    auto* search = reinterpret_cast<WindowSearch*>(lParam);
-    if (!search || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != 0) {
-        return TRUE;
-    }
-
-    DWORD windowPid = 0;
-    GetWindowThreadProcessId(hwnd, &windowPid);
-    if (windowPid == search->pid) {
-        LONG_PTR styles = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-        if (!(styles & WS_EX_TOOLWINDOW)) {
-            search->hwnd = hwnd;
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
-HWND GetMainWindowForProcess(DWORD pid) {
-    if (pid == 0) {
-        return NULL;
-    }
-
-    WindowSearch search = {pid, NULL};
-    EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&search));
-    return search.hwnd;
-}
-
-bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
-                             bool warnVisible,
-                             ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
-                             ULONGLONG recordingNotifyUntil,
-                             ce::pseudo_overlay::RecordingNotificationKind recordingNotification,
-                             bool ghostActive, bool statusDarkForCapture) {
-    // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
-    // warning on the resolved idle state so it can never leak into pending or active recording (see
-    // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
-    ce::pseudo_overlay::OverlayVisibilityInputs in;
-    in.mode = config.mode;
-    in.recordingState = recordingState;
-    in.warnVisible = warnVisible;
-    in.showEncoderOverloadWarn = config.showEncoderOverloadWarn;
-    in.ghostActive = ghostActive;
-    in.nowMs = GetTickCount64();
-    in.overloadWarnUntilMs = overloadWarnUntil;
-    in.screenshotNotifyUntilMs = screenshotNotifyUntil;
-    in.recordingNotifyUntilMs = recordingNotifyUntil;
-    in.recordingNotification = recordingNotification;
-    in.statusDarkForCapture = statusDarkForCapture;
-    return ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(in);
-}
-}  // namespace
-
-// ---- Static instance pointer for wndproc routing ----
-PseudoOverlay* PseudoOverlay::instance_ = nullptr;
-
-// ---- Constructor / Destructor ----
-
-PseudoOverlay::PseudoOverlay() = default;
+#include "pseudo_overlay_internal.h"
 
 PseudoOverlay::~PseudoOverlay() {
     Shutdown();
 }
-
-// ---- Scale helper ----
 
 int PseudoOverlay::S(int v) const {
     return static_cast<int>(static_cast<float>(v) * scale_);
@@ -284,8 +36,6 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
         CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, ANTIALIASED_QUALITY, 0, 0, 0, "Segoe UI");
 }
 
-// ---- Foreground process/profile detection ----
-
 void PseudoOverlay::RefreshActiveProfileConfig() {
     HWND foregroundWindow = GetForegroundWindow();
     DWORD foregroundPid = 0;
@@ -294,7 +44,7 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
 
     if (foregroundPid != foregroundPid_ || (foregroundPid != 0 && foregroundProcessName_.empty())) {
         foregroundPid_ = foregroundPid;
-        foregroundProcessName_ = QueryProcessName(foregroundPid);
+        foregroundProcessName_ = pseudo_overlay_QueryProcessName(foregroundPid);
         LogDebug("[PseudoOverlay] Foreground process changed: pid=%lu process=%s", foregroundPid,
                  foregroundProcessName_.empty() ? "unknown" : foregroundProcessName_.c_str());
     }
@@ -316,7 +66,7 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
             if (sourcePid != 0) {
                 if (sourcePid != sourceProfilePid_ || sourceProcessName_.empty()) {
                     sourceProfilePid_ = sourcePid;
-                    sourceProcessName_ = QueryProcessName(sourcePid);
+                    sourceProcessName_ = pseudo_overlay_QueryProcessName(sourcePid);
                 }
                 sourceProfile = ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, sourceProcessName_);
                 if (sourceProfile && !sourceProfile->captureUsesInjection)
@@ -422,8 +172,6 @@ ce::pseudo_overlay::FocusGraceDecision PseudoOverlay::EvaluateForegroundGrace(bo
     prevGraceActive_ = decision.graceActive;
     return decision;
 }
-
-// ---- Inject overlay detection via shared memory ----
 
 bool PseudoOverlay::EnsureSharedMemoryMapping() {
     if (!hDiscoveryMap_) {
@@ -572,7 +320,7 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     HWND sourceWindow = NULL;
     if (EnsureSharedMemoryMapping() && pSharedMem_) {
-        sourceWindow = GetMainWindowForProcess(pSharedMem_->GetSourcePid());
+        sourceWindow = pseudo_overlay_GetMainWindowForProcess(pSharedMem_->GetSourcePid());
         if (!isUsableAnchorWindow(sourceWindow)) {
             sourceWindow = NULL;
         }
@@ -590,7 +338,7 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     if (!anchorMonitor && this->stickyAnchorMonitor_) {
         RECT stickyRect = {};
-        if (GetMonitorRectForMonitor(this->stickyAnchorMonitor_, &stickyRect)) {
+        if (pseudo_overlay_GetMonitorRectForMonitor(this->stickyAnchorMonitor_, &stickyRect)) {
             anchorMonitor = this->stickyAnchorMonitor_;
         }
     }
@@ -609,14 +357,14 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     anchor.window = anchorWindow;
     anchor.monitor = anchorMonitor;
-    if (!GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
+    if (!pseudo_overlay_GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
         anchor.monitorRect.left = 0;
         anchor.monitorRect.top = 0;
         anchor.monitorRect.right = GetSystemMetrics(SM_CXSCREEN);
         anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    anchor.dpi = anchorWindow ? GetResolvedWindowDpi(anchorWindow)
+    anchor.dpi = anchorWindow ? pseudo_overlay_GetResolvedWindowDpi(anchorWindow)
                               : (this->stickyAnchorDpi_ ? this->stickyAnchorDpi_ : GetDpiForSystem());
     anchor.fullscreenLike = IsWindowFullscreenLike(anchorWindow);
 
@@ -637,71 +385,3 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
 
     return anchor;
 }
-
-// ---- GDI helpers ----
-
-void PseudoOverlay::InitGDI() {
-    HDC hdcScreen = GetDC(NULL);
-    hdcWarn_ = CreateCompatibleDC(hdcScreen);
-    if (hdcWarn_)
-        oldBmWarn_ = (HBITMAP)GetCurrentObject(hdcWarn_, OBJ_BITMAP);
-    ReleaseDC(NULL, hdcScreen);
-
-    UpdateScaleForDpi(currentDpi_);
-}
-
-void PseudoOverlay::OnTimerTick() {
-    if (!initialized_.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    const int64_t tickStartUs = Log_GetQpcUs();
-    ULONGLONG now = GetTickCount64();
-    ApplyPendingConfig();
-    const bool recordingStateChanged = RefreshRecordingState();
-    RefreshActiveProfileConfig();
-
-    // The pseudo-overlay owns this dedicated message thread. A large timer gap now
-    // diagnoses work on this thread itself; controller readiness waits cannot starve it.
-    if (lastTimerTickMs_ != 0 && now > lastTimerTickMs_) {
-        const ULONGLONG tickGapMs = now - lastTimerTickMs_;
-        if (tickGapMs >= kPumpStallWarnMs) {
-            LogWarn(
-                "[PseudoOverlay] UI-thread stall: %llums between timer ticks (interval=%ums)",
-                static_cast<unsigned long long>(tickGapMs), kTimerInterval);
-        }
-    }
-    lastTimerTickMs_ = now;
-
-    // Foreground-acquire grace tracking. The decision (suppress or render) is evaluated
-    // inside UpdateOverlay() so every entry path that calls UpdateOverlay() benefits
-    // from the same gate, but the tracking state only advances on the timer tick to
-    // avoid double-counting a transition.
-    const uint32_t rawFgPid = GetForegroundTargetPid();
-    const bool currentHadTarget = IsForegroundTarget();
-    UpdateForegroundGraceState(currentHadTarget, currentHadTarget ? rawFgPid : 0u);
-    (void)now;
-
-    if (recordingStateChanged) {
-        UpdateOverlay();
-    }
-
-    if (config_.mode == 1 || config_.mode == 2) {
-        bool warnTargetFocused = IsForegroundTarget();
-        const bool isRecording = ce::recording_indicator::IsRecording(recordingIndicatorState_);
-        const bool isStarting = ce::recording_indicator::IsStarting(recordingIndicatorState_);
-        bool condition = warnTargetFocused && !isRecording && !isStarting;
-
-        if (condition) {
-            if (!warnActive_) {
-                LogInfo("[PseudoOverlay] NOT RECORDING warning activated (foreground target focused, not recording)");
-                warnActive_ = true;
-                warnCycleStart_ = now;
-                warnVisible_ = true;
-                UpdateOverlay();
-            } else {
-                ULONGLONG elapsed = now - warnCycleStart_;
-                ULONGLONG cycleTime = elapsed % 3000;
-                bool shouldBeVisible = (cycleTime < 2000);
-                if (warnVisible_ != shouldBeVisible) {
-                    warnVisible_ = shouldBeVisible;

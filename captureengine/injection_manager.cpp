@@ -1,267 +1,4 @@
-#include "injection.h"
-#include <psapi.h>
-#include <tlhelp32.h>
-#include <algorithm>
-#include <array>
-#include <filesystem>
-#include <iostream>
-#include <system_error>
-#include <thread>
-#include <vector>
-#include "../common/logging.h"
-#include "../common/module_enumeration.h"
-#include "../common/raii_helpers.h"
-#include "../common/thread_wait.h"
-#include "injection_policy.h"
-
-#include <aclapi.h>
-#include <bcrypt.h>
-#include <ntstatus.h>
-#include <oleauto.h>
-#include <softpub.h>
-#include <wintrust.h>
-#include <fstream>
-#include <iomanip>
-#include <sstream>
-
-#ifdef _MSC_VER
-#pragma comment(lib, "wintrust.lib")
-#endif
-
-/*
- * ANTI-CHEAT DETECTION LIMITATIONS
- * =================================
- *
- * This injection system uses CreateRemoteThread() for DLL injection, which is:
- *
- * 1. EASILY DETECTABLE by modern anti-cheat systems (EAC, BattlEye, Vanguard,
- * etc.)
- *    - CreateRemoteThread is a well-known injection technique
- *    - Anti-cheat can monitor for remote thread creation
- *    - DLL loading events are tracked by kernel-mode drivers
- *
- * 2. WILL TRIGGER BANS in competitive games with anti-cheat
- *    - Do NOT use this on games with anti-cheat protection
- *    - Intended for single-player games and testing only
- *
- * 3. DETECTION VECTORS:
- *    - CreateRemoteThread API calls
- *    - Unsigned DLL loading (mitigated by signature verification)
- *    - Shared memory with predictable names (mitigated by randomization)
- *    - Hook installation via IAT patching and VTable hooking
- *    - Process memory scanning for known hook patterns
- *
- * 4. SAFER ALTERNATIVES (not implemented):
- *    - Manual mapping (avoids LoadLibrary detection)
- *    - Kernel-mode driver injection (requires signed driver)
- *    - AppInit_DLLs registry (deprecated, requires reboot)
- *    - SetWindowsHookEx (limited to UI thread)
- *
- * USE AT YOUR OWN RISK. This tool is for educational and single-player use
- * only.
- */
-
-namespace fs = std::filesystem;
-
-namespace {
-double QpcDeltaToMs(int64_t deltaUs) {
-    return static_cast<double>(deltaUs) / 1000.0;
-}
-
-// Read a null-terminated string from a remote process.
-static bool ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t bufferSize) {
-    if (!buffer || bufferSize == 0)
-        return false;
-    buffer[0] = '\0';
-    size_t offset = 0;
-    while (offset < bufferSize - 1) {
-        char c;
-        if (!ReadProcessMemory(hProc, static_cast<const char*>(address) + offset, &c, 1, NULL))
-            return false;
-        buffer[offset++] = c;
-        if (c == '\0')
-            return true;
-    }
-    buffer[bufferSize - 1] = '\0';
-    return true;
-}
-
-// Resolve a function address in a remote 32-bit (WoW64) module by manually
-// parsing its PE export directory. Used for cross-bitness injection where
-// GetProcAddress from the local 64-bit module returns the wrong address.
-static LPVOID GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* funcName) {
-    IMAGE_DOS_HEADER dosHeader;
-    if (!ReadProcessMemory(hProc, hModule, &dosHeader, sizeof(dosHeader), NULL))
-        return nullptr;
-    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
-        return nullptr;
-
-    BYTE* pNtHeaders = (BYTE*)hModule + dosHeader.e_lfanew;
-    IMAGE_NT_HEADERS32 ntHeaders;
-    if (!ReadProcessMemory(hProc, pNtHeaders, &ntHeaders, sizeof(ntHeaders), NULL))
-        return nullptr;
-    if (ntHeaders.Signature != IMAGE_NT_SIGNATURE)
-        return nullptr;
-
-    DWORD exportDirRVA = ntHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-    if (exportDirRVA == 0)
-        return nullptr;
-
-    IMAGE_EXPORT_DIRECTORY exportDir;
-    if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDirRVA, &exportDir, sizeof(exportDir), NULL))
-        return nullptr;
-
-    // Read Name Table
-    std::vector<DWORD> nameRVAs(exportDir.NumberOfNames);
-    if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNames, nameRVAs.data(),
-                           nameRVAs.size() * sizeof(DWORD), NULL))
-        return nullptr;
-
-    for (DWORD i = 0; i < exportDir.NumberOfNames; i++) {
-        char buffer[256];
-        if (ReadRemoteString(hProc, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer))) {
-            if (strcmp(buffer, funcName) == 0) {
-                WORD ordinal;
-                if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNameOrdinals + (i * sizeof(WORD)),
-                                       &ordinal, sizeof(WORD), NULL))
-                    return nullptr;
-
-                DWORD funcRVA;
-                if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)),
-                                       &funcRVA, sizeof(DWORD), NULL))
-                    return nullptr;
-
-                return (BYTE*)hModule + funcRVA;
-            }
-        }
-    }
-    return nullptr;
-}
-
-// Resolve a function address in a remote 32-bit module by module name.
-// Opens the remote module enumeration and delegates to GetRemoteProcAddress above.
-static LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName, const char* funcName) {
-    int maxRetries = 20;
-    for (int retry = 0; retry < maxRetries; retry++) {
-        std::vector<HMODULE> hMods;
-        if (ce::EnumerateProcessModulesEx(hProc, LIST_MODULES_32BIT, hMods)) {
-            for (size_t i = 0; i < hMods.size(); i++) {
-                char szModName[MAX_PATH];
-                if (GetModuleFileNameExA(hProc, hMods[i], szModName, sizeof(szModName))) {
-                    std::string modName = szModName;
-                    std::transform(modName.begin(), modName.end(), modName.begin(),
-                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-                    // Convert wide module name to lower for comparison
-                    char narrowModuleName[MAX_PATH];
-                    WideCharToMultiByte(CP_UTF8, 0, moduleName, -1, narrowModuleName, sizeof(narrowModuleName), NULL,
-                                        NULL);
-                    std::string lowerTarget = narrowModuleName;
-                    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
-                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-                    if (modName.find(lowerTarget) != std::string::npos) {
-                        return GetRemoteProcAddress(hProc, hMods[i], funcName);
-                    }
-                }
-            }
-        }
-        Sleep(100);
-    }
-    return nullptr;
-}
-
-constexpr uint64_t kPendingInjectionDelayMs = 1;
-
-struct BstrGuard {
-    BSTR value = nullptr;
-
-    explicit BstrGuard(const wchar_t* text) : value(SysAllocString(text)) {}
-
-    ~BstrGuard() {
-        if (value) {
-            SysFreeString(value);
-        }
-    }
-
-    BstrGuard(const BstrGuard&) = delete;
-    BstrGuard& operator=(const BstrGuard&) = delete;
-
-    operator BSTR() const {
-        return value;
-    }
-
-    bool valid() const {
-        return value != nullptr;
-    }
-};
-}  // namespace
-
-InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
-    const int64_t constructorStartUs = Log_GetQpcUs();
-
-    // Determine DLL paths (assume next to exe)
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    fs::path exePath(buffer);
-
-    hookDllPathX64 = (exePath.parent_path() / "capture_hook_x64.dll").string();
-    hookDllPathX86 = (exePath.parent_path() / "capture_hook_x86.dll").string();
-
-    // FIX: Force absolute path resolution to ensure the correct DLL is injected.
-    // Relative paths can be ambiguous if the target process has a different CWD.
-    try {
-        if (fs::exists(hookDllPathX64))
-            hookDllPathX64 = fs::absolute(hookDllPathX64).string();
-        if (fs::exists(hookDllPathX86))
-            hookDllPathX86 = fs::absolute(hookDllPathX86).string();
-    } catch (const fs::filesystem_error& e) {
-        LogError("Filesystem error resolving absolute paths: %s", e.what());
-    }
-
-    // Check if DLLs exist
-    if (!fs::exists(hookDllPathX64))
-        LogError("Capture Hook X64 DLL not found: %s", hookDllPathX64.c_str());
-    if (!fs::exists(hookDllPathX86))
-        LogError("Capture Hook X86 DLL not found: %s", hookDllPathX86.c_str());
-
-    const int64_t wmiStartUs = Log_GetQpcUs();
-    bool wmiInitialized = InitializeWMI();
-    const int64_t wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
-
-    const int64_t scanStartUs = Log_GetQpcUs();
-    ScanExistingProcesses();
-    const int64_t scanTotalUs = Log_GetQpcUs() - scanStartUs;
-
-    LogInfo(
-        "[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
-        "total=%.3f ms",
-        QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
-        QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
-}
-
-InjectionManager::~InjectionManager() {
-    // Reject and drain WMI callbacks before joining raw-owner worker threads.
-    // Launch and worker-list transfer are serialized by threadListMutex, so no
-    // worker can appear after the list has been claimed for shutdown.
-    try {
-    RequestShutdown();
-    ShutdownWMI();
-    WaitForInjectionThreads(5000);
-    EjectAll();
-    } catch (...) {
-        LogWarn("[Injection] Suppressed exception during manager destruction");
-    }
-}
-
-void InjectionManager::SetOnInjectCallback(std::function<void(const std::string&)> callback) {
-    this->onInjectCallback = std::move(callback);
-}
-
-void InjectionManager::UpdateConfig(const AppConfig& newConfig) {
-    std::lock_guard<std::mutex> lock(configMutex);
-    config = newConfig;
-}
+#include "injection_internal.h"
 
 void InjectionManager::RescanExistingProcesses() {
     ScanExistingProcesses();
@@ -452,7 +189,7 @@ bool InjectionManager::InitializeWMI() {
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
     coInitUs = Log_GetQpcUs() - phaseStartUs;
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%lX)", QpcDeltaToMs(coInitUs),
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%lX)", injection_QpcDeltaToMs(coInitUs),
                 (unsigned long)hres);
         LogError("Failed to initialize COM library. Error code = 0x%lX", hres);
         return false;
@@ -477,7 +214,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeSecurity after %.3f ms (hr=0x%lX)",
-                QpcDeltaToMs(securityUs), (unsigned long)hres);
+                injection_QpcDeltaToMs(securityUs), (unsigned long)hres);
         LogError("Failed to initialize security. Error code = 0x%lX", hres);
         return false;  // Don't return false if RPC_E_TOO_LATE (already init)
     }
@@ -489,7 +226,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoCreateInstance after %.3f ms (hr=0x%lX)",
-                QpcDeltaToMs(locatorUs), (unsigned long)hres);
+                injection_QpcDeltaToMs(locatorUs), (unsigned long)hres);
         LogError("Failed to create IWbemLocator object. Err: 0x%lX", hres);
         return false;
     }
@@ -516,7 +253,7 @@ bool InjectionManager::InitializeWMI() {
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%lX)", QpcDeltaToMs(connectUs),
+        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%lX)", injection_QpcDeltaToMs(connectUs),
                 (unsigned long)hres);
         LogError("Could not connect. Error code = 0x%lX", hres);
         pLoc->Release();
@@ -539,7 +276,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at CoSetProxyBlanket after %.3f ms (hr=0x%lX)",
-                QpcDeltaToMs(proxyBlanketUs), (unsigned long)hres);
+                injection_QpcDeltaToMs(proxyBlanketUs), (unsigned long)hres);
         LogError("Could not set proxy blanket. Error code = 0x%lX", hres);
         pSvc->Release();
         pSvc = nullptr;
@@ -594,7 +331,7 @@ bool InjectionManager::InitializeWMI() {
 
     if (FAILED(hres)) {
         LogInfo("[StartupPerf] InitializeWMI failed at ExecNotificationQueryAsync after %.3f ms (hr=0x%lX)",
-                QpcDeltaToMs(notificationUs), (unsigned long)hres);
+                injection_QpcDeltaToMs(notificationUs), (unsigned long)hres);
         LogError("ExecNotificationQueryAsync failed. Error code = 0x%lX", hres);
         return false;
     }
@@ -603,9 +340,9 @@ bool InjectionManager::InitializeWMI() {
         "[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
         "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
         "NotificationQuery=%.3f ms, total=%.3f ms",
-        QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
-        QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
-        QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
+        injection_QpcDeltaToMs(coInitUs), injection_QpcDeltaToMs(securityUs), injection_QpcDeltaToMs(locatorUs), injection_QpcDeltaToMs(connectUs),
+        injection_QpcDeltaToMs(proxyBlanketUs), injection_QpcDeltaToMs(sinkSetupUs), injection_QpcDeltaToMs(notificationUs),
+        injection_QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
     LogInfo("WMI Event Sink Initialized");
     return true;
 }
@@ -652,4 +389,282 @@ void InjectionManager::ShutdownWMI() {
     }
 }
 
-// Event Sink Implementation
+ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::AddRef() {
+    return InterlockedIncrement(&m_lRef);
+}
+
+ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Release() {
+    LONG lRef = InterlockedDecrement(&m_lRef);
+    if (lRef == 0)
+        delete this;
+    return lRef;
+}
+
+HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::QueryInterface(REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    *ppv = nullptr;
+    if (riid == IID_IUnknown || riid == IID_IWbemObjectSink) {
+        *ppv = (IWbemObjectSink*)this;
+        AddRef();
+        return WBEM_S_NO_ERROR;
+    }
+    return E_NOINTERFACE;
+}
+
+bool InjectionManager::ProcessEventSink::EnterCallback() {
+    std::lock_guard<std::mutex> lock(callbackMutex);
+    if (bDone || !pManager) {
+        return false;
+    }
+    ++activeCallbacks;
+    return true;
+}
+
+void InjectionManager::ProcessEventSink::LeaveCallback() {
+    std::lock_guard<std::mutex> lock(callbackMutex);
+    if (activeCallbacks > 0) {
+        --activeCallbacks;
+    }
+    if (activeCallbacks == 0) {
+        callbacksDrained.notify_all();
+    }
+}
+
+void InjectionManager::ProcessEventSink::MarkDoneAndDrain() {
+    std::unique_lock<std::mutex> lock(callbackMutex);
+    bDone = true;
+    callbacksDrained.wait(lock, [this]() { return activeCallbacks == 0; });
+    pManager = nullptr;
+}
+
+HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObjectCount, IWbemClassObject __RPC_FAR *
+                                                                                              __RPC_FAR * apObjArray) {
+    if (!EnterCallback()) {
+        return WBEM_S_NO_ERROR;
+    }
+    CE_SCOPE_EXIT(LeaveCallback());
+
+    // Exception handling: WMI callbacks can throw COM exceptions
+    // Catching them prevents crashes and allows graceful degradation
+    try {
+        if (!pManager)
+            return WBEM_S_NO_ERROR;
+
+        for (int i = 0; i < lObjectCount; i++) {
+            IWbemClassObject* pObj = apObjArray[i];
+
+            // Get TargetInstance
+            _variant_t vTarget;
+            if (FAILED(pObj->Get(L"TargetInstance", 0, &vTarget, NULL, NULL)))
+                continue;
+
+            IUnknown* pUnk = vTarget;
+            IWbemClassObject* pTargetCase = nullptr;
+            if (FAILED(pUnk->QueryInterface(IID_IWbemClassObject, (void**)&pTargetCase)))
+                continue;
+
+            struct TargetCaseGuard {
+                IWbemClassObject* obj;
+                ~TargetCaseGuard() {
+                    if (obj)
+                        obj->Release();
+                }
+            } guard{pTargetCase};
+
+            // Get Name
+            _variant_t vName;
+            pTargetCase->Get(L"Name", 0, &vName, NULL, NULL);
+
+            // Get PID
+            _variant_t vPid;
+            pTargetCase->Get(L"ProcessId", 0, &vPid, NULL, NULL);
+
+            if (vName.vt == VT_BSTR && vPid.vt == VT_I4) {
+                std::wstring wName = vName.bstrVal;
+                std::string name(wName.begin(), wName.end());
+                DWORD pid = vPid.intVal;
+
+                // Check whitelist (thread-safe? IsWhitelisted reads config which is
+                // const, so yes)
+                if (pManager->IsWhitelisted(name)) {
+                    pManager->LaunchDelayedInjectionThread(pid, name, "WMI");
+                }
+            }
+        }
+    } catch (const _com_error& e) {
+        // COM exception - log and continue gracefully
+        LogError("WMI Indicate: COM exception 0x%lX: %s", (unsigned long)e.Error(), e.ErrorMessage());
+    } catch (const std::exception& e) {
+        // Standard exception
+        LogError("WMI Indicate: Exception: %s", e.what());
+    } catch (...) {
+        // Unknown exception
+        LogError("WMI Indicate: Unknown exception caught");
+    }
+
+    return WBEM_S_NO_ERROR;
+}
+
+HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG lFlags, HRESULT hResult, BSTR strParam,
+                                                                        IWbemClassObject __RPC_FAR* pObjParam) {
+    return WBEM_S_NO_ERROR;
+}
+
+bool InjectionManager::IsRecentlyFailed(DWORD pid) {
+    std::lock_guard<std::mutex> lock(injectMutex);
+    return IsRecentlyFailedLocked(pid);
+}
+
+void InjectionManager::ReapCompletedDelayedInjectionThreadsLocked() {
+    std::lock_guard<std::mutex> threadLock(threadListMutex);
+    for (auto it = delayedInjectionThreads.begin(); it != delayedInjectionThreads.end();) {
+        if (!it->joinable()) {
+            it = delayedInjectionThreads.erase(it);
+            continue;
+        }
+
+        HANDLE existingThreadHandle = ce::Win32ThreadHandle(*it);
+        if (WaitForSingleObject(existingThreadHandle, 0) == WAIT_OBJECT_0) {
+            it->join();
+            it = delayedInjectionThreads.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string& name, const char* sourceTag) {
+    std::string source = sourceTag ? sourceTag : "Inject";
+    std::lock_guard<std::mutex> threadLock(threadListMutex);
+    if (IsShuttingDown()) {
+        LogInfo("[%s] Skipping delayed injection launch during shutdown for %s (PID: %lu)", source.c_str(),
+                name.c_str(), static_cast<unsigned long>(pid));
+        return;
+    }
+
+    try {
+        // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below
+        delayedInjectionThreads.emplace_back([this, pid, name, source]() {
+            try {
+                LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...",
+                        source.c_str(), name.c_str(), (unsigned long)pid);
+
+                bool ready = false;
+                bool d3d12Loaded = false;
+                bool loggedModuleEnumFailure = false;
+                int waitMs = 0;
+                for (int i = 0; i < 300 && !ready; i++) {
+                    if (IsShuttingDown()) {
+                        LogInfo("[%s] %s (PID: %lu) - Shutdown requested, aborting delayed injection", source.c_str(),
+                                name.c_str(), (unsigned long)pid);
+                        return;
+                    }
+
+                    HANDLE hProcess =
+                        OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
+                    if (!hProcess) {
+                        LogInfo("[%s] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)",
+                                source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
+                        return;
+                    }
+
+                    DWORD exitCode = 0;
+                    if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                        CloseHandle(hProcess);
+                        LogInfo("[%s] %s (PID: %lu) - Process exited before injection (exit code=%lu)", source.c_str(),
+                                name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
+                        return;
+                    }
+
+                    if (!d3d12Loaded) {
+                        std::vector<HMODULE> hMods;
+                        if (ce::EnumerateProcessModules(hProcess, hMods)) {
+                            for (size_t j = 0; j < hMods.size(); j++) {
+                                char szModName[MAX_PATH];
+                                if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
+                                    if (strstr(szModName, "d3d12.dll")) {
+                                        d3d12Loaded = true;
+                                        LogInfo(
+                                            "[%s] %s (PID: %lu) - D3D12.dll detected, injecting without fixed delay...",
+                                            source.c_str(), name.c_str(), (unsigned long)pid);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            DWORD err = GetLastError();
+                            if (!loggedModuleEnumFailure) {
+                                LogInfo(
+                                    "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX); "
+                                    "continuing with conservative non-D3D12 injection timing",
+                                    source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)err,
+                                    (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE));
+                                loggedModuleEnumFailure = true;
+                            }
+                            if (err == ERROR_ACCESS_DENIED && i < 2) {
+                                CloseHandle(hProcess);
+                                Sleep(100);
+                                waitMs += 100;
+                                continue;
+                            }
+                        }
+                    }
+                    CloseHandle(hProcess);
+
+                    if (ce::injection_policy::ShouldInjectAfterGraphicsProbe(d3d12Loaded)) {
+                        ready = true;
+                    }
+
+                    if (!ready) {
+                        Sleep(100);
+                        waitMs += 100;
+                    }
+                }
+
+                LogInfo("[%s] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting injection",
+                        source.c_str(), name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
+
+                std::lock_guard<std::mutex> lock(injectMutex);
+                if (!IsWhitelisted(name)) {
+                    LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(),
+                            name.c_str(), (unsigned long)pid);
+                } else if (!IsAlreadyInjectedLocked(pid) && !IsRecentlyFailedLocked(pid)) {
+                    LogInfo("[%s] %s (PID: %lu) - Injecting (%s detected, waited %d ms)", source.c_str(), name.c_str(),
+                            (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
+                    if (Inject(pid, name)) {
+                        LogInfo("[%s] Injection successful.", source.c_str());
+                    } else {
+                        LogError("[%s] Injection failed.", source.c_str());
+                        if (failedInjections.size() >= 1024) {
+                            failedInjections.erase(failedInjections.begin());
+                        }
+                        failedInjections.push_back({pid, GetTickCount64()});
+                    }
+                } else {
+                    LogInfo("[%s] %s (PID: %lu) - Already injected or recently failed, skipping", source.c_str(),
+                            name.c_str(), (unsigned long)pid);
+                }
+            } catch (const std::exception& e) {
+                LogError("[%s] Delayed injection thread exception for PID %lu: %s", source.c_str(), (unsigned long)pid,
+                         e.what());
+            } catch (...) {
+                LogError("[%s] Delayed injection thread unknown exception for PID %lu", source.c_str(),
+                         (unsigned long)pid);
+            }
+        });
+    } catch (const std::system_error& error) {
+        LogError("[%s] Failed to create delayed injection thread for %s (PID: %lu): %s", source.c_str(), name.c_str(),
+                 static_cast<unsigned long>(pid), error.what());
+    }
+}
+
+bool InjectionManager::IsRecentlyFailedLocked(DWORD pid) {
+    // Caller must hold injectMutex
+    for (const auto& fail : failedInjections) {
+        if (fail.pid == pid)
+            return true;
+    }
+    return false;
+}

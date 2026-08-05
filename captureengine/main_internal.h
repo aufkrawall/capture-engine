@@ -1,35 +1,59 @@
-// CaptureEngine Multi-Process Architecture
-// Main entry point - acts as Controller when run without --mode flag
-// Dispatches to Inject, Media, or Limiter process based on --mode=<mode>
+#pragma once
 
 // clang-format off
 #include <windows.h>
+
 #include <shellapi.h>
+
 #include <timeapi.h>
+
 // clang-format on
 #include <algorithm>
+
 #include <atomic>
+
 #include <filesystem>
+
 #include <fstream>
+
 #include <functional>
+
 #include <mutex>
+
 #include <string>
+
 #include <string_view>
+
 #include <vector>
+
 #include "../common/config.h"
+
 #include "../common/crash_handler.h"
+
 #include "../common/logging.h"
+
 #include "../common/monitor_selection.h"
+
 #include "../common/process_ipc.h"
+
 #include "../common/shared_defs.h"
+
 #include "../common/strict_integer_parse.h"
+
 #include "../common/vulkan_layer_registration.h"
+
 #include "dump_helper.h"
+
 #include "injection.h"
+
 #include "process_loopback_worker_host.h"
+
 #include "pseudo_overlay.h"
+
 #include "recording_manifest.h"
+
 #include "screenshot.h"
+
 #include "tray.h"
 
 #ifdef _MSC_VER
@@ -38,66 +62,116 @@
 
 // Forward declarations for process entry points
 extern int InjectProcessMain(const AppConfig& config);
+
 extern int MediaProcessMain(const AppConfig& config);
+
 extern int LimiterProcessMain(const AppConfig& config);
+
 extern int LoggerProcessMain(const AppConfig& config);
+
 extern int SensorProcessMain(const AppConfig& config);
 
 // Hotkey IDs
 #define HOTKEY_ID_RECORD 1
+
 #define HOTKEY_ID_SCREENSHOT 2
+
 #define HOTKEY_ID_AUDIO_ONLY 3
 
+struct ScopedVulkanRegistration;
+
+void LaunchGameSuspended(const std::string& path);
+
+bool ConnectToChildProcesses(DWORD);
+
+void SendCommandToAll(ProcessCommand cmd);
+
+void PublishRecordingFailureOverlayNotification(const char* reason);
+
+void CheckRecordingFailureState();
+
+void ToggleRecording();
+
+void ToggleAudioOnlyRecording();
+
+void ShutdownChildProcesses();
+
+void CheckChildProcessHealth();
+
+bool CompleteControllerStartup();
+
+BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType);
+
+int ControllerMain(HINSTANCE hInstance);
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
+
 // Controller state
-static bool g_Running = true;
-static bool g_Recording = false;
-static uint32_t g_RecordingSerial = 0;
-static std::atomic<RecordingStartIntent> g_RecordingStartIntent{RecordingStartIntent::Idle};
+inline bool main_g_Running = true;
+
+inline bool main_g_Recording = false;
+
+inline uint32_t main_g_RecordingSerial = 0;
+
+inline std::atomic<RecordingStartIntent> main_g_RecordingStartIntent{RecordingStartIntent::Idle};
+
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
-static AppConfig g_Config;
-static std::string g_ConfigPath;
+inline AppConfig main_g_Config;
+
+inline std::string main_g_ConfigPath;
 
 // Auto-record feature for autonomous testing
-static bool g_AutoRecordEnabled = false;
-static DWORD g_AutoRecordDelayMs = 3000;      // Delay before starting
-static DWORD g_AutoRecordDurationMs = 10000;  // Recording duration
-static DWORD g_AutoRecordStartTime = 0;
+inline bool main_g_AutoRecordEnabled = false;
+
+inline DWORD main_g_AutoRecordDelayMs = 3000;      // Delay before starting
+
+inline DWORD main_g_AutoRecordDurationMs = 10000;  // Recording duration
+
+inline DWORD main_g_AutoRecordStartTime = 0;
 
 // Deferred game launch (for --launch mode)
-static std::string g_DeferredLaunchPath;
+inline std::string main_g_DeferredLaunchPath;
 
 // Child process handles
-static HANDLE g_hInjectProcess = NULL;
-static HANDLE g_hMediaProcess = NULL;
-static HANDLE g_hLimiterProcess = NULL;
-static HANDLE g_hLoggerProcess = NULL;
-static HANDLE g_hSensorProcess = NULL;
+inline HANDLE main_g_hInjectProcess = NULL;
+
+inline HANDLE main_g_hMediaProcess = NULL;
+
+inline HANDLE main_g_hLimiterProcess = NULL;
+
+inline HANDLE main_g_hLoggerProcess = NULL;
+
+inline HANDLE main_g_hSensorProcess = NULL;
 
 // IPC clients for child processes
-static std::unique_ptr<ProcessIPCClient> g_InjectClient;
-static std::unique_ptr<ProcessIPCClient> g_MediaClient;
-static std::unique_ptr<ProcessIPCClient> g_LimiterClient;
+inline std::unique_ptr<ProcessIPCClient> main_g_InjectClient;
 
-static TrayIcon* g_Tray = nullptr;
-static std::unique_ptr<PseudoOverlay> g_PseudoOverlay;
+inline std::unique_ptr<ProcessIPCClient> main_g_MediaClient;
+
+inline std::unique_ptr<ProcessIPCClient> main_g_LimiterClient;
+
+inline TrayIcon* main_g_Tray = nullptr;
+
+inline std::unique_ptr<PseudoOverlay> main_g_PseudoOverlay;
+
+inline constexpr UINT main_kMsgCompleteControllerStartup = WM_APP + 1;
 
 namespace {
-constexpr UINT kMsgCompleteControllerStartup = WM_APP + 1;
-
 struct ControllerStartupTimingState {
     int64_t controllerStartUs = 0;
     int64_t vulkanRegUs = 0;
     int64_t trayCreateUs = 0;
     bool complete = false;
 };
+}
 
-ControllerStartupTimingState g_ControllerStartupTiming;
+inline ControllerStartupTimingState main_g_ControllerStartupTiming;
 
-double QpcDeltaToMs(int64_t deltaUs) {
+inline double main_QpcDeltaToMs(int64_t deltaUs) {
     return static_cast<double>(deltaUs) / 1000.0;
 }
 
-void PumpStartupMessages() {
+inline void main_PumpStartupMessages() {
     MSG msg = {};
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -105,7 +179,7 @@ void PumpStartupMessages() {
     }
 }
 
-void PrimeStartupCursor() {
+inline void main_PrimeStartupCursor() {
     MSG msg = {};
     PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE);
     HCURSOR arrow = LoadCursor(nullptr, IDC_ARROW);
@@ -114,7 +188,7 @@ void PrimeStartupCursor() {
     }
 }
 
-bool HasExactCommandLineArgument(const wchar_t* expected) {
+inline bool main_HasExactCommandLineArgument(const wchar_t* expected) {
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
     if (!arguments)
@@ -130,7 +204,7 @@ bool HasExactCommandLineArgument(const wchar_t* expected) {
     return found;
 }
 
-bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
+inline bool main_TryParseAutoRecordValue(std::string_view value, DWORD& result) {
     uint32_t parsed = 0;
     if (!ce::TryParseUInt32(value, parsed))
         return false;
@@ -138,7 +212,7 @@ bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
     return true;
 }
 
-bool IsProcessRunning(HANDLE hProcess) {
+inline bool main_IsProcessRunning(HANDLE hProcess) {
     if (!hProcess) {
         return false;
     }
@@ -146,6 +220,7 @@ bool IsProcessRunning(HANDLE hProcess) {
     return GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
 }
 
+namespace {
 // Measures how long the controller's main thread spends inside a blocking section. The
 // pseudo-overlay owns a dedicated message thread, but the tray and global hotkeys still
 // depend on this controller thread and remain useful diagnostics when it is starved.
@@ -162,39 +237,40 @@ struct MainThreadBlockTimer {
         }
     }
 };
-
-bool ShouldStartMediaProcessAtStartup() {
-    return g_AutoRecordEnabled;
 }
 
-void PrepareRecordingDiagnosticIdentity() {
-    if (g_hMediaProcess && IsProcessRunning(g_hMediaProcess) && !g_RecordingId.empty())
+inline bool main_ShouldStartMediaProcessAtStartup() {
+    return main_g_AutoRecordEnabled;
+}
+
+inline void main_PrepareRecordingDiagnosticIdentity() {
+    if (main_g_hMediaProcess && main_IsProcessRunning(main_g_hMediaProcess) && !g_RecordingId.empty())
         return;
 
     char recordingId[24]{};
-    snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(++g_RecordingSerial));
+    snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(++main_g_RecordingSerial));
     g_RecordingId = recordingId;
     LogInfo("[Controller] Recording diagnostic identity allocated: %s", g_RecordingId.c_str());
 }
 
-bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
-    return config.fpsLimiter.generalEnabled || (g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
+inline bool main_ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
+    return config.fpsLimiter.generalEnabled || (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
 }
 
-bool ShouldKeepLimiterProcessRunning(const AppConfig& config) {
-    return config.fpsLimiter.generalEnabled || (g_Recording && config.fpsLimiter.captureSyncEnabled) ||
-           (g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
+inline bool main_ShouldKeepLimiterProcessRunning(const AppConfig& config) {
+    return config.fpsLimiter.generalEnabled || (main_g_Recording && config.fpsLimiter.captureSyncEnabled) ||
+           (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
 }
 
-bool ShouldStartLoggerProcess(const AppConfig& config) {
+inline bool main_ShouldStartLoggerProcess(const AppConfig& config) {
     return IsAnyLoggingEnabled(config.logLevel);
 }
 
-bool ShouldStartSensorProcess(const AppConfig& config) {
+inline bool main_ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
-std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
+inline std::vector<PseudoOverlayApplicationConfig> main_ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
     std::vector<PseudoOverlayApplicationConfig> profiles;
     profiles.reserve(baseConfig.applicationProfiles.size());
 
@@ -205,7 +281,7 @@ std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfi
             continue;
 
         AppConfig resolvedConfig;
-        LoadConfig(g_ConfigPath, resolvedConfig, profile.target.pattern);
+        LoadConfig(main_g_ConfigPath, resolvedConfig, profile.target.pattern);
 
         PseudoOverlayApplicationConfig overlayProfile;
         overlayProfile.section = profile.section;
@@ -225,35 +301,35 @@ std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfi
     return profiles;
 }
 
-void SyncPseudoOverlayConfiguration(const char* reason) {
-    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(g_Config);
+inline void main_SyncPseudoOverlayConfiguration(const char* reason) {
+    std::vector<PseudoOverlayApplicationConfig> profiles = main_ResolvePseudoOverlayApplicationConfigs(main_g_Config);
     const bool anyProfileEnabled =
         std::any_of(profiles.begin(), profiles.end(), [](const PseudoOverlayApplicationConfig& profile) {
             return profile.settings.enabled;
         });
 
-    if (!g_PseudoOverlay && !g_Config.pseudoOverlay.enabled && !anyProfileEnabled)
+    if (!main_g_PseudoOverlay && !main_g_Config.pseudoOverlay.enabled && !anyProfileEnabled)
         return;
 
-    if (!g_PseudoOverlay) {
+    if (!main_g_PseudoOverlay) {
         LogInfo("[Controller] Initializing pseudo-overlay (%s)...", reason ? reason : "configuration");
         auto overlay = std::make_unique<PseudoOverlay>();
-        overlay->UpdateConfig(g_Config.pseudoOverlay, profiles);
-        overlay->SetRecordingStartIntent(g_RecordingStartIntent.load(std::memory_order_acquire));
+        overlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
+        overlay->SetRecordingStartIntent(main_g_RecordingStartIntent.load(std::memory_order_acquire));
         HMODULE hMod = GetModuleHandle(NULL);
         if (!overlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
             LogError("[Controller] Failed to initialize pseudo-overlay");
             return;
         }
-        g_PseudoOverlay = std::move(overlay);
+        main_g_PseudoOverlay = std::move(overlay);
         LogInfo("[Controller] Pseudo-overlay initialized");
         return;
     }
 
-    g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay, profiles);
+    main_g_PseudoOverlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
 }
 
-void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
+inline void main_WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
     std::ofstream manifest(logsDir + "\\session_manifest.txt", std::ios::out | std::ios::trunc);
     if (!manifest.is_open()) {
         return;
@@ -283,8 +359,8 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
     manifest << "ffx_loaded=0\n";
     manifest << "fg_shadow_state_enabled=1\n";
     manifest << "fg_state_schema_version=1\n";
-    manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
-    manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
+    manifest << "logger_enabled=" << (main_ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
+    manifest << "sensor_enabled=" << (main_ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";
     manifest << "overlay_whitelist_entries=" << config.overlayWhitelist.size() << "\n";
     manifest << "logs=" << GetLogFileName(mode) << "\n";
@@ -293,7 +369,7 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
     manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
 }
 
-void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
+inline void main_WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
     if (g_RecordingId.empty())
         return;
 
@@ -315,7 +391,7 @@ void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config,
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
-DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
+inline DWORD main_GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     DWORD waitMs = 2000;
     DWORD now = GetTickCount();
 
@@ -328,9 +404,9 @@ DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
         waitMs = configWaitMs;
     }
 
-    if (g_AutoRecordEnabled && g_AutoRecordStartTime > 0) {
-        DWORD elapsed = now - g_AutoRecordStartTime;
-        DWORD nextAutoActionMs = !g_Recording ? g_AutoRecordDelayMs : (g_AutoRecordDelayMs + g_AutoRecordDurationMs);
+    if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
+        DWORD elapsed = now - main_g_AutoRecordStartTime;
+        DWORD nextAutoActionMs = !main_g_Recording ? main_g_AutoRecordDelayMs : (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs);
         if (elapsed >= nextAutoActionMs) {
             return 0;
         }
@@ -343,23 +419,23 @@ DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     return waitMs;
 }
 
-bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
+inline bool main_HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
     return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
 }
 
-void CloseProcessHandle(HANDLE& processHandle) {
+inline void main_CloseProcessHandle(HANDLE& processHandle) {
     if (processHandle) {
         CloseHandle(processHandle);
         processHandle = NULL;
     }
 }
 
-bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
+inline bool main_EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
                                  const char* processName) {
-    if (processHandle && IsProcessRunning(processHandle) && client && !client->IsConnected()) {
+    if (processHandle && main_IsProcessRunning(processHandle) && client && !client->IsConnected()) {
         const DWORD disconnectWaitMs = std::min<DWORD>(timeoutMs, 2000);
         const ULONGLONG deadline = GetTickCount64() + disconnectWaitMs;
-        while (IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
+        while (main_IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
             const ULONGLONG now = GetTickCount64();
             if (now >= deadline)
                 break;
@@ -370,16 +446,16 @@ bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, Proces
             if (wait == WAIT_OBJECT_0)
                 break;
             if (wait == WAIT_OBJECT_0 + 1)
-                PumpStartupMessages();
+                main_PumpStartupMessages();
             else
                 break;
         }
-        if (IsProcessRunning(processHandle)) {
+        if (main_IsProcessRunning(processHandle)) {
             LogWarn("[Controller] %s has not exited after its IPC channel broke; deferring respawn", processName);
             return false;
         }
     }
-    if (!processHandle || !IsProcessRunning(processHandle)) {
+    if (!processHandle || !main_IsProcessRunning(processHandle)) {
         if (client) {
             client->Disconnect();
         }
@@ -389,13 +465,13 @@ bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, Proces
         }
 
         const int64_t spawnStartUs = Log_GetQpcUs();
-        processHandle = SpawnChildProcess(mode, g_ConfigPath.c_str(), client);
+        processHandle = SpawnChildProcess(mode, main_g_ConfigPath.c_str(), client);
         const int64_t spawnUs = Log_GetQpcUs() - spawnStartUs;
         if (!processHandle) {
             LogError("[Controller] Failed to spawn %s process on demand", processName);
             return false;
         }
-        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, QpcDeltaToMs(spawnUs));
+        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, main_QpcDeltaToMs(spawnUs));
     }
 
     if (!client || client->IsConnected()) {
@@ -406,16 +482,16 @@ bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, Proces
     return false;
 }
 
-bool EnsureMediaProcessReady(DWORD timeoutMs) {
-    return EnsureChildProcessConnected(ProcessMode::Media, g_hMediaProcess, g_MediaClient.get(), timeoutMs, "media");
+inline bool main_EnsureMediaProcessReady(DWORD timeoutMs) {
+    return main_EnsureChildProcessConnected(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), timeoutMs, "media");
 }
 
-bool EnsureLimiterProcessReady(DWORD timeoutMs) {
-    return EnsureChildProcessConnected(ProcessMode::Limiter, g_hLimiterProcess, g_LimiterClient.get(), timeoutMs,
+inline bool main_EnsureLimiterProcessReady(DWORD timeoutMs) {
+    return main_EnsureChildProcessConnected(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), timeoutMs,
                                        "limiter");
 }
 
-bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
+inline bool main_ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
                              DWORD timeoutMs) {
     if (!processHandle) {
         if (client) {
@@ -436,36 +512,36 @@ bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, co
     if (waitResult != WAIT_OBJECT_0) {
         LogWarn("[Controller] Timed out waiting for %s process to exit", processName);
     }
-    CloseProcessHandle(processHandle);
+    main_CloseProcessHandle(processHandle);
     return waitResult == WAIT_OBJECT_0;
 }
 
-void SyncLimiterProcess(const AppConfig& config) {
-    if (ShouldKeepLimiterProcessRunning(config)) {
-        EnsureLimiterProcessReady(10000);
+inline void main_SyncLimiterProcess(const AppConfig& config) {
+    if (main_ShouldKeepLimiterProcessRunning(config)) {
+        main_EnsureLimiterProcessReady(10000);
         return;
     }
 
-    if (g_hLimiterProcess) {
+    if (main_g_hLimiterProcess) {
         LogInfo("[Controller] Limiter no longer needed; shutting it down");
-        ShutdownIpcChildProcess(g_hLimiterProcess, g_LimiterClient.get(), "limiter", 5000);
-    } else if (g_LimiterClient) {
-        g_LimiterClient->Disconnect();
+        main_ShutdownIpcChildProcess(main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter", 5000);
+    } else if (main_g_LimiterClient) {
+        main_g_LimiterClient->Disconnect();
     }
 }
 
-void SyncLoggerAndSensorProcesses(const AppConfig& config) {
-    const bool wantLogger = ShouldStartLoggerProcess(config);
-    const bool wantSensor = ShouldStartSensorProcess(config);
-    const bool loggerRunning = IsProcessRunning(g_hLoggerProcess);
-    const bool sensorRunning = IsProcessRunning(g_hSensorProcess);
+inline void main_SyncLoggerAndSensorProcesses(const AppConfig& config) {
+    const bool wantLogger = main_ShouldStartLoggerProcess(config);
+    const bool wantSensor = main_ShouldStartSensorProcess(config);
+    const bool loggerRunning = main_IsProcessRunning(main_g_hLoggerProcess);
+    const bool sensorRunning = main_IsProcessRunning(main_g_hSensorProcess);
 
     if (loggerRunning == wantLogger && sensorRunning == wantSensor) {
         if (!loggerRunning) {
-            CloseProcessHandle(g_hLoggerProcess);
+            main_CloseProcessHandle(main_g_hLoggerProcess);
         }
         if (!sensorRunning) {
-            CloseProcessHandle(g_hSensorProcess);
+            main_CloseProcessHandle(main_g_hSensorProcess);
         }
         return;
     }
@@ -480,13 +556,13 @@ void SyncLoggerAndSensorProcesses(const AppConfig& config) {
         SetEvent(hShutdownEvent);
     }
 
-    if (g_hLoggerProcess) {
-        WaitForSingleObject(g_hLoggerProcess, 5000);
-        CloseProcessHandle(g_hLoggerProcess);
+    if (main_g_hLoggerProcess) {
+        WaitForSingleObject(main_g_hLoggerProcess, 5000);
+        main_CloseProcessHandle(main_g_hLoggerProcess);
     }
-    if (g_hSensorProcess) {
-        WaitForSingleObject(g_hSensorProcess, 5000);
-        CloseProcessHandle(g_hSensorProcess);
+    if (main_g_hSensorProcess) {
+        WaitForSingleObject(main_g_hSensorProcess, 5000);
+        main_CloseProcessHandle(main_g_hSensorProcess);
     }
 
     if (hShutdownEvent) {
@@ -495,23 +571,22 @@ void SyncLoggerAndSensorProcesses(const AppConfig& config) {
     }
 
     if (wantLogger) {
-        g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
-        if (!g_hLoggerProcess) {
+        main_g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, main_g_ConfigPath.c_str());
+        if (!main_g_hLoggerProcess) {
             LogError("[Controller] Failed to restart logger process");
         }
     }
     if (wantSensor) {
-        g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
-        if (!g_hSensorProcess) {
+        main_g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, main_g_ConfigPath.c_str());
+        if (!main_g_hSensorProcess) {
             LogError("[Controller] Failed to restart sensor process");
         }
     }
 }
-}  // namespace
 
 // Remove old session directories from logs/, keeping the most recent maxKeep.
 // Also cleans up any stale flat .log/.csv files from pre-session-dir versions.
-static void CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 20) {
+inline void main_CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 20) {
     namespace fs = std::filesystem;
     std::error_code ec;
 
@@ -564,89 +639,158 @@ struct DeferredLaunchCommand {
     std::string workingDirectory;
     std::string fileName;
 };
-
-std::string TrimCommandWhitespace(const std::string& value) {
-    const size_t start = value.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        return "";
-    }
-
-    const size_t end = value.find_last_not_of(" \t\r\n");
-    return value.substr(start, end - start + 1);
 }
 
-bool ParseDeferredLaunchCommand(const std::string& command, DeferredLaunchCommand* outCommand) {
-    if (!outCommand) {
+// Helper: open inject's shared memory and run a callback with a writable view.
+// Returns true if the shared memory was opened and the callback executed.
+inline bool main_WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& fn) {
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc)
+        return false;
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (!ValidateDiscoveryInfo(pDisc)) {
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
         return false;
     }
+    uint32_t injPid = pDisc->GetInjectPid();
+    UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+    if (injPid == 0)
+        return false;
 
-    *outCommand = {};
-    outCommand->rawCommandLine = TrimCommandWhitespace(command);
-    if (outCommand->rawCommandLine.empty()) {
+    wchar_t shmName[64];
+    GenerateSharedMemName(shmName, 64, injPid);
+    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+    if (!hShm)
+        return false;
+    auto* pShm =
+        (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+    if (!pShm) {
+        CloseHandle(hShm);
         return false;
     }
-
-    const std::string& raw = outCommand->rawCommandLine;
-    if (raw.front() == '"') {
-        const size_t closingQuote = raw.find('"', 1);
-        if (closingQuote == std::string::npos || closingQuote == 1) {
-            return false;
-        }
-        outCommand->executablePath = raw.substr(1, closingQuote - 1);
-    } else {
-        const size_t separator = raw.find_first_of(" \t\r\n");
-        outCommand->executablePath = raw.substr(0, separator);
-    }
-
-    if (outCommand->executablePath.empty()) {
+    if (!ValidateSharedMemory(pShm)) {
+        LogError("[Controller] Rejected inject shared memory with incompatible ABI (version=%u size=%u abi=0x%08X)",
+                 pShm->GetVersion(), pShm->structSize.load(std::memory_order_acquire),
+                 pShm->abiSignature.load(std::memory_order_acquire));
+        UnmapViewOfFile(pShm);
+        CloseHandle(hShm);
         return false;
     }
-
-    const size_t lastSlash = outCommand->executablePath.find_last_of("\\/");
-    outCommand->fileName = (lastSlash != std::string::npos) ? outCommand->executablePath.substr(lastSlash + 1)
-                                                            : outCommand->executablePath;
-    if (lastSlash != std::string::npos) {
-        outCommand->workingDirectory = outCommand->executablePath.substr(0, lastSlash);
-    }
-
+    fn(pShm);
+    UnmapViewOfFile(pShm);
+    CloseHandle(hShm);
     return true;
 }
-}  // namespace
 
-// Launch game suspended and inject immediately (The only way to guarantee API
-// overrides) If the target looks like a launcher (not the actual game exe), we
-// just start it normally and let WMI + CreateProcess hooks in already-injected
-// processes catch the real game
-void LaunchGameSuspended(const std::string& path) {
-    STARTUPINFOA si = {};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {};
+inline bool main_PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
+    main_g_RecordingStartIntent.store(intent, std::memory_order_release);
+    const bool published = main_WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+        sharedMemory->runtimeState.SetRecordingStartIntent(intent);
+        if (intent != RecordingStartIntent::AudioOnly) {
+            sharedMemory->runtimeState.audioOnly.store(false, std::memory_order_release);
+        } else {
+            sharedMemory->runtimeState.audioOnly.store(true, std::memory_order_release);
+        }
+    });
+    if (main_g_PseudoOverlay) {
+        main_g_PseudoOverlay->SetRecordingStartIntent(intent);
+    }
+    LogInfo("[Controller] Recording start intent=%s published=%d reason=%s",
+            intent == RecordingStartIntent::Video       ? "video"
+            : intent == RecordingStartIntent::AudioOnly ? "audio-only"
+                                                        : "idle",
+            published ? 1 : 0, reason ? reason : "unspecified");
+    return published;
+}
 
-    DeferredLaunchCommand launchCommand = {};
-    if (!ParseDeferredLaunchCommand(path, &launchCommand)) {
-        LogError("[Launcher] Failed to parse launch command: %s", path.c_str());
-        return;
+inline bool main_RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+                                      DWORD timeoutMs) {
+    if (!client || !client->IsConnected())
+        return false;
+
+    ProcessResponse response = ProcessResponse::Error;
+    if (!client->SendCommand(ProcessCommand::StopRecording, nullptr, &response, timeoutMs) ||
+        response == ProcessResponse::Error) {
+        LogWarn("[Controller] %s did not accept the recording stop (%s)", childName,
+                reason ? reason : "unspecified");
+        return false;
     }
 
-    std::vector<char> commandLineBuffer(launchCommand.rawCommandLine.begin(), launchCommand.rawCommandLine.end());
-    commandLineBuffer.push_back('\0');
-    LPSTR mutableCommandLine = commandLineBuffer.data();
-    LPCSTR workingDir = launchCommand.workingDirectory.empty() ? NULL : launchCommand.workingDirectory.c_str();
+    LogInfo("[Controller] %s accepted the recording stop (%s)", childName, reason ? reason : "unspecified");
+    return true;
+}
 
-    const std::string& cleanPath = launchCommand.executablePath;
+inline bool main_RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
+    // Ask media first. It acknowledges before finalization, so controller UI work
+    // does not wait for trailer writing or the post-mux probe. Media clears the
+    // hook-facing shared state before acknowledging. The inject command is only a
+    // fallback when the private media channel cannot accept the request.
+    const bool mediaAccepted = main_RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
+    const bool stopAccepted =
+        mediaAccepted || main_RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+    if (!stopAccepted) {
+        LogWarn("[Controller] No recording child accepted the stop (%s); process teardown is the final fallback",
+                reason ? reason : "unspecified");
+    }
 
-    // Extract filename
-    std::string filename = launchCommand.fileName;
+    // Media self-exits after finalization. Drop the controller's reference now so
+    // the next recording creates a fresh authenticated child.
+    if (main_g_MediaClient)
+        main_g_MediaClient->Disconnect();
+    main_CloseProcessHandle(main_g_hMediaProcess);
+    return stopAccepted;
+}
 
-    // Convert to lowercase
-    std::string lowerName;
-    for (char c : filename)
-        lowerName += (char)tolower(c);
+inline ce::vulkan_layer::RegistrationPlan main_BuildControllerVulkanRegistrationPlan() {
+    std::filesystem::path baseDir;
+    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
+        LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
+        return {};
+    }
 
-    // Check if this is likely a launcher (not the game itself)
-    // Heuristic: if filename doesn't contain _dx11, _dx12, _vulkan, etc., it
-    // Check if this looks like the actual game vs a launcher
-    // Games typically have: _dx, _vulkan, _vk, game, test, or are known
-    // executables
-    bool looksLikeGame =
-        (lowerName.find("_dx") != std::string::npos || lowerName.find("_vulkan") != std::string::npos ||
+    return ce::vulkan_layer::BuildRegistrationPlan(baseDir, ce::vulkan_layer::RegistrationMode::Auto,
+                                                   ce::vulkan_layer::IsCurrentProcessElevated());
+}
+
+// RAII wrapper for exact registration ownership. Startup repairs superseded CE
+// entries only in registry scopes already writable by this process; the retained
+// plan then lets teardown remove only this instance's exact registrations.
+class ScopedVulkanRegistration {
+public:
+    ScopedVulkanRegistration() : plan_(main_BuildControllerVulkanRegistrationPlan()) {
+        ce::vulkan_layer::LogRegistrationPlan(plan_);
+        if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
+            LogWarn("[Controller] Vulkan layer registration repair was incomplete");
+        }
+        active_ = ce::vulkan_layer::ApplyRegistrationPlan(plan_, true);
+        if (!active_) {
+            LogError("[Controller] Vulkan layer registration failed");
+        }
+    }
+    ~ScopedVulkanRegistration() {
+        Unregister();
+    }
+
+    bool IsActive() const {
+        return active_;
+    }
+
+    void Unregister() {
+        std::call_once(unregistrationOnce_, [this]() {
+            if (!ce::vulkan_layer::ApplyRegistrationPlan(plan_, false)) {
+                LogError("[Controller] Vulkan layer unregistration failed");
+            }
+        });
+    }
+
+private:
+    ce::vulkan_layer::RegistrationPlan plan_;
+    std::once_flag unregistrationOnce_;
+    bool active_ = false;
+};
+
+// Global pointer for emergency unregistration
+inline ScopedVulkanRegistration* main_g_VulkanReg = nullptr;

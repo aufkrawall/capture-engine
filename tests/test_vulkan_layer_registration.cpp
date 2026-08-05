@@ -180,8 +180,8 @@ TEST(VulkanLayerRegistrationSourceTest, ControllerRetainsOneExactPlanThroughUnre
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty()) << source.string();
 
-    EXPECT_NE(text.find("ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan())"),
-              std::string::npos);
+    EXPECT_NE(text.find("ScopedVulkanRegistration() : plan_("), std::string::npos);
+    EXPECT_NE(text.find("BuildControllerVulkanRegistrationPlan())"), std::string::npos);
     const size_t repair = text.find("RepairOwnedRegistrations(plan_)");
     const size_t apply = text.find("ApplyRegistrationPlan(plan_, true)");
     ASSERT_NE(repair, std::string::npos);

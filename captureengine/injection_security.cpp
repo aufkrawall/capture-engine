@@ -1,71 +1,4 @@
-}
-
-// Check if any process is currently injected
-bool InjectionManager::HasActiveInjections() const {
-    std::lock_guard<std::mutex> lock(injectMutex);
-    return !injectedProcesses.empty();
-}
-
-bool InjectionManager::HasPendingInjections() {
-    std::lock_guard<std::mutex> lock(injectMutex);
-    std::lock_guard<std::mutex> threadLock(threadListMutex);
-    return !pendingInjections.empty() || !delayedInjectionThreads.empty();
-}
-
-void InjectionManager::Eject(DWORD pid) {
-    std::lock_guard<std::mutex> lock(injectMutex);
-    auto it = std::find_if(injectedProcesses.begin(), injectedProcesses.end(),
-                           [&](const InjectedProcess& p) { return p.pid == pid; });
-    HANDLE hProcess = (it != injectedProcesses.end()) ? it->hProcess : NULL;
-    bool openedProcessHandle = false;
-
-    if (!hProcess) {
-        hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-        if (!hProcess)
-            return;
-        openedProcessHandle = true;
-    }
-
-    std::vector<HMODULE> hMods;
-    if (ce::EnumerateProcessModules(hProcess, hMods)) {
-        for (size_t i = 0; i < hMods.size(); i++) {
-            char szModName[MAX_PATH];
-            if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
-                std::string modName = szModName;
-                if (modName.find("capture_hook_x64.dll") != std::string::npos ||
-                    modName.find("capture_hook_x86.dll") != std::string::npos) {
-                    BOOL isWow64Target = FALSE;
-                    IsWow64Process(hProcess, &isWow64Target);
-
-                    LPTHREAD_START_ROUTINE pFreeLibrary = nullptr;
-                    if (isWow64Target) {
-                        LPVOID p = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "FreeLibrary");
-                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(p);
-                    } else {
-                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                            GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary"));
-                    }
-
-                    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, pFreeLibrary, (LPVOID)hMods[i], 0, NULL);
-                    if (hThread) {
-                        WaitForSingleObject(hThread, 500);
-                        CloseHandle(hThread);
-                    }
-
-                    // CRITICAL FIX: Free remote memory allocated during APC injection
-                    if (it != injectedProcesses.end() && it->remoteMemory) {
-                        VirtualFreeEx(hProcess, it->remoteMemory, 0, MEM_RELEASE);
-                        LogInfo("[Eject] Freed remote memory at %p for PID %d", it->remoteMemory, pid);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    if (openedProcessHandle)
-        CloseHandle(hProcess);
-}
+#include "injection_internal.h"
 
 // SHA256 using Windows CNG (bcrypt.dll)
 [[maybe_unused]] static std::string ComputeFileHash(const std::string& path) {
@@ -356,7 +289,7 @@ void InjectionManager::ScanExistingProcesses() {
     const int64_t snapshotUs = Log_GetQpcUs() - snapshotStartUs;
     if (hSnapshot == INVALID_HANDLE_VALUE) {
         LogInfo("[StartupPerf] ScanExistingProcesses: CreateToolhelp32Snapshot failed after %.3f ms (error=%lu)",
-                QpcDeltaToMs(snapshotUs), GetLastError());
+                injection_QpcDeltaToMs(snapshotUs), GetLastError());
         return;
     }
 
@@ -380,7 +313,7 @@ void InjectionManager::ScanExistingProcesses() {
                     LogInfo("[Scan] Found existing whitelisted process: %s (PID: %lu)", name.c_str(),
                             (unsigned long)pe32.th32ProcessID);
                     pendingInjections.push_back(
-                        {pe32.th32ProcessID, name, "StartupScan", GetTickCount64() + kPendingInjectionDelayMs});
+                        {pe32.th32ProcessID, name, "StartupScan", GetTickCount64() + injection_kPendingInjectionDelayMs});
                     ++injectSuccesses;
                 }
             }
@@ -390,6 +323,6 @@ void InjectionManager::ScanExistingProcesses() {
     LogInfo(
         "[StartupPerf] ScanExistingProcesses: snapshot=%.3f ms, total=%.3f ms, scanned=%d, whitelisted=%d, "
         "injectAttempts=%d, queuedForDelayedInjection=%d",
-        QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
+        injection_QpcDeltaToMs(snapshotUs), injection_QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
         injectAttempts, injectSuccesses);
 }
