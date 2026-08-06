@@ -537,7 +537,7 @@ def rebuild_class_body(text: str, cls: ClassInfo) -> str:
     return "".join(out)
 
 
-def extract_top_level(text: str, sc: Scanner) -> list[MemberDef]:
+def extract_top_level(text: str, sc: Scanner) -> list[tuple[MemberDef, tuple]]:
     """Extract inline function definitions (not templates/vars) from file
     scope and named namespaces. Returns (members, ns_path) pairs via a wrapper
     list of (MemberDef, tuple) -- kept simple by storing ns on the member."""
@@ -730,7 +730,6 @@ def main() -> int:
                 params = strip_defaults(params)
                 ns = pseudo_namespaces.get(m.name, ())
                 wrap_open = "\n".join(f"namespace {comp} {{" for comp in ns)
-                wrap_close = "\n".join("}" for _ in ns)
                 if wrap_open:
                     parts.append(wrap_open)
                 parts.append(f"{ret + ' ' if ret else ''}{name}({params})"
