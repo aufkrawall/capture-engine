@@ -414,6 +414,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                     "vulkan_fg_switch_streamline_shutdown.cpp",
                     "vulkan_fg_switch_device.cpp",
                     "vulkan_fg_switch_fidelityfx.cpp",
+                    "vulkan_fg_switch_fidelityfx_frame.cpp",
                     "vulkan_fg_switch_wsi.cpp",
                     "vulkan_fg_switch_renderer.cpp",
                 )

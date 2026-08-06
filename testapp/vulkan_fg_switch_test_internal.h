@@ -176,6 +176,10 @@ bool WaitForFsrPresents(const char* reason);
 }
 
 namespace testapp::vkfg {
+FfxApiResource MakeFfxResource(const ImageResource& image, uint32_t state, uint32_t additionalUsage = 0);
+}
+
+namespace testapp::vkfg {
 void RegisterFsrUiResource(FrameResources& resources);
 }
 

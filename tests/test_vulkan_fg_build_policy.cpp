@@ -74,8 +74,11 @@ TEST(VulkanFgBuildPolicyTest, RuntimeKeepsOwnerRoutingAndDiagnosticsExplicit) {
     ExpectContains(wsi, "FidelityFX same-owner proxy retired before recreation");
     ExpectContains(wsi, "FidelityFX proxy retired after drained passthrough for owner");
     const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.cpp");
-    ExpectContains(fidelityfx, "presentationAlreadyRetired");
-    ExpectContains(fidelityfx, "skipping configure/wait");
+    const std::string fidelityfxFrame =
+        ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx_frame.cpp");
+    const std::string allFidelityFx = fidelityfx + fidelityfxFrame;
+    ExpectContains(allFidelityFx, "presentationAlreadyRetired");
+    ExpectContains(allFidelityFx, "skipping configure/wait");
     ExpectContains(wsi, "replacement.wsi = DispatchForOwner(owner)");
     ExpectContains(wsi, "DestroyFailedFfxTakeover");
     ExpectContains(wsi, "cleaning failed FFX takeover with owning proxy handle");
