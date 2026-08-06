@@ -208,9 +208,14 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     fsr_fg_exe = os.path.join(testapp_bin_dir, "dx12_fsr_fg_test.exe")
     if os.path.exists(fsr_fg_src):
         fsr_fg_ldflags = list(dx12_ldflags)
+        fsr_fg_units = [
+            os.path.join(testapp_src_dir, name)
+            for name in ("dx12_fsr_fg_test_fsr.cpp",)
+            if os.path.exists(os.path.join(testapp_src_dir, name))
+        ]
         add_task(
             "dx12_fsr_fg_test.exe",
-            make_cmd(clang_exe, fg_sdk_cflags, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe),
+            make_cmd(clang_exe, fg_sdk_cflags, [fsr_fg_src] + fsr_fg_units, fsr_fg_ldflags, fsr_fg_exe),
         )
         if have_x86:
             log("Skipping dx12_fsr_fg_test.exe (x86): FG SDK runtime DLLs are x64-only")

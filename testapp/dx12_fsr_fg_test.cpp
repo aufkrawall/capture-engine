@@ -35,6 +35,7 @@
 #include <ffx_framegeneration.h>
 
 #include "dx12_fg_resources.h"
+#include "dx12_fsr_fg_test_internal.h"
 #include "testapp_common.h"
 
 #pragma comment(lib, "d3d12.lib")
@@ -47,11 +48,11 @@ using Microsoft::WRL::ComPtr;
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-static int g_WindowWidth = 1920;
-static int g_WindowHeight = 1080;
-static int g_GpuLoadPasses = 40;
-static int g_VSync = 0;
-static int g_Fullscreen = 0;
+int g_WindowWidth = 1920;
+int g_WindowHeight = 1080;
+int g_GpuLoadPasses = 40;
+int g_VSync = 0;
+int g_Fullscreen = 0;
 
 void LoadConfig() {
     char path[MAX_PATH];
@@ -96,22 +97,21 @@ UINT g_RtvDescriptorSize = 0;
 std::mutex g_FrameSyncMutex;
 
 // FSR FG state
-static HMODULE g_FfxModule = nullptr;
-static ffxContext g_FfxCtx = nullptr;
-static ffxContext g_FfxSwapChainCtx = nullptr;
-static PfnFfxCreateContext g_FfxCreateContext = nullptr;
-static PfnFfxConfigure g_FfxConfigure = nullptr;
-static PfnFfxDispatch g_FfxDispatch = nullptr;
-static PfnFfxDestroyContext g_FfxDestroyContext = nullptr;
-static bool g_FsrInitialized = false;
-static bool g_FsrEnabled = false;
-static bool g_FsrEnableAttempted = false;
-static uint64_t g_FrameIdCounter = 0;
-static uint64_t g_LastFsrPrepareLogFrame = 0;
-static constexpr uint64_t kNoFsrUiRegisterLogFrame = static_cast<uint64_t>(-1);
-static uint64_t g_LastFsrUiRegisterLogFrame = kNoFsrUiRegisterLogFrame;
-static std::atomic<uint64_t> g_FsrPresentCallbackCount{0};
-static std::atomic<uint64_t> g_FsrFrameGenerationCallbackCount{0};
+HMODULE g_FfxModule = nullptr;
+ffxContext g_FfxCtx = nullptr;
+ffxContext g_FfxSwapChainCtx = nullptr;
+PfnFfxCreateContext g_FfxCreateContext = nullptr;
+PfnFfxConfigure g_FfxConfigure = nullptr;
+PfnFfxDispatch g_FfxDispatch = nullptr;
+PfnFfxDestroyContext g_FfxDestroyContext = nullptr;
+bool g_FsrInitialized = false;
+bool g_FsrEnabled = false;
+bool g_FsrEnableAttempted = false;
+uint64_t g_FrameIdCounter = 0;
+uint64_t g_LastFsrPrepareLogFrame = 0;
+uint64_t g_LastFsrUiRegisterLogFrame = kNoFsrUiRegisterLogFrame;
+std::atomic<uint64_t> g_FsrPresentCallbackCount{0};
+std::atomic<uint64_t> g_FsrFrameGenerationCallbackCount{0};
 
 // Timing
 float g_BarPosition = 0.0f;
@@ -198,121 +198,12 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 // FSR FG initialization
 // ---------------------------------------------------------------------------
-static ffxReturnCode_t TestPresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {
-    uint64_t callbackIndex = ++g_FsrPresentCallbackCount;
-    if (params) {
-        auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(params->commandList);
-        testapp::dx12fg::CopyFfxPresentSourceToOutput(cmdList, params);
-        if (callbackIndex <= 5 || (callbackIndex % 120) == 0) {
-            testapp::Log("[FG-DIAG] FSR present callback #%llu frameID=%llu generated=%d backbuffer=%p output=%p\n",
-                         static_cast<unsigned long long>(callbackIndex),
-                         static_cast<unsigned long long>(params->frameID), params->isGeneratedFrame ? 1 : 0,
-                         params->currentBackBuffer.resource, params->outputSwapChainBuffer.resource);
-        }
-    }
-    return FFX_API_RETURN_OK;
-}
-
-static ffxReturnCode_t TestFrameGenerationCallback(ffxDispatchDescFrameGeneration* params, void* pUserCtx) {
-    if (!params || !pUserCtx || !g_FfxDispatch) {
-        return FFX_API_RETURN_ERROR_PARAMETER;
-    }
-    ffxContext* context = reinterpret_cast<ffxContext*>(pUserCtx);
-    ffxReturnCode_t ret = g_FfxDispatch(context, &params->header);
-    uint64_t callbackIndex = ++g_FsrFrameGenerationCallbackCount;
-    if (ret != FFX_API_RETURN_OK || callbackIndex <= 5 || (callbackIndex % 120) == 0) {
-        testapp::Log("[FG-DIAG] FSR frame-generation callback #%llu frameID=%llu result=%u present=%p output0=%p\n",
-                     static_cast<unsigned long long>(callbackIndex), static_cast<unsigned long long>(params->frameID),
-                     ret, params->presentColor.resource, params->outputs[0].resource);
-    }
-    return ret;
-}
-
-enum FsrInitResult {
-    kFsrOk = 0,
-    kFsrNoDll = 1,
-    kFsrNoExports = 2,
-    kFsrCreateFailed = 3,
-    kFsrSwapChainFailed = 4,
-};
-
-static const char* FfxReturnName(ffxReturnCode_t code) {
-    switch (code) {
-        case FFX_API_RETURN_OK:
-            return "OK";
-        case FFX_API_RETURN_ERROR:
-            return "ERROR";
-        case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE:
-            return "UNKNOWN_DESCTYPE";
-        case FFX_API_RETURN_ERROR_RUNTIME_ERROR:
-            return "RUNTIME_ERROR";
-        case FFX_API_RETURN_NO_PROVIDER:
-            return "NO_PROVIDER";
-        case FFX_API_RETURN_ERROR_MEMORY:
-            return "MEMORY";
-        case FFX_API_RETURN_ERROR_PARAMETER:
-            return "PARAMETER";
-        case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE:
-            return "PROVIDER_NO_SUPPORT_NEW_DESCTYPE";
-        default:
-            return "unknown";
-    }
-}
 
 // Extracted from dx12_fsr_fg_test.cpp to stay under the AGENTS.md
 // size ceiling. Included at exactly the point these definitions used to sit,
 // so declaration order is unchanged.
 
 static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer);
-
-static void PreloadAmdCompanionDlls() {
-    const wchar_t* companionDlls[] = {L"amd_ags_x64.dll", L"amd_acs_x64.dll"};
-    for (const wchar_t* dllName : companionDlls) {
-        HMODULE companion = LoadLibraryW(dllName);
-        if (companion) {
-            testapp::Log("  Preloaded AMD companion: %S\n", dllName);
-        } else {
-            testapp::Log("  Failed to preload AMD companion %S (err=%lu)\n", dllName, GetLastError());
-        }
-    }
-}
-
-static FsrInitResult LoadFSRRuntime() {
-    if (g_FfxModule)
-        return kFsrOk;
-
-    PreloadAmdCompanionDlls();
-
-    // Prefer the per-effect FG DLL directly (the loader DLL's ffxCreateContext
-    // delegates to this, but going direct avoids any loader-side issues).
-    const wchar_t* dllNames[] = {
-        L"amd_fidelityfx_framegeneration_dx12.dll",
-        L"amd_fidelityfx_loader_dx12.dll",
-        L"amd_fidelityfx_dx12.dll",
-        L"ffx_framegeneration.dll",
-    };
-    for (auto dllName : dllNames) {
-        g_FfxModule = LoadLibraryW(dllName);
-        if (g_FfxModule) {
-            testapp::Log("  Loaded FSR runtime: %S\n", dllName);
-            break;
-        }
-    }
-    if (!g_FfxModule)
-        return kFsrNoDll;
-
-    g_FfxCreateContext = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(g_FfxModule, "ffxCreateContext"));
-    g_FfxConfigure = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(g_FfxModule, "ffxConfigure"));
-    g_FfxDispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(g_FfxModule, "ffxDispatch"));
-    g_FfxDestroyContext = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_FfxModule, "ffxDestroyContext"));
-    if (!g_FfxCreateContext || !g_FfxConfigure || !g_FfxDispatch || !g_FfxDestroyContext) {
-        testapp::Log("  FSR DLL missing ffxCreateContext/ffxConfigure/ffxDispatch/ffxDestroyContext exports\n");
-        FreeLibrary(g_FfxModule);
-        g_FfxModule = nullptr;
-        return kFsrNoExports;
-    }
-    return kFsrOk;
-}
 
 static bool CreateFSRSwapChainForHwndContext(IDXGIFactory4* factory, HWND hwnd, DXGI_SWAP_CHAIN_DESC1& swapChainDesc) {
     if (!g_FfxCreateContext || !factory || !hwnd || !g_CommandQueue) {
@@ -535,18 +426,6 @@ static void DestroyFSRContexts() {
         g_FfxDestroyContext(&g_FfxSwapChainCtx, nullptr);
         g_FfxSwapChainCtx = nullptr;
     }
-}
-
-static void UnloadFSRRuntime() {
-    if (g_FfxModule) {
-
-        FreeLibrary(g_FfxModule);
-        g_FfxModule = nullptr;
-    }
-    g_FfxCreateContext = nullptr;
-    g_FfxConfigure = nullptr;
-    g_FfxDispatch = nullptr;
-    g_FfxDestroyContext = nullptr;
 }
 
 static void ReleaseDX12Resources() {
