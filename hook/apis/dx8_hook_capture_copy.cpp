@@ -1,7 +1,6 @@
 #include "dx8_hook_internal.h"
 
 
-
 bool DX8Capture::EnsureSnapshotSurface(IDirect3DDevice8* device) {
 
 
@@ -61,7 +60,6 @@ bool DX8Capture::EnsureSnapshotSurface(IDirect3DDevice8* device) {
         return true;
 
 }
-
 bool DX8Capture::EnsureFrontBufferSurface(IDirect3DDevice8* device) {
 
 
@@ -86,7 +84,6 @@ bool DX8Capture::EnsureFrontBufferSurface(IDirect3DDevice8* device) {
         return true;
 
 }
-
 bool DX8Capture::CopyLockedPixelsToSurface9(const D3DLOCKED_RECT& sourceLockedRect,  D3DFORMAT sourceFormat, 
                                     IDirect3DSurface9* destinationSurface) {
 
@@ -208,7 +205,6 @@ bool DX8Capture::CopyLockedPixelsToSurface9(const D3DLOCKED_RECT& sourceLockedRe
         return true;
 
 }
-
 bool DX8Capture::CopyLockedPixelsToOverlayBackbuffer(const D3DLOCKED_RECT& sourceLockedRect,  D3DFORMAT sourceFormat) {
 
 
@@ -228,7 +224,6 @@ bool DX8Capture::CopyLockedPixelsToOverlayBackbuffer(const D3DLOCKED_RECT& sourc
         return copied;
 
 }
-
 bool DX8Capture::CopySurfaceToSurface9(IDirect3DSurface8* sourceSurface,  D3DFORMAT sourceFormat, 
                                IDirect3DSurface9* destinationSurface) {
 
@@ -253,7 +248,6 @@ bool DX8Capture::CopySurfaceToSurface9(IDirect3DSurface8* sourceSurface,  D3DFOR
         return copied;
 
 }
-
 bool DX8Capture::CopyBackBufferToSurface9(IDirect3DDevice8* device,  IDirect3DSurface9* destinationSurface) {
 
 
@@ -286,7 +280,6 @@ bool DX8Capture::CopyBackBufferToSurface9(IDirect3DDevice8* device,  IDirect3DSu
         return CopySurfaceToSurface9(d3d8SnapshotSurface, d3d8SnapshotFormat, destinationSurface);
 
 }
-
 bool DX8Capture::CopyFrontBufferToSurface9(IDirect3DDevice8* device,  IDirect3DSurface9* destinationSurface) {
 
 
@@ -320,7 +313,6 @@ bool DX8Capture::CopyFrontBufferToSurface9(IDirect3DDevice8* device,  IDirect3DS
         return copied;
 
 }
-
 bool DX8Capture::CopyFrontBufferToOverlayBackbuffer(IDirect3DDevice8* device) {
 
 
