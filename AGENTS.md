@@ -124,6 +124,13 @@ The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces
   then read the relevant topic page(s) via `llm-wiki/index.md`, then
   `llm-wiki/log/recent.md` for active/stale-risk areas. Re-check the code map
   after large refactors: monolithic files may have been split into per-area units.
+- File names are semantic: the 2026-08-06 conversion removed all numbered
+  `*_2/_3` chunks and `_part_*.py` fragments. A few modules keep a small
+  logical-source facade (`dx12_hook.cpp`, `mediaengine.cpp`, `wgc_capture.cpp`,
+  `layer_capture.cpp`, the `*.py` entry points) that the source-policy reader
+  keys on; the real content lives in content-named sibling units. If an archive
+  cites a pre-conversion name, resolve it through `repo-map.md` instead of
+  grepping the tree for it.
 - For substantial work, start with `llm-wiki/index.md`, read only relevant topic pages, then read `llm-wiki/log/recent.md` for active/stale-risk areas.
 - Read archives only when historical context is needed or explicitly linked.
 - For trivial localized edits, skip broad wiki loading unless the area is unfamiliar or stale-risk is likely.

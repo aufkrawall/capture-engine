@@ -49,7 +49,7 @@ new file that exceeds 800 lines.
 ## clang-tidy baseline
 
 `tools/clang_tidy_baseline.json` is now at **zero accepted warnings across 28 checks**,
-measured over **272 translation units** (verified 2026-08-03). The remaining findings
+measured over **552 translation units** (verified 2026-08-06). The remaining findings
 were either fixed at the root or annotated with targeted `NOLINT` comments carrying a
 concrete rationale; no check was disabled globally.
 

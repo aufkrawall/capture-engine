@@ -148,7 +148,7 @@ anchors that predate the split are approximate.
 - `build/packages/` - automatically replaced `captureengine.7z` and `testapps.7z`
   artifacts. The latter contains no vendor DLLs.
 - `compile_commands.json` - generated at the repo root by `build.py` for clangd/LSP
-  (528 translation units after the semantic-unit split).
+  (552 translation units after the semantic-unit split).
 - `build/verification/` - per-run gate summaries (`latest_summary.txt`), manifests,
   and stage artifacts (`clang_tidy.log`, `flake8.log`, `pyright.log`, sanitizer logs).
 
