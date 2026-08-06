@@ -39,7 +39,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* p
     return hr;
 
 }
-
 HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST RECT* pSourceRect, 
                                                  CONST RECT* pDestRect,  HWND hDestWindowOverride, 
                                                  CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
@@ -86,7 +85,6 @@ HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST REC
     return hr;
 
 }
-
 HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RECT* pSourceRect, 
                                                    CONST RECT* pDestRect,  HWND hDestWindowOverride, 
                                                    CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
@@ -149,7 +147,6 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
     return hr;
 
 }
-
 HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARAMETERS* pPresentationParameters) {
 
 
@@ -241,7 +238,6 @@ HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARA
     return hr;
 
 }
-
 HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device, 
                                                D3DPRESENT_PARAMETERS* pPresentationParameters, 
                                                D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
