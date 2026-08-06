@@ -247,7 +247,12 @@ def extract_member_definitions(text: str, sc: Scanner, cls: ClassInfo) -> None:
                     name = method_name(head)
                     if name:
                         ret, _, _, _, _ = split_head(head)
-                        nested_ret = ret if ret and ret in cls.nested_types else ""
+                        nested_ret = ""
+                        if ret:
+                            for nt in cls.nested_types:
+                                if re.search(r"\b" + re.escape(nt) + r"\b", ret):
+                                    nested_ret = nt
+                                    break
                         # Keep the body verbatim: preprocessor directives inside
                         # it balance against the per-member guard wrapper.
                         body = text[i + 1 : close - 1]
@@ -473,8 +478,12 @@ def declaration_for(m: MemberDef) -> str:
 
 def definition_for(m: MemberDef, cls_name: str) -> str:
     ret, name, params, tail, init_list = split_head(m.head)
-    if ret and ret == m.nested_type_ret:
-        ret = f"{cls_name}::{ret}"
+    if m.nested_type_ret:
+        ret = re.sub(
+            r"\b" + re.escape(m.nested_type_ret) + r"\b",
+            f"{cls_name}::{m.nested_type_ret}",
+            ret,
+        )
     tail = re.sub(r"\b(override|final)\b", "", tail)
     tail = re.sub(r"\s+", " ", tail).strip()
     params = strip_defaults(params)
