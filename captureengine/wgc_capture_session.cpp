@@ -3,191 +3,6 @@
 
 #if HAS_WGC
 
-void WGCCapture::Impl::OnDuplicationFrame(ID3D11Texture2D* texture,  const D3D11_TEXTURE2D_DESC& desc,  int64_t rawSourceQpc) {
-
-
-        LARGE_INTEGER callbackStart = {};
-        QueryPerformanceCounter(&callbackStart);
-        const int64_t previousCallbackStart =
-            lastCallbackStartQpc_.exchange(callbackStart.QuadPart, std::memory_order_relaxed);
-        if (previousCallbackStart > 0 && callbackStart.QuadPart > previousCallbackStart && qpcFreq_ > 0) {
-            const int64_t gapUs = ((callbackStart.QuadPart - previousCallbackStart) * 1000000) / qpcFreq_;
-            UpdateSmoothedAtomicUs(callbackGapAvgUs_, gapUs);
-            UpdateAtomicMax(callbackGapMaxUs_, gapUs);
-        }
-
-        auto recordCallbackProcess = [&]() {
-            LARGE_INTEGER callbackEnd = {};
-            QueryPerformanceCounter(&callbackEnd);
-            if (callbackEnd.QuadPart > callbackStart.QuadPart && qpcFreq_ > 0) {
-                const int64_t processUs = ((callbackEnd.QuadPart - callbackStart.QuadPart) * 1000000) / qpcFreq_;
-                UpdateSmoothedAtomicUs(callbackProcessAvgUs_, processUs);
-                UpdateAtomicMax(callbackProcessMaxUs_, processUs);
-            }
-            UpdateAtomicMax(callbackDrainMaxCount_, 1u);
-        };
-
-        if (!alive_.load(std::memory_order_acquire) || NeedsReset()) {
-            recordCallbackProcess();
-            return;
-        }
-
-        bool processed = false;
-        if (!frameCallback_.load(std::memory_order_acquire)) {
-            // Pull mode: enqueue into the internal bounded queue like WGC.
-            WGCCapturedFrame frame{};
-            {
-                std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
-                const SourceFramePreflight pre = PreflightSourceFrame(rawSourceQpc);
-                if (pre.accepted) {
-                    processed = DeliverSourceTexture(texture, desc, pre, &frame) && frame.texture;
-                }
-            }
-            if (processed) {
-                std::lock_guard<std::mutex> lock(frameMutex_);
-                EnqueueFrameInternal(std::move(frame));
-            }
-        } else {
-            std::lock_guard<std::mutex> drainLock(callbackDrainMutex_);
-            if (!alive_.load(std::memory_order_acquire)) {
-                recordCallbackProcess();
-                return;
-            }
-            std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
-            const SourceFramePreflight pre = PreflightSourceFrame(rawSourceQpc);
-            if (pre.accepted) {
-                processed = DeliverSourceTexture(texture, desc, pre, nullptr);
-            }
-        }
-
-        if (processed && frameArrivedEvent_) {
-            SetEvent(frameArrivedEvent_);
-        }
-        recordCallbackProcess();
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender,  winrt::IInspectable const&) {
-
-
-        EnsureWgcCallbackThreadQoS();
-
-        LARGE_INTEGER callbackStart = {};
-        QueryPerformanceCounter(&callbackStart);
-        const int64_t previousCallbackStart =
-            lastCallbackStartQpc_.exchange(callbackStart.QuadPart, std::memory_order_relaxed);
-        if (previousCallbackStart > 0 && callbackStart.QuadPart > previousCallbackStart && qpcFreq_ > 0) {
-            const int64_t gapUs = ((callbackStart.QuadPart - previousCallbackStart) * 1000000) / qpcFreq_;
-            UpdateSmoothedAtomicUs(callbackGapAvgUs_, gapUs);
-            UpdateAtomicMax(callbackGapMaxUs_, gapUs);
-        }
-
-        auto recordCallbackProcess = [&](uint32_t drainedCount) {
-            LARGE_INTEGER callbackEnd = {};
-            QueryPerformanceCounter(&callbackEnd);
-            if (callbackEnd.QuadPart > callbackStart.QuadPart && qpcFreq_ > 0) {
-                const int64_t processUs = ((callbackEnd.QuadPart - callbackStart.QuadPart) * 1000000) / qpcFreq_;
-                UpdateSmoothedAtomicUs(callbackProcessAvgUs_, processUs);
-                UpdateAtomicMax(callbackProcessMaxUs_, processUs);
-            }
-            UpdateAtomicMax(callbackDrainMaxCount_, drainedCount);
-        };
-
-        // Check if Impl is still alive
-        if (!alive_.load(std::memory_order_acquire)) {
-            recordCallbackProcess(0);
-            return;
-        }
-
-        if (NeedsReset()) {
-            uint32_t drainedCount = 0;
-            while (alive_.load(std::memory_order_acquire)) {
-                auto winrtFrame = sender.TryGetNextFrame();
-                if (!winrtFrame) {
-                    break;
-                }
-                ++drainedCount;
-                winrtFrame.Close();
-            }
-            recordCallbackProcess(drainedCount);
-            return;
-        }
-
-        // Pull mode: drain promptly into an internal bounded queue so the
-        // encoder thread only performs CFR scheduling. This preserves recent
-        // temporal history across callback bursts and avoids coupling source
-        // collection to encoder wakeups.
-        if (!frameCallback_.load(std::memory_order_acquire)) {
-            bool processedFrame = false;
-            uint32_t drainedCount = 0;
-            std::vector<WGCCapturedFrame> drainedFrames;
-            drainedFrames.reserve(4);
-            {
-                std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
-                while (alive_.load(std::memory_order_acquire)) {
-                    auto winrtFrame = sender.TryGetNextFrame();
-                    if (!winrtFrame) {
-                        break;
-                    }
-                    ++drainedCount;
-
-                    WGCCapturedFrame frame{};
-                    if (ProcessCapturedFrame(winrtFrame, &frame) && frame.texture) {
-                        drainedFrames.push_back(std::move(frame));
-                        processedFrame = true;
-                    }
-                }
-            }
-
-            if (!drainedFrames.empty()) {
-                std::lock_guard<std::mutex> lock(frameMutex_);
-                for (auto& frame : drainedFrames) {
-                    EnqueueFrameInternal(std::move(frame));
-                }
-            }
-
-            if (processedFrame && frameArrivedEvent_) {
-                SetEvent(frameArrivedEvent_);
-            }
-            recordCallbackProcess(drainedCount);
-            return;
-        }
-
-        std::lock_guard<std::mutex> lock(callbackDrainMutex_);
-        if (!alive_.load(std::memory_order_acquire)) {
-            recordCallbackProcess(0);
-            return;
-        }
-
-        bool processedFrame = false;
-        uint32_t drainedCount = 0;
-        {
-            std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
-            while (alive_.load(std::memory_order_acquire)) {
-                auto winrtFrame = sender.TryGetNextFrame();
-                if (!winrtFrame) {
-                    break;
-                }
-                ++drainedCount;
-                processedFrame = ProcessCapturedFrame(winrtFrame, nullptr) || processedFrame;
-            }
-        }
-
-        if (processedFrame && frameArrivedEvent_) {
-            SetEvent(frameArrivedEvent_);
-        }
-        recordCallbackProcess(drainedCount);
-
-}
-
-#endif
-
-#if HAS_WGC
-
 bool WGCCapture::Impl::CreateWinRTDevice() {
 
 
@@ -212,6 +27,7 @@ bool WGCCapture::Impl::CreateWinRTDevice() {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::UnsubscribeItemClosed() noexcept {
@@ -235,6 +51,7 @@ void WGCCapture::Impl::UnsubscribeItemClosed() noexcept {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -267,6 +84,7 @@ bool WGCCapture::Impl::SubscribeItemClosed(const char* targetName,  const char* 
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -309,6 +127,7 @@ bool WGCCapture::Impl::CreateForMonitor(HMONITOR hmon) {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -383,6 +202,7 @@ bool WGCCapture::Impl::CreateForWindow(HWND hwnd) {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -463,6 +283,7 @@ bool WGCCapture::Impl::CreateForMonitorDuplication(HMONITOR hmon) {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -583,6 +404,170 @@ bool WGCCapture::Impl::StartDuplicationCapture(uint32_t& width,  uint32_t& heigh
 
         LogInfo("[WGC] Capture session started (DXGI duplication): %dx%d", width, height);
         return true;
+
+}
+
+#endif
+
+
+
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::StopCapture() {
+
+
+        // Stop the DXGI duplication source first when active: Stop() joins the
+        // duplication capture thread, so no sink callbacks can run past this
+        // point (the duplication analogue of the WinRT in-flight wait below).
+        if (dupSource_) {
+            dupSource_->Stop();
+            dupSource_.reset();
+        }
+
+        // Stop the producer before closing the callback epoch. Queued handlers
+        // still retain the shared gate, but once StopAndDrain invalidates this
+        // epoch they can no longer acquire Impl. No timeout/polling is needed:
+        // active callback leases notify the gate when they leave.
+        if (session_) {
+            try {
+                session_.Close();
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] Capture session close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] Capture session close failed");
+            }
+            session_ = nullptr;
+        }
+
+        frameCallbackState_->StopAndDrain();
+
+        if (framePool_) {
+            try {
+                framePool_.FrameArrived(frameArrivedToken_);
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] FrameArrived unsubscribe failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] FrameArrived unsubscribe failed");
+            }
+            try {
+                framePool_.Close();
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] Frame pool close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] Frame pool close failed");
+            }
+            framePool_ = nullptr;
+        }
+
+        // Safe to clear callback now - no more concurrent readers
+        frameCallback_.store(nullptr, std::memory_order_release);
+        cursorCallback_.store(nullptr, std::memory_order_release);
+
+        // NOTE: Do NOT null item_ - it's the capture target (monitor) and doesn't
+        // change between recordings. StartCapture() needs item_ to exist.
+
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        SafeRelease(latestFrame_);
+        ReleasePendingFramesLocked();
+        ResetVideoMemoryReservation();
+        ReleaseTexturePool();
+        borderlessCapture_ = false;
+        frameWidth_ = 0;
+        frameHeight_ = 0;
+
+        SafeRelease(cachedTexture_);
+        frameReady_ = false;
+
+        // Close the frame arrived event handle
+        if (frameArrivedEvent_) {
+            CloseHandle(frameArrivedEvent_);
+            frameArrivedEvent_ = NULL;
+        }
+
+        // Drop idle WGC device state between recordings so desktop capture
+        // releases its D3D/WinRT memory footprint instead of keeping standby
+        // resources resident until process shutdown.
+        winrtDevice_ = nullptr;
+        if (d3dContext_) {
+            d3dContext_->ClearState();
+            d3dContext_->Flush();
+        }
+        if (d3dDevice_) {
+            IDXGIDevice3* dxgiDevice3 = nullptr;
+            if (SUCCEEDED(d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
+                dxgiDevice3->Trim();
+                dxgiDevice3->Release();
+                LogInfo("[WGC] Trimmed capture-device residency");
+            }
+        }
+        ReleaseGpuTimingResources();
+        SafeRelease(d3dContext_);
+        if (usingDedicatedCaptureDevice_) {
+            SafeRelease(d3dDevice_);
+        } else {
+            d3dDevice_ = nullptr;
+        }
+
+}
+
+#endif
+
+
+#if !HAS_WGC
+
+bool WGCCapture::Impl::CreateWinRTDevice() {
+
+
+        return false;
+
+}
+
+#endif
+
+
+#if !HAS_WGC
+
+bool WGCCapture::Impl::CreateForMonitor(void*) {
+
+
+        return false;
+
+}
+
+#endif
+
+
+#if !HAS_WGC
+
+bool WGCCapture::Impl::CreateForWindow(void*) {
+
+
+        return false;
+
+}
+
+#endif
+
+
+#if !HAS_WGC
+
+bool WGCCapture::Impl::StartCapture(uint32_t&,  uint32_t&,  bool) {
+
+
+        return false;
+
+}
+
+#endif
+
+
+#if !HAS_WGC
+
+void WGCCapture::Impl::StopCapture() {
+
+
 
 }
 

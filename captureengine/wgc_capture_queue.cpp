@@ -1,185 +1,5 @@
 #include "wgc_capture_internal.h"
 
-#if HAS_WGC
-
-void WGCCapture::Impl::ApplyConfiguredVideoMemoryReservation() {
-
-        if (videoMemoryReservationMode_ == VideoMemoryReservationMode::kOff)
-            return;
-        const uint32_t mandatorySlots =
-            std::max<uint32_t>(ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames,
-                               smoothnessSyncDelayFrames_ + smoothnessReservedFreeSlots_ + smoothnessSafetySlots_ + 1u);
-        const uint64_t mandatoryBytes = smoothnessSourceEstimatedVramBytes_ +
-                                        static_cast<uint64_t>(mandatorySlots) * smoothnessCopyBytesPerSurface_;
-        const uint64_t fullBytes = smoothnessSourceEstimatedVramBytes_ +
-                                   static_cast<uint64_t>(texturePool_.size()) * smoothnessCopyBytesPerSurface_;
-        const bool full = videoMemoryReservationMode_ == VideoMemoryReservationMode::kFull;
-        SetVideoMemoryReservationBytes(full ? fullBytes : mandatoryBytes, full ? "full" : "mandatory");
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::ResetVideoMemoryReservation() {
-
-        if (activeVideoMemoryReservationBytes_ != 0)
-            SetVideoMemoryReservationBytes(0, "teardown");
-        activeVideoMemoryReservationBytes_ = 0;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::EnableMultithreadProtection(ID3D11Device* device,  const char* label) {
-
-        if (!device) {
-            return;
-        }
-
-        ID3D11Multithread* multithread = nullptr;
-        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
-            multithread->SetMultithreadProtected(TRUE);
-            multithread->Release();
-            LogInfo("[WGC] D3D11 multithread protection enabled on %s device", label);
-        }
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::ApplyConfiguredGpuPriority(const char* role) {
-
-        if (!d3dDevice_) {
-            return;
-        }
-        const int requested = std::clamp(desiredGpuPriority_.load(std::memory_order_relaxed), -7, 7);
-        IDXGIDevice* dxgiDevice = nullptr;
-        HRESULT setHr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
-        if (FAILED(setHr) || !dxgiDevice) {
-            LogWarn("[WGC] GPU priority query failed: role=%s requested=%d hr=0x%08lX", role, requested,
-                    static_cast<unsigned long>(setHr));
-            return;
-        }
-        setHr = dxgiDevice->SetGPUThreadPriority(requested);
-        INT actual = 0;
-        const HRESULT readbackHr = SUCCEEDED(setHr) ? dxgiDevice->GetGPUThreadPriority(&actual) : setHr;
-        if (SUCCEEDED(setHr) && SUCCEEDED(readbackHr) && actual == requested) {
-            LogInfo("[WGC] GPU thread priority applied: role=%s requested=%d actual=%d verified=1 dedicated=%d", role,
-                    requested, actual, usingDedicatedCaptureDevice_ ? 1 : 0);
-        } else {
-            LogWarn(
-                "[WGC] GPU thread priority apply/readback failed: role=%s requested=%d actual=%d setHr=0x%08lX "
-                "readbackHr=0x%08lX verified=0 dedicated=%d",
-                role, requested, actual, static_cast<unsigned long>(setHr), static_cast<unsigned long>(readbackHr),
-                usingDedicatedCaptureDevice_ ? 1 : 0);
-        }
-        dxgiDevice->Release();
-
-}
-
-#endif
-
-#if HAS_WGC
-
-bool WGCCapture::Impl::InitializeDevices(ID3D11Device* encoderDevice) {
-
-        if (!encoderDevice) {
-            return false;
-        }
-
-        ReleaseTexturePool();
-        SafeRelease(d3dContext_);
-        if (usingDedicatedCaptureDevice_) {
-            SafeRelease(d3dDevice_);
-        } else {
-            d3dDevice_ = nullptr;
-        }
-
-        encoderDevice_ = encoderDevice;
-        usingDedicatedCaptureDevice_ = false;
-
-        if (sameDeviceCapture_) {
-            d3dDevice_ = encoderDevice_;
-            d3dDevice_->GetImmediateContext(&d3dContext_);
-            if (!d3dContext_) {
-                LogError("[WGC] Failed to acquire same-device D3D11 immediate context");
-                d3dDevice_ = nullptr;
-                return false;
-            }
-            EnableMultithreadProtection(d3dDevice_, "same-device capture");
-            ApplyConfiguredGpuPriority("same-device-capture");
-            LogInfo("[WGC] Same-device capture enabled; reusing encoder D3D11 device");
-            return true;
-        }
-
-        IDXGIDevice* dxgiDevice = nullptr;
-        IDXGIAdapter* adapter = nullptr;
-        HRESULT hr = encoderDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
-        if (SUCCEEDED(hr) && dxgiDevice) {
-            hr = dxgiDevice->GetAdapter(&adapter);
-        }
-        SafeRelease(dxgiDevice);
-
-        if (SUCCEEDED(hr) && adapter) {
-            DXGI_ADAPTER_DESC adapterDesc = {};
-            adapter->GetDesc(&adapterDesc);
-
-            D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
-            hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr,
-                                   0, D3D11_SDK_VERSION, &d3dDevice_, &featureLevel, &d3dContext_);
-            SafeRelease(adapter);
-
-            if (SUCCEEDED(hr) && d3dDevice_ && d3dContext_) {
-                usingDedicatedCaptureDevice_ = (d3dDevice_ != encoderDevice_);
-                EnableMultithreadProtection(d3dDevice_, "capture");
-                ApplyConfiguredGpuPriority("dedicated-capture");
-                LogInfo("[WGC] Dedicated capture D3D11 device created (FL=0x%x, adapter=%ls)", featureLevel,
-                        adapterDesc.Description);
-                return true;
-            }
-
-            SafeRelease(d3dContext_);
-            SafeRelease(d3dDevice_);
-            LogWarn("[WGC] Dedicated capture device creation failed (0x%08lX); falling back to shared device",
-                    (unsigned long)hr);
-        } else {
-            SafeRelease(adapter);
-            LogWarn("[WGC] Failed to resolve encoder adapter for dedicated capture device; falling back");
-        }
-
-        d3dDevice_ = encoderDevice_;
-        d3dDevice_->GetImmediateContext(&d3dContext_);
-        if (!d3dContext_) {
-            LogError("[WGC] Failed to acquire fallback shared D3D11 immediate context");
-            d3dDevice_ = nullptr;
-            return false;
-        }
-        EnableMultithreadProtection(d3dDevice_, "shared capture");
-        ApplyConfiguredGpuPriority("shared-fallback-capture");
-        return true;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::ReleaseCapturedFrame(WGCCapturedFrame& frame) {
-
-        SafeRelease(frame.texture);
-        frame.poolLease.Reset();
-        frame.poolSlot = std::numeric_limits<uint32_t>::max();
-        frame.poolGeneration = 0;
-
-}
-
-#endif
 
 #if HAS_WGC
 
@@ -293,6 +113,7 @@ void WGCCapture::Impl::ResetStats() {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::ReleasePendingFramesLocked() {
@@ -306,6 +127,7 @@ void WGCCapture::Impl::ReleasePendingFramesLocked() {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -337,6 +159,7 @@ void WGCCapture::Impl::EnqueueFrameInternal(WGCCapturedFrame&& frame) {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::QueuePendingFrame(WGCCapturedFrame&& frame) {
@@ -347,6 +170,7 @@ void WGCCapture::Impl::QueuePendingFrame(WGCCapturedFrame&& frame) {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -362,6 +186,7 @@ void WGCCapture::Impl::RecordInputFrameEvent() {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::RecordDeliveredFrameEvent() {
@@ -376,6 +201,7 @@ void WGCCapture::Impl::RecordDeliveredFrameEvent() {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -421,6 +247,7 @@ void WGCCapture::Impl::RecordSourceTimingSample(int64_t sourceFrameQpc) {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::RecordSourceToCopyLatency(int64_t sourceFrameQpc,  int64_t copyCompleteQpc) {
@@ -446,6 +273,7 @@ void WGCCapture::Impl::RecordSourceToCopyLatency(int64_t sourceFrameQpc,  int64_
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::ApplyFrameThrottleInterval() {
@@ -462,6 +290,7 @@ void WGCCapture::Impl::ApplyFrameThrottleInterval() {
 
 #endif
 
+
 #if HAS_WGC
 
 void WGCCapture::Impl::ApplyProducerInterval() {
@@ -475,6 +304,7 @@ void WGCCapture::Impl::ApplyProducerInterval() {
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -533,6 +363,7 @@ void WGCCapture::Impl::ApplyMinUpdateInterval() {
 
 #endif
 
+
 #if HAS_WGC
 
 int64_t WGCCapture::Impl::GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const {
@@ -543,6 +374,7 @@ int64_t WGCCapture::Impl::GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame&
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -559,6 +391,7 @@ bool WGCCapture::Impl::IsStaleSourceFrameQpc(int64_t sourceFrameQpc) const {
 
 #endif
 
+
 #if HAS_WGC
 
 bool WGCCapture::Impl::IsOutOfOrderRawSourceFrameQpc(int64_t sourceFrameQpc) const {
@@ -571,107 +404,6 @@ bool WGCCapture::Impl::IsOutOfOrderRawSourceFrameQpc(int64_t sourceFrameQpc) con
         return lastObservedRawSourceQpc > 0 && sourceFrameQpc < lastObservedRawSourceQpc;
 
 }
-
-#endif
-
-#if HAS_WGC
-
-#endif
-
-#if HAS_WGC
-
-HMONITOR WGCCapture::Impl::ResolveTargetMonitor() const {
-
-        if (targetWindow_) {
-            return MonitorFromWindow(targetWindow_, MONITOR_DEFAULTTONEAREST);
-        }
-        if (targetMonitor_) {
-            return targetMonitor_;
-        }
-        return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-
-}
-
-#endif
-
-#if HAS_WGC
-
-bool WGCCapture::Impl::GetCaptureOrigin(int32_t& left,  int32_t& top) const {
-
-        left = 0;
-        top = 0;
-
-        if (targetWindow_) {
-            const char* originMode = ResolveWindowCaptureOrigin(left, top);
-            return originMode != nullptr;
-        }
-
-        MONITORINFO monitorInfo = {};
-        monitorInfo.cbSize = sizeof(monitorInfo);
-        HMONITOR monitor = ResolveTargetMonitor();
-        if (monitor && GetMonitorInfo(monitor, &monitorInfo)) {
-            left = monitorInfo.rcMonitor.left;
-            top = monitorInfo.rcMonitor.top;
-            return true;
-        }
-
-        return false;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-const char* WGCCapture::Impl::ResolveWindowCaptureOrigin(int32_t& left,  int32_t& top) const {
-
-        left = 0;
-        top = 0;
-        if (!targetWindow_ || !IsWindow(targetWindow_)) {
-            return nullptr;
-        }
-
-        RECT windowRect = {};
-        RECT clientRect = {};
-        const bool haveWindowRect = GetWindowRect(targetWindow_, &windowRect) != FALSE;
-        const bool haveClientRect = GetWindowClientRectInScreen(targetWindow_, clientRect);
-        constexpr LONG kOriginSizeTolerancePx = 8;
-
-        if (frameWidth_ > 0 && frameHeight_ > 0) {
-            if (haveClientRect &&
-                SizeNearlyMatchesRect(frameWidth_, frameHeight_, clientRect, kOriginSizeTolerancePx)) {
-                left = clientRect.left;
-                top = clientRect.top;
-                return "client-size-match";
-            }
-
-            if (haveWindowRect &&
-                SizeNearlyMatchesRect(frameWidth_, frameHeight_, windowRect, kOriginSizeTolerancePx)) {
-                left = windowRect.left;
-                top = windowRect.top;
-                return "window-size-match";
-            }
-        }
-
-        if (haveWindowRect) {
-            left = windowRect.left;
-            top = windowRect.top;
-            return "window-fallback";
-        }
-
-        if (haveClientRect) {
-            left = clientRect.left;
-            top = clientRect.top;
-            return "client-fallback";
-        }
-
-        return nullptr;
-
-}
-
-#endif
-
-#if HAS_WGC
 
 #endif
 

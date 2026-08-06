@@ -3,6 +3,216 @@
 
 #if HAS_WGC
 
+uint32_t WGCCapture::Impl::BytesPerPixelForFormat(DXGI_FORMAT format) const {
+
+        switch (format) {
+            case DXGI_FORMAT_R16G16B16A16_FLOAT:
+                return 8;
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+            default:
+                return 4;
+        }
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+DXGI_FORMAT WGCCapture::Impl::GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const {
+
+        if (ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, captureIsHDR_)) {
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
+        }
+        return sourceFormat;
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+bool WGCCapture::Impl::IsCompactRetainedCopy(DXGI_FORMAT sourceFormat,  DXGI_FORMAT retainedFormat) const {
+
+        return retainedFormat != sourceFormat;
+
+}
+
+#endif
+
+#if HAS_WGC
+
+#endif
+
+#if HAS_WGC
+
+#endif
+
+#if HAS_WGC
+
+#endif
+
+
+#if HAS_WGC
+
+bool WGCCapture::Impl::CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture,  const D3D11_TEXTURE2D_DESC& sourceDesc, 
+                                 DXGI_FORMAT inputSrvFormat,  ID3D11ShaderResourceView** outSrv,  bool* usedStaging) {
+
+        if (!sourceTexture || !outSrv) {
+            return false;
+        }
+        *outSrv = nullptr;
+        if (usedStaging) {
+            *usedStaging = false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = inputSrvFormat;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        HRESULT hr = d3dDevice_->CreateShaderResourceView(sourceTexture, &srvDesc, outSrv);
+        if (SUCCEEDED(hr) && *outSrv) {
+            return true;
+        }
+
+        static std::atomic<uint32_t> directSrvFailLogCount{0};
+        const uint32_t failLog = directSrvFailLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (failLog <= 4) {
+            LogInfo(
+                "[WGC] Direct WGC source SRV unavailable for retained-copy conversion; using reusable staging "
+                "(srcFmt=%s srvFmt=%s bind=0x%X misc=0x%X hr=0x%08lX)",
+                DxgiFormatName(sourceDesc.Format), DxgiFormatName(inputSrvFormat), sourceDesc.BindFlags,
+                sourceDesc.MiscFlags, (unsigned long)hr);
+        }
+
+        if (!poolCopyStagingTexture_ || poolCopyStagingWidth_ != sourceDesc.Width ||
+            poolCopyStagingHeight_ != sourceDesc.Height || poolCopyStagingFormat_ != sourceDesc.Format) {
+            SafeRelease(poolCopyStagingSrv_);
+            SafeRelease(poolCopyStagingTexture_);
+
+            D3D11_TEXTURE2D_DESC stagingDesc = {};
+            stagingDesc.Width = sourceDesc.Width;
+            stagingDesc.Height = sourceDesc.Height;
+            stagingDesc.MipLevels = 1;
+            stagingDesc.ArraySize = 1;
+            stagingDesc.Format = sourceDesc.Format;
+            stagingDesc.SampleDesc.Count = 1;
+            stagingDesc.Usage = D3D11_USAGE_DEFAULT;
+            stagingDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            hr = d3dDevice_->CreateTexture2D(&stagingDesc, nullptr, &poolCopyStagingTexture_);
+            if (FAILED(hr) || !poolCopyStagingTexture_) {
+                LogError("[WGC] Failed to create retained-copy source staging texture: 0x%08lX", (unsigned long)hr);
+                return false;
+            }
+
+            hr = d3dDevice_->CreateShaderResourceView(poolCopyStagingTexture_, &srvDesc, &poolCopyStagingSrv_);
+            if (FAILED(hr) || !poolCopyStagingSrv_) {
+                LogError("[WGC] Failed to create retained-copy source staging SRV: 0x%08lX", (unsigned long)hr);
+                SafeRelease(poolCopyStagingTexture_);
+                return false;
+            }
+
+            poolCopyStagingWidth_ = sourceDesc.Width;
+            poolCopyStagingHeight_ = sourceDesc.Height;
+            poolCopyStagingFormat_ = sourceDesc.Format;
+            LogInfo("[WGC] Retained-copy source staging created: %ux%u fmt=%s bytes=%lluMB", sourceDesc.Width,
+                    sourceDesc.Height, DxgiFormatName(sourceDesc.Format),
+                    static_cast<unsigned long long>(
+                        (ce::capture_policy::EstimateWgcSurfaceBytes(sourceDesc.Width, sourceDesc.Height,
+                                                                     BytesPerPixelForFormat(sourceDesc.Format)) +
+                         1024ull * 1024ull - 1ull) /
+                        (1024ull * 1024ull)));
+        }
+
+        d3dContext_->CopyResource(poolCopyStagingTexture_, sourceTexture);
+        poolCopyStagingSrv_->AddRef();
+        *outSrv = poolCopyStagingSrv_;
+        if (usedStaging) {
+            *usedStaging = true;
+        }
+        return true;
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+bool WGCCapture::Impl::RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture,  const D3D11_TEXTURE2D_DESC& sourceDesc, 
+                               ID3D11RenderTargetView* targetRtv,  bool linearToSrgb,  bool* usedStaging) {
+
+        if (!sourceTexture || !targetRtv || !d3dContext_ || !d3dDevice_) {
+            return false;
+        }
+        if (!EnsurePoolCopyShader()) {
+            return false;
+        }
+
+        const DXGI_FORMAT inputSrvFormat = ce::video_format::GetRgbShaderResourceViewFormat(sourceDesc.Format);
+        if (inputSrvFormat == DXGI_FORMAT_UNKNOWN) {
+            LogError("[WGC] Unsupported retained-copy source format for shader conversion: %s",
+                     DxgiFormatName(sourceDesc.Format));
+            return false;
+        }
+
+        ID3D11ShaderResourceView* sourceSrv = nullptr;
+        bool staging = false;
+        if (!CreatePoolCopySourceSrv(sourceTexture, sourceDesc, inputSrvFormat, &sourceSrv, &staging)) {
+            return false;
+        }
+        if (usedStaging) {
+            *usedStaging = staging;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        HRESULT hr = d3dContext_->Map(poolCopyCB_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr) || !mapped.pData) {
+            LogError("[WGC] Failed to map retained-copy constant buffer: 0x%08lX", (unsigned long)hr);
+            SafeRelease(sourceSrv);
+            return false;
+        }
+        uint32_t* cbData = static_cast<uint32_t*>(mapped.pData);
+        cbData[0] = linearToSrgb ? 1u : 0u;
+        cbData[1] = 0;
+        cbData[2] = 0;
+        cbData[3] = 0;
+        d3dContext_->Unmap(poolCopyCB_, 0);
+
+        D3D11ContextStateGuard stateGuard(d3dContext_);
+        D3D11_VIEWPORT viewport = {};
+        viewport.Width = static_cast<float>(sourceDesc.Width);
+        viewport.Height = static_cast<float>(sourceDesc.Height);
+        viewport.MaxDepth = 1.0f;
+        d3dContext_->RSSetViewports(1, &viewport);
+        d3dContext_->OMSetRenderTargets(1, &targetRtv, nullptr);
+        d3dContext_->VSSetShader(poolCopyVS_, nullptr, 0);
+        d3dContext_->PSSetShader(poolCopyPS_, nullptr, 0);
+        d3dContext_->PSSetShaderResources(0, 1, &sourceSrv);
+        d3dContext_->PSSetSamplers(0, 1, &poolCopySampler_);
+        d3dContext_->PSSetConstantBuffers(0, 1, &poolCopyCB_);
+        d3dContext_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        d3dContext_->IASetInputLayout(nullptr);
+        d3dContext_->Draw(3, 0);
+
+        ID3D11RenderTargetView* nullRtv = nullptr;
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        d3dContext_->OMSetRenderTargets(1, &nullRtv, nullptr);
+        d3dContext_->PSSetShaderResources(0, 1, &nullSrv);
+        SafeRelease(sourceSrv);
+        return true;
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
 bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI_FORMAT sourceFormat) {
 
 
@@ -182,6 +392,7 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
 
 #endif
 
+
 #if HAS_WGC
 
 bool WGCCapture::Impl::ShouldAdmitFrameToPool(int64_t sourceFrameQpc,  int64_t rawSourceFrameQpc,  uint32_t poolSize, 
@@ -299,6 +510,7 @@ bool WGCCapture::Impl::ShouldAdmitFrameToPool(int64_t sourceFrameQpc,  int64_t r
 }
 
 #endif
+
 
 #if HAS_WGC
 
@@ -511,210 +723,6 @@ bool WGCCapture::Impl::CopyFrameToPool(ID3D11Texture2D* sourceTexture,  const D3
                 poolSlotOverwritePreventedCount_.load(std::memory_order_relaxed), (long long)sourceFrameQpc);
         }
         return false;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-WGCCapture::Impl::SourceFramePreflight WGCCapture::Impl::PreflightSourceFrame(int64_t rawSourceFrameQpc) {
-
-
-        SourceFramePreflight pre;
-        pre.rawSourceFrameQpc = rawSourceFrameQpc;
-
-        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
-        RecordInputFrameEvent();
-
-        if (IsOutOfOrderRawSourceFrameQpc(rawSourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            return pre;
-        }
-
-        pre.sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &pre.duplicateSourceTimestamp);
-        const int64_t lastDeliveredRawSourceQpc = lastDeliveredRawSourceQpc_.load(std::memory_order_relaxed);
-        if (pre.duplicateSourceTimestamp ||
-            ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
-                pre.duplicateSourceTimestamp, rawSourceFrameQpc, lastDeliveredRawSourceQpc, targetIntervalQPC_ > 0)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            duplicateTimestampSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            static std::atomic<uint32_t> duplicateSkipLogCount{0};
-            if (duplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
-                LogInfo(
-                    "[WGC] Skipped duplicate/out-of-order source frame before copy: "
-                    "rawQpc=%lld dupTs=%d lastDeliveredRawQpc=%lld lastDeliveredNormQpc=%lld",
-                    static_cast<long long>(rawSourceFrameQpc), pre.duplicateSourceTimestamp ? 1 : 0,
-                    static_cast<long long>(lastDeliveredRawSourceQpc), static_cast<long long>(lastDeliveredSourceQpc));
-            }
-            return pre;
-        }
-        if (!pre.duplicateSourceTimestamp && targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && pre.sourceFrameQpc > 0 &&
-            pre.sourceFrameQpc < nextCaptureQPC_) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            return pre;
-        }
-
-        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            return pre;
-        }
-
-        if (!pre.duplicateSourceTimestamp && IsStaleSourceFrameQpc(pre.sourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
-            if (pre.sourceFrameQpc == lastDeliveredSourceQpc) {
-                staleDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            } else if (pre.sourceFrameQpc < lastDeliveredSourceQpc) {
-                staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            }
-            return pre;
-        }
-
-        pre.accepted = true;
-        return pre;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-bool WGCCapture::Impl::DeliverSourceTexture(ID3D11Texture2D* texture,  const D3D11_TEXTURE2D_DESC& desc, 
-                              const SourceFramePreflight& pre,  WGCCapturedFrame* outputFrame) {
-
-
-        // Snapshot identity before any GPU work. If the coordinator advances
-        // this already-warmed capture during an inject->WGC commit, an in-flight
-        // pre-commit frame must retain the retired epoch.
-        const uint64_t sourceEpoch = sourceEpoch_.load(std::memory_order_acquire);
-        if (frameWidth_ != 0 && frameHeight_ != 0 && (desc.Width != frameWidth_ || desc.Height != frameHeight_)) {
-            LogWarn("[WGC] Source size changed from %ux%u to %ux%u", frameWidth_, frameHeight_, desc.Width,
-                    desc.Height);
-            FlagResetNeeded("capture size changed");
-            return false;
-        }
-
-        if (!formatDetected_) {
-            formatDetected_ = true;
-            LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
-        }
-
-        ID3D11Texture2D* copiedTexture = nullptr;
-        int64_t copyCompleteQpc = 0;
-        WgcPoolSlotLease poolLease;
-        uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
-        uint64_t poolGeneration = 0;
-        if (!CopyFrameToPool(texture, desc, pre.sourceFrameQpc, pre.rawSourceFrameQpc, &copiedTexture, copyCompleteQpc,
-                             poolLease, poolSlot, poolGeneration)) {
-            return false;
-        }
-
-        const int64_t deliveredTimestamp = pre.sourceFrameQpc > 0 ? pre.sourceFrameQpc : copyCompleteQpc;
-        if (pre.sourceFrameQpc > 0) {
-            lastDeliveredSourceQpc_.store(pre.sourceFrameQpc, std::memory_order_relaxed);
-        }
-        if (pre.rawSourceFrameQpc > 0) {
-            lastDeliveredRawSourceQpc_.store(pre.rawSourceFrameQpc, std::memory_order_relaxed);
-        }
-        RecordDeliveredFrameEvent();
-        RequestHDRRecheckIfDue();
-
-        int32_t captureLeft = 0;
-        int32_t captureTop = 0;
-        GetCaptureOrigin(captureLeft, captureTop);
-        ce::cursor::SourcePointerObservation cursorObservation;
-        if (useDuplicationBackend_ && dupSource_) {
-            dupSource_->GetPointerState(&cursorObservation);
-        }
-        const bool cursorEmbedded = cursorObservation.valid && cursorObservation.embedded;
-
-        if (outputFrame) {
-            outputFrame->texture = copiedTexture;
-            outputFrame->width = desc.Width;
-            outputFrame->height = desc.Height;
-            outputFrame->timestamp = deliveredTimestamp;
-            outputFrame->rawTimestamp = pre.rawSourceFrameQpc;
-            outputFrame->isHDR = captureIsHDR_;
-            outputFrame->cursorEmbedded = cursorEmbedded;
-            outputFrame->cursorObservation = cursorObservation;
-            outputFrame->captureLeft = captureLeft;
-            outputFrame->captureTop = captureTop;
-            outputFrame->duplicateSourceTimestamp = pre.duplicateSourceTimestamp;
-            outputFrame->sourceEpoch = sourceEpoch;
-            outputFrame->poolSlot = poolSlot;
-            outputFrame->poolGeneration = poolGeneration;
-            outputFrame->poolLease = std::move(poolLease);
-        } else {
-            auto cb = frameCallback_.load(std::memory_order_acquire);
-            if (cb) {
-                cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, pre.rawSourceFrameQpc, captureIsHDR_,
-                   cursorEmbedded, pre.duplicateSourceTimestamp, cursorObservation, captureLeft, captureTop,
-                   sourceEpoch, std::move(poolLease));
-            } else {
-                SafeRelease(copiedTexture);
-            }
-        }
-
-        callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
-        return true;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-bool WGCCapture::Impl::ProcessCapturedFrame(const winrt::Direct3D11CaptureFrame& winrtFrame,  WGCCapturedFrame* outputFrame) {
-
-
-        if (!winrtFrame) {
-            return false;
-        }
-
-        if (targetWindow_) {
-            if (!IsWindow(targetWindow_)) {
-                FlagResetNeeded("target window became invalid");
-                winrtFrame.Close();
-                return false;
-            }
-            if (IsIconic(targetWindow_)) {
-                FlagResetNeeded("target window minimized");
-                winrtFrame.Close();
-                return false;
-            }
-        }
-
-        const SourceFramePreflight pre = PreflightSourceFrame(GetFrameSourceQpc(winrtFrame));
-        if (!pre.accepted) {
-            winrtFrame.Close();
-            return false;
-        }
-
-        bool success = false;
-        auto surface = winrtFrame.Surface();
-        IDirect3DDxgiInterfaceAccess* access = nullptr;
-
-        if (SUCCEEDED(surface.as<IUnknown>()->QueryInterface(IID_IDirect3DDxgiInterfaceAccess, (void**)&access)) &&
-            access) {
-            ID3D11Texture2D* texture = nullptr;
-            if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
-                D3D11_TEXTURE2D_DESC desc;
-                texture->GetDesc(&desc);
-                success = DeliverSourceTexture(texture, desc, pre, outputFrame);
-                texture->Release();
-            }
-            access->Release();
-        }
-
-        winrtFrame.Close();
-        return success;
 
 }
 

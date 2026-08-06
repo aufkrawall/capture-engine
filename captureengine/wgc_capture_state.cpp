@@ -3,6 +3,259 @@
 
 #if HAS_WGC
 
+void WGCCapture::Impl::FlagResetNeeded(const char* reason) {
+
+        resetNeeded_.store(true, std::memory_order_release);
+        if (reason && *reason) {
+            std::lock_guard<std::mutex> lock(resetReasonMutex_);
+            if (resetReason_.empty()) {
+                resetReason_ = reason;
+            }
+        }
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+bool WGCCapture::Impl::NeedsReset() const {
+
+        return resetNeeded_.load(std::memory_order_acquire);
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+std::string WGCCapture::Impl::ConsumeResetReason() {
+
+        resetNeeded_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(resetReasonMutex_);
+        std::string reason = resetReason_;
+        resetReason_.clear();
+        return reason;
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::PerformHDRRecheck() {
+
+        const ULONGLONG now = GetTickCount64();
+        lastHDRCheckTick_.store(now, std::memory_order_relaxed);
+
+        const HMONITOR monitor = ResolveTargetMonitor();
+        if (!monitor)
+            return;
+
+        DXGI_OUTPUT_DESC1 desc1 = {};
+        if (QueryOutputDesc1ForMonitor(monitor, desc1)) {
+            bool newHDR = ::IsHdrOutputColorSpace(desc1.ColorSpace);
+            if (newHDR != captureIsHDR_) {
+                // The WGC frame-pool pixel format is immutable. Merely changing
+                // the metadata flag would mislabel frames and apply the wrong
+                // color conversion; recreate the source/pool on the new mode.
+                LogInfo("[WGC] HDR state changed mid-capture: %s -> %s; requesting capture recreation",
+                        captureIsHDR_ ? "HDR" : "SDR", newHDR ? "HDR" : "SDR");
+                FlagResetNeeded("HDR output state changed");
+            }
+        }
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::RequestHDRRecheckIfDue() {
+
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
+        if (now - lastCheckTick < 2000) {
+            return;
+        }
+
+        hdrRecheckPending_.store(true, std::memory_order_relaxed);
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::MaybePerformDeferredHDRRecheck() {
+
+        if (!hdrRecheckPending_.exchange(false, std::memory_order_relaxed)) {
+            return;
+        }
+
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
+        if (now - lastCheckTick < 2000) {
+            return;
+        }
+
+        PerformHDRRecheck();
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::SetVideoMemoryReservationBytes(uint64_t requestedBytes,  const char* stage) {
+
+        if (!d3dDevice_)
+            return;
+        IDXGIDevice* dxgiDevice = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        IDXGIAdapter3* adapter3 = nullptr;
+        HRESULT hr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (SUCCEEDED(hr) && dxgiDevice)
+            hr = dxgiDevice->GetAdapter(&adapter);
+        if (SUCCEEDED(hr) && adapter)
+            hr = adapter->QueryInterface(IID_PPV_ARGS(&adapter3));
+        DXGI_QUERY_VIDEO_MEMORY_INFO before = {};
+        if (SUCCEEDED(hr) && adapter3)
+            hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &before);
+        uint64_t clampedBytes = requestedBytes;
+        if (SUCCEEDED(hr)) {
+            const uint64_t reservable = before.CurrentReservation + before.AvailableForReservation;
+            clampedBytes = std::min(requestedBytes, reservable);
+            hr = adapter3->SetVideoMemoryReservation(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, clampedBytes);
+        }
+        DXGI_QUERY_VIDEO_MEMORY_INFO after = {};
+        const HRESULT readbackHr =
+            SUCCEEDED(hr) ? adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &after) : hr;
+        if (SUCCEEDED(hr) && SUCCEEDED(readbackHr)) {
+            activeVideoMemoryReservationBytes_ = after.CurrentReservation;
+            LogInfo(
+                "[WGC] Video-memory reservation: stage=%s requested=%.1fMB clamped=%.1fMB actual=%.1fMB "
+                "available=%.1fMB verified=%d",
+                stage ? stage : "unknown", static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+                static_cast<double>(clampedBytes) / (1024.0 * 1024.0),
+                static_cast<double>(after.CurrentReservation) / (1024.0 * 1024.0),
+                static_cast<double>(after.AvailableForReservation) / (1024.0 * 1024.0),
+                after.CurrentReservation >= clampedBytes ? 1 : 0);
+        } else {
+            LogWarn(
+                "[WGC] Video-memory reservation failed: stage=%s requested=%.1fMB hr=0x%08lX "
+                "readbackHr=0x%08lX",
+                stage ? stage : "unknown", static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+                static_cast<unsigned long>(hr), static_cast<unsigned long>(readbackHr));
+        }
+        SafeRelease(adapter3);
+        SafeRelease(adapter);
+        SafeRelease(dxgiDevice);
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::ApplyConfiguredVideoMemoryReservation() {
+
+        if (videoMemoryReservationMode_ == VideoMemoryReservationMode::kOff)
+            return;
+        const uint32_t mandatorySlots =
+            std::max<uint32_t>(ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames,
+                               smoothnessSyncDelayFrames_ + smoothnessReservedFreeSlots_ + smoothnessSafetySlots_ + 1u);
+        const uint64_t mandatoryBytes = smoothnessSourceEstimatedVramBytes_ +
+                                        static_cast<uint64_t>(mandatorySlots) * smoothnessCopyBytesPerSurface_;
+        const uint64_t fullBytes = smoothnessSourceEstimatedVramBytes_ +
+                                   static_cast<uint64_t>(texturePool_.size()) * smoothnessCopyBytesPerSurface_;
+        const bool full = videoMemoryReservationMode_ == VideoMemoryReservationMode::kFull;
+        SetVideoMemoryReservationBytes(full ? fullBytes : mandatoryBytes, full ? "full" : "mandatory");
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::ResetVideoMemoryReservation() {
+
+        if (activeVideoMemoryReservationBytes_ != 0)
+            SetVideoMemoryReservationBytes(0, "teardown");
+        activeVideoMemoryReservationBytes_ = 0;
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::EnableMultithreadProtection(ID3D11Device* device,  const char* label) {
+
+        if (!device) {
+            return;
+        }
+
+        ID3D11Multithread* multithread = nullptr;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
+            multithread->SetMultithreadProtected(TRUE);
+            multithread->Release();
+            LogInfo("[WGC] D3D11 multithread protection enabled on %s device", label);
+        }
+
+}
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::ApplyConfiguredGpuPriority(const char* role) {
+
+        if (!d3dDevice_) {
+            return;
+        }
+        const int requested = std::clamp(desiredGpuPriority_.load(std::memory_order_relaxed), -7, 7);
+        IDXGIDevice* dxgiDevice = nullptr;
+        HRESULT setHr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (FAILED(setHr) || !dxgiDevice) {
+            LogWarn("[WGC] GPU priority query failed: role=%s requested=%d hr=0x%08lX", role, requested,
+                    static_cast<unsigned long>(setHr));
+            return;
+        }
+        setHr = dxgiDevice->SetGPUThreadPriority(requested);
+        INT actual = 0;
+        const HRESULT readbackHr = SUCCEEDED(setHr) ? dxgiDevice->GetGPUThreadPriority(&actual) : setHr;
+        if (SUCCEEDED(setHr) && SUCCEEDED(readbackHr) && actual == requested) {
+            LogInfo("[WGC] GPU thread priority applied: role=%s requested=%d actual=%d verified=1 dedicated=%d", role,
+                    requested, actual, usingDedicatedCaptureDevice_ ? 1 : 0);
+        } else {
+            LogWarn(
+                "[WGC] GPU thread priority apply/readback failed: role=%s requested=%d actual=%d setHr=0x%08lX "
+                "readbackHr=0x%08lX verified=0 dedicated=%d",
+                role, requested, actual, static_cast<unsigned long>(setHr), static_cast<unsigned long>(readbackHr),
+                usingDedicatedCaptureDevice_ ? 1 : 0);
+        }
+        dxgiDevice->Release();
+
+}
+
+#endif
+
+
+
+
+#if HAS_WGC
+
 bool WGCCapture::Impl::StartCapture(uint32_t& width,  uint32_t& height,  bool captureCursor) {
 
 
@@ -341,224 +594,3 @@ bool WGCCapture::Impl::StartCapture(uint32_t& width,  uint32_t& height,  bool ca
 
 #endif
 
-#if HAS_WGC
-
-void WGCCapture::Impl::StopCapture() {
-
-
-        // Stop the DXGI duplication source first when active: Stop() joins the
-        // duplication capture thread, so no sink callbacks can run past this
-        // point (the duplication analogue of the WinRT in-flight wait below).
-        if (dupSource_) {
-            dupSource_->Stop();
-            dupSource_.reset();
-        }
-
-        // Stop the producer before closing the callback epoch. Queued handlers
-        // still retain the shared gate, but once StopAndDrain invalidates this
-        // epoch they can no longer acquire Impl. No timeout/polling is needed:
-        // active callback leases notify the gate when they leave.
-        if (session_) {
-            try {
-                session_.Close();
-            } catch (const winrt::hresult_error& e) {
-                LogWarn("[WGC] Capture session close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
-            } catch (...) {
-                LogWarn("[WGC] Capture session close failed");
-            }
-            session_ = nullptr;
-        }
-
-        frameCallbackState_->StopAndDrain();
-
-        if (framePool_) {
-            try {
-                framePool_.FrameArrived(frameArrivedToken_);
-            } catch (const winrt::hresult_error& e) {
-                LogWarn("[WGC] FrameArrived unsubscribe failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
-            } catch (...) {
-                LogWarn("[WGC] FrameArrived unsubscribe failed");
-            }
-            try {
-                framePool_.Close();
-            } catch (const winrt::hresult_error& e) {
-                LogWarn("[WGC] Frame pool close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
-            } catch (...) {
-                LogWarn("[WGC] Frame pool close failed");
-            }
-            framePool_ = nullptr;
-        }
-
-        // Safe to clear callback now - no more concurrent readers
-        frameCallback_.store(nullptr, std::memory_order_release);
-        cursorCallback_.store(nullptr, std::memory_order_release);
-
-        // NOTE: Do NOT null item_ - it's the capture target (monitor) and doesn't
-        // change between recordings. StartCapture() needs item_ to exist.
-
-        std::lock_guard<std::mutex> lock(frameMutex_);
-        SafeRelease(latestFrame_);
-        ReleasePendingFramesLocked();
-        ResetVideoMemoryReservation();
-        ReleaseTexturePool();
-        borderlessCapture_ = false;
-        frameWidth_ = 0;
-        frameHeight_ = 0;
-
-        SafeRelease(cachedTexture_);
-        frameReady_ = false;
-
-        // Close the frame arrived event handle
-        if (frameArrivedEvent_) {
-            CloseHandle(frameArrivedEvent_);
-            frameArrivedEvent_ = NULL;
-        }
-
-        // Drop idle WGC device state between recordings so desktop capture
-        // releases its D3D/WinRT memory footprint instead of keeping standby
-        // resources resident until process shutdown.
-        winrtDevice_ = nullptr;
-        if (d3dContext_) {
-            d3dContext_->ClearState();
-            d3dContext_->Flush();
-        }
-        if (d3dDevice_) {
-            IDXGIDevice3* dxgiDevice3 = nullptr;
-            if (SUCCEEDED(d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
-                dxgiDevice3->Trim();
-                dxgiDevice3->Release();
-                LogInfo("[WGC] Trimmed capture-device residency");
-            }
-        }
-        ReleaseGpuTimingResources();
-        SafeRelease(d3dContext_);
-        if (usingDedicatedCaptureDevice_) {
-            SafeRelease(d3dDevice_);
-        } else {
-            d3dDevice_ = nullptr;
-        }
-
-}
-
-#endif
-
-#if HAS_WGC
-
-size_t WGCCapture::Impl::DrainPendingFrames(std::vector<WGCCapturedFrame>& frames,  size_t maxFrames) {
-
-
-        if (!framePool_ && !dupSource_) {
-            return 0;
-        }
-
-        MaybePerformDeferredHDRRecheck();
-        frames.clear();
-        std::lock_guard<std::mutex> lock(frameMutex_);
-        while (!pendingFrames_.empty()) {
-            frames.push_back(std::move(pendingFrames_.front()));
-            pendingFrames_.pop_front();
-            if (maxFrames > 0 && frames.size() > maxFrames) {
-                WGCCapturedFrame stale = std::move(frames.front());
-                frames.erase(frames.begin());
-                ReleaseCapturedFrame(stale);
-            }
-        }
-
-        return frames.size();
-
-}
-
-#endif
-
-#if HAS_WGC
-
-bool WGCCapture::Impl::GetNextFrame(WGCCapturedFrame& frame) {
-
-
-        std::vector<WGCCapturedFrame> frames;
-        frames.reserve(1);
-        if (DrainPendingFrames(frames, 1) == 0) {
-            return false;
-        }
-        frame = std::move(frames.back());
-        return frame.texture != nullptr;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::CreateWinRTDevice() {
-
-
-        return false;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::CreateForMonitor(void*) {
-
-
-        return false;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::CreateForWindow(void*) {
-
-
-        return false;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::StartCapture(uint32_t&,  uint32_t&,  bool) {
-
-
-        return false;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-void WGCCapture::Impl::StopCapture() {
-
-
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::GetNextFrame(WGCCapturedFrame&) {
-
-
-        return false;
-
-}
-
-#endif
-
-#if !HAS_WGC
-
-bool WGCCapture::Impl::GetCaptureOrigin(int32_t&,  int32_t&) const {
-
-
-        return false;
-
-}
-
-#endif
