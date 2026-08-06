@@ -7,7 +7,6 @@ void OpenGLCapture::CreateSharedResources(uint32_t w,  uint32_t h,  uint32_t fmt
         // Implemented in Init
 
 }
-
 bool OpenGLCapture::CreateD3D11Device() {
 
 
@@ -75,7 +74,6 @@ bool OpenGLCapture::CreateD3D11Device() {
         return true;
 
 }
-
 bool OpenGLCapture::InitNVInterop() {
 
 
@@ -149,7 +147,6 @@ bool OpenGLCapture::InitNVInterop() {
         return true;
 
 }
-
 bool OpenGLCapture::InitPBOFence() {
 
 
@@ -188,7 +185,6 @@ bool OpenGLCapture::InitPBOFence() {
         return true;
 
 }
-
 bool OpenGLCapture::InitPBOFallback() {
 
 
@@ -265,7 +261,6 @@ bool OpenGLCapture::InitPBOFallback() {
         return true;
 
 }
-
 void OpenGLCapture::Init(HDC hDC) {
 
 
