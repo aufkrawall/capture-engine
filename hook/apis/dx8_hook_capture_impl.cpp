@@ -340,30 +340,3 @@ bool DX8Capture::CopyFrontBufferToOverlayBackbuffer(IDirect3DDevice8* device) {
         return copied;
 
 }
-
-bool DX8Capture::PresentOverlay() {
-
-
-        if (!d3d9DeviceEx) {
-            return false;
-        }
-
-        HRESULT hr = E_FAIL;
-        {
-            DX9InternalBypassScope dx9Bypass;
-            hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, overlayHwnd, nullptr, 0);
-        }
-        static uint32_t overlayPresentCount = 0;
-        overlayPresentCount++;
-        if (overlayPresentCount <= 8) {
-            HookLogImportant("DX8: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
-                             overlayHwnd, width, height, overlayPresentCount);
-        }
-
-        if (FAILED(hr) && hr != D3DERR_WASSTILLDRAWING) {
-            HookLog("DX8: Overlay helper present failed (hr=0x%08x)", hr);
-        }
-
-        return SUCCEEDED(hr);
-
-}
