@@ -33,7 +33,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_capture_state.cpp"),
         os.path.join(layer_dir, "layer_capture_frame.cpp"),
         os.path.join(layer_dir, "layer_capture_capture.cpp"),
-        os.path.join(layer_dir, "layer_capture_impl.cpp"),
         os.path.join(layer_dir, "layer_capture_impl_2.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
