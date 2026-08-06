@@ -8,10 +8,10 @@ executed in this module's namespace so imports, CLI behavior, and the
 from pathlib import Path as _SourcePath
 
 _SOURCE_PARTS = (
-    'source_splitter_part_001.py',
-    'source_splitter_part_002.py',
-    'source_splitter_part_003.py',
-    'source_splitter_part_004.py',
+    'source_splitter_common.py',
+    'source_splitter_lexer.py',
+    'source_splitter_scanner.py',
+    'source_splitter_split.py',
 )
 _SOURCE_BODY_PARTS = ()
 _SOURCE_TEXT = ""

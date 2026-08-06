@@ -701,7 +701,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         project_root = Path(build.__file__).parent
         # The per-unit .cpp files replaced the interleaved .inl includes; the
         # dependency order is now the test app's source list in the build.
-        build_part = (project_root / "tools/build/build_part_011.py").read_text(encoding="utf-8")
+        build_part = (project_root / "tools/build/build_testapps.py").read_text(encoding="utf-8")
         wsi_index = build_part.index("vulkan_fg_switch_wsi.cpp")
         renderer_index = build_part.index("vulkan_fg_switch_renderer.cpp")
         self.assertLess(wsi_index, renderer_index)

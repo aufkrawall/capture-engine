@@ -1,3 +1,20 @@
+### 2026-08-06 - Python facade parts renamed to semantic unit names
+
+- tools/build/build_part_001..016.py -> semantic names (build_common, build_bootstrap,
+  build_io, build_fg_sdk, build_linux_msys2, build_ffmpeg, build_toolchain,
+  build_compile_db, build_tests, build_preflight, build_testapps, build_vulkan_layer,
+  build_project, build_project_finalize, build_packaging, build_cli).
+- compile_project (was split mid-function across build_part_013/014 with an
+  `if False:` sentinel) is now one unit: build_project.py (658L) + the extracted
+  finalize phase in build_project_finalize.py (144L, _finalize_project_build).
+- source_splitter parts renamed to source_splitter_common/lexer/scanner/split.py.
+- build.py facade _SOURCE_PARTS/_SOURCE_BODY_PARTS updated (no body parts left);
+  flake8 extend-exclude now uses build_*.py / source_splitter_*.py basename globs
+  (config-relative matching makes directory patterns unreliable); pyright excludes
+  tools/build and the splitter parts. Facades stay linted.
+- Verified: incremental build (exercises compile_project), unit tests, python tool
+  self-tests, flake8/pyright/clang-tidy all green.
+
 ### 2026-08-06 - clang-tidy at 0 and Python semantic units <= 800 lines (ALL code)
 
 - Resolved all 16 clang-tidy warnings: fg_session_state_internal.h forward
@@ -6,7 +23,7 @@
   STL recursive_mutex globals keep the repo's NOLINT noexcept-toolchain
   justification (x6). Ratchet: 0 warnings, baseline checks {}.
 - split source_splitter.py (1219) into a semantic-unit facade + four parts
-  (source_splitter_part_001..004.py) executed in the facade namespace; parts
+  (source_splitter_common/lexer/scanner/split.py) executed in the facade namespace; parts
   reconstruct the original byte-for-byte; reapply.py / test_source_splitter
   surface unchanged.
 - Fixed last Python lint findings in gen_deinline.py: extract_top_level return

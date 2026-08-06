@@ -9,7 +9,7 @@ self-tests, lint, ASan/UBSan regression).
 Every first-party C++ file (`.cpp/.h/.hpp`) AND Python file is now a proper
 semantic unit of at most 800 lines; `tools/file_size_baseline.json` is empty
 (`files: {}`, count 0). `source_splitter.py` (1219) was split into a semantic-unit
-facade plus four parts (`source_splitter_part_001..004.py`). No `.inl` fragments
+facade plus four semantic parts (`source_splitter_common/lexer/scanner/split.py`). No `.inl` fragments
 exist in the tree. The clang-tidy ratchet is at 0 warnings (`checks: {}`); flake8
 and pyright are clean (the last gen_deinline.py findings were fixed).
 
@@ -27,8 +27,8 @@ The conversion covered, among others:
   detour units with an internal header, `custom_overlay_dx12` -> buffers unit...).
 - Test apps re-partitioned into per-area units (vulkan fg switch, dx12 fg switch,
   dx12_av_sync_test, dx12_fsr_fg_test) with explicit registrations in
-  `tools/build/build_part_011.py` (multi-source `make_cmd` lists) and the vulkan
-  layer's explicit list in `build_part_012.py`.
+  `tools/build/build_testapps.py` (multi-source `make_cmd` lists) and the vulkan
+  layer's explicit list in `build_vulkan_layer.py`.
 - Source-policy tests updated to read the new sibling units (logical source for
   a stem now = stem + `<stem>_internal.h` + sorted `<stem>_*.cpp` siblings; tests
   that assert cross-unit ordering concatenate units in source order).

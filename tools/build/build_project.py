@@ -1,3 +1,6 @@
+# compile_project: the full product build pipeline (common, hook DLL, mediaengine,
+# captureengine) followed by the finalize phase (FG SDK, test apps, vulkan layer,
+# licenses, PE hardening, packaging). See build_project_finalize.py for the tail.
 
 
 def compile_project(
@@ -510,3 +513,145 @@ def compile_project(
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")
     ce_src = glob.glob(os.path.join(PROJECT_ROOT, "captureengine", "*.cpp"))
+    if ce_src:
+        ce_exe = os.path.join(BIN_DIR, "captureengine.exe")
+        me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
+        ce_obj_dir = os.path.join(OBJ_DIR, "x64")
+        if IS_LINUX:
+            ce_ffmpeg_cflags, _ = get_linux_ffmpeg_build_flags(env, pkg_config)
+        else:
+            env_ffmpeg = env.copy()
+            env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(env_ffmpeg.get("PKG_CONFIG_PATH", ""))
+            pkgs = [
+                "libavcodec",
+                "libavformat",
+                "libavutil",
+                "libswresample",
+                "libswscale",
+            ]
+            ce_ffmpeg_cflags: List[str] = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
+
+        ce_objs: List[str] = []
+        src_obj_pairs: List[tuple[str, str]] = []
+        strict_fp_src_obj_pairs: List[tuple[str, str]] = []
+        for src in ce_src:
+            if "screen_capture.cpp" in src:
+                continue
+            rel_path = os.path.relpath(src, PROJECT_ROOT)
+            obj = os.path.join(ce_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
+            if os.path.basename(src) in STRICT_FP_SCREENSHOT_SOURCES:
+                strict_fp_src_obj_pairs.append((src, obj))
+            else:
+                src_obj_pairs.append((src, obj))
+            ce_objs.append(obj)
+        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
+        parallel_compile(
+            env,
+            clang_exe,
+            cflags + ce_ffmpeg_cflags + get_strict_fp_flags(clang_exe),
+            strict_fp_src_obj_pairs,
+        )
+
+        # Resource file
+        rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
+        rc_obj = os.path.join(ce_obj_dir, "captureengine", "captureengine.res.o").replace("\\", "/")
+        if os.path.exists(rc_file):
+            windres = get_windres_exe("x64")
+            log("Compiling resource file (manifest)...")
+            cmd = [windres, rc_file, "-o", rc_obj]
+            run_command(cmd, env=env, cwd=os.path.join(PROJECT_ROOT, "captureengine"))
+            ce_objs.append(rc_obj)
+
+        log("Linking CaptureEngine x64...")
+        ffmpeg_lib_dir = os.path.join(get_linux_ffmpeg_root(), "lib") if IS_LINUX else os.path.join(FFMPEG_DIR, "lib")
+        ce_ldflags: List[str] = [
+            "-mwindows",
+            "-static",
+            "-static-libgcc",
+            "-static-libstdc++",
+        ]
+        ce_ldflags.extend(LD_OPT_FLAGS)
+        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
+        ce_ldflags.extend(
+            [
+                "-ld3d11",
+                "-ldxgi",
+                "-luser32",
+                "-lshell32",
+                "-lshlwapi",
+                "-lpsapi",
+                "-lwinmm",
+                "-lavrt",
+                "-lruntimeobject",
+                "-lole32",
+                "-loleaut32",
+                "-lwindowscodecs",
+                "-ldbghelp",
+                "-lwbemuuid",
+                "-lbcrypt",
+                "-lwintrust",
+                "-lpdh",
+                "-lversion",
+                "-lntdll",
+                "-ladvapi32",
+                # FFmpeg for HDR screenshot encoding (AVIF via libaom) — delay-loaded so SetDllDirectory works
+                os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
+                os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
+                os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+            ]
+        )
+        if not IS_LINUX:
+            ffmpeg_runtime_names = resolve_ffmpeg_runtime_dll_names(os.path.join(FFMPEG_DIR, "bin"))
+            ce_ldflags.extend(
+                f"-Wl,--delayload={ffmpeg_runtime_names[prefix]}" for prefix in ("avformat", "avcodec", "avutil")
+            )
+        if env.get("CE_DISABLE_LTO") != "1":
+            ce_ldflags.append("-flto")
+        if any(flag.startswith("-fsanitize=") for flag in cflags):
+            ce_ldflags.append("-fsanitize=address,undefined")
+        # Don't link mediaengine.dll on Linux - load dynamically instead
+        if not IS_LINUX:
+            ce_ldflags.append(me_lib)
+        # Delay-load only works with MSYS2's lld on Windows
+        # On Linux, we need to copy FFmpeg DLLs to main folder or use LoadLibrary
+        if not IS_LINUX:
+            ce_ldflags.append("-Wl,--delayload,mediaengine.dll")
+            ce_ldflags.append("-ldelayimp")
+        append_windows_pdb_linker_flag(ce_ldflags, ce_exe)
+        # x64 common objects
+        x64_common_objs = [
+            os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
+            for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+        ]
+        temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
+        safe_delete_file(temp_ce_exe)
+        cmd: List[str] = [clang_exe] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
+        run_command(cmd, env=env)
+        if not safe_copy_file(temp_ce_exe, ce_exe):
+            log("ERROR: Failed to place captureengine.exe (destination may be locked)")
+            sys.exit(1)
+        safe_delete_file(temp_ce_exe)
+        record_verification_artifact("captureengine_exe", ce_exe)
+
+        stale_layer_register_exe = os.path.join(BIN_DIR, "vulkan_layer_register.exe")
+        if os.path.exists(stale_layer_register_exe):
+            if safe_delete_file(stale_layer_register_exe):
+                log("Removed stale vulkan_layer_register.exe")
+
+    # compile_custom_ffmpeg() already synchronized the complete runtime closure
+    # before compilation. Re-verify that final bundle here without deleting and
+    # recopying the same DLLs a second time.
+    if not IS_LINUX:
+        ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
+        objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
+        verify_pe_import_closure(ffmpeg_bin_dst, objdump_exe, logger=log)
+        remove_redundant_root_runtime_dlls(
+            BIN_DIR,
+            WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS,
+        )
+        if env.get("CE_SANITIZE") == "1":
+            sync_windows_sanitizer_runtime_dlls(BIN_DIR)
+        else:
+            remove_stale_windows_sanitizer_runtime_dlls(BIN_DIR)
+
+    _finalize_project_build(env, clang_exe, cflags, skip_updates)

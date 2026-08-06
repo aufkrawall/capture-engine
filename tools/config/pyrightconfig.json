@@ -10,7 +10,12 @@
     "../../.venv",
     "../../build",
     "../../installed",
-    "../../**/*_part_*.py"
+    "../../**/*_part_*.py",
+    "../../tools/build",
+    "../../tools/refactor/source_splitter_common.py",
+    "../../tools/refactor/source_splitter_lexer.py",
+    "../../tools/refactor/source_splitter_scanner.py",
+    "../../tools/refactor/source_splitter_split.py"
   ],
   "ignore": [],
   "strict": [],

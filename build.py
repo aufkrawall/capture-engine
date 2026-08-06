@@ -3,26 +3,24 @@
 from pathlib import Path as _SourcePath
 
 _SOURCE_PARTS = (
-    'tools/build/build_part_001.py',
-    'tools/build/build_part_002.py',
-    'tools/build/build_part_003.py',
-    'tools/build/build_part_004.py',
-    'tools/build/build_part_005.py',
-    'tools/build/build_part_006.py',
-    'tools/build/build_part_007.py',
-    'tools/build/build_part_008.py',
-    'tools/build/build_part_009.py',
-    'tools/build/build_part_010.py',
-    'tools/build/build_part_011.py',
-    'tools/build/build_part_012.py',
-    'tools/build/build_part_013.py',
-    'tools/build/build_part_014.py',
-    'tools/build/build_part_015.py',
-    'tools/build/build_part_016.py',
+    'tools/build/build_common.py',
+    'tools/build/build_bootstrap.py',
+    'tools/build/build_io.py',
+    'tools/build/build_fg_sdk.py',
+    'tools/build/build_linux_msys2.py',
+    'tools/build/build_ffmpeg.py',
+    'tools/build/build_toolchain.py',
+    'tools/build/build_compile_db.py',
+    'tools/build/build_tests.py',
+    'tools/build/build_preflight.py',
+    'tools/build/build_testapps.py',
+    'tools/build/build_vulkan_layer.py',
+    'tools/build/build_project.py',
+    'tools/build/build_project_finalize.py',
+    'tools/build/build_packaging.py',
+    'tools/build/build_cli.py',
 )
-_SOURCE_BODY_PARTS = (
-    'tools/build/build_part_014.py',
-)
+_SOURCE_BODY_PARTS = ()
 _SOURCE_TEXT = ""
 for _source_name in _SOURCE_PARTS:
     _source_part = (_SourcePath(__file__).parent / _source_name).read_text(encoding="utf-8")
