@@ -417,6 +417,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
 
 }
 
+
 void DX9Capture::CompletePendingZeroCopy() {
 
 
@@ -483,6 +484,7 @@ void DX9Capture::CompletePendingZeroCopy() {
 
 }
 
+
 void DX9Capture::PostPresentReadback(IDirect3DDevice9* device) {
 
 
@@ -538,6 +540,7 @@ void DX9Capture::PostPresentReadback(IDirect3DDevice9* device) {
         }
 
 }
+
 
 void DX9Capture::WaitPrerender(IDirect3DDevice9* device,  float limit) {
 
@@ -630,3 +633,4 @@ void DX9Capture::WaitPrerender(IDirect3DDevice9* device,  float limit) {
         }
 
 }
+
