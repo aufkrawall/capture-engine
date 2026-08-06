@@ -592,7 +592,21 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     required_outputs = [test_exe]
     if IS_WINDOWS:
         required_outputs.append(pdb_path_for_binary(test_exe))
-    linked = run_cached_link(cmd, env, test_exe, required_outputs=required_outputs)
+    execute_cmd = cmd
+    if len(" ".join(cmd)) > 30000:
+        # The unit-test link now spans many translation units; keep the cache
+        # key on the full command but invoke through a response file so the
+        # Windows command line stays under the length limit.
+        rsp = os.path.join(obj_dir, "unit_tests_link.rsp")
+        with open(rsp, "w", encoding="utf-8") as rsp_file:
+            for argument in cmd[1:]:
+                # clang's response-file parser treats '\' as an escape; forward
+                # slashes are accepted by the Windows toolchain.
+                rsp_file.write('"' + argument.replace("\\", "/") + '"\n')
+        execute_cmd = [cmd[0], "@" + rsp]
+    linked = run_cached_link(
+        cmd, env, test_exe, required_outputs=required_outputs, execute_command=execute_cmd
+    )
     if not linked:
         log("Unit test link cache hit")
     copy_test_runtime_dlls(tests_dir)

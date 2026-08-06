@@ -580,6 +580,7 @@ def run_cached_link(
     *,
     required_outputs: Optional[List[str]] = None,
     cwd: Optional[str] = None,
+    execute_command: Optional[List[str]] = None,
 ) -> bool:
     required = [os.path.abspath(path) for path in (required_outputs or [output_path])]
     output_path = os.path.abspath(output_path)
@@ -595,7 +596,10 @@ def run_cached_link(
         os.remove(manifest_path)
     except FileNotFoundError:
         pass
-    run_command(command, env=env, cwd=cwd)
+    # Long link lines can exceed the Windows command-line limit; callers may
+    # supply a response-file equivalent. The cache signature stays keyed on the
+    # full `command` so a shortened invocation cannot mask stale inputs.
+    run_command(execute_command if execute_command is not None else command, env=env, cwd=cwd)
     missing_outputs = [path for path in required if not os.path.isfile(path)]
     if missing_outputs:
         raise RuntimeError("Link did not produce required output(s): " + ", ".join(missing_outputs))
