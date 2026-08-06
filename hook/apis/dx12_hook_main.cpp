@@ -53,19 +53,6 @@ static DX12Context GetDX12Context() {
     return DX12Context(g_Device.load(), g_CommandQueue.load());
 }
 
-extern "C" __declspec(dllexport) void DX12_SetWrappedPresentFocusLossContext(const char* presentName, int callCount,
-                                                                             UINT syncInterval, UINT presentFlags) {
-    dx12_hook_s_WrappedPresentFocusLossContext.valid = true;
-    dx12_hook_s_WrappedPresentFocusLossContext.presentName = presentName;
-    dx12_hook_s_WrappedPresentFocusLossContext.callCount = callCount;
-    dx12_hook_s_WrappedPresentFocusLossContext.syncInterval = syncInterval;
-    dx12_hook_s_WrappedPresentFocusLossContext.presentFlags = presentFlags;
-}
-
-extern "C" __declspec(dllexport) void DX12_ClearWrappedPresentFocusLossContext() {
-    dx12_hook_s_WrappedPresentFocusLossContext = {};
-}
-
 void EnsureDX12Hook() {
     if (!g_dx12HookInstance) {
         g_dx12HookInstance = new DX12Hook();
@@ -253,4 +240,3 @@ static void FindAndWrapPreExistingSwapchains() {
             "call is intercepted");
     }
 }
-
