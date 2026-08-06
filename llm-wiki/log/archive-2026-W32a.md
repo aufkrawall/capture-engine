@@ -2,7 +2,7 @@
 
 Rotated from `recent.md` on 2026-08-06 (newest-first).
 
-### 2026-08-05 - 800-line semantic-unit conversion (IN PROGRESS; hand-off in HANDOFF.md)
+### 2026-08-05 - 800-line semantic-unit conversion (IN PROGRESS; hand-off in HANDOFF.md, removed 2026-08-06)
 
 The remaining goal is every first-party C++ file <= 800 lines as a proper semantic unit.
 Committed this effort: `af42d025` (system_metrics, custom_overlay_gl), `76ec7086` (hook/main),
@@ -12,8 +12,9 @@ Committed this effort: `af42d025` (system_metrics, custom_overlay_gl), `76ec7086
 `unstatic` / `keep_static` (definitions stay in units, headers keep prototypes/externs).
 Remaining: `EncoderThreadFunc` (media_main_threads.cpp, 8571 lines), `ProcessFrame`
 (dx12_hook_process.cpp, 5414), the dx12_hook/video_encoder modules, class-heavy internal
-headers, and several smaller units/testapps. Full recipe + per-file plan: **`HANDOFF.md`**
-at the repo root.
+headers, and several smaller units/testapps. Full recipe + per-file plan lived in
+**`HANDOFF.md`** at the repo root (the conversion is complete and the file was
+removed on 2026-08-06; see `repo-map.md` for the current code map).
 
 ### 2026-08-05 - Source-fragment (.inl) conversion to semantic .cpp units (COMPLETE)
 
