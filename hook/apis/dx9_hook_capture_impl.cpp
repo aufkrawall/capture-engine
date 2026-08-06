@@ -58,60 +58,6 @@ void DX9Capture::StagingCaptureThreadProc() {
 
 }
 
-void DX9Capture::GDICaptureThreadProc() {
-
-
-        captureThreadRunning = true;
-        EarlyLog("DX9: GDI capture thread started");
-
-        int64_t qpcFreq = 0;
-        {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            qpcFreq = f.QuadPart;
-        }
-
-        while (!captureThreadShutdown.load(std::memory_order_acquire)) {
-            uint32_t rIdx = pendingReadIdx.load(std::memory_order_acquire);
-            uint32_t wIdx = pendingWriteIdx.load(std::memory_order_acquire);
-
-            if (rIdx == wIdx) {
-                WaitForSingleObject(captureEvent, 50);
-                continue;
-            }
-
-            PendingCaptureFrame& frame = pendingRing[rIdx % CAPTURE_RING_SIZE];
-            const int surfIdx = static_cast<int>(frame.backBufferIndex);
-
-            // Mark buffer busy so render thread won't StretchRect to it
-            gdiBufferBusy[surfIdx].store(true, std::memory_order_release);
-
-            LARGE_INTEGER captureStart;
-            QueryPerformanceCounter(&captureStart);
-
-            CompleteGDIInteropCapture(gdiCopySurfaces[surfIdx], frame.timestampQPC);
-
-            LARGE_INTEGER captureEnd;
-            QueryPerformanceCounter(&captureEnd);
-            int32_t captureUs =
-                static_cast<int32_t>(((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / qpcFreq);
-
-            // Mark buffer available again
-            gdiBufferBusy[surfIdx].store(false, std::memory_order_release);
-
-            static int gdiThreadLogCount = 0;
-            ++gdiThreadLogCount;
-            if (gdiThreadLogCount <= 5 || gdiThreadLogCount % 200 == 0)
-                HookLog("DX9: GDI thread: frame #%d surf[%d] %dus", gdiThreadLogCount, surfIdx, captureUs);
-
-            pendingReadIdx.store(rIdx + 1, std::memory_order_release);
-        }
-
-        captureThreadRunning = false;
-        EarlyLog("DX9: GDI capture thread stopped");
-
-}
-
 void DX9Capture::Cleanup() {
 
 
