@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-08-06 - Fixed: WGC/DXGI transactional start-contract flow was dead since the MediaEncoderSession refactor; audit hardening batch
+
+- Root cause: the 2026-08-05 `EncoderThreadFunc` refactor (1cce877b) converted
+  the monolithic loop's `continue`/`break` states into
+  `continueMainLoop`/`breakMainLoop` early returns, but `LoopStartup` still
+  called `CommitWarmupReset()` unconditionally after `CommitWarmupSync()`. The
+  go-live reset therefore ran on the SAME iteration that completed the pre-live
+  delay, before the barrier/prewarm/reserve/contract tail ever executed. Every
+  WGC/DXGI session logged `wgc_start_contract_error` ("first frame encoded
+  without a valid transactional start contract") and anchored the CFR grid at
+  encode completion instead of the post-prewarm wall-anchored contract;
+  "WGC CFR start contract selected" had never appeared in any session log.
+  Fix: gate the reset with `if (!continueMainLoop && !breakMainLoop)` — the
+  exact original `continue`/`break` semantics.
+- Live-validated twice (sessions `20260806_231530`, `20260806_231751`):
+  `WGC CFR start contract selected` -> `post-delay barrier satisfied` ->
+  `Preserved transactional ... contractValid=1` -> `committed after first
+  successful encode`, zero `wgc_start_contract_error`, manifests healthy.
+  Regression test: `WarmupResetIsGatedOnStartupSyncCompletion` (source-policy).
+- Hardening batch (audit-driven, all gated): config hot-reload now reloads on
+  any (mtime, size) identity change while keeping first-check baseline
+  semantics (an older-mtime replacement was previously missed); configured
+  output-directory failures log a rate-limited fallback warning instead of
+  silently relocating recordings; controller no longer calls
+  `SetProcessWorkingSetSize(-1,-1)`; hook command-line logging under
+  `forceRayReconstruction` logs a bounded masked excerpt instead of the raw
+  line; DLL writability check now covers Authenticated Users and
+  BUILTIN\Users (was Everyone-only); production signature verification adds a
+  revocation-confirmation pass (confirmed revocation is fatal, offline
+  revocation is tolerated and logged); SPSC ring buffers fail closed for
+  `DropOld`/`Overwrite` (torn-slot race) with updated tests plus a concurrent
+  torn-read stress test.
+- CET enforcement deferral recorded: Windows reads CET compatibility from the
+  `IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS` (type 0x14) debug entry
+  (`EX_CET_COMPAT`), not from `DllCharacteristics` (a 16-bit field); lld has no
+  `/cetcompat`, so first-party x64 binaries keep `-fcf-protection=full` codegen
+  without the enforcement bit until lld supports it. Verified against
+  `C:\Windows\System32\kernel32.dll`, which carries the type-0x14 entry with
+  `EX_CET_COMPAT (0x1)`.
+
 ### 2026-08-06 - Python facade fragments renamed to semantic units (conversion complete)
 
 - The remaining ordered `_part_*.py` fragments (analyze_capture_av ×18,

@@ -1,7 +1,9 @@
 #include "reserved_capture_output.h"
 
+#include "logging.h"
 #include "path_utils.h"
 
+#include <atomic>
 #include <array>
 #include <cwchar>
 #include <limits>
@@ -97,6 +99,20 @@ std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirec
         return directory;
     }
 
+    // A user with an invalid/unwritable [Output] directory must never get
+    // recordings in an unexpected location without a diagnostic. Rate-limit
+    // the warning so a persistently failing mapped drive cannot spam the log.
+    static std::atomic<uint32_t> s_fallbackLogCount{0};
+    const uint32_t fallbackIndex = s_fallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (fallbackIndex < 4) {
+        LogWarn(
+            "[Output] Configured capture directory could not be created; using fallback '%ls' "
+            "(configured='%s' error=%u). Recordings will be written below the fallback path.",
+            (executableDirectory / L"captures").wstring().c_str(), configuredDirectory.c_str(),
+            static_cast<unsigned>(error.value()));
+    } else if (fallbackIndex == 4) {
+        LogWarn("[Output] Further capture-directory fallback diagnostics are suppressed for this process");
+    }
     const std::filesystem::path fallback = executableDirectory / L"captures";
     error.clear();
     std::filesystem::create_directories(fallback, error);

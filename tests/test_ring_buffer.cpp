@@ -68,18 +68,21 @@ TEST_F(LockFreeRingBufferTest, DropNewWhenFull) {
     EXPECT_EQ(val, 0);
 }
 
-TEST_F(LockFreeRingBufferTest, DropOldWhenFull) {
+TEST_F(LockFreeRingBufferTest, DropOldFailsClosedWhenFull) {
+    // DropOld/Overwrite would race a concurrent consumer (torn slot read), so
+    // the lock-free SPSC variant fails closed by dropping the new element.
     LockFreeRingBuffer<int, 4> dropOld(RingBufferPolicy::DropOld);
     for (int i = 0; i < 4; i++) {
         dropOld.Push(i);
     }
     // Buffer full: 0,1,2,3
-    dropOld.Push(10);  // Should drop oldest (0), droppedCount++
+    EXPECT_FALSE(dropOld.Push(10));  // Fail closed: new element dropped
     EXPECT_EQ(dropOld.DroppedCount(), 1u);
+    EXPECT_EQ(dropOld.Size(), 4u);   // Oldest element is retained
 
     int val = 0;
     EXPECT_TRUE(dropOld.Pop(val));
-    EXPECT_EQ(val, 1);  // 0 was dropped
+    EXPECT_EQ(val, 0);
 }
 
 TEST_F(LockFreeRingBufferTest, Peek) {
@@ -154,18 +157,18 @@ TEST_F(LockFreeRingBufferTest, DroppedCountReset) {
     EXPECT_EQ(small.DroppedCount(), 0u);
 }
 
-TEST_F(LockFreeRingBufferTest, OverwritePolicy) {
+TEST_F(LockFreeRingBufferTest, OverwritePolicyFailsClosedWhenFull) {
     LockFreeRingBuffer<int, 4> overwrite(RingBufferPolicy::Overwrite);
     for (int i = 0; i < 4; i++) {
         overwrite.Push(i);  // 0,1,2,3
     }
-    overwrite.Push(99);  // overwrite oldest slot
+    EXPECT_FALSE(overwrite.Push(99));  // Fail closed: new element dropped
     EXPECT_EQ(overwrite.DroppedCount(), 1u);
     EXPECT_EQ(overwrite.Size(), 4u);
     EXPECT_EQ(overwrite.Available(), 0u);
 
     int value = 0;
-    for (int expected : {1, 2, 3, 99}) {
+    for (int expected : {0, 1, 2, 3}) {
         ASSERT_TRUE(overwrite.Pop(value));
         EXPECT_EQ(value, expected);
     }
@@ -260,31 +263,32 @@ TEST_F(DynamicRingBufferTest, MultipleValues) {
     EXPECT_TRUE(buf.Empty());
 }
 
-TEST_F(DynamicRingBufferTest, DropOldPolicy) {
+TEST_F(DynamicRingBufferTest, DropOldPolicyFailsClosedWhenFull) {
     DynamicRingBuffer<int> dropOld(4, RingBufferPolicy::DropOld);
     for (int i = 0; i < 4; i++) {
         dropOld.Push(i);
     }
-    dropOld.Push(10);  // Drops oldest
+    EXPECT_FALSE(dropOld.Push(10));  // Fail closed: new element dropped
     EXPECT_EQ(dropOld.DroppedCount(), 1u);
+    EXPECT_EQ(dropOld.Size(), 4u);
     int val = 0;
     dropOld.Pop(val);
-    EXPECT_EQ(val, 1);  // 0 was dropped
+    EXPECT_EQ(val, 0);
 }
 
-TEST_F(DynamicRingBufferTest, OverwritePolicyKeepsSizeBounded) {
+TEST_F(DynamicRingBufferTest, OverwritePolicyFailsClosedWhenFull) {
     DynamicRingBuffer<int> overwrite(4, RingBufferPolicy::Overwrite);
     for (int i = 0; i < 4; i++) {
         overwrite.Push(i);
     }
-    overwrite.Push(10);
+    EXPECT_FALSE(overwrite.Push(10));  // Fail closed: new element dropped
 
     EXPECT_EQ(overwrite.DroppedCount(), 1u);
     EXPECT_EQ(overwrite.Size(), 4u);
     EXPECT_EQ(overwrite.Available(), 0u);
 
     int value = 0;
-    for (int expected : {1, 2, 3, 10}) {
+    for (int expected : {0, 1, 2, 3}) {
         ASSERT_TRUE(overwrite.Pop(value));
         EXPECT_EQ(value, expected);
     }
@@ -374,4 +378,50 @@ TEST(RingBufferConcurrentTest, SPSCCorrectness) {
     for (int i = 0; i < kItems; i++) {
         EXPECT_EQ(received[i], i);
     }
+}
+
+TEST(RingBufferConcurrentTest, DropOldPolicyNeverPublishesTornElements) {
+    struct TaggedValue {
+        uint32_t sequence = 0;
+        uint32_t checksum = 0;
+    };
+    LockFreeRingBuffer<TaggedValue, 4> buffer(RingBufferPolicy::DropOld);
+    constexpr uint32_t kItems = 20000;
+    std::atomic<bool> done{false};
+    std::atomic<uint32_t> invalidReads{0};
+    std::atomic<uint32_t> received{0};
+
+    std::thread producer([&]() {
+        for (uint32_t i = 1; i <= kItems; ++i) {
+            // Pushes while full are dropped (fail-closed contract); that is
+            // fine for this test, which verifies every *published* element is
+            // fully written (no torn reads under a concurrent consumer).
+            buffer.Push(TaggedValue{i, i * 2u + 1u});
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    std::thread consumer([&]() {
+        TaggedValue value{};
+        uint32_t last = 0;
+        while (!done.load(std::memory_order_acquire) || !buffer.Empty()) {
+            if (buffer.Pop(value)) {
+                if (value.checksum != value.sequence * 2u + 1u ||
+                    value.sequence <= last) {
+                    invalidReads.fetch_add(1, std::memory_order_relaxed);
+                }
+                last = value.sequence;
+                received.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_EQ(invalidReads.load(), 0u);
+    EXPECT_GT(received.load(), 0u);
+    EXPECT_LE(received.load(), kItems);
 }

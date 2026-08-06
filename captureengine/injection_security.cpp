@@ -59,33 +59,58 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
         return false;
     }
 
-    // 2. ACL Check (Check if World/Everyone has Write Access)
+    // 2. ACL Check (Check that no broad identity has Write Access). The hook
+    // DLL is injected into third-party processes, so a writable install is a
+    // code-execution vector for anyone who can drop a file next to it. World,
+    // Authenticated Users, and BUILTIN\Users are all checked; checking only
+    // "Everyone" missed default-inherited ACEs that grant write to the
+    // authenticated-user group (e.g. user-writable install directories).
     PACL pDacl = NULL;
     PSECURITY_DESCRIPTOR pSD = NULL;
     if (GetNamedSecurityInfoA(dllPath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDacl, NULL,
                               &pSD) == ERROR_SUCCESS) {
-        TRUSTEE_A trustee = {};
-        trustee.TrusteeForm = TRUSTEE_IS_SID;
-        trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        struct SidDefinition {
+            SID_IDENTIFIER_AUTHORITY authority;
+            BYTE subAuthorityCount;
+            DWORD subAuthorities[2];
+            const char* displayName;
+        };
+        static const SidDefinition kWriteProtectionSids[] = {
+            {SECURITY_WORLD_SID_AUTHORITY, 1, {SECURITY_WORLD_RID, 0}, "Everyone"},
+            {SECURITY_NT_AUTHORITY, 1, {SECURITY_AUTHENTICATED_USER_RID, 0}, "Authenticated Users"},
+            {SECURITY_NT_AUTHORITY, 2, {SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_USERS}, "BUILTIN\\Users"},
+        };
+        bool writableByBroadIdentity = false;
+        for (const SidDefinition& sidDefinition : kWriteProtectionSids) {
+            TRUSTEE_A trustee = {};
+            trustee.TrusteeForm = TRUSTEE_IS_SID;
+            trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
 
-        // Check "Everyone" (S-1-1-0)
-        SID_IDENTIFIER_AUTHORITY SIDAuth = SECURITY_WORLD_SID_AUTHORITY;
-        PSID pEveryoneSid = NULL;
-        AllocateAndInitializeSid(&SIDAuth, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &pEveryoneSid);
-        trustee.ptstrName = (LPSTR)pEveryoneSid;
+            SID_IDENTIFIER_AUTHORITY authority = sidDefinition.authority;
+            PSID pSid = NULL;
+            if (!AllocateAndInitializeSid(&authority, sidDefinition.subAuthorityCount,
+                                          sidDefinition.subAuthorities[0], sidDefinition.subAuthorities[1], 0, 0, 0,
+                                          0, 0, 0, &pSid)) {
+                continue;
+            }
+            trustee.ptstrName = (LPSTR)pSid;
 
-        ACCESS_MASK access = 0;
-        GetEffectiveRightsFromAclA(pDacl, &trustee, &access);
+            ACCESS_MASK access = 0;
+            GetEffectiveRightsFromAclA(pDacl, &trustee, &access);
+            FreeSid(pSid);
 
-        FreeSid(pEveryoneSid);
+            if (access & (FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC | WRITE_OWNER)) {
+                LogError("[Security] DLL is writable by %s! Access Mask: 0x%lX", sidDefinition.displayName, access);
+                writableByBroadIdentity = true;
+            }
+        }
         LocalFree(pSD);  // also frees pDacl if it points into pSD
 
-        if (access & (FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC | WRITE_OWNER)) {
-            LogError("[Security] DLL is writable by Everyone! Access Mask: 0x%lX", access);
+        if (writableByBroadIdentity) {
 #ifdef CE_PRODUCTION_BUILD
             return false;  // Strict mode in production
 #else
-            LogError("[Security] WARNING: Proceeding despite world-writable DLL (dev build)");
+            LogError("[Security] WARNING: Proceeding despite broadly writable DLL (dev build)");
 #endif
         }
     }
@@ -114,7 +139,10 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFa
     trustData.pPolicyCallbackData = NULL;
     trustData.pSIPClientData = NULL;
     trustData.dwUIChoice = WTD_UI_NONE;
-    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;  // Skip revocation check for performance
+    // Primary pass is offline-tolerant (WTD_REVOKE_NONE): revocation must
+    // never block injection on an offline/air-gapped host. Production builds
+    // additionally run a revocation-confirmation pass below.
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
     trustData.dwUnionChoice = WTD_CHOICE_FILE;
     trustData.dwStateAction = WTD_STATEACTION_VERIFY;
     trustData.hWVTStateData = NULL;
@@ -131,6 +159,31 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFa
     WinVerifyTrust(NULL, &policyGUID, &trustData);
 
     if (status == ERROR_SUCCESS) {
+#ifdef CE_PRODUCTION_BUILD
+        // Revocation-confirmation pass: only a *confirmed* revocation is fatal.
+        // Offline/unavailable revocation results (CERT_E_REVOCATION_FAILURE,
+        // CRYPT_E_REVOCATION_OFFLINE) keep the offline-tolerant primary result
+        // — a documented availability decision, not a silent weakening.
+        WINTRUST_DATA revocationTrustData = trustData;
+        revocationTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        revocationTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+        revocationTrustData.hWVTStateData = NULL;
+        const LONG revocationStatus = WinVerifyTrust(NULL, &policyGUID, &revocationTrustData);
+        revocationTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        WinVerifyTrust(NULL, &policyGUID, &revocationTrustData);
+        if (revocationStatus == TRUST_E_EXPLICIT_DISTRUST || revocationStatus == CRYPT_E_REVOKED ||
+            revocationStatus == CERT_E_REVOKED) {
+            LogError("[Security] DLL signature is revoked: %s (error 0x%lX)", dllPath.c_str(),
+                     (unsigned long)revocationStatus);
+            return false;
+        }
+        if (revocationStatus != ERROR_SUCCESS) {
+            LogWarn(
+                "[Security] Revocation check unavailable for %s (error 0x%lX); accepting the "
+                "offline-tolerant signature result",
+                dllPath.c_str(), (unsigned long)revocationStatus);
+        }
+#endif
         LogInfo("[Security] DLL signature valid: %s", dllPath.c_str());
         return true;
     } else {

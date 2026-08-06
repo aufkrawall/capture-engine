@@ -21,6 +21,13 @@
  *   // Dynamic ring buffer for audio
  *   LockFreeRingBuffer<float> audioRing(4096);
  *
+ * Concurrency contract: both SPSC variants support only
+ * RingBufferPolicy::DropNew for concurrent producer/consumer use. The
+ * DropOld/Overwrite policies would have to advance the read index before the
+ * producer writes the reclaimed slot, letting a concurrent consumer read a
+ * torn element (data race), so they fail closed by dropping the new element
+ * instead. Block is likewise unsupported in the lock-free variants.
+ *
  * Note: For shared memory, use the fixed-size variant with std::atomic fields
  * in the element type.
  */
@@ -134,22 +141,12 @@ public:
         if ((wIdx - rIdx) >= N) {
             // Buffer full
             droppedCount_.fetch_add(1, std::memory_order_relaxed);
-
-            switch (policy_) {
-                case RingBufferPolicy::DropNew:
-                    return false;  // Drop the new item
-
-                case RingBufferPolicy::DropOld:
-                case RingBufferPolicy::Overwrite:
-                    // Both policies replace the oldest element. Keep the
-                    // logical size bounded when advancing the write index.
-                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-                    break;
-
-                case RingBufferPolicy::Block:
-                    // Blocking not supported in lock-free implementation
-                    return false;
-            }
+            // Only DropNew is supported for concurrent SPSC use. DropOld/
+            // Overwrite would require advancing the read index before writing
+            // the reclaimed slot, letting a concurrent consumer read a torn
+            // element (data race); Block is unsupported in a lock-free
+            // variant. All of them fail closed by dropping the new element.
+            return false;
         }
 
         // Write element
@@ -361,17 +358,10 @@ public:
 
         if ((wIdx - rIdx) >= capacity_) {
             droppedCount_.fetch_add(1, std::memory_order_relaxed);
-
-            switch (policy_) {
-                case RingBufferPolicy::DropNew:
-                    return false;
-                case RingBufferPolicy::DropOld:
-                case RingBufferPolicy::Overwrite:
-                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-                    break;
-                case RingBufferPolicy::Block:
-                    return false;
-            }
+            // Same fail-closed contract as the fixed-size variant: only
+            // DropNew is supported for concurrent SPSC use; DropOld/Overwrite
+            // (torn-slot race) and Block (not lock-free) drop the new element.
+            return false;
         }
 
         buffer_[wIdx % capacity_] = item;

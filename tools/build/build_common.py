@@ -134,7 +134,16 @@ else:
 OPT_FLAGS_X64 = [
     "-O3",
     "-flto",
-    "-fcf-protection=full",  # CET where supported; Windows CFG is -mguard=cf/--guard-cf.
+    # CET-compatible codegen (IBT landing pads, shadow-stack-compatible
+    # prologues). Enforcement signaling is intentionally NOT emitted: Windows
+    # reads CET compatibility from the IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS
+    # debug entry (EX_CET_COMPAT), which the clang64 -> lld GNU-mode linker
+    # cannot produce (lld has no /cetcompat), and setting the legacy
+    # DllCharacteristics bit is invalid (the field is 16-bit). Re-enable when
+    # lld gains /cetcompat or the link driver switches to lld-link, then make
+    # verify_pe_hardening require the entry. Windows CFG is
+    # -mguard=cf/--guard-cf.
+    "-fcf-protection=full",
     "-march=x86-64",
     "-mtune=generic",
     "-fvisibility=hidden",

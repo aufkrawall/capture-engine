@@ -18,6 +18,11 @@ std::string ReadMediaProcessStartSource() {
                                               "media_main_start.cpp");
 }
 
+std::string ReadEncoderLoopStartupSource() {
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                              "media_main_encoder_06_loop_startup.cpp");
+}
+
 std::string ReadWgcCaptureSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp");
 }
@@ -91,6 +96,27 @@ TEST(CaptureCoordinatorSourceTest, MediaProcessMainRunsTheMediaSession) {
     ASSERT_NE(bodyEnd, std::string::npos);
     const std::string body = source.substr(entry, bodyEnd - entry);
     EXPECT_NE(body.find("return MediaProcessSession().Run(initialConfig);"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, WarmupResetIsGatedOnStartupSyncCompletion) {
+    // Regression: the EncoderThreadFunc decomposition (1cce877b) converted the
+    // monolithic loop's `continue`/`break` states into early returns signaled by
+    // continueMainLoop/breakMainLoop. The go-live warmup reset must not run
+    // while the WGC CFR startup-sync phase is still advancing or was aborted by
+    // prewarm failure; calling it unconditionally committed the live timeline
+    // before the transactional start contract was selected, so every WGC/DXGI
+    // session logged wgc_start_contract_error and used the encode-completion
+    // wall anchor instead of the post-prewarm wall-anchored contract.
+    const std::string source = ReadEncoderLoopStartupSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t syncCall = source.find("CommitWarmupSync();");
+    ASSERT_NE(syncCall, std::string::npos);
+    const size_t resetCall = source.find("CommitWarmupReset();", syncCall);
+    ASSERT_NE(resetCall, std::string::npos);
+    const std::string between = source.substr(syncCall, resetCall - syncCall);
+    EXPECT_NE(between.find("if (!continueMainLoop && !breakMainLoop) {"), std::string::npos);
+    EXPECT_EQ(between.find("CommitWarmupReset();"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, ExplicitTenBitWgcCannotUseCompactBgraIntermediate) {

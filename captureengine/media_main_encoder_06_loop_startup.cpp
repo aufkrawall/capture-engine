@@ -40,7 +40,21 @@ void MediaEncoderSession::LoopStartup() {
             if (warmupReady && warmupFreshEnough) {
             CommitWarmupSync();
 
-            CommitWarmupReset();
+            // The WGC CFR startup-sync phase (CommitWarmupSync) is a
+            // multi-iteration state machine: pre-live delay, barrier arm,
+            // frame-past-barrier wait, transactional prewarm, and the
+            // delay-reserve wait each return early with continueMainLoop
+            // (or breakMainLoop on prewarm failure). The original monolithic
+            // loop used `continue`/`break` for those states, which skipped the
+            // go-live reset below. Calling CommitWarmupReset unconditionally
+            // here committed the live timeline before the start contract was
+            // selected, so the first encoded frame always fell back to the
+            // encode-completion wall anchor (wgc_start_contract_error).
+            // Restore the exact original semantics: only proceed to the reset
+            // when the sync phase reached its terminal contract-selected state.
+            if (!continueMainLoop && !breakMainLoop) {
+                CommitWarmupReset();
+            }
             }
         }
 

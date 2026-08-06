@@ -56,7 +56,6 @@ int ControllerMain(HINSTANCE hInstance) {
 
     // Main message loop
     MSG msg;
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     // Diagnostic loop timing
     static int64_t loopStartUs = Log_GetQpcUs();
@@ -184,10 +183,21 @@ int ControllerMain(HINSTANCE hInstance) {
         if (configNow - lastConfigCheck >= 1000) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
             if (GetFileAttributesExA(main_g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
+                // Reload on ANY identity change (mtime OR size), not only a
+                // newer mtime: an editor/restore/sync can replace the file with
+                // an older timestamp, which the previous > comparison missed.
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
-                if (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) > 0) {
+                static DWORD lastConfigSize = fileInfo.nFileSizeLow;
+                static bool lastConfigSeen = false;
+                const bool firstSeen = !lastConfigSeen;
+                lastConfigSeen = true;
+                const bool configIdentityChanged =
+                    !firstSeen && (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) != 0 ||
+                                   fileInfo.nFileSizeLow != lastConfigSize);
+                if (configIdentityChanged) {
                     LogInfo("[Controller] Config change detected, reloading...");
                     lastWriteTime = fileInfo.ftLastWriteTime;
+                    lastConfigSize = fileInfo.nFileSizeLow;
 
                     AppConfig oldConfig = main_g_Config;
                     LoadConfig(main_g_ConfigPath, main_g_Config);

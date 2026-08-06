@@ -119,6 +119,47 @@ file-per-file tests for their own sake.
 
 ## Falsified findings — do not re-raise
 
+## Decisions recorded by the 2026-08-06 audit-fix pass
+
+### SPSC ring buffers: `DropOld`/`Overwrite` fail closed
+
+`common/ring_buffer.h` (`LockFreeRingBuffer` and `DynamicRingBuffer`) documents
+and enforces a `DropNew`-only concurrency contract. Replacing the oldest
+element would require advancing the read index before writing the reclaimed
+slot, which lets a concurrent consumer read a torn element (data race), so the
+full-buffer branch drops the new element instead for `DropOld`/`Overwrite`/
+`Block`. Production uses `DropNew` only (the fixed-layout ABI frame ring has
+its own machinery); tests assert the fail-closed contract plus a concurrent
+torn-read stress test. Do not re-introduce overwrite semantics without a
+generation-tagged slot scheme.
+
+### CET enforcement bit is deferred to lld support
+
+Windows reads CET compatibility from the `IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS`
+(type 0x14) debug entry carrying `IMAGE_DLL_CHARACTERISTICS_EX_CET_COMPAT`,
+not from `DllCharacteristics` (16-bit field; the old 0x20000 spelling cannot
+fit). The clang64 -> lld GNU-mode linker cannot emit that entry (no
+`/cetcompat`), so first-party x64 binaries keep `-fcf-protection=full` codegen
+without the enforcement bit. Verified against `kernel32.dll` (type-0x14 entry
+with `EX_CET_COMPAT (0x1)`). Re-enable when lld gains `/cetcompat` or the link
+driver switches to lld-link, then require the entry in
+`tools/verify_pe_hardening.py` and add a patcher test with a synthetic PE
+(MZ + PE signature + COFF + optional header; DllCharacteristics at optional
+offset 0x46).
+
+### Hook command-line logging is masked
+
+`hook/main_loadlibrary.cpp` logs only a bounded excerpt of the command line
+under `forceRayReconstruction`, with values of token-like `key=` arguments
+masked (`token`, `key`, `secret`, `password`, `auth`, `code`, `session`,
+`access_token`, ...). Keep the mask in sync with any new sensitive parameters.
+
+### Config reload watches (mtime, size) identity
+
+The controller reloads `config.ini` on any (mtime, size) identity change with
+first-check baseline semantics, so an older-mtime replacement (editor restore,
+sync) is not missed. Keep the 1 s poll and the baseline-on-first-check rule.
+
 Checked during the 2026-07-24 audit and confirmed **not** defects:
 
 - **IPC deserialization over-read.** `common/process_ipc.cpp:302-310` cross-checks

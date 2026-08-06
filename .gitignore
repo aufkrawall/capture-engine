@@ -77,4 +77,5 @@ CLAUDE.md
 tests/logs/session_manifest.txt
 common/config.h.tmp0
 hook/common/hook_common.h.tmp0
-audit/code-audit-report.md
+# Audit artifacts (reports and plans) are working documents, not tracked files.
+/audit/
