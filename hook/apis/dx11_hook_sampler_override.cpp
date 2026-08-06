@@ -10,7 +10,6 @@ ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
     return GetWrapperForcedAFViewMetadata(view, outInfo);
 
 }
-
 bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc,  const GraphicsConfig& gfx) {
 
 
@@ -58,7 +57,6 @@ bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc,  const GraphicsConfig
     return false;
 
 }
-
 bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContext* context, 
                                               D3D11ShaderStage stage,  UINT slot,  const D3D11_SAMPLER_DESC& desc, 
                                               const GraphicsConfig& gfx) {
@@ -214,7 +212,6 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
     return true;
 
 }
-
 ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
                                                            UINT slot,  ID3D11SamplerState* original) {
 
@@ -277,7 +274,6 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
     return replacement;
 
 }
-
 int ReconcileStageSamplers11(SetSamplers11_t originalFn,  ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
                                     UINT startSlot,  UINT numSlots,  uint32_t slotMask) {
 
@@ -331,7 +327,6 @@ int ReconcileStageSamplers11(SetSamplers11_t originalFn,  ID3D11DeviceContext* c
     return rebound;
 
 }
-
 void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
                                        UINT startSlot,  UINT numSamplers,  ID3D11SamplerState* const* ppSamplers) {
 
