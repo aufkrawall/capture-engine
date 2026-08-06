@@ -23,6 +23,8 @@ inline bool g_IPCReady = false;
 
 inline std::atomic<bool> g_PiggybackDrawnThisFrame{false};
 
+bool DX12_TryInvokePostSLStartupActivationCallbackFromSharedService(const char* source, bool clearStartupWindow);
+
 inline const GUID SKID_D3D12SwapChainBufferBitmap = {
     0xbc53df3b, 0x956f, 0x47db, {0xa6, 0x53, 0x5, 0xd7, 0xb8, 0x71, 0x53, 0x38}};
 
@@ -47,4 +49,3 @@ void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::R
 bool HookHasExplicitStreamlineSetOptionsActivation();
 bool HookHasRuntimeOwnedNativeFGPresentPath();
 const char* DescribeFocusLossPostPresentFenceSkip( const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext& ctx, const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo& info);
-
