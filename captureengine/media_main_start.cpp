@@ -242,27 +242,27 @@ bool MediaProcessSession::ensureMediaEngineReady() {
 
 
 bool MediaProcessSession::isExplicitInjectConfig() {
-
+    return IsInjectCaptureMethod(config.captureMethod);
 }
 
 
 bool MediaProcessSession::isExplicitWgcConfig() {
-
+    return IsWgcCaptureMethod(config.captureMethod);
 }
 
 
 bool MediaProcessSession::isExplicitDxgiDupConfig() {
-
+    return IsDxgiDupCaptureMethod(config.captureMethod);
 }
 
 
 bool MediaProcessSession::isExplicitScreenGrabConfig() {
-
+    return IsScreenGrabCaptureMethod(config.captureMethod);
 }
 
 
 bool MediaProcessSession::isAutoCaptureConfig() {
-
+    return IsAutoCaptureMethod(config.captureMethod);
 }
 
 
@@ -283,12 +283,19 @@ bool MediaProcessSession::isInjectCaptureTarget(const std::string& processName) 
 
 
 std::string MediaProcessSession::resolveSourceProcessName(uint32_t sourcePid, const std::string& knownName) {
-
+    if (!knownName.empty() && knownName != "unknown") {
+        return knownName;
+    }
+    if (sourcePid == 0) {
+        return std::string{};
+    }
+    std::string resolvedName = GetProcessNameFromPID(sourcePid);
+    return resolvedName == "unknown" ? std::string{} : resolvedName;
 }
 
 
 bool MediaProcessSession::isInjectCaptureTargetForSource(uint32_t sourcePid, const std::string& knownName) {
-
+    return isInjectCaptureTarget(resolveSourceProcessName(sourcePid, knownName));
 }
 
 
@@ -304,6 +311,7 @@ void MediaProcessSession::applyWgcOptions(WGCCapture* capture) {
 
 
 int MediaProcessMain(const AppConfig& initialConfig) {
+    return MediaProcessSession().Run(initialConfig);
 }
 bool StartRecording(const AppConfig& config) {
     if (media_main_g_Recording)

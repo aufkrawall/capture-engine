@@ -13,6 +13,11 @@ std::string ReadCoordinatorSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media_main.cpp");
 }
 
+std::string ReadMediaProcessStartSource() {
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                              "media_main_start.cpp");
+}
+
 std::string ReadWgcCaptureSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp");
 }
@@ -71,6 +76,21 @@ TEST(CaptureCoordinatorSourceTest, DuplicationCursorSuppressionIsExplicitlyReset
     EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC pipeline stop\")"), std::string::npos);
     EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC recording start\")"), std::string::npos);
     EXPECT_NE(source.find("MediaEngine_SetCursorCompositionSuppressed(false)"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, MediaProcessMainRunsTheMediaSession) {
+    // Regression: the MediaProcessMain decomposition must leave a thin entry that
+    // runs MediaProcessSession. An empty body silently disables the media process
+    // and crashes it at startup (heap corruption on the mode dispatch).
+    const std::string source = ReadMediaProcessStartSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t entry = source.find("int MediaProcessMain(const AppConfig& initialConfig) {");
+    ASSERT_NE(entry, std::string::npos);
+    const size_t bodyEnd = source.find("\n}\n", entry);
+    ASSERT_NE(bodyEnd, std::string::npos);
+    const std::string body = source.substr(entry, bodyEnd - entry);
+    EXPECT_NE(body.find("return MediaProcessSession().Run(initialConfig);"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, ExplicitTenBitWgcCannotUseCompactBgraIntermediate) {

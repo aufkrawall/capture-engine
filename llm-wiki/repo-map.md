@@ -59,8 +59,10 @@ anchors that predate the split are approximate.
   - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_inject.cpp`,
     `injection_security.cpp`, `inject_main.cpp`.
   - Recording/media orchestration: `media_main_encoder_0*.cpp` (session, loop start,
-    WGC target, select, startup, emit, encode, health), `media_main_internal.h`,
-    `wgc_capture*.cpp` (impl, pool, gpu_timing, format units).
+    WGC target, select, startup, emit, encode, health),
+    `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target
+    selection, shutdown; MediaProcessMain is a thin entry that runs the session),
+    `media_main_internal.h`, `wgc_capture*.cpp` (impl, pool, gpu_timing, format units).
 - `hook/`
   - `main.cpp` + `main_*.cpp` (dllmain, injection, install, loadlibrary, hookthread,
     redirect, ue5, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`.

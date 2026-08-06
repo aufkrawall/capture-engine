@@ -2,7 +2,83 @@
 
 std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targetWindow , uint32_t confirmedPid ,
                                    const std::string& confirmedProcessName) {
+    uint32_t sourcePid = 0;
+    std::string processName;
+    if (media_main_g_pSharedMem) {
+        sourcePid = media_main_g_pSharedMem->GetSourcePid();
+        if (sourcePid != 0) {
+            processName = GetProcessNameFromPID(sourcePid);
+            if (processName.empty() && sourcePid == activeConfigSourcePid)
+                processName = activeConfigProcessName;
+        }
+    }
+    if (sourcePid == 0) {
+        HWND resolvedWindow = targetWindow;
+        if (!resolvedWindow && currentCapturedWindow && IsWindow(currentCapturedWindow))
+            resolvedWindow = currentCapturedWindow;
+        if (resolvedWindow) {
+            DWORD resolvedPid = 0;
+            GetWindowThreadProcessId(resolvedWindow, &resolvedPid);
+            sourcePid = resolvedPid;
+        }
+        if (sourcePid != 0) {
+            if (sourcePid == confirmedPid && !confirmedProcessName.empty())
+                processName = confirmedProcessName;
+            else
+                processName = GetProcessNameFromPID(sourcePid);
+            if (processName.empty() && sourcePid == activeConfigSourcePid)
+                processName = activeConfigProcessName;
+        }
+    }
+    if (sourcePid == 0 && media_main_g_Recording && activeConfigSourcePid != 0) {
+        sourcePid = activeConfigSourcePid;
+        processName = activeConfigProcessName;
+    }
 
+    if (!forceReload && sourcePid == activeConfigSourcePid && processName == activeConfigProcessName) {
+        return processName;
+    }
+
+    AppConfig resolvedConfig;
+    LoadConfig(configPath, resolvedConfig);
+    if (!processName.empty()) {
+        LoadConfig(configPath, resolvedConfig, processName);
+    }
+    // Normalize runtime-only sync state before comparing with the active config. Otherwise a
+    // config.ini reload with no real media changes would compare file defaults (usually 0 ms)
+    // against the active auto-detected render latency and reload unnecessarily.
+    ApplyAutoDetectedRenderLatencyToConfig(resolvedConfig);
+
+    const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
+
+    config = std::move(resolvedConfig);
+    Log_SetLevel(config.logLevel);
+    activeConfigSourcePid = sourcePid;
+    activeConfigProcessName = processName;
+
+    if (media_main_g_Recording && IsActiveScreenGrab())
+        PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice, true, "active profile refresh");
+
+    ApplyMediaPrioritySettings(config);
+    if (d3dDevice) {
+        ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
+    } else {
+        ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
+    }
+    if (auto capture = media_main_g_WgcCap.Read()) {
+        applyWgcOptions(capture.get());
+        capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+    }
+    if (mediaEngineReady) {
+        MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
+        if (forceReload || mediaConfigChanged) {
+            MediaEngine_ReloadConfig(&config);
+        }
+        if (media_main_g_pSharedMem || media_main_g_pShmem) {
+            MediaEngine_SetSharedMem(media_main_g_pSharedMem, media_main_g_pShmem);
+        }
+    }
+    return processName;
 }
 
 
@@ -620,5 +696,4 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
 
     SetPreferredScreenGrab(false);
 }
-
 

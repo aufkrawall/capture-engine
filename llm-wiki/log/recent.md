@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-06 - Fixed: media process crashed at startup (heap corruption / C++ exception)
+
+- Symptom: starting a recording crashed the media process immediately; the
+  controller reported "media child failed inherited-channel authentication" and
+  the session dir contained a 0xC0000374 crash dump (media log only had the two
+  startup lines).
+- Root cause: the MediaProcessMain decomposition (a9816048, "decompose
+  MediaProcessMain into MediaProcessSession phases") was incomplete. It left
+  `MediaProcessMain` EMPTY plus 8 empty `MediaProcessSession` methods:
+  isExplicitInjectConfig, isExplicitWgcConfig, isExplicitDxgiDupConfig,
+  isExplicitScreenGrabConfig, isAutoCaptureConfig, resolveSourceProcessName,
+  isInjectCaptureTargetForSource (media_main_start.cpp) and refreshActiveConfig
+  (media_main_start_targets.cpp). The empty entry made the binary's mode switch
+  execute unrelated inlined code (worker-host epilogue) with garbage registers ->
+  LocalFree(2) -> heap corruption; the empty bool/string methods were UB. After
+  restoring the MediaProcessMain entry, a second crash surfaced: unhandled
+  `std::out_of_range` from substr (0x20474343 " GCC" MinGW C++ exception) from
+  the garbage config-check flow.
+- Fix: restored all function bodies from a9816048^ (the pre-refactor source) and
+  adapted them to the session members (config, activeConfigSourcePid,
+  activeConfigProcessName, d3dDevice, mediaEngineReady, currentCapturedWindow,
+  configPath, applyWgcOptions). MediaProcessMain is again a thin entry running
+  MediaProcessSession().Run(initialConfig).
+- Regression test: CaptureCoordinatorSourceTest.MediaProcessMainRunsTheMediaSession
+  (tests/test_capture_coordinator_source.cpp) asserts the thin entry is non-empty.
+- Gate: full --verify (clean build, unit tests, Python self-tests, ASan/UBSan,
+  clang-tidy ratchet at 0) passed. Verified manually: media process with bogus IPC
+  args exits cleanly with "[Media] Failed to initialize IPC" instead of crashing.
+- Lesson: when a refactor commit promises a "thin entry" or "small stub", verify
+  the stub actually calls the new implementation; empty bodies silently turn into
+  UB and can crash far from the edited function.
+
 ### 2026-08-06 - Docs maintenance: AGENTS.md + llm-wiki paths/code map refreshed
 
 - AGENTS.md: translation-unit count updated (528-TU full compile DB; tests-only
