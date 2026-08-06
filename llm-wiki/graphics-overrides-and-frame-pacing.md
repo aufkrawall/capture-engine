@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-03
+Last cross-checked: 2026-08-06
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -88,6 +88,17 @@ Primary sources:
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
   general limiting retains now-relative recovery. The fine margin is `clamp(p99 timer wake overshoot + 25us, 50us,
   250us)`; only the final 50us is a tight spin.
+- Native Vulkan presents are paced through the grid with `Apply(gateEveryPresent=true)` on EVERY present (both
+  `vkQueuePresentKHR` and the async `vkAcquireNextImageKHR` path), not only the first present entering the hook.
+  Strange Brigade Vulkan presents several real swapchain images per frame period from concurrent present streams;
+  the old first-present-only gating plus the 2ms dedup fast path let those extra images reach the driver unpaced, so
+  a 60fps target displayed ~120fps (vsync-capped in intros) with alternating short/long frame times and bad 1% lows.
+  Gate-every-present takes the cadence lock blocking (concurrent streams serialize onto the grid: exactly one present
+  per target interval, evenly spaced) and bypasses both dedup fast paths. DXVK keeps the legacy first-present gating +
+  dedup because its CS thread presents once per frame while the DX9/DXGI hooks already pace the game thread, and
+  FG-scaled modes keep legacy behavior so generated frames are not pushed onto the base-frame grid. The strict path
+  works identically with FIFO vsync enabled or off: the wait happens before the driver call and the game's present
+  mode is left untouched.
 - Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
   entry points directly. NvAPI code bytes/prologues are deliberately not patched because some DLSS FG integrations
   validate them during Reflex setup; `minimumIntervalUs` is pushed proactively, and pacing hands to the game-owned
@@ -101,7 +112,10 @@ Primary sources:
 
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate
   limited. The limiter's periodic stats report waited/late/reset frames, whole capture-grid slots skipped while
-  preserving phase, and actual wait time.
+  preserving phase, and actual wait time. The Vulkan perf CSV populates `fps_limit_wait_us` per present (it was
+  previously always 0 on the Vulkan path), and strict-grid serialization of a concurrent present is logged
+  rate-limited (`lockWaitUs`, count) when the cadence lock acquisition exceeds 500us.
 - Runtime validation remains required across representative native/DXVK D3D9, D3D10/11, D3D12, Vulkan, and OpenGL
   games, plus WGC and inject CFR capture. In particular, validate Kena/Blackwell, multi-swapchain engines, asynchronous
-  Vulkan present queues, and OpenGL shared-context applications.
+  Vulkan present queues, OpenGL shared-context applications, and Strange Brigade Vulkan at a 60fps general cap
+  (must display exactly 60fps with flat frame times, with vsync on and off).

@@ -1,5 +1,41 @@
 # llm-wiki Log
 
+### 2026-08-06 - Fixed: Vulkan limiter leaked every second present (Strange Brigade showed 120fps at a 60fps cap)
+
+- Symptom (session 20260806_182125, build 0.1.5732, general limiter 60/basic):
+  the display showed ~120fps in menus/gameplay (and ~144fps vsync-capped in the
+  intro, where the limiter was not yet pacing) with alternating short/long
+  frame times and bad 1% lows. Limiter stats claimed a clean 60.0fps
+  (waited=120/2s, late=0), but the perf CSV recorded ~120 presents/s in pairs
+  (two swapchain images ~0.4-2.5ms apart, distinct image indices, one per
+  16.67ms slot).
+- Root cause: Strange Brigade Vulkan presents from concurrent present streams
+  (only one thread rendered the overlay; the other presents entered the hook
+  while the first was still waiting). The layer applied the limiter only for
+  the first present entering the hook (`isFirstHook`), and the shared 2ms
+  dedup fast path skipped the wait for presents arriving right after a paced
+  one — both let real frames through to `vkQueuePresentKHR` unpaced, so the
+  limiter paced 60/s and the display showed 120/s.
+- Fix: `FpsLimiter::Apply(allowPostPresentReflexCadence, gateEveryPresent)`
+  gates EVERY present through the cadence grid: blocking cadence lock
+  (concurrent present streams serialize onto the grid, one present per target
+  interval) and no dedup fast path. Native Vulkan `vkQueuePresentKHR` +
+  async `vkAcquireNextImageKHR` use it (`nativeVulkanPresent` = not DXVK
+  d3d9/d3d11); DXVK keeps legacy first-present gating + dedup (its CS thread
+  presents once per frame, and d3d11 double-pacing is avoided), and
+  FG-scaled modes keep legacy behavior so generated frames stay off the base
+  grid. vsync is untouched: the wait happens before the driver call, so FIFO
+  on/off paces identically. Also fixed the Vulkan perf CSV `fps_limit_wait_us`
+  column (was always 0) and added a rate-limited strict-grid serialization log.
+- Validation: 3 new unit tests
+  (`GateEveryPresentPacesImmediateSecondApply`,
+  `GateEveryPresentDefersToDedupWhileFGActive`,
+  `GateEveryPresentStaysNonBlockingWhenInactive`) plus full native/Python
+  gates on build 0.1.5733. Runtime smoke with vulkan_test.exe + general 60:
+  exactly 60.0 presents/s, delta p50 16.67ms, `fps_limit_wait_us` populated
+  on all 2080 frames. Fresh Strange Brigade Vulkan confirmation with the
+  general cap (and capture-sync runs) still required.
+
 ### 2026-08-06 - Fixed: DX12 draw-chain failure else-branches hoisted into success path (Strange Brigade still stalling/flickering)
 
 - Symptom (session 20260806_174024, build 0.1.5730): after the GetBuffer fix the
