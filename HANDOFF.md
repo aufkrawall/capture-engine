@@ -1,15 +1,17 @@
 # Hand-off: semantic-unit conversion (<=800 lines per file) - COMPLETE for C++
 
-Last updated: 2026-08-06 (after `python build.py --verify --skip-updates --concise` passed:
-clean product build, full native tests, 17 Python tool self-tests, clang-tidy ratchet,
-ASan/UBSan regression).
+Last updated: 2026-08-06 (final `python build.py --verify --skip-updates --concise`
+passed at build 0.1.5719: clean product build, full native tests, 17 Python tool
+self-tests, lint, ASan/UBSan regression).
 
 ## Goal and status
 
-Every first-party C++ file (`.cpp/.h/.hpp`) is now a proper semantic unit of at most
-800 lines; `tools/file_size_baseline.json` contains a single remaining entry:
-`tools/refactor/source_splitter.py` (1219 lines) - Python is a separate follow-up and
-explicitly out of scope. No `.inl` fragments exist in the tree (non-Python).
+Every first-party C++ file (`.cpp/.h/.hpp`) AND Python file is now a proper
+semantic unit of at most 800 lines; `tools/file_size_baseline.json` is empty
+(`files: {}`, count 0). `source_splitter.py` (1219) was split into a semantic-unit
+facade plus four parts (`source_splitter_part_001..004.py`). No `.inl` fragments
+exist in the tree. The clang-tidy ratchet is at 0 warnings (`checks: {}`); flake8
+and pyright are clean (the last gen_deinline.py findings were fixed).
 
 The conversion covered, among others:
 - Class-heavy internal headers de-inlined into semantic units: dx9/dx11/wgc/streamline/
@@ -41,14 +43,10 @@ The conversion covered, among others:
   (sanitizer child exceeded the Windows command-line limit, WinError 206) invoke
   through a response file while the cache key stays on the full command.
 
-## Known remaining debt (out of scope here)
+## Verification
 
-- Python split follow-up (`tools/refactor/source_splitter.py` 1219 lines, recorded
-  in the file-size baseline; `build.py` and `tools/*.py` may have other over-800
-  files - `source_splitter.py` is the only baseline entry).
-- clang-tidy baseline holds 16 advisory warnings (10
-  bugprone-throwing-static-initialization, 6 bugprone-forward-declaration-namespace)
-  recorded over the post-split 528-TU database.
+`python build.py --verify --skip-updates --concise` passes (success=1, build 0.1.5719)
+with empty file-size and clang-tidy baselines.
 
 ## Verification
 

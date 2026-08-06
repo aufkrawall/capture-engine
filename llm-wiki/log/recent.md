@@ -1,3 +1,19 @@
+### 2026-08-06 - clang-tidy at 0 and Python semantic units <= 800 lines (ALL code)
+
+- Resolved all 16 clang-tidy warnings: fg_session_state_internal.h forward
+  declarations moved into ce::fg_session (bugprone-forward-declaration-namespace x6);
+  OverlayAdapter() and SharedCaptureD3D12() are now noexcept (trivial init, x4);
+  STL recursive_mutex globals keep the repo's NOLINT noexcept-toolchain
+  justification (x6). Ratchet: 0 warnings, baseline checks {}.
+- split source_splitter.py (1219) into a semantic-unit facade + four parts
+  (source_splitter_part_001..004.py) executed in the facade namespace; parts
+  reconstruct the original byte-for-byte; reapply.py / test_source_splitter
+  surface unchanged.
+- Fixed last Python lint findings in gen_deinline.py: extract_top_level return
+  annotation (pyright error) and a dead wrap_close assignment (flake8 F841).
+- tools/file_size_baseline.json is now empty (files: {}) - every first-party C++
+  and Python file is <= 800 lines. Final --verify passes (build 0.1.5719).
+
 ### 2026-08-06 - 800-line semantic-unit conversion COMPLETE for C++
 
 All first-party C++ files are now proper semantic units <= 800 lines; no `.inl`
