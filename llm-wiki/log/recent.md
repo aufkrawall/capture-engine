@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-08-06 - Semantic-unit conversion completed for all C++ source families
+
+- The 2026-08-05/06 de-inline wave had cut the former inline headers and big
+  files into sequential ~650-line chunks named `*_2`, `*_3`, ... (`impl`,
+  `helpers`, `0_internal_helpers2-11`, `process_session2-9`,
+  `mediaengine_impl_2-9` + letter stages, `wgc_capture_impl_2-5`, ...). Those
+  chunks were regrouped into genuinely semantic units with proper names across
+  every family: DX9, DX8, DDraw, OpenGL, FFX, Vulkan layer, DX11, DX12
+  (main/fg/overlay/ffx/ecl/process_session/postsl/helpers), streamline, wgc and
+  mediaengine (incl. the audio pull/loop stage chains).
+- No numbered or "chunk"-named C++ file remains (only the shader-bytecode
+  headers with shader-model version names, which are legitimate). The dxgi_shared
+  and hook/main families were already semantic. Source-policy tests were
+  converted from cross-file sort-order anchors to per-unit anchors where the
+  renames changed sibling ordering.
+- Full `python build.py --verify --skip-updates --concise` passed: clean product
+  build, 1897 unit tests, all 19 Python tool self-tests, x64 ASan/UBSan, lint
+  with clang-tidy 0 warnings and file-size baseline OK. Commits are per family
+  (per file where intermediate states stayed testable); the helper-chunk and
+  mediaengine/wgc families landed as single regroup commits because intermediate
+  states cannot pass the source-policy suite.
+- Remaining convention exceptions (documented, not misnamed chunks): the
+  `tools/analysis/*_part_*.py` / `testapp/run_tests_part_*.py` Python fragments
+  behind facades, and the `dx12_hook.cpp` / `mediaengine.cpp` /
+  `wgc_capture.cpp` / `layer_capture.cpp` logical-source facades used by the
+  source-policy reader.
+
 ### 2026-08-06 - DX9 hook family regrouped into genuine semantic units
 
 - The 2026-08-06 de-inline wave had cut `dx9_hook_internal.h` sequentially into
@@ -18,9 +45,9 @@
 - Zero numbered chunks remain in the DX9 family. No behavior change; unit
   tests, Python self-tests and clang-tidy (0 warnings) pass; lint baseline
   scope regenerated (`--update-lint-baseline`).
-- Open: `tests/test_fps_limiter.cpp` (852 lines) got recorded in the file-size
-  baseline; the remaining numbered families (dx8/ddraw/dx11/dx12/streamline/
-  wgc/mediaengine/layer/ffx_hook) are still sequential chunks.
+- Open: `tests/test_fps_limiter.cpp` (852 lines) stays recorded in the
+  file-size baseline (single test suite, still one semantic unit; the entry
+  predates the regroup).
 
 ### 2026-08-06 - Fixed: Vulkan limiter leaked every second present (Strange Brigade showed 120fps at a 60fps cap)
 

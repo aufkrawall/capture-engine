@@ -62,25 +62,48 @@ anchors that predate the split are approximate.
     WGC target, select, startup, emit, encode, health),
     `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target
     selection, shutdown; MediaProcessMain is a thin entry that runs the session),
-    `media_main_internal.h`, `wgc_capture*.cpp` (impl, pool, gpu_timing, format units).
+    `media_main_internal.h`, `wgc_capture*.cpp` (pool, pool_budget, frame,
+    session, state, queue, init, frame_pump units + `wgc_capture.cpp` facade).
 - `hook/`
   - `main.cpp` + `main_*.cpp` (dllmain, injection, install, loadlibrary, hookthread,
     redirect, ue5, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`.
   - `apis/` - per-API hook sets, de-inlined into semantic units:
-    - DX12: `dx12_hook_main*.cpp` (present/FG orchestration), `dx12_hook_overlay*.cpp`,
-      `dx12_hook_ffx*.cpp`, `dx12_hook_ecl*.cpp`, `dx12_hook_process_session*.cpp`
-      (ProcessFrame), `dx12_hook_postsl_render*.cpp`, `dx12_hook_0_internal_helpers*.cpp`
-      (1-11: state, exports, Steam/VA-space/focus helpers in helpers10), `dx12_hook.cpp`
-      (1-line facade include), `dx12_hook_internal.h`.
-    - DX11: `dx11_hook_present.cpp`, `dx11_hook_prerender.cpp`, `dx11_hook_internal.h`.
+    - DX12: `dx12_hook.cpp` (facade) + `dx12_hook_internal.h` + semantic units:
+      `dx12_hook_main.cpp` (module lifecycle), `dx12_hook_fg_state.cpp` /
+      `dx12_hook_fg_startup.cpp` / `dx12_hook_streamline_fg_transition.cpp` /
+      `dx12_hook_focus_loss.cpp`, `dx12_hook_overlay*.cpp` (overlay, present,
+      d3d11on12), `dx12_hook_ffx*.cpp` (ffx, ui_composite, ui_state, owner_queue,
+      proxy_present), `dx12_hook_ecl*.cpp` (ecl, ecl_install),
+      `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/
+      draw_transition/draw_main/draw_submit/draw_tail), `dx12_hook_postsl_render*.cpp`
+      (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp` +
+      themed helper units (overlay_coverage, overlay_breadcrumbs, ffx_startup,
+      fg_heuristics, postsl_queue, swapchain_create, observer, overlay_render,
+      prerender, hook_install, screenshot, overlay_dedicated_queue,
+      overlay_startup_compat, postsl_route, swapchain_tracking, swapchain_detours),
+      `dx12_hook_types*.h/cpp`, `dx12_hook_internal_globals.cpp`, `dx12_hook_swapchain.cpp`.
+    - DX11: `dx11_hook_present.cpp`, `dx11_hook_prerender.cpp`, `dx11_hook_device.cpp`,
+      `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `dx11_hook_screenshot.cpp`,
+      `dx11_hook_overlay.cpp`, `dx11_hook_sampler_state.cpp`,
+      `dx11_hook_sampler_override.cpp`, `dx11_hook_capture_{lifecycle,init,frame}.cpp`,
+      `dx11_hook_helpers.cpp`, `dx11_hook_internal.h`.
     - DX9: `dx9_hook_internal.h` + semantic units: `dx9_hook.cpp` (module
       lifecycle + inline IAT hooks), `dx9_hook_capture_{frame,direct_ring,init,
       gdi,ring,lifecycle}.cpp`, `dx9_hook_present.cpp` (present begin/end
       stages), `dx9_hook_present_detours.cpp`, `dx9_hook_state_detours.cpp`,
       `dx9_hook_device.cpp` (creation + hook install), `dx9_hook_pacing.cpp`,
       `dx9_hook_overlay.cpp`, `dx9_hook_helpers.cpp`, `dx9_hook_sampler_state.cpp`.
-    - DX8/DDraw/OpenGL/Streamline/FFX/Layer: de-inlined internal headers
-      (`dx8_hook_internal.h` etc.) + per-area `.cpp` units.
+    - DX8: `dx8_hook_capture_{lifecycle,init,frame,copy}.cpp`, `dx8_hook_detours.cpp`,
+      `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
+    - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_detours.cpp`,
+      `ddraw_hook_install.cpp`, `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`.
+    - OpenGL: `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.
+    - Streamline: `streamline_hook.cpp` + `streamline_hook_{helpers,state,startup,
+      modules,originals,feature_fallback,install,resolve,dlssg,api}.cpp` +
+      `streamline_hook_internal.h`.
+    - FFX: `ffx_hook.cpp` + `ffx_hook_{context,install}.cpp` + `ffx_hook_internal.h`.
+    - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
+      textures,state,frame,capture}.cpp` + `layer_capture_internal.h`.
   - `common/` - overlay policy (`dx12_overlay_policy.h`, `streamline_runtime_policy.h`,
     `overlay_compat.h`), `dxgi_shared*.cpp` (central Present routing: hooks, present,
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
@@ -90,8 +113,12 @@ anchors that predate the split are approximate.
   - `wrappers/` - `dxgi_swapchain_wrap*.cpp` (wrap, present, lifetime, frame_latency),
     `hook_system.cpp`, `iat_hook.h`.
 - `mediaengine/`
-  - De-inlined `MediaEngine` class: `mediaengine_impl*.cpp` units (init/recording/
-    frame pipeline/audio), `mediaengine_internal.h` (declarations only), `mediaengine.cpp` (facade).
+  - De-inlined `MediaEngine` class: `mediaengine.cpp` (facade) + semantic units:
+    `mediaengine_audio_{helpers,thread,loop_poll,loop_commit,audio_pull,
+    audio_pull_targets,audio_pull_encode_a,audio_pull_encode_b,audio_pull_encode_c,
+    audio_pull_sync}.cpp`, `mediaengine_{init,config,transport,timeline,
+    recording_start,recording_stop,frame}.cpp`, `mediaengine_internal.h`
+    (declarations only).
   - `audio_*.cpp` - capture, loop, encoder (encode/flush), resampler, ring buffer,
     app-audio (activation/loop/monitor/queue units), process-loopback capture.
   - `video_encoder*.cpp` - encoder pipeline units (options, backend_options,
@@ -135,15 +162,18 @@ anchors that predate the split are approximate.
 - `hook/main.cpp` + `main_injection.cpp` - hook bootstrap and wrapper-init decisions.
 - `hook/common/dxgi_shared.cpp` (+ `dxgi_shared_present*.cpp`, `dxgi_shared_steam*.cpp`)
   - central Present routing and startup bypass behavior.
-- `hook/apis/dx12_hook_main*.cpp` + `dx12_hook_0_internal_helpers*.cpp` - DX12
-  present/FG/overlay policy, exports, Steam/VA-space helpers.
+- `hook/apis/dx12_hook_main.cpp` + `dx12_hook_fg_state.cpp` +
+  `dx12_hook_fg_startup.cpp` + `dx12_hook_streamline_fg_transition.cpp` +
+  `dx12_hook_focus_loss.cpp` + the themed `dx12_hook_*` helper units - DX12
+  present/FG/overlay policy, exports, Steam/VA-space/focus helpers.
 - `hook/common/dx12_overlay_policy.h` - dense policy helpers for DX12 overlay
   routing, startup coexistence, and FG transitions.
 - `hook/common/streamline_runtime_policy.h` - Streamline PostSL startup/suspend
   policy helpers.
 - `hook/common/overlay_compat.h` - third-party overlay and FFX module detection helpers.
-- `mediaengine/mediaengine_impl*.cpp` + `mediaengine_internal.h` - capture/CFR/audio
-  pipeline; the audio loop and pull phases live in `mediaengine_impl_7*`/`9*` units.
+- `mediaengine/mediaengine_*.cpp` + `mediaengine_internal.h` - capture/CFR/audio
+  pipeline; the audio loop and pull phases live in the `mediaengine_audio_loop_*`
+  and `mediaengine_audio_pull*` units.
 - `mediaengine/video_encoder*.cpp` - encoding pipeline (CFR, hardware encoders,
   HDR, frame-repeat) and `mediaengine/video_encoder_internal.h`.
 
