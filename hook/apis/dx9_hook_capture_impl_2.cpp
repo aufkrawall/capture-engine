@@ -1,19 +1,6 @@
 #include "dx9_hook_internal.h"
 
 
-bool DX9Capture::HasPublishedGeneration() const {
-
-
-        if (sharedFenceHandle.load(std::memory_order_acquire) != NULL)
-            return true;
-        for (const auto& handle : sharedTextureHandles) {
-            if (handle.load(std::memory_order_acquire) != NULL)
-                return true;
-        }
-        return false;
-
-}
-
 void DX9Capture::ReleaseGameDeviceResourcesForReset() {
 
 
@@ -297,12 +284,5 @@ bool DX9Capture::CleanupDX9(bool permanentFailure,  bool force) {
             initializationFailed = false;  // Allow retry if it wasn't a permanent fail
         }
         return true;
-
-}
-
-void DX9Capture::CreateSharedResources(uint32_t w,  uint32_t h,  uint32_t fmt) {
-
-
-        // Implemented in Init
 
 }
