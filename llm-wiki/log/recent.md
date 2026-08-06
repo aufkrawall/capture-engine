@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-08-06 - DX9 hook family regrouped into genuine semantic units
+
+- The 2026-08-06 de-inline wave had cut `dx9_hook_internal.h` sequentially into
+  ~650-line chunks named `dx9_hook_capture_impl{,_2,_3,_4}.cpp` and
+  `dx9_hook_helpers{,_2,_3}.cpp`; the cuts ran through themes (EX vs legacy
+  producer, cleanup vs device reset, ring setup vs submission).
+- Regrouped into semantic units, one commit per file: frame pipeline
+  (`dx9_hook_capture_frame.cpp`), direct D3D9 shared ring
+  (`dx9_hook_capture_direct_ring.cpp`), capture init (`dx9_hook_capture_init.cpp`),
+  GDI interop (`dx9_hook_capture_gdi.cpp`), shared texture ring
+  (`dx9_hook_capture_ring.cpp`), capture lifecycle (`dx9_hook_capture_lifecycle.cpp`),
+  pacing/VSync (`dx9_hook_pacing.cpp`), overlay rendering
+  (`dx9_hook_overlay.cpp`), state/scene detours (`dx9_hook_state_detours.cpp`),
+  present/reset detours (`dx9_hook_present_detours.cpp`), device creation and
+  hook install folded into `dx9_hook_device.cpp`.
+- Zero numbered chunks remain in the DX9 family. No behavior change; unit
+  tests, Python self-tests and clang-tidy (0 warnings) pass; lint baseline
+  scope regenerated (`--update-lint-baseline`).
+- Open: `tests/test_fps_limiter.cpp` (852 lines) got recorded in the file-size
+  baseline; the remaining numbered families (dx8/ddraw/dx11/dx12/streamline/
+  wgc/mediaengine/layer/ffx_hook) are still sequential chunks.
+
 ### 2026-08-06 - Fixed: Vulkan limiter leaked every second present (Strange Brigade showed 120fps at a 60fps cap)
 
 - Symptom (session 20260806_182125, build 0.1.5732, general limiter 60/basic):

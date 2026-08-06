@@ -73,8 +73,14 @@ anchors that predate the split are approximate.
       (1-11: state, exports, Steam/VA-space/focus helpers in helpers10), `dx12_hook.cpp`
       (1-line facade include), `dx12_hook_internal.h`.
     - DX11: `dx11_hook_present.cpp`, `dx11_hook_prerender.cpp`, `dx11_hook_internal.h`.
-    - DX9/DX8/DDraw/OpenGL/Streamline/FFX/Layer: de-inlined internal headers
-      (`dx9_hook_internal.h` etc.) + per-area `.cpp` units.
+    - DX9: `dx9_hook_internal.h` + semantic units: `dx9_hook.cpp` (module
+      lifecycle + inline IAT hooks), `dx9_hook_capture_{frame,direct_ring,init,
+      gdi,ring,lifecycle}.cpp`, `dx9_hook_present.cpp` (present begin/end
+      stages), `dx9_hook_present_detours.cpp`, `dx9_hook_state_detours.cpp`,
+      `dx9_hook_device.cpp` (creation + hook install), `dx9_hook_pacing.cpp`,
+      `dx9_hook_overlay.cpp`, `dx9_hook_helpers.cpp`, `dx9_hook_sampler_state.cpp`.
+    - DX8/DDraw/OpenGL/Streamline/FFX/Layer: de-inlined internal headers
+      (`dx8_hook_internal.h` etc.) + per-area `.cpp` units.
   - `common/` - overlay policy (`dx12_overlay_policy.h`, `streamline_runtime_policy.h`,
     `overlay_compat.h`), `dxgi_shared*.cpp` (central Present routing: hooks, present,
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
