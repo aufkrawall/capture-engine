@@ -678,3 +678,9 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
 void DX11Hook::ProcessDeferredReleases() {
     g_DeferredRelease.Process();
 }
+
+// architecture)
+void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    HandleDX11ProcessFrame(pSwapChain, true);
+}
+
