@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-08-06 - Fixed: DX12 draw-chain failure else-branches hoisted into success path (Strange Brigade still stalling/flickering)
+
+- Symptom (session 20260806_174024, build 0.1.5730): after the GetBuffer fix the
+  per-frame ImGui teardown was gone, but the game still collapsed into 1s
+  lockstep stalls and the overlay drew only ~9 frames in 40s (flicker / ghostly
+  transparency). Hook trace showed `InitOverlaySync: ENTER (syncInit=0)` 575x via
+  "Startup compat staged activation" + "delaying overlay rendering for 100ms"
+  every cycle; `[OVERLAY COVERAGE] INTERRUPTED/UNPROVEN` 248x. Manual .dmp
+  (17:40:56) confirmed the present thread inside
+  `DX12DescFreeBackend::WaitForSlotGpuComplete` (the 1s upload-ring fence
+  timeout) via RenderOverlay -> DrawSubmitCoreFront -> DrawSc3 -> DrawSubmit ->
+  DrawReset -> DrawListAndAlloc.
+- Root cause: the same refactor (3398151e) hoisted FOUR more failure
+  else-branches of the draw chain into the success path: DrawSubmitElse
+  (list->Reset failed) and DrawResetElse (alloc->Reset failed) both cleared
+  `syncInit = false` unconditionally after EVERY successful draw. Frame 1 drew
+  and cleared syncInit; every later present re-ran the staged sync activation
+  (Phase4 block gated on `overlayInit && !syncInit`), recreating 16 allocators +
+  a fresh fence per cycle and delaying rendering 100ms — so the overlay barely
+  drew and the repeated fence recreation (values reset to 0) starved the
+  DescFree upload-ring guard, which then hit its 1s timeout every frame.
+- Fix: restored the else-branches in the wrappers — DrawListAndAlloc/DrawReset/
+  DrawSubmit/DrawSc3 now call DrawNullList/DrawResetElse/DrawSubmitElse/
+  DrawSc3Else ONLY from their original failure branches (with the pre-refactor
+  HookLogs: "null list or alloc", "alloc->Reset failed", "list->Reset failed",
+  "failed to get SwapChain3 interface"). syncInit now persists across successful
+  draws, so the staged sync activation runs only on genuine transitions.
+- Regression tests: DXGISharedSourceTest.DrawChainFailureElseBranchesNeverRunOnTheSuccessPath
+  (asserts each else-chunk is reachable only after `} else {` in its wrapper and
+  keeps its recovery semantics). tests/test_dxgi_shared_part10.cpp hit the
+  800-line ceiling (807) and was split: both overlay source-policy tests moved to
+  tests/test_dxgi_shared_part11.cpp (test sources are glob-discovered).
+- Lesson: audit ALL refactored if/else pairs, not just the visible regression:
+  the chunker converted every `if (x) {...} else {...}` into a wrapper that
+  called the else-chunk unconditionally on the success path. Check each `*Else()`
+  stub for state mutation (syncInit/overlayInit/cleanup) and verify success paths
+  never execute failure-only recovery.
+
 ### 2026-08-06 - Build gates: `--verify` reuses content-validated objects, `--verify-clean` for strict clean, `--skip-package` for dev
 
 - Motivation: `--verify` compiled the same code twice per gate (a mandatory clean

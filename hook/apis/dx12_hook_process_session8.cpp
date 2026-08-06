@@ -105,7 +105,7 @@ return ProcessFrameFlow::kOverlayDone;
 
 ProcessFrameFlow FrameProcessSession::DrawSc3() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-                            if (sc3) {
+    if (sc3) {
     flow = DrawSc3Front();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -114,11 +114,12 @@ ProcessFrameFlow FrameProcessSession::DrawSc3() {
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
-    flow = DrawSc3Else();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
+    } else {
+        flow = DrawSc3Else();
+        if (flow != ProcessFrameFlow::kContinue) {
+            return flow;
+        }
     }
-                            }
     return ProcessFrameFlow::kContinue;
 }
 

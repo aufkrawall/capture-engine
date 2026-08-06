@@ -540,20 +540,24 @@ return ProcessFrameFlow::kSkipSteamFence;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawSc3Else() {
+    HookLog("DX12: ProcessFrame - failed to get SwapChain3 interface");
     return ProcessFrameFlow::kContinue;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitElse() {
-dx12_hook_g_State.syncInit = false;
+    HookLog("DX12: ProcessFrame - list->Reset failed hr=0x%08X, forcing reinit", listResetHr);
+    dx12_hook_g_State.syncInit = false;
     return ProcessFrameFlow::kContinue;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawResetElse() {
-dx12_hook_g_State.syncInit = false;
+    HookLog("DX12: ProcessFrame - alloc->Reset failed hr=0x%08X, forcing reinit", allocResetHr);
+    dx12_hook_g_State.syncInit = false;
     return ProcessFrameFlow::kContinue;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawNullList() {
+    HookLog("DX12: ProcessFrame - null list or alloc");
     return ProcessFrameFlow::kContinue;
 }
 

@@ -592,7 +592,7 @@ return ProcessFrameFlow::kOverlayDone;
 
 ProcessFrameFlow FrameProcessSession::DrawListAndAlloc() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-                if (list && alloc) {
+    if (list && alloc) {
     flow = DrawAllocReset();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -601,11 +601,12 @@ ProcessFrameFlow FrameProcessSession::DrawListAndAlloc() {
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
-    flow = DrawNullList();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
+    } else {
+        flow = DrawNullList();
+        if (flow != ProcessFrameFlow::kContinue) {
+            return flow;
+        }
     }
-                }
     return ProcessFrameFlow::kContinue;
 }
 
@@ -632,7 +633,7 @@ return ProcessFrameFlow::kOverlayDone;
 
 ProcessFrameFlow FrameProcessSession::DrawReset() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-                    if (SUCCEEDED(allocResetHr)) {
+    if (SUCCEEDED(allocResetHr)) {
     flow = DrawResetFront();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -641,11 +642,12 @@ ProcessFrameFlow FrameProcessSession::DrawReset() {
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
-    flow = DrawResetElse();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
+    } else {
+        flow = DrawResetElse();
+        if (flow != ProcessFrameFlow::kContinue) {
+            return flow;
+        }
     }
-                    }
     return ProcessFrameFlow::kContinue;
 }
 
@@ -666,7 +668,7 @@ if (g_FGCompat.IsFGActive() || slFGActive) {
 
 ProcessFrameFlow FrameProcessSession::DrawSubmit() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-                        if (SUCCEEDED(listResetHr)) {
+    if (SUCCEEDED(listResetHr)) {
     flow = DrawSubmitSetup();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -675,10 +677,11 @@ ProcessFrameFlow FrameProcessSession::DrawSubmit() {
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
-    flow = DrawSubmitElse();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
+    } else {
+        flow = DrawSubmitElse();
+        if (flow != ProcessFrameFlow::kContinue) {
+            return flow;
+        }
     }
-                        }
     return ProcessFrameFlow::kContinue;
 }
