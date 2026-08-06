@@ -1,53 +1,100 @@
 #include "mediaengine_internal.h"
 
 
-bool MediaEngine::CreateSharedCaptureTextures(uint32_t width,  uint32_t height,  uint32_t format,  SharedMemoryLayout* sharedMem) {
+void MediaEngine::SetSourcePrefers10BitHint(bool prefer10Bit) {
 
 
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (!videoEnc) {
-            DLL_Log("MediaEngine: CreateSharedCaptureTextures - no encoder");
-            return false;
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] SetSourcePrefers10Bit(%s)", prefer10Bit ? "true" : "false");
+            videoEnc->SetSourcePrefers10Bit(prefer10Bit);
         }
-        if (!sharedMem) {
-            DLL_Log("MediaEngine: CreateSharedCaptureTextures - sharedMem is null");
-            return false;
-        }
-
-        // IMPORTANT: Set encoder dimensions and LUID from the parameters before
-        // EnsureDevice Otherwise EnsureDevice fails because width/height are still
-        // 0 or uses wrong GPU
-        videoEnc->SetDimensions(width, height);
-        videoEnc->SetAdapterLUID(sharedMem->GetLuidLowPart(), sharedMem->GetLuidHighPart());
-
-        if (!videoEnc->EnsureDevice()) {
-            DLL_Log(
-                "MediaEngine: CreateSharedCaptureTextures - device init failed "
-                "for LUID %08x:%08x",
-                sharedMem->GetLuidLowPart(), sharedMem->GetLuidHighPart());
-            return false;
-        }
-        return videoEnc->CreateSharedCaptureTextures(width, height, format, sharedMem);
 
 }
 
-void MediaEngine::WritePacket(AVPacket* pkt) {
+
+void MediaEngine::SetCursorCompositionSuppressedHint(bool suppressed) {
 
 
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (audioOnly && audioOnlyFmtCtx) {
-            if (pkt->stream_index >= 0 && (unsigned int)pkt->stream_index < audioOnlyFmtCtx->nb_streams) {
-                AVStream* st = audioOnlyFmtCtx->streams[pkt->stream_index];
-                AVRational codec_tb = {1, st->codecpar->sample_rate};
-                if (codec_tb.den > 0)
-                    av_packet_rescale_ts(pkt, codec_tb, st->time_base);
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] Cursor composition %s (capture frames %s the cursor)",
+                    suppressed ? "suppressed" : "active", suppressed ? "already contain" : "do not contain");
+            videoEnc->SetCursorCompositionSuppressed(suppressed);
+        }
+
+}
+
+
+void MediaEngine::SetActiveScreenGrab(bool enabled) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        activeScreenGrab = enabled;
+
+}
+
+
+void MediaEngine::SetAudioOnly(bool enabled) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        audioOnly = enabled;
+
+}
+
+
+void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
+
+
+        const std::filesystem::path exeDir = ce::capture_output::GetExecutableDirectory();
+        const std::filesystem::path outDir =
+            ce::capture_output::ResolveCaptureDirectory(config->video.outputDir, exeDir);
+        audioOnlyOutputReservation =
+            ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
+        if (!audioOnlyOutputReservation) {
+            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s", outDir.string().c_str());
+            audioOnlyFmtCtx = nullptr;
+            return;
+        }
+        audioOnlyFilename = audioOnlyOutputReservation.Utf8Path();
+        audioOnlyTrailerSucceeded = false;
+        if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
+            DLL_Log("MediaEngine: Failed to create audio-only muxer");
+            audioOnlyFmtCtx = nullptr;
+            audioOnlyOutputReservation.CleanupOwnedFile();
+            audioOnlyFilename.clear();
+        }
+
+}
+
+
+bool MediaEngine::CleanupAudioOnlyMuxer() {
+
+
+        int closeResult = 0;
+        if (audioOnlyFmtCtx) {
+            if (audioOnlyFmtCtx->pb) {
+                closeResult = avio_closep(&audioOnlyFmtCtx->pb);
+                if (closeResult < 0) {
+                    DLL_Log("MediaEngine: Failed to close audio-only output: %d", closeResult);
+                }
             }
-            av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
-        } else if (videoEnc) {
-            videoEnc->WriteFrame(pkt);
+            avformat_free_context(audioOnlyFmtCtx);
+            audioOnlyFmtCtx = nullptr;
         }
+        const bool outputPublished = audioOnlyTrailerSucceeded && closeResult >= 0;
+        if (outputPublished) {
+            audioOnlyOutputReservation.Publish();
+        } else {
+            audioOnlyOutputReservation.CleanupOwnedFile();
+        }
+        audioOnlyTrailerSucceeded = false;
+        audioOnlyFilename.clear();
+        return outputPublished;
 
 }
+
 
 void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
 
@@ -232,6 +279,7 @@ void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
 
 }
 
+
 void MediaEngine::CoalesceCaptureRoutes() {
 
 
@@ -298,6 +346,7 @@ void MediaEngine::CoalesceCaptureRoutes() {
 
 }
 
+
 ProcessLoopbackCapture* MediaEngine::GetAppCaptureForRoute(size_t srcIdx) {
 
 
@@ -311,6 +360,7 @@ ProcessLoopbackCapture* MediaEngine::GetAppCaptureForRoute(size_t srcIdx) {
         return audioSources[ownerIdx].appCapture.get();
 
 }
+
 
 std::pair<int64_t, int64_t> MediaEngine::GetCaptureGroupBufferedSampleRange(size_t srcIdx) const {
 
@@ -333,6 +383,7 @@ std::pair<int64_t, int64_t> MediaEngine::GetCaptureGroupBufferedSampleRange(size
         return {minimum == std::numeric_limits<int64_t>::max() ? 0 : minimum, maximum};
 
 }
+
 
 void MediaEngine::InitAudioSourceBuffers(AudioSource& source,  const AudioConfig& audioConfig,  size_t sourceIdx) {
 

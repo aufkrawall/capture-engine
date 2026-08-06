@@ -635,3 +635,15 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
         return videoOutputPublished;
 
 }
+
+MediaEngine::~MediaEngine() {
+
+
+        try {
+        StopRecording();
+        } catch (...) {
+            DLL_Log("[MediaEngine] Suppressed exception during destruction");
+        }
+
+}
+

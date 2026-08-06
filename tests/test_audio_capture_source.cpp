@@ -328,20 +328,21 @@ TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFresh
 }
 
 TEST(AudioCaptureSourceTest, EpochResetUsesTerminalResamplerFlushResultInsteadOfReportedDelay) {
-    const std::string mediaSource = ReadSource("mediaengine.cpp");
-    ASSERT_FALSE(mediaSource.empty());
+    // The resampler-flush implementations live in the frame and audio-pull units.
+    const std::string frame = ReadSource("mediaengine_frame.cpp");
+    const std::string audioPull = ReadSource("mediaengine_audio_pull.cpp");
+    ASSERT_FALSE(frame.empty());
+    ASSERT_FALSE(audioPull.empty());
 
-    // The internal header carries prototypes; anchor on the out-of-line
-    // definitions in the mediaengine_impl units (rfind).
-    const size_t captureFlush = mediaSource.find("bool MediaEngine::FlushCaptureResamplerForEpoch(");
-    const size_t resetService = mediaSource.find("bool MediaEngine::ServiceAudioEpochResetOnPull(", captureFlush);
-    const size_t audioOnlyFlush = mediaSource.find("void MediaEngine::FlushAudioOnlyResamplerTails(", resetService);
+    const size_t captureFlush = frame.find("bool MediaEngine::FlushCaptureResamplerForEpoch(");
+    const size_t resetService = audioPull.find("bool MediaEngine::ServiceAudioEpochResetOnPull(");
+    const size_t audioOnlyFlush = audioPull.find("void MediaEngine::FlushAudioOnlyResamplerTails(", resetService);
     ASSERT_NE(captureFlush, std::string::npos);
     ASSERT_NE(resetService, std::string::npos);
     ASSERT_NE(audioOnlyFlush, std::string::npos);
 
-    const std::string captureBody = mediaSource.substr(captureFlush, resetService - captureFlush);
-    const std::string resetBody = mediaSource.substr(resetService, audioOnlyFlush - resetService);
+    const std::string captureBody = frame.substr(captureFlush);
+    const std::string resetBody = audioPull.substr(resetService, audioOnlyFlush - resetService);
     EXPECT_NE(captureBody.find("AudioResampler::FlushResult::Complete"), std::string::npos);
     EXPECT_NE(resetBody.find("AudioResampler::FlushResult::Complete"), std::string::npos);
     EXPECT_EQ(captureBody.find("remainingDelay != 0"), std::string::npos);
@@ -547,13 +548,15 @@ TEST(AudioCaptureSourceTest, AudioWorkerExitAlwaysReleasesDrainWaiters) {
 
 TEST(AudioCaptureSourceTest, AudioWorkerSchedulingGapsAreRateLimitedDiagnosticsNotContinuityRecovery) {
     const std::string source = ReadSource("mediaengine.cpp");
+    const std::string audioThread = ReadSource("mediaengine_audio_thread.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(audioThread.empty());
 
-    const size_t loopBegin = source.find("void MediaEngine::AudioLoop()");
-    const size_t loopEnd = source.find("MediaEngine: Audio thread stopped", loopBegin);
+    const size_t loopBegin = audioThread.find("void MediaEngine::AudioLoop()");
+    const size_t loopEnd = audioThread.find("MediaEngine: Audio thread stopped", loopBegin);
     ASSERT_NE(loopBegin, std::string::npos);
     ASSERT_NE(loopEnd, std::string::npos);
-    const std::string loopBody = source.substr(loopBegin, loopEnd - loopBegin);
+    const std::string loopBody = audioThread.substr(loopBegin, loopEnd - loopBegin);
     // The threshold constant now lives in AudioLoopState (single source of truth
     // in the internal header); the loop phase consumes it from there.
     EXPECT_NE(source.find("kAudioWorkerSchedulingGapThresholdUs = 25000"), std::string::npos);
@@ -597,18 +600,26 @@ TEST(AudioCaptureSourceTest, MultiTrackRoutesShareOnePhysicalCaptureAndFanOutPac
 }
 
 TEST(AudioCaptureSourceTest, StartupQueueDropsPreAnchorPacketsInBoundedBatchesBeforeResampling) {
-    const std::string source = ReadSource("mediaengine.cpp");
-    ASSERT_FALSE(source.empty());
+    // The loop iteration polls sources before committing them; the bounded pre-start discard lives
+    // in the poll phase and resampling in the commit phase.
+    const std::string iteration = ReadSource("mediaengine_audio_thread.cpp");
+    const std::string poll = ReadSource("mediaengine_audio_loop_poll.cpp");
+    const std::string commit = ReadSource("mediaengine_audio_loop_commit.cpp");
+    ASSERT_FALSE(iteration.empty());
+    ASSERT_FALSE(poll.empty());
+    ASSERT_FALSE(commit.empty());
 
-    const size_t loopBegin = source.find("void AudioLoop()");
-    const size_t resample = source.find("src.resampler->Process(", loopBegin);
-    const size_t batch = source.find("kMaxPreStartDiscardBatchPackets", loopBegin);
-    ASSERT_NE(loopBegin, std::string::npos);
+    const size_t pollCall = iteration.find("AudioLoopPollSource(s, srcIdx)");
+    const size_t commitCall = iteration.find("AudioLoopCommitSource(s, srcIdx)", pollCall);
+    ASSERT_NE(pollCall, std::string::npos);
+    ASSERT_NE(commitCall, std::string::npos);
+    EXPECT_LT(pollCall, commitCall);
+
+    const size_t batch = poll.find("kMaxPreStartDiscardBatchPackets");
     ASSERT_NE(batch, std::string::npos);
-    ASSERT_NE(resample, std::string::npos);
-    EXPECT_LT(batch, resample);
-    EXPECT_NE(source.find("Batched pre-start discard owner=", batch), std::string::npos);
-    EXPECT_NE(source.find("batchedDiscards < kMaxPreStartDiscardBatchPackets", batch), std::string::npos);
+    EXPECT_NE(poll.find("batchedDiscards < kMaxPreStartDiscardBatchPackets", batch), std::string::npos);
+    EXPECT_NE(poll.find("Batched pre-start discard owner=", batch), std::string::npos);
+    EXPECT_NE(commit.find("src.resampler->Process("), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, AppBacklogDrainCannotStarveRouteFromDelayedSharedCaptureSibling) {
@@ -658,40 +669,39 @@ TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructive
 // the ingest-side headroom measurement, the pull-side adaptive reservoir, and the late-live-source
 // hold that replaces destructive silence.
 TEST(AudioCaptureSourceTest, LateLiveSourceHoldsThePullAndDeepensTheIngestReservoir) {
-    const std::string source = ReadSource("mediaengine.cpp");
-    ASSERT_FALSE(source.empty());
-
-    // Ingest side publishes headroom from the pre-pin exported cursor and attributes destroyed audio.
-    const size_t loopBegin = source.find("void MediaEngine::AudioLoop()");
-    ASSERT_NE(loopBegin, std::string::npos);
-    EXPECT_NE(source.find("PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx]", loopBegin),
+    // Ingest side (audio-loop commit phase) publishes headroom from the pre-pin exported cursor and
+    // attributes destroyed audio.
+    const std::string commit = ReadSource("mediaengine_audio_loop_commit.cpp");
+    ASSERT_FALSE(commit.empty());
+    EXPECT_NE(commit.find("PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx]"),
               std::string::npos);
-    EXPECT_NE(source.find("ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples", loopBegin),
-              std::string::npos);
-    EXPECT_NE(source.find("packetStartSamples += src.timelineResyncOffsetSamples;", loopBegin), std::string::npos);
+    EXPECT_NE(commit.find("ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples"), std::string::npos);
+    EXPECT_NE(commit.find("packetStartSamples += src.timelineResyncOffsetSamples;"), std::string::npos);
 
     // Pull side runs the reservoir controller and derives BOTH the pull latency and the buffered
     // target from it, so the drift/backlog compensation lane cannot fight a deepened reservoir.
-    const size_t pullBegin = source.find("void MediaEngine::PullAndEncodeAudio(");
+    const std::string pull = ReadSource("mediaengine_audio_pull.cpp");
+    const std::string targets = ReadSource("mediaengine_audio_pull_targets.cpp");
+    ASSERT_FALSE(pull.empty());
+    ASSERT_FALSE(targets.empty());
+    const size_t pullBegin = pull.find("void MediaEngine::PullAndEncodeAudio(");
     ASSERT_NE(pullBegin, std::string::npos);
-    EXPECT_NE(source.find("ce::audio::ComputeAudioIngestReservoir(", pullBegin), std::string::npos);
-    EXPECT_NE(source.find("effectiveAudioPullLatencyMs = kSteadyAudioPullLatencyMs +", pullBegin),
-              std::string::npos);
-    EXPECT_NE(source.find("ComputeAudioPullLatencyMs(effectiveAudioPullLatencyMs", pullBegin), std::string::npos);
-    EXPECT_NE(source.find("SAMPLE_RATE, baseTargetLatencySamples, effectiveAudioTargetBufferLagMs", pullBegin),
+    EXPECT_NE(targets.find("ce::audio::ComputeAudioIngestReservoir("), std::string::npos);
+    EXPECT_NE(targets.find("effectiveAudioPullLatencyMs = kSteadyAudioPullLatencyMs +"), std::string::npos);
+    EXPECT_NE(pull.find("ComputeAudioPullLatencyMs(effectiveAudioPullLatencyMs", pullBegin), std::string::npos);
+    EXPECT_NE(pull.find("SAMPLE_RATE, baseTargetLatencySamples, effectiveAudioTargetBufferLagMs"),
               std::string::npos);
 
     // The hold must be evaluated before the timeline-gap silence path, otherwise late real audio is
     // still exported as silence and then destroyed.
-    const size_t hold = source.find("ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(", pullBegin);
-    const size_t gapSilence = source.find("[PullAudio] Timeline source gap silence:", pullBegin);
+    const size_t hold = pull.find("ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(", pullBegin);
+    const size_t gapSilence = pull.find("[PullAudio] Timeline source gap silence:", pullBegin);
     ASSERT_NE(hold, std::string::npos);
     ASSERT_NE(gapSilence, std::string::npos);
     EXPECT_LT(hold, gapSilence);
-    EXPECT_NE(source.find("ce::audio::RaiseAudioIngestReservoirForShortfall(reservoirPassBaseMs", pullBegin),
+    EXPECT_NE(pull.find("ce::audio::RaiseAudioIngestReservoirForShortfall(reservoirPassBaseMs", pullBegin),
               std::string::npos);
 
     // The stop drain must never clear the reservoir; the retained lead would look like drift.
-    EXPECT_NE(source.find("if (!forceDrain) {\n            reservoirTick = pullTick;"),
-              std::string::npos);
+    EXPECT_NE(targets.find("if (!forceDrain) {\n            reservoirTick = pullTick;"), std::string::npos);
 }

@@ -92,12 +92,14 @@ bool MediaEngine::ProcessFrame(uint64_t handle,  uint64_t fenceHandle,  uint64_t
 
 }
 
+
 bool MediaEngine::RepeatLastFrame(int64_t timestampQPC,  const ce::cursor::CaptureState* cursorState) {
 
 
         return RepeatLastFrame(timestampQPC, -1, cursorState);
 
 }
+
 
 bool MediaEngine::RepeatLastFrame(int64_t timestampQPC,  int64_t timelineElapsedUs, 
                          const ce::cursor::CaptureState* cursorState) {
@@ -155,6 +157,7 @@ bool MediaEngine::RepeatLastFrame(int64_t timestampQPC,  int64_t timelineElapsed
 
 }
 
+
 void MediaEngine::ExtendCfrToCommonAudioLattice() {
 
 
@@ -200,6 +203,7 @@ void MediaEngine::ExtendCfrToCommonAudioLattice() {
 
 }
 
+
 bool MediaEngine::IsWgcCfrRecording() const {
 
 
@@ -207,12 +211,14 @@ bool MediaEngine::IsWgcCfrRecording() const {
 
 }
 
+
 bool MediaEngine::IsCfrRecording() const {
 
 
         return ce::audio::ShouldUseCfrAudioContinuityPolicy(SessionUsesVfr());
 
 }
+
 
 double MediaEngine::GetMaxAudioCaptureLatencyMs() const {
 
@@ -225,6 +231,7 @@ double MediaEngine::GetMaxAudioCaptureLatencyMs() const {
 
 }
 
+
 int64_t MediaEngine::GetMaxAudioCaptureLatencyQpc() const {
 
 
@@ -235,6 +242,7 @@ int64_t MediaEngine::GetMaxAudioCaptureLatencyQpc() const {
         return static_cast<int64_t>(std::llround((maxLatencyMs / 1000.0) * static_cast<double>(qpcFreq)));
 
 }
+
 
 void MediaEngine::SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
 
@@ -252,6 +260,7 @@ void MediaEngine::SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
         }
 
 }
+
 
 bool MediaEngine::PrepareFrameD3D11(void* texture,  uint32_t width,  uint32_t height,  bool isHDR) {
 
@@ -275,6 +284,7 @@ bool MediaEngine::PrepareFrameD3D11(void* texture,  uint32_t width,  uint32_t he
         return prepared;
 
 }
+
 
 bool MediaEngine::ProcessFrameD3D11(void* texture,  int64_t timestampQPC,  uint32_t width,  uint32_t height,  bool isHDR, 
                            int32_t captureLeft,  int32_t captureTop,  int64_t timelineElapsedUs, 
@@ -409,6 +419,7 @@ bool MediaEngine::ProcessFrameD3D11(void* texture,  int64_t timestampQPC,  uint3
 
 }
 
+
 void MediaEngine::AppendSyncResamplerOutput(AudioSource& src,  size_t srcIdx,  int channels,  uint8_t** resampledData, 
                                    int outSamples) {
 
@@ -510,6 +521,7 @@ void MediaEngine::AppendSyncResamplerOutput(AudioSource& src,  size_t srcIdx,  i
 
 }
 
+
 bool MediaEngine::PumpSourceRingThroughSyncResampler(AudioSource& src,  size_t srcIdx,  int channels,  size_t maxFloats) {
 
 
@@ -550,6 +562,7 @@ bool MediaEngine::PumpSourceRingThroughSyncResampler(AudioSource& src,  size_t s
         return true;
 
 }
+
 
 bool MediaEngine::FlushCaptureResamplerForEpoch(AudioSource& src,  size_t srcIdx,  uint64_t oldEpoch,  uint64_t newEpoch) {
 
