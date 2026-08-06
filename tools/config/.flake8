@@ -9,4 +9,4 @@ extend-ignore = E203
 # the build.py facade parts (tools/build/); source_splitter_*.py covers the
 # splitter's parts. The facades themselves (build.py, source_splitter.py) stay
 # linted.
-extend-exclude = *_part_*.py, build_*.py, source_splitter_*.py
+extend-exclude = *_part_*.py, build_*.py, source_splitter_*.py, analyze_capture_av_*.py

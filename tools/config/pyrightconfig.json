@@ -11,6 +11,7 @@
     "../../build",
     "../../installed",
     "../../**/*_part_*.py",
+    "../../**/analyze_capture_av_*.py",
     "../../tools/build",
     "../../tools/refactor/source_splitter_common.py",
     "../../tools/refactor/source_splitter_lexer.py",
