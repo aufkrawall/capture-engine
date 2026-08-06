@@ -3,6 +3,7 @@
 // installation. Shared state and helpers come from crash_handler_internal.h.
 
 #include "crash_handler_internal.h"
+#include "cpp_exception_message.h"
 
 #include <atomic>
 #include <cstdio>
@@ -316,6 +317,12 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // and write the dump there.
     if (!forceDump && (code == 0xE06D7363 || code == 0x20474343)) {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Unhandled C++ exception: log the thrown object (message) before dumping;
+    // the minimal-first minidump does not capture it.
+    if (code == 0xE06D7363 || code == 0x20474343) {
+        ce::crash_diagnostics::LogCppExceptionDiagnostics(pExceptionPointers->ExceptionRecord);
     }
 
     ActivateCrashTrace();

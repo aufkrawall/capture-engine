@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstring>
+
 #include "../common/crash_dump_policy.h"
+#include "../common/cpp_exception_message.h"
 
 namespace policy = ce::crash_dump_policy;
 
@@ -163,4 +167,32 @@ TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
     EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(false, false));
     EXPECT_TRUE(policy::ShouldSkipBreakpointExceptionDump(false, true));
     EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(true, true));
+}
+
+TEST(CrashDumpPolicyTest, ExtractPrintableMessageFindsTextAmongBinaryNoise) {
+    // Mimics a thrown std::out_of_range object: vtable-ish pointers around an
+    // inline (small-string) message.
+    uint8_t object[128]{};
+    const std::string message = "basic_string::substr: __pos (which is 49) > this->size()";
+    std::copy(message.begin(), message.end(), object + 16);
+    EXPECT_EQ(ce::crash_diagnostics::ExtractPrintableMessage(object, sizeof(object)), message);
+}
+
+TEST(CrashDumpPolicyTest, ExtractPrintableMessageReturnsLongestPrintableRun) {
+    // Mimics a what()-style payload where the message run also carries a
+    // printable prefix/suffix.
+    const std::string message = "invalid argument";
+    const std::string padded = std::string("XX") + message + std::string("YY");
+    EXPECT_EQ(ce::crash_diagnostics::ExtractPrintableMessage(
+                  reinterpret_cast<const uint8_t*>(padded.data()), padded.size()),
+              "XXinvalid argumentYY");
+}
+
+TEST(CrashDumpPolicyTest, ExtractPrintableMessageRejectsShortRunsAndEmptyInput) {
+    const uint8_t shortRun[] = {0xAA, 0xBB, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 0xCC};
+    EXPECT_TRUE(ce::crash_diagnostics::ExtractPrintableMessage(shortRun, sizeof(shortRun)).empty());
+    EXPECT_TRUE(ce::crash_diagnostics::ExtractPrintableMessage(nullptr, 0).empty());
+
+    const uint8_t trailingSpace[] = {'m', 'e', 's', 's', 'a', 'g', 'e', ' ', ' ', 0x00};
+    EXPECT_EQ(ce::crash_diagnostics::ExtractPrintableMessage(trailingSpace, sizeof(trailingSpace)), "message");
 }

@@ -6,6 +6,41 @@ cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed
 ```
 The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces.
 
+- When analyzing an OLD session dump after a newer build was installed, add the
+  crash handler's per-session symbol archive to the path (it snapshots the PDBs
+  of the crashed build at crash time):
+```
+cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\<session>\symbols" -c ".ecxr; k; q"
+```
+  Verify the PDB really matches the dump with `!lmi captureengine` (GUID/age)
+  before suspecting the symbol store; a mismatch is rare and prints explicit
+  warnings.
+
+- Source lines in dump sessions: `l+` alone often reports "Line information
+  loading disabled". Use `l+` then `.lines` (that command actually enables it),
+  then `ln <addr>` / `u <addr>`.
+
+- Address math: convert runtime addresses to module offsets (RVA) with a script
+  (PE base + section mapping) instead of by hand; manual subtraction slipped
+  twice by 0x20000 during one analysis and mis-targeted breakpoints. Prefer
+  `module!symbol` / `module!symbol+offset` for breakpoints over `module+offset`
+  so the debugger resolves the symbol instead of relying on your arithmetic.
+
+- Heavy inlining (WinMain inlines whole subsystems): `k`/`ln` can attribute a
+  crash block to the WRONG inlined function (shared/outlined epilogues make the
+  PDB pick one owner). When the attribution contradicts the flow, verify with
+  execution: breakpoint a known earlier point and step over calls (`p N`) to
+  capture the real path into the crash site.
+
+- `!peb` (live session only) shows the process command line; minimal dumps do
+  not include it.
+
+- Unhandled C++ exceptions: MinGW/clang raises 0x20474343 (" GCC"), MSVC
+  0xE06D7363. The minimal dump normally does NOT contain the thrown exception
+  object, so the message is unreadable from the dump; the crash handler now logs
+  the object bytes + decoded message to crash.log (see
+  common/cpp_exception_message.{h,cpp}).
+
 - Installed Windows tools for `.dmp`, symbol, PE/COFF, Sysinternals, and media/capture analysis:
 
 | Tool | Purpose | Installed/default path |
