@@ -82,7 +82,7 @@ This page records the style rules that are either tool-backed or strongly reflec
 
 ### Current clang-tidy debt and triage
 
-As of 2026-08-03 the clang-tidy baseline is **zero warnings** across 272 translation
+As of 2026-08-06 the clang-tidy baseline is **zero warnings** across 552 translation
 units. Remaining analyzer findings are either fixed at the root or carry a targeted
 `NOLINT` comment with a concrete rationale; checks are never disabled globally. See
 `known-debt.md` for the category-by-category disposition.
