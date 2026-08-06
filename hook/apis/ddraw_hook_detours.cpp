@@ -1,6 +1,288 @@
 #include "ddraw_hook_internal.h"
 
 
+HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis,  DDSURFACEDESC* pDesc, 
+                                                                     IDirectDrawSurface** ppSurface, 
+                                                                     IUnknown* ddraw_hook_pUnkOuter) {
+
+
+    LegacyDDrawVTableRecord record;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        const auto it = ddraw_hook_g_LegacyDDrawVTables.find(pThis ? *(void***)pThis : nullptr);
+        if (it != ddraw_hook_g_LegacyDDrawVTables.end())
+            record = it->second;
+    }
+    if (!record.createSurface)
+        return DDERR_GENERIC;
+
+    if (pDesc && g_IPC) {
+        const int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc) && (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX)) {
+            pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+            pDesc->dwBackBufferCount = static_cast<DWORD>(count - 1);
+        }
+    }
+
+    const HRESULT hr = record.createSurface(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, record.version);
+        InstallSurfaceHooksForLegacySurface(*ppSurface, ce::graphics_api_identity::DirectDrawLabel(record.version));
+        if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
+            HookLog("DDraw: %s CreateSurface accepted surface=%p primary=%d",
+                    ce::graphics_api_identity::DirectDrawLabel(record.version), *ppSurface,
+                    IsPrimarySurfaceDesc(pDesc) ? 1 : 0);
+        }
+    }
+    return hr;
+
+}
+
+
+LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* surface) {
+
+
+    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+    const auto it = ddraw_hook_g_LegacySurfaceVTables.find(surface ? *(void***)surface : nullptr);
+    return it != ddraw_hook_g_LegacySurfaceVTables.end() ? it->second : LegacySurfaceVTableRecord{};
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface, 
+                                                           IDirectDrawSurface* destOverride,  DWORD ddraw_hook_flags) {
+
+
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.flip)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.flip(surface, destOverride, ddraw_hook_flags);
+    if (SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface);
+    }
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface,  LPRECT destRect, 
+                                                          IDirectDrawSurface* srcSurface,  LPRECT srcRect,  DWORD ddraw_hook_flags, 
+                                                          DDBLTFX* ddraw_hook_bltFx) {
+
+
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.blt)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
+        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface, srcSurface);
+    }
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface,  LPRECT destRect, 
+                                                           DDSURFACEDESC* surfaceDesc,  DWORD ddraw_hook_flags,  HANDLE ddraw_hook_event) {
+
+
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    return record.lock ? record.lock(surface, destRect, surfaceDesc, ddraw_hook_flags, ddraw_hook_event) : DDERR_GENERIC;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface,  LPVOID ddraw_hook_surfaceData) {
+
+
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.unlock)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.unlock(surface, ddraw_hook_surfaceData);
+    if (SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface);
+    }
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis,  DDSURFACEDESC2* pDesc, 
+                                                                IDirectDrawSurface7** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
+
+
+    HookLog("DDraw: DetourDirectDraw7CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
+            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
+
+    if (pDesc && g_IPC) {
+        int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc)) {
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+                pDesc->dwBackBufferCount = (DWORD)count - 1;
+                HookLog("DDraw: CreateSurface: Overriding BackBufferCount to %d", count);
+            }
+        }
+    }
+
+    DDraw7CreateSurface_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        const auto it = ddraw_hook_g_DDraw7CreateSurfaceOriginals.find(pThis ? *(void***)pThis : nullptr);
+        if (it != ddraw_hook_g_DDraw7CreateSurfaceOriginals.end())
+            original = it->second;
+    }
+    HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
+    HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p", hr,
+            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
+        InstallSurfaceHooksForSurface(*ppSurface, "CreateSurface");
+        if (IsPrimarySurfaceDesc(pDesc)) {
+            ddraw_hook_g_PrimarySurface = *ppSurface;
+            HookLog("DDraw: Tracking primary surface from CreateSurface (%p)", *ppSurface);
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                InstallAttachedBackBufferHooks(*ppSurface, "CreateSurface attached backbuffer");
+            }
+        }
+    }
+
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis,  DDSURFACEDESC2* pDesc, 
+                                                                IDirectDrawSurface4** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
+
+
+    HookLog("DDraw: DetourDirectDraw4CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
+            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
+
+    if (pDesc && g_IPC) {
+        int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc)) {
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+                pDesc->dwBackBufferCount = (DWORD)count - 1;
+                HookLog("DDraw: CreateSurface4: Overriding BackBufferCount to %d", count);
+            }
+        }
+    }
+
+    DDraw4CreateSurface_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        const auto it = ddraw_hook_g_DDraw4CreateSurfaceOriginals.find(pThis ? *(void***)pThis : nullptr);
+        if (it != ddraw_hook_g_DDraw4CreateSurfaceOriginals.end())
+            original = it->second;
+    }
+    HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
+    HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p", hr,
+            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
+        InstallSurfaceHooksForSurface4(*ppSurface, "CreateSurface4");
+        if (IsPrimarySurfaceDesc(pDesc)) {
+            ddraw_hook_g_PrimarySurface4 = *ppSurface;
+            HookLog("DDraw: Tracking primary surface4 from CreateSurface (%p)", *ppSurface);
+        }
+    }
+
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  IDirectDrawSurface7* destOverride, 
+                                                      DWORD ddraw_hook_flags) {
+
+
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
+    MaybeTrackPrimarySurface(surface, "Flip");
+
+    if (g_IPC) {
+        std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
+        if (mode != "default") {
+            if (mode == "off") {
+                // Force Immediate
+                ddraw_hook_flags |= 0x00000008;   // DDFLIP_NOVSYNC
+                ddraw_hook_flags &= ~0x00000001;  // DDFLIP_WAIT
+            } else if (mode == "fifo" || mode == "adaptive") {
+                // Force Wait
+                ddraw_hook_flags |= 0x00000001;   // DDFLIP_WAIT
+                ddraw_hook_flags &= ~0x00000008;  // DDFLIP_NOVSYNC
+            }
+        }
+    }
+
+    // CPU Prerender Limit (Buffered)
+    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit > 0.0f) {
+        ApplyPrerenderLimitDDraw(surface, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
+    }
+
+    HRESULT hr = ddraw_hook_oDDSurface7Flip(surface, destOverride, ddraw_hook_flags);
+
+    // CPU Prerender Limit (Serial)
+    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit == 0.0f) {
+        ApplyPrerenderLimitDDraw(surface, 0.0f);
+    }
+
+    // Capture after flip (primary surface now has the rendered frame)
+    HandleCapture(surface);
+
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  IDirectDrawSurface4* destOverride, 
+                                                      DWORD ddraw_hook_flags) {
+
+
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
+    MaybeTrackPrimarySurface4(surface, "Flip4");
+
+    HRESULT hr = ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags);
+    HandleCaptureSurface4(surface);
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPRECT destRect, 
+                                                     IDirectDrawSurface7* srcSurface,  LPRECT srcRect,  DWORD ddraw_hook_flags, 
+                                                     void* ddraw_hook_bltFx) {
+
+
+    HRESULT hr = ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
+
+    if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        RememberPresentedSourceSurface(srcSurface);
+    }
+
+    if (surface != ddraw_hook_g_HookSurfacePrototype && !ddraw_hook_g_PrimarySurface) {
+        MaybeTrackPrimarySurface(surface, "Blt");
+    }
+
+    // Only capture if this is a blit to the tracked primary surface
+    if (surface && surface != ddraw_hook_g_HookSurfacePrototype && (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface)) {
+        HandleCapture(surface, srcSurface);
+    }
+
+    return hr;
+
+}
+
+
+#include "ddraw_hook_internal.h"
+
+
 HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPRECT destRect, 
                                                      IDirectDrawSurface4* srcSurface,  LPRECT srcRect,  DWORD ddraw_hook_flags, 
                                                      void* ddraw_hook_bltFx) {
