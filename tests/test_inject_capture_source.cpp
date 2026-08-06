@@ -204,11 +204,17 @@ TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesShared
     const std::string source = ReadSource("hook/apis/dx9_hook.cpp");
     ASSERT_FALSE(source.empty());
 
-    const std::string createDevice =
-        FunctionBody(source, "HRESULT STDMETHODCALLTYPE DetourCreateDevice(",
-                     "inline IDirect3D9* WINAPI DetourDirect3DCreate9(");
+    // The internal header carries prototypes; anchor on the out-of-line
+    // definitions in the dx9_hook_helpers units (rfind).
+    const size_t createDeviceBegin = source.rfind("HRESULT STDMETHODCALLTYPE DetourCreateDevice(");
+    const size_t createDeviceEnd = source.find("IDirect3D9* WINAPI DetourDirect3DCreate9(", createDeviceBegin);
+    ASSERT_NE(createDeviceBegin, std::string::npos);
+    ASSERT_NE(createDeviceEnd, std::string::npos);
+    const std::string createDevice = source.substr(createDeviceBegin, createDeviceEnd - createDeviceBegin);
     const std::string sharedSetup =
-        FunctionBody(source, "bool SetupDirectD3D9SharedRing(", "bool HasPublishedGeneration() const");
+        // The internal header carries prototypes; anchor on the out-of-line
+        // definition in the dx9_hook_capture_impl units (rfind).
+        FunctionBody(source, "bool DX9Capture::SetupDirectD3D9SharedRing(", "bool HasPublishedGeneration() const");
     ASSERT_FALSE(createDevice.empty());
     ASSERT_FALSE(sharedSetup.empty());
 
