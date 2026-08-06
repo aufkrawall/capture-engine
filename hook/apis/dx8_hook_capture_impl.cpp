@@ -1,14 +1,6 @@
 #include "dx8_hook_internal.h"
 
 
-DX8StateHookBypassScope::~DX8StateHookBypassScope() {
-
-
-        if (dx8_hook_g_DX8StateHookBypassDepth > 0) {
-            --dx8_hook_g_DX8StateHookBypassDepth;
-        }
-
-}
 
 void DX8Capture::Cleanup() {
 
