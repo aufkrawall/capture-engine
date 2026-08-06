@@ -733,3 +733,11 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
     }
 
 }
+
+D3D11InternalIdentityProbeScope::~D3D11InternalIdentityProbeScope() {
+
+
+        DX11Hook_EndInternalIdentityProbe();
+
+}
+
