@@ -664,14 +664,11 @@ def main() -> int:
                 new_text += "\n" + "\n".join(m.after_dirs) + "\n"
             cursor = m.body_close
         new_text += text[cursor:]
-        # A pre-existing `inline` declaration for an extracted function would
-        # make its out-of-line definition inline again (clang may then drop the
-        # cross-TU symbol). Strip `inline` from declarations of extracted names.
-        for m, _ in extracted:
-            pattern = re.compile(
-                r"\binline\s+([A-Za-z_:<>,\s*&]*\b" + re.escape(m.name) + r"\s*)\("
-            )
-            new_text = pattern.sub(r"\1(", new_text)
+        # A pre-existing `inline` declaration would make the out-of-line
+        # definition in the impl unit inline again (clang may then drop the
+        # cross-TU symbol). Strip `inline` from every function declaration
+        # (inline variables keep their keyword - they have no '(').
+        new_text = re.sub(r"(?m)^(\s*)inline\s+((?:[A-Za-z_:<>,\s*&]|\b)+?[A-Za-z_~]\w*\s*\()", r"\1\2", new_text)
         classes: list[ClassInfo] = []
         for m, ns in extracted:
             pseudo = ClassInfo(name="", start=0, body_open=0, body_close=0)

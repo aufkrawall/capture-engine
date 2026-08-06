@@ -135,8 +135,12 @@ TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeA
 TEST(InjectCaptureSourceTest, D3D11CleanupOwnsImmediateContextAndSerializesCapture) {
     const std::string source = ReadSource("hook/apis/dx11_hook.cpp");
     ASSERT_FALSE(source.empty());
-    const std::string cleanup = FunctionBody(source, "void Cleanup() override", "void CreateSharedResources(");
-    const std::string capture = FunctionBody(source, "bool CaptureFrame(IDXGISwapChain*", "static DX11Capture");
+    // The internal header now carries declarations only; anchor on the
+    // out-of-line definitions in the dx11_hook_capture_impl units.
+    const std::string cleanup =
+        FunctionBody(source, "void DX11Capture::Cleanup()", "bool DX11Capture::CreateSharedResources(");
+    const std::string capture =
+        FunctionBody(source, "bool DX11Capture::CaptureFrame(IDXGISwapChain*", "static DX11Capture");
     ASSERT_FALSE(cleanup.empty());
     ASSERT_FALSE(capture.empty());
 
