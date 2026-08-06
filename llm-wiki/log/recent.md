@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-06 - Build gates: `--verify` reuses content-validated objects, `--verify-clean` for strict clean, `--skip-package` for dev
+
+- Motivation: `--verify` compiled the same code twice per gate (a mandatory clean
+  product rebuild + the incremental sanitizer child) and packaging re-created the
+  7z archives on every build. Measured before: plain `--verify` 420 s (of which
+  ~390 s was the clean rebuild of 529 TUs), incremental loop 76 s incl. ~26 s
+  packaging.
+- `--verify` now runs the product build with the same content-addressed object
+  reuse as `--incremental` (source/compiler/flags/depfile/project-header
+  signatures; products still relink for the new build identity; unit-test links
+  stay content-cached). `--verify --verify-clean` restores the strict clean
+  rebuild (every object recompiled) and is the required gate for `build.py`,
+  toolchain/compile/link/hardening policy, shared ABI/layout, and
+  analyzer/test-gate policy changes. `--verify-clean` without `--verify` exits 2.
+- `--skip-package` skips only the automatic 7z archive creation (step recorded as
+  skipped) while keeping licenses, PE hardening, tests, lint, and sanitizer;
+  intended for dev iteration, commit gates should still package.
+- Measured after (2026-08-06, warm caches): `--verify --skip-package` 89 s
+  (1 identity TU recompiled, sanitizer incremental + concurrent, lint warm);
+  `--verify --verify-clean` 347 s (clean rebuild, sanitizer stage-cache hit).
+- Regression tests: BuildFlagPolicyTest.test_verify_reuses_content_validated_objects_unless_clean_explicitly_requested
+  and test_skip_package_disables_release_archives_but_keeps_the_gate_steps
+  (source-policy over the build units). Gate: `--verify --verify-clean` passed
+  (build 0.1.5730).
+
 ### 2026-08-06 - Fixed: DX12 overlay re-initialized EVERY frame (Strange Brigade DX12 stalls + flicker)
 
 - Symptom: Strange Brigade DX12 (Steam overlay active, no FG) showed ~1s game

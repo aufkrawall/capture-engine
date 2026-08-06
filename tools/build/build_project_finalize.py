@@ -136,8 +136,10 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
 
     if env.get("CE_SANITIZE") == "1" or ISOLATED_BUILD_ROOT:
         log("Skipping release archives for isolated/sanitizer validation")
+    elif env.get("CE_SKIP_PACKAGE") == "1":
+        log("Skipping release archives (--skip-package)")
+        record_verification_step("package_archives", "skipped", details={"reason": "--skip-package"})
     else:
         package_build_outputs()
 
     log("Build Complete.")
-

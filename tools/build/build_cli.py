@@ -81,6 +81,8 @@ def main():
     # Parse flags
     default_quality_mode = is_default_quality_invocation(args)
     verify_flag = "--verify" in sys.argv
+    verify_clean_flag = "--verify-clean" in sys.argv
+    skip_package_flag = "--skip-package" in sys.argv
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
     run_integration_flag = "--run-integration-tests" in sys.argv
@@ -106,9 +108,23 @@ def main():
     # --production: build signed production binaries (requires CE_PRODUCTION_BUILD=1)
     # Dev builds do NOT pass this flag; signature verification is a warning only.
     production_flag = "--production" in sys.argv or "CE_PRODUCTION_BUILD" in os.environ
-    # --force is now DEFAULT behavior for reliability (disable with --incremental)
+    # --force is now DEFAULT behavior for reliability (disable with --incremental).
+    # --verify reuses content-validated objects by default so the complete gate is
+    # not a full rebuild on every category change; --verify-clean (or
+    # --force-rebuild) keeps the authoritative clean product build for
+    # toolchain/dependency/ABI-sensitive changes.
     resume_flag = "--resume" in sys.argv
-    incremental_flag = "--incremental" in sys.argv or resume_flag
+    if verify_clean_flag and not verify_flag:
+        log(
+            "ERROR: --verify-clean requires --verify (it selects the clean product build "
+            "inside the verification gate)"
+        )
+        sys.exit(2)
+    incremental_flag = (
+        "--incremental" in sys.argv
+        or resume_flag
+        or (verify_flag and not verify_clean_flag and "--force-rebuild" not in sys.argv)
+    )
     force_flag = not incremental_flag  # Force rebuild by default
 
     if resume_flag and no_build_flag:
@@ -251,6 +267,9 @@ def main():
 
     # Store flags in env for access in compile functions
     env["FORCE_REBUILD"] = "1" if force_flag else "0"
+    if skip_package_flag:
+        env["CE_SKIP_PACKAGE"] = "1"
+        log("Release archive packaging skipped (--skip-package)")
     if production_flag:
         env["CE_PRODUCTION_BUILD"] = "1"
         log("PRODUCTION BUILD: DLL signature verification will be enforced")
@@ -258,8 +277,16 @@ def main():
         log("DEV BUILD: DLL signature verification is advisory only")
 
     if incremental_flag:
-        mode = "failed-build resume" if resume_flag else "incremental build"
-        log(f"Validated {mode} - unchanged objects may be reused by content signature")
+        if verify_flag and not verify_clean_flag and "--incremental" not in sys.argv and "--resume" not in sys.argv:
+            log(
+                "Verification build reuses content-validated objects "
+                "(--verify-clean forces a clean product build)"
+            )
+        else:
+            mode = "failed-build resume" if resume_flag else "incremental build"
+            log(f"Validated {mode} - unchanged objects may be reused by content signature")
+    elif verify_flag and verify_clean_flag:
+        log("Verification clean product build (--verify-clean) - rebuilding all objects for reliability")
     else:
         log("Force rebuild (default) - ensuring clean build for reliability")
 
@@ -376,7 +403,7 @@ def main():
                     sanitizer_jobs,
                 )
                 log(
-                    "Running isolated sanitizer validation concurrently with the clean product build "
+                    "Running isolated sanitizer validation concurrently with the product build "
                     f"(product jobs={product_jobs}, sanitizer jobs={sanitizer_jobs})"
                 )
                 record_verification_step(
@@ -434,6 +461,7 @@ def main():
             "sanitize": sanitize_flag,
             "no_build": no_build_flag,
             "resume": resume_flag,
+            "force_rebuild": force_flag,
         },
     )
     if sanitizer_future is not None:

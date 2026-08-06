@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-29 (successful product builds now emit clean, verified CaptureEngine and first-party test-app 7z archives; previously 2026-07-28 for content-aware/concurrent complete verification)
+Last cross-checked: 2026-08-06 (successful product builds now emit clean, verified CaptureEngine and first-party test-app 7z archives; `--verify` reuses content-validated objects by default with `--verify-clean` for the strict clean rebuild, and `--skip-package` skips only the automatic 7z archives for dev iteration; previously 2026-07-29)
 
 Primary sources:
 - `AGENTS.md`
@@ -49,7 +49,7 @@ Running `python build.py` is the full default-quality path. On Windows it update
 - License packaging is fail closed. Runtime notices are selected from the exact DLLs copied into `installed/captureengine/ffmpeg`; the bundled oneVPL dispatcher therefore emits `MIT_libvpl.txt`. AMF is the deliberate exception to DLL-triggered selection: FFmpeg compiles against the MSYS2 `amf-headers` package but dynamically loads the AMD-driver `amfrt64.dll`, so packaging unconditionally requires and copies that package's complete license and standards disclaimer as `MIT_AMF-Headers.txt` even though no AMD DLL is redistributed.
 - The product release boundary is the curated `captureengine/` root in `build/packages/captureengine.7z`: it includes the verified first-party product, FFmpeg closure, PDBs, manifests, licenses, and a clean config copied from `captureengine/config.ini.template`. It excludes the live installation's logs, captures, backups, stale/temporary files, `nul`, and user-edited `config.ini`.
 - `build/packages/testapps.7z` is a separate validation artifact, not part of the product. Its `testapps/` root contains only the explicitly built x64/x86 first-party test executables, available PDBs, and `THIRD_PARTY_RUNTIME_REQUIREMENTS.txt`; it never copies DLLs or arbitrary files from `installed/testapp`. The note maps FSR SR/FG, DLSS SR/FG, Reflex/PCL, Streamline core, NVIDIA NGX, and Vulkan FidelityFX requirements to official SDK/driver sources and instructs users to place x64 vendor DLLs beside the x64 FG apps.
-- CMake's `-E tar --format=7zip` path creates each archive through a temporary output, lists it back to verify the single expected root, and atomically replaces the fixed archive name. Packaging runs only after PE/import/PDB verification and is skipped by isolated/sanitizer builds; failures are fatal and recorded in the verification manifest. Never package `build/msys64`, SDK caches, `external`, local diagnostic/session data, or vendor SDK/driver DLLs.
+- CMake's `-E tar --format=7zip` path creates each archive through a temporary output, lists it back to verify the single expected root, and atomically replaces the fixed archive name. Packaging runs only after PE/import/PDB verification and is skipped by isolated/sanitizer builds and by `--skip-package` (dev iteration; the step is recorded as skipped); failures are fatal and recorded in the verification manifest. Never package `build/msys64`, SDK caches, `external`, local diagnostic/session data, or vendor SDK/driver DLLs.
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
@@ -85,17 +85,17 @@ No-build verification reuses `common/build_version.h`; it does not mint an ident
 
 The default development loop is `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` (about 5-7 s). Stay in it while writing code and reach for a product build or a heavier gate only when closing out the change; do not repeat a clean build after every small edit.
 
-`--verify` is the complete gate — clean build, full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run:
+`--verify` is the complete gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run:
 
 ```powershell
 python build.py --verify --skip-updates --concise
 ```
 
-`AGENTS.md` requires it before committing changes to `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, analyzer or test-gate policy, or the capture/CFR/FG/audio paths. It is not the routine per-change gate. The pre-optimization 2026-07-28 run took 372.8 s: 183.1 s clean build, 108.6 s sanitizer, 77.4 s lint, and 9.2 s native tests, with sanitizer and product work serialized and all 269 translation units re-analyzed.
+`python build.py --verify --verify-clean --skip-updates --concise` is the same gate with the strict clean product rebuild (every object recompiled) and is the required invocation for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes; the plain `--verify` gate covers the capture/CFR/FG/audio path categories. `--verify-clean` without `--verify` exits 2.
 
-The first post-optimization warm-analyzer run (build 5232) completed in 221.2 s: the mandatory clean product build took 203.3 s, the concurrent sanitizer branch 38.4 s, and lint 14.2 s with 268 cache hits and one build-identity-dependent miss. A direct post-gate proof found the sanitizer manifest reusable and all 269 analyzer units cached. Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings.
+Timing reference (2026-08-06, warm caches, 529 translation units): plain `--verify --skip-package` completed in 89 s (only the build-version identity TU recompiled; product relinks for the new identity; sanitizer child incremental and concurrent; lint warm). `--verify --verify-clean` completed in 347 s with every object recompiled (the sanitizer stage still reused its exact-input manifest from the preceding run). Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings.
 
-**The gates are nested, not cumulative.** `--verify` performs the clean product build, full suite, Python self-tests, lint ratchet, and fresh or exact-input-proven sanitizer coverage itself, so when a change requires `--verify` it is the only gate to run. Prefixing it with `--incremental`, `--no-build --run-tests`, or `--no-build --lint` repeats covered work. The cheaper gates are alternatives for changes that do **not** require `--verify`:
+**The gates are nested, not cumulative.** `--verify` performs the content-validated product build (clean with `--verify-clean`), full suite, Python self-tests, lint ratchet, and fresh or exact-input-proven sanitizer coverage itself, so when a change requires `--verify` it is the only gate to run. Prefixing it with `--incremental`, `--no-build --run-tests`, or `--no-build --lint` repeats covered work. The cheaper gates are alternatives for changes that do **not** require `--verify`:
 
 ```powershell
 python build.py --no-build --lint --skip-updates --concise
@@ -108,7 +108,7 @@ runs clang-format/flake8/pyright plus the clang-tidy ratchet with no rebuild. Tw
 - `--verify` performs a read-only file-size and clang-tidy preflight before external preparation. It uses the last full database only when its recorded `build.py` hash still matches. This catches ordinary source/header analyzer regressions before the expensive native stages; new or build-policy-changed translation units defer to authoritative post-build lint.
 - clang-tidy results are cached per translation unit under `build/cache/clang_tidy`. A hit requires byte-identical clang-tidy binary, `tools/config/.clang-tidy` configuration, compile command, source, and every dependency from the compiler depfile, including system headers. Missing depfiles, unreadable dependencies, corrupt records, tool failures, or any content change run that unit again. The baseline is evaluated against the aggregate of cached hits and fresh misses, never against misses alone.
 - clang-tidy misses run concurrently with clang-format, flake8, and pyright. A successful full database is retained separately for the next preflight; reduced test-only databases never replace it.
-- The sanitizer child sets `CE_ISOLATED_BUILD_ROOT=build/stages/sanitize`, separating objects, installed binaries, unit-test outputs, temp files, compile commands, and generated SDK headers from the clean product build. On cache misses, the two builds share the requested worker budget and run concurrently. Shared SDK archives are prepared before the split.
+- The sanitizer child sets `CE_ISOLATED_BUILD_ROOT=build/stages/sanitize`, separating objects, installed binaries, unit-test outputs, temp files, compile commands, and generated SDK headers from the product build. On cache misses, the two builds share the requested worker budget and run concurrently. Shared SDK archives are prepared before the split.
 - `build/stages/sanitize/success.json` may reuse a prior sanitizer result only when all discovered first-party inputs, compiler/depfile/link-runtime inputs, and required stage outputs still match their recorded SHA-256 values. New files, changed contents even with unchanged timestamps, missing inputs/outputs, or an explicit `--force-rebuild` cause a real sanitizer run. `common/build_version.h` and lint baseline JSON are intentionally excluded because they cannot change sanitizer semantics; ordinary native/build/test changes are included.
 - This is validated reuse, not reduced coverage. A code/header/toolchain input change still reruns sanitizer and the affected clang-tidy units. Ordinary low-risk changes continue to use the incremental build plus native-test gates and do not acquire an ASan requirement.
 
@@ -120,7 +120,7 @@ Default quality mode currently:
 - bootstraps toolchain state as needed
 - runs the read-only verification preflight when a compatible full lint database is available
 - prepares the source dependency/FFmpeg closure once for both sanitizer and product consumers
-- reuses an exact-input sanitizer success or runs the isolated sanitizer child concurrently with the clean product build
+- reuses an exact-input sanitizer success or runs the isolated sanitizer child concurrently with the product build
 - builds the product cleanly regardless of sanitizer/lint cache state
 - compiles unit tests
 - executes unit tests
@@ -133,7 +133,9 @@ Default quality mode currently:
 ### User-facing and advanced flags
 | Flag | Tier | Effect | Notes |
 | --- | --- | --- | --- |
-| `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate, with the documented clean-build triggers. |
+| `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Reuses content-validated objects by default (same signature discipline as `--incremental`); use `--verify-clean` for the strict clean product rebuild. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate. |
+| `--verify-clean` | user-facing | Force the strict clean product rebuild inside `--verify` | Every object is recompiled and every link redone; still runs the full test/lint/sanitizer gate. Required for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes. Exits 2 when used without `--verify`. |
+| `--skip-package` | user-facing | Skip only the automatic 7z archive creation | Keeps every other build/finalize stage (licenses, PE hardening, tests, lint, sanitizer); the `package_archives` step is recorded as skipped. Intended for dev iteration; the commit gates should run without it so archive validation still happens. |
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build so compile failures and `compile_commands.json` stay current. The non-LTO validation link is content-cached; this flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
@@ -163,6 +165,8 @@ Default quality mode currently:
 
 ## Flag Interactions
 - `--verify` implies the normal post-change validation set: lint, unit tests, and sanitizer regression cadence.
+- `--verify` also implies content-validated object reuse; `--verify-clean` (or `--force-rebuild`) switches it back to the strict clean product rebuild. `--verify-clean` is rejected without `--verify`.
+- `--skip-package` composes with every build mode (incremental, clean, verify) and only skips the final 7z archives.
 - No-arg default mode enables `--lint`, `--run-tests`, and `--sanitize-regression` behavior implicitly. Only presentation flags (`--concise`, `--verbose-commands`, `--jobs`, `--log-file`, `--detail-log`) preserve it; **any** other flag, `--skip-updates` included, makes the invocation explicit and therefore build-only unless the corresponding action flags are also passed. This is the usual reason a "clean gate" run shows no test, lint, or sanitizer stage.
 - `--run-fuzz` composes with `--no-build` for a fuzz-only pass, and with `--verify` for one combined gate.
 - `--full-integration` implies `--run-integration-tests`.
@@ -187,13 +191,15 @@ Default quality mode currently:
 
 ### Internal environment variables set by the script
 - `FORCE_REBUILD`
-  - Set to `1` unless `--incremental` is used.
+  - Set to `1` unless `--incremental` is used or `--verify` runs without `--verify-clean`/`--force-rebuild` (verification reuses content-validated objects).
 - `CE_BUILD_JOBS`
   - Set when `--jobs` is provided.
 - `CE_PRODUCTION_BUILD`
   - Set by the script when production mode is active.
 - `CE_SANITIZE`
   - Set when `--sanitize` is active.
+- `CE_SKIP_PACKAGE`
+  - Set when `--skip-package` is active; `_finalize_project_build` records the `package_archives` step as skipped instead of creating the 7z archives.
 - `CE_DISABLE_LTO`
   - Set when sanitizer mode disables LTO.
 - `DISABLE_CCACHE`

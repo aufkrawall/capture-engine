@@ -735,6 +735,28 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
             self.assertEqual(output_path, session_dir / "integration_results.json")
 
+    def test_verify_reuses_content_validated_objects_unless_clean_explicitly_requested(self) -> None:
+        source = build.read_source_text()
+        self.assertIn('verify_clean_flag = "--verify-clean" in sys.argv', source)
+        self.assertIn('"ERROR: --verify-clean requires --verify', source)
+        # --verify defaults to content-validated object reuse so the complete gate is
+        # not a full rebuild on every change; only --verify-clean or --force-rebuild
+        # selects the authoritative clean product build.
+        self.assertIn(
+            '(verify_flag and not verify_clean_flag and "--force-rebuild" not in sys.argv)',
+            source,
+        )
+        self.assertIn("Verification build reuses content-validated objects", source)
+        self.assertIn("Verification clean product build (--verify-clean)", source)
+
+    def test_skip_package_disables_release_archives_but_keeps_the_gate_steps(self) -> None:
+        source = build.read_source_text()
+        self.assertIn('skip_package_flag = "--skip-package" in sys.argv', source)
+        self.assertIn('env["CE_SKIP_PACKAGE"] = "1"', source)
+        self.assertIn("Release archive packaging skipped (--skip-package)", source)
+        self.assertIn('elif env.get("CE_SKIP_PACKAGE") == "1":', source)
+        self.assertIn('record_verification_step("package_archives", "skipped"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
