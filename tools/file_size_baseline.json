@@ -12,9 +12,7 @@
   ],
   "limit": 800,
   "target": 750,
-  "files": {
-    "tools/refactor/source_splitter.py": 1219
-  },
-  "count": 1,
-  "total": 1219
+  "files": {},
+  "count": 0,
+  "total": 0
 }
