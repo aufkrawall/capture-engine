@@ -1,10 +1,8 @@
 #include "wgc_capture_internal.h"
 
-
 #if HAS_WGC
 
 WGCCapture::Impl::~Impl() {
-
 
         alive_.store(false, std::memory_order_release);
         StopCapture();
@@ -32,7 +30,6 @@ WGCCapture::Impl::~Impl() {
 
 void WGCCapture::Impl::FlagResetNeeded(const char* reason) {
 
-
         resetNeeded_.store(true, std::memory_order_release);
         if (reason && *reason) {
             std::lock_guard<std::mutex> lock(resetReasonMutex_);
@@ -49,7 +46,6 @@ void WGCCapture::Impl::FlagResetNeeded(const char* reason) {
 
 bool WGCCapture::Impl::NeedsReset() const {
 
-
         return resetNeeded_.load(std::memory_order_acquire);
 
 }
@@ -59,7 +55,6 @@ bool WGCCapture::Impl::NeedsReset() const {
 #if HAS_WGC
 
 std::string WGCCapture::Impl::ConsumeResetReason() {
-
 
         resetNeeded_.store(false, std::memory_order_release);
         std::lock_guard<std::mutex> lock(resetReasonMutex_);
@@ -74,7 +69,6 @@ std::string WGCCapture::Impl::ConsumeResetReason() {
 #if HAS_WGC
 
 void WGCCapture::Impl::PerformHDRRecheck() {
-
 
         const ULONGLONG now = GetTickCount64();
         lastHDRCheckTick_.store(now, std::memory_order_relaxed);
@@ -104,7 +98,6 @@ void WGCCapture::Impl::PerformHDRRecheck() {
 
 void WGCCapture::Impl::RequestHDRRecheckIfDue() {
 
-
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
         if (now - lastCheckTick < 2000) {
@@ -120,7 +113,6 @@ void WGCCapture::Impl::RequestHDRRecheckIfDue() {
 #if HAS_WGC
 
 void WGCCapture::Impl::MaybePerformDeferredHDRRecheck() {
-
 
         if (!hdrRecheckPending_.exchange(false, std::memory_order_relaxed)) {
             return;
@@ -142,7 +134,6 @@ void WGCCapture::Impl::MaybePerformDeferredHDRRecheck() {
 
 const char* WGCCapture::Impl::DescribeCaptureFormat() const {
 
-
         switch (captureDxgiFormat_) {
             case DXGI_FORMAT_R16G16B16A16_FLOAT:
                 return "R16G16B16A16_FLOAT";
@@ -162,7 +153,6 @@ const char* WGCCapture::Impl::DescribeCaptureFormat() const {
 
 uint32_t WGCCapture::Impl::BytesPerPixelForFormat(DXGI_FORMAT format) const {
 
-
         switch (format) {
             case DXGI_FORMAT_R16G16B16A16_FLOAT:
                 return 8;
@@ -180,7 +170,6 @@ uint32_t WGCCapture::Impl::BytesPerPixelForFormat(DXGI_FORMAT format) const {
 
 DXGI_FORMAT WGCCapture::Impl::GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const {
 
-
         if (ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, captureIsHDR_)) {
             return DXGI_FORMAT_R10G10B10A2_UNORM;
         }
@@ -194,7 +183,6 @@ DXGI_FORMAT WGCCapture::Impl::GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) co
 
 bool WGCCapture::Impl::IsCompactRetainedCopy(DXGI_FORMAT sourceFormat,  DXGI_FORMAT retainedFormat) const {
 
-
         return retainedFormat != sourceFormat;
 
 }
@@ -203,152 +191,13 @@ bool WGCCapture::Impl::IsCompactRetainedCopy(DXGI_FORMAT sourceFormat,  DXGI_FOR
 
 #if HAS_WGC
 
-void WGCCapture::Impl::ReleasePoolConversionResources() {
-
-
-        for (auto* rtv : poolRenderTargetViews_) {
-            SafeRelease(rtv);
-        }
-        poolRenderTargetViews_.clear();
-        SafeRelease(poolCopyStagingSrv_);
-        SafeRelease(poolCopyStagingTexture_);
-        poolCopyStagingWidth_ = 0;
-        poolCopyStagingHeight_ = 0;
-        poolCopyStagingFormat_ = DXGI_FORMAT_UNKNOWN;
-        SafeRelease(poolCopyCB_);
-        SafeRelease(poolCopySampler_);
-        SafeRelease(poolCopyPS_);
-        SafeRelease(poolCopyVS_);
-        lastPoolConvertUs_.store(0, std::memory_order_relaxed);
-
-}
-
 #endif
 
 #if HAS_WGC
 
-void WGCCapture::Impl::ReleaseGpuTimingResources() {
-
-
-        SafeRelease(gpuTimingEnd_);
-        SafeRelease(gpuTimingStart_);
-        SafeRelease(gpuTimingDisjoint_);
-        gpuTimingPending_ = false;
-        gpuTimingActive_ = false;
-        gpuTimingSubmitQpc_ = 0;
-
-}
-
 #endif
 
 #if HAS_WGC
-
-bool WGCCapture::Impl::EnsurePoolCopyShader() {
-
-
-        if (poolCopyVS_ && poolCopyPS_ && poolCopySampler_ && poolCopyCB_) {
-            return true;
-        }
-        if (!d3dDevice_) {
-            return false;
-        }
-
-        HMODULE d3dCompiler = ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll");
-        if (!d3dCompiler) {
-            LogError("[WGC] Failed to load d3dcompiler_47.dll for retained-copy conversion");
-            return false;
-        }
-
-        typedef HRESULT(WINAPI * PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                                 LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-        auto d3dCompile = reinterpret_cast<PFN_D3DCompile>(GetProcAddress(d3dCompiler, "D3DCompile"));
-        if (!d3dCompile) {
-            LogError("[WGC] Failed to resolve D3DCompile for retained-copy conversion");
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-
-        ID3DBlob* vsBlob = nullptr;
-        ID3DBlob* psBlob = nullptr;
-        ID3DBlob* errBlob = nullptr;
-        HRESULT hr = d3dCompile(WGC_POOL_COPY_SHADER_SRC, strlen(WGC_POOL_COPY_SHADER_SRC), nullptr, nullptr, nullptr,
-                                "VS_Main", "vs_4_0", 0, 0, &vsBlob, &errBlob);
-        if (FAILED(hr)) {
-            if (errBlob) {
-                LogError("[WGC] Retained-copy VS compile failed: %s",
-                         static_cast<const char*>(errBlob->GetBufferPointer()));
-                errBlob->Release();
-            }
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-        SafeRelease(errBlob);
-
-        hr = d3dCompile(WGC_POOL_COPY_SHADER_SRC, strlen(WGC_POOL_COPY_SHADER_SRC), nullptr, nullptr, nullptr,
-                        "PS_Main", "ps_4_0", 0, 0, &psBlob, &errBlob);
-        if (FAILED(hr)) {
-            if (errBlob) {
-                LogError("[WGC] Retained-copy PS compile failed: %s",
-                         static_cast<const char*>(errBlob->GetBufferPointer()));
-                errBlob->Release();
-            }
-            SafeRelease(vsBlob);
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-        SafeRelease(errBlob);
-
-        hr = d3dDevice_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &poolCopyVS_);
-        SafeRelease(vsBlob);
-        if (FAILED(hr)) {
-            LogError("[WGC] Retained-copy CreateVertexShader failed: 0x%08lX", (unsigned long)hr);
-            SafeRelease(psBlob);
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-
-        hr = d3dDevice_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &poolCopyPS_);
-        SafeRelease(psBlob);
-        if (FAILED(hr)) {
-            LogError("[WGC] Retained-copy CreatePixelShader failed: 0x%08lX", (unsigned long)hr);
-            SafeRelease(poolCopyVS_);
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-        FreeLibrary(d3dCompiler);
-
-        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-        D3D11_SAMPLER_DESC samplerDesc = {};
-        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-        hr = d3dDevice_->CreateSamplerState(&samplerDesc, &poolCopySampler_);
-        if (FAILED(hr)) {
-            LogError("[WGC] Retained-copy CreateSamplerState failed: 0x%08lX", (unsigned long)hr);
-            SafeRelease(poolCopyPS_);
-            SafeRelease(poolCopyVS_);
-            return false;
-        }
-
-        D3D11_BUFFER_DESC cbDesc = {};
-        cbDesc.ByteWidth = 16;
-        cbDesc.Usage = D3D11_USAGE_DYNAMIC;
-        cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hr = d3dDevice_->CreateBuffer(&cbDesc, nullptr, &poolCopyCB_);
-        if (FAILED(hr)) {
-            LogError("[WGC] Retained-copy CreateBuffer failed: 0x%08lX", (unsigned long)hr);
-            SafeRelease(poolCopySampler_);
-            SafeRelease(poolCopyPS_);
-            SafeRelease(poolCopyVS_);
-            return false;
-        }
-
-        LogInfo("[WGC] Retained-copy conversion shader created");
-        return true;
-
-}
 
 #endif
 
@@ -356,7 +205,6 @@ bool WGCCapture::Impl::EnsurePoolCopyShader() {
 
 bool WGCCapture::Impl::CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture,  const D3D11_TEXTURE2D_DESC& sourceDesc, 
                                  DXGI_FORMAT inputSrvFormat,  ID3D11ShaderResourceView** outSrv,  bool* usedStaging) {
-
 
         if (!sourceTexture || !outSrv) {
             return false;
@@ -442,7 +290,6 @@ bool WGCCapture::Impl::CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture,  
 bool WGCCapture::Impl::RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture,  const D3D11_TEXTURE2D_DESC& sourceDesc, 
                                ID3D11RenderTargetView* targetRtv,  bool linearToSrgb,  bool* usedStaging) {
 
-
         if (!sourceTexture || !targetRtv || !d3dContext_ || !d3dDevice_) {
             return false;
         }
@@ -512,7 +359,6 @@ bool WGCCapture::Impl::RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture,  co
 ce::capture_policy::WgcSmoothnessSurfaceBudget WGCCapture::Impl::ComputeTexturePoolBudget(uint32_t width,  uint32_t height, 
                                                                             DXGI_FORMAT format) const {
 
-
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
         // The duplication backend has no consumer-owned source frame pool (the
         // OS holds the desktop image), so its entire VRAM budget funds retained
@@ -533,7 +379,6 @@ ce::capture_policy::WgcSmoothnessSurfaceBudget WGCCapture::Impl::ComputeTextureP
 #if HAS_WGC
 
 void WGCCapture::Impl::UpdateSmoothnessBudget(uint32_t width,  uint32_t height,  DXGI_FORMAT format,  bool logBudget) {
-
 
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
         const auto budget = ComputeTexturePoolBudget(width, height, format);
@@ -596,7 +441,6 @@ void WGCCapture::Impl::UpdateSmoothnessBudget(uint32_t width,  uint32_t height, 
 
 void WGCCapture::Impl::ReleaseTexturePool() {
 
-
         ReleasePoolConversionResources();
         for (auto* mutex : captureTextureMutexPool_) {
             SafeRelease(mutex);
@@ -625,116 +469,23 @@ void WGCCapture::Impl::ReleaseTexturePool() {
 
 #if HAS_WGC
 
-bool WGCCapture::Impl::EnsureGpuTimingQueries() {
+#endif
 
-
-        if (gpuTimingDisjoint_ && gpuTimingStart_ && gpuTimingEnd_)
-            return true;
-        SafeRelease(gpuTimingEnd_);
-        SafeRelease(gpuTimingStart_);
-        SafeRelease(gpuTimingDisjoint_);
-        if (!d3dDevice_)
-            return false;
-        D3D11_QUERY_DESC desc = {D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
-        HRESULT hr = d3dDevice_->CreateQuery(&desc, &gpuTimingDisjoint_);
-        desc.Query = D3D11_QUERY_TIMESTAMP;
-        if (SUCCEEDED(hr))
-            hr = d3dDevice_->CreateQuery(&desc, &gpuTimingStart_);
-        if (SUCCEEDED(hr))
-            hr = d3dDevice_->CreateQuery(&desc, &gpuTimingEnd_);
-        if (FAILED(hr)) {
-            SafeRelease(gpuTimingEnd_);
-            SafeRelease(gpuTimingStart_);
-            SafeRelease(gpuTimingDisjoint_);
-            LogWarn("[WGC] Nonblocking GPU timing query prewarm failed: 0x%08lX", static_cast<unsigned long>(hr));
-            return false;
-        }
-        return true;
-
-}
+#if HAS_WGC
 
 #endif
 
 #if HAS_WGC
 
-void WGCCapture::Impl::PollGpuTimingSample() {
-
-
-        if (!gpuTimingPending_ || !d3dContext_)
-            return;
-        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
-        const HRESULT disjointHr =
-            d3dContext_->GetData(gpuTimingDisjoint_, &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        if (disjointHr != S_OK)
-            return;
-        UINT64 start = 0;
-        UINT64 end = 0;
-        const HRESULT startHr =
-            d3dContext_->GetData(gpuTimingStart_, &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        const HRESULT endHr = d3dContext_->GetData(gpuTimingEnd_, &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        if (startHr != S_OK || endHr != S_OK)
-            return;
-        LARGE_INTEGER observed = {};
-        QueryPerformanceCounter(&observed);
-        const double executionUs =
-            !disjoint.Disjoint && disjoint.Frequency > 0 && end >= start
-                ? static_cast<double>(end - start) * 1000000.0 / static_cast<double>(disjoint.Frequency)
-                : -1.0;
-        const int64_t observedLatencyUs = qpcFreq_ > 0 && observed.QuadPart >= gpuTimingSubmitQpc_
-                                              ? (observed.QuadPart - gpuTimingSubmitQpc_) * 1000000 / qpcFreq_
-                                              : -1;
-        LogInfo("[WGC GPU Timing] backend=%s execution=%.1fus submitToObserved=%lldus disjoint=%d",
-                useDuplicationBackend_ ? "dxgi_dup" : "wgc", executionUs, static_cast<long long>(observedLatencyUs),
-                disjoint.Disjoint ? 1 : 0);
-        gpuTimingPending_ = false;
-
-}
-
 #endif
 
 #if HAS_WGC
-
-void WGCCapture::Impl::BeginGpuTimingSample() {
-
-
-        PollGpuTimingSample();
-        const ULONGLONG now = GetTickCount64();
-        if (gpuTimingPending_ || gpuTimingActive_ || !EnsureGpuTimingQueries() ||
-            (lastGpuTimingSampleTick_ != 0 && now - lastGpuTimingSampleTick_ < 1000)) {
-            return;
-        }
-        d3dContext_->Begin(gpuTimingDisjoint_);
-        d3dContext_->End(gpuTimingStart_);
-        gpuTimingActive_ = true;
-        lastGpuTimingSampleTick_ = now;
-
-}
-
-#endif
-
-#if HAS_WGC
-
-void WGCCapture::Impl::EndGpuTimingSample() {
-
-
-        if (!gpuTimingActive_ || !d3dContext_)
-            return;
-        d3dContext_->End(gpuTimingEnd_);
-        d3dContext_->End(gpuTimingDisjoint_);
-        LARGE_INTEGER submitted = {};
-        QueryPerformanceCounter(&submitted);
-        gpuTimingSubmitQpc_ = submitted.QuadPart;
-        gpuTimingActive_ = false;
-        gpuTimingPending_ = true;
-
-}
 
 #endif
 
 #if HAS_WGC
 
 void WGCCapture::Impl::LogVideoMemoryInfo(const char* stage,  bool force) {
-
 
         if (!d3dDevice_)
             return;
@@ -788,7 +539,6 @@ void WGCCapture::Impl::LogVideoMemoryInfo(const char* stage,  bool force) {
 
 bool WGCCapture::Impl::IsAllocationExhaustion(HRESULT hr) {
 
-
         return hr == E_OUTOFMEMORY || hr == HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY) ||
                hr == HRESULT_FROM_WIN32(ERROR_COMMITMENT_LIMIT);
 
@@ -799,7 +549,6 @@ bool WGCCapture::Impl::IsAllocationExhaustion(HRESULT hr) {
 #if HAS_WGC
 
 void WGCCapture::Impl::SetVideoMemoryReservationBytes(uint64_t requestedBytes,  const char* stage) {
-
 
         if (!d3dDevice_)
             return;
