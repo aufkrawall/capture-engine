@@ -1,13 +1,6 @@
 #include "dx11_hook_internal.h"
 
 
-D3D11InternalIdentityProbeScope::~D3D11InternalIdentityProbeScope() {
-
-
-        DX11Hook_EndInternalIdentityProbe();
-
-}
-
 bool DX11Capture::InitDX10(IDXGISwapChain* swapChain) {
 
 
@@ -51,7 +44,6 @@ bool DX11Capture::InitDX10(IDXGISwapChain* swapChain) {
         return true;
 
 }
-
 bool DX11Capture::IsCurrentD3D11DXVK() {
 
 
@@ -68,7 +60,6 @@ bool DX11Capture::IsCurrentD3D11DXVK() {
         return !(_strnicmp(path, sysDir, sysLen) == 0 && path[sysLen] == '\\');
 
 }
-
 bool DX11Capture::CreateSystemD3D11DeviceForLUID(int32_t luidLowPart,  int32_t luidHighPart) {
 
 
@@ -144,7 +135,6 @@ bool DX11Capture::CreateSystemD3D11DeviceForLUID(int32_t luidLowPart,  int32_t l
         return true;
 
 }
-
 void DX11Capture::Init(ID3D11Device* device,  IDXGISwapChain* swapChain) {
 
 
