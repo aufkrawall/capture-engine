@@ -21,7 +21,7 @@ Primary sources:
 - `captureengine/media_main.cpp`
 - `hook/common/fps_limiter.h`
 - `hook/common/fps_limiter_policy.h`
-- `mediaengine/mediaengine.cpp`
+- `mediaengine/mediaengine_impl*.cpp`
 - `mediaengine/audio_sync_utils.h` (adaptive ingestion reservoir policy)
 - `mediaengine/audio_time_utils.h`
 - `mediaengine/audio_encoder.cpp`

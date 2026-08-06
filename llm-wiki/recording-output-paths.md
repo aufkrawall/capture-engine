@@ -7,7 +7,7 @@ Last cross-checked: 2026-07-22 (video staging now uses container extension direc
 All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
 - Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory file with the final container extension (`.mkv`, `.mp4`, etc.); idle media initialization creates no output. The file receives its final collision-safe name after valid mux finalization.
-- Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
+- Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine_impl.cpp`.
 - SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
 
 `[Output] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. `[Output] screenshot_dir` follows the same rules. Empty video, audio-only, and screenshot output writes to the `captures` subfolder next to the executable. Relative output is resolved below the executable directory. All three paths preserve the mapped-drive behavior below. Legacy `[Video] output_dir` and `[Screenshot] screenshot_dir` remain readable.
@@ -44,7 +44,7 @@ Limits:
 - `common/reserved_capture_output.{h,cpp}` (`ResolveCaptureDirectory`, `ReservedCaptureOutput`)
 - `mediaengine/video_encoder.cpp` (`ReserveOutputStagingFile`, content-gated muxer publication and cancellation cleanup)
 - `mediaengine/mux_invariants.h` (`SelectVideoOutputDisposition`)
-- `mediaengine/mediaengine.cpp` (`InitAudioOnlyMuxer`, audio-only ownership and publication)
+- `mediaengine/mediaengine_impl*.cpp` (`InitAudioOnlyMuxer`, audio-only ownership and publication)
 - `captureengine/screenshot_encoding.cpp` (reserved staging and atomic final commit)
 - `tests/test_path_utils.cpp`, `tests/test_reserved_capture_output.cpp`, `tests/test_mux_invariants.cpp`, and `tests/test_recording_start_feedback.cpp`
 

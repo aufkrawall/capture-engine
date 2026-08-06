@@ -50,5 +50,5 @@ The strongest explanation is an NVIDIA x86/WoW64 native-DX12 driver interaction 
 - `hook/common/custom_overlay.{h,cpp}`: solid text geometry path and `PreferSolidTextGeometry`.
 - `hook/common/custom_overlay_dx12.{h,cpp}`: x86 solid text preference and font SRV upload skip.
 - `hook/common/dx12_overlay_policy.h`: x86 backend/text policy helpers.
-- `hook/apis/dx12_hook.cpp`: v13 policy marker and removed focus-transition offscreen branch.
+- `hook/apis/dx12_hook_main.cpp`: v13 policy marker and removed focus-transition offscreen branch.
 - `tests/test_overlay_system.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_crash_handler.cpp`: regression coverage.

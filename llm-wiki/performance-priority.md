@@ -89,7 +89,7 @@ The requested D3D11 relative priority is retained and reapplied after WGC shared
 - `common/config.cpp` (`copy_queue_priority` parsing)
 - `common/shared_defs.h` (`copyQueuePriority_`)
 - `captureengine/inject_main.cpp`, `captureengine/ipc.cpp` (shared-memory propagation)
-- `hook/apis/dx12_hook.cpp` (`InitOverlaySync` queue creation)
+- `hook/apis/dx12_hook_main.cpp` (`InitOverlaySync` queue creation)
 
 ## D3D12 COPY Queue / HAGS Findings
 

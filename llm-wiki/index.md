@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-08-01 (latched recording-capacity health and truthful asynchronous finalization, recording-sticky audio bootstrap across capture epochs and full-duration content-offset analysis, exact-QPC DXGI hardware-pointer history including pointer-only acquisitions, authoritative menu-suspended Streamline-handoff retirement of stale FSR transport, GetState-first post-FSR ownership repair including the independent FFX no-callback latch, single-submit all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
+Last cross-checked: 2026-08-06 (semantic-unit conversion complete: every first-party C++ and Python file is a <=800-line semantic unit, no .inl fragments, empty file-size and clang-tidy baselines; latched recording-capacity health and truthful asynchronous finalization, recording-sticky audio bootstrap across capture epochs and full-duration content-offset analysis, exact-QPC DXGI hardware-pointer history including pointer-only acquisitions, authoritative menu-suspended Streamline-handoff retirement of stale FSR transport, GetState-first post-FSR ownership repair including the independent FFX no-callback latch, single-submit all-transport exact PostSL suspension keep-alive, automatic clean CaptureEngine/test-app 7z packaging, plus the existing content-addressed/parallel verification, bounded source-fragment facades, capture/CFR/audio/graphics, screenshot, and security state; see frame-generation/guardrails.md, build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -47,7 +47,7 @@ Primary sources:
 - `process-ipc.md`
   - Restricted private child channels, accept-before-finalize disposable media stops with media-owned completion notification, recording-health publication, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI 38 publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-08-01.
 - `repo-map.md`
-  - Top-level repo layout and subsystem ownership.
+  - **Code map**: top-level layout, semantic-unit inventory per subsystem (hook/captureengine/mediaengine/common/testapp/tools), the Python build pipeline units, and important paths. Re-point stale monolithic-file anchors here after splits.
 - `d3d9-capture.md`
   - Native classic-D3D9 device preservation, opportunistic shared-ring probing, D3D9Ex incompatibilities, synchronization/reset lifetime, diagnostics, and GPU-based WGC fallback. Last verified 2026-07-12.
 - `dx12-injection-bootstrap.md`

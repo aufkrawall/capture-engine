@@ -25,7 +25,7 @@ Primary sources:
 - `captureengine/host_metrics.cpp`
 - `captureengine/ipc.cpp`
 - `captureengine/pseudo_overlay.cpp`
-- `mediaengine/mediaengine.cpp`
+- `mediaengine/mediaengine_impl*.cpp`
 - `mediaengine/video_encoder.cpp`
 - `mediaengine/video_color_conversion_shader.h`
 - `mediaengine/cursor_renderer.cpp`

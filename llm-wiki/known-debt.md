@@ -24,11 +24,13 @@ file above the 800-line ceiling. The 39 entries that remained after the earlier
 wrapper, shared-capture, crash-handler, screenshot, and IPC work are now represented
 by ordered bounded fragments, with a working target of roughly 650 lines per fragment.
 
-C++ wrappers include ordered `.inl` fragments inside the original translation unit.
-This preserves anonymous-namespace state, file-static ownership, ABI, compiler flags,
-hot-path placement, and the original include/preprocessor context. Conditional groups
-must not cross fragment boundaries; the WGC `HAS_WGC` / fallback branches remain
-explicitly guarded by the wrapper. Python entry points are compatibility facades that
+The earlier `.inl` fragment convention is retired: no `.inl` files remain.
+C++ units are now proper semantic `.cpp` files (class skeletons stay in headers,
+bodies move out as out-of-line definitions; phase functions use per-call state
+structs), with anonymous-namespace state, file-static ownership, ABI, compiler
+flags, and include/preprocessor context preserved inside each unit. Conditional
+groups must not cross unit boundaries; the WGC `HAS_WGC` / fallback branches
+remain explicitly guarded by the wrapper unit. Python entry points are compatibility facades that
 execute ordered `.py` fragments in one module-global namespace, preserving
 `python build.py`, `import build`, monkeypatching, constants, and CLI behavior.
 `build.read_source_text()` and `tests/source_fragment_reader.h` expose the logical
@@ -94,7 +96,7 @@ The identical four-line FPS / 1% low / 0.1% low / frame-time-std-dev conversion 
 appears in four backends:
 
 - `hook/apis/dx11_hook.cpp:2383`
-- `hook/apis/dx12_hook.cpp:16142`
+- `hook/apis/dx12_hook_main*.cpp` (line anchors predate the semantic-unit split; see repo-map.md)
 - `hook/vulkan_layer/vulkan_layer.cpp:1281`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp:1088`
 

@@ -18,7 +18,7 @@ Primary sources:
 - `mediaengine/process_loopback_worker.cpp`
 - `mediaengine/process_tree_selection.h`
 - `captureengine/process_loopback_worker_host.{h,cpp}`
-- `mediaengine/mediaengine.cpp`
+- `mediaengine/mediaengine_impl*.cpp`
 - `mediaengine/matroska_timing.h`
 - `mediaengine/video_encoder.cpp`
 - `tests/test_config.cpp`
@@ -129,7 +129,7 @@ WASAPI capture records device-reported stream latency, device period, packet dur
 - `downmix=true` forces the track output layout to stereo and resamples/mixes all contributing sources to stereo before encoding.
 - `downmix=false` preserves the main source layout for that track. System/app audio is the main source when present; mic-only tracks use the mic layout.
 - `sample_rate=default` resolves to 48000 Hz. Explicit 44100, 48000, and 96000 are respected where the codec supports them. Opus always resolves to 48000 Hz and logs the adjustment.
-  - **Strict validation (no crash on bad config):** a `sample_rate` value must be `default`/empty or a pure positive integer. `LoadConfig` (`config.cpp` `NormalizeSampleRate`) normalizes anything else (e.g. `48kHz`, `-1`, overflow) to `default` and logs `[Config] Invalid sample_rate ...`. The three encoder-side parse sites (`mediaengine.cpp ParseAudioSampleRate`, `audio_encoder.cpp`, `video_encoder.cpp AddAudioStream`) use `ce::audio::ParseSampleRateOr` (`audio_time_utils.h`, unit-tested) as defense-in-depth — it never throws (the old `std::stoi` threw `std::invalid_argument`/`std::out_of_range` on a hand-edited typo and terminated encoder init).
+  - **Strict validation (no crash on bad config):** a `sample_rate` value must be `default`/empty or a pure positive integer. `LoadConfig` (`config.cpp` `NormalizeSampleRate`) normalizes anything else (e.g. `48kHz`, `-1`, overflow) to `default` and logs `[Config] Invalid sample_rate ...`. The three encoder-side parse sites (`mediaengine_impl.cpp ParseAudioSampleRate`, `audio_encoder.cpp`, `video_encoder.cpp AddAudioStream`) use `ce::audio::ParseSampleRateOr` (`audio_time_utils.h`, unit-tested) as defense-in-depth — it never throws (the old `std::stoi` threw `std::invalid_argument`/`std::out_of_range` on a hand-edited typo and terminated encoder init).
 - `bit_depth=default` resolves to 24-bit for PCM, ALAC, and FLAC. AAC and Opus ignore output bit depth because they encode from the float mix path.
 
 ### Override invariant (reserved selector keys)

@@ -5,7 +5,7 @@ Last cross-checked: 2026-07-16 (RESOLVED: x86 DX12 no-vsync `dx12_test` DEVICE_H
 Primary sources:
 - `hook/common/overlay_compat.h`
 - `hook/common/dx12_overlay_policy.h`
-- `hook/apis/dx12_hook.cpp`
+- `hook/apis/dx12_hook_main.cpp`
 - `hook/apis/ffx_hook.cpp`
 - `hook/main.cpp`
 - `hook/common/dxgi_shared.cpp`
@@ -64,7 +64,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 
 ### Diagnostic tools (committed, gated, OFF by default)
 - **`ce_dx12_dred` flag file (empty = page-fault-only, low perturbation; `1`/`full` = auto-breadcrumbs) or env `CE_DX12_DRED=pf|1`** → DRED on device-removed: `DX12 DRED: pageFaultVA=.. [existing]/[recently-freed] ..` (+ breadcrumb op in full mode). **Page-fault-only is the right tool for the steady-state DEVICE_HUNG** (full auto-breadcrumbs perturb timing and can mask it). Code: `ce::dx12_dred` (`hook/common/dx12_dred.cpp`), `DredArmMode`/`DecideDredArmMode` (`hook/common/dx12_overlay_policy.h`).
-- `[Overlay] dx12_focus_analysis=true` (config) → in-process residency flight recorder + present-gap + CPU VA-space probe (`vaspace committedMB/freeMB/largestFreeBlockMB`, ~1/s and at the stall). **RESULT: VA is FLAT through the stall — the 32-bit VA/command-buffer-pool exhaustion hypothesis is RULED OUT.** Still useful as the residency/present-gap flight recorder. Code: `Dx12SampleVaSpace`/`DX12_UpdateFocusAnalysis`/`DX12_DumpFocusAnalysisRing` in `dx12_hook.cpp`.
+- `[Overlay] dx12_focus_analysis=true` (config) → in-process residency flight recorder + present-gap + CPU VA-space probe (`vaspace committedMB/freeMB/largestFreeBlockMB`, ~1/s and at the stall). **RESULT: VA is FLAT through the stall — the 32-bit VA/command-buffer-pool exhaustion hypothesis is RULED OUT.** Still useful as the residency/present-gap flight recorder. Code: `Dx12SampleVaSpace`/`DX12_UpdateFocusAnalysis`/`DX12_DumpFocusAnalysisRing` in `dx12_hook_0_internal_helpers10.cpp`.
 - `ce_dx12_trace` flag file (or env `CE_DX12_TRACE=1`) + `tools/tracing/dx12_call_trace.py` → caller-attributed D3D12 call trace (CreateCommandQueue/Resource/DescriptorHeap, ExecuteCommandLists, Signal, CreateSwapChain). Logs: `DX12 TRACE:`. NOTE: CE's own overlay ECL/Signal use the raw `realECL` pointer so they are NOT captured (a known blind spot); it captures the app's and co-resident modules' calls.
 - `tools/tracing/gpu_trace.py capture [--debug-layer N] [--open]` → automated GPUView kernel capture (wraps in-box `gpuview/log.cmd`; needs an ELEVATED shell; user triggers the Alt+Tab; auto-stops on the dump, merges to `Merged.etl`, coarse-parses).
 - `ce_dx12_debug_layer` file (`1`=layer, `2`=+GPU validation) → D3D12 debug layer (`DX12 DBGLAYER:` lines). NOTE: enabling it MASKS the freeze (timing).
@@ -279,7 +279,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   7. Non-hook build stubs in `dxgi_shared.cpp` — `ResolveDX12SetDeferOverlay`, `ResolveDX12SubmitSteamDeferredOverlay`, `ResolveDX12IsDeferOverlayPending` via `GetModuleHandleA`/`GetProcAddress`
 - **Key design decisions**: Automatic (no env vars), non-SL only (`steamOverlayLoaded && !IsSLInterposerLoaded()`), `GetOriginalExecuteCommandLists` over vtable fallback, fallback safety for frames where Steam doesn't call ECL.
 - **Diagnostic logging**: "non-SL Steam path — deferring overlay" with SyncInterval/Flags, "Deferring overlay ECL submit to Steam ECL hook #N", "ECL hook detected Steam with deferred overlay pending" vs "no deferred overlay pending", "Submitting Steam-deferred overlay ECL to queue %p (cmdList=%p, allocIdx=%d)", "Deferred overlay submitted #N (queue=%p, fence=%llu)", fallback submit log, "Post-Steam fence wait took X us (wasPending=%d)", fence-already-complete with mode info.
-- **Source anchors**: `hook/apis/dx12_hook.cpp` (~line 955-1080: state struct, exports, SubmitSteamDeferredOverlay, IsSteamOverlayModulePath, ProcessFrame skip logic, DetourExecuteCommandLists ECL hook detection), `hook/common/dxgi_shared.cpp` (~line 1970-2150: deferral flag set, skip fence wait, post-CallOriginalPresent fallback + fence wait + clear).
+- **Source anchors**: `hook/apis/dx12_hook_main.cpp` (~line 955-1080: state struct, exports, SubmitSteamDeferredOverlay, IsSteamOverlayModulePath, ProcessFrame skip logic, DetourExecuteCommandLists ECL hook detection), `hook/common/dxgi_shared.cpp` (~line 1970-2150: deferral flag set, skip fence wait, post-CallOriginalPresent fallback + fence wait + clear).
 - **Verification**: Build 0.1.2963 compiles, all 696 unit tests pass.
 - **Open questions / stale-risk**:
   - ECL hook fires ~1 in 50+ frames — fallback path submits after Present, too late for current frame
