@@ -4,6 +4,8 @@
 
 - AGENTS.md: translation-unit count updated (528-TU full compile DB; tests-only
   ~218) after the semantic-unit conversion.
+- AGENTS.md llm-wiki workflow now routes agents to repo-map.md first for orientation
+  when understanding/changing code in an unfamiliar area (was: start at index.md only).
 - llm-wiki/repo-map.md rewritten as the current code map: per-subsystem semantic
   units (hook/apis dx12_hook_main/overlay/ffx/ecl/process_session/postsl + internal
   helpers; dxgi_shared_*; mediaengine_impl_*; video_encoder_*; media_main_encoder_*;

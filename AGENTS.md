@@ -118,6 +118,12 @@ The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces
 ## `llm-wiki/` workflow
 
 - `llm-wiki/` is canonical LLM-maintained derived memory, not the sole source of truth.
+- When starting work on an unfamiliar area — whether to understand or change it —
+  first orient via `llm-wiki/repo-map.md` (the code map: semantic units per
+  subsystem, the Python build pipeline units, test matrix, and important paths),
+  then read the relevant topic page(s) via `llm-wiki/index.md`, then
+  `llm-wiki/log/recent.md` for active/stale-risk areas. Re-check the code map
+  after large refactors: monolithic files may have been split into per-area units.
 - For substantial work, start with `llm-wiki/index.md`, read only relevant topic pages, then read `llm-wiki/log/recent.md` for active/stale-risk areas.
 - Read archives only when historical context is needed or explicitly linked.
 - For trivial localized edits, skip broad wiki loading unless the area is unfamiliar or stale-risk is likely.

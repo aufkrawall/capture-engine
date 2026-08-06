@@ -24,6 +24,9 @@ Primary sources:
 
 ## Recommended Read Order
 - Start here to find the right page.
+- If you are about to understand or change code in an unfamiliar area, first
+  orient with `repo-map.md` (the code map: semantic units per subsystem, build
+  pipeline units, test matrix, important paths) before reading the topic page.
 - Read `current.md` next for a compact current-state summary and routing.
 - Read `log/recent.md` after that when you need the recent historical genesis for a changing area. For older entries, consult the relevant `log/archive-YYYY-Www*.md` file.
 - For build and tooling questions, read `build.py.md` and `codestyle.md`.
