@@ -1,3 +1,29 @@
+### 2026-08-06 - 800-line semantic-unit conversion COMPLETE for C++
+
+All first-party C++ files are now proper semantic units <= 800 lines; no `.inl`
+fragments remain (non-Python). `python build.py --verify --skip-updates --concise`
+passes (build 0.1.5717). Highlights:
+
+- Internal headers de-inlined: mediaengine (6667 -> 669), vulkan_fg_switch_test
+  (982 -> 437 + helper unit), plus the dx9/dx11/wgc/streamline/ddraw/dx8/ffx/opengl/
+  layer_capture headers in earlier commits.
+- Giant functions decomposed: EncoderThreadFunc -> MediaEncoderSession, ProcessFrame
+  -> FrameProcessSession, PullAndEncodeAudio -> AudioPullState phases, AudioLoop ->
+  AudioLoopState phases (Init/Iteration/PollSource/CommitSource/Tail), RenderContent,
+  AppAudioCapture::CaptureLoop, dx12_fg SwitchMode, av_sync WriteManifest.
+- Repaired generator-produced splits with dead phase calls (audio would have encoded
+  as silence) and `continue -> return false` loop mis-conversions.
+- `run_cached_link` gained `execute_command` for a response-file link when the
+  unit-test link exceeds the Windows command-line limit (sanitizer child hit
+  WinError 206).
+- `tools/file_size_baseline.json` now holds one entry: `source_splitter.py` (1219,
+  Python follow-up). clang-tidy baseline refreshed over the 528-TU database
+  (16 advisory warnings folded).
+
+Source-policy tests read the logical unit (stem + `<stem>_internal.h` + sorted
+`<stem>_*.cpp` siblings); tests asserting cross-unit ordering concatenate units in
+source order. Python split follow-up and the source_splitter.py entry remain open.
+
 # llm-wiki Log
 
 ### 2026-08-05 - 800-line semantic-unit conversion (IN PROGRESS; hand-off in HANDOFF.md)
