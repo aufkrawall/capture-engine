@@ -13,7 +13,6 @@ OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm) {
     return cfg;
 
 }
-
 void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,  uint64_t requestId) {
 
 
@@ -44,7 +43,6 @@ void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,
         CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 
 }
-
 void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,  uint64_t requestId) {
 
 
@@ -108,7 +106,6 @@ void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,
         CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 
 }
-
 void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,  uint64_t requestId) {
 
 
@@ -130,7 +127,6 @@ void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLay
     CaptureDX11Screenshot(pSwapChain, shm, requestId);
 
 }
-
 void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
 
 
