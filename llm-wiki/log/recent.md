@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-06 - Python facade fragments renamed to semantic units (conversion complete)
+
+- The remaining ordered `_part_*.py` fragments (analyze_capture_av ×18,
+  analyze_av_sync_stimulus ×5, run_av_sync_matrix ×4,
+  run_dx12_fg_overlay_transition ×2, testapp run_tests ×2) were renamed to
+  content-honest units behind their facades, and the facade
+  `_SOURCE_BODY_PARTS` first-line-stripping mechanism was dropped (every unit
+  is a self-contained block in the shared namespace; standalone compilation
+  verified per unit and for the reassembled facades).
+- flake8/pyright exclusions updated from `*_part_*.py` to the semantic unit
+  name families (facades stay linted). No `_part_` source file remains
+  anywhere in the repo.
+- Full `python build.py --verify --skip-updates --concise` passed again:
+  clean product build, 1897 unit tests, all 19 Python tool self-tests, x64
+  ASan/UBSan, packaging, flake8/pyright OK, clang-tidy 0 warnings, file-size
+  baseline OK.
+
 ### 2026-08-06 - Semantic-unit conversion completed for all C++ source families
 
 - The 2026-08-05/06 de-inline wave had cut the former inline headers and big
@@ -22,10 +39,9 @@
   mediaengine/wgc families landed as single regroup commits because intermediate
   states cannot pass the source-policy suite.
 - Remaining convention exceptions (documented, not misnamed chunks): the
-  `tools/analysis/*_part_*.py` / `testapp/run_tests_part_*.py` Python fragments
-  behind facades, and the `dx12_hook.cpp` / `mediaengine.cpp` /
-  `wgc_capture.cpp` / `layer_capture.cpp` logical-source facades used by the
-  source-policy reader.
+  logical-source facades (`dx12_hook.cpp` / `mediaengine.cpp` /
+  `wgc_capture.cpp` / `layer_capture.cpp` / the `*.py` entry points) used by
+  the source-policy reader and the facade unit assembly.
 
 ### 2026-08-06 - DX9 hook family regrouped into genuine semantic units
 

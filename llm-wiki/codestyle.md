@@ -36,7 +36,7 @@ This page records the style rules that are either tool-backed or strongly reflec
 ### Bounded source fragments
 
 - The governed source ceiling is 800 lines; the working target is ~750. Splits must follow semantic boundaries
-  (one entity/module per file), never line-count cuts; `_part_NNN` fragments are deprecated.
+  (one entity/module per file), never line-count cuts; `_part_NNN` fragments are retired.
 - C++ modules are split into semantic `.cpp` units plus a generated `<module>_internal.h` that holds the hoisted
   includes, class forward declarations, prototypes of non-static functions, and shared file-scope state. Shared
   variables are renamed with a `<module>_` prefix (string/comment aware); shared static functions become `inline`
@@ -48,7 +48,7 @@ This page records the style rules that are either tool-backed or strongly reflec
 - A file that is genuinely one cohesive unit may exceed the ceiling and be registered in
   `tools/file_size_baseline.json` as deliberate debt; keep such entries rare.
 - Python compatibility facades execute ordered fragments in one module-global namespace. This preserves direct scripts,
-  `import build`, monkeypatching, constants, and CLI behavior. exec-fragment files (`*_part_*.py`, `build_*.py`, `source_splitter_*.py`) are excluded from standalone flake8/
+  `import build`, monkeypatching, constants, and CLI behavior. exec-facade unit files (the `<tool>_*.py` families, `build_*.py`, `source_splitter_*.py`) are excluded from standalone flake8/
   pyright discovery because their names/imports intentionally come from neighboring fragments; source reassembly tests,
   `compileall`, facade execution, and the full verification gate cover the logical program.
 - Before accepting a split, compare logical source reassembly, inspect symbol/state ownership, run focused tests, and use

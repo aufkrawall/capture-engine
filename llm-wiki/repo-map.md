@@ -132,7 +132,7 @@ anchors that predate the split are approximate.
   - Graphics test apps: `dx12_fg_switch_*.cpp`, `vulkan_fg_switch_*.cpp` (+
     `vulkan_fg_switch_test_internal.h`), `dx12_av_sync_test*.cpp` (util/manifest
     units), `dx12_fsr_fg_test*.cpp` (fsr unit), `dx11_test.cpp`, `vulkan_*.cpp`,
-    `run_tests.py` (integration runner, facade over `run_tests_part_*.py`).
+    `run_tests.py` (integration runner, facade over `run_tests_{support,main}.py`).
 - `tools/refactor/`
   - `source_splitter.py` (facade over `source_splitter_common/lexer/scanner/split.py`),
     `gen_deinline.py`, `reapply.py`.
@@ -188,5 +188,5 @@ anchors that predate the split are approximate.
 - DX12 overlay, injection, and FG behavior spans `captureengine/`, `hook/`, and
   `tests/`; do not reason about one of those areas in isolation.
 - Python facade fragments are excluded from standalone flake8/pyright analysis
-  (`*_part_*.py`, `build_*.py`, `source_splitter_*.py`); the facades themselves
+  (`<tool>_*.py` unit families, `build_*.py`, `source_splitter_*.py`); the facades themselves
   (`build.py`, `source_splitter.py`) stay linted.

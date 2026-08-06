@@ -31,7 +31,7 @@ structs), with anonymous-namespace state, file-static ownership, ABI, compiler
 flags, and include/preprocessor context preserved inside each unit. Conditional
 groups must not cross unit boundaries; the WGC `HAS_WGC` / fallback branches
 remain explicitly guarded by the wrapper unit. Python entry points are compatibility facades that
-execute ordered `.py` fragments in one module-global namespace, preserving
+execute ordered semantic `.py` units in one module-global namespace, preserving
 `python build.py`, `import build`, monkeypatching, constants, and CLI behavior.
 `build.read_source_text()` and `tests/source_fragment_reader.h` expose the logical
 source to source-policy tests rather than making tests depend on the small facade.
@@ -40,7 +40,7 @@ Future bounded-source work must: choose preprocessor- or top-level-AST-safe cuts
 performance-sensitive state in the same translation unit; update explicit source,
 Vulkan-layer, and strict-FP lists; prove exact logical reassembly (or an explicit
 conditional transformation); run focused tests and the appropriate `--verify` gate;
-and leave the baseline at zero. Python fragment files are shared-namespace
+and leave the baseline at zero. Python facade-unit files are shared-namespace
 implementation details and are excluded from standalone flake8/pyright discovery;
 the facades, compileall, source-reassembly checks, runtime tests, and full gates remain
 the validation boundary. This is a tooling constraint, not permission to suppress a

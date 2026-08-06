@@ -2,11 +2,11 @@
 max-line-length = 120
 # E203: whitespace before ':' — false positive for slice notation (black/pycodestyle disagree)
 extend-ignore = E203
-# Executed-in-facade fragments share one namespace (build.py / source_splitter.py
-# exec their ordered parts) and are therefore not independently analyzable;
+# Executed-in-facade units share one namespace (build.py / source_splitter.py
+# exec their ordered units) and are therefore not independently analyzable;
 # lint the facades and preserve logical-source coverage through the reassembly
-# tests. The *_part_*.py glob covers analysis-tool fragments; build_*.py covers
-# the build.py facade parts (tools/build/); source_splitter_*.py covers the
-# splitter's parts. The facades themselves (build.py, source_splitter.py) stay
-# linted.
+# tests. The <tool>_*.py globs cover the analysis/tracing/testapp units;
+# build_*.py covers the build.py facade units (tools/build/);
+# source_splitter_*.py covers the splitter's units. The facades themselves
+# (build.py, source_splitter.py, analyze_*.py, run_tests.py) stay linted.
 extend-exclude = *_part_*.py, build_*.py, source_splitter_*.py, analyze_capture_av_*.py, analyze_av_sync_stimulus_*.py, run_av_sync_matrix_*.py, run_dx12_fg_overlay_transition_*.py, run_tests_*.py
