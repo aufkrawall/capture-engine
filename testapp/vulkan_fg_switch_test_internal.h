@@ -247,6 +247,12 @@ namespace testapp::vkfg {
 bool RenderFrame();
 }
 
+void LoadConfig();
+void NormalizeAutoSequenceTimings();
+void ParseCommandLine(int argc, char* argv[]);
+std::string TestAppConfigPath();
+void ParseVulkanOptions(int argc, char* argv[]);
+
 int main(int argc, char* argv[]);
 
 namespace testapp::vkfg {
