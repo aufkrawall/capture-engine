@@ -717,3 +717,7 @@ void CleanupRTVs() {
     dx12_hook_g_State.cachedSC3 = nullptr;
 }
 
+void CleanupOverlay() {
+CleanupOverlay(false);
+}
+

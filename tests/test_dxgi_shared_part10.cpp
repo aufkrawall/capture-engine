@@ -38,18 +38,17 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_NE(sourcePresentGate, std::string::npos);
 
     const size_t minimalProcessFrame = dx12Text.find("void DX12_ProcessFrameMinimal(");
+    const size_t minimalForward =
+        dx12Text.find("ProcessFrame(sc3, processCapture, applicationSourcePresent, "
+                      "frameGenerationPresentationActive);");
     const size_t externalProcessFrame = dx12Text.find("void DX12_ProcessFrameExternal(", minimalProcessFrame);
     const size_t externalForward =
         dx12Text.find(
             "ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive, "
             "diagnostics);",
             externalProcessFrame);
-    const size_t minimalForward =
-        dx12Text.find("ProcessFrame(sc3, processCapture, applicationSourcePresent, "
-                      "frameGenerationPresentationActive);",
-                      externalForward);
     const size_t wrapperEntry =
-        dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {", minimalForward);
+        dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {");
     const size_t wrapperClassification =
         dx12Text.find("ShouldApplyDX12PrerenderLimitOnPresent(", wrapperEntry);
     ASSERT_NE(minimalProcessFrame, std::string::npos);
@@ -58,6 +57,10 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_NE(externalForward, std::string::npos);
     ASSERT_NE(wrapperEntry, std::string::npos);
     ASSERT_NE(wrapperClassification, std::string::npos);
+    // In-file flow: the minimal forward runs first, the wrapper entry classifies the limiter, and the
+    // 5-argument ProcessFrame implementation is forwarded to afterwards (all in the process unit).
+    EXPECT_LT(minimalForward, wrapperEntry);
+    EXPECT_LT(wrapperEntry, externalForward);
 
     const size_t handler = dx12Text.find("void HandleDX12ProcessFrame(");
     const size_t handlerForward =

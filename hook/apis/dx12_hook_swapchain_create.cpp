@@ -1,12 +1,105 @@
 #include "dx12_hook_internal.h"
 
 
-// Inline hook detour for CreateSwapChainForHwnd.
-// This code-level hook fires for ALL calls to the real DXGI function,
-// including internal calls by Streamline's DLFG module (linkSwapchainToCmdQueue).
-// When E_ACCESSDENIED occurs (HWND already has a flip-model swapchain), we
-// only do CE-owned cleanup/retry for non-runtime-managed cases. Streamline and
-// authoritative FFX takeover paths must manage that handoff themselves.
+bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut, size_t modulePathOutCount) {
+if (modulePathOut && modulePathOutCount > 0) {
+    modulePathOut[0] = '\0';
+}
+
+const void* callerAddress = CE_RETURN_ADDRESS();
+if (!callerAddress) {
+    return false;
+}
+
+char localModulePath[MAX_PATH] = {};
+char* targetBuffer = (modulePathOut && modulePathOutCount > 0) ? modulePathOut : localModulePath;
+const size_t targetCount = (modulePathOut && modulePathOutCount > 0) ? modulePathOutCount : sizeof(localModulePath);
+if (!TryGetModulePathFromCodeAddress(callerAddress, targetBuffer, targetCount)) {
+    return false;
+}
+
+return ce::overlay_compat::IsThirdPartyOverlayModulePath(targetBuffer);
+}
+
+
+CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvidence(const void* callerAddress, bool callerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath, const char* ffxModulePath) {
+CreateSwapchainQueueCaptureEvidence evidence = {};
+evidence.callerAddress = callerAddress;
+evidence.callerFromThirdPartyOverlay = callerFromThirdPartyOverlay;
+evidence.authoritativeFFXRuntimeCreator =
+    ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
+                                                                                ffxFrameGenerationInStack);
+evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
+evidence.callerFromStreamlineFGModule = callerFromStreamlineFGModule;
+evidence.streamlineFrameGenerationInStack = streamlineFrameGenerationInStack;
+if (callerModulePath && *callerModulePath) {
+    strncpy_s(evidence.callerModulePath, sizeof(evidence.callerModulePath), callerModulePath, _TRUNCATE);
+}
+const char* authoritativeFFXPath = (ffxModulePath && *ffxModulePath)
+                                       ? ffxModulePath
+                                       : (callerFromFFXFGModule && callerModulePath ? callerModulePath : nullptr);
+if (authoritativeFFXPath && *authoritativeFFXPath) {
+    strncpy_s(evidence.ffxModulePath, sizeof(evidence.ffxModulePath), authoritativeFFXPath, _TRUNCATE);
+    evidence.officialAMDFFXRuntimeCreator = ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(authoritativeFFXPath);
+}
+return evidence;
+}
+
+
+CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {
+CreateSwapchainForHwndCallerContext context = {};
+
+char immediateCallerModulePath[MAX_PATH] = {};
+const void* immediateCallerAddress = CE_RETURN_ADDRESS();
+TryGetModulePathFromCodeAddress(immediateCallerAddress, immediateCallerModulePath,
+                                sizeof(immediateCallerModulePath));
+
+const char* effectiveCallerModulePath = ce::overlay_compat::GetEffectiveCreateSwapchainCallerModulePath(
+    dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
+if (effectiveCallerModulePath && *effectiveCallerModulePath) {
+    strncpy_s(context.callerModulePath, sizeof(context.callerModulePath), effectiveCallerModulePath, _TRUNCATE);
+}
+
+context.callerAddress = dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath[0]
+                            ? dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerAddress
+                            : immediateCallerAddress;
+context.callerFromFFXFGModule = ce::overlay_compat::IsFFXFrameGenerationModulePath(context.callerModulePath);
+context.callerFromThirdPartyOverlay = ce::overlay_compat::IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(
+    dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
+return context;
+}
+
+
+bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(const char* context, bool rawCallerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath) {
+const bool authoritativeFGRuntimeSwapchainCreator =
+    ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+        callerFromFFXFGModule, ffxFrameGenerationInStack, callerFromStreamlineFGModule,
+        streamlineFrameGenerationInStack);
+if (rawCallerFromThirdPartyOverlay && authoritativeFGRuntimeSwapchainCreator) {
+    static std::atomic<int> s_wrappedFGCreateCallerLogCount{0};
+    const int logCount = s_wrappedFGCreateCallerLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20) {
+        const char* runtimeKind = (callerFromFFXFGModule || ffxFrameGenerationInStack) ? "FFX" : "Streamline";
+        if (callerFromStreamlineFGModule || callerFromFFXFGModule || ffxFrameGenerationInStack) {
+            HookLogImportant(
+                "%s: %s frame-generation stack detected behind third-party overlay caller %s — treating "
+                "swapchain as authoritative runtime takeover",
+                context ? context : "CreateSwapChain", runtimeKind,
+                callerModulePath && *callerModulePath ? callerModulePath : "unknown");
+        } else {
+            HookLogImportant(
+                "%s: Streamline stack detected behind third-party overlay caller %s — deferring takeover "
+                "classification until queue identity is known",
+                context ? context : "CreateSwapChain",
+                callerModulePath && *callerModulePath ? callerModulePath : "unknown");
+        }
+    }
+}
+
+return rawCallerFromThirdPartyOverlay && !authoritativeFGRuntimeSwapchainCreator;
+}
+
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
 if (HookIsShuttingDown()) {
     if (dx12_hook_s_oCreateSCForHwndInline)
@@ -286,6 +379,8 @@ return hr;
 // - This causes E_ACCESSDENIED when DLSS FG tries to activate
 // The inline Present hooks (installed on the real DXGI function) provide the
 // same interception without interfering with Streamline's lifecycle management.
+
+
 bool IsStreamlineLoaded() {
 static bool detected = false;
 if (detected)
@@ -300,6 +395,8 @@ return false;
 
 
 // Detour for global CreateSwapChain hook
+
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain) {
 // CRITICAL: Pass through during shutdown
 if (HookIsShuttingDown()) {
@@ -432,6 +529,8 @@ return hr;
 
 
 // Detour for global CreateSwapChainForHwnd hook
+
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
 // CRITICAL: Pass through during shutdown
 if (HookIsShuttingDown()) {
@@ -588,4 +687,3 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
 
 return hr;
 }
-

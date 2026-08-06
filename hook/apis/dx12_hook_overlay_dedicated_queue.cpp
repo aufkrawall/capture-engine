@@ -277,153 +277,6 @@ if (dx12_hook_g_NativeFSRInternalNoCallbackComposition.exchange(false, std::memo
 }
 
 
-bool UpdateHeuristicFSRFGState(bool active, const char* source) {
-if (active && ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(
-                  dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
-                  dx12_hook_g_FGRuntimeOwnsSwapchain)) {
-    g_FGCompat.SetHeuristicFSRFGActive(false);
-
-    static std::atomic<int> s_explicitOffSuppressedLogCount{0};
-    if (s_explicitOffSuppressedLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-        HookLogImportant(
-            "DX12: Suppressing %s FSR FG heuristic because native FSR explicitly turned FG off while the "
-            "runtime-owned "
-            "swapchain teardown is still active",
-            source ? source : "unknown");
-    }
-    return false;
-}
-
-const char* blockedReason = nullptr;
-if (!CanUseFSRFGHeuristics(&blockedReason)) {
-    g_FGCompat.SetHeuristicFSRFGActive(false);
-
-    if (active) {
-        static std::atomic<int> s_suppressedLogCount{0};
-        if (s_suppressedLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLog("DX12: Suppressing %s FSR FG heuristic because %s", source,
-                    blockedReason ? blockedReason : "it is unsafe");
-        }
-    }
-    return false;
-}
-
-g_FGCompat.SetHeuristicFSRFGActive(active);
-return true;
-}
-
-
-void CleanupOverlay() {
-CleanupOverlay(false);
-}
-
-
-bool IsStartupOverlayCompatibilityActive() {
-return ce::dx12_overlay_policy::ShouldUseStartupOverlayCompatibilityMode(
-    ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr, IsActualFrameGenerationActive(),
-    dx12_hook_s_startupOverlayCompatSettled.load(std::memory_order_acquire),
-    dx12_hook_s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), dx12_hook_g_FGRuntimeOwnsSwapchain);
-}
-
-
-bool ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff() {
-return ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-    dx12_hook_s_startupOverlayCompatSettled.load(std::memory_order_acquire), dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit,
-    dx12_hook_g_FGRuntimeOwnsSwapchain, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-    g_FGCompat.GetRuntimeMode(), HookHasExplicitStreamlineSetOptionsActivation(),
-    dx12_hook_s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), dx12_hook_g_HadFSRFGPhase, dx12_hook_g_OriginalGameQueue != nullptr);
-}
-
-
-void UpdateStartupOverlayCompatibilityState() {
-const bool actualFGActive = IsActualFrameGenerationActive();
-
-if (actualFGActive) {
-    dx12_hook_s_startupOverlayObservedAnyFG.store(true, std::memory_order_release);
-    dx12_hook_s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
-    ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
-    dx12_hook_g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
-    return;
-}
-
-const bool startupBlockingOverlayLoaded = ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr;
-if (!startupBlockingOverlayLoaded || !dx12_hook_g_FGRuntimeOwnsSwapchain) {
-    dx12_hook_s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
-}
-
-const bool observedAnyFrameGenerationActivity = dx12_hook_s_startupOverlayObservedAnyFG.load(std::memory_order_acquire);
-const bool startupCompatSettled = dx12_hook_s_startupOverlayCompatSettled.load(std::memory_order_acquire);
-const bool lateRuntimeOwnedHandoffJustObserved =
-    dx12_hook_s_pendingLateRuntimeOwnedStartupHandoff.exchange(false, std::memory_order_acq_rel);
-const bool preserveLiveOverlayDuringHandoff =
-    ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
-if (!ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        startupBlockingOverlayLoaded, actualFGActive, startupCompatSettled, dx12_hook_g_FGRuntimeOwnsSwapchain,
-        observedAnyFrameGenerationActivity, lateRuntimeOwnedHandoffJustObserved,
-        preserveLiveOverlayDuringHandoff)) {
-    if (lateRuntimeOwnedHandoffJustObserved && preserveLiveOverlayDuringHandoff) {
-        HookLogImportant(
-            "DX12: Keeping settled startup overlay live through runtime-inactive Streamline handoff "
-            "(overlayInit=%d syncInit=%d runtime=%s origGame=%p)",
-            dx12_hook_g_State.overlayInit ? 1 : 0, dx12_hook_g_State.syncInit ? 1 : 0,
-            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), dx12_hook_g_OriginalGameQueue);
-    }
-    return;
-}
-
-if (dx12_hook_s_startupOverlayCompatSettled.exchange(false, std::memory_order_acq_rel)) {
-    HookLogImportant(
-        "DX12: Re-arming startup overlay compatibility after late runtime-owned swapchain handoff before any real "
-        "FG activity");
-    ResetStartupOverlayBackendActivationStage();
-}
-}
-
-
-const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage) {
-switch (stage) {
-    case StartupOverlayFirstDrawProbeStage::kBackbufferTouchOnly:
-        return "backbuffer touch";
-    case StartupOverlayFirstDrawProbeStage::kPipelineStateOnly:
-        return "pipeline state setup";
-    case StartupOverlayFirstDrawProbeStage::kActualRender:
-        return "real overlay draw";
-    case StartupOverlayFirstDrawProbeStage::kComplete:
-        return "complete";
-    case StartupOverlayFirstDrawProbeStage::kNone:
-    default:
-        return "overlay probe";
-}
-}
-
-
-void ResetStartupOverlayBackendActivationStage() {
-dx12_hook_s_startupOverlayActivationStage = StartupOverlayActivationStage::kNone;
-dx12_hook_s_startupOverlayFirstDrawProbeStage = StartupOverlayFirstDrawProbeStage::kNone;
-dx12_hook_s_startupOverlayActivationStageMs = 0;
-dx12_hook_s_startupOverlaySyncInitMs = 0;
-dx12_hook_s_startupOverlayResourcePrimeMs = 0;
-dx12_hook_s_startupOverlayFirstDrawProbeMs = 0;
-dx12_hook_s_lastStartupBlockingRenderModuleActivityMs.store(0, std::memory_order_release);
-}
-
-
-bool IsActualFrameGenerationActive() {
-const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-return runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG || runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
-}
-
-
-bool IsFSRFrameGenerationActive() {
-return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kFSRFG;
-}
-
-
-bool IsNvidiaSmoothMotionActiveRuntime() {
-return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
-}
-
-
 bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule) {
 const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
 const bool processNeedsDelay = IsStartupOverlayCompatibilityActive();
@@ -527,152 +380,57 @@ return false;
 // pristine d3d12.dll function pointer.  When DIRECT and COMPUTE queues
 // share the same vtable (all hooks applied to the shared vtable), we
 // fall back to scanning SL's hook for an indirect JMP/CALL target.
-void ProbeRealD3D12ECL(ID3D12Device* device) {
-if (dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire))
-    return;
-if (!device)
-    return;
 
-// Create a temporary COMPUTE queue
-D3D12_COMMAND_QUEUE_DESC desc = {};
-desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-desc.NodeMask = 0;
 
-ID3D12CommandQueue* probeQueue = nullptr;
-HRESULT hr = device->CreateCommandQueue(&desc, IID_PPV_ARGS(&probeQueue));
-if (FAILED(hr) || !probeQueue) {
-    HookLogImportant("DX12: ECL probe - COMPUTE queue creation failed (hr=0x%08X)", (unsigned)hr);
+void DisableDedicatedOverlayQueueForOverlayCompat() {
+// When FG goes inactive, we keep the dedicated overlay queue alive to avoid
+// a destructive teardown/rebuild cycle during FG mode switches (e.g. 2x→3x).
+// Destroying and recreating queue + fence + allocators mid-transition causes
+// ERR_GFX_STATE because InitOverlaySync releases D3D12 objects while the GPU
+// still has in-flight work (deferred Signal not yet flushed).
+//
+// The queue sits idle when FG is inactive (submissions go to the game queue).
+// When FG reactivates, the queue is ready — no reinit needed.
+if (ShouldUseDedicatedOverlayQueue()) {
     return;
 }
 
-void** probeVtable = *(void***)probeQueue;
-void* probeECL = probeVtable[10];
-void* probeSignal = probeVtable[14];  // Signal is at vtable[14] on ID3D12CommandQueue
-
-// Check which module owns the COMPUTE queue's ECL
-HMODULE probeModule = nullptr;
-GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                   (LPCSTR)probeECL, &probeModule);
-char probeMod[MAX_PATH] = {};
-if (probeModule)
-    GetModuleFileNameA(probeModule, probeMod, MAX_PATH);
-
-// Check which module owns the COMPUTE queue's Signal
-HMODULE probeSignalModule = nullptr;
-GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                   (LPCSTR)probeSignal, &probeSignalModule);
-char probeSignalMod[MAX_PATH] = {};
-if (probeSignalModule)
-    GetModuleFileNameA(probeSignalModule, probeSignalMod, MAX_PATH);
-
-// Compare with the current DIRECT queue's vtable[10] (our hooked version)
-ID3D12CommandQueue* directQueue = dx12_hook_g_SwapchainQueue;
-void* directECL = nullptr;
-char directMod[MAX_PATH] = {};
-if (directQueue) {
-    void** directVtable = *(void***)directQueue;
-    directECL = directVtable[10];
-    HMODULE dMod = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCSTR)directECL, &dMod);
-    if (dMod)
-        GetModuleFileNameA(dMod, directMod, MAX_PATH);
+if (!dx12_hook_g_State.overlayQueue) {
+    return;
 }
 
-bool sameVtable = (probeVtable == (directQueue ? *(void***)directQueue : nullptr));
-bool sameECL = (probeECL == directECL);
-bool probeIsD3D12 = (strstr(probeMod, "d3d12") != nullptr || strstr(probeMod, "D3D12") != nullptr);
-bool probeSignalIsD3D12 =
-    (strstr(probeSignalMod, "d3d12") != nullptr || strstr(probeSignalMod, "D3D12") != nullptr);
-
-HookLogImportant("DX12: ECL probe - COMPUTE ECL=%p (%s), DIRECT ECL=%p (%s), sameVtable=%d sameECL=%d isD3D12=%d",
-                 probeECL, probeMod, directECL, directMod, sameVtable ? 1 : 0, sameECL ? 1 : 0,
-                 probeIsD3D12 ? 1 : 0);
-
-if (probeIsD3D12) {
-    dx12_hook_g_RealD3D12ECL.store((ExecuteCommandListsPtr)probeECL, std::memory_order_release);
-    HookLogImportant("DX12: Real D3D12 ECL found via COMPUTE probe: %p", probeECL);
-}
-
-// Probe the real D3D12 Signal from the COMPUTE queue's vtable
-if (probeSignalIsD3D12 && !dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
-    dx12_hook_g_RealD3D12Signal.store(reinterpret_cast<SignalPtr>(probeSignal), std::memory_order_release);
-    HookLogImportant("DX12: Real D3D12 Signal found via COMPUTE probe: %p (%s)", probeSignal, probeSignalMod);
-}
-
-// Always check saved original — in GTA V both COMPUTE and DIRECT share
-// the same vtable (sameECL=1) so our hook is on both, but
-// oExecuteCommandLists still holds the real D3D12 function.
-if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-    ExecuteCommandListsPtr savedOrig = oExecuteCommandLists;
-    if (savedOrig) {
-        HMODULE origMod = nullptr;
-        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)savedOrig, &origMod);
-        char origModName[MAX_PATH] = {};
-        if (origMod)
-            GetModuleFileNameA(origMod, origModName, MAX_PATH);
-        bool origIsD3D12 = (strstr(origModName, "d3d12") != nullptr || strstr(origModName, "D3D12") != nullptr);
-        HookLogImportant("DX12: ECL probe - saved oECL=%p (%s) isD3D12=%d", (void*)savedOrig, origModName,
-                         origIsD3D12 ? 1 : 0);
-        if (origIsD3D12) {
-            dx12_hook_g_RealD3D12ECL.store(savedOrig, std::memory_order_release);
-            HookLogImportant("DX12: Real D3D12 ECL found via saved original: %p", (void*)savedOrig);
-        }
+static bool s_loggedSuspend = false;
+if (!s_loggedSuspend) {
+    const char* overlayModule = nullptr;
+    ShouldUseDedicatedOverlayQueue(&overlayModule);
+    if (overlayModule) {
+        HookLogImportant(
+            "DX12: Suspending dedicated overlay queue (FG inactive, external overlay %s) — queue kept alive",
+            overlayModule);
+    } else {
+        HookLogImportant("DX12: Suspending dedicated overlay queue (FG inactive) — queue kept alive");
     }
+    s_loggedSuspend = true;
+}
 }
 
-// If still not found, try to follow the saved original's JMP chain
-if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-    ExecuteCommandListsPtr savedOrig = oExecuteCommandLists;
-    if (savedOrig) {
-        const uint8_t* fn = (const uint8_t*)savedOrig;
-        void* target = nullptr;
-        // Check for E9 rel32 (JMP rel32) — SL's hook might be a simple JMP
-        if (fn[0] == 0xE9) {
-            int32_t rel = *(const int32_t*)(fn + 1);
-            target = (void*)(fn + 5 + rel);
-        }
-        // Check for FF 25 (JMP [rip+disp32]) — indirect JMP
-        else if (fn[0] == 0xFF && fn[1] == 0x25) {
-            int32_t disp = *(const int32_t*)(fn + 2);
-            void** addr = (void**)(fn + 6 + disp);
-            target = *addr;
-        }
-        // Check for 48 FF 25 (REX.W JMP [rip+disp32])
-        else if (fn[0] == 0x48 && fn[1] == 0xFF && fn[2] == 0x25) {
-            int32_t disp = *(const int32_t*)(fn + 3);
-            void** addr = (void**)(fn + 7 + disp);
-            target = *addr;
-        }
 
-        if (target) {
-            HMODULE targetMod = nullptr;
-            GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                (LPCSTR)target, &targetMod);
-            char targetModName[MAX_PATH] = {};
-            if (targetMod)
-                GetModuleFileNameA(targetMod, targetModName, MAX_PATH);
-            bool isD3D12 = (strstr(targetModName, "d3d12") != nullptr || strstr(targetModName, "D3D12") != nullptr);
-            HookLogImportant("DX12: ECL probe - followed JMP chain: target=%p (%s) isD3D12=%d", target,
-                             targetModName, isD3D12 ? 1 : 0);
-            if (isD3D12) {
-                dx12_hook_g_RealD3D12ECL.store((ExecuteCommandListsPtr)target, std::memory_order_release);
-                HookLogImportant("DX12: Real D3D12 ECL found via JMP chain: %p", target);
-            }
-        }
-    }
+void EnsureDedicatedOverlayQueueForFGCompat() {
+if (!ShouldUseDedicatedOverlayQueue()) {
+    return;
 }
 
-if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-    HookLogImportant(
-        "DX12: ECL probe - FAILED to find real D3D12 ECL! "
-        "Overlay will be disabled during SL FG to prevent crash");
+if (!dx12_hook_g_State.syncInit || dx12_hook_g_State.overlayQueue) {
+    // Queue already exists or not yet initialized — nothing to do.
+    return;
 }
 
-probeQueue->Release();
+// Non-SL FG cases (e.g., FSR FG with third-party overlay) may still need
+// a dedicated queue.  For SL FG, ShouldUseDedicatedOverlayQueue() returns
+// false so we never reach here; overlay draws are skipped instead.
+HookLogImportant(
+    "DX12: FG active with overlay compat — dedicated overlay queue not yet created, forcing sync reinit");
+dx12_hook_g_State.syncInit = false;
+dx12_hook_g_State.syncDevice = nullptr;
+dx12_hook_g_State.overlayInit = false;
 }
-

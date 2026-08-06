@@ -279,3 +279,57 @@ bool DX12_TryInvokePostSLStartupActivationCallbackFromSharedService(const char* 
                                                                     bool clearStartupWindow) {
     return DX12_TryInvokePostSLStartupActivationCallback(source, clearStartupWindow, false);
 }
+
+void SafeReleaseStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
+if (!swapchain) {
+    return;
+}
+
+if (!IsUsableStartupActivationSwapchainPointer(swapchain)) {
+    static std::atomic<int> s_skipUnsafeSwapchainReleaseLogCount{0};
+    const int logCount = s_skipUnsafeSwapchainReleaseLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 100) == 0) {
+        HookLogImportant(
+            "DX12: Skipping unsafe startup activation swapchain Release for stale pointer %p "
+            "(source=%s log=%d)",
+            swapchain, source ? source : "unknown", logCount + 1);
+    }
+    return;
+}
+
+swapchain->Release();
+}
+
+
+void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
+IDXGISwapChain* oldSwapchain = nullptr;
+{
+    std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);
+    oldSwapchain = dx12_hook_g_StreamlineStartupActivationSwapchain;
+    dx12_hook_g_StreamlineStartupActivationSwapchain = nullptr;
+}
+
+if (oldSwapchain) {
+    HookLogImportant("DX12: Released retained Streamline startup activation swapchain %p (source=%s)", oldSwapchain,
+                     source ? source : "unknown");
+    SafeReleaseStartupActivationSwapchain(oldSwapchain, source);
+}
+}
+
+
+bool HasRetainedStreamlineStartupActivationSwapchain() {
+std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);
+return dx12_hook_g_StreamlineStartupActivationSwapchain != nullptr;
+}
+
+
+bool HasUsableRetainedStreamlineStartupActivationSwapchainCandidate() {
+std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);
+return IsUsableStartupActivationSwapchainPointer(dx12_hook_g_StreamlineStartupActivationSwapchain);
+}
+
+
+bool HasStartupActivationSwapchainCandidateForECLProbe() {
+return HasUsableRetainedStreamlineStartupActivationSwapchainCandidate();
+}
+

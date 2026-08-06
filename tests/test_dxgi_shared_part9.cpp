@@ -194,25 +194,44 @@ TEST(DXGISharedTest, ExactPrewarmedPostSLHandoffSurvivesItsFirstMatchingPresent)
 
 TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGenericSwapchainCleanup) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    const std::string text = ce::test_source::ReadLogicalSource(source);
-    ASSERT_FALSE(text.empty()) << source.string();
-
-    const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
-    const size_t arm = text.find("dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarm);
-    const size_t lifetimeDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", arm);
-    const size_t preserve =
-        text.find("ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(", lifetimeDecision);
-    const size_t cleanup = text.find("CleanupRTVs();", preserve);
-    ASSERT_NE(prewarm, std::string::npos);
+    // The swapchain-tracking unit (queue-capture / present-hook refresh path) calls the prewarm and
+    // immediately arms the proof; generic swapchain cleanup in the same unit must come later.
+    const std::string tracking =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_swapchain_tracking.cpp");
+    ASSERT_FALSE(tracking.empty()) << "swapchain-tracking unit missing";
+    const size_t prewarmCall =
+        tracking.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
+    ASSERT_NE(prewarmCall, std::string::npos);
+    const size_t arm =
+        tracking.find("dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarmCall);
     ASSERT_NE(arm, std::string::npos);
-    ASSERT_NE(lifetimeDecision, std::string::npos);
-    ASSERT_NE(preserve, std::string::npos);
-    ASSERT_NE(cleanup, std::string::npos);
-    EXPECT_LT(prewarm, arm);
-    EXPECT_LT(arm, lifetimeDecision);
-    EXPECT_LT(lifetimeDecision, preserve);
-    EXPECT_LT(preserve, cleanup);
+    EXPECT_LT(prewarmCall, arm);
+    const size_t cleanupInTracking = tracking.find("CleanupRTVs();", arm);
+    ASSERT_NE(cleanupInTracking, std::string::npos);
+    EXPECT_LT(arm, cleanupInTracking)
+        << "the armed prewarm proof must be established before generic swapchain cleanup in the same unit";
+
+    // The prewarm implementation lives in the helpers unit.
+    const std::string helpers =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_helpers.cpp");
+    ASSERT_FALSE(helpers.empty()) << "helpers unit missing";
+    EXPECT_NE(helpers.find("PrewarmPostSLOverlayForFreshStreamlineHandoff("), std::string::npos);
+
+    // The process-session phases decide swapchain replacement (phase 1) and exact-backend preservation
+    // (phase 2) before the generic cleanup paths (overlay unit) can run.
+    const std::string phase1 =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_process_session_phase1.cpp");
+    const std::string phase2 =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_process_session_phase2.cpp");
+    ASSERT_FALSE(phase1.empty());
+    ASSERT_FALSE(phase2.empty());
+    EXPECT_NE(phase1.find("ShouldProcessLogicalSwapchainReplacement("), std::string::npos);
+    EXPECT_NE(phase2.find("ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent("), std::string::npos);
+
+    const std::string overlay =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_overlay.cpp");
+    ASSERT_FALSE(overlay.empty());
+    EXPECT_NE(overlay.find("void CleanupRTVs() {"), std::string::npos);
 }
 
 TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProof) {
