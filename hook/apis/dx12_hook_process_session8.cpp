@@ -154,6 +154,14 @@ if (SUCCEEDED(sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb))) && bb) {
         dx12_hook_g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
     rtvRecreate.ptr += (SIZE_T)bufferIdx * dx12_hook_g_State.rtvDescriptorSize;
     g_Device.load()->CreateRenderTargetView(bb, nullptr, rtvRecreate);
+} else {
+    // GetBuffer failure: the swapchain/backbuffer state is not usable.
+    // Force a full RTV reinit on the next ProcessFrame instead of drawing
+    // against a stale/null backbuffer. (Regression guard: this cleanup must
+    // stay in the FAILURE branch only - see DrawSubmitCoreTail.)
+    HookLog("DX12: GetBuffer(%u) failed, forcing RTV reinit", swapchainBufferIdx);
+    CleanupRTVs();
+    dx12_hook_g_State.overlayInit = false;
 }
     return ProcessFrameFlow::kContinue;
 }

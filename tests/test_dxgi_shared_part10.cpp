@@ -680,3 +680,58 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_EQ(renderer.find("queue->ExecuteCommandLists"), std::string::npos);
     EXPECT_EQ(renderer.find("WaitForSingleObject"), std::string::npos);
 }
+
+// Strange Brigade DX12 session 20260806_165849: every Present re-initialized the
+// whole overlay (ImGui + RTVs + 16 allocators + fence) because the ProcessFrame
+// semantic-unit refactor (3398151e) hoisted the GetBuffer-failure recovery out of
+// its else-branch and ran CleanupRTVs()/overlayInit=false unconditionally after
+// every successful overlay draw. That per-frame teardown flooded the GPU queue,
+// produced 1s upload-ring fence timeouts (game render stalls) and made the overlay
+// rebuild itself (and visibly flicker) on every frame. The recovery must stay in
+// the GetBuffer-failure branch only.
+TEST(DXGISharedSourceTest, GetBufferFailureForcesRtvReinitButSuccessPathKeepsOverlayState) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    // DrawSc3Front must pair the GetBuffer success path with an else-branch that
+    // forces RTV reinit (CleanupRTVs + overlayInit=false) only when GetBuffer fails.
+    const size_t front = text.find("ProcessFrameFlow FrameProcessSession::DrawSc3Front() {");
+    ASSERT_NE(front, std::string::npos);
+    const size_t getBuffer = text.find("sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb))) && bb)", front);
+    ASSERT_NE(getBuffer, std::string::npos);
+    const size_t rtvRecreate = text.find("CreateRenderTargetView(bb, nullptr, rtvRecreate)", getBuffer);
+    ASSERT_NE(rtvRecreate, std::string::npos);
+    const size_t failureElse = text.find("} else {", rtvRecreate);
+    ASSERT_NE(failureElse, std::string::npos);
+    EXPECT_LT(failureElse - rtvRecreate, static_cast<size_t>(120))
+        << "the GetBuffer-failure else-branch must directly follow the success path";
+    const size_t failureLog = text.find("HookLog(\"DX12: GetBuffer(%u) failed, forcing RTV reinit\"", failureElse);
+    const size_t failureCleanup = text.find("CleanupRTVs();", failureElse);
+    const size_t failureInvalidate = text.find("dx12_hook_g_State.overlayInit = false;", failureElse);
+    ASSERT_NE(failureLog, std::string::npos);
+    ASSERT_NE(failureCleanup, std::string::npos);
+    ASSERT_NE(failureInvalidate, std::string::npos);
+    EXPECT_LT(failureLog - failureElse, static_cast<size_t>(400));
+    EXPECT_LT(failureCleanup - failureLog, static_cast<size_t>(200));
+    EXPECT_LT(failureInvalidate - failureCleanup, static_cast<size_t>(80));
+
+    // DrawSubmitCoreTail must NOT clear overlay state after a successful draw:
+    // that is what forced the per-frame reinit storm. It must only release the
+    // per-frame backbuffer reference.
+    const size_t tail = text.find("ProcessFrameFlow FrameProcessSession::DrawSubmitCoreTail() {");
+    ASSERT_NE(tail, std::string::npos);
+    const size_t nextFunction = text.find("ProcessFrameFlow FrameProcessSession::DrawSc3Else() {", tail);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const std::string tailBody = text.substr(tail, nextFunction - tail);
+    EXPECT_NE(tailBody.find("if (bbNeedsRelease)"), std::string::npos)
+        << "the per-frame backbuffer reference release must remain";
+    EXPECT_NE(tailBody.find("bb->Release();"), std::string::npos);
+    EXPECT_EQ(tailBody.find("dx12_hook_g_State.overlayInit = false;"), std::string::npos)
+        << "successful draws must never invalidate the overlay state";
+    EXPECT_EQ(tailBody.find("CleanupRTVs();"), std::string::npos)
+        << "successful draws must never tear down RTV state";
+}

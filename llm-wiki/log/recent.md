@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-08-06 - Fixed: DX12 overlay re-initialized EVERY frame (Strange Brigade DX12 stalls + flicker)
+
+- Symptom: Strange Brigade DX12 (Steam overlay active, no FG) showed ~1s game
+  render stalls (15+ in 19s, final ~8s freeze) and the inject overlay visibly
+  flickered/disappeared repeatedly. Hook trace (20260806_165849) showed
+  `ImGui initialized` / `CreateRTVs` / `InitOverlaySync` / `releasing
+  swapchain/queue-bound overlay state` 425x for 425 presents — a full overlay
+  teardown+reinit (16 allocators + new fence + GPU flush) on EVERY frame, plus
+  `DescFree: slot N GPU-completion wait timed out` with 1s ProcessFrame SLOW
+  diagnostics. Per-frame reinit flooded the GPU queue; the overlay upload-ring
+  fence then could not complete within its 1s wait, producing lockstep 1s stalls
+  and skipped overlay draws (visible flicker). The HookThread's 1s IAT retry
+  loop (`IAT: Initializing D3D11 hooks...`) was investigated and ruled out
+  (early-outs cheaply when d3d11.dll is absent; pre-existing by design).
+- Root cause: the ProcessFrame semantic-unit refactor (3398151e, 2026-08-05)
+  accidentally hoisted the GetBuffer-failure recovery out of its else-branch.
+  Pre-refactor: `if (SUCCEEDED(GetBuffer) && bb) { ...draw...; bb->Release(); }
+  else { HookLog("GetBuffer failed, forcing RTV reinit"); CleanupRTVs();
+  overlayInit = false; }`. The refactor dropped the else-branch and appended
+  `CleanupRTVs(); dx12_hook_g_State.overlayInit = false;` unconditionally at the
+  end of DrawSubmitCoreTail — so every successful overlay draw invalidated the
+  overlay state and the next ProcessFrame rebuilt it (Phase3 cleanup+init,
+  InitImGui warm-backend reuse, CreateRTVs, InitOverlaySync with fresh fence).
+- Fix: restored the GetBuffer-failure else-branch in
+  `dx12_hook_process_session8.cpp` DrawSc3Front (log + CleanupRTVs +
+  overlayInit=false, failure-only) and removed the unconditional teardown from
+  DrawSubmitCoreTail (`dx12_hook_process_session9.cpp`); the per-frame
+  `bb->Release()` stays. Overlay state now persists across presents; the
+  per-frame RTV recreate (cheap CPU-side CreateRenderTargetView) remains.
+- Regression test:
+  DXGISharedSourceTest.GetBufferFailureForcesRtvReinitButSuccessPathKeepsOverlayState
+  (source-policy: asserts the else-branch follows the GetBuffer success path and
+  DrawSubmitCoreTail never clears overlayInit/CleanupRTVs).
+- Gate: full `--verify` passed (build 0.1.5728).
+- Lesson: when chunking large functions, failure-branch recovery must stay in
+  the failure branch; after a refactor, check that success paths do not execute
+  cleanup that was previously error-only (per-frame re-init storms are
+  catastrophic for GPU queues and overlay visibility).
+
 ### 2026-08-06 - Fixed: media process crashed at startup (heap corruption / C++ exception)
 
 - Symptom: starting a recording crashed the media process immediately; the

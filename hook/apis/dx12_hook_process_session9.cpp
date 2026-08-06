@@ -536,8 +536,6 @@ return ProcessFrameFlow::kSkipSteamFence;
                         // FG-SAFE: Release per-frame backbuffer reference
                         if (bbNeedsRelease)
                             bb->Release();
-                        CleanupRTVs();
-                        dx12_hook_g_State.overlayInit = false;
     return ProcessFrameFlow::kContinue;
 }
 
