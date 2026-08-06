@@ -70,21 +70,27 @@ TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBrea
     const std::string text =
         ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "testapp" /
                                            "dx12_fg_switch_render.cpp");
+    const std::string switchUnit = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "testapp" / "dx12_fg_switch_render_switch.cpp");
     ASSERT_FALSE(text.empty());
+    ASSERT_FALSE(switchUnit.empty());
+    // SwitchMode lives in the switch unit and Render()'s present section in the
+    // stem; concatenate in source order so the cross-unit ordering asserts hold.
+    const std::string all = switchUnit + text;
 
-    const size_t switchMode = text.find("bool SwitchMode(");
-    const size_t disable = text.find("ConfigureFSR(false, nullptr, \"leave FSR mode\"", switchMode);
-    const size_t pending = text.find("FsrExitTransitionStage::PresentPending", disable);
-    const size_t deferredReturn = text.find("return true;", pending);
-    const size_t preparation = text.find("prepare DLSS before FSR presentation break", deferredReturn);
-    const size_t completedWait = text.find("leave FSR mode after passthrough Present", preparation);
-    const size_t dlssBranch = text.find("} else if (target == FGMode::DLSS)", completedWait);
-    const size_t destroy = text.find("DestroyFSRContexts();", dlssBranch);
-    const size_t recreate = text.find("enter DLSS mode after prepared FSR exit", destroy);
-    const size_t replacementPending = text.find("FsrExitTransitionStage::ReplacementPresentPending", recreate);
-    const size_t replacementDeferredReturn = text.find("return true;", replacementPending);
-    const size_t enableDlss = text.find("SetDLSSFGMode(true)", replacementDeferredReturn);
-    const size_t dlssBranchEnd = text.find("} else {", recreate);
+    const size_t switchMode = all.find("bool SwitchMode(");
+    const size_t disable = all.find("ConfigureFSR(false, nullptr, \"leave FSR mode\"", switchMode);
+    const size_t pending = all.find("FsrExitTransitionStage::PresentPending", disable);
+    const size_t deferredReturn = all.find("return true;", pending);
+    const size_t preparation = all.find("prepare DLSS before FSR presentation break", deferredReturn);
+    const size_t completedWait = all.find("leave FSR mode after passthrough Present", preparation);
+    const size_t dlssBranch = all.find("} else if (target == FGMode::DLSS)", completedWait);
+    const size_t destroy = all.find("DestroyFSRContexts();", dlssBranch);
+    const size_t recreate = all.find("enter DLSS mode after prepared FSR exit", destroy);
+    const size_t replacementPending = all.find("FsrExitTransitionStage::ReplacementPresentPending", recreate);
+    const size_t replacementDeferredReturn = all.find("return true;", replacementPending);
+    const size_t enableDlss = all.find("SetDLSSFGMode(true)", replacementDeferredReturn);
+    const size_t dlssBranchEnd = all.find("} else {", recreate);
     ASSERT_NE(disable, std::string::npos);
     ASSERT_NE(pending, std::string::npos);
     ASSERT_NE(deferredReturn, std::string::npos);
@@ -109,17 +115,17 @@ TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBrea
     EXPECT_TRUE(fullRendererRelease == std::string::npos || fullRendererRelease > dlssBranchEnd)
         << "FSR->DLSS must preserve the current device/queue and replace only swapchain resources";
 
-    const size_t rollback = text.find("rolling back to active FSR without destroying its proxy", preparation);
-    const size_t rollbackConfigure = text.find("rollback failed DLSS preparation\", true", rollback);
+    const size_t rollback = all.find("rolling back to active FSR without destroying its proxy", preparation);
+    const size_t rollbackConfigure = all.find("rollback failed DLSS preparation\", true", rollback);
     ASSERT_NE(rollback, std::string::npos);
     ASSERT_NE(rollbackConfigure, std::string::npos);
     EXPECT_LT(preparation, rollback);
     EXPECT_LT(rollback, rollbackConfigure);
     EXPECT_LT(rollbackConfigure, destroy);
 
-    const size_t transitionPresent = text.find("const bool fsrExitPassthroughPresent", destroy);
-    const size_t present = text.find("g_SwapChain->Present(", transitionPresent);
-    const size_t presented = text.find("FsrExitTransitionStage::PassthroughPresented", present);
+    const size_t transitionPresent = all.find("const bool fsrExitPassthroughPresent", destroy);
+    const size_t present = all.find("g_SwapChain->Present(", transitionPresent);
+    const size_t presented = all.find("FsrExitTransitionStage::PassthroughPresented", present);
     ASSERT_NE(transitionPresent, std::string::npos);
     ASSERT_NE(present, std::string::npos);
     ASSERT_NE(presented, std::string::npos);
@@ -127,11 +133,11 @@ TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBrea
     EXPECT_LT(present, presented);
 
     const size_t replacementTransitionPresent =
-        text.find("const bool dlssReplacementPassthroughPresent", transitionPresent);
-    const size_t replacementPresent = text.find("g_SwapChain->Present(", replacementTransitionPresent);
-    const size_t replacementPresented = text.find("FsrExitTransitionStage::ReplacementPresented", replacementPresent);
+        all.find("const bool dlssReplacementPassthroughPresent", transitionPresent);
+    const size_t replacementPresent = all.find("g_SwapChain->Present(", replacementTransitionPresent);
+    const size_t replacementPresented = all.find("FsrExitTransitionStage::ReplacementPresented", replacementPresent);
     const size_t fsrRetirement =
-        text.find("MaybeUnloadFSRRuntimeAfterSwitch(\"after first active DLSS Present\"", replacementPresented);
+        all.find("MaybeUnloadFSRRuntimeAfterSwitch(\"after first active DLSS Present\"", replacementPresented);
     ASSERT_NE(replacementTransitionPresent, std::string::npos);
     ASSERT_NE(replacementPresent, std::string::npos);
     ASSERT_NE(replacementPresented, std::string::npos);

@@ -236,6 +236,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "dx12_fg_switch_swapchain.cpp",
             "dx12_fg_switch_upscale.cpp",
             "dx12_fg_switch_render.cpp",
+            "dx12_fg_switch_render_switch.cpp",
         )
     ]
     fg_switch_exe = os.path.join(testapp_bin_dir, "dx12_fg_switch_test.exe")
