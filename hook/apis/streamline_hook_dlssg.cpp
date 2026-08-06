@@ -1,6 +1,252 @@
 #include "streamline_hook_internal.h"
 
 
+slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState& state,  const slDLSSGOptions* streamline_hook_options) {
+
+
+    auto originalGetState = GetCallableOriginalDLSSGGetState();
+    if (!originalGetState) {
+        return streamline_hook_kSlResultErrorInvalidState;
+    }
+
+    // Newer integrations can configure DLSS-G by passing options directly to GetState, after
+    // slSetTagForFrame has already made the activation input volatile. Keep the latest inactive
+    // DX12 UI tag covered before entering GetState so a late OFF->ON observation can adopt it.
+    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() && streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_acquire) &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        const uint32_t requestedOutputs = streamline_hook_options ? std::clamp(streamline_hook_options->numFramesToGenerate + 1u, 1u, 6u) : 2u;
+        ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(requestedOutputs);
+    }
+
+    const slResult result = originalGetState(viewport, state, streamline_hook_options);
+    RetryResolveReflexFeatureHooksForRuntimeActivity("slDLSSGGetState");
+    const uint32_t viewportKey = GetViewportKey(viewport);
+    const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
+    const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
+    const bool suppressNewActivation = ShouldSuppressNewGetStateActivation();
+    if (result == streamline_hook_kSlResultOk && state.numFramesToGenerateMax > 0) {
+        CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
+    }
+
+    const uint32_t capabilityMax =
+        state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
+    const auto runtimeEvaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
+        result == streamline_hook_kSlResultOk, streamline_hook_options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
+        streamline_hook_options ? streamline_hook_options->mode : 0, streamline_hook_options ? streamline_hook_options->numFramesToGenerate : 0u, capabilityMax);
+    const bool clearAllViewportStatesForDisable =
+        runtimeEvaluation.update.shouldUpdate &&
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(
+            result == streamline_hook_kSlResultOk, streamline_hook_options != nullptr, hasRuntimeFenceEvidence, streamline_hook_options ? streamline_hook_options->mode : 0u,
+            capabilityMax);
+    if (result == streamline_hook_kSlResultOk && streamline_hook_options != nullptr) {
+        static std::atomic<int> s_getStateTraceLogCount{0};
+        const int logCount = s_getStateTraceLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 8 || (logCount % 512) == 0) {
+            char statusText[160];
+            FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
+            HookLogImportant(
+                "Streamline Hook: slDLSSGGetState observed viewport=%u optionsMode=%s(%u) generated=%u "
+                "capabilityMax=%u presented=%u status=0x%X(%s) minWH=%u vsyncOk=%d dynMFG=%d vramMB=%llu "
+                "fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
+                "updateActive=%d clearAll=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d "
+                "setOptionsOriginal=%p",
+                viewportKey, GetDLSSGModeName(streamline_hook_options->mode), streamline_hook_options->mode, streamline_hook_options->numFramesToGenerate,
+                capabilityMax, state.numFramesActuallyPresented, state.status, statusText, state.minWidthOrHeight,
+                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
+                state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, viewportWasActive ? 1 : 0,
+                runtimeEvaluation.update.shouldUpdate ? 1 : 0, runtimeEvaluation.update.active ? 1 : 0,
+                clearAllViewportStatesForDisable ? 1 : 0, suppressNewActivation ? 1 : 0,
+                hasRuntimeFenceEvidence ? 1 : 0, streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                reinterpret_cast<void*>(streamline_hook_g_Original_slDLSSGSetOptions));
+        }
+    }
+
+    // [DLSSG HEALTH] — session 20260702_094955: GTA reported DLSSG ON (optionsMode=on, updateActive=1) but
+    // presents stayed at base rate all session (numFramesActuallyPresented==1, no fps gain). sl.dlss_g
+    // publishes WHY it declines to interpolate in DLSSGState.status; log every status transition, and while
+    // the game requests ON without interpolation evidence, emit a deterministic streak warning that pairs
+    // NVIDIA's status decode with Reflex call-activity evidence (DLSSG hard-requires Reflex, and GTA's
+    // Reflex is historically flaky even without CE).
+    if (result == streamline_hook_kSlResultOk) {
+        const uint32_t previousStatus = streamline_hook_g_DLSSGLastObservedStatus.exchange(state.status, std::memory_order_relaxed);
+        if (previousStatus != state.status) {
+            char prevText[160];
+            char nowText[160];
+            FormatDLSSGStatusFlags(previousStatus, prevText, sizeof(prevText));
+            FormatDLSSGStatusFlags(state.status, nowText, sizeof(nowText));
+            HookLogImportant(
+                "Streamline Hook: [DLSSG HEALTH] status TRANSITION 0x%X(%s) -> 0x%X(%s) (viewport=%u "
+                "optionsMode=%s presented=%u minWH=%u vsyncOk=%d dynMFG=%d)",
+                previousStatus, prevText, state.status, nowText, viewportKey,
+                streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "n/a", state.numFramesActuallyPresented,
+                state.minWidthOrHeight, static_cast<int>(state.bIsVsyncSupportAvailable),
+                static_cast<int>(state.bIsDynamicMFGSupported));
+        }
+    }
+    const bool optionsRequestOn = streamline_hook_options != nullptr && streamline_hook_options->mode != 0;
+    if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(result == streamline_hook_kSlResultOk,
+                                                                              optionsRequestOn)) {
+        const bool interpolationEvidence =
+            ce::streamline_runtime_policy::IsDLSSGInterpolationPresentEvidence(state.numFramesActuallyPresented);
+        uint64_t streak = 0;
+        if (interpolationEvidence && state.status == 0) {
+            streamline_hook_g_DLSSGNotInterpolatingStreak.store(0, std::memory_order_relaxed);
+        } else {
+            streak = streamline_hook_g_DLSSGNotInterpolatingStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+        if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(streak, streamline_hook_kDLSSGHealthWarnStreak,
+                                                                                    streamline_hook_kDLSSGHealthWarnRepeat)) {
+            const uint64_t nowMs = GetTickCount64();
+            const uint64_t sleepCount = streamline_hook_g_ReflexSleepObservedCount.load(std::memory_order_relaxed);
+            const uint64_t sleepCountAtLastLog =
+                streamline_hook_g_ReflexSleepCountAtLastHealthLog.exchange(sleepCount, std::memory_order_relaxed);
+            const uint64_t sleepLastMs = streamline_hook_g_ReflexSleepLastTickMs.load(std::memory_order_relaxed);
+            const uint64_t reflexOptCount = streamline_hook_g_ReflexSetOptionsObservedCount.load(std::memory_order_relaxed);
+            const uint64_t reflexOptLastMs = streamline_hook_g_ReflexSetOptionsLastTickMs.load(std::memory_order_relaxed);
+            char statusText[160];
+            FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
+            HookLogImportant(
+                "Streamline Hook: [DLSSG HEALTH] ON but NOT interpolating for %llu consecutive GetState samples — "
+                "status=0x%X(%s) presented=%u generatedReq=%u capabilityMax=%u minWH=%u vsyncOk=%d dynMFG=%d "
+                "vramMB=%llu fence=%p fenceValue=%llu | Reflex evidence: sleepCalls=%llu (+%llu since last warn) "
+                "sleepAge=%llums setOptionsCalls=%llu setOptionsAge=%llums lastMode=%d sleepHooked=%d | "
+                "REFLEX-NOT-DETECTED in status = the game's Reflex pipeline is not running (DLSSG requires it); "
+                "status=ok with presented==1 and dynMFG=1 can be hardware flip metering — correlate with the "
+                "displayed fps",
+                static_cast<unsigned long long>(streak), state.status, statusText, state.numFramesActuallyPresented,
+                streamline_hook_options->numFramesToGenerate, capabilityMax, state.minWidthOrHeight,
+                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
+
+                state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                static_cast<unsigned long long>(sleepCount),
+                static_cast<unsigned long long>(sleepCount - sleepCountAtLastLog),
+                static_cast<unsigned long long>(sleepLastMs ? (nowMs - sleepLastMs) : 0),
+                static_cast<unsigned long long>(reflexOptCount),
+                static_cast<unsigned long long>(reflexOptLastMs ? (nowMs - reflexOptLastMs) : 0),
+                streamline_hook_g_ReflexLastForwardedMode.load(std::memory_order_relaxed),
+                streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0);
+        }
+    } else if (result == streamline_hook_kSlResultOk && streamline_hook_options != nullptr && streamline_hook_options->mode == 0) {
+        // Explicit OFF request: end any pending not-interpolating streak so a later re-enable starts a
+        // fresh, correctly-attributed streak.
+        streamline_hook_g_DLSSGNotInterpolatingStreak.store(0, std::memory_order_relaxed);
+    }
+    if (runtimeEvaluation.update.shouldUpdate) {
+        UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
+                                   runtimeEvaluation.update.generatedFrames, runtimeEvaluation.update.capabilityMax,
+                                   "GetState", clearAllViewportStatesForDisable);
+    } else if (result == streamline_hook_kSlResultOk && streamline_hook_options != nullptr && runtimeEvaluation.suppressedFreshActivation) {
+        static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
+        const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 128) == 0) {
+            const ULONGLONG suppressUntilMs = streamline_hook_g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
+            const ULONGLONG nowMs = GetTickCount64();
+            const ULONGLONG remainingMs = suppressUntilMs > nowMs ? (suppressUntilMs - nowMs) : 0;
+            const bool persistentBlock =
+                streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
+            const ULONGLONG startupTransitionUntilMs =
+                DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+            const bool startupWindowActive = startupTransitionUntilMs != 0 && startupTransitionUntilMs > nowMs;
+            const ULONGLONG startupRemainingMs = startupWindowActive ? (startupTransitionUntilMs - nowMs) : 0;
+            HookLogImportant(
+                "Streamline Hook: Suppressing fresh GetState DLSS FG reactivation "
+                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu persistentBlock=%d startupWindow=%d "
+                "startupRemaining=%llums remaining=%llums)",
+                viewportKey, streamline_hook_options->mode, streamline_hook_options->numFramesToGenerate, state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, persistentBlock ? 1 : 0,
+                startupWindowActive ? 1 : 0, (unsigned long long)startupRemainingMs, (unsigned long long)remainingMs);
+        }
+    }
+
+    if (!IsObserverOnlyModeActive()) {
+        std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
+        const bool startupWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+        const bool startupActivationPending =
+            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+        const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+        const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+        const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
+        const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
+        const bool postSLConfirmedButRuntimeStateStabilizing =
+            HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+            HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+        const bool explicitSetOptionsActivationForCurrentComeback =
+            streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+        const bool hadFSRFGPhase = HookHasFSRFGHistory();
+        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+        const bool startupProtectedComebackProof =
+            explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+        const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+            startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+        const bool effectivePostSLRuntimeStateStabilizing =
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
+        const bool currentGetStateReportsInactive =
+            runtimeEvaluation.update.shouldUpdate && !runtimeEvaluation.update.active;
+        const bool acceptActivatedUnconfirmedResumeOff =
+            ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+                currentGetStateReportsInactive, startupWindowActive, startupProtectedComebackProof,
+                startupActivationPending, postSLActiveButUnconfirmed, postSLStartupActivationEntered,
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
+        const bool shouldKeepDeferred =
+            !acceptActivatedUnconfirmedResumeOff &&
+            ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+                startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
+                safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
+        if (streamline_hook_g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
+            if (acceptActivatedUnconfirmedResumeOff) {
+                LogAcceptedOffDuringActivatedUnconfirmedResume(
+                    "GetState/suppressed-off-flush", startupWindowActive, hadFSRFGPhase,
+                    explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath, startupActivationPending,
+                    postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
+                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
+            }
+            if (!acceptActivatedUnconfirmedResumeOff &&
+                ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
+                    hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing)) {
+                LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
+                    streamline_hook_g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
+                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                    postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+                    effectivePostSLRuntimeStateStabilizing);
+            } else if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
+                HookLogImportant(
+                    "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
+                    "expired (viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
+                    streamline_hook_g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
+                    effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+                const slResult offResult = originalSetOptions(streamline_hook_g_SuppressedOffViewport, streamline_hook_g_SuppressedOffOptions);
+                if (offResult != streamline_hook_kSlResultOk) {
+                    HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
+                                     offResult);
+                }
+            }
+            streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+
+    // SL may overwrite our Present vtable hook asynchronously during FG
+    // activation (not necessarily inside slDLSSGSetOptions).  This check
+    // runs every frame the game polls FG state and will re-patch if needed.
+    // Skip vtable repair while PostSL has not yet confirmed rendering, to
+    // avoid calling through Steam's overlay hook chain during SL's DllMain
+    // (which can crash gameoverlayrenderer64 with a null pointer).
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && HookIsPostSLOverlayConfirmedRendering()) {
+        DXGIShared::RepairVTableHooksIfNeeded();
+    }
+
+    return result;
+
+}
+
+
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLSSGOptions& streamline_hook_options) {
 
 
@@ -409,295 +655,5 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
     }
 
     return result;
-
-}
-
-slResult SlNullFunctionStub() {
-
-
-    return streamline_hook_kSlResultOk;
-
-}
-
-void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName) {
-
-
-    if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
-        static std::atomic<int> s_externalOverlaySuppressedPluginLookupLogCount{0};
-        const int logCount = s_externalOverlaySuppressedPluginLookupLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 200) == 0) {
-            HookLogImportant(
-                "Streamline Hook: Suppressing re-entrant slGetPluginFunction during guarded external overlay "
-                "Present (name=%s depth=%d)",
-                streamline_hook_functionName ? streamline_hook_functionName : "null", streamline_hook_g_ExternalOverlayPresentGuardDepth);
-        }
-        return reinterpret_cast<void*>(SlNullFunctionStub);
-    }
-
-    auto originalGetPluginFunction = GetCallableOriginalGetPluginFunction();
-    if (!originalGetPluginFunction) {
-        return streamline_hook_g_Original_slGetPluginFunction ? reinterpret_cast<void*>(SlNullFunctionStub) : nullptr;
-    }
-
-    return originalGetPluginFunction(streamline_hook_functionName);
-
-}
-
-slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_hook_functionName,  void*& streamline_hook_function) {
-
-
-    if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
-        static std::atomic<int> s_externalOverlaySuppressedLookupLogCount{0};
-        const int logCount = s_externalOverlaySuppressedLookupLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 200) == 0) {
-            HookLogImportant(
-                "Streamline Hook: Suppressing re-entrant slGetFeatureFunction during guarded external overlay "
-                "Present (feature=%u name=%s depth=%d)",
-                feature, streamline_hook_functionName ? streamline_hook_functionName : "null", streamline_hook_g_ExternalOverlayPresentGuardDepth);
-        }
-        streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
-        return streamline_hook_kSlResultErrorInvalidState;
-    }
-
-    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
-    if (!originalGetFeatureFunction) {
-        streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
-        return streamline_hook_kSlResultErrorInvalidState;
-    }
-
-    const slResult result = originalGetFeatureFunction(feature, streamline_hook_functionName, streamline_hook_function);
-    // Safety: if the original returned success but gave us NULL, the caller
-    // would call through NULL → RIP=0 crash.  This can happen when third-party
-    // overlays (e.g., Steam's OverlayHookD3D3) call slGetFeatureFunction
-    // re-entrantly from within Streamline's own code during FG processing.
-    // Substitute a safe no-op stub so the caller doesn't crash even if it
-    // ignores the error return and uses the function pointer directly.
-    if (result == streamline_hook_kSlResultOk && !streamline_hook_function) {
-        static std::atomic<int> s_nullFunctionLogCount{0};
-        if (s_nullFunctionLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-            HookLogImportant(
-                "Streamline Hook: slGetFeatureFunction returned OK with NULL function "
-                "(feature=%u name=%s) — substituting safe no-op stub to prevent null call crash",
-                feature, streamline_hook_functionName ? streamline_hook_functionName : "null");
-        }
-        streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
-        return streamline_hook_kSlResultOk;
-    }
-    if (result != streamline_hook_kSlResultOk || !streamline_hook_functionName || !streamline_hook_function) {
-        return result;
-    }
-
-    // DLSS Frame Generation feature hooks
-    if (feature == streamline_hook_kSLFeatureDLSSG) {
-        if (strcmp(streamline_hook_functionName, "slDLSSGSetOptions") == 0) {
-            void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookDLSSGSetOptions(streamline_hook_function, true);
-            LogFeatureLookupOutcomeOnce(streamline_hook_g_DLSSGSetOptionsLookupLogged, "slDLSSGSetOptions", originalFunction, streamline_hook_function,
-                                        hookReady);
-        } else if (strcmp(streamline_hook_functionName, "slDLSSGGetState") == 0) {
-            void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookDLSSGGetState(streamline_hook_function, true);
-            LogFeatureLookupOutcomeOnce(streamline_hook_g_DLSSGGetStateLookupLogged, "slDLSSGGetState", originalFunction, streamline_hook_function,
-                                        hookReady);
-            // Talos resolves GetState shortly before it starts tagging the activation inputs, but
-            // never resolves/calls SetOptions. Arm standby at pointer delivery, before those tags.
-            if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
-                streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_acquire)) {
-                ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(2);
-            }
-        }
-    }
-    // Reflex feature hook — detect game activation of native Reflex
-    else if (feature == streamline_hook_kSLFeatureReflex) {
-        if (strcmp(streamline_hook_functionName, "slReflexSleep") == 0) {
-            void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSleep(streamline_hook_function, true);
-            LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSleepLookupLogged, "slReflexSleep", originalFunction, streamline_hook_function,
-                                        hookReady);
-        } else if (strcmp(streamline_hook_functionName, "slReflexSetOptions") == 0) {
-            void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSetOptions(streamline_hook_function, true);
-            LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSetOptionsLookupLogged, "slReflexSetOptions", originalFunction,
-                                        streamline_hook_function, hookReady);
-        } else if (strcmp(streamline_hook_functionName, "slReflexSetConstants") == 0) {
-            void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSetConstants(streamline_hook_function, true);
-            LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSetConstantsLookupLogged, "slReflexSetConstants", originalFunction,
-                                        streamline_hook_function, hookReady);
-        }
-    }
-
-    return result;
-
-}
-
-slResult Hooked_slSetD3DDevice(void* streamline_hook_d3dDevice) {
-
-
-    auto originalSetD3DDevice = GetCallableOriginalSetD3DDevice();
-    if (!originalSetD3DDevice) {
-        return streamline_hook_kSlResultErrorInvalidState;
-    }
-
-    ID3D12Device* acceptedD3D12Device = nullptr;
-    if (streamline_hook_d3dDevice) {
-        static_cast<IUnknown*>(streamline_hook_d3dDevice)->QueryInterface(IID_PPV_ARGS(&acceptedD3D12Device));
-    }
-    const bool isD3D12 = acceptedD3D12Device != nullptr;
-
-    const slResult result = originalSetD3DDevice(streamline_hook_d3dDevice);
-    if (result == streamline_hook_kSlResultOk) {
-        ID3D12Device* previousAcceptedDevice = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(streamline_hook_g_AcceptedD3D12DeviceMutex);
-            previousAcceptedDevice = streamline_hook_g_AcceptedD3D12Device;
-            streamline_hook_g_AcceptedD3D12Device = acceptedD3D12Device;
-            acceptedD3D12Device = nullptr;
-        }
-        if (previousAcceptedDevice) {
-            previousAcceptedDevice->Release();
-        }
-        streamline_hook_g_StreamlineUsesD3D12.store(isD3D12, std::memory_order_release);
-        if (isD3D12 && !ShouldKeepPureObserverOnlyStreamlineBehavior()) {
-            // Resource tags are legal immediately after Streamline accepts the device. Some
-            // integrations (Talos) publish their reusable UI tag before resolving any DLSS-G
-            // feature function, so GetState-pointer delivery is too late to cover that tag.
-            ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(2);
-            HookLogImportant(
-                "Streamline Hook: D3D12 device accepted — official UI preactivation standby ready before tags "
-                "(device=%p)",
-                streamline_hook_d3dDevice);
-        } else if (!isD3D12) {
-            ce::dx12_streamline_ui_overlay::EndPreactivationStandby("Streamline device is not D3D12");
-        }
-        TryResolveDLSSGFeatureHooks();
-        TryResolveReflexFeatureHooks();
-    }
-    if (acceptedD3D12Device) {
-        acceptedD3D12Device->Release();
-    }
-    return result;
-
-}
-
-bool StructTypesEqual(const slStructType& lhs,  const slStructType& rhs) {
-
-
-    return lhs.data1 == rhs.data1 && lhs.data2 == rhs.data2 && lhs.data3 == rhs.data3 &&
-           std::memcmp(lhs.data4, rhs.data4, sizeof(lhs.data4)) == 0;
-
-}
-
-bool TryRecordOfficialUiResourceTag(const void* frameToken,  const slResourceTag& tag,  void* streamline_hook_commandBuffer) {
-
-
-    if (ShouldKeepPureObserverOnlyStreamlineBehavior() || !streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_acquire) ||
-        !streamline_hook_commandBuffer || tag.type != streamline_hook_kSLBufferTypeUIColorAndAlpha || !tag.resource || !tag.resource->native ||
-        tag.resource->type != slResourceType::kTexture2D || tag.extent.top != 0 || tag.extent.left != 0) {
-        return false;
-    }
-
-    auto* uiResource = static_cast<ID3D12Resource*>(tag.resource->native);
-    const D3D12_RESOURCE_DESC desc = uiResource->GetDesc();
-    const uint32_t width = tag.extent.width != 0
-                               ? tag.extent.width
-                               : (tag.resource->width != 0 ? tag.resource->width : static_cast<uint32_t>(desc.Width));
-    const uint32_t height =
-        tag.extent.height != 0 ? tag.extent.height : (tag.resource->height != 0 ? tag.resource->height : desc.Height);
-    const DXGI_FORMAT format =
-        tag.resource->nativeFormat != 0 ? static_cast<DXGI_FORMAT>(tag.resource->nativeFormat) : desc.Format;
-    const bool hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format);
-    ID3D12CommandQueue* initializationQueue = DX12_AcquireOriginalGameQueueForOverlay();
-    if (!initializationQueue) {
-        return false;
-    }
-
-    ce::dx12_streamline_ui_overlay::RecordRequest request;
-    request.commandList = static_cast<ID3D12GraphicsCommandList*>(streamline_hook_commandBuffer);
-    request.uiResource = uiResource;
-    request.initializationQueue = initializationQueue;
-    request.resourceState = static_cast<D3D12_RESOURCE_STATES>(tag.resource->state);
-    request.format = format;
-    request.width = width;
-    request.height = height;
-    request.hdr = hdr;
-    request.frameToken = frameToken;
-    const bool recorded = ce::dx12_streamline_ui_overlay::TryRecordBootstrap(request);
-    initializationQueue->Release();
-    return recorded;
-
-}
-
-uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken,  uint32_t viewportKey, 
-                                     const slResourceTag* tags,  uint32_t numTags,  void* streamline_hook_commandBuffer, 
-                                     uint32_t feature,  uint32_t numInputs) {
-
-
-    static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
-    const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (opportunity > 12 && (opportunity % 300) != 0) {
-        return 0;
-    }
-
-    HookLogImportant(
-        "Streamline Hook: Official UI tag record opportunity #%u (api=%s feature=%u frame=%p viewport=%u "
-        "tags=%p numTags=%u inputs=%u commandBuffer=%p d3d12=%d)",
-        opportunity, tagApi ? tagApi : "unknown", feature, frameToken, viewportKey, tags, numTags, numInputs,
-        streamline_hook_commandBuffer, streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
-    const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
-    for (uint32_t i = 0; i < loggedTags; ++i) {
-        const slResourceTag& tag = tags[i];
-        HookLogImportant(
-            "Streamline Hook: UI tag opportunity #%u tag[%u] type=%u lifecycle=%d resource=%p "
-            "extent=(%u,%u %ux%u)",
-            opportunity, i, tag.type, tag.lifecycle, tag.resource, tag.extent.left, tag.extent.top, tag.extent.width,
-            tag.extent.height);
-    }
-    return opportunity;
-
-}
-
-void TryRecordOfficialUiTag(const char* tagApi,  const void* frameToken,  const slViewportHandle& viewport, 
-                            const slResourceTag* tags,  uint32_t numTags,  void* streamline_hook_commandBuffer) {
-
-
-    const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(frameToken);
-
-    if (wantsUiBootstrapRecord) {
-        LogOfficialUiTagOpportunity(tagApi, frameToken, GetViewportKey(viewport), tags, numTags, streamline_hook_commandBuffer);
-    }
-
-    // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
-    // only run after that output has been produced. Record CE's rolling/one-shot overlay into the
-    // official UI layer on the app-provided command list. Source frames keep replacing the
-    // eValidUntilPresent record until PostSL consumes the bounded output handoff. This introduces
-    // no copy, extra submission, queue, or wait and naturally follows Streamline's synchronization.
-    if (wantsUiBootstrapRecord && tags) {
-        for (uint32_t i = 0; i < numTags; ++i) {
-            if (TryRecordOfficialUiResourceTag(frameToken, tags[i], streamline_hook_commandBuffer)) {
-                break;
-            }
-        }
-    }
-
-}
-
-slResult Hooked_slSetTag(const slViewportHandle& viewport,  const slResourceTag* tags,  uint32_t numTags, 
-                         void* streamline_hook_commandBuffer) {
-
-
-    auto originalSetTag = GetCallableOriginalSetTag();
-    if (!originalSetTag) {
-        return streamline_hook_kSlResultErrorInvalidState;
-    }
-
-    // Legacy/global resource tagging has no frame token. A monotonically unique opaque identity
-    // lets the standby state roll across calls without dereferencing or fabricating an SL object.
-    static std::atomic<uintptr_t> s_legacyTagToken{1};
-    const uintptr_t tokenValue = s_legacyTagToken.fetch_add(1, std::memory_order_relaxed);
-    const void* frameToken = reinterpret_cast<const void*>((tokenValue << 1u) | 1u);
-    TryRecordOfficialUiTag("slSetTag", frameToken, viewport, tags, numTags, streamline_hook_commandBuffer);
-
-    return originalSetTag(viewport, tags, numTags, streamline_hook_commandBuffer);
 
 }
