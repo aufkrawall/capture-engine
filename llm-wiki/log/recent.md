@@ -37,6 +37,12 @@
   called the else-chunk unconditionally on the success path. Check each `*Else()`
   stub for state mutation (syncInit/overlayInit/cleanup) and verify success paths
   never execute failure-only recovery.
+- Confirmed fixed in Strange Brigade DX12 session 20260806_175327 (build
+  0.1.5732, Steam overlay active): 2423 frames in 18.4s (~144fps median), zero
+  1s stalls, zero overlay frames with total_us>50ms, InitImGui/InitOverlaySync/
+  CreateRTVs each ran exactly once, zero staged-activation churn, zero DescFree
+  upload-ring timeouts, zero coverage interruptions, overlay perf ~84us/frame,
+  Steam E9-JMP invoke per present hr=0x00000000.
 
 ### 2026-08-06 - Build gates: `--verify` reuses content-validated objects, `--verify-clean` for strict clean, `--skip-package` for dev
 
