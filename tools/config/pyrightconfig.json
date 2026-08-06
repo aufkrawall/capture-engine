@@ -15,6 +15,7 @@
     "../../**/analyze_av_sync_stimulus_*.py",
     "../../**/run_av_sync_matrix_*.py",
     "../../**/run_dx12_fg_overlay_transition_*.py",
+    "../../**/run_tests_*.py",
     "../../tools/build",
     "../../tools/refactor/source_splitter_common.py",
     "../../tools/refactor/source_splitter_lexer.py",
