@@ -5,9 +5,33 @@
 
 #include "../fps_limiter.h"
 
-inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
-    std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::try_to_lock);
-    if (!cadenceLock.owns_lock()) {
+inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEveryPresent) {
+    // Strict grid pacing: every present must be gated by the cadence grid, even
+    // when another present thread is currently inside the cadence. Blocking on
+    // the cadence lock serializes concurrent present streams so each one gets
+    // its own grid slot (one present per target interval), instead of letting
+    // the later present skip the wait and reach the swapchain unpaced. The
+    // legacy try-lock path keeps its non-blocking behavior for call sites whose
+    // second call is a duplicate of the same frame (DXVK Present+PresentEx).
+    const bool strictGrid = gateEveryPresent && !g_FGCompat.IsFGActive();
+    std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
+    if (strictGrid) {
+        LARGE_INTEGER lockStart, lockEnd, lockFreq;
+        QueryPerformanceCounter(&lockStart);
+        cadenceLock.lock();
+        QueryPerformanceCounter(&lockEnd);
+        QueryPerformanceFrequency(&lockFreq);
+        const int64_t lockWaitUs = ((lockEnd.QuadPart - lockStart.QuadPart) * 1000000) / lockFreq.QuadPart;
+        if (lockWaitUs > 500) {
+            ++strictGridContendedWaits_;
+            if (strictGridContendedWaits_ <= 3 || (strictGridContendedWaits_ % 600) == 0) {
+                TraceLog("Apply: STRICT grid serialized concurrent present lockWaitUs=%lld count=%u", lockWaitUs,
+                         strictGridContendedWaits_);
+                HookLog("FPS Limiter: strict grid serialized a concurrent present (lockWaitUs=%lld, count=%u)",
+                        lockWaitUs, strictGridContendedWaits_);
+            }
+        }
+    } else if (!cadenceLock.try_lock()) {
         concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -46,7 +70,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
     // BUT: when the FPS limiter is active and ALLOW_TEARING disables vsync,
     // frames arrive very fast (1-2ms) and dedup would skip legitimate frames.
     // Only apply dedup when the limiter is NOT active.
-    if (!isActivelyLimiting_.load(std::memory_order_relaxed)) {
+    if (!isActivelyLimiting_.load(std::memory_order_relaxed) && !strictGrid) {
         const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
         if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
             applyDedupCount_++;
@@ -527,7 +551,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence) {
         effectiveTargetFps = 60;
 
     const bool localCadenceFirstFrame = localTargetTime_ == 0;
-    if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0) {
+    if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0 && !strictGrid) {
         LARGE_INTEGER activeDedupQpc;
         QueryPerformanceCounter(&activeDedupQpc);
         int64_t activeDedupTicks = qpcFrequency / 500;  // 2ms maximum duplicate window.

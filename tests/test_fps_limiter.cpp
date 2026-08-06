@@ -176,6 +176,90 @@ TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActi
     EXPECT_TRUE(sawFastDedup);
 }
 
+// Strange Brigade Vulkan presents several real swapchain images per frame
+// period (concurrent present streams). The legacy 2ms dedup treated the second
+// present as a duplicate and let it through unpaced, so the displayed rate was
+// 2x the target with alternating short/long frame times. gateEveryPresent must
+// pace the immediate second Apply too: it waits for the next grid slot instead
+// of returning fast.
+TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(60);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    limiter.Apply(false, true);
+
+    bool sawFastDedup = false;
+    bool sawPacedSecondApply = false;
+    for (int attempt = 0; attempt < 3 && !sawPacedSecondApply; ++attempt) {
+        LARGE_INTEGER start, end;
+        QueryPerformanceCounter(&start);
+        limiter.Apply(false, true);
+        QueryPerformanceCounter(&end);
+
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
+        // Strict grid must never take the dedup fast path: the second present
+        // waits for its own grid slot (~16.7ms after the first at 60fps).
+        sawPacedSecondApply = elapsedMs >= 3.0 && limiter.GetLastWaitUs() > 0;
+    }
+
+    EXPECT_FALSE(sawFastDedup);
+    EXPECT_TRUE(sawPacedSecondApply);
+}
+
+// FG-scaled modes keep the legacy dedup behavior: generated frames arrive a
+// few ms after the base frame and must not be pushed onto the base grid, so
+// gateEveryPresent defers to the dedup fast path while FG is active.
+TEST_F(FpsLimiterTest, GateEveryPresentDefersToDedupWhileFGActive) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(60);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply(false, true);
+
+    bool sawFastDedup = false;
+    for (int attempt = 0; attempt < 3 && !sawFastDedup; ++attempt) {
+        LARGE_INTEGER start, end;
+        QueryPerformanceCounter(&start);
+        limiter.Apply(false, true);
+        QueryPerformanceCounter(&end);
+
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
+    }
+
+    EXPECT_TRUE(sawFastDedup);
+    g_FGCompat.SetDLSSFGMultiplier(0);
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+// gateEveryPresent must never stall when the limiter is not configured: it
+// only changes lock/dedup semantics, not the inactive fast path.
+TEST_F(FpsLimiterTest, GateEveryPresentStaysNonBlockingWhenInactive) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(false);
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply(false, true);
+    QueryPerformanceCounter(&end);
+
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+    const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    EXPECT_LT(elapsedMs, 100.0);
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
+}
+
 TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = false;

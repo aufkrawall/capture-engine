@@ -113,7 +113,19 @@ public:
     // Called each frame before present. DXGI/DX12 call sites can allow explicit
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
-    void Apply(bool allowPostPresentReflexCadence = false);
+    //
+    // gateEveryPresent is for native-Vulkan call sites (vkQueuePresentKHR /
+    // vkAcquireNextImageKHR) that must pace EVERY present through the cadence
+    // grid. Some games present several real swapchain images per frame period
+    // (Strange Brigade Vulkan presents from multiple threads); the legacy
+    // first-present-only gating and the 2ms dedup let those extra presents
+    // through unpaced, so the displayed rate became 2x the target with bad
+    // frame-time variance. With gateEveryPresent the cadence lock is taken
+    // blocking (concurrent present streams are serialized onto the grid) and
+    // neither dedup fast path can let a real frame pass without a wait.
+    // FG-scaled modes keep the legacy behavior because generated frames must
+    // not be pushed onto the base-frame grid.
+    void Apply(bool allowPostPresentReflexCadence = false, bool gateEveryPresent = false);
 
     void Shutdown();
 
@@ -183,6 +195,7 @@ private:
     uint32_t applyInterFrameCount_ = 0;
     int applyTraceCount_ = 0;
     uint32_t applyDedupCount_ = 0;
+    uint32_t strictGridContendedWaits_ = 0;  // Strict-grid presents that had to block on the cadence lock
     int traceLogCount_ = 0;
     mutable std::mutex eventStateMutex_;
     mutable std::mutex timerStateMutex_;

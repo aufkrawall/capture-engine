@@ -241,14 +241,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     if (isFirstHook) {
-        // For DXVK: FPS limiter runs in DX9 hook (game thread) instead.
-        // This vkQueuePresent runs on DXVK's CS thread — blocking here
-        // doesn't limit the game's actual render rate.
-        if (!preferDX9Path && !asyncPresentDetected) {
-            g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-            g_SharedFpsLimiter.Apply();
-        }
-
         // Apply CPU prerender limit - only if we have valid device and queue
         // tracking
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
@@ -258,6 +250,28 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             }
         }
     }
+
+    // FPS limiter: pace EVERY present, not only the first one entering the hook.
+    // Strange Brigade Vulkan presents several swapchain images per frame period
+    // (concurrent present streams); gating only the first present let the other
+    // images through unpaced, so the displayed rate stayed at 2x the configured
+    // target with alternating short/long frame times and bad 1% lows. The
+    // limiter's gateEveryPresent mode serializes concurrent presents onto the
+    // cadence grid: exactly one present per target interval, evenly spaced,
+    // regardless of vsync (FIFO stays untouched and the limiter waits before
+    // the driver call, so vsync on/off paces identically).
+    // DXVK keeps the legacy first-present gating + dedup: its CS thread presents
+    // once per frame while the DX9 hook paces the game thread for d3d9, and the
+    // game-thread DXGI hook + layer both pace for d3d11 — the layer's second
+    // call is then a duplicate of the same frame and must not wait again.
+    if (!preferDX9Path && !asyncPresentDetected) {
+        const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
+        const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
+        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        g_SharedFpsLimiter.Apply(false, nativeVulkanPresent);
+        perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
+    }
+
     if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
     perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
     perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
@@ -448,7 +462,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
         sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
         if (sd->asyncPresentDetected.load(std::memory_order_acquire) && !preferDX9Path) {
             g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-            g_SharedFpsLimiter.Apply();
+            // Async-present games acquire from a different thread than they
+            // present on, so the present-time wait cannot throttle production;
+            // gate every acquire on the cadence grid instead. DXVK keeps the
+            // legacy behavior for the same reason as in vkQueuePresentKHR.
+            g_SharedFpsLimiter.Apply(false, !IsDXVKD3D11WrapperLoaded());
         }
     }
 
