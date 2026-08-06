@@ -1,64 +1,6 @@
 #include "dx8_hook_internal.h"
 
 
-void DX8Capture::Init(IDirect3DDevice8* device,  HWND hwnd) {
-
-
-        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
-        if (initialized)
-            return;
-        if (generationResetPending && !CleanupDX8(false))
-            return;
-
-        d3d8Device = device;
-        overlayHwnd = hwnd;
-
-        // Get backbuffer size from HWND
-        RECT rect;
-        GetClientRect(hwnd, &rect);
-        width = rect.right - rect.left;
-        height = rect.bottom - rect.top;
-        format = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-        if (width == 0 || height == 0) {
-            HookLog("DX8: Invalid window size");
-            return;
-        }
-
-        // Create D3D9Ex wrapper for sharing
-        if (!CreateD3D9ExWrapper(hwnd)) {
-            CleanupDX8(false);
-            return;
-        }
-
-        // Create D3D11 device
-        if (!CreateD3D11Device()) {
-            CleanupDX8(false);
-            return;
-        }
-
-        // Create shared textures
-        if (!CreateSharedTextures()) {
-            CleanupDX8(false);
-            return;
-        }
-
-        // Create D3D9Ex shared surface
-        if (!CreateD3D9ExSharedSurface()) {
-            CleanupDX8(false);
-            return;
-        }
-
-        // Publish to shared memory
-        if (g_IPC) {
-            PublishToSharedMemory(g_IPC);
-        }
-
-        initialized = true;
-        HookLog("DX8 Capture Initialized: %dx%d", width, height);
-
-}
-
 void DX8Capture::CaptureFrame(IDirect3DDevice8* device,  bool useFrontBuffer) {
 
 
