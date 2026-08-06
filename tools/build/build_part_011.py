@@ -185,16 +185,22 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if os.path.exists(av_sync_src):
         av_sync_ldflags = list(dx12_ldflags)
         av_sync_ldflags.extend(["-lole32", "-luuid", "-lwinmm"])
+        av_sync_units = [
+            os.path.join(testapp_src_dir, name)
+            for name in ("dx12_av_sync_test_util.cpp", "dx12_av_sync_test_manifest.cpp")
+            if os.path.exists(os.path.join(testapp_src_dir, name))
+        ]
         add_task(
             "dx12_av_sync_test.exe",
-            make_cmd(clang_exe, cflags, av_sync_src, av_sync_ldflags, av_sync_exe),
+            make_cmd(clang_exe, cflags, [av_sync_src] + av_sync_units, av_sync_ldflags, av_sync_exe),
         )
 
         if have_x86:
             av_sync_exe_x86 = os.path.join(x86_bin_dir, "dx12_av_sync_test.exe")
             add_task(
                 "dx12_av_sync_test.exe (x86)",
-                make_cmd_x86(clang_exe_x86, cflags_x86, av_sync_src, av_sync_ldflags, av_sync_exe_x86),
+                make_cmd_x86(clang_exe_x86, cflags_x86, [av_sync_src] + av_sync_units, av_sync_ldflags,
+                             av_sync_exe_x86),
             )
 
     # FSR FG DX12 Test App
