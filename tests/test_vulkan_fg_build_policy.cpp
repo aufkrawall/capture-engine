@@ -138,16 +138,19 @@ TEST(VulkanFgBuildPolicyTest, StreamlineTagsBackbufferUiAndExplicitExtents) {
 
 TEST(VulkanFgBuildPolicyTest, ReflexKeepsAutomaticDriverPacingUnmodified) {
     const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.cpp");
+    const std::string streamlineShutdown =
+        ReadProjectFile("testapp/vulkan_fg_switch_streamline_shutdown.cpp");
     const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.cpp");
-    ExpectContains(streamline, "slReflexGetState");
-    ExpectContains(streamline, "bIsVsyncSupportAvailable");
-    ExpectContains(streamline, "frameLimitUs=0");
-    ExpectContains(streamline, "automaticDriverPacing=unmodified");
+    const std::string allStreamline = streamline + streamlineShutdown;
+    ExpectContains(allStreamline, "slReflexGetState");
+    ExpectContains(allStreamline, "bIsVsyncSupportAvailable");
+    ExpectContains(allStreamline, "frameLimitUs=0");
+    ExpectContains(allStreamline, "automaticDriverPacing=unmodified");
     ExpectContains(streamline, "sl::DLSSGFlags::eRetainResourcesWhenOff");
     ExpectContains(streamline, "slow slDLSSGSetOptions");
-    EXPECT_EQ(streamline.find("frameLimitUs ="), std::string::npos)
+    EXPECT_EQ(allStreamline.find("frameLimitUs ="), std::string::npos)
         << "the Vulkan test must never install an explicit Reflex frame cap";
-    EXPECT_EQ(streamline.find("g_App.sl.reflexSleep && g_App.sl.reflexActive"), std::string::npos)
+    EXPECT_EQ(allStreamline.find("g_App.sl.reflexSleep && g_App.sl.reflexActive"), std::string::npos)
         << "slReflexSleep is required even while Reflex mode is off";
     EXPECT_LT(renderer.find("BeginStreamlineFrame()"), renderer.find("vkWaitForFences(frame)"));
 }

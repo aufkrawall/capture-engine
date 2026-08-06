@@ -411,6 +411,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 for name in (
                     "vulkan_fg_switch_diagnostics.cpp",
                     "vulkan_fg_switch_streamline.cpp",
+                    "vulkan_fg_switch_streamline_shutdown.cpp",
                     "vulkan_fg_switch_device.cpp",
                     "vulkan_fg_switch_fidelityfx.cpp",
                     "vulkan_fg_switch_wsi.cpp",

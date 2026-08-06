@@ -111,6 +111,11 @@ void ShutdownStreamline();
 }
 
 namespace testapp::vkfg {
+bool SetReflexMode(bool enabled, const char* reason);
+void PollReflexState(bool force);
+}
+
+namespace testapp::vkfg {
 bool InitializeVulkanDevice();
 }
 
