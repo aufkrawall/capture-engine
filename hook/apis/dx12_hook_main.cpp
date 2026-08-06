@@ -33,12 +33,14 @@ std::atomic<ID3D12Device*> g_Device{nullptr};
 
 std::atomic<ID3D12CommandQueue*> g_CommandQueue{nullptr};
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_CommandQueueMutex;
 
 ID3D12Resource* g_DummyBackBuffer = nullptr;
 
 DX12Hook* g_dx12HookInstance = nullptr;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_DeviceQueuesMutex;
 
 std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
@@ -760,4 +762,3 @@ void DX12_OnStreamlineExplicitSetOptionsActivationConfirmed() {
     ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(
         true, false, "already-live comeback upgraded by explicit SetOptions");
 }
-

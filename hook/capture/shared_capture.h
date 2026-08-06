@@ -116,7 +116,7 @@ class SharedCaptureD3D12 : public ISharedCaptureTarget {
 public:
     static constexpr UINT kSharedTextureCount = SHARED_TEXTURE_SLOT_COUNT;
 
-    SharedCaptureD3D12();
+    SharedCaptureD3D12() noexcept;
     ~SharedCaptureD3D12() override;
 
     // Initialize with the device and swapchain

@@ -21,10 +21,10 @@
     "  bugprone-exception-escape                 destructors; see git log for rationale"
   ],
   "checks": {
-    "bugprone-forward-declaration-namespace": 6,
-    "bugprone-throwing-static-initialization": 10
+    "bugprone-forward-declaration-namespace": 0,
+    "bugprone-throwing-static-initialization": 0
   },
-  "total": 16,
+  "total": 0,
   "scope": {
     "entries": 528,
     "translation_units": [

@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex dx12_hook_g_ExecuteCommandListsHookStateMutex;
 
 std::map<void**, ExecuteCommandListsPtr> dx12_hook_g_ExecuteCommandListsOriginalByVTable;
@@ -294,8 +295,10 @@ thread_local int dx12_hook_s_forwardedCreateSwapchainForHwndInlineDepth = 0;
 
 thread_local bool dx12_hook_s_forwardedCreateSwapchainForHwndInlineHandled = false;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex dx12_hook_g_OverlayMutex;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex dx12_hook_g_DX12CaptureMutex;
 
 std::atomic<bool> dx12_hook_g_InSwapchainResizeCleanup{false};
@@ -370,6 +373,7 @@ std::atomic<ULONGLONG> dx12_hook_g_OverlaySuppressedSinceMs{0};
 
 std::atomic<uint32_t> dx12_hook_g_RuntimeOwnedStreamlineNoFGPresentCount{0};
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex dx12_hook_g_FFXUiCompositeMutex;
 
 ID3D12CommandQueue* dx12_hook_g_FFXUiCompositeQueue = nullptr;
@@ -430,4 +434,3 @@ IDXGIAdapter3* dx12_hook_g_Dx12FaAdapter = nullptr;
 std::atomic<bool> dx12_hook_s_initDelayComplete{false};
 
 std::atomic<int> dx12_hook_g_ECLCallCount{0};
-

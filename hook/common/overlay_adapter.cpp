@@ -46,7 +46,7 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
     return 1.0f;
 }
 
-OverlayAdapter::OverlayAdapter() {
+OverlayAdapter::OverlayAdapter() noexcept {
     memset(graphicsAPI, 0, sizeof(graphicsAPI));
 }
 

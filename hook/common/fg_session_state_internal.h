@@ -1,9 +1,8 @@
 #pragma once
 
+namespace ce::fg_session {
 struct FGSessionSnapshot;
 struct FGActionPlan;
-
-namespace ce::fg_session {
 
 // Logging helpers shared between the session-state core and the log unit.
 const char* BoolName(bool value);

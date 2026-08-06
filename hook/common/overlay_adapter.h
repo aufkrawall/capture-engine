@@ -28,7 +28,7 @@ enum class OverlayBackendType { None, DX8, DX9, DX10, DX11, DX12, OpenGL, Vulkan
 
 class OverlayAdapter {
 public:
-    OverlayAdapter();
+    OverlayAdapter() noexcept;
     ~OverlayAdapter();
 
     // Initialize with graphics API-specific parameters

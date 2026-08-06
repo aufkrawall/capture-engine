@@ -26,7 +26,7 @@
 // SharedCaptureD3D12 Implementation
 // ============================================================================
 
-SharedCaptureD3D12::SharedCaptureD3D12()
+SharedCaptureD3D12::SharedCaptureD3D12() noexcept
     : m_SharedHandles{},
       m_FenceShareHandle(nullptr),
       m_FenceValue(0),
