@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-08-07 - History scrubbed a third time; a force-push does NOT purge GitHub
+
+- Documenting the log-scrub fix put the maintainer's real user name into four tracked files
+  as `C__Users_<name>_Programme_...`, and it reached `origin/main` in three commits plus
+  the `v0.1.5293` tag tree. Commit authorship is deliberately clean
+  (`aufkrawall <...@users.noreply.github.com>`), so this would have been a genuinely new
+  exposure rather than something already visible.
+- **Why nothing caught it:** `test_no_developer_user_paths_in_tracked_files` matched only
+  path-shaped occurrences, the same blind spot the binary scrub had (fixed `a9590837`) and
+  the log scrub had (fixed `ebf962e0`). Third instance of one defect in three places.
+  `MANGLED_USER_RE` now covers the underscore-mangled identifier form.
+- Scrub performed with `git filter-repo --replace-text --replace-message` (the name was in
+  a commit *message* too, which `--replace-text` alone would have missed), replacing
+  `C__Users_<name>_` with `C__Users_TestUser_`. `TestUser` rather than `<developer>` so the
+  rewritten historical blobs still satisfy the gate's allowlist and the detector's regex,
+  which rejects `<` and `>`. Minimal rewrite: `18273781` and earlier kept their SHAs.
+- **The important finding: a force-push does not remove anything from GitHub.** After
+  force-pushing the rewritten `main` *and* deleting the `v0.1.5293` release and tag, all
+  three old commits were **still fetchable by SHA**, and the leaked comment was still
+  readable through the contents API at the old ref. Unreferenced objects stay served until
+  GitHub garbage-collects, which is not automatic.
+  - The remedy is to ask GitHub Support to garbage-collect the repository. This repo has
+    **0 forks and network_count 0**, which is what makes that possible - objects in a fork
+    network cannot be removed.
+  - Consequence: **the repository must stay private until that purge is confirmed.** While
+    private, the dangling objects need repo access to read, so they are contained; going
+    public would expose them to anyone holding a SHA.
+- Local hygiene: dropped a stale `refs/remotes/scrubbed/main` from the 2026-08-04 scrub
+  (no configured remote, and verified clean) and the rewritten backup branch. A bundle of
+  the pre-scrub state is kept outside the worktree in
+  `build/ce-pre-scrub-backup/`, deliberately not in the repo.
+- `v0.1.5293` was deleted and replaced by `0.1.5294` so the published release points at a
+  commit that still exists.
+- Runner-stop correction: `run.cmd` is a wrapper that **restarts** `Runner.Listener` when it
+  dies, so killing the listener alone does not stop the runner - it silently comes back.
+  Kill the `cmd.exe` running `run.cmd` first, then the listener, and confirm the GitHub-side
+  status reports `offline`.
+
 ### 2026-08-07 - Stable release v0.1.5293 published, built entirely in-job
 
 - Run 31210650635 succeeded in 24 min. First stable release that satisfies the original
