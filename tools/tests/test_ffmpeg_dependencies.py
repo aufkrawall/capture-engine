@@ -12,7 +12,9 @@ from unittest import mock
 
 import build
 from tools import dependency_build_policy as policy
+from tools import dependency_pgp
 from tools import ffmpeg_dependencies as dependencies
+from tools import rehearse_dependency_closure as rehearsal
 from tools import source_download
 
 # The manifest sits next to ffmpeg_dependencies.py in tools/, one level above this
@@ -20,6 +22,7 @@ from tools import source_download
 MANIFEST_PATH = Path(__file__).resolve().parents[1] / "ffmpeg_dependencies.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MSYS_BASH = PROJECT_ROOT / "build" / "msys64" / "usr" / "bin" / "bash.exe"
+MSYS_GPG = PROJECT_ROOT / "build" / "msys64" / "usr" / "bin" / "gpg.exe"
 
 
 class FfmpegDependencyManifestTest(unittest.TestCase):
@@ -94,6 +97,33 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             is_complete.assert_not_called()
             reset_outputs.assert_called_once_with()
             self.assertEqual(build_dependency.call_count, len(builder.manifest["dependencies"]))
+
+    def test_rebuild_discards_the_keyring_so_vendored_keys_are_reimported(self) -> None:
+        # The blind spot behind run 31207385807: _reset_outputs kept `gnupg/`, so
+        # has_fingerprint() short-circuited on a key imported weeks earlier and the
+        # vendored-import path never ran locally. The runner deletes ffmpeg_build
+        # wholesale and therefore always ran it, so a broken key was visible only
+        # there. Sockets must survive - gpg-agent/keyboxd put them in that
+        # directory and a locked socket would make removal fail.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            builder = dependencies.SourceDependencyBuilder(
+                temp_dir,
+                os.path.join(temp_dir, "msys2"),
+                manifest_path=str(MANIFEST_PATH),
+            )
+            Path(builder.gnupg_dir).mkdir(parents=True)
+            keyrings = [Path(builder.gnupg_dir) / name for name in dependency_pgp.KEYRING_FILES]
+            for keyring in keyrings:
+                keyring.write_bytes(b"stale keyring")
+            socket = Path(builder.gnupg_dir) / "S.gpg-agent"
+            socket.write_bytes(b"socket stand-in")
+
+            builder._reset_outputs()
+
+            for keyring in keyrings:
+                self.assertFalse(keyring.exists(), f"{keyring.name} survived the rebuild reset")
+            self.assertTrue(socket.exists(), "the reset must not touch gpg-agent sockets")
+            self.assertTrue(os.path.isdir(builder.gnupg_dir), "the gnupg directory itself must survive")
 
     def test_reuses_current_cached_prefix_without_force_rebuild(self) -> None:
         manifest_path = MANIFEST_PATH
@@ -377,6 +407,40 @@ class DependencyBuildPolicyShellTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class RehearsalDetectorTest(unittest.TestCase):
+    """The rehearsal tool is only useful if its checks can actually fail.
+
+    Its first version used a path heuristic ("is there a `doc` component?"), which
+    would have reported libiconv's own `share/man/man3` and needed reasoning to
+    clear. These are the real observed names from both sides.
+    """
+
+    def test_flags_the_doxygen_man_names_that_broke_the_release(self) -> None:
+        for name in (
+            "C__Users_TestUser_Programme_build_captureproject_ffmpeg_build_dependencies_"
+            "recipes_opus_mingw-w64-opus_src_opus-1.6.1_include_.3",
+            "C__Users_TestUser_Programme_build_runner-work_capture-engine_capture-engine_"
+            "ffmpeg_build_dependencies_recipes_opus_mingw-w64-opus_src_opus-1.6.1_.3",
+        ):
+            self.assertTrue(rehearsal.is_path_derived_name(name), name)
+
+    def test_does_not_flag_ordinary_generated_or_installed_files(self) -> None:
+        # libiconv installs real man pages; doxygen's other backends hash their
+        # names. None of these encode a path, so none may be reported.
+        for name in (
+            "iconv_open.3",
+            "opus.h.3",
+            "opus_multistream_ctls.3",
+            "dir_fe80300f08587586fe06c8824e04b727.tex",
+            "dir_b20e91b0a5fe8ce313ec317fba02c47c.html",
+            "libopus-0.dll",
+            "mingw-w64-clang-x86_64-opus-1.6.1-1-any.pkg.tar.zst",
+            "noname",
+            "PKGBUILD",
+        ):
+            self.assertFalse(rehearsal.is_path_derived_name(name), name)
+
+
 class DependencyBuildPolicyTest(unittest.TestCase):
     def test_man_output_stays_disabled_and_html_stays_enabled(self) -> None:
         # GENERATE_MAN is the load-bearing override: for an input directory doxygen
@@ -430,50 +494,6 @@ class DependencyBuildPolicyTest(unittest.TestCase):
                     output.endswith(("-docs", "-doc")),
                     f"{dependency['name']} declares documentation subpackage {output} as a build output",
                 )
-
-
-class FfmpegVendoredPgpKeyTest(unittest.TestCase):
-    """Every pinned signing key must ship in-repo, not come from a keyserver.
-
-    The builder's keyring is not persisted between builds, so each closure build
-    re-imported the keys. Fetching them needs dirmngr, which cannot start in the
-    Actions runner's non-interactive context, so the release job could never build
-    the dependency closure at all. Vendoring removes that dependency; the
-    fingerprint check still decides trust, so this is not a weakening.
-    """
-
-    def test_every_pinned_fingerprint_has_a_vendored_key(self) -> None:
-        manifest = dependencies.load_dependency_manifest(str(MANIFEST_PATH))
-        pinned = set()
-        for dependency in manifest["dependencies"]:
-            for field in ("pgp_keys", "source_package_pgp_keys"):
-                pinned.update(fingerprint.upper() for fingerprint in dependency.get(field, []))
-        missing = [
-            fingerprint
-            for fingerprint in sorted(pinned)
-            if not os.path.exists(os.path.join(dependencies.PGP_KEY_DIR, f"{fingerprint}.asc"))
-        ]
-        self.assertEqual(
-            [],
-            missing,
-            "Pinned PGP keys without a vendored tools/pgp-keys/<fingerprint>.asc; the "
-            "release job cannot fetch them (no dirmngr on the runner):\n" + "\n".join(missing),
-        )
-
-    def test_vendored_keys_are_armored_and_named_by_fingerprint(self) -> None:
-        for entry in sorted(os.listdir(dependencies.PGP_KEY_DIR)):
-            if not entry.endswith(".asc"):
-                continue
-            self.assertRegex(entry, r"^[0-9A-F]{40}\.asc$", f"{entry} is not named by fingerprint")
-            with open(os.path.join(dependencies.PGP_KEY_DIR, entry), "r", encoding="utf-8") as handle:
-                self.assertIn("BEGIN PGP PUBLIC KEY BLOCK", handle.read(200), f"{entry} is not armored")
-
-    def test_vendored_import_is_attempted_before_any_keyserver(self) -> None:
-        # Order matters: a keyserver round trip must never be on the normal path.
-        source = Path(dependencies.__file__).read_text(encoding="utf-8")
-        vendored_at = source.index("PGP_KEY_DIR, f\"{fingerprint.upper()}.asc\"")
-        keyserver_at = source.index("for keyserver in keyservers:")
-        self.assertLess(vendored_at, keyserver_at)
 
 
 class FfmpegDownloadTrustTest(unittest.TestCase):

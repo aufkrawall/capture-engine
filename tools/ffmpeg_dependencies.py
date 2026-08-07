@@ -35,11 +35,14 @@ import urllib.request
 import urllib.parse
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
-from tools import dependency_build_policy, source_download
+from tools import dependency_build_policy, dependency_pgp, source_download
 
 # Re-exported so the closure keeps one error type across both units and callers
 # (build_common, verify_pe_hardening) need not know where it is defined.
 from tools.dependency_build_policy import DependencyBuildError
+
+# Re-exported: build_common imports it from here, and this module still uses it.
+from tools.dependency_pgp import verify_detached_signature
 
 
 CommandRunner = Callable[..., Any]
@@ -62,12 +65,6 @@ def remove_tree(path: str) -> None:
         function(entry)
 
     shutil.rmtree(path, onerror=make_writable_and_retry)
-
-
-# Armored public keys for every fingerprint pinned in the manifest. Vendored
-# so a build never depends on a keyserver (or on dirmngr, which cannot start
-# in the Actions runner context). The fingerprint check still gates trust.
-PGP_KEY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pgp-keys")
 
 
 def load_dependency_manifest(manifest_path: str) -> Dict[str, Any]:
@@ -193,34 +190,6 @@ def parse_pe_import_names(objdump_output: str) -> Set[str]:
         match.group(1).lower()
         for match in re.finditer(r"^\s*DLL Name:\s*(\S+)", objdump_output, flags=re.IGNORECASE | re.MULTILINE)
     }
-
-
-def verify_detached_signature(
-    gpg_exe: str,
-    artifact_path: str,
-    signature_path: str,
-    expected_fingerprints: Sequence[str],
-    env: Mapping[str, str],
-) -> None:
-    """Verify a detached signature and require one of the pinned full fingerprints."""
-    result = subprocess.run(
-        [gpg_exe, "--batch", "--no-auto-key-retrieve", "--status-fd", "1", "--verify", signature_path, artifact_path],
-        env=dict(env),
-        capture_output=True,
-        text=True,
-    )
-    valid_fingerprints: Set[str] = set()
-    for line in result.stdout.splitlines():
-        if not line.startswith("[GNUPG:] VALIDSIG "):
-            continue
-        valid_fingerprints.update(re.findall(r"\b[0-9a-fA-F]{40}\b", line))
-    expected = {fingerprint.lower() for fingerprint in expected_fingerprints}
-    if result.returncode != 0 or not expected.intersection(fingerprint.lower() for fingerprint in valid_fingerprints):
-        details = (result.stderr + " " + result.stdout).strip()
-        raise DependencyBuildError(
-            f"Detached signature verification failed for {os.path.basename(artifact_path)} "
-            f"(expected one of {', '.join(sorted(expected))}): {details}"
-        )
 
 
 WINDOWS_SYSTEM_DLLS = {
@@ -374,77 +343,15 @@ class SourceDependencyBuilder:
         return env
 
     def _ensure_pgp_key_fingerprints(self, fingerprints: Sequence[str], subject: str) -> None:
-        normalized_fingerprints = [fingerprint.lower() for fingerprint in fingerprints]
-        if not normalized_fingerprints:
-            return
-        if not os.path.exists(self.gpg_exe):
-            raise DependencyBuildError(f"Missing GPG executable required for {subject} signatures")
-
-        os.makedirs(self.gnupg_dir, exist_ok=True)
-        env = self._build_environment()
-
-        def has_fingerprint(fingerprint: str) -> bool:
-            result = subprocess.run(
-                [self.gpg_exe, "--batch", "--with-colons", "--list-keys", fingerprint],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            return fingerprint in result.stdout.lower()
-
-        keyservers = [
-            "hkps://keys.openpgp.org",
-            "hkps://keyserver.ubuntu.com",
-        ]
-        for fingerprint in normalized_fingerprints:
-            if has_fingerprint(fingerprint):
-                continue
-            # Vendored keys first. The keyring is not persisted between builds, so
-            # every closure build used to re-fetch from a keyserver - which needs
-            # dirmngr, and dirmngr cannot start in the Actions runner's
-            # non-interactive context ("failed to start dirmngr ... General
-            # error"), so the release could never build the closure at all. The
-            # armored keys in tools/pgp-keys/ remove that dependency: import is a
-            # local file read, and has_fingerprint() still proves the imported key
-            # carries the pinned fingerprint, so trust remains anchored on the
-            # manifest rather than on whoever answers the keyserver.
-            vendored = os.path.join(PGP_KEY_DIR, f"{fingerprint.upper()}.asc")
-            if os.path.exists(vendored):
-                self._log(f"Importing pinned PGP key {fingerprint} from tools/pgp-keys")
-                subprocess.run(
-                    [self.gpg_exe, "--batch", "--import", self._unix_path(vendored)],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                )
-                if has_fingerprint(fingerprint):
-                    continue
-                self._log(f"Vendored PGP key {fingerprint} did not import cleanly; trying keyservers")
-            imported = False
-            for keyserver in keyservers:
-                self._log(f"Retrieving PGP key {fingerprint} from {keyserver}")
-                result = subprocess.run(
-                    [
-                        self.gpg_exe,
-                        "--batch",
-                        "--keyserver",
-                        keyserver,
-                        "--recv-keys",
-                        fingerprint,
-                    ],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode == 0 and has_fingerprint(fingerprint):
-                    imported = True
-                    break
-                if result.stderr:
-                    self._log(f"PGP keyserver lookup failed: {result.stderr.strip()}")
-            if not imported:
-                raise DependencyBuildError(
-                    f"Could not retrieve and fingerprint-verify PGP key {fingerprint} for {subject}"
-                )
+        dependency_pgp.ensure_key_fingerprints(
+            self.gpg_exe,
+            self.gnupg_dir,
+            self._build_environment(),
+            self._unix_path,
+            fingerprints,
+            subject,
+            self._log,
+        )
 
     def _ensure_pgp_keys(self, dependency: Mapping[str, Any]) -> None:
         self._ensure_pgp_key_fingerprints(dependency.get("pgp_keys", []), str(dependency["name"]))
@@ -691,6 +598,7 @@ class SourceDependencyBuilder:
                 remove_tree(path)
             elif os.path.exists(path):
                 os.remove(path)
+        dependency_pgp.reset_keyring(self.gnupg_dir)
         os.makedirs(self.recipe_dir, exist_ok=True)
         os.makedirs(self.staging_dir, exist_ok=True)
 
