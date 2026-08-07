@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-07 - Stable release v0.1.5293 published, built entirely in-job
+
+- Run 31210650635 succeeded in 24 min. First stable release that satisfies the original
+  goal: **every shipped binary was compiled by the run that published it**, so a future
+  artifact attestation would cover what it claims to. Author `github-actions[bot]`,
+  4 assets, not draft.
+- Evidence the closure was really built in-job rather than reused:
+  `step.external_preparation` took **1037 s** (local from-scratch equivalent 956 s). If that
+  step ever returns in seconds, the closure is being reused and the release is not
+  attestable. The run log is auto-deleted, so read `latest_summary.txt` from the release
+  assets instead of grepping the log.
+- Log deletion verified: `GET /actions/runs/31210650635/logs` -> **404**.
+- Privacy audited independently on the published assets: no user name, no host name. Paths
+  read `C:\Users\<developer>\Programme\build\runner-work\...` - user component redacted,
+  directory layout surviving, which is the deliberately deferred item (needs a project-root
+  `-ffile-prefix-map`), not a regression.
+- Artifact attestation step was **skipped**: the repository is private and GitHub
+  Free/Pro/Team cannot attest private repositories. The property that makes attestation
+  meaningful now holds, so it becomes real when the repo goes public.
+- Five attempts failed before this one, each on a different runner-only fault. What made
+  this one pass first time was rehearsing locally first - see build.py.md "Rehearsing the
+  release closure locally".
+
 ### 2026-08-07 - Fixed: aom's vendored PGP key had no user ID, so gpg never imported it
 
 - Release run 31207385807 (the first with the MAX_PATH fix — opus built in **18 s**, so
