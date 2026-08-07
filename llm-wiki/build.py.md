@@ -39,6 +39,54 @@ bounded-source workflow documented in `codestyle.md`.
 ## Default Mode
 Running `python build.py` is the full default-quality path. On Windows it updates MSYS2 as needed and deliberately rebuilds the complete pinned FFmpeg dependency closure and custom FFmpeg from source. Use `python build.py --skip-updates` when you want to reuse verified source-built outputs and skip update work; stale or missing outputs still rebuild for correctness.
 
+## Rehearsing the release closure locally
+
+Five consecutive stable-release attempts failed in the dependency-closure phase, each on a
+different fault, and **none of them could happen locally** — the release run was acting as
+the first real test of the closure, at 10-40 minutes per attempt plus a manual runner
+start. The cause is not bad luck: a normal local build reuses state the runner never has.
+
+| Reused locally | Fresh on the runner | What that hid |
+|---|---|---|
+| `dependencies/gnupg/` keyring | `ffmpeg_build` is deleted wholesale | Importing the vendored PGP keys. `has_fingerprint()` short-circuited on a key imported weeks earlier, so aom's blob could be broken indefinitely (run 31207385807). |
+| `dependencies/downloads/` | empty | Every URL, TLS trust decision, retry path and detached-signature check — the cert-chain and dropped-TCP failures. |
+| 46-character workspace root | 73 characters | Anything path-length dependent — the opus doxygen man pages (run 31192891717). |
+
+Two changes close most of this permanently:
+
+- `_reset_outputs()` now calls `dependency_pgp.reset_keyring()`, deleting the keyring files
+  (not the directory — gpg-agent/keyboxd sockets live there and a locked socket would fail
+  the removal). Any local rebuild therefore re-imports the vendored keys exactly as the
+  runner does, for the cost of a few local file reads.
+- A vendored key that will not import is now a hard error carrying gpg's own reason. It
+  used to fall through to a keyserver and die with "No dirmngr", which blamed the runner
+  environment for a bad file in this repository.
+- `tools/tests/test_dependency_pgp.py` (registered in the tool self-tests **and** in the
+  release job's explicit preflight list — a new module that is not added there never runs
+  where it matters most) imports each vendored
+  key into an empty keyring and takes gpg's own verdict. This is the only check that
+  catches a UID-less key: the file existed, was armored, was named by fingerprint, and
+  `gpg --show-keys` even reported the pinned fingerprint — but gpg refuses to import a key
+  with no user ID (`new key but contains no user ID - skipped`), so it never reached the
+  keyring. The release job preflights this suite, so it now costs seconds.
+
+For the rest — build-time faults and path depth — rehearse before spending a release run:
+
+```powershell
+python tools/rehearse_dependency_closure.py
+```
+
+It drives the real `SourceDependencyBuilder` (so it cannot drift) against a throwaway root
+padded to 89 characters, with an empty download cache and empty keyring, and checks that
+every declared output was built, no undeclared one was, all runtime DLLs exist, and no
+doxygen `man3` directory reappeared. The real `ffmpeg_build` tree is untouched.
+
+Two traps when writing any such harness, both of which produced **false passes** here:
+`GNUPGHOME` must be handed to the MSYS gpg in MSYS spelling (a `C:\...` path makes gpg
+join it onto its own cwd and silently create no keyring), and GnuPG's daemon sockets live
+under `GNUPGHOME`, so a long path breaks `keyboxd` outright. Take the verdict from gpg's
+keyring listing, never from matching the key file.
+
 ## Windows FFmpeg Dependency Provenance
 - `ffmpeg_dependencies.json` is the authoritative manifest for the Windows FFmpeg dependency closure. It pins LLVM/libc++/libunwind 22.1.8, libiconv 1.19, Opus 1.6.1, libva 2.24.1, oneVPL/libvpl 2.17.0, libwinpthread 14.0.0.r179.g24aaa6147-1, AOM 3.14.1-1, and SVT-AV1 4.1.0, plus source URLs, SHA-256 values, package outputs, runtime DLLs, licenses, and build order.
 - `SourceDependencyBuilder` builds the runtime dependencies into the private `ffmpeg_build/dependencies/prefix`. Runtime synchronization copies only from that prefix; it never copies shipped runtime DLLs from `build/msys64/clang64/bin`. The optional `libcharset-1.dll` is included only if PE inspection proves that `libiconv-2.dll` imports it.

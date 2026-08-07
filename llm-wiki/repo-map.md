@@ -54,8 +54,10 @@ anchors that predate the split are approximate.
   | `ffmpeg_dependencies.json` | the pinned manifest: versions, source URLs, SHA-256, PGP fingerprints, `package_outputs`, runtime DLLs, licenses, build order |
   | `ffmpeg_dependencies.py` | `SourceDependencyBuilder`: manifest validation/fingerprint, PGP + SHA-256 verification, recipe extraction, `makepkg-mingw`, CFG verification, PE import closure |
   | `dependency_build_policy.py` | the shell policy appended to each PKGBUILD: hardening/prefix flags, `pkgname` reduced to `package_outputs` (fail-closed), path-independent documentation output |
+  | `dependency_pgp.py` | PGP trust: vendored-key import (hard failure, no keyserver fallback), keyring reset so rebuilds re-import, detached-signature verification against pinned fingerprints |
   | `source_download.py` | TLS trust from the toolchain CA bundle and bounded retry of transient download faults |
-  | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`) |
+  | `rehearse_dependency_closure.py` | builds the closure with empty downloads/keyring at a runner-depth root, to catch release-only faults locally |
+  | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
   - `shared_defs.h` - shared-memory ABI (current version `38`).

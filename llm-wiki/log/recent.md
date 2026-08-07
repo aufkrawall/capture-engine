@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: aom's vendored PGP key had no user ID, so gpg never imported it
+
+- Release run 31207385807 (the first with the MAX_PATH fix — opus built in **18 s**, so
+  that fix held) died at aom: `Vendored PGP key b002f08b... did not import cleanly; trying
+  keyservers` → dirmngr → fail closed.
+- **The dirmngr message was a red herring.** Root cause: `tools/pgp-keys/B002F08B...asc`
+  contained a key with **zero user IDs**, and gpg refuses such a key
+  (`new key but contains no user ID - skipped`), so it never entered the keyring and
+  `has_fingerprint()` stayed false. `keys.openpgp.org` strips UIDs it has not verified, and
+  that is where the previous session fetched it. Re-fetched from `keyserver.ubuntu.com`
+  (same pinned fingerprint, 1 UID, imports cleanly). All 8 keys now have exactly 1 UID.
+- **Why local builds could never see it:** `_reset_outputs()` reset `prefix`, `recipes` and
+  `staging` but **kept `gnupg/`**, so `has_fingerprint()` short-circuited on a key imported
+  weeks earlier and the import path never ran. The runner deletes `ffmpeg_build` wholesale,
+  so it always runs. The blob could have been broken indefinitely.
+  Fixed: `dependency_pgp.reset_keyring()` deletes the keyring *files* (not the directory —
+  gpg-agent and keyboxd sockets live there and a locked socket would fail removal), so any
+  local rebuild re-imports exactly as the runner does.
+- PGP trust moved to the new `tools/dependency_pgp.py` and its tests to
+  `tools/tests/test_dependency_pgp.py`, because `ffmpeg_dependencies.py` hit 805 lines and
+  the test file 805 — the ratchet caught both. The new test module is registered in the
+  tool self-tests (now 20) **and** in `release-stable.yml`'s explicit preflight list; a
+  module missing from that list never runs where it matters most.
+- A vendored key that will not import is now a hard error carrying gpg's own reason,
+  instead of falling through to a keyserver and dying with a misleading "No dirmngr".
+- Test `test_every_vendored_key_actually_imports_into_an_empty_keyring` — the only check
+  that catches this. The file existed, was armored, was fingerprint-named, and
+  `gpg --show-keys` even reported the pinned fingerprint; every cheaper assertion passed.
+  Verified it **fails on the old blob** before restoring the fixed one.
+- **Two harness traps that produced false passes while diagnosing this** (worth more than
+  the fix): `GNUPGHOME` must be given to the MSYS gpg in MSYS spelling — a `C:\...` path
+  makes gpg join it onto its own cwd, create nothing, and a sloppy matcher then reports
+  success; and GnuPG's daemon sockets live under `GNUPGHOME`, so a long path (the agent
+  scratchpad) breaks `keyboxd` outright. Take the verdict from gpg's keyring listing, never
+  from matching the key file.
+- Added `tools/rehearse_dependency_closure.py`: builds the whole closure against a
+  throwaway 89-character root with empty downloads and empty keyring, driving the real
+  builder. See build.py.md "Rehearsing the release closure locally" for the table of what
+  a local build reuses that the runner does not.
+
 ### 2026-08-07 - Fixed: opus doxygen man pages exceeded MAX_PATH on the release runner
 
 - Fourth failure in the same chain (dirmngr -> cert chain -> dropped TCP -> this). Run
