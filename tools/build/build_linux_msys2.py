@@ -240,7 +240,29 @@ FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
 # bumping, re-check tools/patches/ffmpeg/*.patch against the new source: they are
 # applied with strict `git apply` and fail the build if context moved.
 FFMPEG_SOURCE_REF = "86940d45aff7d59810794df3ab2b39b7b83b478c"
-FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
+# nv-codec-headers supplies the NVENC/NVDEC headers FFmpeg compiles against.
+#
+# Two equivalent sources, tried in order. Release run 31215691866 lost a run that
+# had already built the entire dependency closure because git.videolan.org was
+# down ("Failed to connect ... after 21273 ms"), and the clone path had no retry
+# and no alternative. The second entry is the FFmpeg project's own GitHub mirror.
+#
+# Falling back to another host is only sound because the ref below is a pinned
+# commit: both hosts were verified to serve that commit with the identical tree
+# hash 2fd41cd5544091f6d0d27d0771a9cb7b838fd554, so which host answers cannot
+# change what gets built.
+FFNVCODEC_URLS = (
+    "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git",
+    "https://github.com/FFmpeg/nv-codec-headers.git",
+)
+FFNVCODEC_URL = FFNVCODEC_URLS[0]  # retained for callers expecting a single URL
+# Pinned for the same reason as FFMPEG_SOURCE_REF: this was cloned from master, so
+# a fresh build took whatever upstream had merged that day. This is the exact commit
+# previous releases were built against ("Bump for (in-dev) 13.1.15.1"), so pinning
+# it changes nothing about the product - it only removes the non-determinism. The
+# ref feeds ffmpeg_build_configuration_fingerprint(), so changing it forces a
+# rebuild without a counter to remember.
+FFNVCODEC_SOURCE_REF = "eddcea9e27f6b772057c9b3f87de2cc1737faffc"
 FFMPEG_DEPENDENCY_MANIFEST = os.path.join(PROJECT_ROOT, "tools", "ffmpeg_dependencies.json")
 FFMPEG_DEPENDENCY_MANIFEST_DATA = load_dependency_manifest(FFMPEG_DEPENDENCY_MANIFEST)
 FFMPEG_DEPENDENCY_PREFIX = dependency_prefix(PROJECT_ROOT)

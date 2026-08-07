@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-08-07 - nv-codec-headers pinned and given a fallback source (git.videolan.org outage)
+
+- Release run 31215691866 (0.1.5294) built the **entire** dependency closure, including aom
+  with the fixed key and no import error, then died on
+  `git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git`:
+  `Failed to connect to git.videolan.org:443 after 21273 ms`. The host was still down
+  minutes later, so this was an outage, not a blip.
+- **Two real gaps, both fixed together:**
+  - `git_clone` had **no retry at all**, while `download_file` has had bounded retry since
+    `0208d09b`. Same lesson - a run that has already compiled for minutes must not be lost
+    to one unreachable host - applied to a path that had been missed.
+  - `nv-codec-headers` was cloned from **master, unpinned** (the `llm-wiki`/hand-off
+    follow-up), so a fresh build took whatever upstream had merged that day.
+- Fix: `FFNVCODEC_SOURCE_REF` pins the exact commit previous releases were already built
+  against (`eddcea9e...`, "Bump for (in-dev) 13.1.15.1"), so pinning changes nothing about
+  the product and only removes the non-determinism. `FFNVCODEC_URLS` adds the FFmpeg
+  project's own GitHub mirror as a second source, and `git_clone` now tries each source
+  twice, deleting any partial tree between attempts so a half-clone is never mistaken for
+  a usable one.
+- **The fallback is only sound because of the pin.** Both hosts were verified to serve that
+  commit with the identical tree hash `2fd41cd5544091f6d0d27d0771a9cb7b838fd554`, so which
+  host answers cannot change what is built. Without a pin, a second host would silently be
+  a second source of truth.
+- The ref feeds `ffmpeg_build_configuration_fingerprint()` for the same reason as
+  `FFMPEG_SOURCE_REF`: `--skip-updates` builds return early when prebuilt DLLs exist, before
+  the source is consulted, so a pin change outside the fingerprint would keep shipping
+  FFmpeg built against the previous NVENC headers.
+- Verified live while git.videolan.org was actually down: the real `git_clone` logged
+  `Clone of ffnvcodec from git.videolan.org failed; trying the next source`, cloned from
+  github.com, and checked out the pinned commit.
+
 ### 2026-08-07 - History scrubbed a third time; a force-push does NOT purge GitHub
 
 - Documenting the log-scrub fix put the maintainer's real user name into four tracked files

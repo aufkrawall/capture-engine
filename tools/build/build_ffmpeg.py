@@ -348,6 +348,32 @@ class FFmpegBuilder:
             return False  # Shallow clone without the tag: must fetch to find out.
         return bool(wanted) and wanted == head
 
+    def _clone_once(self, url, dest, name, ref, git_exe, env):
+        """One clone attempt from one URL. Raises on failure, leaving no partial tree."""
+        # A tag can be fetched shallowly with --branch, but a raw commit
+        # cannot: git.ffmpeg.org refuses unadvertised objects ("Server does
+        # not allow request for unadvertised object"), so a commit pin needs
+        # the history that makes it reachable. Only the commit form pays for
+        # the full clone.
+        try:
+            command = [git_exe, "clone"]
+            if ref and _is_commit_ref(ref):
+                command += [url, dest]
+                self.run(command, env=env)
+                self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
+                return
+            command += ["--depth", "1"]
+            if ref:
+                command += ["--branch", ref]
+            command += [url, dest]
+            self.run(command, env=env)
+        except Exception:
+            # A half-written tree would be mistaken for a usable clone by the
+            # `os.path.exists(dest)` check on the next attempt or the next build.
+            if os.path.exists(dest):
+                safe_remove_tree(dest)
+            raise
+
     def git_clone(self, url, name, update=True, ref=None):
         """Clone or update a git repository. Returns (path, updated) tuple.
 
@@ -357,30 +383,37 @@ class FFmpegBuilder:
         and a clone left on master from before the pin must still be moved onto
         it or the build would silently produce a different product. When the ref
         is already checked out this costs no network access.
+
+        `url` may be a single URL or a sequence of equivalent ones tried in order.
+        Release run 31215691866 lost a run that had already built the whole
+        dependency closure because git.videolan.org was simply down - a class
+        `download_file` has handled with bounded retry since 0208d09b, while this
+        path had no retry at all. Falling back to another host is only safe because
+        the ref is a pinned commit: whichever host answers, the checkout is the
+        same tree (verified identical for nv-codec-headers), so availability is
+        decoupled from what gets built.
         """
+        urls = [url] if isinstance(url, str) else list(url)
+        if not urls:
+            raise ValueError("git_clone requires at least one URL")
         dest = os.path.join(self.repos_dir, name)
         git_exe = self.get_tool_path("git")
         env = self.get_msys_env()
 
         if not os.path.exists(dest):
-            log(f"[FFmpeg] Cloning {name}" + (f" at {ref}..." if ref else "..."))
-            # A tag can be fetched shallowly with --branch, but a raw commit
-            # cannot: git.ffmpeg.org refuses unadvertised objects ("Server does
-            # not allow request for unadvertised object"), so a commit pin needs
-            # the history that makes it reachable. Only the commit form pays for
-            # the full clone.
-            command = [git_exe, "clone"]
-            if ref and _is_commit_ref(ref):
-                command += [url, dest]
-                self.run(command, env=env)
-                self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
-                return dest, True
-            command += ["--depth", "1"]
-            if ref:
-                command += ["--branch", ref]
-            command += [url, dest]
-            self.run(command, env=env)
-            return dest, True  # New clone = always needs build
+            attempts = [(candidate, attempt) for attempt in range(1, 3) for candidate in urls]
+            last_error = None
+            for index, (candidate, attempt) in enumerate(attempts, start=1):
+                host = candidate.split("/")[2] if "//" in candidate else candidate
+                log(f"[FFmpeg] Cloning {name}" + (f" at {ref}" if ref else "") + f" from {host}...")
+                try:
+                    self._clone_once(candidate, dest, name, ref, git_exe, env)
+                    return dest, True  # New clone = always needs build
+                except Exception as error:  # noqa: BLE001 - reported and retried below
+                    last_error = error
+                    if index < len(attempts):
+                        log(f"[FFmpeg] Clone of {name} from {host} failed; trying the next source")
+            raise RuntimeError(f"Could not clone {name} from any of {', '.join(urls)}: {last_error}")
 
         if ref:
             if self._repo_is_at_ref(dest, ref, git_exe, env):
@@ -480,7 +513,7 @@ class FFmpegBuilder:
     def build_dependencies(self, update=True):
         log("[FFmpeg] Building Dependencies...")
         # 1. FFNVCodec
-        nv_dir, _ = self.git_clone(FFNVCODEC_URL, "ffnvcodec", update=update)
+        nv_dir, _ = self.git_clone(FFNVCODEC_URLS, "ffnvcodec", update=update, ref=FFNVCODEC_SOURCE_REF)
         make_exe = self.get_tool_path("make")
         self.run(
             [make_exe, f"PREFIX={self.prefix}", "install"],
@@ -644,6 +677,12 @@ def ffmpeg_build_configuration_fingerprint():
     digest = hashlib.sha256(f"configure-v{FFMPEG_BUILD_CONFIGURATION_VERSION}\n".encode("ascii"))
     digest.update(b"source-ref\n")
     digest.update(FFMPEG_SOURCE_REF.encode("utf-8"))
+    # The nv-codec-headers pin belongs here for the same reason as the FFmpeg one:
+    # --skip-updates builds return early when prebuilt DLLs exist, before the
+    # source is consulted, so a pin change outside the fingerprint would keep
+    # shipping FFmpeg built against the previous NVENC headers.
+    digest.update(b"\nffnvcodec-ref\n")
+    digest.update(FFNVCODEC_SOURCE_REF.encode("utf-8"))
     digest.update(b"\ndependency-manifest\n")
     digest.update(dependency_manifest_fingerprint(FFMPEG_DEPENDENCY_MANIFEST).encode("ascii"))
     patches_dir = os.path.join(PROJECT_ROOT, "tools", "patches", "ffmpeg")

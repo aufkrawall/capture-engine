@@ -598,6 +598,23 @@ class SourceDownloadRetryTest(unittest.TestCase):
 class FfmpegSourcePinTest(unittest.TestCase):
     """The shipped FFmpeg must come from a named source, built by the release job."""
 
+    def test_nv_codec_headers_is_pinned_and_has_a_fallback_source(self) -> None:
+        # Release run 31215691866 lost a run that had already built the whole
+        # dependency closure because git.videolan.org was simply down, and this
+        # clone had no retry and no alternative host - a class download_file has
+        # handled since 0208d09b. It was also cloned from master, so a fresh build
+        # took whatever upstream had merged that day.
+        self.assertRegex(build.FFNVCODEC_SOURCE_REF, r"^[0-9a-f]{40}$")
+        self.assertGreaterEqual(len(build.FFNVCODEC_URLS), 2, "no fallback source configured")
+        for url in build.FFNVCODEC_URLS:
+            self.assertTrue(url.startswith("https://"), url)
+        # A second host is only sound because the ref is a pinned commit: whichever
+        # host answers, the checkout is the same tree. Without the pin the fallback
+        # would silently allow a different source of truth.
+        self.assertTrue(build._is_commit_ref(build.FFNVCODEC_SOURCE_REF))
+        source = build.read_source_text()
+        self.assertIn("digest.update(FFNVCODEC_SOURCE_REF.encode(", source)
+
     def test_source_is_pinned_and_feeds_the_build_fingerprint(self) -> None:
         # Until 2026-08-07 the clone tracked master HEAD, so two builds a week
         # apart were not the same product. The ref must also feed the
