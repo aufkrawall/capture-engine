@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-08-07 - Release run logs are now deleted automatically; the hostname needs no host rename
+
+- Follow-up to the entry below, which claimed renaming the runner registration
+  and/or the Windows host was the way to remove the automatic `Machine name`
+  line. Renaming is **not** required. Verified first that the line genuinely has
+  no override: presetting `COMPUTERNAME` for the runner process leaves .NET
+  `Environment.MachineName` (Win32 `GetComputerNameW`, registry-backed)
+  unchanged, and the runner assemblies contain no `RUNNER_MACHINE*` /
+  `ACTIONS_RUNNER_*NAME` lookup. So the string cannot be changed in-job - but it
+  can be deleted afterwards, which is what the release path already did by hand.
+- **Fix:** `.github/workflows/release-log-cleanup.yml` - `workflow_run` on
+  `release-stable` completion, `ubuntu-latest` (self-hosted would republish the
+  hostname), `actions: write`, deletes `/actions/runs/<id>/logs`, then re-reads
+  the endpoint and fails the run unless it answers 404/410 (a 204 from the DELETE
+  is not proof). It must be a separate workflow: the runner uploads a job's log
+  archive *after* its last step, so an in-job self-delete is overwritten. Failed
+  runs keep their log deliberately and get a warning naming the manual command.
+- Also confirmed the release itself is already clean, so this closed the last
+  gap rather than one of several: the four published assets, the notes, and the
+  tag (tagger `github-actions[bot]`) carry no developer identity, and all 45
+  files in `captureengine.7z` - PDBs and FFmpeg-closure DLLs included - scan to
+  0 user-name and 0 hostname hits. Caveat recorded in `build.py.md`: the
+  fail-closed finalize scan covers the **user name** only; the hostname's absence
+  is verified by inspection, not by a gate.
+- Regression coverage: `ReleaseLogCleanupPolicyTest` in
+  `tools/tests/test_privacy_paths.py` pins the trigger (matched against
+  `release-stable.yml`'s actual `name:`, since `workflow_run` binds by name and a
+  rename would silently detach it), the GitHub-hosted runner, the `actions: write`
+  grant, the delete target, and the fail-closed verification.
+
 ### 2026-08-07 - Fixed: GitHub Actions release run logs leaked the developer profile path and hostname
 
 - Beyond the shipped files, every `release-stable` run log contained the full
@@ -14,8 +44,10 @@
   runner preflights Python 3.12+ on PATH); the junction step prints
   `%USERPROFILE%`-redacted roots. Old release run logs were deleted via the
   Actions API. GitHub's automatic `Runner name` / `Machine name` lines in "Set
-  up job" still show the runner/hostname - rename the runner registration (and
-  optionally the Windows host) to remove those.
+  up job" still show the runner/hostname; the runner registration was renamed to
+  `windows-release`, and the `Machine name` line is now removed by deleting the
+  run log automatically (see the entry above - the host rename this originally
+  called for turned out to be unnecessary).
 
 ### 2026-08-07 - Fixed: release PDBs/DLLs still leaked the user name in escaped and MSYS path spellings
 

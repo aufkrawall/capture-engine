@@ -1,0 +1,78 @@
+name: release-log-cleanup
+
+# release-stable builds on the maintainer's self-hosted Windows runner, and the
+# runner writes "Machine name: '<hostname>'" into the "Set up job" section of
+# every run log. That line comes from .NET Environment.MachineName, which calls
+# Win32 GetComputerNameW and reads the registry computer name: there is no
+# environment variable or runner setting that overrides it (verified 2026-08-07;
+# the runner binaries contain no RUNNER_MACHINE*/ACTIONS_RUNNER_*NAME lookup and
+# presetting COMPUTERNAME has no effect). The release itself is clean - assets,
+# notes, tag and verification manifest carry no developer identity - so deleting
+# the run log after the fact is what closes the last gap.
+#
+# This must be a separate workflow, not a final step in release-stable: the
+# runner uploads a job's log archive after its last step finishes, so a step that
+# deleted its own run's logs would simply be overwritten by that upload.
+# workflow_run fires once the whole run is complete and its logs are final.
+on:
+  workflow_run:
+    workflows: ["release-stable"]
+    types: [completed]
+
+# Deleting run logs needs actions:write. The repository default for
+# GITHUB_TOKEN is read-only, which only sets the default; an explicit block
+# still grants the scope (release-stable relies on the same mechanism to push
+# tags). Every unlisted scope stays none - this job never touches the code.
+permissions:
+  actions: write
+
+jobs:
+  purge-release-run-log:
+    # GitHub-hosted on purpose. Running this on the self-hosted runner would
+    # write the very hostname it exists to remove into this workflow's own log.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Delete release run log
+        # Only successful releases. A failed run's log is the sole diagnostic
+        # material for that failure, so it is kept deliberately; the step below
+        # flags that it still needs a manual delete once investigated.
+        if: github.event.workflow_run.conclusion == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs" --silent
+          # Fail closed: a 204 from the DELETE is not proof the archive is gone,
+          # and a surviving log still publishes the hostname. Ask for the log
+          # again and require a not-found status. Deliberately no -L, so an
+          # intact log answers 302 with its download redirect and nothing is
+          # transferred - the status code alone is decisive.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs")"
+          case "$status" in
+            404|410)
+              echo "Release run $RUN_ID: logs deleted and verified gone (HTTP $status)"
+              ;;
+            *)
+              echo "::error::Release run $RUN_ID still exposes its log after DELETE (HTTP $status); the runner hostname remains published"
+              exit 1
+              ;;
+          esac
+
+      - name: Flag retained log of a failed release run
+        if: github.event.workflow_run.conclusion != 'success'
+        shell: bash
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          echo "::warning::Release run $RUN_ID ended '$CONCLUSION'; its log was kept for diagnosis and still contains the runner hostname. Delete it once investigated: gh api -X DELETE repos/${{ github.repository }}/actions/runs/$RUN_ID/logs"

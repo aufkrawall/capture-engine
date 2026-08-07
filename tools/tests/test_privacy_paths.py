@@ -24,6 +24,11 @@ manifest/summary unless redacted, so the helpers below (prefix-map flags,
 manifest sanitization, binary scrubbing) must stay leak-free and are exercised
 against a fake profile. The finalize stage additionally fails the build when a
 shipped first-party PE/PDB retains the profile root.
+
+The Actions run log is covered too: it is the one release-path surface the build
+cannot sanitize, because GitHub's runner writes the Windows computer name into it
+and exposes no override. `release-log-cleanup.yml` deletes the log after the run,
+and `ReleaseLogCleanupPolicyTest` pins that wiring.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ USER_PATH_RE = re.compile(r"[A-Za-z]:\\Users\\([^\\\r\n\s\"'`]+)")
 PUA_USER_RE = re.compile(r"[A-Za-z][\uf03a\uff1a]Users([A-Za-z0-9_]+)")
 
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-stable.yml"
+CLEANUP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-log-cleanup.yml"
 
 
 def _tracked_files() -> List[Path]:
@@ -125,6 +131,64 @@ class PrivacyPathPolicyTest(unittest.TestCase):
         ]
         if example_lines:
             self.assertIn("%USERPROFILE%", example_lines[0])
+
+
+class ReleaseLogCleanupPolicyTest(unittest.TestCase):
+    """The release run log is the last surface carrying maintainer identity.
+
+    The release itself is clean - assets, notes, tag and verification manifest are
+    scrubbed and the finalize stage fails the build otherwise - but GitHub's runner
+    writes "Machine name: '<hostname>'" into the "Set up job" section of every run
+    log from Environment.MachineName, and no environment or runner setting
+    overrides it. release-log-cleanup.yml therefore deletes the log once the run
+    completes. Each assertion below pins one way that cleanup could silently stop
+    happening while release-stable itself kept succeeding.
+    """
+
+    text: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = CLEANUP_WORKFLOW.read_text(encoding="utf-8") if CLEANUP_WORKFLOW.is_file() else ""
+
+    def test_cleanup_workflow_exists(self) -> None:
+        self.assertTrue(
+            CLEANUP_WORKFLOW.is_file(),
+            "release-log-cleanup.yml is missing; release run logs would keep publishing the runner hostname",
+        )
+
+    def test_cleanup_triggers_on_the_current_release_workflow_name(self) -> None:
+        # workflow_run matches by workflow name, so renaming release-stable
+        # detaches the trigger without any error anywhere.
+        release_name = re.search(r"^name:\s*(\S+)", RELEASE_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertIsNotNone(release_name, "release-stable.yml has no top-level name:")
+        assert release_name is not None
+        self.assertIn(f'workflows: ["{release_name.group(1)}"]', self.text)
+        self.assertIn("types: [completed]", self.text)
+
+    def test_cleanup_runs_on_a_github_hosted_runner(self) -> None:
+        # Running the cleanup on the self-hosted runner would write the very
+        # hostname it exists to remove into this workflow's own log. Match the
+        # runs-on directives themselves; the prose above them names the
+        # self-hosted runner legitimately.
+        runners = [value.strip() for value in re.findall(r"^\s*runs-on:\s*(.+)$", self.text, re.MULTILINE)]
+        self.assertEqual(["ubuntu-latest"], runners)
+
+    def test_cleanup_requests_actions_write_permission(self) -> None:
+        # The repository default for GITHUB_TOKEN is read-only; without an
+        # explicit grant the delete fails with 403.
+        self.assertRegex(self.text, r"permissions:\s*\n\s*actions: write")
+
+    def test_cleanup_deletes_the_triggering_runs_log(self) -> None:
+        self.assertIn("github.event.workflow_run.id", self.text)
+        self.assertIn('gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs"', self.text)
+
+    def test_cleanup_verifies_deletion_and_fails_closed(self) -> None:
+        # A 204 from the DELETE is not proof the archive is gone, so the workflow
+        # re-reads the endpoint and must fail the run when the log survived.
+        self.assertIn("404|410)", self.text)
+        self.assertIn("::error::", self.text)
+        self.assertIn("exit 1", self.text)
 
 
 class PrivacyArtifactPolicyTest(unittest.TestCase):
