@@ -112,13 +112,16 @@ def finalize_verification_on_exit() -> None:
 
         if VERIFICATION_CONTEXT.get("top_level"):
             os.makedirs(VERIFICATION_DIR, exist_ok=True)
+            # The latest_* pair is uploaded as a release asset; emit it with the
+            # developer profile root redacted so release artifacts never leak
+            # the maintainer's Windows user name.
             write_json_atomic(
                 os.path.join(VERIFICATION_DIR, "latest_manifest.json"),
-                VERIFICATION_CONTEXT,
+                sanitize_privacy_values(VERIFICATION_CONTEXT),
             )
             write_text_atomic(
                 os.path.join(VERIFICATION_DIR, "latest_summary.txt"),
-                "\n".join(summary_lines) + "\n",
+                sanitize_privacy_paths("\n".join(summary_lines) + "\n"),
             )
             write_text_atomic(os.path.join(VERIFICATION_DIR, "latest_run_dir.txt"), run_dir + "\n")
             if os.path.exists(build_log_copy):

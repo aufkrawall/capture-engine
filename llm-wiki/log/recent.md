@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: release assets (manifest, summary, PDBs, PE debug records) leaked the developer's Windows user name
+
+- The 0.1.5290 release shipped `latest_manifest.json` / `latest_summary.txt`
+  containing real-profile `C:\Users\<developer>\...` paths (run dir, command,
+  artifacts), and the PDBs inside `captureengine.7z` / `testapps.7z` embedded
+  the profile path hundreds to thousands of times per file (source paths,
+  object paths, compiler and linker command-line records). Every PE's RSDS
+  debug record also embedded the absolute PDB path. Repo-private at the time,
+  but the tree is intended to become public and the privacy tests exist
+  precisely for this.
+- **Fix** (build machinery): `-ffile-prefix-map` (both slash spellings) on all
+  native compile flag lists so debug-info source paths become
+  `C:\Users\<developer>\...`; `-Wl,/pdbaltpath:<bare>.pdb` so images embed only
+  the PDB file name; finalize-stage in-place PDB scrub with a length-identical
+  `redact` user component (UTF-8 + UTF-16LE) plus a fail-closed scan of all
+  shipped first-party PEs/PDBs; `latest_manifest.json` / `latest_summary.txt`
+  are written with the profile root redacted to `C:\Users\<developer>`.
+  Regression tests added to `tools/tests/test_privacy_paths.py`; the 0.1.5290
+  release was deleted and is being re-published with clean assets.
+
 ### 2026-08-07 - Ops: stable release 0.1.5290 triggered; self-hosted runner is started manually
 
 - The self-hosted release runner is the maintainer's Windows PC itself, but it

@@ -132,6 +132,9 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
             )
     log("Verified PE mitigations, architecture, section permissions, effective CFG, imports, and PDBs")
 
+    if IS_WINDOWS and env.get("CE_SANITIZE") != "1" and not ISOLATED_BUILD_ROOT:
+        scrub_and_verify_privacy_paths()
+
     clear_stale_hook_pdb_cache()
 
     if env.get("CE_SANITIZE") == "1" or ISOLATED_BUILD_ROOT:
@@ -143,3 +146,85 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
         package_build_outputs()
 
     log("Build Complete.")
+
+
+def scrub_and_verify_privacy_paths() -> None:
+    """Scrub the developer profile root from shipped PDBs and fail if any shipped
+    artifact retains it, so release artifacts never leak the maintainer's Windows
+    user name (UTF-8 and UTF-16LE spellings). First-party images must be clean
+    via /pdbaltpath (a regression stays loud); PDBs and third-party FFmpeg
+    closure DLLs (which embed local recipe build paths) are scrubbed in place."""
+    if not profile_path_spellings():
+        return
+    # Mirror the packaging boundary (build_packaging.py: at the captureengine
+    # root only ffmpeg/ and licenses/ subdirectories are walked; elsewhere
+    # bak/captures/logs/screenshots and the excluded suffixes stay local).
+    # Only artifacts that actually ship may fail the scan.
+    excluded_dirs = {"bak", "captures", "logs", "screenshots"}
+    excluded_suffixes = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
+    included_root_dirs = {"ffmpeg", "licenses"}
+    packaged_x64_testapps = set(PACKAGED_X64_TEST_APPS)
+    packaged_x86_testapps = set(PACKAGED_X86_TEST_APPS)
+    targets: List[str] = []
+    for root in (BIN_DIR, TESTAPP_BIN_DIR):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            relative_directory = os.path.relpath(dirpath, root)
+            kept_directories = []
+            for directory in dirnames:
+                lower = directory.lower()
+                if lower in excluded_dirs or os.path.islink(os.path.join(dirpath, directory)):
+                    continue
+                if root == BIN_DIR and relative_directory == "." and lower not in included_root_dirs:
+                    continue
+                kept_directories.append(directory)
+            dirnames[:] = kept_directories
+            for filename in filenames:
+                lower = filename.lower()
+                if lower.endswith(excluded_suffixes):
+                    continue
+                if lower in {"config.ini", "nul"} or ".old." in lower:
+                    continue
+                if root == TESTAPP_BIN_DIR:
+                    testapp_name = os.path.splitext(filename)[0]
+                    packaged_names = (
+                        packaged_x86_testapps
+                        if os.path.basename(dirpath).lower() == "x86"
+                        else packaged_x64_testapps
+                    )
+                    if testapp_name not in packaged_names:
+                        continue
+                if lower.endswith((".dll", ".exe", ".pdb")):
+                    targets.append(os.path.join(dirpath, filename))
+    targets = sorted(set(targets))
+    scrubbed = 0
+    for target in targets:
+        with open(target, "rb") as handle:
+            data = handle.read()
+        hits = count_profile_path_hits(data)
+        if not hits:
+            continue
+        relative = (
+            os.path.relpath(target, BIN_DIR) if target.startswith(BIN_DIR + os.sep) else target
+        )
+        is_scrubbable = target.lower().endswith(".pdb") or relative.lower().startswith(
+            "ffmpeg" + os.sep
+        )
+        if not is_scrubbable:
+            raise RuntimeError(
+                f"privacy scan found developer profile path in {target}; "
+                "PE PDB references must embed a bare filename (/pdbaltpath)"
+            )
+        scrubbed_data = scrub_profile_path_bytes(data)
+        if len(scrubbed_data) != len(data):
+            raise RuntimeError(f"privacy scrub changed byte length of {target}")
+        with open(target, "wb") as handle:
+            handle.write(scrubbed_data)
+        scrubbed += 1
+        log(f"Scrubbed {hits} profile-path occurrence(s) from {target}")
+    for target in targets:
+        with open(target, "rb") as handle:
+            if count_profile_path_hits(handle.read()):
+                raise RuntimeError(f"privacy scan still finds developer profile path in {target}")
+    log(f"Privacy scan clean: {len(targets)} first-party binaries/PDBs, {scrubbed} scrubbed")
