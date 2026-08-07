@@ -34,8 +34,21 @@
   **not** disabled anywhere - a test asserts no `CERT_NONE`,
   `_create_unverified_context` or `check_hostname = False` appears - because the
   SHA256 and PGP checks are defence in depth, not a reason to drop TLS.
-- `tools/ffmpeg_dependencies.py` now sits at exactly 800 lines. Split it toward the
-  750 working target before adding anything else.
+- **Third failure, transient:** run 31192282693 then died with `Remote end closed
+  connection without response` fetching `llvm-project-22.1.8.src.tar.xz` from github.com
+  - a dropped TCP connection, with no retry, losing a release that had already compiled
+  for half an hour. (That run had **zero** certificate failures, so the CA-bundle fix
+  held.)
+- Fix: download concerns moved into the new `tools/source_download.py` unit (which also
+  took `ffmpeg_dependencies.py` from 800 back to 788 - the ceiling was the reason the
+  retry could not simply be added in place). `download_file` retries a bounded 4 attempts
+  with linear backoff on transient faults only: `RemoteDisconnected`, `IncompleteRead`,
+  `ConnectionError`, timeouts, and HTTP 408/425/429/5xx. `HTTPError` 404/403 is **not**
+  retried - a wrong pinned URL is a bug, not weather. The body still lands in a `.tmp`
+  file and is moved into place only when complete, so an interrupted attempt can never
+  leave a truncated archive a later run would treat as cached.
+- Tests: retry-then-succeed, 404-not-retried, bounded-attempts, and
+  no-truncated-file-on-partial-read; plus the TLS assertions moved to the new module.
 
 ### 2026-08-07 - FFmpeg source pinned; release job now compiles the whole dependency closure
 

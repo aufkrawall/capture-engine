@@ -1,12 +1,15 @@
+import http.client
 import os
 import re
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
 import build
 from tools import ffmpeg_dependencies as dependencies
+from tools import source_download
 
 # The manifest sits next to ffmpeg_dependencies.py in tools/, one level above this
 # suite. Resolving it relative to __file__ keeps the tests runnable from any cwd.
@@ -254,12 +257,91 @@ class FfmpegDownloadTrustTest(unittest.TestCase):
         # run. Trust is taken from the MSYS2 bundle the build already depends on.
         # Verification must never be switched off: the tarballs are SHA256- and
         # PGP-checked, but that is defence in depth, not a licence to drop TLS.
-        source = Path(dependencies.__file__).read_text(encoding="utf-8")
+        source = Path(source_download.__file__).read_text(encoding="utf-8")
         self.assertIn("tls-ca-bundle.pem", source)
-        self.assertIn("context=self._ssl_context()", source)
-        self.assertNotIn("ssl._create_unverified_context", source)
-        self.assertNotIn("CERT_NONE", source)
-        self.assertNotIn("check_hostname = False", source)
+        self.assertIn("context=ssl_context", source)
+        for forbidden in ("_create_unverified_context", "CERT_NONE", "check_hostname = False"):
+            self.assertNotIn(forbidden, source)
+
+    def test_missing_bundle_falls_back_to_default_verification(self) -> None:
+        self.assertIsNone(source_download.toolchain_ssl_context(os.path.join(tempfile.gettempdir(), "no-msys")))
+
+
+class SourceDownloadRetryTest(unittest.TestCase):
+    """A release that has compiled for half an hour must survive one dropped TCP
+    connection - run 31192282693 died on exactly that ("Remote end closed
+    connection without response" from github.com) with no retry."""
+
+    def _download(self, opener, attempts=4):
+        slept: list = []
+        with mock.patch.object(source_download.urllib.request, "urlopen", opener):
+            source_download.download_file(
+                "https://example.invalid/x.tar.gz",
+                os.path.join(self.tmp, "x.tar.gz"),
+                attempts=attempts,
+                sleep=slept.append,
+            )
+        return slept
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+
+    def test_transient_disconnect_is_retried_then_succeeds(self) -> None:
+        calls = {"n": 0}
+
+        class Response:
+            def read(self, *_a):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def opener(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise http.client.RemoteDisconnected("Remote end closed connection without response")
+            return Response()
+
+        slept = self._download(opener)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(len(slept), 2)  # backoff only between attempts
+
+    def test_http_404_is_not_retried(self) -> None:
+        # A wrong pinned URL is a bug, not weather: fail immediately.
+        calls = {"n": 0}
+
+        def opener(*_args, **_kwargs):
+            calls["n"] += 1
+            raise urllib.error.HTTPError("https://example.invalid/x", 404, "Not Found", {}, None)
+
+        with self.assertRaises(urllib.error.HTTPError):
+            self._download(opener)
+        self.assertEqual(calls["n"], 1)
+
+    def test_attempts_are_bounded_and_the_error_is_raised(self) -> None:
+        def opener(*_args, **_kwargs):
+            raise http.client.RemoteDisconnected("nope")
+
+        with self.assertRaises(http.client.RemoteDisconnected):
+            self._download(opener, attempts=3)
+
+    def test_partial_download_never_lands_at_the_destination(self) -> None:
+        # An interrupted body must not leave a truncated archive that a later run
+        # would treat as already fetched.
+        destination = os.path.join(self.tmp, "x.tar.gz")
+
+        def opener(*_args, **_kwargs):
+            raise http.client.IncompleteRead(b"partial")
+
+        with self.assertRaises(http.client.IncompleteRead):
+            self._download(opener, attempts=1)
+        self.assertFalse(os.path.exists(destination))
+        self.assertFalse(os.path.exists(destination + ".tmp"))
 
 
 class FfmpegSourcePinTest(unittest.TestCase):

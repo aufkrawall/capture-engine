@@ -36,6 +36,8 @@ import urllib.request
 import urllib.parse
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
+from tools import source_download
+
 
 CommandRunner = Callable[..., Any]
 Logger = Callable[[str], None]
@@ -475,33 +477,19 @@ class SourceDependencyBuilder:
         return digest.hexdigest()
 
     def _ssl_context(self) -> Optional[ssl.SSLContext]:
-        """TLS trust anchored on the toolchain's CA bundle rather than the host's.
-
-        The runner's Python could not verify downloads.xiph.org ("unable to get
-        local issuer certificate") while other hosts verified fine in the same
-        run - its store lacked an intermediate. Verification is never disabled:
-        with no bundle we fall back to Python's default context.
-        """
-        bundle = os.path.join(
-            self.msys2_dir, "etc", "pki", "ca-trust", "extracted", "pem", "tls-ca-bundle.pem"
-        )
-        if not os.path.exists(bundle):
-            return None
+        """Cached TLS context trusting the toolchain CA bundle (see source_download)."""
         if self._cached_ssl_context is None:
-            self._cached_ssl_context = ssl.create_default_context(cafile=bundle)
+            self._cached_ssl_context = source_download.toolchain_ssl_context(self.msys2_dir)
         return self._cached_ssl_context
 
     def _download_file(self, url: str, destination: str) -> None:
-        temporary_path = destination + ".tmp"
         self._log(f"Downloading {url}")
-        try:
-            with urllib.request.urlopen(url, timeout=180, context=self._ssl_context()) as response:
-                with open(temporary_path, "wb") as output_file:
-                    shutil.copyfileobj(response, output_file)
-            os.replace(temporary_path, destination)
-        finally:
-            if os.path.exists(temporary_path):
-                os.remove(temporary_path)
+        source_download.download_file(
+            url,
+            destination,
+            ssl_context=self._ssl_context(),
+            logger=self._log,
+        )
 
     def _download_source_package(self, dependency: Mapping[str, Any]) -> str:
         os.makedirs(self.download_dir, exist_ok=True)
