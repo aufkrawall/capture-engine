@@ -34,7 +34,7 @@ jobs:
   build-release:
     # Native Windows release build on the maintainer's self-hosted runner.
     # The workspace must be persistent so the ignored toolchain trees
-    # (build/msys64, ffmpeg_build/, external/ffmpeg, installed/) survive and
+    # (build/msys64, external/, installed/) survive and
     # the artifact matches a local native build (PDBs, effective x64 CFG,
     # custom-patched FFmpeg, FG runtime payloads).
     #
@@ -83,15 +83,21 @@ jobs:
             if (-not $env:USERPROFILE) { return $path }
             return $path.Replace($env:USERPROFILE, '%USERPROFILE%').Replace($env:USERPROFILE.Replace('\','/'), '%USERPROFILE%')
           }
-          foreach ($required in @('build\msys64', 'ffmpeg_build', 'external')) {
+          foreach ($required in @('build\msys64', 'external')) {
             if (-not (Test-Path (Join-Path $root $required))) {
               throw "Toolchain root '$(Get-Redacted $root)' is missing $required; restore the local build environment first."
             }
           }
           New-Item -ItemType Directory -Force -Path build | Out-Null
+          # ffmpeg_build is deliberately NOT junctioned: FFmpeg and its source
+          # dependency closure (libaom, opus, libva, libvpl, SVT-AV1, libiconv,
+          # libwinpthread, llvm-runtime) must be compiled by this job, so that
+          # every shipped binary was produced by the run that publishes it. It
+          # used to be junctioned to the maintainer's dev tree, which meant the
+          # release reused DLLs compiled locally days earlier - self-built, but
+          # not built here, and therefore not attestable.
           foreach ($pair in @(
             @('build\msys64', (Join-Path $root 'build\msys64')),
-            @('ffmpeg_build', (Join-Path $root 'ffmpeg_build')),
             @('external', (Join-Path $root 'external'))
           )) {
             if (-not (Test-Path $pair[0])) {
@@ -106,9 +112,29 @@ jobs:
           }
           Write-Output "Toolchain junctions ready (root=$(Get-Redacted $root))"
 
+      - name: Reset FFmpeg build tree (every release compiles it from source)
+        shell: pwsh
+        run: |
+          $tree = 'ffmpeg_build'
+          if (Test-Path $tree) {
+            $item = Get-Item -LiteralPath $tree -Force
+            if ($item.LinkType -eq 'Junction') {
+              # Delete only the reparse point. Remove-Item -Recurse follows
+              # junctions on Windows and would erase the maintainer's real
+              # toolchain tree behind it - the same failure mode that made this
+              # workflow avoid actions/checkout.
+              [System.IO.Directory]::Delete($item.FullName, $false)
+              Write-Output "Removed inherited ffmpeg_build junction (release builds must compile FFmpeg themselves)"
+            } else {
+              Remove-Item -LiteralPath $tree -Recurse -Force
+              Write-Output "Removed previous ffmpeg_build tree from this workspace"
+            }
+          }
+          Write-Output "FFmpeg and its full source dependency closure will be built by this job"
+
       - name: Run build policy tests
         shell: pwsh
-        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening tools.tests.test_privacy_paths
+        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening tools.tests.test_privacy_paths tools.tests.test_ffmpeg_dependencies
 
       - name: Resolve release version
         id: version

@@ -319,16 +319,100 @@ class FFmpegBuilder:
             log(f"[FFmpeg] FAILED: {cmd_str}")
             raise e
 
-    def git_clone(self, url, name, update=True):
-        """Clone or update a git repository. Returns (path, updated) tuple."""
+    def _ref_resolves_locally(self, dest, ref, git_exe, env):
+        """True when `ref` names an object this clone already has."""
+        try:
+            subprocess.check_output(
+                [git_exe, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                cwd=dest,
+                env=env,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            return False
+        return True
+
+    def _repo_is_at_ref(self, dest, ref, git_exe, env):
+        """True when HEAD already resolves to `ref` locally (no network needed)."""
+        try:
+            wanted = subprocess.check_output(
+                [git_exe, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                cwd=dest,
+                env=env,
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            head = subprocess.check_output(
+                [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
+            ).decode().strip()
+        except subprocess.CalledProcessError:
+            return False  # Shallow clone without the tag: must fetch to find out.
+        return bool(wanted) and wanted == head
+
+    def git_clone(self, url, name, update=True, ref=None):
+        """Clone or update a git repository. Returns (path, updated) tuple.
+
+        With `ref` the repository is pinned to an upstream ref (a release tag).
+        The pin is enforced even under --skip-updates: skipping updates means
+        "do not follow upstream", not "build whatever happens to be checked out",
+        and a clone left on master from before the pin must still be moved onto
+        it or the build would silently produce a different product. When the ref
+        is already checked out this costs no network access.
+        """
         dest = os.path.join(self.repos_dir, name)
         git_exe = self.get_tool_path("git")
         env = self.get_msys_env()
 
         if not os.path.exists(dest):
-            log(f"[FFmpeg] Cloning {name}...")
-            self.run([git_exe, "clone", "--depth", "1", url, dest], env=env)
+            log(f"[FFmpeg] Cloning {name}" + (f" at {ref}..." if ref else "..."))
+            # A tag can be fetched shallowly with --branch, but a raw commit
+            # cannot: git.ffmpeg.org refuses unadvertised objects ("Server does
+            # not allow request for unadvertised object"), so a commit pin needs
+            # the history that makes it reachable. Only the commit form pays for
+            # the full clone.
+            command = [git_exe, "clone"]
+            if ref and _is_commit_ref(ref):
+                command += [url, dest]
+                self.run(command, env=env)
+                self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
+                return dest, True
+            command += ["--depth", "1"]
+            if ref:
+                command += ["--branch", ref]
+            command += [url, dest]
+            self.run(command, env=env)
             return dest, True  # New clone = always needs build
+
+        if ref:
+            if self._repo_is_at_ref(dest, ref, git_exe, env):
+                log(f"[FFmpeg] {name} already at pinned {ref}")
+                return dest, False
+            old_commit = subprocess.check_output(
+                [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
+            ).decode().strip()
+            log(f"[FFmpeg] Moving {name} to pinned {ref}...")
+            if _is_commit_ref(ref):
+                # Only pay for history when the commit is genuinely absent. It is
+                # often already present (for example after moving off a previous
+                # pin), and the server will not serve it on its own, so the
+                # fallback is a full unshallow rather than a targeted fetch.
+                if self._ref_resolves_locally(dest, ref, git_exe, env):
+                    log(f"[FFmpeg] Pinned commit already present locally, no fetch needed")
+                else:
+                    self.run(
+                        [git_exe, "fetch", "--unshallow", "--force", "origin"],
+                        cwd=dest,
+                        env=env,
+                        check=False,
+                    )
+                    self.run([git_exe, "fetch", "--force", "origin"], cwd=dest, env=env)
+            else:
+                self.run([git_exe, "fetch", "--depth", "1", "--force", "origin", "tag", ref], cwd=dest, env=env)
+            self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
+            new_commit = subprocess.check_output(
+                [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
+            ).decode().strip()
+            log(f"[FFmpeg] {name} pinned {old_commit[:8]} -> {new_commit[:8]} ({ref})")
+            return dest, new_commit != old_commit
 
         if not update:
             log(f"[FFmpeg] Using existing {name} (--skip-updates)")
@@ -407,7 +491,7 @@ class FFmpegBuilder:
     def build_ffmpeg(self, update=True):
         """Build FFmpeg. Returns True if build was performed."""
         log("[FFmpeg] Building FFmpeg...")
-        src_dir, updated = self.git_clone(FFMPEG_URL, "ffmpeg", update=update)
+        src_dir, updated = self.git_clone(FFMPEG_URL, "ffmpeg", update=update, ref=FFMPEG_SOURCE_REF)
         build_dir = os.path.join(self.working_dir, "ffmpeg")
 
         if os.path.exists(build_dir):
@@ -541,13 +625,26 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
+def _is_commit_ref(ref):
+    """True when the pin is a raw commit rather than a tag/branch name."""
+    return bool(re.fullmatch(r"[0-9a-fA-F]{40}", ref or ""))
+
+
 FFMPEG_BUILD_CONFIGURATION_VERSION = 10
 
 
 def ffmpeg_build_configuration_fingerprint():
-    """Track local configure/patch inputs independently of the upstream commit."""
+    """Track local configure/patch inputs and the pinned upstream source ref.
+
+    The pinned ref belongs in this fingerprint because `--skip-updates` builds
+    return early when prebuilt DLLs are present, before the source is consulted
+    at all - so a pin change that was not part of the fingerprint would leave the
+    previous FFmpeg shipping until someone happened to force a rebuild.
+    """
     digest = hashlib.sha256(f"configure-v{FFMPEG_BUILD_CONFIGURATION_VERSION}\n".encode("ascii"))
-    digest.update(b"dependency-manifest\n")
+    digest.update(b"source-ref\n")
+    digest.update(FFMPEG_SOURCE_REF.encode("utf-8"))
+    digest.update(b"\ndependency-manifest\n")
     digest.update(dependency_manifest_fingerprint(FFMPEG_DEPENDENCY_MANIFEST).encode("ascii"))
     patches_dir = os.path.join(PROJECT_ROOT, "tools", "patches", "ffmpeg")
     if os.path.isdir(patches_dir):

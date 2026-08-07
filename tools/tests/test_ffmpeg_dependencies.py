@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -200,6 +201,52 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
                 ),
                 str(new_archive),
             )
+
+
+class FfmpegSourcePinTest(unittest.TestCase):
+    """The shipped FFmpeg must come from a named source, built by the release job."""
+
+    def test_source_is_pinned_and_feeds_the_build_fingerprint(self) -> None:
+        # Until 2026-08-07 the clone tracked master HEAD, so two builds a week
+        # apart were not the same product. The ref must also feed the
+        # configuration fingerprint: --skip-updates builds return early when
+        # prebuilt DLLs exist, before the source is consulted, so otherwise a pin
+        # change would silently keep shipping the previous FFmpeg.
+        self.assertRegex(build.FFMPEG_SOURCE_REF, r"^(n\d+\.\d+[\w.]*|[0-9a-f]{40})$")
+        source = build.read_source_text()
+        self.assertIn("ref=FFMPEG_SOURCE_REF", source)
+        self.assertIn("digest.update(FFMPEG_SOURCE_REF.encode(", source)
+
+    def test_pin_keeps_the_nmr_aac_coder_available(self) -> None:
+        # NMR exists only on FFmpeg master: it landed after the 9.0 release branch
+        # was cut, so every released tag drops the encoder to twoloop and fails the
+        # AAC tests with "Undefined constant ... 'nmr'". A tag pin is valid only
+        # once an upstream release actually carries NMR.
+        # mediaengine/audio_encoder.cpp selects it explicitly.
+        if not build._is_commit_ref(build.FFMPEG_SOURCE_REF):
+            self.fail(
+                "FFMPEG_SOURCE_REF is a release tag; confirm the tag contains the NMR "
+                "aac_coder (grep AAC_CODER_NMR libavcodec/aacenc.c) before allowing it"
+            )
+
+    def test_release_workflow_builds_ffmpeg_instead_of_junctioning_it(self) -> None:
+        # Every shipped binary must be produced by the run that publishes it, so a
+        # later GitHub artifact attestation covers what it claims to. Junctioning
+        # ffmpeg_build to the maintainer's dev tree made releases reuse DLLs
+        # compiled locally days earlier: self-built, but not built by the job.
+        workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release-stable.yml"
+        text = workflow.read_text(encoding="utf-8")
+        junction_targets = re.findall(r"@\('([^']+)',\s*\(Join-Path \$root", text)
+        self.assertNotIn(
+            "ffmpeg_build",
+            junction_targets,
+            "release-stable.yml junctions ffmpeg_build again; the release would ship "
+            "FFmpeg and its dependency closure built outside the job",
+        )
+        self.assertIn("Reset FFmpeg build tree", text)
+        # The reset must not recurse through a junction: on Windows that follows
+        # the link and would delete the maintainer's real toolchain tree.
+        self.assertIn("[System.IO.Directory]::Delete(", text)
 
 
 if __name__ == "__main__":

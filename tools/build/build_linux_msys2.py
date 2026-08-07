@@ -223,6 +223,23 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str, *, prefer_static: bool = False
 
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
+# Pinned upstream source. Until 2026-08-07 the clone tracked master HEAD, so every
+# fresh build shipped whatever upstream had merged that day and two builds a week
+# apart were not the same product.
+#
+# This is a master COMMIT rather than a release tag, deliberately. The native AAC
+# encoder's NMR coder - which CE selects explicitly (mediaengine/audio_encoder.cpp,
+# `aac_coder=nmr`) - landed on master after the 9.0 release branch was cut, so it
+# exists in NO released FFmpeg. Building n9.0 drops the encoder to twoloop and
+# fails the AAC unit tests with "Undefined constant ... 'nmr'". Revisit only when
+# an upstream release actually contains NMR; verify with
+# `grep AAC_CODER_NMR libavcodec/aacenc.c` on the candidate before switching.
+#
+# The ref is part of ffmpeg_build_configuration_fingerprint(), so changing it
+# forces a rebuild by itself - there is no counter to remember to bump. When
+# bumping, re-check tools/patches/ffmpeg/*.patch against the new source: they are
+# applied with strict `git apply` and fail the build if context moved.
+FFMPEG_SOURCE_REF = "86940d45aff7d59810794df3ab2b39b7b83b478c"
 FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
 FFMPEG_DEPENDENCY_MANIFEST = os.path.join(PROJECT_ROOT, "tools", "ffmpeg_dependencies.json")
 FFMPEG_DEPENDENCY_MANIFEST_DATA = load_dependency_manifest(FFMPEG_DEPENDENCY_MANIFEST)

@@ -1,5 +1,42 @@
 # llm-wiki Log
 
+### 2026-08-07 - FFmpeg source pinned; release job now compiles the whole dependency closure
+
+- **FFmpeg was never pinned.** `git_clone` did `clone --depth 1 https://git.ffmpeg.org/ffmpeg.git`,
+  i.e. master HEAD, so two builds a week apart were not the same product. Now
+  `FFMPEG_SOURCE_REF` (`build_linux_msys2.py`) pins it, enforced even under
+  `--skip-updates`: skipping updates means "do not follow upstream", not "build
+  whatever is checked out".
+- The ref is part of `ffmpeg_build_configuration_fingerprint()`. This is load-bearing:
+  `compile_custom_ffmpeg` returns early when prebuilt DLLs exist, *before* consulting
+  the source, so a pin change outside the fingerprint would silently keep shipping the
+  previous FFmpeg.
+- **n9.0 was tried and rejected - it has no NMR AAC coder.** NMR landed on master after
+  the 9.0 release branch was cut, so it is in *no* released FFmpeg (n9.0 is the newest
+  tag). Building it drops `aac_coder` to twoloop and fails 11 unit tests with
+  `Undefined constant or missing '(' in 'nmr'`; `mediaengine/audio_encoder.cpp:262`
+  selects it explicitly. Pin is therefore master commit
+  `86940d45aff7d59810794df3ab2b39b7b83b478c` - the last verified-green source.
+  `FfmpegSourcePinTest.test_pin_keeps_the_nmr_aac_coder_available` fails if anyone
+  switches to a tag pin without first checking `AAC_CODER_NMR` in `libavcodec/aacenc.c`.
+- **git.ffmpeg.org refuses unadvertised objects** (`Server does not allow request for
+  unadvertised object`), so a commit pin cannot be fetched shallowly. `git_clone`
+  full-clones only for the commit form (tags keep `--depth 1 --branch`), and skips the
+  fetch entirely when the commit is already in the local object store.
+- **Release job builds the closure itself.** `ffmpeg_build` is no longer junctioned to
+  the maintainer's dev tree, plus a reset step, so every release compiles FFmpeg and all
+  8 source dependencies in the run that publishes them - the precondition for meaningful
+  GitHub artifact attestation. Previously the release reused DLLs compiled locally days
+  earlier: self-built, but not built by the job. The reset deletes a junction with
+  `[System.IO.Directory]::Delete($path, $false)`, never `Remove-Item -Recurse`, which on
+  Windows follows the link and would erase the real toolchain tree.
+- `test_ffmpeg_dependencies` was added to the release workflow's own policy-test step; it
+  was previously absent, so the pin/junction guards would not have run on the runner.
+- Gate: `--verify --verify-clean` success=1 (build 0.1.5853, 820 s), FFmpeg rebuilt
+  `d32b387f -> 86940d45`, privacy scan clean over 87 shipped binaries.
+- Open: `nv-codec-headers` is still cloned unpinned from master. Headers only, nothing
+  shipped, but the same class of non-determinism.
+
 ### 2026-08-07 - Fixed: the binary privacy scrub could neither redact nor report a user path with an unlisted terminator
 
 - Found while re-reviewing `a65d1292..HEAD`. `_user_component_patterns` accepted
