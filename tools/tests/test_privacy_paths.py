@@ -227,6 +227,21 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
             self.assertEqual(build.count_profile_path_hits(b"no hits here"), 0)
             self.assertEqual(build.count_profile_path_hits(b"TestUser is not a path"), 0)
 
+    def test_privacy_sanitize_log_text_is_env_gated(self) -> None:
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            message = r"Built: C:\Users\TestUser\proj\x.dll and msys=/c/Users/TestUser/y"
+            with patch.dict(build.os.environ, {"CE_PRIVACY_SANITIZE_LOGS": ""}, clear=False):
+                self.assertEqual(build.privacy_sanitize_log_text(message), message)
+            with patch.dict(build.os.environ, {"CE_PRIVACY_SANITIZE_LOGS": "1"}, clear=False):
+                sanitized = build.privacy_sanitize_log_text(message)
+                self.assertNotIn("TestUser", sanitized)
+                self.assertIn("proj", sanitized)
+                self.assertIn("x.dll", sanitized)
+
+    def test_log_output_uses_privacy_sanitizer(self) -> None:
+        source = build.read_source_text()
+        self.assertIn("formatted = privacy_sanitize_log_text(", source)
+
 
 if __name__ == "__main__":
     unittest.main()

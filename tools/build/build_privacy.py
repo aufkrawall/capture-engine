@@ -116,3 +116,12 @@ def count_profile_path_hits(data: bytes) -> int:
     return len(utf8_pattern.findall(data)) + len(utf16_pattern.findall(data))
 
 
+def privacy_sanitize_log_text(text: str) -> str:
+    """Redact developer-identifying paths from console/log output when the
+    release workflow requests it (CE_PRIVACY_SANITIZE_LOGS=1), so GitHub Actions
+    run logs never expose the maintainer's profile path. Local builds leave
+    output untouched so real paths stay available for diagnostics."""
+    if os.environ.get("CE_PRIVACY_SANITIZE_LOGS") != "1":
+        return text
+    return sanitize_privacy_paths(text)
+

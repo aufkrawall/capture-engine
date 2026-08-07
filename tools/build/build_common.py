@@ -548,7 +548,7 @@ PACKAGES = [
 
 def log(msg: str, *, detail: bool = False) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{timestamp}] {msg}"
+    formatted = privacy_sanitize_log_text(f"[{timestamp}] {msg}")
     if not (CONCISE_OUTPUT and detail and not VERBOSE_COMMANDS):
         print(formatted)
     with LOG_LOCK:

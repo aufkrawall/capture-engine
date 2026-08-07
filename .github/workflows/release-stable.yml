@@ -79,9 +79,13 @@ jobs:
             throw "Repository variable CE_TOOLCHAIN_ROOT must point to the maintainer's dev checkout (e.g. %USERPROFILE%\Programme\build\captureproject)."
           }
           $root = [System.IO.Path]::GetFullPath($env:TOOLCHAIN_ROOT)
+          function Get-Redacted([string]$path) {
+            if (-not $env:USERPROFILE) { return $path }
+            return $path.Replace($env:USERPROFILE, '%USERPROFILE%').Replace($env:USERPROFILE.Replace('\','/'), '%USERPROFILE%')
+          }
           foreach ($required in @('build\msys64', 'ffmpeg_build', 'external')) {
             if (-not (Test-Path (Join-Path $root $required))) {
-              throw "Toolchain root '$root' is missing $required; restore the local build environment first."
+              throw "Toolchain root '$(Get-Redacted $root)' is missing $required; restore the local build environment first."
             }
           }
           New-Item -ItemType Directory -Force -Path build | Out-Null
@@ -92,7 +96,7 @@ jobs:
           )) {
             if (-not (Test-Path $pair[0])) {
               New-Item -ItemType Junction -Path $pair[0] -Target $pair[1] | Out-Null
-              Write-Output "Created junction $($pair[0]) -> $($pair[1])"
+              Write-Output "Created junction $($pair[0]) -> $(Get-Redacted $pair[1])"
             } else {
               $item = Get-Item -LiteralPath $pair[0] -Force
               if ($item.LinkType -ne 'Junction') {
@@ -100,12 +104,7 @@ jobs:
               }
             }
           }
-          Write-Output "Toolchain junctions ready (root=$root)"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          Write-Output "Toolchain junctions ready (root=$(Get-Redacted $root))"
 
       - name: Run build policy tests
         shell: pwsh
@@ -153,7 +152,18 @@ jobs:
 
       - name: Build release product
         shell: pwsh
-        run: python build.py --skip-updates
+        env:
+          # build.py redacts developer-identifying paths from its console output
+          # while this is set, so GitHub Actions run logs stay free of machine
+          # paths. actions/setup-python is deliberately not used: it dumps the
+          # toolcache path (under the developer profile) into the run log.
+          CE_PRIVACY_SANITIZE_LOGS: "1"
+        run: |
+          python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python 3.12 or newer is required on the self-hosted runner."
+          }
+          python build.py --skip-updates
 
       - name: Verify built version
         shell: pwsh

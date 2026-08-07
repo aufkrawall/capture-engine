@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: GitHub Actions release run logs leaked the developer profile path and hostname
+
+- Beyond the shipped files, every `release-stable` run log contained the full
+  profile path (~90 lines with the user name per run): `CE_TOOLCHAIN_ROOT`
+  echoes, `actions/setup-python`'s toolcache env dump
+  (`C:\Users\<developer>\Programme\build\runner-work\_tool\...`), and build.py
+  console output. Run logs are visible to anyone with repo access and would be
+  public in a public repo.
+- **Fix:** `log()` now redacts the profile through `privacy_sanitize_log_text`
+  whenever `CE_PRIVACY_SANITIZE_LOGS=1` (set by the release workflow);
+  `actions/setup-python@v5` was removed (it dumps the toolcache path; the
+  runner preflights Python 3.12+ on PATH); the junction step prints
+  `%USERPROFILE%`-redacted roots. Old release run logs were deleted via the
+  Actions API. GitHub's automatic `Runner name` / `Machine name` lines in "Set
+  up job" still show the runner/hostname - rename the runner registration (and
+  optionally the Windows host) to remove those.
+
 ### 2026-08-07 - Fixed: release PDBs/DLLs still leaked the user name in escaped and MSYS path spellings
 
 - The first privacy pass redacted only `C:\Users\<user>` / `C:/Users/<user>`
