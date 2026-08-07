@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-07 - Ops: stable release 0.1.5290 triggered; self-hosted runner is started manually
+
+- The self-hosted release runner is the maintainer's Windows PC itself, but it
+  is **not** a service: no `runsvc.exe`, no scheduled task. `Runner.Listener.exe`
+  only runs while `%USERPROFILE%\Programme\build\actions-runner\run.cmd` has been
+  started manually and its console stays open. It had been offline since the
+  0.1.5289 publish on 2026-08-04, so the first dispatch of 0.1.5290 stayed queued
+  until the runner was started.
+- Procedure (now documented in `build.py.md`): start the runner via `run.cmd`,
+  delete the replaced release/tag (`gh release delete v0.1.5289 --yes
+  --cleanup-tag`), then `gh workflow run release-stable.yml --ref main --field
+  version=0.1.5290`. Run 31135488193 is in progress at head `9eef3478`.
+
 ### 2026-08-07 - Fixed: D3D10 inject capture wedged in "preparing" forever; OpenGL overlay missing whenever the game caches the SwapBuffers import
 
 - **DX10 root cause** (session `20260807_010839`, build 0.1.5835): the
