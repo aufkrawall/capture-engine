@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: release job could not build the dependency closure (no dirmngr on the runner)
+
+- First release after un-junctioning `ffmpeg_build` failed in `Build release product`:
+  `gpg: failed to start dirmngr '/usr/bin/dirmngr': General error` ->
+  `Could not retrieve and fingerprint-verify PGP key 5f944b02... for llvm-runtime`.
+  The closure PGP-verifies every source tarball and **failed closed**, which is correct.
+- Root cause is not runner-specific: `ffmpeg_build/dependencies/gnupg/` holds only
+  sockets, no keyring, so **every** closure build re-fetched the keys from a keyserver.
+  That needs dirmngr, which cannot start in the runner's non-interactive context. The
+  path had never run there before because the tree used to be junctioned.
+- **Fix:** the 8 pinned public keys are vendored as `tools/pgp-keys/<FINGERPRINT>.asc`
+  and imported from file before any keyserver is tried (keyserver retained as fallback).
+  Trust is unchanged - `has_fingerprint()` still proves the imported key carries the
+  fingerprint pinned in the manifest, so the anchor is the manifest, not the keyserver.
+  This removes a live network dependency from every release, which also matters for
+  attestation.
+- Keys were obtained over plain HTTPS (`pks/lookup?op=get`), bypassing dirmngr, and each
+  was fingerprint-verified with `gpg --show-keys` before being written. `gpg --recv-keys`
+  hangs even locally in a non-interactive shell - do not use it when scripting this.
+- Tests: `FfmpegVendoredPgpKeyTest` - every pinned fingerprint has a vendored key, files
+  are armored and fingerprint-named, and the vendored import is attempted *before* any
+  keyserver.
+- Not yet proven end to end: a full closure rebuild (plain `python build.py`, no
+  `--skip-updates`) exercises this path; `--verify --skip-updates` does not force it.
+
 ### 2026-08-07 - FFmpeg source pinned; release job now compiles the whole dependency closure
 
 - **FFmpeg was never pinned.** `git_clone` did `clone --depth 1 https://git.ffmpeg.org/ffmpeg.git`,

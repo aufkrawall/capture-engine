@@ -63,6 +63,12 @@ def remove_tree(path: str) -> None:
     shutil.rmtree(path, onerror=make_writable_and_retry)
 
 
+# Armored public keys for every fingerprint pinned in the manifest. Vendored
+# so a build never depends on a keyserver (or on dirmngr, which cannot start
+# in the Actions runner context). The fingerprint check still gates trust.
+PGP_KEY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pgp-keys")
+
+
 def load_dependency_manifest(manifest_path: str) -> Dict[str, Any]:
     with open(manifest_path, "r", encoding="utf-8") as manifest_file:
         manifest = json.load(manifest_file)
@@ -408,6 +414,27 @@ class SourceDependencyBuilder:
         for fingerprint in normalized_fingerprints:
             if has_fingerprint(fingerprint):
                 continue
+            # Vendored keys first. The keyring is not persisted between builds, so
+            # every closure build used to re-fetch from a keyserver - which needs
+            # dirmngr, and dirmngr cannot start in the Actions runner's
+            # non-interactive context ("failed to start dirmngr ... General
+            # error"), so the release could never build the closure at all. The
+            # armored keys in tools/pgp-keys/ remove that dependency: import is a
+            # local file read, and has_fingerprint() still proves the imported key
+            # carries the pinned fingerprint, so trust remains anchored on the
+            # manifest rather than on whoever answers the keyserver.
+            vendored = os.path.join(PGP_KEY_DIR, f"{fingerprint.upper()}.asc")
+            if os.path.exists(vendored):
+                self._log(f"Importing pinned PGP key {fingerprint} from tools/pgp-keys")
+                subprocess.run(
+                    [self.gpg_exe, "--batch", "--import", self._unix_path(vendored)],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                if has_fingerprint(fingerprint):
+                    continue
+                self._log(f"Vendored PGP key {fingerprint} did not import cleanly; trying keyservers")
             imported = False
             for keyserver in keyservers:
                 self._log(f"Retrieving PGP key {fingerprint} from {keyserver}")

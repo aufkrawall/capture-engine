@@ -203,6 +203,50 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
             )
 
 
+class FfmpegVendoredPgpKeyTest(unittest.TestCase):
+    """Every pinned signing key must ship in-repo, not come from a keyserver.
+
+    The builder's keyring is not persisted between builds, so each closure build
+    re-imported the keys. Fetching them needs dirmngr, which cannot start in the
+    Actions runner's non-interactive context, so the release job could never build
+    the dependency closure at all. Vendoring removes that dependency; the
+    fingerprint check still decides trust, so this is not a weakening.
+    """
+
+    def test_every_pinned_fingerprint_has_a_vendored_key(self) -> None:
+        manifest = dependencies.load_dependency_manifest(str(MANIFEST_PATH))
+        pinned = set()
+        for dependency in manifest["dependencies"]:
+            for field in ("pgp_keys", "source_package_pgp_keys"):
+                pinned.update(fingerprint.upper() for fingerprint in dependency.get(field, []))
+        missing = [
+            fingerprint
+            for fingerprint in sorted(pinned)
+            if not os.path.exists(os.path.join(dependencies.PGP_KEY_DIR, f"{fingerprint}.asc"))
+        ]
+        self.assertEqual(
+            [],
+            missing,
+            "Pinned PGP keys without a vendored tools/pgp-keys/<fingerprint>.asc; the "
+            "release job cannot fetch them (no dirmngr on the runner):\n" + "\n".join(missing),
+        )
+
+    def test_vendored_keys_are_armored_and_named_by_fingerprint(self) -> None:
+        for entry in sorted(os.listdir(dependencies.PGP_KEY_DIR)):
+            if not entry.endswith(".asc"):
+                continue
+            self.assertRegex(entry, r"^[0-9A-F]{40}\.asc$", f"{entry} is not named by fingerprint")
+            with open(os.path.join(dependencies.PGP_KEY_DIR, entry), "r", encoding="utf-8") as handle:
+                self.assertIn("BEGIN PGP PUBLIC KEY BLOCK", handle.read(200), f"{entry} is not armored")
+
+    def test_vendored_import_is_attempted_before_any_keyserver(self) -> None:
+        # Order matters: a keyserver round trip must never be on the normal path.
+        source = Path(dependencies.__file__).read_text(encoding="utf-8")
+        vendored_at = source.index("PGP_KEY_DIR, f\"{fingerprint.upper()}.asc\"")
+        keyserver_at = source.index("for keyserver in keyservers:")
+        self.assertLess(vendored_at, keyserver_at)
+
+
 class FfmpegSourcePinTest(unittest.TestCase):
     """The shipped FFmpeg must come from a named source, built by the release job."""
 
