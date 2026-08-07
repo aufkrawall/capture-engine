@@ -54,7 +54,7 @@ def sanitize_privacy_paths(text: str) -> str:
         # Path-derived identifiers defeat every rule above, because the
         # separators are gone: doxygen names its man pages after the escaped
         # absolute input path, so run 31192891717 logged the maintainer's user
-        # name as `C__Users_TestUser_Programme_...` while the same path one line
+        # name as `C__Users_<developer>_Programme_...` while the same path one line
         # earlier was correctly redacted. Anchoring on the mangled `Users`
         # component lets `_` terminate the name here without the general rule
         # having to accept it - which it must not, or it would rewrite the

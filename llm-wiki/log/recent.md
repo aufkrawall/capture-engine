@@ -127,7 +127,7 @@
   `bash -n`. `DependencyBuildPolicyTest` covers the fingerprint coupling and the manifest
   invariant that no `-docs`/`-doc` subpackage is ever a declared output.
 - **Privacy gap found in that same log:** the run redacted `C:/Users/<developer>/...`
-  correctly but left `C__Users_TestUser_Programme_...` on the *next line* - the log scrub
+  correctly but left `C__Users_<developer>_Programme_...` on the *next line* - the log scrub
   anchors on path separators, and doxygen's mangled name has none. Fixed in
   `sanitize_privacy_paths` with a rule anchored on the mangled `Users_` component, and
   the general rule's terminator allowlist replaced by the same negative lookahead

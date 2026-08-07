@@ -50,6 +50,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_USER_COMPONENTS = frozenset(
     {
         "TestUser",
+        # The length-preserving filler `redact_user_component` writes into shipped
+        # binaries. Correctly scrubbed text quotes it (`C:/Users/redact/...`), so
+        # flagging it would fail the gate on evidence that the scrub worked.
+        "redact",
         "dev",
         "Public",
         "Default",
@@ -80,6 +84,16 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 USER_PATH_RE = re.compile(r"[A-Za-z]:\\Users\\([^\\\r\n\s\"'`]+)")
 # MSYS/Cygwin private-use-area colon spelling: C<U+F03A/U+FF1A>Users<name>.
 PUA_USER_RE = re.compile(r"[A-Za-z][\uf03a\uff1a]Users([A-Za-z0-9_]+)")
+# Path mangled into an identifier, where every separator became an underscore:
+# `C__Users_<name>_Programme_...`. Doxygen names man pages this way, and the two
+# patterns above cannot see it because the separators they anchor on are gone.
+#
+# This is the third place the same blind spot appeared - the binary scrub had it
+# (fixed in a9590837), the log scrub had it, and this gate had it too, which is
+# how documenting the log-scrub fix put the maintainer's real user name into four
+# tracked files without anything objecting. `_` terminates the name here, which
+# the general patterns must not accept.
+MANGLED_USER_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]__Users_([A-Za-z0-9-]+)_")
 
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-stable.yml"
 CLEANUP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-log-cleanup.yml"
@@ -118,6 +132,10 @@ def _user_path_hits(path: Path) -> List[Tuple[int, str]]:
             user = match.group(1)
             if user not in ALLOWED_USER_COMPONENTS:
                 hits.append((lineno, f"PUA-colon user path in {relative} (user {user})"))
+        for match in MANGLED_USER_RE.finditer(line):
+            user = match.group(1)
+            if user not in ALLOWED_USER_COMPONENTS:
+                hits.append((lineno, f"path-derived identifier C__Users_{user}_ in {relative}"))
     return hits
 
 
@@ -297,7 +315,7 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
 
     def test_sanitize_privacy_paths_redacts_path_derived_identifiers(self) -> None:
         # Run 31192891717 logged the maintainer's user name as
-        # `C__Users_TestUser_Programme_...`: doxygen names its man pages after the
+        # `C__Users_<developer>_Programme_...`: doxygen names its man pages after the
         # escaped absolute input path, so every separator the path-shaped rules
         # anchor on was gone, and the same path one line earlier was correctly
         # redacted while this copy was not.
