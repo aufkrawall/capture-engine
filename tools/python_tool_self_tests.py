@@ -44,6 +44,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("build_lint_policy", unittest_command("test_build_lint_policy")),
         ("git_clean_paths", unittest_command("test_git_clean")),
         ("privacy_paths", unittest_command("test_privacy_paths")),
+        ("workflow_security", unittest_command("test_workflow_security")),
         ("source_splitter", unittest_command("test_source_splitter")),
         ("build_packaging", unittest_command("test_packaging")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
