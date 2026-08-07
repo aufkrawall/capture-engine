@@ -42,9 +42,26 @@ def sanitize_privacy_paths(text: str) -> str:
     spellings = profile_path_spellings()
     if spellings:
         user = re.escape(os.path.basename(spellings[0]))
+        # Terminator handling matches _user_component_patterns: a negative
+        # lookahead on name-continuation characters rather than an allowlist of
+        # accepted terminators, which used to miss the same path followed by
+        # `;`, `)`, a newline or the end of the buffer.
         text = re.sub(
-            r"(?<=[\\/:])" + user + r"(?=[\\/=\" \x00])",
+            r"(?<=[\\/:])" + user + r"(?![A-Za-z0-9_-])",
             "<developer>",
+            text,
+        )
+        # Path-derived identifiers defeat every rule above, because the
+        # separators are gone: doxygen names its man pages after the escaped
+        # absolute input path, so run 31192891717 logged the maintainer's user
+        # name as `C__Users_TestUser_Programme_...` while the same path one line
+        # earlier was correctly redacted. Anchoring on the mangled `Users`
+        # component lets `_` terminate the name here without the general rule
+        # having to accept it - which it must not, or it would rewrite the
+        # leading fragment of any longer name that merely starts the same way.
+        text = re.sub(
+            r"(?<![A-Za-z0-9])Users_" + user + r"(?![A-Za-z0-9-])",
+            "Users_<developer>",
             text,
         )
     return text

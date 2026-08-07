@@ -295,6 +295,32 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
             self.assertIn(r"C:\\Users\\<developer>\\proj", sanitized)
             self.assertIn("/c/Users/<developer>/proj", sanitized)
 
+    def test_sanitize_privacy_paths_redacts_path_derived_identifiers(self) -> None:
+        # Run 31192891717 logged the maintainer's user name as
+        # `C__Users_TestUser_Programme_...`: doxygen names its man pages after the
+        # escaped absolute input path, so every separator the path-shaped rules
+        # anchor on was gone, and the same path one line earlier was correctly
+        # redacted while this copy was not.
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            text = "man3/C__Users_TestUser_Programme_build_x.3"
+            sanitized = build.sanitize_privacy_paths(text)
+            self.assertNotIn("TestUser", sanitized)
+            self.assertIn("C__Users_<developer>_Programme_build_x.3", sanitized)
+
+    def test_sanitize_privacy_paths_terminators_match_the_binary_scrub(self) -> None:
+        # The log scrub kept the terminator allowlist that a9590837 replaced in
+        # the binary scrub, so `;`, `)` and end-of-buffer were missed here.
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            for text in ("cmd=/c/Users/TestUser;next", "path=(/c/Users/TestUser)", "tail=/c/Users/TestUser"):
+                self.assertNotIn("TestUser", build.sanitize_privacy_paths(text), text)
+
+    def test_sanitize_privacy_paths_leaves_unrelated_names_alone(self) -> None:
+        # A longer name that merely starts with the user name is not a leak, and
+        # rewriting it would corrupt diagnostics.
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            text = "TestUserGroup and /c/Users/TestUserOther/x"
+            self.assertEqual(build.sanitize_privacy_paths(text), text)
+
     def test_sanitize_privacy_values_walks_manifest_structures(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
             payload = {
