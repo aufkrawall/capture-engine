@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: the binary privacy scrub could neither redact nor report a user path with an unlisted terminator
+
+- Found while re-reviewing `a65d1292..HEAD`. `_user_component_patterns` accepted
+  only `[\\/= "\x00]` *after* the user name, so `C:\Users\<user>` followed by
+  `;`, `)`, `'`, `>`, a newline/CRLF, a `.` (domain-profile `\<user>.DOMAIN`), or
+  sitting at the **end of the buffer** did not match. The scrub and its
+  verification pass share this pattern, so such an occurrence would have been
+  neither rewritten nor reported - the stage would log "Privacy scan clean" while
+  the path shipped. Latent, not live: an independent ground-truth scan (bare name,
+  no delimiter assumptions, UTF-8 + UTF-16) over all 106 files of both shipped
+  packages found zero occurrences before and after.
+- **Fix:** the trailing side is now a negative lookahead on name-continuation
+  characters, `(?![A-Za-z0-9_-])` (UTF-16: `(?!(?:[A-Za-z0-9_-]\x00))`). This
+  still refuses a longer user name that merely starts with this one, treats `.`
+  as a terminator, and matches at end of buffer.
+- **Second bug, same function:** the UTF-16 spelling was built with
+  `user.encode("utf-16le")` and never regex-escaped, so a user name containing
+  `.` or `+` would have become a metacharacter and over-matched. Both spellings
+  now go through `re.escape`.
+- Lesson worth keeping: when a scrub and its verification share one pattern, the
+  pattern's blind spots are invisible twice over. The independent ground-truth
+  scan (different pattern, no delimiter assumptions) is what makes the gate
+  trustworthy - keep using it when auditing, not the gate's own matcher.
+- Regression tests: `test_count_profile_path_hits_covers_terminators_beyond_path_separators`
+  (all ten terminators, each also asserted to scrub to zero),
+  `test_count_profile_path_hits_still_refuses_longer_names`,
+  `test_user_component_patterns_escape_regex_metacharacters`. Note the tracked-file
+  gate rejects literal `C:\Users\<name>` fixtures, so those tests use approved
+  placeholders or assemble the profile from parts.
+- Gate: `--verify --verify-clean` success=1 (build 0.1.5850, 386 s); privacy scan
+  clean over 87 shipped binaries/PDBs, 43 scrubbed.
+
 ### 2026-08-07 - Machine name and stray emails are now gated, not just inspected
 
 - Audit finding, not a live leak: the shipped artifacts were verified clean of

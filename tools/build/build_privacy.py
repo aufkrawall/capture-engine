@@ -68,20 +68,28 @@ def redact_user_component(user: str) -> str:
     return ("redact" * ((len(user) + 5) // 6))[: len(user)]
 
 
-def _user_component_patterns(user: str) -> Tuple[bytes, bytes]:
+def _user_component_patterns(user: str) -> Tuple[Any, Any]:
     """Compiled UTF-8 and UTF-16LE patterns matching the user name as a path
     component, so the redaction is length-preserving and never touches ordinary
     text. Observed leak spellings all share path-ish delimiters: C:\\Users\\<user>,
     C:/Users/<user>, C:<escaped>Users\\<user> (compiler/linker command-line
-    records store doubled backslashes), and the MSYS /c/Users/<user> form."""
-    utf8 = re.compile(
-        rb"(?<=[\\/:])" + re.escape(user).encode("utf-8") + rb"(?=[\\/= \"\x00])"
-    )
-    utf16 = re.compile(
-        rb"(?<=[\\/:]\x00)"
-        + user.encode("utf-16le")
-        + rb"(?=(?:[\\/=\" ]\x00)|\x00\x00)"
-    )
+    records store doubled backslashes), and the MSYS /c/Users/<user> form.
+
+    The trailing side is a negative lookahead on name-continuation characters
+    rather than a list of accepted terminators. The earlier allowlist
+    (`[\\/= "\\x00]`) silently missed the same path followed by `;`, `)`, `'`, a
+    newline, or ending the buffer - and since the scrub and its verification pass
+    share this pattern, such an occurrence would have been neither rewritten nor
+    reported. Excluding only `[A-Za-z0-9_-]` still refuses to match a longer name
+    that merely starts with this one, while treating `.` as a terminator so
+    domain-profile folders (`C:\\Users\\<user>.DOMAIN`) are covered.
+
+    Both spellings are regex-escaped: a user name containing `.` or `+` would
+    otherwise turn into a metacharacter and over-match."""
+    escaped_utf8 = re.escape(user.encode("utf-8"))
+    escaped_utf16 = re.escape(user.encode("utf-16le"))
+    utf8 = re.compile(rb"(?<=[\\/:])" + escaped_utf8 + rb"(?![A-Za-z0-9_-])")
+    utf16 = re.compile(rb"(?<=[\\/:]\x00)" + escaped_utf16 + rb"(?!(?:[A-Za-z0-9_-]\x00))")
     return utf8, utf16
 
 

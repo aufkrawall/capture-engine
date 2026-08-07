@@ -343,6 +343,40 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
             self.assertEqual(build.count_profile_path_hits(b"no hits here"), 0)
             self.assertEqual(build.count_profile_path_hits(b"TestUser is not a path"), 0)
 
+    def test_count_profile_path_hits_covers_terminators_beyond_path_separators(self) -> None:
+        # Regression: the pattern used to accept only [\\/= "\x00] after the user
+        # name, so the same path followed by ';', ')', "'", a newline, or ending
+        # the buffer was neither scrubbed nor reported - the scrub and its
+        # verification pass share this pattern, so a miss was invisible twice.
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            for suffix in (b"\\x", b"/x", b";", b")", b"'", b">", b"\n", b"\r\n", b"", b".bak"):
+                data = b"C:\\Users\\TestUser" + suffix
+                self.assertEqual(
+                    build.count_profile_path_hits(data),
+                    1,
+                    f"user path went undetected when followed by {suffix!r}",
+                )
+                self.assertEqual(build.count_profile_path_hits(build.scrub_profile_path_bytes(data)), 0)
+
+    def test_count_profile_path_hits_still_refuses_longer_names(self) -> None:
+        # Widening the terminator set must not let a different, longer user name
+        # that merely starts with this one match.
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\User"}):
+            self.assertEqual(build.count_profile_path_hits(b"C:\\Users\\UserData\\a"), 0)
+            self.assertEqual(build.count_profile_path_hits(b"C:\\Users\\User-old\\a"), 0)
+            self.assertEqual(build.count_profile_path_hits(b"C:\\Users\\User\\a"), 1)
+
+    def test_user_component_patterns_escape_regex_metacharacters(self) -> None:
+        # A user name containing '.' or '+' must be matched literally; unescaped
+        # it would become a metacharacter and over-match unrelated bytes. The
+        # profile is assembled rather than written as one literal so this file
+        # stays clean for test_no_developer_user_paths_in_tracked_files.
+        with patch.dict(build.os.environ, {"USERPROFILE": "C:\\Users\\" + "Test.User"}):
+            self.assertEqual(build.count_profile_path_hits(b"C:\\Users\\Test.User\\x"), 1)
+            self.assertEqual(build.count_profile_path_hits(b"C:\\Users\\TestxUser\\x"), 0)
+            utf16 = "C:\\Users\\TestxUser\\x".encode("utf-16le")
+            self.assertEqual(build.count_profile_path_hits(utf16), 0)
+
     def test_privacy_sanitize_log_text_is_env_gated(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
             message = r"Built: C:\Users\TestUser\proj\x.dll and msys=/c/Users/TestUser/y"
