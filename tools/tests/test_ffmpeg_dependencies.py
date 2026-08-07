@@ -247,6 +247,21 @@ class FfmpegVendoredPgpKeyTest(unittest.TestCase):
         self.assertLess(vendored_at, keyserver_at)
 
 
+class FfmpegDownloadTrustTest(unittest.TestCase):
+    def test_downloads_use_the_toolchain_ca_bundle_without_disabling_verification(self) -> None:
+        # The runner's Python could not verify downloads.xiph.org ("unable to get
+        # local issuer certificate") while other hosts verified fine in the same
+        # run. Trust is taken from the MSYS2 bundle the build already depends on.
+        # Verification must never be switched off: the tarballs are SHA256- and
+        # PGP-checked, but that is defence in depth, not a licence to drop TLS.
+        source = Path(dependencies.__file__).read_text(encoding="utf-8")
+        self.assertIn("tls-ca-bundle.pem", source)
+        self.assertIn("context=self._ssl_context()", source)
+        self.assertNotIn("ssl._create_unverified_context", source)
+        self.assertNotIn("CERT_NONE", source)
+        self.assertNotIn("check_hostname = False", source)
+
+
 class FfmpegSourcePinTest(unittest.TestCase):
     """The shipped FFmpeg must come from a named source, built by the release job."""
 

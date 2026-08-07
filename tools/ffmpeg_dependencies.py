@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import shutil
+import ssl
 import stat
 import subprocess
 import urllib.request
@@ -322,6 +323,7 @@ class SourceDependencyBuilder:
     ) -> None:
         self.project_root = project_root
         self.msys2_dir = msys2_dir
+        self._cached_ssl_context: Optional[ssl.SSLContext] = None
         self.manifest_path = manifest_path or os.path.join(project_root, "tools", "ffmpeg_dependencies.json")
         self.manifest = load_dependency_manifest(self.manifest_path)
         self.logger = logger or (lambda message: None)
@@ -472,11 +474,28 @@ class SourceDependencyBuilder:
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def _ssl_context(self) -> Optional[ssl.SSLContext]:
+        """TLS trust anchored on the toolchain's CA bundle rather than the host's.
+
+        The runner's Python could not verify downloads.xiph.org ("unable to get
+        local issuer certificate") while other hosts verified fine in the same
+        run - its store lacked an intermediate. Verification is never disabled:
+        with no bundle we fall back to Python's default context.
+        """
+        bundle = os.path.join(
+            self.msys2_dir, "etc", "pki", "ca-trust", "extracted", "pem", "tls-ca-bundle.pem"
+        )
+        if not os.path.exists(bundle):
+            return None
+        if self._cached_ssl_context is None:
+            self._cached_ssl_context = ssl.create_default_context(cafile=bundle)
+        return self._cached_ssl_context
+
     def _download_file(self, url: str, destination: str) -> None:
         temporary_path = destination + ".tmp"
         self._log(f"Downloading {url}")
         try:
-            with urllib.request.urlopen(url, timeout=180) as response:
+            with urllib.request.urlopen(url, timeout=180, context=self._ssl_context()) as response:
                 with open(temporary_path, "wb") as output_file:
                     shutil.copyfileobj(response, output_file)
             os.replace(temporary_path, destination)

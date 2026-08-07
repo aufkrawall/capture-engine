@@ -22,8 +22,20 @@
 - Tests: `FfmpegVendoredPgpKeyTest` - every pinned fingerprint has a vendored key, files
   are armored and fingerprint-named, and the vendored import is attempted *before* any
   keyserver.
-- Not yet proven end to end: a full closure rebuild (plain `python build.py`, no
-  `--skip-updates`) exercises this path; `--verify --skip-updates` does not force it.
+- Proven in the job (run 31190976656): all 8 keys imported from `tools/pgp-keys`, no
+  dirmngr, closure build proceeded through llvm-runtime and libiconv.
+- **Follow-on failure, different cause:** that run then died on
+  `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer
+  certificate>` for `https://downloads.xiph.org/...opus-1.6.1.tar.gz`, while
+  `ftp.gnu.org` and `mirror.msys2.org` verified fine in the same run - the runner's
+  Python store lacked an intermediate. Fix: `_download_file` now uses an SSL context
+  built from the MSYS2 tree's own `etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`.
+  Verified directly: that bundle fetches the failing URL with HTTP 200. Verification is
+  **not** disabled anywhere - a test asserts no `CERT_NONE`,
+  `_create_unverified_context` or `check_hostname = False` appears - because the
+  SHA256 and PGP checks are defence in depth, not a reason to drop TLS.
+- `tools/ffmpeg_dependencies.py` now sits at exactly 800 lines. Split it toward the
+  750 working target before adding anything else.
 
 ### 2026-08-07 - FFmpeg source pinned; release job now compiles the whole dependency closure
 
