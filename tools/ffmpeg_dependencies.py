@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import ssl
 import stat
@@ -36,7 +35,11 @@ import urllib.request
 import urllib.parse
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
-from tools import source_download
+from tools import dependency_build_policy, source_download
+
+# Re-exported so the closure keeps one error type across both units and callers
+# (build_common, verify_pe_hardening) need not know where it is defined.
+from tools.dependency_build_policy import DependencyBuildError
 
 
 CommandRunner = Callable[..., Any]
@@ -49,11 +52,6 @@ DEPENDENCY_COMPILE_FLAGS = (
     "-D_FORTIFY_SOURCE=2 -ffunction-sections -fdata-sections"
 )
 DEPENDENCY_LINK_FLAGS = "-Wl,--gc-sections -Wl,--guard-cf"
-DEPENDENCY_BUILD_POLICY_MARKER = "# captureproject source-dependency build policy"
-
-
-class DependencyBuildError(RuntimeError):
-    """Raised when a pinned FFmpeg dependency cannot be source-built safely."""
 
 
 def remove_tree(path: str) -> None:
@@ -134,38 +132,21 @@ def dependency_manifest_fingerprint(manifest_path: str) -> str:
                 "configuration_version": DEPENDENCY_BUILD_CONFIGURATION_VERSION,
                 "compile_flags": DEPENDENCY_COMPILE_FLAGS,
                 "link_flags": DEPENDENCY_LINK_FLAGS,
+                # The policy text decides which subpackages are built and which
+                # documentation formats are generated, so it belongs in the
+                # fingerprint. Hashing the rendered block keeps that automatic:
+                # editing the policy invalidates the cached prefix without anyone
+                # remembering to bump the configuration version.
+                "build_policy": dependency_build_policy.policy_fingerprint(
+                    DEPENDENCY_COMPILE_FLAGS,
+                    DEPENDENCY_LINK_FLAGS,
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     )
     return digest.hexdigest()
-
-
-def inject_dependency_build_policy(pkgbuild_path: str, prefix: str, msys_lib: str) -> None:
-    """Append policy after makepkg's config has replaced the caller's flags."""
-    with open(pkgbuild_path, "r", encoding="utf-8") as pkgbuild_file:
-        existing = pkgbuild_file.read()
-    if DEPENDENCY_BUILD_POLICY_MARKER in existing:
-        raise DependencyBuildError(f"Dependency PKGBUILD already contains the project build policy: {pkgbuild_path}")
-
-    prefix_value = shlex.quote(prefix)
-    msys_lib_value = shlex.quote(msys_lib)
-    policy = f"""
-
-{DEPENDENCY_BUILD_POLICY_MARKER}
-_captureproject_prefix={prefix_value}
-_captureproject_msys_lib={msys_lib_value}
-CPPFLAGS+=" -I${{_captureproject_prefix}}/include"
-CFLAGS+=" {DEPENDENCY_COMPILE_FLAGS} -I${{_captureproject_prefix}}/include"
-CXXFLAGS+=" {DEPENDENCY_COMPILE_FLAGS} -I${{_captureproject_prefix}}/include"
-LDFLAGS+=" {DEPENDENCY_LINK_FLAGS} -L${{_captureproject_prefix}}/lib -L${{_captureproject_msys_lib}}"
-PKG_CONFIG_PATH="${{_captureproject_prefix}}/lib/pkgconfig:${{PKG_CONFIG_PATH:-}}"
-CMAKE_PREFIX_PATH="${{_captureproject_prefix}}:${{CMAKE_PREFIX_PATH:-}}"
-export CPPFLAGS CFLAGS CXXFLAGS LDFLAGS PKG_CONFIG_PATH CMAKE_PREFIX_PATH
-"""
-    with open(pkgbuild_path, "a", encoding="utf-8", newline="\n") as pkgbuild_file:
-        pkgbuild_file.write(policy)
 
 
 def parse_guard_cf_function_count(readobj_output: str) -> int:
@@ -578,10 +559,13 @@ class SourceDependencyBuilder:
             raise DependencyBuildError(
                 f"Expected one PKGBUILD for {dependency['name']}, found {len(package_builds)}"
             )
-        inject_dependency_build_policy(
+        dependency_build_policy.inject_dependency_build_policy(
             package_builds[0],
             self._unix_path(self.prefix),
             self._unix_path(self.msys_lib),
+            dependency["package_outputs"],
+            DEPENDENCY_COMPILE_FLAGS,
+            DEPENDENCY_LINK_FLAGS,
         )
         return os.path.dirname(package_builds[0])
 

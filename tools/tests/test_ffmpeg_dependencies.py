@@ -1,19 +1,25 @@
+import email.message
 import http.client
 import os
 import re
+import subprocess
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from typing import Sequence
 from unittest import mock
 
 import build
+from tools import dependency_build_policy as policy
 from tools import ffmpeg_dependencies as dependencies
 from tools import source_download
 
 # The manifest sits next to ffmpeg_dependencies.py in tools/, one level above this
 # suite. Resolving it relative to __file__ keeps the tests runnable from any cwd.
 MANIFEST_PATH = Path(__file__).resolve().parents[1] / "ffmpeg_dependencies.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MSYS_BASH = PROJECT_ROOT / "build" / "msys64" / "usr" / "bin" / "bash.exe"
 
 
 class FfmpegDependencyManifestTest(unittest.TestCase):
@@ -135,25 +141,34 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
     def test_injects_policy_after_makepkg_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pkgbuild_path = Path(temp_dir) / "PKGBUILD"
-            pkgbuild_path.write_text("build() {\n  true\n}\n", encoding="utf-8")
-            dependencies.inject_dependency_build_policy(
+            pkgbuild_path.write_text("build() {\n  true\n}\n", encoding="utf-8", newline="\n")
+            policy.inject_dependency_build_policy(
                 str(pkgbuild_path),
                 "/c/private dependency prefix",
                 "/clang64/lib",
+                ["mingw-w64-clang-x86_64-opus"],
+                dependencies.DEPENDENCY_COMPILE_FLAGS,
+                dependencies.DEPENDENCY_LINK_FLAGS,
             )
             content = pkgbuild_path.read_text(encoding="utf-8")
-            self.assertIn(dependencies.DEPENDENCY_BUILD_POLICY_MARKER, content)
+            self.assertIn(policy.DEPENDENCY_BUILD_POLICY_MARKER, content)
             self.assertIn("-march=x86-64", content)
             self.assertIn("-mguard=cf", content)
             self.assertIn("-fstack-protector-strong", content)
             self.assertIn("-D_FORTIFY_SOURCE=2", content)
             self.assertIn("-Wl,--guard-cf", content)
             self.assertIn("PKG_CONFIG_PATH=", content)
+            # makepkg refuses to source a PKGBUILD containing CRLF, so the
+            # appended block must keep LF even though this is a Windows build.
+            self.assertNotIn(b"\r\n", pkgbuild_path.read_bytes())
             with self.assertRaises(dependencies.DependencyBuildError):
-                dependencies.inject_dependency_build_policy(
+                policy.inject_dependency_build_policy(
                     str(pkgbuild_path),
                     "/c/private dependency prefix",
                     "/clang64/lib",
+                    ["mingw-w64-clang-x86_64-opus"],
+                    dependencies.DEPENDENCY_COMPILE_FLAGS,
+                    dependencies.DEPENDENCY_LINK_FLAGS,
                 )
 
     def test_requires_effective_guard_cf_metadata(self) -> None:
@@ -204,6 +219,217 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
                 ),
                 str(new_archive),
             )
+
+
+RECIPE_TEMPLATE = """
+_realname=opus
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
+pkgver=1.6.1
+
+build() {
+  echo UPSTREAM_BUILD_RAN
+}
+
+package_opus() { :; }
+package_opus-docs() { :; }
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
+"""
+
+# Mirrors makepkg's own sequence: source the recipe (fail the build if sourcing
+# fails, as source_safe does), then run build() in an extracted source tree.
+RECIPE_DRIVER = """
+set -u
+export MINGW_PACKAGE_PREFIX=mingw-w64-clang-x86_64
+if ! source ./PKGBUILD; then
+  echo SOURCE_FAILED
+  exit 3
+fi
+printf 'PKGNAME:%s\\n' "${pkgname[*]}"
+for _n in "${pkgname[@]}"; do
+  declare -F "package_${_n}" >/dev/null || { echo "MISSING_WRAPPER:${_n}"; exit 4; }
+done
+srcdir="${PWD}/src"
+build
+"""
+
+
+@unittest.skipUnless(MSYS_BASH.is_file(), "MSYS2 bash is required to execute the generated recipe policy")
+class DependencyBuildPolicyShellTest(unittest.TestCase):
+    """The policy is generated shell that only ever runs inside a 40-minute
+    release build, so a syntax or logic slip in it is expensive to discover.
+    These execute it the way makepkg does instead of pattern-matching the text."""
+
+    def _write_recipe(
+        self,
+        directory: Path,
+        package_outputs: Sequence[str],
+        recipe: str = RECIPE_TEMPLATE,
+    ) -> None:
+        pkgbuild = directory / "PKGBUILD"
+        pkgbuild.write_text(recipe, encoding="utf-8", newline="\n")
+        policy.inject_dependency_build_policy(
+            str(pkgbuild),
+            "/c/private dependency prefix",
+            "/clang64/lib",
+            package_outputs,
+            dependencies.DEPENDENCY_COMPILE_FLAGS,
+            dependencies.DEPENDENCY_LINK_FLAGS,
+        )
+        (directory / "driver.sh").write_text(RECIPE_DRIVER, encoding="utf-8", newline="\n")
+
+    def _run_recipe(self, directory: Path) -> "subprocess.CompletedProcess[str]":
+        # A login shell with CHERE_INVOKING is how SourceDependencyBuilder
+        # invokes makepkg-mingw, and it is what puts the MSYS utilities the
+        # policy uses (find) on PATH. Running plain `bash script` instead would
+        # silently exercise a different environment than the release job.
+        environment = dict(os.environ, CHERE_INVOKING="1", MSYSTEM="CLANG64")
+        return subprocess.run(
+            [str(MSYS_BASH), "-lc", "source ./driver.sh"],
+            cwd=str(directory),
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_pkgbuild_is_reduced_to_the_declared_package_outputs(self) -> None:
+        # Upstream splits off subpackages nothing here consumes; makepkg would
+        # still build, package and compress each of them.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            self._write_recipe(directory, ["mingw-w64-clang-x86_64-opus"])
+            doxyfile = directory / "src" / "opus-1.6.1" / "doc" / "Doxyfile.in"
+            doxyfile.parent.mkdir(parents=True)
+            doxyfile.write_text("GENERATE_MAN = YES\nGENERATE_HTML = YES\n", encoding="utf-8", newline="\n")
+
+            result = self._run_recipe(directory)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("PKGNAME:mingw-w64-clang-x86_64-opus\n", result.stdout)
+            self.assertNotIn("opus-docs", result.stdout)
+            # The retained name must still have its split-package wrapper, and
+            # the upstream build body must still run after the policy step.
+            self.assertNotIn("MISSING_WRAPPER", result.stdout)
+            self.assertIn("UPSTREAM_BUILD_RAN", result.stdout)
+            # Doxyfile.in, not just a literal Doxyfile: for meson/cmake recipes
+            # the effective configuration is generated from the template during
+            # the build, so patching only the generated file would be too late.
+            restricted = doxyfile.read_text(encoding="utf-8")
+            self.assertIn("GENERATE_MAN = NO", restricted)
+            self.assertLess(restricted.index("GENERATE_MAN = YES"), restricted.index("GENERATE_MAN = NO"))
+
+    def test_declared_output_the_recipe_does_not_provide_fails_closed(self) -> None:
+        # An upstream subpackage rename must stop the build at the recipe, not
+        # produce a closure that is silently missing a library.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            self._write_recipe(directory, ["mingw-w64-clang-x86_64-opus-renamed"])
+
+            result = self._run_recipe(directory)
+
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertIn("SOURCE_FAILED", result.stdout)
+            self.assertIn("does not declare package output", result.stderr)
+
+    def test_recipe_without_a_build_function_is_left_alone(self) -> None:
+        # The build() wrapper is guarded: re-defining build() for a recipe that
+        # has none would make makepkg start running one.
+        recipe = RECIPE_TEMPLATE.replace("build() {\n  echo UPSTREAM_BUILD_RAN\n}\n", "")
+        self.assertNotIn("build()", recipe)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            self._write_recipe(directory, ["mingw-w64-clang-x86_64-opus"], recipe=recipe)
+            (directory / "driver.sh").write_text(
+                RECIPE_DRIVER.replace(
+                    "\nbuild\n",
+                    "\nif declare -F build >/dev/null; then echo BUILD_DEFINED; fi\nexit 0\n",
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            result = self._run_recipe(directory)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("PKGNAME:mingw-w64-clang-x86_64-opus\n", result.stdout)
+            self.assertNotIn("BUILD_DEFINED", result.stdout)
+
+    def test_generated_policy_is_syntactically_valid_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            self._write_recipe(directory, ["mingw-w64-clang-x86_64-opus"])
+            result = subprocess.run(
+                [str(MSYS_BASH), "-n", "./PKGBUILD"],
+                cwd=str(directory),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class DependencyBuildPolicyTest(unittest.TestCase):
+    def test_man_output_stays_disabled_and_html_stays_enabled(self) -> None:
+        # GENERATE_MAN is the load-bearing override: for an input directory doxygen
+        # names the man page after the escaped absolute path
+        # ("C__Users_..._src_opus-1.6.1_include_.3"), which reached 313 characters
+        # on the release runner's workspace - 27 deeper than a dev checkout, which
+        # lands at 259, one under Windows' 260-character MAX_PATH. Measured: man is
+        # the only backend that does this; the rest hash their names.
+        self.assertIn("GENERATE_MAN = NO", policy.DOCUMENTATION_OUTPUT_OVERRIDES)
+        # HTML must stay on. It is the only doc output the recipes' targets declare
+        # and install, and opus's package function moves `share/doc`, so disabling
+        # it would fail packaging rather than save anything.
+        for override in policy.DOCUMENTATION_OUTPUT_OVERRIDES:
+            self.assertNotIn("GENERATE_HTML", override)
+        rendered = policy.render_build_policy("/c/p", "/c/lib", ["pkg"], "-O2", "-s")
+        # Applied by wrapping build(): the configuration files do not exist
+        # until makepkg has extracted the sources.
+        self.assertIn("_captureproject_restrict_documentation_output", rendered)
+        self.assertIn("declare -f build", rendered)
+
+    def test_policy_covers_doxyfile_templates_not_only_generated_files(self) -> None:
+        self.assertIn("Doxyfile*", policy.DOXYGEN_CONFIG_PATTERNS)
+        rendered = policy.render_build_policy("/c/p", "/c/lib", ["pkg"], "-O2", "-s")
+        self.assertIn("-iname 'Doxyfile*'", rendered)
+
+    def test_policy_text_feeds_the_dependency_build_fingerprint(self) -> None:
+        # What the policy *does* - which subpackages get built, which doc formats
+        # get generated - must invalidate the cached prefix. Otherwise a changed
+        # policy leaves a previously built closure looking current, the same trap
+        # that let a changed FFmpeg source pin keep shipping the old FFmpeg.
+        original = dependencies.dependency_manifest_fingerprint(str(MANIFEST_PATH))
+        with mock.patch.object(
+            policy,
+            "DOCUMENTATION_OUTPUT_OVERRIDES",
+            policy.DOCUMENTATION_OUTPUT_OVERRIDES + ("GENERATE_MAN = YES",),
+        ):
+            changed = dependencies.dependency_manifest_fingerprint(str(MANIFEST_PATH))
+        self.assertNotEqual(original, changed)
+
+    def test_policy_requires_at_least_one_declared_output(self) -> None:
+        # An empty package_outputs would reduce pkgname to nothing and makepkg
+        # would build no package at all; load_dependency_manifest rejects it too.
+        with self.assertRaises(dependencies.DependencyBuildError):
+            policy.render_build_policy("/c/p", "/c/lib", [], "-O2", "-s")
+
+    def test_manifest_declares_no_documentation_subpackage_as_an_output(self) -> None:
+        manifest = dependencies.load_dependency_manifest(str(MANIFEST_PATH))
+        for dependency in manifest["dependencies"]:
+            for output in dependency["package_outputs"]:
+                self.assertFalse(
+                    output.endswith(("-docs", "-doc")),
+                    f"{dependency['name']} declares documentation subpackage {output} as a build output",
+                )
 
 
 class FfmpegVendoredPgpKeyTest(unittest.TestCase):
@@ -317,7 +543,12 @@ class SourceDownloadRetryTest(unittest.TestCase):
 
         def opener(*_args, **_kwargs):
             calls["n"] += 1
-            raise urllib.error.HTTPError("https://example.invalid/x", 404, "Not Found", {}, None)
+            # hdrs must be an email.message.Message, not {}: pyright rejects the
+            # dict, and the lint stage never saw it because the commit that added
+            # this test landed after the last lint run.
+            raise urllib.error.HTTPError(
+                "https://example.invalid/x", 404, "Not Found", email.message.Message(), None
+            )
 
         with self.assertRaises(urllib.error.HTTPError):
             self._download(opener)
