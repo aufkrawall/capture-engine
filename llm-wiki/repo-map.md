@@ -48,6 +48,14 @@ anchors that predate the split are approximate.
 - `tools/config/`
   - Committed tool configuration (clang-format, clang-tidy, clangd, editorconfig,
     flake8, pyright), consumed via explicit paths by the build and lint drivers.
+- FFmpeg dependency closure (standalone `tools/` units, driven by `build_toolchain.py`):
+  | Unit | Role |
+  | --- | --- |
+  | `ffmpeg_dependencies.json` | the pinned manifest: versions, source URLs, SHA-256, PGP fingerprints, `package_outputs`, runtime DLLs, licenses, build order |
+  | `ffmpeg_dependencies.py` | `SourceDependencyBuilder`: manifest validation/fingerprint, PGP + SHA-256 verification, recipe extraction, `makepkg-mingw`, CFG verification, PE import closure |
+  | `dependency_build_policy.py` | the shell policy appended to each PKGBUILD: hardening/prefix flags, `pkgname` reduced to `package_outputs` (fail-closed), path-independent documentation output |
+  | `source_download.py` | TLS trust from the toolchain CA bundle and bounded retry of transient download faults |
+  | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`) |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
   - `shared_defs.h` - shared-memory ABI (current version `38`).
