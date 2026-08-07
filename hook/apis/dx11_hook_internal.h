@@ -208,6 +208,11 @@ public:
     std::recursive_mutex captureMutex;
     ID3D11Texture2D* sharedTextures[CAPTURE_TEXTURE_COUNT]{};
     ID3D11Query* copyQueries[CAPTURE_TEXTURE_COUNT]{};  // GPU sync queries
+    // A freshly created EVENT query has never been End()ed, and GetData() on such
+    // a query returns DXGI_ERROR_INVALID_CALL rather than S_OK. Slot selection must
+    // not read that as "GPU still busy": no slot would ever be picked, so End() would
+    // never run, and the capture would wedge permanently. Track issuance explicitly.
+    bool copyQueryIssued[CAPTURE_TEXTURE_COUNT]{};
     ID3D11Device* cachedDevice = nullptr;
     ID3D11DeviceContext* cachedContext = nullptr;
     IUnknown* cachedSwapChainIdentity = nullptr;

@@ -53,7 +53,7 @@ static void WINAPI DetourGlTexImage2DMultisample(GLenum target, GLsizei samples,
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static OpenGLCapture g_OpenGLCapture;
 
-static void ResetTrackedOpenGLState(HGLRC contextToReset) {
+void ResetTrackedOpenGLState(HGLRC contextToReset) {
     const bool resetAll = (contextToReset == NULL);
     const bool resetCapture = resetAll || contextToReset == opengl_hook_g_CaptureContext;
     const bool resetOverlay = resetAll || contextToReset == opengl_hook_g_OverlayContext;
@@ -556,7 +556,7 @@ static void SwapEnd(HDC hdc) {
 }
 
 // Hook: SwapBuffers (GDI32)
-static BOOL WINAPI DetourSwapBuffers(HDC hdc) {
+BOOL WINAPI DetourSwapBuffers(HDC hdc) {
     SwapBegin(hdc);
     if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         LoadOpenGLExtensions();
@@ -567,7 +567,7 @@ static BOOL WINAPI DetourSwapBuffers(HDC hdc) {
 }
 
 // Hook: wglSwapBuffers
-static BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
+BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
     SwapBegin(hdc);
     BOOL result = opengl_hook_oWglSwapBuffers(hdc);
     SwapEnd(hdc);
@@ -575,7 +575,7 @@ static BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
 }
 
 // Hook: wglSwapLayerBuffers
-static BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
+BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
     SwapBegin(hdc);
     BOOL result = opengl_hook_oWglSwapLayerBuffers(hdc, fuPlanes);
     SwapEnd(hdc);
@@ -583,7 +583,7 @@ static BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
 }
 
 // Hook: wglDeleteContext - cleanup when context is destroyed
-static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
+BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
     HookLog("OpenGL: wglDeleteContext called (ctx=0x%p)", hglrc);
     ResetTrackedOpenGLState(hglrc);
 
@@ -637,7 +637,7 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
     return FALSE;
 }
 
-static BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
+BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
     const BOOL result = opengl_hook_oWglMakeCurrent(hdc, hrc);
     if (result) {
         ce::opengl_sampler_override::NotifyContextChanged();
@@ -646,7 +646,7 @@ static BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
 }
 
 // Hook: wglGetProcAddress
-static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
+PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
     if (!lpszProc)
         return NULL;
 
@@ -680,84 +680,4 @@ static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
 
     PROC original = opengl_hook_oWglGetProcAddress(lpszProc);
     return ce::opengl_sampler_override::InterceptProcAddress(lpszProc, original, opengl_hook_oWglGetProcAddress);
-}
-
-void OpenGLHook::Init() {
-    HookLog("OpenGLHook::Init()");
-
-    // Check if opengl32.dll is loaded
-    HMODULE glModule = GetModuleHandleA("opengl32.dll");
-    if (!glModule) {
-        return;
-    }
-
-    HMODULE gdi32Module = GetModuleHandleA("gdi32.dll");
-    if (!gdi32Module) {
-        return;
-    }
-
-    // Hook SwapBuffers (GDI32)
-    // Register for dynamic loading via GetProcAddress
-    IATHook::RegisterDynamicHook("SwapBuffers", (LPVOID)&DetourSwapBuffers, (LPVOID*)&opengl_hook_oSwapBuffers);
-    // Patch explicit imports
-    IATHook::PatchIATAllModules("gdi32.dll", "SwapBuffers", (LPVOID)&DetourSwapBuffers, (LPVOID*)&opengl_hook_oSwapBuffers);
-
-    // Hook wglSwapBuffers
-    IATHook::RegisterDynamicHook("wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, (LPVOID*)&opengl_hook_oWglSwapBuffers);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers,
-                                (LPVOID*)&opengl_hook_oWglSwapBuffers);
-
-    // Hook wglSwapLayerBuffers
-    IATHook::RegisterDynamicHook("wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers,
-                                 (LPVOID*)&opengl_hook_oWglSwapLayerBuffers);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers,
-                                (LPVOID*)&opengl_hook_oWglSwapLayerBuffers);
-
-    // Hook wglDeleteContext
-    IATHook::RegisterDynamicHook("wglDeleteContext", (LPVOID)&DetourWglDeleteContext, (LPVOID*)&opengl_hook_oWglDeleteContext);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglDeleteContext", (LPVOID)&DetourWglDeleteContext,
-                                (LPVOID*)&opengl_hook_oWglDeleteContext);
-
-    // Hook wglGetProcAddress
-    // Critical for intercepting extensions
-    IATHook::RegisterDynamicHook("wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, (LPVOID*)&opengl_hook_oWglGetProcAddress);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress,
-                                (LPVOID*)&opengl_hook_oWglGetProcAddress);
-
-    ce::opengl_sampler_override::Initialize();
-
-    // Hook wglMakeCurrent
-    IATHook::RegisterDynamicHook("wglMakeCurrent", (LPVOID)&DetourWglMakeCurrent, (LPVOID*)&opengl_hook_oWglMakeCurrent);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglMakeCurrent", (LPVOID)&DetourWglMakeCurrent,
-                                (LPVOID*)&opengl_hook_oWglMakeCurrent);
-
-    opengl_hook_g_HooksInitialized = true;
-    HookLog("OpenGLHook: All hooks registered (IAT/Dynamic)");
-}
-
-void OpenGLHook::Shutdown() {
-    HookLog("OpenGLHook::Shutdown()");
-    ce::opengl_sampler_override::Shutdown();
-    ResetTrackedOpenGLState(NULL);
-
-    {
-        std::lock_guard<std::mutex> lock(opengl_hook_g_PrerenderMutex);
-        const HGLRC current = wglGetCurrentContext();
-        if (opengl_hook_pglDeleteSync && current) {
-            auto it = opengl_hook_g_PrerenderStates.find(current);
-            if (it != opengl_hook_g_PrerenderStates.end()) {
-                for (GLsync sync : it->second.syncs) {
-                    if (sync)
-                        opengl_hook_pglDeleteSync(sync);
-                }
-            }
-        }
-        opengl_hook_g_PrerenderStates.clear();
-    }
-    // IAT hooks remain until process exit
-}
-
-void OpenGLHook::OnHostDisconnect() {
-    HookLog("OpenGLHook::OnHostDisconnect()");
-    ResetTrackedOpenGLState(NULL);
 }

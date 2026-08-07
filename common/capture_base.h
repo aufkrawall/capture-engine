@@ -105,6 +105,31 @@ inline int32_t FindAvailableCaptureTextureSlot(const SharedMemoryLayout* sharedM
     return FindAvailableCaptureTextureSlotIf(sharedMem, firstTextureIndex, textureCount, [](int32_t) { return true; });
 }
 
+// Result of asking a per-slot GPU copy query whether its slot can be reused.
+enum class CaptureCopyQuerySlotState {
+    Ready,          // The slot may be written again.
+    GpuBusy,        // The issued copy has not completed yet.
+    QueryUnusable,  // The query cannot answer (device removed, driver rejection).
+};
+
+// An EVENT copy query only answers GetData() meaningfully once it has been
+// issued with End(). Both D3D10 and D3D11 return DXGI_ERROR_INVALID_CALL for a
+// query that was created but never issued, so a selector that only accepts S_OK
+// would classify every fresh slot as busy. Nothing would ever be written, End()
+// would therefore never run, and capture would wedge with zero frames and no
+// diagnostics - which is exactly how DX10 inject capture hung in "preparing".
+// A never-issued query is trivially ready, and a query that cannot answer at all
+// must not be allowed to block reuse either.
+inline CaptureCopyQuerySlotState ClassifyCaptureCopyQuerySlot(bool queryPresent, bool queryIssued, HRESULT getDataHr) {
+    if (!queryPresent || !queryIssued)
+        return CaptureCopyQuerySlotState::Ready;
+    if (getDataHr == S_OK)
+        return CaptureCopyQuerySlotState::Ready;
+    if (getDataHr == S_FALSE)
+        return CaptureCopyQuerySlotState::GpuBusy;
+    return CaptureCopyQuerySlotState::QueryUnusable;
+}
+
 // Pending frame metadata for async capture thread
 struct PendingCaptureFrame {
     int64_t timestampQPC = 0;           // QPC timestamp when frame was submitted

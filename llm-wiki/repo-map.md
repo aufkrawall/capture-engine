@@ -97,7 +97,9 @@ anchors that predate the split are approximate.
       `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
     - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_detours.cpp`,
       `ddraw_hook_install.cpp`, `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`.
-    - OpenGL: `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.
+    - OpenGL: `opengl_hook_capture.cpp` (detours, swap begin/end, overlay draw),
+      `opengl_hook_install.cpp` (inline + IAT hook installation, `OpenGLHook::Init/Shutdown`),
+      `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.
     - Streamline: `streamline_hook.cpp` + `streamline_hook_{helpers,state,startup,
       modules,originals,feature_fallback,install,resolve,dlssg,api}.cpp` +
       `streamline_hook_internal.h`.

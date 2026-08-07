@@ -62,24 +62,88 @@ uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
     return static_cast<uint8_t*>(allocation);
 }
 
+#ifdef _WIN64
+namespace {
+
+constexpr uintptr_t kTrampolineSearchWindow = 0x7FFF0000ULL;
+constexpr uintptr_t kAllocationGranularity = 0x10000ULL;
+
+// Address inside [regionStart, regionEnd) that is closest to the target and can
+// still hold a whole pool, or 0 when the region cannot host one.
+uintptr_t ClosestPoolAddressInRegion(uintptr_t regionStart, uintptr_t regionEnd, uintptr_t low, uintptr_t high,
+                                     uintptr_t target) {
+    if (regionEnd < TRAMPOLINE_POOL_SIZE)
+        return 0;
+    const uintptr_t firstFit =
+        (std::max(regionStart, low) + kAllocationGranularity - 1) & ~(kAllocationGranularity - 1);
+    uintptr_t lastFit = (regionEnd - TRAMPOLINE_POOL_SIZE) & ~(kAllocationGranularity - 1);
+    if (lastFit > high)
+        lastFit = high & ~(kAllocationGranularity - 1);
+    if (firstFit > lastFit || firstFit + TRAMPOLINE_POOL_SIZE > regionEnd)
+        return 0;
+
+    uintptr_t candidate = target & ~(kAllocationGranularity - 1);
+    if (candidate < firstFit)
+        candidate = firstFit;
+    else if (candidate > lastFit)
+        candidate = lastFit;
+    return candidate;
+}
+
+}  // namespace
+#endif
+
 // Allocate memory near the target (within ±2GB for x64).
 // Each trampoline gets a private read/write page while it is constructed. The
 // page is sealed execute/read before any target can reference it, which keeps
 // the allocation W^X and avoids changing protection under active callers.
 static uint8_t* AllocateTrampolinePool(void* nearAddr) {
 #ifdef _WIN64
-    // Try to allocate within ±2GB of target for RIP-relative fixups
+    // Try to allocate within ±2GB of target for RIP-relative fixups.
     uintptr_t target = (uintptr_t)nearAddr;
-    uintptr_t low = target > 0x7FFF0000ULL ? target - 0x7FFF0000ULL : 0x10000ULL;
-    uintptr_t high = target + 0x7FFF0000ULL;
+    uintptr_t low = target > kTrampolineSearchWindow ? target - kTrampolineSearchWindow : 0x10000ULL;
+    uintptr_t high = target + kTrampolineSearchWindow;
 
+    // Prefer the free block closest to the target. Taking the first free block
+    // above `low` instead lands roughly 2GB below the target, which pushes the
+    // rewritten displacement of any RIP-relative instruction in the copied
+    // prologue - those normally reference data just past the function, i.e. above
+    // the target - outside the +/-2GB range, so the install fails. That is what
+    // kept opengl32's swap exports on the IAT-only path.
+    uintptr_t bestAddr = 0;
+    uintptr_t bestDistance = 0;
     MEMORY_BASIC_INFORMATION mbi;
     for (uintptr_t addr = low; addr < high;) {
         if (VirtualQuery((void*)addr, &mbi, sizeof(mbi)) == 0)
             break;
 
+        const uintptr_t regionStart = (uintptr_t)mbi.BaseAddress;
+        const uintptr_t regionEnd = regionStart + mbi.RegionSize;
         if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
-            // Align to allocation granularity (64KB)
+            const uintptr_t candidate = ClosestPoolAddressInRegion(regionStart, regionEnd, low, high, target);
+            if (candidate != 0) {
+                const uintptr_t distance = candidate > target ? candidate - target : target - candidate;
+                if (bestAddr == 0 || distance < bestDistance) {
+                    bestAddr = candidate;
+                    bestDistance = distance;
+                }
+            }
+        }
+        addr = regionEnd;
+    }
+
+    if (bestAddr != 0) {
+        if (void* p = AllocateWritableTrampolinePage(reinterpret_cast<void*>(bestAddr)))
+            return (uint8_t*)p;
+    }
+
+    // The preferred address can be taken by another thread between the scan and
+    // the reservation; fall back to first fit inside the same window.
+    for (uintptr_t addr = low; addr < high;) {
+        if (VirtualQuery((void*)addr, &mbi, sizeof(mbi)) == 0)
+            break;
+
+        if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
             uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
             if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
                 void* p = AllocateWritableTrampolinePage(reinterpret_cast<void*>(aligned));

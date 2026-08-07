@@ -409,6 +409,59 @@ TEST(CaptureBaseTest, CombinedSlotScanReportsAllBusyWithoutWaiting) {
     EXPECT_EQ(gpuBusy, 8u);
 }
 
+// DXGI_ERROR_INVALID_CALL is what both D3D10 and D3D11 return for GetData() on a
+// query that was created but never End()ed. Before the fix the DX10 selector
+// only accepted S_OK, so every freshly created slot looked GPU-busy, no copy was
+// ever issued, and inject capture produced zero frames forever.
+TEST(CaptureBaseTest, NeverIssuedCopyQueryDoesNotBlockSlotReuse) {
+    constexpr HRESULT kInvalidCall = static_cast<HRESULT>(0x887A0001);
+
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(true, false, kInvalidCall), CaptureCopyQuerySlotState::Ready);
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(false, false, kInvalidCall), CaptureCopyQuerySlotState::Ready);
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(true, true, S_OK), CaptureCopyQuerySlotState::Ready);
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(true, true, S_FALSE), CaptureCopyQuerySlotState::GpuBusy);
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(true, true, kInvalidCall), CaptureCopyQuerySlotState::QueryUnusable);
+    // DXGI_ERROR_DEVICE_REMOVED
+    EXPECT_EQ(ClassifyCaptureCopyQuerySlot(true, true, static_cast<HRESULT>(0x887A0005)),
+              CaptureCopyQuerySlotState::QueryUnusable);
+}
+
+// The whole slot ring starting from a never-issued query must still yield a
+// usable slot; otherwise the producer can never reach the End() that would make
+// any slot ready again.
+TEST(CaptureBaseTest, SlotScanSucceedsWhenNoCopyQueryHasBeenIssuedYet) {
+    SharedMemoryLayout sharedMem;
+    constexpr HRESULT kInvalidCall = static_cast<HRESULT>(0x887A0001);
+    std::array<bool, 8> issued = {};
+
+    uint32_t cpuBusy = 0;
+    uint32_t gpuBusy = 0;
+    const int32_t slot = FindAvailableCaptureTextureSlotIf(
+        &sharedMem, 0, 8,
+        [&](int32_t candidate) {
+            return ClassifyCaptureCopyQuerySlot(true, issued[static_cast<size_t>(candidate)], kInvalidCall) !=
+                   CaptureCopyQuerySlotState::GpuBusy;
+        },
+        &cpuBusy, &gpuBusy);
+
+    EXPECT_EQ(slot, 0);
+    EXPECT_EQ(gpuBusy, 0u);
+
+    // Once issued and still pending, the same slot is correctly reported busy and
+    // the scan moves on instead of overwriting an in-flight copy.
+    issued[0] = true;
+    const int32_t nextSlot = FindAvailableCaptureTextureSlotIf(
+        &sharedMem, 0, 8,
+        [&](int32_t candidate) {
+            const bool slotIssued = issued[static_cast<size_t>(candidate)];
+            return ClassifyCaptureCopyQuerySlot(true, slotIssued, slotIssued ? S_FALSE : kInvalidCall) !=
+                   CaptureCopyQuerySlotState::GpuBusy;
+        },
+        &cpuBusy, &gpuBusy);
+    EXPECT_EQ(nextSlot, 1);
+    EXPECT_EQ(gpuBusy, 1u);
+}
+
 TEST(CaptureBaseTest, OutstandingFrameLeaseScanProtectsResourceGeneration) {
     SharedMemoryLayout sharedMem;
     auto& ring = sharedMem.frameRing;

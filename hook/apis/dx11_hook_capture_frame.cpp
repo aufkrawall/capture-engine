@@ -1,5 +1,41 @@
 #include "dx11_hook_internal.h"
 
+namespace {
+
+// Applies the shared copy-query classification and reports the unusable-query
+// case, which would otherwise silently look like permanent GPU busy-ness.
+bool IsCaptureCopyQuerySlotReady(bool queryPresent, bool queryIssued, HRESULT queryHr, const char* apiTag,
+                                 int32_t slot) {
+    const CaptureCopyQuerySlotState state = ClassifyCaptureCopyQuerySlot(queryPresent, queryIssued, queryHr);
+    if (state == CaptureCopyQuerySlotState::QueryUnusable) {
+        static std::atomic<int> s_queryErrorLogCount{0};
+        if (s_queryErrorLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+            HookLogImportant("%sCapture: Copy query for slot %d is unusable (hr=0x%08X); treating the slot as reusable",
+                             apiTag, slot, queryHr);
+        }
+    }
+    return state != CaptureCopyQuerySlotState::GpuBusy;
+}
+
+std::atomic<uint64_t> g_captureSlotStarvationStreak{0};
+
+// Slot starvation used to fail silently, which made a permanently unavailable
+// slot indistinguishable from "no frames yet" in the logs. Report the first
+// occurrence and then only rare milestones so a real stall stays visible without
+// adding hot-path noise.
+void ReportCaptureSlotStarvation(const char* apiTag, uint32_t cpuBusySlots, uint32_t gpuBusySlots) {
+    const uint64_t starved = g_captureSlotStarvationStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (starved == 1 || starved == 60 || (starved % 600) == 0) {
+        HookLogImportant("%sCapture: No capture texture slot available (consecutive=%llu cpuBusy=%u gpuBusy=%u)",
+                         apiTag, static_cast<unsigned long long>(starved), cpuBusySlots, gpuBusySlots);
+    }
+}
+
+void ResetCaptureSlotStarvation() {
+    g_captureSlotStarvationStreak.store(0, std::memory_order_relaxed);
+}
+
+}  // namespace
 
 bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
 
@@ -96,13 +132,17 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
                 captureSharedMem, writeIdx, CAPTURE_TEXTURE_COUNT,
                 [&](int32_t candidate) {
                     ID3D10Query* query = copyQueries10[candidate];
-                    if (!query)
-                        return true;
-                    BOOL complete = FALSE;
-                    return query->GetData(&complete, sizeof(complete), D3D10_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+                    const bool issued = query != nullptr && copyQueryIssued[candidate];
+                    HRESULT queryHr = S_OK;
+                    if (issued) {
+                        BOOL complete = FALSE;
+                        queryHr = query->GetData(&complete, sizeof(complete), D3D10_ASYNC_GETDATA_DONOTFLUSH);
+                    }
+                    return IsCaptureCopyQuerySlotReady(query != nullptr, issued, queryHr, "DX10", candidate);
                 },
                 &cpuBusySlots, &gpuBusySlots);
             if (writeIdx < 0) {
+                ReportCaptureSlotStarvation("DX10", cpuBusySlots, gpuBusySlots);
                 if (captureSharedMem) {
                     if (cpuBusySlots != 0)
                         captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(
@@ -115,6 +155,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
                 backbuffer10->Release();
                 return false;
             }
+            ResetCaptureSlotStarvation();
             writeIndex.store(writeIdx, std::memory_order_relaxed);
             if (frameNum <= 20 || frameNum % 60 == 0) {
                 HookLog("DX10Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx,
@@ -130,6 +171,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
 
             if (copyQueries10[writeIdx]) {
                 copyQueries10[writeIdx]->End();
+                copyQueryIssued[writeIdx] = true;
             }
 
             // D3D10->D3D11 shared-texture interop requires a producer-side Flush()
@@ -199,13 +241,17 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
                     return requiredValue == 0 || completedFenceValue >= requiredValue;
                 }
                 ID3D11Query* query = copyQueries[candidate];
-                if (!query)
-                    return true;
-                BOOL complete = FALSE;
-                return context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+                const bool issued = query != nullptr && copyQueryIssued[candidate];
+                HRESULT queryHr = S_OK;
+                if (issued) {
+                    BOOL complete = FALSE;
+                    queryHr = context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                }
+                return IsCaptureCopyQuerySlotReady(query != nullptr, issued, queryHr, "DX11", candidate);
             },
             &cpuBusySlots, &gpuBusySlots);
         if (writeIdx < 0) {
+            ReportCaptureSlotStarvation("DX11", cpuBusySlots, gpuBusySlots);
             if (captureSharedMem) {
                 if (cpuBusySlots != 0)
                     captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1,
@@ -217,6 +263,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
             backbuffer->Release();
             return false;
         }
+        ResetCaptureSlotStarvation();
         writeIndex.store(writeIdx, std::memory_order_relaxed);
 
         if (frameNum <= 20 || frameNum % 60 == 0) {
@@ -238,6 +285,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
         // Issue query for GPU completion tracking
         if (copyQueries[writeIdx]) {
             context->End(copyQueries[writeIdx]);
+            copyQueryIssued[writeIdx] = true;
         }
 
         // Signal fence if using D3D11.3 fences

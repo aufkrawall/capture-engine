@@ -1,5 +1,76 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: D3D10 inject capture wedged in "preparing" forever; OpenGL overlay missing whenever the game caches the SwapBuffers import
+
+- **DX10 root cause** (session `20260807_010839`, build 0.1.5835): the
+  `Harden capture under HAGS contention` commit (2850502f, 2026-07-12) turned the
+  DX10 copy-query check from advisory into the GPU-ready gate of
+  `FindAvailableCaptureTextureSlotIf`, accepting only `S_OK`. A freshly created
+  `ID3D10Query` EVENT query has never been `End()`ed, and `GetData()` then
+  returns `DXGI_ERROR_INVALID_CALL` (0x887A0001) - measured directly with a
+  standalone D3D10/D3D11 probe, and identical on D3D11. So on the very first
+  capture attempt every slot looked GPU-busy, `writeIdx` came back -1, and
+  `CaptureFrame` returned before reaching the `End()` that would have made any
+  slot ready. Permanent deadlock, and completely silent: the `writeIdx < 0` path
+  had no logging, so `hook_debug.log` showed `DX10 Capture Initialized` followed
+  by nothing, and the media inject thread blocked forever in
+  `WaitForMultipleObjects(INFINITE)` on the frame-ready event. DX11 escaped only
+  because it normally uses fences (`slotFenceValues[]` starts at 0 = ready); its
+  no-fence fallback had the same latent deadlock.
+- **DX10 fix**: per-slot `copyQueryIssued[]` in `DX11Capture`, reset in
+  `Cleanup()` and at query creation, set right after `End()`. Readiness now goes
+  through the shared, unit-testable `ClassifyCaptureCopyQuerySlot()` in
+  `common/capture_base.h`: a never-issued query is trivially ready, `S_FALSE` is
+  busy, and any other HRESULT is `QueryUnusable` - treated as reusable with a
+  bounded log, because a query that cannot answer must never wedge capture.
+  Slot starvation is now reported (`No capture texture slot available
+  (consecutive=... cpuBusy=... gpuBusy=...)`, first/60th/every-600th).
+- **OpenGL root cause** (session `20260807_011201`): `OpenGLHook::Init` hooked
+  the swap entry points by IAT patching only. LLVM marks `dllimport` loads
+  invariant, so clang hoisted `__imp_SwapBuffers` out of `opengl_test.exe`'s
+  render loop into `r13` (`movq 0x33519(%rip), %r13` at `0x1400021d0`, verified
+  with `llvm-objdump` and with a live `cdb` breakpoint on the patched IAT slot
+  that never hit). `opengl_legacy_test.exe` emits `callq *0x3340b(%rip)` inside
+  the loop, so the identical patch worked there - the whole difference between
+  "works" and "no overlay", nothing to do with the GL context version
+  (`opengl_test.exe --legacy` failed the same way). With the detour never
+  entered, overlay, capture, FPS limiter and perf logging were all dead;
+  `perf_metrics_*.csv` stayed header-only.
+- **OpenGL fix**: `gdi32!SwapBuffers`, `opengl32!wglSwapBuffers` and
+  `wglSwapLayerBuffers` now get an inline hook (`InlineHook::InstallPublished`,
+  trampoline published before the target goes live) with IAT patching retained
+  as a complementary route. When a trampoline is live the IAT/dynamic route
+  writes its "original" into a discard sink so the detour can never call itself.
+  Originals are seeded from the untouched exports first, closing the pre-existing
+  window where a detour could fire before `PatchIATAllModules` wrote back.
+  `opengl_hook_g_SwapRecurse` became `thread_local`: the nested
+  `SwapBuffers -> wglSwapBuffers` dispatch that inline hooking now produces would
+  corrupt a shared counter across GL threads and could latch it above zero.
+- **Trampoline allocator**: the first two inline installs failed with
+  `RIP-relative fixup out of range`. `AllocateTrampolinePool` scanned upward from
+  `target - 2GB` and took the *first* free block, landing ~2.2GB below the
+  target, so rewriting a RIP-relative reference to data just past the function
+  overflowed the displacement. It now picks the free block *closest* to the
+  target (first-fit inside the same window remains the fallback). This is
+  engine-wide and strictly improves every inline hook.
+- **Validation**: DX10 recording produced AV1 + 2x AAC, 5.67 s, `outputSaved=1`,
+  `health=healthy`, 144 fps steady input with 0 drops. OpenGL now logs all three
+  `Inline hook installed` lines, `InitOpenGL returned 1`, per-frame `SwapBegin`,
+  and NV-interop capture init. `python build.py --verify` success=1 (build 0.1.5841).
+- **Coverage**: `run_tests.py` gained a `dx10` target (DX10 had none, which is
+  why a total capture wedge shipped unnoticed) requiring `DX10 Capture
+  Initialized` plus `DX10Capture: [n] Copying to texture`. Also fixed the
+  harness's stale `media.log` name - the engine writes `media_r0001_<pid>.log`,
+  so the completion-stats gate had been failing for *every* API; `dx10` now
+  passes 1/1. `opengl_hook_capture.cpp` was split at the 800-line ceiling into a
+  new `opengl_hook_install.cpp` semantic unit.
+- **Open / not fixed here**: both OpenGL variants still fail the harness's
+  worst-frame gate with an identical ~140-155 ms startup hitch (legacy 141.76 ms,
+  modern 145.72 ms) - `DetectGPU()` creates a D3D11 device on the render thread
+  inside `SwapBuffers`. Pre-existing on both, unrelated to these fixes.
+  `wglGetProcAddress`/`wglMakeCurrent`/`wglDeleteContext` remain IAT-only; they
+  are not called from hot loops, so hoisting has not been observed there.
+
 ### 2026-08-06 - Fixed: WGC/DXGI transactional start-contract flow was dead since the MediaEncoderSession refactor; audit hardening batch
 
 - Root cause: the 2026-08-05 `EncoderThreadFunc` refactor (1cce877b) converted

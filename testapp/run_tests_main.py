@@ -112,7 +112,7 @@ def run_single_test(
 
     run_log_dir = find_latest_run_log_dir(test_start_unix_ts)
     frame_times_csv = (run_log_dir / "frame_times.csv") if run_log_dir else FRAME_TIMES_CSV
-    media_log_path = (run_log_dir / "media.log") if run_log_dir else MEDIA_LOG
+    media_log_path = resolve_media_log(run_log_dir)
     recorded_output_frames = parse_recorded_output_frames(media_log_path, test_start_unix_ts)
 
     frame_times = parse_frame_times(frame_times_csv)
@@ -124,7 +124,7 @@ def run_single_test(
     estimated_frame_count = 0
     if not frame_times:
         frame_times, estimated_frame_count = parse_media_log_frame_times(media_log_path, test_start_unix_ts)
-        frame_source = f"{media_log_path.parent.name}/media.log"
+        frame_source = f"{media_log_path.parent.name}/{media_log_path.name}"
 
     stats = analyze_frame_times(frame_times, target_fps, test_name)
     if "error" not in stats:
@@ -147,7 +147,7 @@ def run_single_test(
         return stats, hook_runtime_error
 
     if recorded_output_frames is None:
-        return stats, "Recording completion stats missing from media.log"
+        return stats, f"Recording completion stats missing from {media_log_path.name}"
     if recorded_output_frames == 0:
         return stats, "Recording produced zero encoded video frames"
 
@@ -253,6 +253,7 @@ def main() -> None:
         choices=[
             "dx12",
             "dx11",
+            "dx10",
             "dx9",
             "dx9ex",
             "dx8",

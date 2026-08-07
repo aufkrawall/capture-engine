@@ -31,6 +31,7 @@ void DX11Capture::Cleanup() {
             g_DeferredRelease.Queue(copyQueries10[i]);
             copyQueries10[i] = nullptr;
 
+            copyQueryIssued[i] = false;
             slotFenceValues[i] = 0;
 
             g_DeferredRelease.Queue(dxvkImportedTextures[i]);

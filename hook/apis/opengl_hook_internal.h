@@ -49,6 +49,7 @@ struct OpenGLCapture;
 #include "../common/screenshot_hook.h"
 
 #include "../wrappers/iat_hook.h"
+#include "../wrappers/inline_hook.h"
 
 #include "hook_common.h"
 
@@ -246,6 +247,16 @@ inline bool IsVulkanPrimary() {
     return false;
 }
 
+// Detours and shared state defined in opengl_hook_capture.cpp and installed by
+// opengl_hook_install.cpp.
+void ResetTrackedOpenGLState(HGLRC contextToReset);
+BOOL WINAPI DetourSwapBuffers(HDC hdc);
+BOOL WINAPI DetourWglSwapBuffers(HDC hdc);
+BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes);
+BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc);
+BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc);
+PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc);
+
 // Original function pointers
 inline SwapBuffers_t opengl_hook_oSwapBuffers = nullptr;
 
@@ -347,7 +358,11 @@ inline bool opengl_hook_g_NVInteropAvailable = false;
 
 inline HDC opengl_hook_g_CaptureHDC = NULL;
 
-inline int opengl_hook_g_SwapRecurse = 0;
+// Guards the nested SwapBuffers -> wglSwapBuffers dispatch that happens once the
+// swap exports themselves are inline-hooked. It must be per-thread: a shared
+// counter would be corrupted by two GL threads swapping concurrently and could
+// latch above zero, silently disabling the overlay for the rest of the session.
+inline thread_local int opengl_hook_g_SwapRecurse = 0;
 
 inline thread_local int32_t opengl_hook_g_LastOverlayUs = 0;
 

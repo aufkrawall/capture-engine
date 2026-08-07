@@ -46,6 +46,7 @@ CAPTURE_CONFIG_TEMPLATE = PROJECT_ROOT / "captureengine" / "config.ini.template"
 DEFAULT_APIS = [
     "dx12",
     "dx11",
+    "dx10",
     "dx9",
     "dx9ex",
     "dx8",
@@ -61,6 +62,7 @@ SUPPORTED_APIS = DEFAULT_APIS + OPT_IN_APIS
 API_EXECUTABLES = {
     "dx12": "dx12_test.exe",
     "dx11": "dx11_test.exe",
+    "dx10": "dx10_test.exe",
     "dx9": "dx9_test.exe",
     "dx9ex": "dx9ex_test.exe",
     "dx8": "dx8_test.exe",
@@ -75,6 +77,7 @@ API_EXECUTABLES = {
 API_LOG_NAMES = {
     "dx12": {"dx12"},
     "dx11": {"dx11"},
+    "dx10": {"dx10", "dx11"},
     "dx9": {"dx9", "dx9ex"},
     "dx9ex": {"dx9", "dx9ex"},
     "dx8": {"dx8"},
@@ -110,6 +113,13 @@ HOOK_RUNTIME_PATTERNS = {
     "dx11": [
         re.compile(r"IAT: Patched D3D11CreateDevice", re.IGNORECASE),
         re.compile(r"DX11: \[frame \d+\] calling RenderOverlay", re.IGNORECASE),
+    ],
+    # DX10 shares the DX11 hook but has its own capture branch. Requiring the
+    # copy line catches a slot selector that never hands out a texture, which is
+    # invisible in the "hooks installed" evidence alone.
+    "dx10": [
+        re.compile(r"DX10 Capture Initialized", re.IGNORECASE),
+        re.compile(r"DX10Capture: \[\d+\] Copying to texture", re.IGNORECASE),
     ],
     "dx12": [
         re.compile(r"DX12: ProcessFrame queue=", re.IGNORECASE),
@@ -218,6 +228,7 @@ def kill_processes() -> None:
         "captureengine.exe",
         "dx12_test.exe",
         "dx11_test.exe",
+        "dx10_test.exe",
         "dx9_test.exe",
         "dx9ex_test.exe",
         "dx8_test.exe",
@@ -377,6 +388,25 @@ def find_latest_run_log_dir(since_unix_ts: float) -> Optional[Path]:
 
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def resolve_media_log(run_log_dir: Optional[Path]) -> Path:
+    """Return the media log of the newest recording in this run.
+
+    The engine writes one log per recording (``media_r0001_<pid>.log``). The old
+    single ``media.log`` name is no longer produced, so hard-coding it made the
+    completion-stats gate report "missing" for every API on every run.
+    """
+    if not run_log_dir:
+        return MEDIA_LOG
+
+    candidates = [path for path in run_log_dir.glob("media_*.log") if path.is_file()]
+    if candidates:
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0]
+
+    legacy = run_log_dir / "media.log"
+    return legacy if legacy.exists() else MEDIA_LOG
 
 
 def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> Tuple[List[float], int]:

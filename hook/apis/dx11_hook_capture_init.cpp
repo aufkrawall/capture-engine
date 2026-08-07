@@ -254,6 +254,7 @@ void DX11Capture::Init(ID3D11Device* device,  IDXGISwapChain* swapChain) {
                         HookLog("DX10: Failed to create copy query %d (hr=0x%08x)", i, queryHr);
                         copyQueries10[i] = nullptr;
                     }
+                    copyQueryIssued[i] = false;
                 }
             }
 
@@ -473,6 +474,7 @@ void DX11Capture::Init(ID3D11Device* device,  IDXGISwapChain* swapChain) {
                                 queryHr);
                         copyQueries[i] = nullptr;
                     }
+                    copyQueryIssued[i] = false;
                 }
             }
 
