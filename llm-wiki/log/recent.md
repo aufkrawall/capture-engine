@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-07 - Fixed: release PDBs/DLLs still leaked the user name in escaped and MSYS path spellings
+
+- The first privacy pass redacted only `C:\Users\<user>` / `C:/Users/<user>`
+  roots. The released 0.1.5290 rebuild still contained the user name in other
+  spellings: compiler/linker command-line records store **doubled backslashes**
+  (`C:\\Users\\<user>\\...`), and the FFmpeg closure DLLs embed **MSYS drive
+  paths** (`/c/Users/<user>/...`).
+- **Fix:** the binary scrub now redacts the user-name *path component* in every
+  spelling (plain/escaped backslashes, forward slashes, MSYS drive paths;
+  UTF-8 + UTF-16LE) with the same length-identical `redact` filler, and the
+  finalize scan counts path-component occurrences. Verified on the real release
+  artifacts: 10,333 raw user-name hits -> 0 across all shipped binaries/PDBs.
+
 ### 2026-08-07 - Fixed: release assets (manifest, summary, PDBs, PE debug records) leaked the developer's Windows user name
 
 - The 0.1.5290 release shipped `latest_manifest.json` / `latest_summary.txt`

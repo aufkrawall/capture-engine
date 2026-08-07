@@ -3,6 +3,7 @@
 from pathlib import Path as _SourcePath
 
 _SOURCE_PARTS = (
+    'tools/build/build_privacy.py',
     'tools/build/build_common.py',
     'tools/build/build_bootstrap.py',
     'tools/build/build_io.py',

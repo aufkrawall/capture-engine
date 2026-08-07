@@ -28,6 +28,7 @@ anchors that predate the split are approximate.
   - Semantic build units executed by the `build.py` facade (order matters):
     | Unit | Role |
     | --- | --- |
+    | `build_privacy.py` | privacy helpers: profile spellings, `-ffile-prefix-map` flags, manifest/summary redaction, length-preserving binary scrub, path-component scan |
     | `build_common.py` | shared constants, compile-commands path, sha256, PDB path, linker helpers |
     | `build_bootstrap.py` | verification context, MSYS2/Python-tool bootstrap, download+verify, file locking |
     | `build_io.py` | safe copy/remove, `run_command`/`run_logged_subprocess`, process helpers |

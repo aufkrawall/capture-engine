@@ -171,6 +171,14 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
             self.assertIn("C:/Users/<developer>", sanitized)
             self.assertIn("proj", sanitized)
 
+    def test_sanitize_privacy_paths_replaces_component_spellings_in_text(self) -> None:
+        with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
+            text = r"escaped=C:\\Users\\TestUser\\proj and msys=/c/Users/TestUser/proj"
+            sanitized = build.sanitize_privacy_paths(text)
+            self.assertNotIn("TestUser", sanitized)
+            self.assertIn(r"C:\\Users\\<developer>\\proj", sanitized)
+            self.assertIn("/c/Users/<developer>/proj", sanitized)
+
     def test_sanitize_privacy_values_walks_manifest_structures(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
             payload = {
@@ -189,7 +197,13 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
 
     def test_scrub_profile_path_bytes_is_length_preserving_and_complete(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
-            utf8 = b"C:\\Users\\TestUser\\proj\\x.pdb C:/Users/TestUser/proj/y.cpp"
+            utf8 = (
+                b"C:\\Users\\TestUser\\proj\\x.pdb "
+                b"C:/Users/TestUser/proj/y.cpp "
+                b"C:\\\\Users\\\\TestUser\\\\escaped.o "  # escaped command line
+                b"/c/Users/TestUser/msys.o "  # MSYS drive path
+                b"home\\TestUser\\posix.o"
+            )
             utf16 = "C:\\Users\\TestUser\\proj\\z.cpp".encode("utf-16le")
             data = utf8 + b"\x00" + utf16
             scrubbed = build.scrub_profile_path_bytes(data)
@@ -197,16 +211,21 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
             self.assertEqual(build.count_profile_path_hits(scrubbed), 0)
             self.assertIn(b"redact", scrubbed)
             self.assertIn("redact".encode("utf-16le"), scrubbed)
+            self.assertNotIn(b"TestUser", scrubbed)
 
     def test_count_profile_path_hits_counts_both_spellings_and_encodings(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):
             data = (
                 b"C:\\Users\\TestUser\\a "
                 b"C:/Users/TestUser/b "
+                b"C:\\\\Users\\\\TestUser\\\\c "
+                b"/c/Users/TestUser/d "
+                b"home\\TestUser\\e "
                 + "C:\\Users\\TestUser\\c".encode("utf-16le")
             )
-            self.assertEqual(build.count_profile_path_hits(data), 3)
+            self.assertEqual(build.count_profile_path_hits(data), 6)
             self.assertEqual(build.count_profile_path_hits(b"no hits here"), 0)
+            self.assertEqual(build.count_profile_path_hits(b"TestUser is not a path"), 0)
 
 
 if __name__ == "__main__":
