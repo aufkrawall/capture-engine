@@ -113,6 +113,24 @@ def _tracked_files() -> List[Path]:
     ]
 
 
+def _cleanup_events() -> dict:
+    """Parsed triggers of the log-cleanup workflow.
+
+    Parsed rather than text-matched because that file's comments quote the old
+    design; a text assertion is satisfied by prose. Note `on` is a YAML 1.1
+    boolean, so safe_load returns it under the key True.
+    """
+    import yaml
+
+    document = yaml.safe_load(CLEANUP_WORKFLOW.read_text(encoding="utf-8"))
+    trigger = document.get("on", document.get(True))
+    if isinstance(trigger, str):
+        return {trigger: None}
+    if isinstance(trigger, list):
+        return {name: None for name in trigger}
+    return dict(trigger or {})
+
+
 def _user_path_hits(path: Path) -> List[Tuple[int, str]]:
     raw = path.read_bytes()
     if b"\x00" in raw:
@@ -227,22 +245,47 @@ class ReleaseLogCleanupPolicyTest(unittest.TestCase):
             "release-log-cleanup.yml is missing; release run logs would keep publishing the runner hostname",
         )
 
-    def test_cleanup_triggers_on_the_current_release_workflow_name(self) -> None:
-        # workflow_run matches by workflow name, so renaming release-stable
-        # detaches the trigger without any error anywhere.
-        release_name = re.search(r"^name:\s*(\S+)", RELEASE_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
-        self.assertIsNotNone(release_name, "release-stable.yml has no top-level name:")
-        assert release_name is not None
-        self.assertIn(f'workflows: ["{release_name.group(1)}"]', self.text)
-        self.assertIn("types: [completed]", self.text)
+    def test_cleanup_is_not_keyed_to_one_workflow_name(self) -> None:
+        # Replaces a test that asserted `workflows: ["release-stable"]` was
+        # present. Keying on a single name is what left two `debug-token` runs
+        # published forever - successful, self-hosted, and outside the filter, with
+        # nothing to clean them once that workflow file was deleted. The trigger
+        # must now match every workflow, and the job decides from the run's own
+        # labels whether the log carries a hostname.
+        #
+        # Assert on the YAML, not the raw text: the comments in that file quote the
+        # old pattern, so a text match is satisfied by prose and passes vacuously -
+        # which is exactly how this test kept passing after the design changed.
+        events = _cleanup_events()
+        self.assertIn("workflow_run", events)
+        self.assertEqual(
+            events["workflow_run"].get("types"),
+            ["completed"],
+            "workflow_run must fire on completed runs, when the log archive is final",
+        )
+        self.assertNotIn(
+            "workflows",
+            events["workflow_run"] or {},
+            "the trigger must not filter by workflow name; scope is decided from the run's labels",
+        )
+        self.assertIn("self-hosted", self.text, "the job must still gate on the self-hosted label")
+
+    def test_cleanup_retention_is_bounded(self) -> None:
+        # A failed run's log is kept deliberately as the only diagnostic material,
+        # but the manual "delete once investigated" follow-up was forgotten six
+        # times, leaving the hostname published. A scheduled sweep bounds it.
+        events = _cleanup_events()
+        self.assertIn("schedule", events, "no scheduled sweep; retention would be open-ended again")
 
     def test_cleanup_runs_on_a_github_hosted_runner(self) -> None:
         # Running the cleanup on the self-hosted runner would write the very
-        # hostname it exists to remove into this workflow's own log. Match the
-        # runs-on directives themselves; the prose above them names the
-        # self-hosted runner legitimately.
+        # hostname it exists to remove into this workflow's own log. Every job
+        # must be GitHub-hosted, however many there are.
         runners = [value.strip() for value in re.findall(r"^\s*runs-on:\s*(.+)$", self.text, re.MULTILINE)]
-        self.assertEqual(["ubuntu-latest"], runners)
+        self.assertTrue(runners, "no runs-on found")
+        for runner in runners:
+            self.assertNotIn("self-hosted", runner)
+            self.assertIn("ubuntu", runner)
 
     def test_cleanup_requests_actions_write_permission(self) -> None:
         # The repository default for GITHUB_TOKEN is read-only; without an

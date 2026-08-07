@@ -1,23 +1,49 @@
 name: release-log-cleanup
 
-# release-stable builds on the maintainer's self-hosted Windows runner, and the
-# runner writes "Machine name: '<hostname>'" into the "Set up job" section of
-# every run log. That line comes from .NET Environment.MachineName, which calls
-# Win32 GetComputerNameW and reads the registry computer name: there is no
-# environment variable or runner setting that overrides it (verified 2026-08-07;
-# the runner binaries contain no RUNNER_MACHINE*/ACTIONS_RUNNER_*NAME lookup and
-# presetting COMPUTERNAME has no effect). The release itself is clean - assets,
-# notes, tag and verification manifest carry no developer identity - so deleting
-# the run log after the fact is what closes the last gap.
+# Any job on the maintainer's self-hosted Windows runner writes
+# "Machine name: '<hostname>'" into the "Set up job" section of its run log. That
+# line comes from .NET Environment.MachineName, which calls Win32
+# GetComputerNameW and reads the registry computer name: there is no environment
+# variable or runner setting that overrides it (verified 2026-08-07; the runner
+# binaries contain no RUNNER_MACHINE*/ACTIONS_RUNNER_*NAME lookup and presetting
+# COMPUTERNAME has no effect). Releases themselves are clean - assets, notes, tag
+# and verification manifest carry no developer identity - so deleting the run log
+# after the fact is what closes the last gap.
 #
 # This must be a separate workflow, not a final step in release-stable: the
 # runner uploads a job's log archive after its last step finishes, so a step that
 # deleted its own run's logs would simply be overwritten by that upload.
 # workflow_run fires once the whole run is complete and its logs are final.
+#
+# Two defects on 2026-08-07 left eight logs published, and the design below is
+# shaped by both:
+#
+#   1. `workflows: ["release-stable"]` matched a single workflow BY NAME. Two runs
+#      of a `debug-token` workflow - successful, on the self-hosted runner - were
+#      never covered, and once that workflow file was deleted nothing would ever
+#      have cleaned them. The trigger now matches every workflow and the job
+#      decides from the run's own jobs API whether it actually executed on a
+#      self-hosted runner. GitHub-hosted logs (hardening-ci) are left alone: they
+#      carry no hostname, so deleting them would only destroy diagnostics.
+#   2. A failed run's log was kept indefinitely pending a MANUAL delete "once
+#      investigated". That step is easy to forget and was forgotten six times.
+#      Failed logs are still kept - they are the only diagnostic material for the
+#      failure - but the scheduled sweep below now removes them after a grace
+#      period, so retention is bounded instead of open-ended.
 on:
   workflow_run:
-    workflows: ["release-stable"]
     types: [completed]
+  schedule:
+    # Daily sweep for self-hosted run logs past the grace period. Bounded
+    # retention is the point: nothing is kept because someone forgot.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      grace_days:
+        description: "Delete self-hosted run logs older than this many days (sweep only)."
+        required: false
+        default: "7"
+        type: string
 
 # Deleting run logs needs actions:write. The repository default for
 # GITHUB_TOKEN is read-only, which only sets the default; an explicit block
@@ -27,25 +53,45 @@ permissions:
   actions: write
 
 jobs:
-  purge-release-run-log:
+  purge-self-hosted-run-log:
+    # Only for a completed run, and only when that run used a self-hosted runner.
+    if: github.event_name == 'workflow_run'
     # GitHub-hosted on purpose. Running this on the self-hosted runner would
     # write the very hostname it exists to remove into this workflow's own log.
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Delete release run log
-        # Only successful releases. A failed run's log is the sole diagnostic
-        # material for that failure, so it is kept deliberately; the step below
-        # flags that it still needs a manual delete once investigated.
-        if: github.event.workflow_run.conclusion == 'success'
+      - name: Delete the run log if it ran on a self-hosted runner and succeeded
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
+
+          # Decide from the run itself, not from a workflow name. A renamed, new
+          # or since-deleted workflow is covered automatically this way.
+          labels="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+            --jq '[.jobs[].labels[]] | join(" ")' 2>/dev/null || echo "")"
+          echo "Run $RUN_ID ($WORKFLOW) concluded '$CONCLUSION' on labels: ${labels:-unknown}"
+
+          case " $labels " in
+            *" self-hosted "*) ;;
+            *)
+              echo "Not a self-hosted run; its log carries no hostname and is kept for diagnosis."
+              exit 0
+              ;;
+          esac
+
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::warning::Run $RUN_ID ended '$CONCLUSION' on the self-hosted runner. Its log is kept for diagnosis and DOES contain the runner hostname. The scheduled sweep deletes it after the grace period; delete it sooner once investigated: gh api -X DELETE repos/$REPO/actions/runs/$RUN_ID/logs"
+            exit 0
+          fi
+
           gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs" --silent
           # Fail closed: a 204 from the DELETE is not proof the archive is gone,
           # and a surviving log still publishes the hostname. Ask for the log
@@ -59,20 +105,77 @@ jobs:
             "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs")"
           case "$status" in
             404|410)
-              echo "Release run $RUN_ID: logs deleted and verified gone (HTTP $status)"
+              echo "Run $RUN_ID: logs deleted and verified gone (HTTP $status)"
               ;;
             *)
-              echo "::error::Release run $RUN_ID still exposes its log after DELETE (HTTP $status); the runner hostname remains published"
+              echo "::error::Run $RUN_ID still exposes its log after DELETE (HTTP $status); the runner hostname remains published"
               exit 1
               ;;
           esac
 
-      - name: Flag retained log of a failed release run
-        if: github.event.workflow_run.conclusion != 'success'
+  sweep-retained-self-hosted-logs:
+    # Bounded retention for the logs the job above deliberately keeps. Without
+    # this, a failed run's log stays published until somebody remembers.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Delete self-hosted run logs past the grace period
         shell: bash
         env:
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GRACE_DAYS: ${{ inputs.grace_days || '7' }}
         run: |
           set -euo pipefail
-          echo "::warning::Release run $RUN_ID ended '$CONCLUSION'; its log was kept for diagnosis and still contains the runner hostname. Delete it once investigated: gh api -X DELETE repos/${{ github.repository }}/actions/runs/$RUN_ID/logs"
+          cutoff="$(date -u -d "-${GRACE_DAYS} days" +%s)"
+          echo "Deleting self-hosted run logs created before $(date -u -d "@$cutoff" '+%Y-%m-%d %H:%M UTC') (grace ${GRACE_DAYS}d)"
+
+          deleted=0
+          kept=0
+          failed=0
+
+          # Paginate: the sweep must not silently stop at the first page and
+          # leave older logs published.
+          runs="$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.created_at)"')"
+
+          while read -r id created; do
+            [ -n "$id" ] || continue
+            created_epoch="$(date -u -d "$created" +%s)"
+            if [ "$created_epoch" -ge "$cutoff" ]; then
+              kept=$((kept+1)); continue
+            fi
+
+            # Nothing to do when the archive is already gone.
+            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/actions/runs/$id/logs")"
+            case "$status" in 404|410) continue ;; esac
+
+            labels="$(gh api "repos/$REPO/actions/runs/$id/jobs" \
+              --jq '[.jobs[].labels[]] | join(" ")' 2>/dev/null || echo "")"
+            case " $labels " in
+              *" self-hosted "*) ;;
+              *) kept=$((kept+1)); continue ;;
+            esac
+
+            gh api -X DELETE "repos/$REPO/actions/runs/$id/logs" --silent || true
+            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/actions/runs/$id/logs")"
+            case "$status" in
+              404|410) echo "  run $id: log deleted and verified gone"; deleted=$((deleted+1)) ;;
+              *) echo "::error::run $id still exposes its log after DELETE (HTTP $status)"; failed=$((failed+1)) ;;
+            esac
+          done <<< "$runs"
+
+          echo "Sweep complete: deleted=$deleted kept=$kept failed=$failed"
+          # Fail closed: a log that resisted deletion is still publishing the
+          # hostname, and a silent success would hide that.
+          [ "$failed" -eq 0 ]
