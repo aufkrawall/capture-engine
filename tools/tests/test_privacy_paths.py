@@ -62,6 +62,20 @@ ALLOWED_USER_COMPONENTS = frozenset(
     }
 )
 
+# Domains that may legitimately appear in tracked files: the placeholder and
+# noreply identities the project uses for commits. A real mailbox is as
+# identifying as a profile path, so anything else fails the gate.
+ALLOWED_EMAIL_DOMAINS = frozenset(
+    {
+        "example.com",
+        "example.org",
+        "users.noreply.github.com",
+        "localhost",
+    }
+)
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
 # C:\Users\<name>\... (any drive letter, backslash spelling).
 USER_PATH_RE = re.compile(r"[A-Za-z]:\\Users\\([^\\\r\n\s\"'`]+)")
 # MSYS/Cygwin private-use-area colon spelling: C<U+F03A/U+FF1A>Users<name>.
@@ -119,6 +133,44 @@ class PrivacyPathPolicyTest(unittest.TestCase):
             "Tracked files contain developer-identifying user paths; replace them with "
             "placeholder components from ALLOWED_USER_COMPONENTS "
             "(see llm-wiki/log/recent.md):\n" + "\n".join(findings),
+        )
+
+    def test_no_machine_name_in_tracked_files(self) -> None:
+        skip = build.machine_name_scan_skip_reason()
+        if skip:
+            self.skipTest(f"machine-name scan unavailable: {skip}")
+        findings: List[str] = []
+        for path in _tracked_files():
+            raw = path.read_bytes()
+            if b"\x00" in raw:
+                continue
+            if build.count_machine_name_hits(raw):
+                findings.append(str(path.relative_to(REPO_ROOT)))
+        self.assertEqual(
+            [],
+            findings,
+            "Tracked files contain this machine's name; replace it with a placeholder:\n"
+            + "\n".join(findings),
+        )
+
+    def test_no_unexpected_email_addresses_in_tracked_files(self) -> None:
+        # A real address is as identifying as a profile path and just as easy to
+        # paste in. Only the placeholder/noreply domains the project already uses
+        # for commit identities are allowed.
+        findings: List[str] = []
+        for path in _tracked_files():
+            raw = path.read_bytes()
+            if b"\x00" in raw:
+                continue
+            text = raw.decode("utf-8", errors="replace")
+            for match in EMAIL_RE.finditer(text):
+                if match.group(1).lower() not in ALLOWED_EMAIL_DOMAINS:
+                    findings.append(f"{path.relative_to(REPO_ROOT)}: {match.group(0)}")
+        self.assertEqual(
+            [],
+            findings,
+            "Tracked files contain email addresses outside ALLOWED_EMAIL_DOMAINS:\n"
+            + "\n".join(findings),
         )
 
     def test_release_workflow_example_uses_environment_placeholder(self) -> None:
@@ -305,6 +357,53 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
     def test_log_output_uses_privacy_sanitizer(self) -> None:
         source = build.read_source_text()
         self.assertIn("formatted = privacy_sanitize_log_text(", source)
+
+    def test_count_machine_name_hits_matches_whole_tokens_in_both_encodings(self) -> None:
+        with patch.dict(build.os.environ, {"COMPUTERNAME": "BUILDHOST-01"}), patch.object(
+            build.platform, "node", return_value="BUILDHOST-01"
+        ):
+            data = (
+                b"host=BUILDHOST-01 "
+                + "path=BUILDHOST-01".encode("utf-16le")
+                + b" lower=buildhost-01"
+            )
+            # Upper + lower UTF-8 spelling and the UTF-16LE spelling.
+            self.assertEqual(build.count_machine_name_hits(data), 3)
+            self.assertEqual(build.count_machine_name_hits(b"nothing to see here"), 0)
+
+    def test_count_machine_name_hits_ignores_substring_occurrences(self) -> None:
+        # A name that merely occurs inside a longer identifier is not a leak, and
+        # failing the build on it would be worse than not checking at all.
+        with patch.dict(build.os.environ, {"COMPUTERNAME": "BUILDHOST"}), patch.object(
+            build.platform, "node", return_value="BUILDHOST"
+        ):
+            self.assertEqual(build.count_machine_name_hits(b"MYBUILDHOSTX"), 0)
+            self.assertEqual(build.count_machine_name_hits(b"BUILDHOSTING"), 0)
+            self.assertEqual(build.count_machine_name_hits(b"built on BUILDHOST."), 1)
+
+    def test_machine_name_scan_is_skipped_for_ambiguously_short_names(self) -> None:
+        with patch.dict(build.os.environ, {"COMPUTERNAME": "PC"}), patch.object(
+            build.platform, "node", return_value="PC"
+        ):
+            self.assertNotEqual(build.machine_name_scan_skip_reason(), "")
+            self.assertEqual(build.count_machine_name_hits(b"PC PC PC"), 0)
+
+    def test_machine_name_scan_survives_a_reassigned_computername(self) -> None:
+        # Presetting COMPUTERNAME does not change the real host name (the runner's
+        # Machine name line proves it), so the scan must also consult
+        # platform.node() and cannot be disabled by reassigning the variable.
+        with patch.dict(build.os.environ, {"COMPUTERNAME": "NEUTRAL"}), patch.object(
+            build.platform, "node", return_value="REALHOST-77"
+        ):
+            self.assertEqual(build.machine_name_scan_skip_reason(), "")
+            self.assertEqual(build.count_machine_name_hits(b"built on REALHOST-77"), 1)
+
+    def test_finalize_privacy_scan_verifies_the_machine_name(self) -> None:
+        # Source policy: the finalize stage must keep checking, and must not start
+        # scrubbing the machine name - a hit is a new leak source to identify.
+        source = build.read_source_text()
+        self.assertIn("count_machine_name_hits(data)", source)
+        self.assertNotIn("scrub_machine_name", source)
 
 
 if __name__ == "__main__":

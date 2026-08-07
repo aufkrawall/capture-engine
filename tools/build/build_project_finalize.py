@@ -225,6 +225,20 @@ def scrub_and_verify_privacy_paths() -> None:
         log(f"Scrubbed {hits} profile-path occurrence(s) from {target}")
     for target in targets:
         with open(target, "rb") as handle:
-            if count_profile_path_hits(handle.read()):
-                raise RuntimeError(f"privacy scan still finds developer profile path in {target}")
-    log(f"Privacy scan clean: {len(targets)} first-party binaries/PDBs, {scrubbed} scrubbed")
+            data = handle.read()
+        if count_profile_path_hits(data):
+            raise RuntimeError(f"privacy scan still finds developer profile path in {target}")
+        # The machine name is verified, never scrubbed: nothing in the toolchain
+        # should embed host state, so a hit is a new leak source to identify
+        # rather than a known spelling to rewrite.
+        machine_hits = count_machine_name_hits(data)
+        if machine_hits:
+            raise RuntimeError(
+                f"privacy scan found the build machine name {machine_hits} time(s) in {target}; "
+                "no build step should embed host state - find what recorded it "
+                "instead of scrubbing the artifact"
+            )
+    machine_skip = machine_name_scan_skip_reason()
+    if machine_skip:
+        log(f"Privacy scan: machine-name check skipped ({machine_skip})")
+    log(f"Privacy scan clean: {len(targets)} shipped binaries/PDBs, {scrubbed} scrubbed")

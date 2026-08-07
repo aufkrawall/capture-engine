@@ -8,6 +8,7 @@
 # PRIVACY_PREFIX_MAP_FLAGS at module level.
 
 import os
+import platform
 import re
 
 from typing import Any, List, Tuple
@@ -114,6 +115,82 @@ def count_profile_path_hits(data: bytes) -> int:
     user = os.path.basename(spellings[0])
     utf8_pattern, utf16_pattern = _user_component_patterns(user)
     return len(utf8_pattern.findall(data)) + len(utf16_pattern.findall(data))
+
+
+# The build machine name has no legitimate route into an artifact: no compiler,
+# linker or packaging step records host state. It is therefore checked and never
+# scrubbed - an occurrence means something new started embedding the host, which
+# has to be understood rather than silently rewritten. (GitHub's runner does
+# write the same name into Actions run logs, which no in-job step can prevent;
+# that surface is handled by deleting the log, see
+# `.github/workflows/release-log-cleanup.yml`.)
+#
+# Names shorter than this are skipped: a host called "PC" or "BUILD" occurs
+# inside ordinary strings and mangled symbol names, so enforcing it would fail
+# builds on coincidence rather than on a leak.
+MACHINE_NAME_MIN_LENGTH = 8
+
+
+def machine_name_spellings() -> List[str]:
+    """Candidate spellings of this machine's name, longest first.
+
+    Both `COMPUTERNAME` and the real node name are consulted: the environment
+    variable is the spelling Windows tooling emits, but it is only a variable and
+    can be reassigned, while `platform.node()` reads the actual host name. Taking
+    both means overriding the variable cannot quietly disable the scan."""
+    candidates = [os.environ.get("COMPUTERNAME", ""), platform.node()]
+    unique: List[str] = []
+    for candidate in candidates:
+        name = candidate.strip()
+        if name and not any(name.lower() == seen.lower() for seen in unique):
+            unique.append(name)
+    return sorted(unique, key=len, reverse=True)
+
+
+def scannable_machine_names() -> List[str]:
+    """Machine-name spellings long enough to match without false positives."""
+    return [name for name in machine_name_spellings() if len(name) >= MACHINE_NAME_MIN_LENGTH]
+
+
+def machine_name_scan_skip_reason() -> str:
+    """Empty when the scan can run, else why it cannot - never silently skipped."""
+    spellings = machine_name_spellings()
+    if not spellings:
+        return "no machine name available (COMPUTERNAME unset and platform.node() empty)"
+    if not scannable_machine_names():
+        return (
+            f"machine name is shorter than {MACHINE_NAME_MIN_LENGTH} characters, "
+            "which is too ambiguous to match without false positives"
+        )
+    return ""
+
+
+def _machine_name_patterns(name: str) -> Tuple[Any, Any]:
+    """Whole-token UTF-8 and UTF-16LE patterns for one machine-name spelling.
+
+    Case-insensitive because tools spell host names in either case (`hostname`
+    reports lower case, `COMPUTERNAME` upper), and token-bounded so the name
+    cannot match inside a longer identifier that merely contains it."""
+    utf8 = re.compile(
+        rb"(?<![A-Za-z0-9])" + re.escape(name.encode("utf-8")) + rb"(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    utf16 = re.compile(
+        rb"(?<![A-Za-z0-9]\x00)"
+        + re.escape(name.encode("utf-16le"))
+        + rb"(?!(?:[A-Za-z0-9]\x00))",
+        re.IGNORECASE,
+    )
+    return utf8, utf16
+
+
+def count_machine_name_hits(data: bytes) -> int:
+    """Count whole-token occurrences of this machine's name in an artifact."""
+    total = 0
+    for name in scannable_machine_names():
+        utf8_pattern, utf16_pattern = _machine_name_patterns(name)
+        total += len(utf8_pattern.findall(data)) + len(utf16_pattern.findall(data))
+    return total
 
 
 def privacy_sanitize_log_text(text: str) -> str:

@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-08-07 - Machine name and stray emails are now gated, not just inspected
+
+- Audit finding, not a live leak: the shipped artifacts were verified clean of
+  the hostname **by inspection**, while the only enforced artifact gate was
+  `count_profile_path_hits`, which matches the *user name* alone. Nothing stopped
+  host state from reappearing later. Verified first that enabling a gate could
+  not break the build: 0 hostname hits across `captureengine.7z` (45 files) and
+  `testapps.7z` (61 files).
+- **Fix:** `count_machine_name_hits` (`build_privacy.py`) plus a fail-closed
+  check in `build_project_finalize.py` over every shipped binary/PDB. Three
+  deliberate design points:
+  - **Verified, never scrubbed.** The user-name scrub exists because paths
+    legitimately contain it; nothing in the toolchain should ever record the
+    host, so a hit means a new leak source to identify. A source-policy test
+    asserts no `scrub_machine_name` is introduced.
+  - **`COMPUTERNAME` *and* `platform.node()`.** Presetting the variable does not
+    change the real host name (the same fact that makes the runner's `Machine
+    name` line unfixable in-job), so relying on the variable alone would let the
+    gate be switched off by an env var.
+  - **Names under `MACHINE_NAME_MIN_LENGTH` (8) are skipped with a logged
+    reason.** A host called `PC` or `BUILD` occurs inside ordinary strings and
+    mangled symbols; enforcing it would fail builds on coincidence. Skipping is
+    reported, never silent.
+- Tracked files also gained a machine-name scan and an email scan against
+  `ALLOWED_EMAIL_DOMAINS` (allowlist, so no real address is written into the tree
+  to detect it). The tree currently holds exactly two addresses, both allowed:
+  `maintainer@example.com` and a `users.noreply.github.com` identity.
+- Also audited and deliberately **not** changed: shipped PDBs and 7 of the 15
+  FFmpeg-closure DLLs still contain `C:/Users/redact/Programme/build/captureproject/...`
+  - the user component is redacted but the directory layout survives. Removing it
+  needs a project-root `-ffile-prefix-map`, which rewrites source paths in every
+  translation unit for a weak benefit (the residue carries layout, not identity).
+  Open decision, not an oversight.
+- Debug symbols re-verified against the shipped, scrubbed artifacts: PE RSDS
+  GUID+age match the PDB, 2124 publics, 183/188 modules with debug info, 386
+  source-file entries with MD5 checksums, and `cdb` resolves first-party symbols,
+  types and `file:line:column`. Only source *file opening* needs `_NT_SOURCE_PATH`
+  / `.srcpath`. Note `llvm-pdbutil`'s line-dump flag is `-l`, not `--lines`
+  (the long spelling is silently rejected and looks like "no line info").
+- Gate: `python build.py --verify --verify-clean --skip-updates --concise`
+  success=1 (build 0.1.5849, 401 s); privacy scan clean over 87 shipped
+  binaries/PDBs, 43 scrubbed.
+
 ### 2026-08-07 - Release run logs are now deleted automatically; the hostname needs no host rename
 
 - Follow-up to the entry below, which claimed renaming the runner registration
@@ -21,9 +64,10 @@
   gap rather than one of several: the four published assets, the notes, and the
   tag (tagger `github-actions[bot]`) carry no developer identity, and all 45
   files in `captureengine.7z` - PDBs and FFmpeg-closure DLLs included - scan to
-  0 user-name and 0 hostname hits. Caveat recorded in `build.py.md`: the
-  fail-closed finalize scan covers the **user name** only; the hostname's absence
-  is verified by inspection, not by a gate.
+  0 user-name and 0 hostname hits. (The caveat this originally recorded - that
+  the finalize scan covered the user name only, leaving the hostname verified by
+  inspection rather than by a gate - was closed the same day; see the entry
+  above.)
 - **Validated end to end** the same day by republishing the release: `v0.1.5290`
   was deleted, run `31180054612` built `0.1.5291` from `2c568147` in 5 min 40 s
   (12:52:25-12:58:05 UTC; warm content-addressed reuse, not the "tens of minutes"
