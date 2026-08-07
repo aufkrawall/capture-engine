@@ -1,5 +1,41 @@
 # llm-wiki Log
 
+### 2026-08-08 - Repo recreated to purge the scrubbed objects; runner workFolder is load-bearing
+
+- The dangling pre-scrub commits could not be removed by a force-push (see the previous
+  entry), so the repository was **renamed to `capture-engine-dev2` (kept private) and a
+  fresh `capture-engine` created** with only the clean history. Chosen over delete+recreate
+  because it is reversible and loses nothing: the archive keeps the old run history,
+  creation date and the `v0.1.5294` release. Verified afterwards: all four leaked SHAs
+  answer **HTTP 422** on the new repo and the contents endpoint 404s, i.e. the objects were
+  never there rather than merely unreferenced - a stronger guarantee than a Support gc.
+  `capture-engine-wip` (a separate older copy) does not contain them; no public repo does.
+- Restored by hand after the recreate: 1897 commits + the `v0.1.5294` tag,
+  `CE_TOOLCHAIN_ROOT`, `default_workflow_permissions=read`
+  (`can_approve_pull_request_reviews=false`), and the runner registration.
+- **`--work` is load-bearing when re-registering the runner.** The original registration
+  used an explicit `workFolder` of `C:\...\build\runner-work`; re-registering with
+  `--unattended` and no `--work` silently used config.cmd's default `_work`, which sits
+  under the runner directory and put the workspace at **82** characters instead of **73**.
+  Run 31226827240 then died seven minutes in, after a fully successful closure and FFmpeg
+  build, while "Linking Hook DLL x64":
+  `EXCEPTION: [WinError 206] The filename or extension is too long`. The link step passes
+  hundreds of absolute object paths on one command line and nine characters were enough to
+  exceed Windows' 32767-character command-line limit. Note this is the command-line limit,
+  a *different* limit from the 260-char MAX_PATH that the doxygen man pages hit - the same
+  path-depth theme, two distinct mechanisms.
+- The runner's work folder is machine state, so no repository test can pin it.
+  `release-stable.yml` now preflights the workspace length as its **first** step (limit 76;
+  measured 73 passes, 82 fails) and names the fix. Seconds instead of seven minutes, with a
+  message that mentions the runner rather than a filename.
+- Gotcha inside that guard: a PowerShell here-string terminator must sit at column 0, which
+  dedents out of a YAML block scalar and makes the workflow unparseable. Build the message
+  with `-join` instead. The first attempt did exactly this and broke the file.
+- Cleanup of the stray 4.4 GB `_work` tree followed the junction rule that once destroyed
+  the dev toolchain: enumerate reparse points, `[System.IO.Directory]::Delete(path, $false)`
+  each one, assert none remain, and only then recurse. Both junction targets
+  (`external`, `build\msys64`) were verified unchanged afterwards.
+
 ### 2026-08-07 - v0.1.5294 released; Actions run logs were a second, larger leak surface
 
 - `v0.1.5294` published by run 31218094687 (success, `step.external_preparation` 1111 s, so
