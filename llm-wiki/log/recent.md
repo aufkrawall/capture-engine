@@ -24,6 +24,14 @@
   0 user-name and 0 hostname hits. Caveat recorded in `build.py.md`: the
   fail-closed finalize scan covers the **user name** only; the hostname's absence
   is verified by inspection, not by a gate.
+- **Validated end to end** the same day by republishing the release: `v0.1.5290`
+  was deleted, run `31180054612` built `0.1.5291` from `2c568147` in 5 min 40 s
+  (12:52:25-12:58:05 UTC; warm content-addressed reuse, not the "tens of minutes"
+  a cold workspace costs), and cleanup run `31180470123` fired within a second of
+  completion and logged `Release run 31180054612: logs deleted and verified gone
+  (HTTP 404)` - so the fail-closed verify path ran, not just the DELETE. An
+  independent `GET .../logs` afterwards also returned 404, and the cleanup run's
+  own log contains zero occurrences of the user name.
 - Regression coverage: `ReleaseLogCleanupPolicyTest` in
   `tools/tests/test_privacy_paths.py` pins the trigger (matched against
   `release-stable.yml`'s actual `name:`, since `workflow_run` binds by name and a
