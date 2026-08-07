@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-08-07 - v0.1.5294 released; Actions run logs were a second, larger leak surface
+
+- `v0.1.5294` published by run 31218094687 (success, `step.external_preparation` 1111 s, so
+  compiled in-job), log auto-deleted (404), published assets carry no user or host name.
+  Replaces the deleted `v0.1.5293`. Next version: `0.1.5295`.
+- **Checking "are the dangling SHAs the only leak?" found two further surfaces.** They were
+  worse than the git objects, because no SHA was needed to reach them:
+  - **Six retained `release-stable` failure logs.** `release-log-cleanup.yml` deliberately
+    keeps a failed run's log (`if: conclusion == 'success'`) as the only diagnostic material,
+    and flags that it "still needs a manual delete once investigated". That manual step had
+    never been performed, so six had accumulated - each exposing the **machine name**, which
+    is the entire reason the cleanup workflow exists, and one also the mangled user path.
+  - **Two logs from a `debug-token` workflow that no longer exists**, both marked *success*.
+    The cleanup matches `workflows: ["release-stable"]` by name, so any other workflow's logs
+    are unprotected by construction, and with the workflow file deleted nothing would ever
+    have cleaned them.
+- All eight deleted, each verified `404` with the same fail-closed re-check the cleanup uses.
+  A sweep of **all 36 runs** with a broad pattern (the name in any spelling, which also
+  catches the host name) now reports **0 leaking logs**; 24 logs remain retained and clean.
+  Zero workflow artifacts.
+- **Design gaps this exposed, still open** (deliberately not changed unilaterally):
+  the "manual delete once investigated" step will be forgotten again - it already was, six
+  times - so failed logs want an age-based auto-delete or an issue opened by the flag step;
+  and the cleanup's single hard-coded workflow name means a new or deleted workflow is
+  silently outside its scope.
+- Remaining exposure before the repo can go public is **only** the dangling git objects from
+  the history scrub: still fetchable by SHA, and the SHA is advertised in the Actions run
+  list, so it needs no guessing. Needs a GitHub Support garbage-collection request, or a
+  repository delete-and-recreate (which also wipes the run history advertising the SHAs).
+
 ### 2026-08-07 - nv-codec-headers pinned and given a fallback source (git.videolan.org outage)
 
 - Release run 31215691866 (0.1.5294) built the **entire** dependency closure, including aom
