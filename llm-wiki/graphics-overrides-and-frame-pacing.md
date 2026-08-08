@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-08
+Last cross-checked: 2026-08-09
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -8,12 +8,13 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
-- `hook/common/{ngx_module_policy.h,ngx_fg_preset_override.*,reflex_limiter.h}`
+- `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,reflex_limiter.h,ue5_rr_override_policy.h}`
+- `hook/main_ue5.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
-- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
+- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_module_policy,test_ngx_fg_preset_override}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy}.cpp`
 
 ## Configuration contract
 
@@ -41,6 +42,10 @@ Primary sources:
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
   "DLSS on-screen indicator" below.
+- `force_ray_reconstruction=off|on` is an opt-in x64 UE5 policy. `on` persistently selects the existing NVIDIA
+  plugin's `r.NGX.DLSS.DenoiserMode=1` render path in process memory; `[DLSS]` is canonical, legacy `[Graphics]`
+  remains accepted, and `DLSS.force_ray_reconstruction` works in a process-backed profile. It does not edit game
+  files or imply that the title supplies the RR render inputs and runtime support described below.
 - Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
   exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
 
@@ -168,6 +173,42 @@ Primary sources:
 - The parameter machinery downstream (vtable hooks on `SetUI`/`SetI` plus `InjectPreset` at parameter creation) was
   already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
   no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.
+
+## UE5 DLSS Ray Reconstruction force policy
+
+- NVIDIA's UE plugin declares `CVarNGXDLSSDenoiserMode` as a static `TAutoConsoleVariable<int32>` and selects SR
+  (`0`) versus RR (`1`) with `GetValueOnRenderThread()`. CE therefore changes the exact value source the plugin reads,
+  rather than periodically issuing a console command that a map/device-profile reload can undo.
+- On opt-in, `hook/main_ue5.cpp` scans the initial x64 module set once and then only newly loaded modules. It finds the
+  exact NUL-terminated UTF-16 `r.NGX.DLSS.DenoiserMode` literal, correlates nearby x64 RIP-relative constructor/store
+  references, and accepts only one strongly distinguished live `TAutoConsoleVariable<int32>` candidate. Validation
+  proves the writable 24-byte `FAutoConsoleObject`/`Target`/`Ref` layout, callable object and target vtables, readable
+  `TConsoleVariableData<int32>`, and plausible `{game, render}` shadow values of `0` or `1`. Ambiguous or unfamiliar
+  layouts leave memory untouched.
+- CE atomically redirects only the `Ref` pointer to page-aligned process-lifetime `{1,1}` shadow storage. The game's
+  real console variable and priority/history state remain intact; later Engine.ini, scalability, level, or game code
+  writes update the original shadow but cannot change the plugin's direct read. Disabling the setting or shutting the
+  hook down compare/exchanges the original pointer back. Owner-module unload retires the stale address and an eventual
+  reload is rescanned. There is no disk write, render-thread hook, repeated module sweep, or vtable call into unknown
+  UE code.
+- The policy deliberately does not spoof `SuperSamplingDenoising.Available`,
+  `SuperSamplingDenoising.FeatureInitResult`, or `GetFeatureRequirements(Feature 13)`. It cannot add missing
+  albedo/specular/normal/depth/motion-vector inputs, enable a disabled temporal upscaler, retrofit an older NVIDIA UE
+  plugin, or make an unsupported GPU/runtime work. It also never blocks Feature 1 ordinary SR fallback: a failed RR
+  create/evaluate must produce an ordinary frame rather than a blank output or engine assertion.
+- CE adds authoritative lifecycle evidence around D3D11/D3D12/Vulkan NGX Create/Evaluate/Evaluate_C/Release. Feature
+  13 is reported active only after a successful evaluation, not merely after handle creation; Feature 1 reports an SR
+  fallback, and release republishes the remaining evaluated handles. Streamline's successful
+  `slEvaluateFeature(kFeatureDLSS_RR=1001)` / `kFeatureDLSS=0` provides the same evidence when the public Streamline
+  layer is visible. All transition/failure logs are bounded. Capability observations are diagnostic only.
+- There is no CE hardware-ray-tracing gate. Software-RT UE projects can use the same policy when their NVIDIA plugin
+  is RR-capable and their renderer supplies the required denoiser inputs. Conversely, merely shipping Streamline or
+  copying `nvngx_dlssd.dll` cannot create engine-side RR integration that is absent.
+- Expected proof sequence: `force policy enabled`, `persistent ... DenoiserMode=1 override installed`, Feature 13
+  creation, then either NGX `Feature 13 evaluation succeeded` or Streamline `kFeatureDLSS_RR (1001) evaluation
+  succeeded`. An ordinary Feature 1/feature 0 evaluation while forced is an explicit fallback diagnostic. Runtime
+  validation remains required on a known title where an Engine.ini-only `DenoiserMode=1` already works, then on
+  map-transition and software-RT cases.
 
 ## DLSS Frame Generation render preset
 

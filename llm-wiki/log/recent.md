@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-09 - UE5 DLSS Ray Reconstruction force became persistent and observable
+
+- `[DLSS] force_ray_reconstruction=on` now reaches the injected hook through initial publication, profile resolution,
+  live IPC updates, and a byte of the existing `SharedGraphicsConfig` alignment gap (size/offset assertions keep ABI
+  38 unchanged). The first-run template documents the opt-in, anti-cheat boundary, DLL override relationship, and
+  missing-integration limitation.
+- The former command-line append and guessed UE console-manager/vtable calls were removed. The x64 hook now finds the
+  exact UTF-16 `r.NGX.DLSS.DenoiserMode` owner, requires one strongly distinguished live
+  `TAutoConsoleVariable<int32>` layout, and atomically redirects only its `Ref` to process-lifetime `{1,1}` shadow
+  storage. This survives level/config CVar writes, restores by compare/exchange on disable/shutdown, rescans an owner
+  module reload, never polls the render path, and leaves unfamiliar/ambiguous layouts untouched.
+- RR support is never spoofed and SR fallback remains unblocked. NGX D3D11/D3D12/Vulkan Create/Evaluate/Evaluate_C/
+  Release plus Streamline feature 1001/0 evaluation now publish and log actual rendering evidence; Feature 13 is not
+  called active merely because creation succeeded. Correct capability keys are
+  `SuperSamplingDenoising.Available` / `.FeatureInitResult`. Focused config, scanner-policy, lifecycle, source-policy,
+  and Streamline ordering tests passed, as did incremental x64/x86 product build 0.1.5878. Known-working Engine.ini
+  equivalence, map transitions, software-RT projects, and titles lacking engine-side RR inputs remain runtime tests.
+
 ### 2026-08-08 - Strange Brigade x64 exposed the NVIDIA patch writer's 32-bit boundary gap
 
 - Session `20260808_214315` is conclusive rather than visual-only: the Vulkan layer resolved

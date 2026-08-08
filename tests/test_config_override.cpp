@@ -1,36 +1,9 @@
 #include <gtest/gtest.h>
-#include <windows.h>
 #include <algorithm>
-#include <filesystem>
-#include <fstream>
 #include <set>
 #include <string>
 #include "../common/config.h"
-
-class ConfigOverrideTest : public ::testing::Test {
-protected:
-    std::string tempConfigFile;
-
-    void SetUp() override {
-        // Include the process id, exactly like MakeTestPath() in test_config_shared.h: the
-        // product suite and the isolated sanitizer suite run concurrently under --verify
-        // from the same working directory, and a fixed name let them delete and overwrite
-        // each other's config file mid-test.
-        const std::string uniqueName = "test_config_override." + std::to_string(GetCurrentProcessId()) + ".ini";
-        tempConfigFile = (std::filesystem::current_path() / uniqueName).string();
-        remove(tempConfigFile.c_str());
-    }
-
-    void TearDown() override {
-        remove(tempConfigFile.c_str());
-    }
-
-    void WriteConfig(const std::string& content) {
-        std::ofstream out(tempConfigFile);
-        out << content;
-        out.close();
-    }
-};
+#include "test_config_override_fixture.h"
 
 TEST_F(ConfigOverrideTest, SimpleOverride) {
     std::string iniContent =
@@ -616,72 +589,6 @@ TEST_F(ConfigOverrideTest, EmptyCanonicalNumberedSectionStillFallsBackToLegacyAp
     ASSERT_EQ(config.gameWhitelist.size(), 1u);
     EXPECT_EQ(config.gameWhitelist.front().pattern, "legacy.exe");
     EXPECT_EQ(config.video.fps, 75);
-}
-
-TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {
-    std::string iniContent =
-        "[Graphics]\n"
-        "dlss_fg_factor=2x\n"
-        "dlss_sr_preset=K\n"
-        "\n"
-        "[App.1]\n"
-        "Process=RoboCop-Win64-Shipping.exe\n"
-        "dlss_fg_factor=3x\n"
-        "dlss_sr_preset=L\n";
-
-    WriteConfig(iniContent);
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config, "RoboCop-Win64-Shipping.exe");
-
-    EXPECT_EQ(config.graphics.dlssFgFactor, "3x");
-    EXPECT_EQ(config.graphics.parsed.dlssFGFactor, 3);
-    EXPECT_EQ(config.graphics.parsed.srPreset, 12u);
-}
-
-TEST_F(ConfigOverrideTest, PerAppDLSSFGPresetOverride) {
-    std::string iniContent =
-        "[DLSS]\n"
-        "dlss_fg_preset=A\n"
-        "\n"
-        "[App.1]\n"
-        "Process=RoboCop-Win64-Shipping.exe\n"
-        "dlss_fg_preset=B\n";
-
-    WriteConfig(iniContent);
-
-    AppConfig matched;
-    LoadConfig(tempConfigFile, matched, "RoboCop-Win64-Shipping.exe");
-    EXPECT_EQ(matched.graphics.dlssFgPreset, "B");
-    EXPECT_EQ(matched.graphics.parsed.fgPreset, 2u);
-
-    AppConfig unmatched;
-    LoadConfig(tempConfigFile, unmatched, "other.exe");
-    EXPECT_EQ(unmatched.graphics.dlssFgPreset, "A");
-    EXPECT_EQ(unmatched.graphics.parsed.fgPreset, 1u);
-}
-
-TEST_F(ConfigOverrideTest, DLSSFGPresetDefaultsToNoOverride) {
-    WriteConfig("[DLSS]\ndlss_fg_factor=default\n");
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config, "any.exe");
-
-    EXPECT_EQ(config.graphics.dlssFgPreset, "default");
-    EXPECT_EQ(config.graphics.parsed.fgPreset, 0u);
-}
-
-TEST_F(ConfigOverrideTest, StreamlineDllPathParsing) {
-    std::string iniContent =
-        "[Graphics]\n"
-        "streamline_dll_path=C:\\custom\\sl\\dlls\n";
-
-    WriteConfig(iniContent);
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config, "test.exe");
-
-    EXPECT_EQ(config.graphics.streamlineDllPath, "C:\\custom\\sl\\dlls");
 }
 
 // Regression: an [App.N] override section's reserved "Process" selector key must

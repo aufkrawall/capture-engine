@@ -1,6 +1,6 @@
 # Known and Accepted Debt
 
-Last verified: 2026-07-28
+Last verified: 2026-08-09
 
 Primary sources:
 - `AGENTS.md`
@@ -146,13 +146,6 @@ driver switches to lld-link, then require the entry in
 `tools/verify_pe_hardening.py` and add a patcher test with a synthetic PE
 (MZ + PE signature + COFF + optional header; DllCharacteristics at optional
 offset 0x46).
-
-### Hook command-line logging is masked
-
-`hook/main_loadlibrary.cpp` logs only a bounded excerpt of the command line
-under `forceRayReconstruction`, with values of token-like `key=` arguments
-masked (`token`, `key`, `secret`, `password`, `auth`, `code`, `session`,
-`access_token`, ...). Keep the mask in sync with any new sensitive parameters.
 
 ### Config reload watches (mtime, size) identity
 

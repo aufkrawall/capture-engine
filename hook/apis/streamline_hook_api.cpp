@@ -387,7 +387,35 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
     }
 
     // Append CE before Streamline observes/copies any eOnlyValidNow/eValidUntilEvaluate UI tag.
-    return originalEvaluateFeature(feature, streamline_hook_frame, inputs, numInputs, streamline_hook_commandBuffer);
+    const slResult result =
+        originalEvaluateFeature(feature, streamline_hook_frame, inputs, numInputs, streamline_hook_commandBuffer);
+    if (result == streamline_hook_kSlResultOk &&
+        (feature == streamline_hook_kFeatureDLSS || feature == streamline_hook_kFeatureDLSSRR)) {
+        const uint32_t previous =
+            streamline_hook_g_LastUpscalerEvaluation.exchange(feature, std::memory_order_acq_rel);
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            auto& state = g_IPC->GetSharedMem()->dlssState;
+            const bool rayReconstruction = feature == streamline_hook_kFeatureDLSSRR;
+            state.rrActive.store(rayReconstruction, std::memory_order_release);
+            state.srActive.store(!rayReconstruction, std::memory_order_release);
+        }
+        if (feature != previous) {
+            static std::atomic<uint32_t> transitionLogs{0};
+            if (transitionLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
+                if (feature == streamline_hook_kFeatureDLSSRR) {
+                    HookLogImportant(
+                        "Streamline RR: kFeatureDLSS_RR (1001) evaluation succeeded; Ray Reconstruction is rendering");
+                } else if (GetActiveGraphicsConfig().forceRayReconstruction) {
+                    HookLogImportant(
+                        "Streamline RR: ordinary kFeatureDLSS (0) evaluation succeeded while force policy is enabled; "
+                        "RR was not selected or has fallen back");
+                } else {
+                    HookLog("Streamline: ordinary DLSS evaluation confirmed");
+                }
+            }
+        }
+    }
+    return result;
 
 }
 

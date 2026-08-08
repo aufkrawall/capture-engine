@@ -370,9 +370,10 @@ struct SharedGraphicsConfig {
     char mipBiasMode[32];                // "strict", "offset", "base"
     bool forceMipBiasClamp;              // Force all texture mip bias values to 0
     char msaaSamples[32];                // "default", "off", "2x", "4x", "8x"
-    // Occupies one byte of the pre-existing three-byte alignment gap before
-    // prerenderLimit, so this addition does not change the shared layout or ABI.
+    // These flags occupy two bytes of the pre-existing three-byte alignment gap
+    // before prerenderLimit, so neither addition changes the shared layout or ABI.
     bool nvLodSpreadFix;                 // Force NVIDIA's process-local LOD-spread branch ON
+    bool forceRayReconstruction;         // Persistently select UE NVIDIA DLSS Ray Reconstruction
     float prerenderLimit;                // integer semantics: -1=default, 0=serial, 1-6 buffered
     int32_t backbufferCount;             // -1=app controlled, 2-6 actual count
     int32_t frameLatency;                // 0=default, 1-6 (SetMaximumFrameLatency)
@@ -413,9 +414,12 @@ struct SharedGraphicsConfig {
 static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
                   offsetof(SharedGraphicsConfig, msaaSamples) + 32,
               "nvLodSpreadFix must remain in the existing SharedGraphicsConfig padding");
+static_assert(offsetof(SharedGraphicsConfig, forceRayReconstruction) ==
+                  offsetof(SharedGraphicsConfig, nvLodSpreadFix) + 1,
+              "forceRayReconstruction must remain in the existing SharedGraphicsConfig padding");
 static_assert(offsetof(SharedGraphicsConfig, prerenderLimit) ==
-                  offsetof(SharedGraphicsConfig, nvLodSpreadFix) + 3,
-              "nvLodSpreadFix must not move later SharedGraphicsConfig fields");
+                  offsetof(SharedGraphicsConfig, forceRayReconstruction) + 2,
+              "RR policy flags must not move later SharedGraphicsConfig fields");
 static_assert(sizeof(SharedGraphicsConfig) == 360,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 

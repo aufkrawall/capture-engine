@@ -569,14 +569,17 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
         streamline.find("StructTypesEqual(input->structType, streamline_hook_kResourceTagStructType)", evaluateGate);
     const size_t evaluateRecord =
         streamline.find("TryRecordOfficialUiResourceTag(frameToken, tag, streamline_hook_commandBuffer)", evaluateLocalTag);
-    const size_t evaluateForward = streamline.find("return originalEvaluateFeature", evaluateRecord);
+    const size_t evaluateForward = streamline.find("originalEvaluateFeature(feature", evaluateRecord);
+    const size_t evaluateReturn = streamline.find("return result", evaluateForward);
     ASSERT_NE(evaluateGate, std::string::npos);
     ASSERT_NE(evaluateLocalTag, std::string::npos);
     ASSERT_NE(evaluateRecord, std::string::npos);
     ASSERT_NE(evaluateForward, std::string::npos);
+    ASSERT_NE(evaluateReturn, std::string::npos);
     EXPECT_LT(evaluateGate, evaluateLocalTag)
         << "steady-state evaluate calls must remain one atomic bootstrap gate before input scanning";
     EXPECT_LT(evaluateRecord, evaluateForward) << "Streamline's local volatile-tag use/copy must include CE's UI draw";
+    EXPECT_LT(evaluateForward, evaluateReturn) << "RR/SR evidence must observe only the real Streamline result";
     EXPECT_NE(streamline.find("{\"slEvaluateFeature\", &streamline_hook_g_SLEvaluateFeatureTarget"), std::string::npos)
         << "evaluate hook state must invalidate safely across Streamline unload/reload";
 

@@ -1,6 +1,7 @@
 #include "nvngx_hook_internal.h"
 
 static PFN_NVSDK_NGX_CreateFeature oCreateFeature_VULKAN = nullptr;
+static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
 
 // Helper to get DLSS Version from loaded DLL
 static void UpdateDLSSVersion() {
@@ -118,46 +119,9 @@ static char GetPresetChar(int qualityValue) {
     return '?';
 }
 
-static float CalculateScale(const NVSDK_NGX_DLSS_Create_Params* p) {
-    if (p->InTargetWidth > 0 && p->InRenderWidth > 0) {
-        return (float)p->InTargetWidth / (float)p->InRenderWidth;
-    }
-    return 0.0f;
-}
-
-static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info) {
-    if (!IsSafePtr(info) || !g_IPC || !g_IPC->GetSharedMem())
-        return;
-
-    auto& state = g_IPC->GetSharedMem()->dlssState;
-    // Version is updated at install time now
-
-    // Safety check for FeatureInfo
-    if (!IsSafePtr(info->FeatureInfo))
-        return;
-
-    if (info->FeatureID == 1) {  // Super Resolution
-        state.srActive = true;
-        if (info->FeatureInfo) {
-            const auto* params = (const NVSDK_NGX_DLSS_Create_Params*)info->FeatureInfo;
-            state.renderScale = CalculateScale(params);
-            state.srPreset = GetPresetChar(params->InPerfQualityValue);
-
-            if (g_IPC->GetSharedMem()->GetDebugLogging()) {
-                LogOncePerParam("DLSS_SR_Create", "NVNGX: Created DLSS SR. Scale=%.2f, Quality=%d, Preset=%c",
-                                state.renderScale.load(), params->InPerfQualityValue, state.srPreset.load());
-            }
-        }
-    } else if (info->FeatureID == 13) {  // Ray Reconstruction
-        state.rrActive = true;
-        if (g_IPC->GetSharedMem()->GetDebugLogging()) {
-            LogOncePerParam("DLSS_RR_Create", "NVNGX: Created DLSS RR.");
-        }
-    }
-}
-
-NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeature original, void* ctx, int featureID,
-                                                      NVSDK_NGX_Parameter* params, void** handle) {
+template <typename CreateCall>
+NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureID, NVSDK_NGX_Parameter* params,
+                                      void** handle) {
     static std::atomic<bool> s_firstCall{true};
     if (s_firstCall.exchange(false)) {
         HookLogImportant("NVNGX: First CreateFeature call — NVNGX hooks are active (featureID=%d)", featureID);
@@ -166,18 +130,16 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Entry ctx=%p, ID=%d, params=%p", ctx, featureID, params);
 
-    if (!original)
-        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
-
     if (params)
         EnsureVTableHooks(params);
-    const NVSDK_NGX_Result res = original(ctx, featureID, params, handle);
+    const NVSDK_NGX_Result res = create();
+    TrackNgxFeatureCreation(featureID, res, handle);
 
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Original Result=%X", res);
 
     // On success, update status
-    if (res == NVSDK_NGX_Result_Success) {
+    if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(res))) {
         // Update version if not yet found (handling lazy load)
         if (g_IPC && g_IPC->GetSharedMem()) {
             if (g_IPC->GetSharedMem()->dlssState.versionMajor == 0) {
@@ -190,9 +152,8 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
             const ParameterVTableOriginals parameterOriginals = GetParameterOriginals(params);
 
             if (featureID == 1) {
-                state.srActive = true;
                 if (g_IPC->GetSharedMem()->GetDebugLogging())
-                    NVNGXLog("Hooked_CreateFeature: DLSS SR Activated (ID 1)");
+                    NVNGXLog("Hooked_CreateFeature: DLSS SR created (ID 1); awaiting EvaluateFeature evidence");
 
                 // Proactive Sync: Query effective presets from the parameter object
                 auto SyncPreset = [&](const char* name) {
@@ -279,9 +240,8 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                        featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration ||
                        featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration) {
                 if (featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction) {
-                    state.rrActive = true;
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
-                        NVNGXLog("Hooked_CreateFeature: DLSS RR Activated (ID 13)");
+                        NVNGXLog("Hooked_CreateFeature: DLSS RR created (ID 13); awaiting EvaluateFeature evidence");
                 } else if (featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration) {
                     // DLSS Multi-Frame Generation (MFG) - Feature ID 18
                     // MFG generates 2x, 3x, or 4x frames per rendered frame
@@ -361,17 +321,38 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_D3D11(void* ctx, int featureID, NVSDK_NGX_Parameter* params,
                                                     void** handle) {
-    return Hooked_CreateFeature_Process(nvngx_hook_oCreateFeature_D3D11, ctx, featureID, params, handle);
+    const auto original = nvngx_hook_oCreateFeature_D3D11;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    return ProcessCreateFeature([=] { return original(ctx, featureID, params, handle); }, ctx, featureID, params,
+                                handle);
 }
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_D3D12(void* ctx, int featureID, NVSDK_NGX_Parameter* params,
                                                     void** handle) {
-    return Hooked_CreateFeature_Process(nvngx_hook_oCreateFeature_D3D12, ctx, featureID, params, handle);
+    const auto original = nvngx_hook_oCreateFeature_D3D12;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    return ProcessCreateFeature([=] { return original(ctx, featureID, params, handle); }, ctx, featureID, params,
+                                handle);
 }
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN(void* ctx, int featureID, NVSDK_NGX_Parameter* params,
                                                      void** handle) {
-    return Hooked_CreateFeature_Process(oCreateFeature_VULKAN, ctx, featureID, params, handle);
+    const auto original = oCreateFeature_VULKAN;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    return ProcessCreateFeature([=] { return original(ctx, featureID, params, handle); }, ctx, featureID, params,
+                                handle);
+}
+
+NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN1(void* device, void* ctx, int featureID,
+                                                      NVSDK_NGX_Parameter* params, void** handle) {
+    const auto original = oCreateFeature_VULKAN1;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    return ProcessCreateFeature([=] { return original(device, ctx, featureID, params, handle); }, ctx, featureID,
+                                params, handle);
 }
 
 // Inline-hook the NVSDK_NGX_* entry points inside the module that really
@@ -416,6 +397,12 @@ static void InstallNGXExportInlineHooks() {
          (void**)&nvngx_hook_oGetFeatureRequirements_D3D11},
         {"NVSDK_NGX_D3D11_CreateFeature", (void*)&Hooked_CreateFeature_D3D11,
          (void**)&nvngx_hook_oCreateFeature_D3D11},
+        {"NVSDK_NGX_D3D11_EvaluateFeature", (void*)&Hooked_EvaluateFeature_D3D11,
+         (void**)&nvngx_hook_oEvaluateFeature_D3D11},
+        {"NVSDK_NGX_D3D11_EvaluateFeature_C", (void*)&Hooked_EvaluateFeature_D3D11_C,
+         (void**)&nvngx_hook_oEvaluateFeature_D3D11_C},
+        {"NVSDK_NGX_D3D11_ReleaseFeature", (void*)&Hooked_ReleaseFeature_D3D11,
+         (void**)&nvngx_hook_oReleaseFeature_D3D11},
         {"NVSDK_NGX_D3D12_GetParameters", (void*)&Hooked_GetParams_D3D12, (void**)&nvngx_hook_oGetParameters_D3D12},
         {"NVSDK_NGX_D3D12_AllocateParameters", (void*)&Hooked_AllocParams_D3D12,
          (void**)&nvngx_hook_oAllocateParameters_D3D12},
@@ -425,6 +412,12 @@ static void InstallNGXExportInlineHooks() {
          (void**)&nvngx_hook_oGetFeatureRequirements_D3D12},
         {"NVSDK_NGX_D3D12_CreateFeature", (void*)&Hooked_CreateFeature_D3D12,
          (void**)&nvngx_hook_oCreateFeature_D3D12},
+        {"NVSDK_NGX_D3D12_EvaluateFeature", (void*)&Hooked_EvaluateFeature_D3D12,
+         (void**)&nvngx_hook_oEvaluateFeature_D3D12},
+        {"NVSDK_NGX_D3D12_EvaluateFeature_C", (void*)&Hooked_EvaluateFeature_D3D12_C,
+         (void**)&nvngx_hook_oEvaluateFeature_D3D12_C},
+        {"NVSDK_NGX_D3D12_ReleaseFeature", (void*)&Hooked_ReleaseFeature_D3D12,
+         (void**)&nvngx_hook_oReleaseFeature_D3D12},
         {"NVSDK_NGX_VULKAN_GetParameters", (void*)&Hooked_GetParams_VULKAN, (void**)&nvngx_hook_oGetParameters_VULKAN},
         {"NVSDK_NGX_VULKAN_AllocateParameters", (void*)&Hooked_AllocParams_VULKAN,
          (void**)&nvngx_hook_oAllocateParameters_VULKAN},
@@ -433,15 +426,31 @@ static void InstallNGXExportInlineHooks() {
         {"NVSDK_NGX_VULKAN_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_VULKAN,
          (void**)&nvngx_hook_oGetFeatureRequirements_VULKAN},
         {"NVSDK_NGX_VULKAN_CreateFeature", (void*)&Hooked_CreateFeature_VULKAN, (void**)&oCreateFeature_VULKAN},
+        {"NVSDK_NGX_VULKAN_CreateFeature1", (void*)&Hooked_CreateFeature_VULKAN1, (void**)&oCreateFeature_VULKAN1},
+        {"NVSDK_NGX_VULKAN_EvaluateFeature", (void*)&Hooked_EvaluateFeature_VULKAN,
+         (void**)&nvngx_hook_oEvaluateFeature_VULKAN},
+        {"NVSDK_NGX_VULKAN_EvaluateFeature_C", (void*)&Hooked_EvaluateFeature_VULKAN_C,
+         (void**)&nvngx_hook_oEvaluateFeature_VULKAN_C},
+        {"NVSDK_NGX_VULKAN_ReleaseFeature", (void*)&Hooked_ReleaseFeature_VULKAN,
+         (void**)&nvngx_hook_oReleaseFeature_VULKAN},
     };
 
     int hooked = 0;
+    int aliased = 0;
     int missing = 0;
     int failed = 0;
+    std::vector<std::pair<void*, void*>> hookedTargets;
     for (const ExportHook& entry : exports) {
         void* target = (void*)GetProcAddress(hNGX, entry.name);
         if (!target) {
             ++missing;
+            continue;
+        }
+        const auto existing = std::find_if(hookedTargets.begin(), hookedTargets.end(),
+                                           [target](const auto& item) { return item.first == target; });
+        if (existing != hookedTargets.end()) {
+            *entry.original = existing->second;
+            ++aliased;
             continue;
         }
         void* trampoline = nullptr;
@@ -453,15 +462,16 @@ static void InstallNGXExportInlineHooks() {
         // Overwrite unconditionally. An earlier IAT pass may have captured the
         // raw export address here; calling that now re-enters our own detour.
         *entry.original = trampoline;
+        hookedTargets.push_back({target, trampoline});
         ++hooked;
     }
 
     if (hooked > 0)
         s_HookedModule = hNGX;
 
-    HookLogImportant("NVNGX: inline-hooked %d export(s) in %s at %p (absent=%d failed=%d); preset/parameter overrides "
+    HookLogImportant("NVNGX: inline-hooked %d export(s) in %s at %p (aliases=%d absent=%d failed=%d); preset/parameter overrides "
                      "now apply regardless of how the caller resolved them",
-                     hooked, moduleName, (void*)hNGX, missing, failed);
+                     hooked, moduleName, (void*)hNGX, aliased, missing, failed);
 }
 
 void NVNGXHook::OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
@@ -549,10 +559,30 @@ void NVNGXHook::Install() {
                     (LPVOID*)&nvngx_hook_oGetFeatureRequirements_VULKAN);
     RegisterDynamic("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11,
                     (LPVOID*)&nvngx_hook_oCreateFeature_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D11_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D11,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D11_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D11_C,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11_C);
+    RegisterDynamic("NVSDK_NGX_D3D11_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_D3D11,
+                    (LPVOID*)&nvngx_hook_oReleaseFeature_D3D11);
     RegisterDynamic("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12,
                     (LPVOID*)&nvngx_hook_oCreateFeature_D3D12);
+    RegisterDynamic("NVSDK_NGX_D3D12_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D12,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D12);
+    RegisterDynamic("NVSDK_NGX_D3D12_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D12_C,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D12_C);
+    RegisterDynamic("NVSDK_NGX_D3D12_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_D3D12,
+                    (LPVOID*)&nvngx_hook_oReleaseFeature_D3D12);
     RegisterDynamic("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
                     (LPVOID*)&oCreateFeature_VULKAN);
+    RegisterDynamic("NVSDK_NGX_VULKAN_CreateFeature1", (LPVOID)&Hooked_CreateFeature_VULKAN1,
+                    (LPVOID*)&oCreateFeature_VULKAN1);
+    RegisterDynamic("NVSDK_NGX_VULKAN_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_VULKAN,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_VULKAN);
+    RegisterDynamic("NVSDK_NGX_VULKAN_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_VULKAN_C,
+                    (LPVOID*)&nvngx_hook_oEvaluateFeature_VULKAN_C);
+    RegisterDynamic("NVSDK_NGX_VULKAN_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_VULKAN,
+                    (LPVOID*)&nvngx_hook_oReleaseFeature_VULKAN);
 
     if (!s_DynamicHookRegisterLogged.exchange(true)) {
         HookLogImportant("NVNGX: Dynamic hooks registered for GetProcAddress interception");
@@ -611,8 +641,28 @@ void NVNGXHook::Install() {
     PatchIAT("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN,
              (LPVOID*)&nvngx_hook_oGetFeatureRequirements_VULKAN);
     PatchIAT("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11, (LPVOID*)&nvngx_hook_oCreateFeature_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D11,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D11_C,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11_C);
+    PatchIAT("NVSDK_NGX_D3D11_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_D3D11,
+             (LPVOID*)&nvngx_hook_oReleaseFeature_D3D11);
     PatchIAT("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12, (LPVOID*)&nvngx_hook_oCreateFeature_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D12,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D12_C,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D12_C);
+    PatchIAT("NVSDK_NGX_D3D12_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_D3D12,
+             (LPVOID*)&nvngx_hook_oReleaseFeature_D3D12);
     PatchIAT("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN, (LPVOID*)&oCreateFeature_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_CreateFeature1", (LPVOID)&Hooked_CreateFeature_VULKAN1,
+             (LPVOID*)&oCreateFeature_VULKAN1);
+    PatchIAT("NVSDK_NGX_VULKAN_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_VULKAN,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_VULKAN_C,
+             (LPVOID*)&nvngx_hook_oEvaluateFeature_VULKAN_C);
+    PatchIAT("NVSDK_NGX_VULKAN_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_VULKAN,
+             (LPVOID*)&nvngx_hook_oReleaseFeature_VULKAN);
 
     HookLogImportant("NVNGX: IAT patches installed");
 }

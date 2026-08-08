@@ -465,6 +465,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.forceMipBiasClamp = shmGfx.forceMipBiasClamp;
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
+        mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

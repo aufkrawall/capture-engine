@@ -6,10 +6,6 @@ struct ExternalDumpGateDecision;
 
 struct ChildInjectParams;
 
-namespace UE5 {
-class IConsoleVariable;
-}
-
 #include "../common/utils/scanner.h"
 
 #include "apis/ddraw_hook.h"
@@ -167,10 +163,6 @@ typedef NTSTATUS(NTAPI *LdrLoadDll_t)(PWSTR SearchPath,
                                       PUNICODE_STRING DllName,
                                       PVOID *BaseAddress);
 
-typedef LPSTR(WINAPI *GetCommandLineA_t)();
-
-typedef LPWSTR(WINAPI *GetCommandLineW_t)();
-
 // CreateProcess Hook Typedefs for child process injection
 typedef BOOL(WINAPI *CreateProcessA_t)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES,
 
@@ -211,10 +203,6 @@ typedef VOID(CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(
 
 typedef NTSTATUS(NTAPI *PFN_LdrRegisterDllNotification)(
     ULONG Flags, PLDR_DLL_NOTIFICATION_FUNCTION NotificationFunction, PVOID Context, PVOID *Cookie);
-
-typedef void *(*FindConsoleVariable_t)(void *mgr, const wchar_t *name);
-
-typedef void (*Set_t)(void *cvar, const wchar_t *value, uint32_t setBy);
 
 BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType, PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam, PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam, PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 
@@ -350,10 +338,6 @@ void ArmManualReflexQueryHookIfConfigured(const char *source);
 
 void ArmNgxFgPresetOverrideIfConfigured(const char *source);
 
-LPSTR WINAPI HookedGetCommandLineA();
-
-LPWSTR WINAPI HookedGetCommandLineW();
-
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName);
@@ -365,7 +349,10 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD d
 NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics, PUNICODE_STRING DllName, PVOID *BaseAddress);
 
 namespace UE5 {
-void EnforceRR();
+void NotifyModuleLoaded(HMODULE module);
+void NotifyModuleUnloaded(void* moduleBase, std::size_t moduleSize);
+void RefreshRayReconstructionOverride(bool enabled);
+void ShutdownRayReconstructionOverride();
 }
 
 void CheckAndInstallHooks();
@@ -383,11 +370,6 @@ inline ProcessCategory main_g_ProcessCategory = ProcessCategory::PotentialGame;
 inline bool main_g_isDormant = false;
 
 inline bool main_g_isSkippedProcess = false;
-
-// Hooked Functions - Signal Event & Redirect
-inline std::string main_g_SpoofedCmdLineA;
-
-inline std::wstring main_g_SpoofedCmdLineW;
 
 extern HMODULE g_hModule;
 
@@ -452,10 +434,6 @@ extern std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA;
 extern std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW;
 
 extern std::atomic<LdrLoadDll_t> OriginalLdrLoadDll;
-
-extern std::atomic<GetCommandLineA_t> OriginalGetCommandLineA;
-
-extern std::atomic<GetCommandLineW_t> OriginalGetCommandLineW;
 
 extern std::atomic<CreateProcessA_t> OriginalCreateProcessA;
 

@@ -37,10 +37,6 @@ void EnsureLocalConfigAllocated() {
   g_pLocalConfig = g_LocalConfigOwner.get();
 }
 
-std::atomic<GetCommandLineA_t> OriginalGetCommandLineA{nullptr};
-
-std::atomic<GetCommandLineW_t> OriginalGetCommandLineW{nullptr};
-
 std::atomic<CreateProcessA_t> OriginalCreateProcessA{nullptr};
 
 std::atomic<CreateProcessW_t> OriginalCreateProcessW{nullptr};

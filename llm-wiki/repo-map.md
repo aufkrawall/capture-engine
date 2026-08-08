@@ -78,7 +78,8 @@ anchors that predate the split are approximate.
     session, state, queue, init, frame_pump units + `wgc_capture.cpp` facade).
 - `hook/`
   - `main.cpp` + `main_*.cpp` (dllmain, injection, install, loadlibrary, hookthread,
-    redirect, ue5, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`.
+    redirect, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`;
+    `main_ue5.cpp` owns validated persistent UE CVar shadow redirection and module lifecycle.
   - `apis/` - per-API hook sets, de-inlined into semantic units:
     - DX12: `dx12_hook.cpp` (facade) + `dx12_hook_internal.h` + semantic units:
       `dx12_hook_main.cpp` (module lifecycle), `dx12_hook_fg_state.cpp` /
@@ -119,7 +120,8 @@ anchors that predate the split are approximate.
     - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
       textures,state,frame,capture}.cpp` + `layer_capture_internal.h`.
   - `common/` - overlay policy (`dx12_overlay_policy.h`, `streamline_runtime_policy.h`,
-    `overlay_compat.h`), `dxgi_shared*.cpp` (central Present routing: hooks, present,
+    `overlay_compat.h`), UE/NGX RR policies (`ue5_rr_override_policy.h`,
+    `ngx_feature_lifecycle.h`), `dxgi_shared*.cpp` (central Present routing: hooks, present,
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),

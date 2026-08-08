@@ -120,6 +120,7 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->graphicsConfig.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
     strncpy(pSharedMem->graphicsConfig.msaaSamples, config.graphics.msaaSamples.c_str(), 31);
     pSharedMem->graphicsConfig.nvLodSpreadFix = config.graphics.nvLodSpreadFix;
+    pSharedMem->graphicsConfig.forceRayReconstruction = config.graphics.forceRayReconstruction;
     pSharedMem->graphicsConfig.prerenderLimit = config.graphics.cpuPrerenderLimit;
     pSharedMem->graphicsConfig.backbufferCount = config.graphics.backbufferCount;
     pSharedMem->graphicsConfig.sgssaa = config.graphics.sgssaa;
@@ -195,14 +196,15 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
         (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
         (static_cast<uint64_t>(config.logLevel) << 7) ^
         (static_cast<uint64_t>(pSharedMem->overlayConfig.observerPolicyOnly) << 8) ^
-        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerStartupPresentOnly) << 9);
+        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerStartupPresentOnly) << 9) ^
+        (static_cast<uint64_t>(pSharedMem->graphicsConfig.forceRayReconstruction) << 10);
 
     if (summaryHash != s_ConfigSummaryHash) {
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
-            "dlssAutoExp=%s sharpen=%.2f srPreset=%u",
+            "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d",
             LogLevelToConfigString(config.logLevel), pSharedMem->graphicsConfig.vsyncMode,
             pSharedMem->graphicsConfig.anisotropicFiltering, pSharedMem->graphicsConfig.mipBias,
             pSharedMem->graphicsConfig.mipBiasMode, pSharedMem->graphicsConfig.prerenderLimit,
@@ -211,7 +213,8 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
             pSharedMem->overlayConfig.observerOnly, pSharedMem->overlayConfig.observerPolicyOnly,
             pSharedMem->overlayConfig.observerStartupPresentOnly, pSharedMem->overlayConfig.captureIncludeOverlay,
             pSharedMem->overlayConfig.screenshotIncludeOverlay, pSharedMem->graphicsConfig.dlssAutoExposure,
-            pSharedMem->graphicsConfig.dlssSharpening, pSharedMem->graphicsConfig.dlssSRPreset);
+            pSharedMem->graphicsConfig.dlssSharpening, pSharedMem->graphicsConfig.dlssSRPreset,
+            pSharedMem->graphicsConfig.forceRayReconstruction ? 1 : 0);
         s_ConfigSummaryHash = summaryHash;
     }
 }
