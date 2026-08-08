@@ -47,33 +47,25 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 180
     steps:
-      - name: Check the workspace path is short enough to link in
+      - name: Check generated paths stay below the legacy Windows limit
         shell: pwsh
-        # Cheap guard against an expensive, badly-signposted failure. The runner's
-        # work folder is machine state, not repository state, so nothing in the repo
-        # can pin it - but its length decides whether the link step's command line
-        # fits Windows' 32767-character limit.
-        #
-        # Measured 2026-08-08: workspace at 73 characters links fine; re-registering
-        # the runner with the DEFAULT `_work` folder instead of the configured
-        # `build\runner-work` made it 82, and the build died 7 minutes in with
-        # "EXCEPTION: [WinError 206] The filename or extension is too long" while
-        # "Linking Hook DLL x64" - a message that names neither the workspace nor
-        # the runner. Failing here instead costs seconds and says what to fix.
+        # Long hook links use a response file, so workspace depth no longer multiplies
+        # across hundreds of object arguments into Windows' 32767-character command
+        # line limit. Keep a separate guard for individual generated paths consumed by
+        # tools that may still apply the legacy MAX_PATH boundary.
         # No PowerShell here-string below: its terminator must sit at column 0,
         # which dedents out of this YAML block scalar and makes the file unparseable.
         run: |
           $workspace = (Get-Location).Path
-          $limit = 76
-          Write-Output "Workspace: $workspace ($($workspace.Length) characters, limit $limit)"
-          if ($workspace.Length -gt $limit) {
+          $longestGeneratedPath = Join-Path $workspace 'build\stages\sanitize\obj\x64\hook\apis\dx12_hook_process_session_draw_transition.o'
+          $limit = 240
+          Write-Output "Longest generated path probe: $longestGeneratedPath ($($longestGeneratedPath.Length) characters, limit $limit)"
+          if ($longestGeneratedPath.Length -gt $limit) {
             $lines = @(
-              "Workspace path is $($workspace.Length) characters, over the $limit-character limit.",
-              "The link step passes hundreds of absolute object paths on one command line and",
-              "fails with WinError 206 several minutes into the build.",
+              "Generated path probe is $($longestGeneratedPath.Length) characters, over the $limit-character limit.",
+              "Some Windows build tools may still apply the legacy MAX_PATH boundary.",
               "Fix: re-register the runner with a short work folder, for example",
-              "  config.cmd --url <repo-url> --token <token> --name windows-release --work <short-path> --unattended --replace",
-              "The default _work folder sits under the runner directory and is 9 characters deeper."
+              "  config.cmd --url <repo-url> --token <token> --name windows-release --work <short-path> --unattended --replace"
             )
             throw ($lines -join [Environment]::NewLine)
           }

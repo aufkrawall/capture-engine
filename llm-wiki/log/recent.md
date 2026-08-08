@@ -233,21 +233,16 @@
 - Restored by hand after the recreate: 1897 commits + the `v0.1.5294` tag,
   `CE_TOOLCHAIN_ROOT`, `default_workflow_permissions=read`
   (`can_approve_pull_request_reviews=false`), and the runner registration.
-- **`--work` is load-bearing when re-registering the runner.** The original registration
-  used an explicit `workFolder` of `C:\...\build\runner-work`; re-registering with
-  `--unattended` and no `--work` silently used config.cmd's default `_work`, which sits
-  under the runner directory and put the workspace at **82** characters instead of **73**.
-  Run 31226827240 then died seven minutes in, after a fully successful closure and FFmpeg
-  build, while "Linking Hook DLL x64":
-  `EXCEPTION: [WinError 206] The filename or extension is too long`. The link step passes
-  hundreds of absolute object paths on one command line and nine characters were enough to
-  exceed Windows' 32767-character command-line limit. Note this is the command-line limit,
-  a *different* limit from the 260-char MAX_PATH that the doxygen man pages hit - the same
-  path-depth theme, two distinct mechanisms.
-- The runner's work folder is machine state, so no repository test can pin it.
-  `release-stable.yml` now preflights the workspace length as its **first** step (limit 76;
-  measured 73 passes, 82 fails) and names the fix. Seconds instead of seven minutes, with a
-  message that mentions the runner rather than a filename.
+- **`--work` still matters when re-registering the runner, but a fixed workspace-length
+  threshold was not a solution.** Run 31226827240 failed at 82 characters while linking the
+  x64 hook because hundreds of absolute object paths exceeded Windows' 32767-character
+  command-line limit. The first response was a 76-character workflow preflight because the
+  then-current 73-character checkout passed. Run 31272100204 later failed at those same 73
+  characters after source growth pushed the sanitizer hook link over the boundary. The
+  actual fix is a clang response file for long product-hook links, matching the unit-test
+  linker path that already handled this class. The workflow now separately probes the
+  longest generated path against a conservative legacy MAX_PATH budget; workspace depth no
+  longer multiplies across linker arguments.
 - Gotcha inside that guard: a PowerShell here-string terminator must sit at column 0, which
   dedents out of a YAML block scalar and makes the workflow unparseable. Build the message
   with `-join` instead. The first attempt did exactly this and broke the file.

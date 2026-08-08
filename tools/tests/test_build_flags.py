@@ -16,6 +16,34 @@ from testapp import run_tests as integration_runner
 
 
 class BuildFlagPolicyTest(unittest.TestCase):
+    def test_long_hook_link_uses_a_clang_response_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            response_file = str(Path(temporary) / "hook_x64_link.rsp")
+            command = [
+                "clang++.exe",
+                r"C:\objects\first file.o",
+                "-Wl,--guard-cf",
+                "-o",
+                r"C:\output\capture_hook_x64.dll",
+            ]
+            execute_command = build.prepare_command_with_response_file(
+                command, response_file, max_command_length=1
+            )
+
+            self.assertEqual(execute_command, ["clang++.exe", "@" + response_file])
+            self.assertEqual(
+                Path(response_file).read_text(encoding="utf-8"),
+                '"C:/objects/first file.o"\n'
+                '"-Wl,--guard-cf"\n'
+                '"-o"\n'
+                '"C:/output/capture_hook_x64.dll"\n',
+            )
+
+        project_source = (Path(build.__file__).parent / "tools" / "build" / "build_project.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("prepare_command_with_response_file(", project_source)
+
     def test_amf_header_license_is_packaged_without_a_runtime_dll(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -88,6 +88,26 @@ def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
     return not os.path.exists(path)
 
 
+def prepare_command_with_response_file(
+    command: List[str], response_file: str, max_command_length: int = 30000
+) -> List[str]:
+    """Move a long clang command's arguments into a response file."""
+    if len(subprocess.list2cmdline(command)) <= max_command_length:
+        return command
+    if len(command) < 2:
+        raise ValueError("A response-file command requires an executable and arguments")
+
+    response_parent = os.path.dirname(response_file)
+    if response_parent:
+        os.makedirs(response_parent, exist_ok=True)
+    with open(response_file, "w", encoding="utf-8", newline="\n") as rsp:
+        for argument in command[1:]:
+            escaped = argument.replace("\\", "/").replace('"', '\\"')
+            rsp.write(f'"{escaped}"\n')
+    log(f"Using response file for {os.path.basename(command[0])} ({len(command) - 1} arguments)")
+    return [command[0], "@" + response_file]
+
+
 def run_command(
     cmd: Union[List[str], str],
     env: Optional[Dict[str, str]] = None,

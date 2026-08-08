@@ -321,7 +321,10 @@ def compile_project(
 
         cmd: List[str] = [curr_clang_exe] + hk_objs + common_objs + ldflags_hook + ["-o", hk_dll]
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
-        run_command(cmd, env=curr_env)
+        execute_cmd = prepare_command_with_response_file(
+            cmd, os.path.join(curr_obj_dir, f"hook_{arch}_link.rsp")
+        )
+        run_command(execute_cmd, env=curr_env)
 
         # Verify the built binary contains the correct version
         if os.path.exists(hk_dll):
