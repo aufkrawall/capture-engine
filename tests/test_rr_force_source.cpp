@@ -55,3 +55,21 @@ TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeH
               std::string::npos);
     EXPECT_NE(hookThread.find("ShutdownRayReconstructionOverride()"), std::string::npos);
 }
+
+TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExpensiveEngineDiscovery) {
+    const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
+
+    const size_t initialHookInstall = hookThread.find("CheckAndInstallHooks();");
+    const size_t initialRRRefresh =
+        hookThread.find("RefreshRayReconstructionOverride(initialGraphicsConfig.forceRayReconstruction)");
+    ASSERT_NE(initialHookInstall, std::string::npos);
+    ASSERT_NE(initialRRRefresh, std::string::npos);
+    EXPECT_LT(initialHookInstall, initialRRRefresh);
+
+    const size_t periodicHookInstall = hookThread.find("CheckAndInstallHooks();", initialHookInstall + 1);
+    const size_t periodicRRRefresh =
+        hookThread.find("RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction)");
+    ASSERT_NE(periodicHookInstall, std::string::npos);
+    ASSERT_NE(periodicRRRefresh, std::string::npos);
+    EXPECT_LT(periodicHookInstall, periodicRRRefresh);
+}

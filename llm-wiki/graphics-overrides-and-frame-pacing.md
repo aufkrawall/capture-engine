@@ -185,6 +185,9 @@ Primary sources:
   proves the writable 24-byte `FAutoConsoleObject`/`Target`/`Ref` layout, callable object and target vtables, readable
   `TConsoleVariableData<int32>`, and plausible `{game, render}` shadow values of `0` or `1`. Ambiguous or unfamiliar
   layouts leave memory untouched.
+- Graphics-hook installation always precedes the optional module scan, both on initial startup and periodic service
+  passes. Large UE5 shipping modules can take several seconds to inspect; allowing that discovery to run first can
+  miss the game's initial DXGI swapchain creation and leave the Streamline PostSL overlay without a captured queue.
 - CE atomically redirects only the `Ref` pointer to page-aligned process-lifetime `{1,1}` shadow storage. The game's
   real console variable and priority/history state remain intact; later Engine.ini, scalability, level, or game code
   writes update the original shadow but cannot change the plugin's direct read. Disabling the setting or shutting the

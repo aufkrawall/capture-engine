@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-09 - RR startup discovery no longer starves DXGI queue capture
+
+- Talos RR validation sessions `20260809_012602`, `012642`, `012805`, and `012924` proved Feature 13 evaluation and
+  preset E worked, but the inject overlay rendered zero frames. PostSL and the DX12/ImGui backend initialized; every
+  callback then reported `PostSL SKIP — no queue` with a live Streamline wrapper command queue but null `scQueue` and
+  `origGame`.
+- Root cause was startup ordering introduced with the RR force: the synchronous first UE5 module scan ran before
+  `CheckAndInstallHooks()`. In `012924` it occupied 6.8 seconds (`01:29:29.604` to `01:29:36.429`), while the game
+  created its initial swapchain at `01:29:33.740`. DXGI queue-capture hooks therefore arrived too late. The force-off
+  process in `012207` installed them first and captured the same creation normally.
+- Initial and periodic graphics-hook checks now run before RR discovery. A source regression test pins both orderings;
+  the RR selector remains persistent and the scan remains off every render/present path.
+- The first closing verify reached a separate pre-existing clang-tidy-cache race: Windows rejected a JSON replace
+  because every writer in one process reused `<cache>.tmp.<pid>`. Atomic publication now gives each writer an
+  exclusive staging file and serializes only destination replacement; a barrier-driven eight-writer regression
+  reproduces the old collision without sleeps.
+
 ### 2026-08-09 - UE5 DLSS Ray Reconstruction force became persistent and observable
 
 - `[DLSS] force_ray_reconstruction=on` now reaches the injected hook through initial publication, profile resolution,

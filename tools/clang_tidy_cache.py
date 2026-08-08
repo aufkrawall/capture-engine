@@ -13,6 +13,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -22,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 CACHE_SCHEMA = 1
 RUN_FLAGS = ("-extra-arg=-w", "-quiet")
+_ATOMIC_REPLACE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -52,10 +55,22 @@ def _sha256_file(path: Path) -> str:
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f"{path.name}.tmp.{os.getpid()}.",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
     try:
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
+        # Cache misses finish on worker threads. A PID-only temporary name let
+        # simultaneous writers overwrite or move the same staging file, while
+        # concurrent replacement of one destination is needlessly fragile on
+        # Windows. Each writer now owns its staging file and only the atomic
+        # publication step is serialized; clang-tidy execution remains fully
+        # parallel.
+        with _ATOMIC_REPLACE_LOCK:
+            os.replace(temporary, path)
     finally:
         try:
             temporary.unlink(missing_ok=True)
