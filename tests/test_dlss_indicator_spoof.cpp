@@ -172,7 +172,7 @@ TEST_F(DlssIndicatorConfigTest, ProfileSectionOverridesGlobalSetting) {
         "\n"
         "[Profile.gta]\n"
         "process=GTA5_Enhanced.exe\n"
-        "dlss_debug_overlay=on\n");
+        "DLSS.dlss_debug_overlay=on\n");
 
     AppConfig matched;
     LoadConfig(configPath, matched, "GTA5_Enhanced.exe");

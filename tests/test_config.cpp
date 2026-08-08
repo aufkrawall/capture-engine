@@ -102,9 +102,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(generatedText.find("\ndisable_auto_mip_bias="), std::string::npos);
     EXPECT_EQ(generatedText.find(";[AppAudio.1]"), std::string::npos);
     const size_t diagnosticsSection = generatedText.find("\n[Diagnostics]\n");
+    const size_t applicationProfilesHeading = generatedText.find("; APPLICATION PROFILES");
     const size_t profileExample = generatedText.find(";[Profile.My Game]");
     ASSERT_NE(diagnosticsSection, std::string::npos);
+    ASSERT_NE(applicationProfilesHeading, std::string::npos);
     ASSERT_NE(profileExample, std::string::npos);
+    EXPECT_GT(applicationProfilesHeading, diagnosticsSection);
     EXPECT_GT(profileExample, diagnosticsSection);
     EXPECT_NE(generatedText.find(";video_capture=inherit", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";monitor=window", profileExample), std::string::npos);
@@ -145,6 +148,19 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";window_title=My Game", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";window_match=contains", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("A profile has two kinds of keys", applicationProfilesHeading), std::string::npos);
+    EXPECT_NE(generatedText.find("Profile fields use the bare names shown below", applicationProfilesHeading),
+              std::string::npos);
+    EXPECT_NE(generatedText.find("if a setting normally appears under [Section], write Section.key",
+                                 applicationProfilesHeading),
+              std::string::npos);
+    EXPECT_NE(generatedText.find("Bare override keys remain readable for old configs", applicationProfilesHeading),
+              std::string::npos);
+    EXPECT_NE(generatedText.find(";FpsLimiter.general_fps=120", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DLSS.dlss_preset_quality=K", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DLSS.dlss_fg_factor=3x", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DLSS.dlss_fg_preset=B", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DLSS.dlss_debug_overlay=on", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
     EXPECT_NE(generatedText.find("Choosing inject or always can trigger anti-cheat protection"), std::string::npos);

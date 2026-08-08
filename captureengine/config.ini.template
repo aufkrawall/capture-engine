@@ -559,8 +559,17 @@ dx12_focus_analysis=false
 ; the same track through both system audio and app audio, or it may sound hollow
 ; or metallic.
 ;
-; Per-app setting overrides use Section.key names. This avoids confusion between
-; settings such as Video.bitrate and Audio.bitrate.
+; A profile has two kinds of keys:
+; - Profile fields use the bare names shown below: process, window_title,
+;   window_match, video_capture, monitor, dll_injection, and audio_*.
+; - Overrides of ordinary settings keep the original section name. For example,
+;   [Video] fps=60 becomes Video.fps=60, [FpsLimiter] general_fps=60 becomes
+;   FpsLimiter.general_fps=120, and [DLSS] dlss_fg_factor=default becomes
+;   DLSS.dlss_fg_factor=3x.
+; Therefore, if a setting normally appears under [Section], write Section.key in
+; a profile. Bare override keys remain readable for old configs, but can
+; accidentally affect every section with the same key (such as enabled or bitrate)
+; and should not be used in new profiles.
 ; Any [DesktopOverlay] setting can also be overridden this way. A process profile
 ; with a video route is automatically a NOT RECORDING warning target, so it does
 ; not also need to be listed in DesktopOverlay.process_list.
@@ -612,6 +621,10 @@ dx12_focus_analysis=false
 ;Graphics.vsync_mode=off
 ;FpsLimiter.general_enabled=true
 ;FpsLimiter.general_fps=120
+;DLSS.dlss_preset_quality=K
+;DLSS.dlss_fg_factor=3x
+;DLSS.dlss_fg_preset=B
+;DLSS.dlss_debug_overlay=on
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
 ;DesktopOverlay.pos=0
