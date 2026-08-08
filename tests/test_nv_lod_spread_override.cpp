@@ -4,10 +4,12 @@
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "../hook/common/nv_lod_spread_override.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -91,6 +93,10 @@ std::vector<uint8_t> MakeImage(const ImageOptions& options) {
 
     // Branch target: the OFF slot load.
     const size_t offPath = kCmpRva + kBranchDelta + 2 + kBranchDisplacement;
+    // The ON path skips over the OFF block after loading its table slot. This
+    // also lets the scanner prove that a pre-existing pair of NOPs is the
+    // documented patch rather than unrelated padding.
+    PutBytes(image, offPath - 2, {0xEB, 0x08});
     PutBytes(image, offPath,
              {0x0F, 0xB6, 0x41, 0x29,                   // movzx eax, byte [rcx+0x29]
               0x44, 0x8B, 0x41, options.offSlotDisp});  // mov r8d, [rcx+0x2C]
@@ -200,9 +206,9 @@ TEST(NvLodSpreadOverride, RefusesAResolvedAddressOutsideTheImage) {
     EXPECT_FALSE(Scan(image, options, site));
 }
 
-// The setting is still found and the data write still applies; only the code
-// fallback is withheld, because NOPing would no longer be provably equivalent.
-TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenTableSlotsAreNotAdjacent) {
+// The setting is still found, but no code is changed unless NOPing is provably
+// equivalent to selecting the ON table slot.
+TEST(NvLodSpreadOverride, WithholdsThePatchWhenTableSlotsAreNotAdjacent) {
     ImageOptions options;
     options.offSlotDisp = 0x20;
     const std::vector<uint8_t> image = MakeImage(options);
@@ -213,7 +219,7 @@ TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenTableSlotsAreNotAdjacent) {
     EXPECT_FALSE(site.branchFound);
 }
 
-TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenFallthroughIsTheOffPath) {
+TEST(NvLodSpreadOverride, WithholdsThePatchWhenFallthroughIsTheOffPath) {
     ImageOptions options;
     options.onSlotDisp = kOffSlotDisp;
     options.offSlotDisp = kOnSlotDisp;
@@ -225,7 +231,7 @@ TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenFallthroughIsTheOffPath) {
     EXPECT_FALSE(site.branchFound);
 }
 
-TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenNoShortBranchGuardsThePath) {
+TEST(NvLodSpreadOverride, WithholdsThePatchWhenNoShortBranchGuardsThePath) {
     ImageOptions options;
     std::vector<uint8_t> image = MakeImage(options);
     // Turn the jne into a two-byte nop so no conditional branch remains.
@@ -236,6 +242,37 @@ TEST(NvLodSpreadOverride, WithholdsTheFallbackWhenNoShortBranchGuardsThePath) {
     ASSERT_TRUE(Scan(image, options, site));
     EXPECT_TRUE(site.found);
     EXPECT_FALSE(site.branchFound);
+}
+
+TEST(NvLodSpreadOverride, RecognizesTheStructurallyValidatedOnDiskPatch) {
+    const ImageOptions options;
+    std::vector<uint8_t> image = MakeImage(options);
+    image[kCmpRva + kBranchDelta] = 0x90;
+    image[kCmpRva + kBranchDelta + 1] = 0x90;
+
+    Site site;
+    ASSERT_TRUE(Scan(image, options, site));
+    EXPECT_TRUE(site.branchFound);
+    EXPECT_TRUE(site.branchAlreadyPatched);
+    EXPECT_EQ(site.branchRva, kCmpRva + kBranchDelta);
+    EXPECT_EQ(site.branchLength, 2u);
+}
+
+TEST(NvLodSpreadOverride, VulkanLayerPatchesAfterInstanceAndBeforeDeviceCreation) {
+    const std::string source = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_hooks.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t instance = source.find("Capture_vkCreateInstance(");
+    const size_t nextInstance = source.find("res = create_fn", instance);
+    const size_t postInstancePatch = source.find("ApplyConfiguredNvLodSpreadFix();", nextInstance);
+    const size_t device = source.find("Capture_vkCreateDevice(", postInstancePatch);
+    ASSERT_NE(instance, std::string::npos);
+    ASSERT_NE(nextInstance, std::string::npos);
+    ASSERT_NE(postInstancePatch, std::string::npos);
+    ASSERT_NE(device, std::string::npos);
+    EXPECT_LT(nextInstance, postInstancePatch);
+    EXPECT_LT(postInstancePatch, device);
 }
 
 TEST(NvLodSpreadOverride, FindTableLoadDispHandlesBothRegisterForms) {

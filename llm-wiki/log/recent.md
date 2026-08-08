@@ -25,34 +25,41 @@
   the same session shows the DLSS FG preset override completing end to end (below).
 - **Coverage**: `tests/test_ngx_module_policy.cpp::ExportLookupInterceptionIsLimitedToTheCoreProvider`.
 
-### 2026-08-08 - nv_lod_spread_fix: the NVIDIA LOD-spread patch done in memory, as data not code
+### 2026-08-08 - nv_lod_spread_fix real-DXVK correction: the inject `.data` write was provably too late
+
+- Filter Tester DXVK session `20260808_154051` falsified the original timing premise. The Vulkan layer entered
+  `vkCreateInstance` at `15:42:26.778` and `vkCreateDevice` at `15:42:26.825`; the injected hook DLL entered
+  `DllMain` only at `15:42:27.119` and changed the setting global at `15:42:27.361`. Its success log therefore said
+  only that memory changed, not that driver initialization consumed it. Negative mip bias remained low quality and
+  shimmery, while the on-disk `75 05 -> 90 90` reference patch was visibly effective.
+- Root fix: apply the exact structurally validated two-byte branch patch to the process-local ICD image. The Vulkan
+  layer sweeps immediately after the next `vkCreateInstance` returns and again at device entry, guaranteeing the
+  patch precedes device initialization; the inject DLL remains the OpenGL/late-module fallback. No driver file is
+  written.
+- The resolved config now reaches the Vulkan layer through one byte of `SharedGraphicsConfig`'s existing alignment
+  gap. Static offset and size assertions prove the shared layout/signature did not change. Initial publication and
+  config updates both copy it, so application profiles remain authoritative.
+- Scanner coverage now recognizes an already-patched image only by proving `90 90`, the ON table load, the skip over
+  the adjacent OFF load, and the four-byte slot relationship. Source-order coverage pins the post-instance patch
+  before `Capture_vkCreateDevice`. The supplied minimal dump independently identifies stock nvoglv32 32.0.16.1088;
+  its RPC `0x6BA` exception is unrelated shell drive enumeration, not the quality failure.
+- Corrected-build hardware pixel validation remains pending.
+
+### 2026-08-08 - nv_lod_spread_fix original implementation (superseded): in-memory `.data` write
 
 - **Request**: implement the community `nvoglv64.dll` byte patch (FERMI_UNOPT_LOD_SPREAD, which fixes NVIDIA's
   negative-LOD-bias texture filtering quality on Vulkan/OpenGL) as a runtime feature that modifies the driver only in
   memory, with nothing written to disk, and without acting too late to matter.
-- **Finding that changed the design**: the reference scripts NOP the `jne` guarding the OFF path, but analysis of the
-  unpatched 32.0.16.1088 image shows the setting global has exactly one reader and one writer in the whole 48MB
-  binary, with no descriptor table and no relocation targeting it. One reader means writing the ON payload
-  (`0x37299934`) into the global is *equivalent* to NOPing the branch - and it touches `.data`, not `.text`.
+- **Original rationale**: the reference scripts NOP the `jne` guarding the OFF path, but analysis of the unpatched
+  32.0.16.1088 image found one global reader and one writer. The implementation inferred that writing the ON payload
+  (`0x37299934`) was timing-equivalent to NOPing the branch and preferred the `.data` page.
 - The single writer is `mov [<global>], eax` guarded by `test al,al / je`, right after
   `mov edx, 0x3001ac; call <settings accessor>`: **`0x003001AC` is the DRS id of this setting**, the store only
   happens when that query succeeds, and the accessor is one internal `.data` function pointer shared by ~1000 setting
-  reads (not an import, so IAT hooking cannot reach it). That conditional store is the only thing that can undo the
-  data write, which is what the re-check exists for.
-- Timing turned out to be the easy part: the ICD is loaded by the Vulkan loader at `vkCreateInstance` and by opengl32
-  at context creation, both far later than CE injects, and Windows maps images copy-on-write so the write is private
-  to the process. Patching at the loader notification is before any instance/device/sampler/pipeline exists.
-- The re-check anchors are `vulkan-1.dll!vkCreateDevice` and `opengl32.dll!wglMakeCurrent` - deliberately the *next*
-  creation step, because the ICD is mapped from inside the call that is already executing, so a hook installed then
-  cannot catch that same call. Ordinary system modules, so no driver code is touched to get the anchor.
+  reads (not an import, so IAT hooking cannot reach it).
 - Validation: replayed the shipped C++ scanner against real images. 1088 and 620.12, x64 and x86, all four resolve to
-  the offsets `LOD_SPREAD_PATCH.md` documents. On an already-patched driver the branch fails validation, so the
-  fallback cannot NOP a wrong site. `tests/test_nv_lod_spread_override.cpp` covers the shipped encoding, the 32-bit
-  absolute form, and every refusal path.
-- Incidental: this machine's installed driver is currently patched **on disk** (SHA-256 `DE954C92...F037`, the
-  documented patched hash), so the feature's payoff here is restoring NVIDIA's signed original.
-- **Not yet validated on hardware**: whether a stock driver's `0x003001AC` query succeeds and therefore clobbers the
-  data write. The first real run's log decides whether the code fallback ever fires.
+  the offsets `LOD_SPREAD_PATCH.md` documents. This scanner evidence remained valid; the untested injection-order
+  premise did not. The hardware correction immediately above supersedes the `.data` write and re-check anchors.
 
 ### 2026-08-08 - dlss_fg_preset added: the FG preset is a DRS key, not an NGX parameter
 

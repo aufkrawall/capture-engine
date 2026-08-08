@@ -7,37 +7,25 @@
  * long-standing negative-LOD-bias filtering quality bug NVIDIA has not fixed.
  * Forcing the ON path restores a spread of 0x10.
  *
- * The community fix byte-patches the DLL on disk. CE does the equivalent inside
- * the game process only, so the machine keeps NVIDIA's signed driver files.
+ * The community fix byte-patches the DLL on disk. CE applies the same validated
+ * two-byte branch patch to the process-local image, so the machine keeps
+ * NVIDIA's signed driver files.
  *
  * Verified against 32.0.16.1088 and 32.0.16.2012 (620.12), both architectures.
- * Across the whole 48 MB image the setting global has exactly one reader and one
- * writer, no descriptor table points at it, and no base relocation targets it:
+ * The relevant code is:
  *
  *     cmp dword ptr [<global>], 0x37299934   ; the ON constant - the only reader
  *     jne OFF                                ; ON  path: r8d = [table+0x30] (1)
  *     ...                                    ; OFF path: r8d = [table+0x2C] (0)
  *                                            ; both shifted by [table+0x28] (4)
  *
- *     mov  edx, 0x3001ac                     ; the DRS id of this setting
- *     call <settings accessor>               ; shared by ~1000 setting reads
- *     test al, al
- *     je   skip                              ; query failed -> global keeps OFF
- *     mov  [<global>], eax                   ; the only writer
- *
- * Because there is exactly one reader, writing the ON constant into the global is
- * equivalent to NOPing the branch, but it touches only a private copy-on-write
- * page of the driver's .data instead of its .text - the same reason
- * ngx_fg_preset_override never patches NvAPI code bytes.
- *
- * The data write alone is not sufficient on its own, though: the ICD loads its
- * settings *after* the module is mapped, so a driver whose profile store answers
- * the 0x3001AC query overwrites CE's value before the state record is built. CE
- * therefore re-checks the global once the ICD has finished initializing, at a
- * point that still precedes any sampler or pipeline creation, and only if the
- * driver is observed clobbering the value does it fall back to NOPing the branch.
- * Steady state on a driver that leaves the setting alone: no executable page of
- * the driver is ever modified.
+ * The first implementation wrote the setting global instead of the branch. A
+ * real DXVK run disproved the assumed timing equivalence: the Vulkan instance
+ * and device already existed before the injected hook DLL ran, while the Vulkan
+ * layer had participated before both. CE therefore performs the exact proven
+ * NOP patch from the Vulkan layer immediately after the ICD is mapped and before
+ * vkCreateDevice, with the injected hook retaining coverage for OpenGL and
+ * already-loaded modules.
  *
  * Detection is entirely pattern-based and self-validating - the resolved global
  * has to actually hold the documented ON or OFF constant, and the fallback site
@@ -91,7 +79,8 @@ struct Site {
     size_t cmpRva = 0;
     size_t settingRva = 0;
     uint32_t settingValue = 0;  // must be kSettingOn or kSettingOff to be accepted
-    bool branchFound = false;   // false: data write only, no code fallback available
+    bool branchFound = false;
+    bool branchAlreadyPatched = false;
     size_t branchRva = 0;
     size_t branchLength = 0;
 };
@@ -103,9 +92,11 @@ struct Site {
 bool FindSettingSite(const uint8_t* image, size_t imageSize, size_t textRva, size_t textSize, bool is64Bit,
                      uintptr_t imageBase, Site& out);
 
-// Structural validation of the fallback site: the two paths leaving `branchRva`
+// Structural validation of the patch site: the two paths leaving `branchRva`
 // must load table slots four bytes apart with the larger (ON) slot reached by
 // fall-through, which is what makes NOPing the branch equivalent to forcing ON.
+// An already-NOPed site is recognized only when the same two paths remain
+// structurally provable.
 bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& out);
 
 // First `mov r32, dword ptr [reg+disp8]` in a branch path, which is the ON/OFF
@@ -116,9 +107,8 @@ bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp);
 struct Status {
     bool armed = false;
     bool moduleSeen = false;
-    bool dataWriteApplied = false;
-    bool codeFallbackApplied = false;
-    uint32_t clobbersObserved = 0;
+    bool codePatchApplied = false;
+    bool branchWasAlreadyPatched = false;
 };
 
 Status GetStatus();
@@ -131,11 +121,5 @@ bool Install(Mode mode);
 
 // Module-load participation, called from CE's loader notification.
 void OnModuleLoaded(HMODULE module, const char* modulePath);
-
-// Re-reads the setting after the ICD's own settings load. Rewrites CE's value
-// when the driver clobbered it and arms the validated code fallback, because a
-// driver that overwrites the global once may do so again where CE cannot observe
-// it. Safe to call repeatedly and cheap enough for creation-time call sites.
-void VerifyAndReassert(const char* reason);
 
 }  // namespace ce::nv_lod_spread

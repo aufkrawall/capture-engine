@@ -98,10 +98,9 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // so the first resolution already lands on our detours.
   NVNGXHook::Get().OnModuleLoaded(module, moduleNameOrPath);
 
-  // The NVIDIA GL/VK ICD is mapped by the Vulkan loader on vkCreateInstance and by
-  // opengl32 on context creation, always long after CE's hook thread starts.
-  // Patching it here, inside its own load, is before any instance, device, sampler
-  // or pipeline exists, so the filtering record is always built from CE's value.
+  // Inject-side fallback for OpenGL and late/reloaded ICDs. LoadLibrary/LdrLoadDll
+  // notifications run after the original loader call returns, so Vulkan's required
+  // pre-device timing is owned by the Vulkan layer instead.
   ce::nv_lod_spread::OnModuleLoaded(module, moduleNameOrPath);
 
   // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately

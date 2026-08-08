@@ -238,7 +238,7 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     }
     config.graphics.mipBiasMode = reader.GetStr("Graphics", "mip_bias_mode", "strict");
     config.graphics.forceMipBiasClamp = reader.GetBool("Graphics", "force_mip_bias_clamp", false);
-    config.graphics.nvLodSpreadFix = reader.GetStr("Graphics", "nv_lod_spread_fix", "off");
+    config.graphics.nvLodSpreadFix = reader.GetBool("Graphics", "nv_lod_spread_fix", false);
     config.graphics.msaaSamples = reader.GetStr("Graphics", "msaa_samples", "default");
     config.graphics.cpuPrerenderLimit = reader.GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
     if (!std::isfinite(config.graphics.cpuPrerenderLimit) ||

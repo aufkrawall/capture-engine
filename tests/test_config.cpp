@@ -41,6 +41,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.video.hdrNominalPeakNits, 1000);
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
+    EXPECT_FALSE(config.graphics.nvLodSpreadFix);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);

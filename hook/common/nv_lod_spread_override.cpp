@@ -4,37 +4,24 @@
 #include <cctype>
 #include <cstring>
 
-#include "../wrappers/inline_hook.h"
+#ifdef VK_LAYER_CE_OVERLAY
+#include "../vulkan_layer/layer_main.h"
+#define NV_LOD_LOG(...) LayerLog(__VA_ARGS__)
+#else
 #include "hook_common.h"
+#define NV_LOD_LOG(...) HookLogImportant(__VA_ARGS__)
+#endif
 
 namespace ce::nv_lod_spread {
 
 namespace {
 
-// Vulkan and WGL entry points CE re-checks the setting from. Both are exported by
-// ordinary system modules, so no driver code is touched to obtain the anchor.
-using PfnVkCreateDevice = int32_t(__stdcall*)(void*, const void*, const void*, void**);
-using PfnWglMakeCurrent = BOOL(__stdcall*)(HDC, HGLRC);
-
-// VK_ERROR_INITIALIZATION_FAILED, for the defensive path where a detour runs
-// before its trampoline is published.
-constexpr int32_t kVkErrorInitializationFailed = -3;
-
 std::atomic<Mode> g_mode{Mode::kOff};
 std::atomic<bool> g_moduleSeen{false};
-std::atomic<bool> g_dataWriteApplied{false};
-std::atomic<bool> g_codeFallbackApplied{false};
-std::atomic<bool> g_codeFallbackAttempted{false};
-std::atomic<uint32_t> g_clobbers{0};
-
+std::atomic<bool> g_codePatchApplied{false};
+std::atomic<bool> g_branchWasAlreadyPatched{false};
 std::atomic<HMODULE> g_patchedModule{nullptr};
-std::atomic<uint32_t*> g_settingAddress{nullptr};
 std::atomic<uint8_t*> g_branchAddress{nullptr};
-std::atomic<size_t> g_branchLength{0};
-std::atomic<bool> g_anchorsInstalled{false};
-
-std::atomic<PfnVkCreateDevice> g_origVkCreateDevice{nullptr};
-std::atomic<PfnWglMakeCurrent> g_origWglMakeCurrent{nullptr};
 
 std::string Trimmed(const std::string& value) {
     size_t first = 0;
@@ -65,24 +52,22 @@ const char* BaseName(const char* path) {
     return base;
 }
 
-bool WriteProtectedMemory(void* address, const void* data, size_t size, bool executable) {
+bool WriteCodePatch(uint8_t* address, const uint8_t* bytes, size_t size) {
     DWORD oldProtect = 0;
-    const DWORD wanted = executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
-    if (!VirtualProtect(address, size, wanted, &oldProtect)) {
+    if (!VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         return false;
     }
-    memcpy(address, data, size);
+
+    memcpy(address, bytes, size);
+    FlushInstructionCache(GetCurrentProcess(), address, size);
+
     DWORD restored = 0;
-    VirtualProtect(address, size, oldProtect, &restored);
-    if (executable) {
-        FlushInstructionCache(GetCurrentProcess(), address, size);
-    }
-    return true;
+    const bool protectionRestored = VirtualProtect(address, size, oldProtect, &restored) != FALSE;
+    return protectionRestored && memcmp(address, bytes, size) == 0;
 }
 
 // Locates the mapped image's bounds and its executable section. The ICD always
-// matches CE's own bitness - a 64-bit driver cannot map into a 32-bit game - so a
-// header that does not describe a native image is refused rather than guessed at.
+// matches CE's own bitness, so a non-native image is refused rather than guessed.
 bool DescribeModule(HMODULE module, const uint8_t*& image, size_t& imageSize, size_t& textRva, size_t& textSize,
                     bool& is64Bit) {
     const auto* base = reinterpret_cast<const uint8_t*>(module);
@@ -108,7 +93,6 @@ bool DescribeModule(HMODULE module, const uint8_t*& image, size_t& imageSize, si
 
     image = base;
     imageSize = nt->OptionalHeader.SizeOfImage;
-
     const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
         if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
@@ -124,109 +108,52 @@ bool DescribeModule(HMODULE module, const uint8_t*& image, size_t& imageSize, si
     return false;
 }
 
-bool WriteSettingValue(uint32_t* setting, uint32_t value) {
-    return WriteProtectedMemory(setting, &value, sizeof(value), /*executable=*/false);
-}
-
-// NOPs the validated branch so the ON path is reached by fall-through. Only ever
-// reached after the driver was observed overwriting CE's data write.
-void ApplyCodeFallback(const char* reason) {
-    if (g_codeFallbackAttempted.exchange(true, std::memory_order_acq_rel)) {
-        return;
-    }
-    uint8_t* branch = g_branchAddress.load(std::memory_order_acquire);
-    const size_t length = g_branchLength.load(std::memory_order_acquire);
-    if (!branch || length == 0) {
-        HookLogImportant(
-            "NV LOD spread: driver overwrote the setting and no validated branch site is known (%s) - the data "
-            "write is re-applied but cannot be made permanent",
-            reason ? reason : "unknown");
-        return;
+bool FindAlreadyPatchedBranch(const uint8_t* image, size_t imageSize, size_t offset, Site& out) {
+    if (offset + 2 > imageSize || image[offset] != 0x90 || image[offset + 1] != 0x90) {
+        return false;
     }
 
-    uint8_t nops[8];
-    memset(nops, 0x90, sizeof(nops));
-    if (length > sizeof(nops) || !WriteProtectedMemory(branch, nops, length, /*executable=*/true)) {
-        HookLogImportant("NV LOD spread: code fallback write FAILED at %p (%zu bytes, %s)", branch, length,
-                         reason ? reason : "unknown");
-        return;
-    }
-    g_codeFallbackApplied.store(true, std::memory_order_release);
-    HookLogImportant(
-        "NV LOD spread: code fallback applied - NOPed the OFF branch at %p (%zu bytes) because the driver "
-        "overwrote CE's setting value (%s)",
-        branch, length, reason ? reason : "unknown");
-}
-
-int32_t __stdcall Detour_vkCreateDevice(void* physicalDevice, const void* createInfo, const void* allocator,
-                                        void** device) {
-    const PfnVkCreateDevice original = g_origVkCreateDevice.load(std::memory_order_acquire);
-    if (!original) {
-        return kVkErrorInitializationFailed;
-    }
-    // Entry covers a settings load that ran during instance creation; the return
-    // covers a driver that defers it into device creation. Both still precede any
-    // sampler or pipeline, which is where the filtering record is built.
-    VerifyAndReassert("vkCreateDevice entry");
-    const int32_t result = original(physicalDevice, createInfo, allocator, device);
-    VerifyAndReassert("vkCreateDevice return");
-    return result;
-}
-
-BOOL __stdcall Detour_wglMakeCurrent(HDC dc, HGLRC context) {
-    const PfnWglMakeCurrent original = g_origWglMakeCurrent.load(std::memory_order_acquire);
-    if (!original) {
-        return FALSE;
-    }
-    const BOOL result = original(dc, context);
-    VerifyAndReassert("wglMakeCurrent");
-    return result;
-}
-
-// The ICD is mapped from inside the caller's vkCreateInstance / context creation,
-// so the anchors deliberately target the *next* creation step rather than the one
-// already executing.
-void InstallReassertAnchors() {
-    if (g_anchorsInstalled.exchange(true, std::memory_order_acq_rel)) {
-        return;
-    }
-
-    if (HMODULE loader = GetModuleHandleA("vulkan-1.dll")) {
-        if (void* target = reinterpret_cast<void*>(GetProcAddress(loader, "vkCreateDevice"))) {
-            void* trampoline = nullptr;
-            if (InlineHook::Install(target, reinterpret_cast<void*>(&Detour_vkCreateDevice), &trampoline) &&
-                trampoline) {
-                g_origVkCreateDevice.store(reinterpret_cast<PfnVkCreateDevice>(trampoline), std::memory_order_release);
-                HookLogImportant("NV LOD spread: re-check anchor installed on vulkan-1.dll!vkCreateDevice");
-            } else {
-                HookLogImportant("NV LOD spread: FAILED to anchor on vulkan-1.dll!vkCreateDevice");
-            }
+    const size_t fallthrough = offset + 2;
+    const size_t jumpSearchEnd = (fallthrough + kPathWindow < imageSize) ? fallthrough + kPathWindow : imageSize;
+    for (size_t jump = fallthrough; jump + 2 <= jumpSearchEnd; ++jump) {
+        if (image[jump] != 0xEB) {
+            continue;
         }
-    }
-
-    if (HMODULE gl = GetModuleHandleA("opengl32.dll")) {
-        if (void* target = reinterpret_cast<void*>(GetProcAddress(gl, "wglMakeCurrent"))) {
-            void* trampoline = nullptr;
-            if (InlineHook::Install(target, reinterpret_cast<void*>(&Detour_wglMakeCurrent), &trampoline) &&
-                trampoline) {
-                g_origWglMakeCurrent.store(reinterpret_cast<PfnWglMakeCurrent>(trampoline), std::memory_order_release);
-                HookLogImportant("NV LOD spread: re-check anchor installed on opengl32.dll!wglMakeCurrent");
-            } else {
-                HookLogImportant("NV LOD spread: FAILED to anchor on opengl32.dll!wglMakeCurrent");
-            }
+        const size_t offPath = jump + 2;
+        const int64_t target = static_cast<int64_t>(offPath) + static_cast<int8_t>(image[jump + 1]);
+        if (target <= static_cast<int64_t>(offPath) || static_cast<uint64_t>(target) > imageSize) {
+            continue;
         }
+
+        uint8_t onDisp = 0;
+        uint8_t offDisp = 0;
+        if (!FindTableLoadDisp(image + fallthrough, jump - fallthrough, onDisp) ||
+            !FindTableLoadDisp(image + offPath, static_cast<size_t>(target) - offPath, offDisp)) {
+            continue;
+        }
+        if (onDisp != static_cast<uint8_t>(offDisp + 4)) {
+            continue;
+        }
+
+        out.branchFound = true;
+        out.branchAlreadyPatched = true;
+        out.branchRva = offset;
+        out.branchLength = 2;
+        return true;
     }
+    return false;
 }
 
 bool ApplyToModule(HMODULE module, const char* modulePath) {
     if (g_mode.load(std::memory_order_acquire) != Mode::kOn || !module) {
         return false;
     }
-    // Re-arming and repeated load notifications must not re-scan a 22 MB .text
-    // section. Once this module is known, the cheap re-check is the right work.
+
     if (g_patchedModule.load(std::memory_order_acquire) == module) {
-        VerifyAndReassert("re-arm");
-        return true;
+        uint8_t* branch = g_branchAddress.load(std::memory_order_acquire);
+        if (branch && branch[0] == 0x90 && branch[1] == 0x90) {
+            return true;
+        }
     }
 
     const uint8_t* image = nullptr;
@@ -235,51 +162,52 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
     size_t textSize = 0;
     bool is64Bit = false;
     if (!DescribeModule(module, image, imageSize, textRva, textSize, is64Bit)) {
-        HookLogImportant("NV LOD spread: %s is not a usable image - not patched",
-                         modulePath ? modulePath : "the ICD");
+        NV_LOD_LOG("NV LOD spread: %s is not a usable image - not patched", modulePath ? modulePath : "the ICD");
         return false;
     }
 
     Site site;
     if (!FindSettingSite(image, imageSize, textRva, textSize, is64Bit, reinterpret_cast<uintptr_t>(image), site)) {
-        HookLogImportant(
-            "NV LOD spread: no FERMI_UNOPT_LOD_SPREAD check found in %s - the driver layout changed, nothing "
-            "patched",
-            modulePath ? modulePath : "the ICD");
+        NV_LOD_LOG("NV LOD spread: no FERMI_UNOPT_LOD_SPREAD check found in %s - the driver layout changed, "
+                   "nothing patched",
+                   modulePath ? modulePath : "the ICD");
         return false;
     }
 
-    auto* setting = const_cast<uint32_t*>(reinterpret_cast<const uint32_t*>(image + site.settingRva));
-    g_settingAddress.store(setting, std::memory_order_release);
-    if (site.branchFound) {
-        g_branchAddress.store(const_cast<uint8_t*>(image + site.branchRva), std::memory_order_release);
-        g_branchLength.store(site.branchLength, std::memory_order_release);
-    }
     g_moduleSeen.store(true, std::memory_order_release);
-    g_patchedModule.store(module, std::memory_order_release);
+    if (!site.branchFound || site.branchLength != 2) {
+        NV_LOD_LOG("NV LOD spread: setting check found at +0x%zX in %s, but the ON/OFF branch was not "
+                   "structurally validated - nothing patched",
+                   site.cmpRva, modulePath ? modulePath : "the ICD");
+        return false;
+    }
 
-    if (site.settingValue == kSettingOn) {
-        // A driver patched on disk, or a profile that already enables the setting.
-        g_dataWriteApplied.store(true, std::memory_order_release);
-        HookLogImportant("NV LOD spread: %s already reports the setting ON - nothing to change",
-                         modulePath ? modulePath : "the ICD");
-        InstallReassertAnchors();
+    uint8_t* branch = const_cast<uint8_t*>(image + site.branchRva);
+    g_patchedModule.store(module, std::memory_order_release);
+    g_branchAddress.store(branch, std::memory_order_release);
+
+    if (site.branchAlreadyPatched) {
+        g_codePatchApplied.store(true, std::memory_order_release);
+        g_branchWasAlreadyPatched.store(true, std::memory_order_release);
+        NV_LOD_LOG("NV LOD spread: %s already has the validated ON branch patch at +0x%zX",
+                   modulePath ? modulePath : "the ICD", site.branchRva);
         return true;
     }
 
-    if (!WriteSettingValue(setting, kSettingOn)) {
-        HookLogImportant("NV LOD spread: failed to write the setting value at %p in %s", setting,
-                         modulePath ? modulePath : "the ICD");
+    constexpr uint8_t kNops[] = {0x90, 0x90};
+    const uint8_t original0 = branch[0];
+    const uint8_t original1 = branch[1];
+    if (!WriteCodePatch(branch, kNops, sizeof(kNops))) {
+        NV_LOD_LOG("NV LOD spread: FAILED to patch the validated OFF branch at %p in %s", branch,
+                   modulePath ? modulePath : "the ICD");
         return false;
     }
-    g_dataWriteApplied.store(true, std::memory_order_release);
-    HookLogImportant(
-        "NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in %s (setting %p 0x%08X -> 0x%08X, check at +0x%zX, "
-        "fallback branch %s) - process-local, the driver file is untouched",
-        modulePath ? modulePath : "the ICD", setting, site.settingValue, kSettingOn, site.cmpRva,
-        site.branchFound ? "validated" : "UNAVAILABLE");
 
-    InstallReassertAnchors();
+    g_codePatchApplied.store(true, std::memory_order_release);
+    NV_LOD_LOG("NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in %s (validated branch +0x%zX: %02X %02X -> "
+               "90 90, check +0x%zX, setting 0x%08X) - process-local, the driver file is untouched",
+               modulePath ? modulePath : "the ICD", site.branchRva, original0, original1, site.cmpRva,
+               site.settingValue);
     return true;
 }
 
@@ -311,23 +239,18 @@ bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp) {
     }
     for (size_t i = 0; i + 2 < pathSize; ++i) {
         size_t cursor = i;
-        // An optional REX prefix selects the extended registers the 64-bit driver
-        // uses (mov r8d, ...); the 32-bit driver has none.
         if (path[cursor] >= 0x40 && path[cursor] <= 0x4F) {
             ++cursor;
             if (cursor + 2 >= pathSize) {
-                return false;
+                continue;
             }
         }
         if (path[cursor] != 0x8B) {
             continue;
         }
         const uint8_t modrm = path[cursor + 1];
-        if ((modrm & 0xC0) != 0x40) {
-            continue;  // not [reg+disp8]
-        }
-        if ((modrm & 0x07) == 0x04) {
-            continue;  // a SIB byte would shift the displacement; stay unambiguous
+        if ((modrm & 0xC0) != 0x40 || (modrm & 0x07) == 0x04) {
+            continue;
         }
         outDisp = path[cursor + 2];
         return true;
@@ -336,22 +259,22 @@ bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp) {
 }
 
 bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& out) {
-    if (!image) {
+    if (!image || cmpRva + kCmpLength > imageSize) {
         return false;
     }
     const size_t searchStart = cmpRva + kCmpLength;
-    for (size_t offset = searchStart; offset < searchStart + kBranchSearchSpan; ++offset) {
-        if (offset + 2 > imageSize) {
-            return false;
-        }
-        const uint8_t opcode = image[offset];
-        if (opcode < 0x70 || opcode > 0x7F) {
-            continue;  // only the short jcc encoding the shipped drivers use
+    const size_t searchEnd = (searchStart + kBranchSearchSpan < imageSize) ? searchStart + kBranchSearchSpan : imageSize;
+    for (size_t offset = searchStart; offset + 2 <= searchEnd; ++offset) {
+        if (FindAlreadyPatchedBranch(image, imageSize, offset, out)) {
+            return true;
         }
 
+        const uint8_t opcode = image[offset];
+        if (opcode < 0x70 || opcode > 0x7F) {
+            continue;
+        }
         const size_t fallthrough = offset + 2;
-        const auto displacement = static_cast<int8_t>(image[offset + 1]);
-        const int64_t target = static_cast<int64_t>(fallthrough) + displacement;
+        const int64_t target = static_cast<int64_t>(fallthrough) + static_cast<int8_t>(image[offset + 1]);
         if (target < 0 || static_cast<size_t>(target) + kPathWindow > imageSize ||
             fallthrough + kPathWindow > imageSize) {
             continue;
@@ -363,8 +286,6 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
             !FindTableLoadDisp(image + static_cast<size_t>(target), kPathWindow, targetDisp)) {
             continue;
         }
-        // The ON slot is the higher of two neighbouring table entries, and forcing
-        // ON by NOPing is only correct when fall-through is the ON path.
         if (fallDisp != static_cast<uint8_t>(targetDisp + 4)) {
             continue;
         }
@@ -380,7 +301,7 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
 bool FindSettingSite(const uint8_t* image, size_t imageSize, size_t textRva, size_t textSize, bool is64Bit,
                      uintptr_t imageBase, Site& out) {
     out = Site{};
-    if (!image || textSize < kCmpLength || textRva + textSize > imageSize) {
+    if (!image || textSize < kCmpLength || textRva > imageSize || textSize > imageSize - textRva) {
         return false;
     }
 
@@ -419,8 +340,6 @@ bool FindSettingSite(const uint8_t* image, size_t imageSize, size_t textRva, siz
 
         uint32_t settingValue = 0;
         memcpy(&settingValue, image + settingRva, sizeof(settingValue));
-        // Self-validation: the resolved address has to actually hold one of the
-        // two documented enum payloads, which is what proves this is the setting.
         if (settingValue != kSettingOn && settingValue != kSettingOff) {
             continue;
         }
@@ -439,40 +358,13 @@ Status GetStatus() {
     Status status;
     status.armed = g_mode.load(std::memory_order_acquire) == Mode::kOn;
     status.moduleSeen = g_moduleSeen.load(std::memory_order_acquire);
-    status.dataWriteApplied = g_dataWriteApplied.load(std::memory_order_acquire);
-    status.codeFallbackApplied = g_codeFallbackApplied.load(std::memory_order_acquire);
-    status.clobbersObserved = g_clobbers.load(std::memory_order_acquire);
+    status.codePatchApplied = g_codePatchApplied.load(std::memory_order_acquire);
+    status.branchWasAlreadyPatched = g_branchWasAlreadyPatched.load(std::memory_order_acquire);
     return status;
 }
 
 Mode GetMode() {
     return g_mode.load(std::memory_order_acquire);
-}
-
-void VerifyAndReassert(const char* reason) {
-    if (g_mode.load(std::memory_order_acquire) != Mode::kOn) {
-        return;
-    }
-    uint32_t* setting = g_settingAddress.load(std::memory_order_acquire);
-    if (!setting) {
-        return;
-    }
-
-    uint32_t current = 0;
-    memcpy(&current, setting, sizeof(current));
-    if (current == kSettingOn) {
-        return;
-    }
-
-    const uint32_t clobbers = g_clobbers.fetch_add(1, std::memory_order_acq_rel) + 1;
-    const bool rewritten = WriteSettingValue(setting, kSettingOn);
-    HookLogImportant(
-        "NV LOD spread: the driver overwrote the setting with 0x%08X at %s (occurrence %u) - re-applied %s",
-        current, reason ? reason : "unknown", clobbers, rewritten ? "successfully" : "FAILED");
-
-    // The driver owns this global and has now proven it writes it. Re-applying the
-    // value only fixes the window CE can observe, so make the ON path structural.
-    ApplyCodeFallback(reason);
 }
 
 void OnModuleLoaded(HMODULE module, const char* modulePath) {
@@ -486,16 +378,14 @@ bool Install(Mode mode) {
     const Mode previous = g_mode.exchange(mode, std::memory_order_acq_rel);
     if (mode != Mode::kOn) {
         if (previous != mode) {
-            HookLogImportant("NV LOD spread: override disabled (nv_lod_spread_fix=%s)", GetModeName(mode));
+            NV_LOD_LOG("NV LOD spread: override disabled (nv_lod_spread_fix=%s)", GetModeName(mode));
         }
         return false;
     }
     if (previous != mode) {
-        HookLogImportant("NV LOD spread: override enabled (nv_lod_spread_fix=on)");
+        NV_LOD_LOG("NV LOD spread: override enabled (nv_lod_spread_fix=on)");
     }
 
-    // Covers a late injection whose ICD is already mapped, and a hot config
-    // reload in a process that is already rendering.
     bool patched = false;
     for (const char* name : {"nvoglv64.dll", "nvoglv32.dll"}) {
         if (HMODULE module = GetModuleHandleA(name)) {
@@ -506,3 +396,5 @@ bool Install(Mode mode) {
 }
 
 }  // namespace ce::nv_lod_spread
+
+#undef NV_LOD_LOG

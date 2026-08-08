@@ -293,7 +293,8 @@ TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
     std::string iniContent =
         "[Graphics]\n"
         "mip_mapping=trilinear\n"
-        "force_mip_bias_clamp=true\n";
+        "force_mip_bias_clamp=true\n"
+        "nv_lod_spread_fix=on\n";
 
     WriteConfig(iniContent);
 
@@ -302,6 +303,7 @@ TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
 
     EXPECT_EQ(config.graphics.mipMapping, "trilinear");
     EXPECT_TRUE(config.graphics.forceMipBiasClamp);
+    EXPECT_TRUE(config.graphics.nvLodSpreadFix);
 }
 
 TEST_F(ConfigTest, NormalizesAndValidatesMipMappingMode) {

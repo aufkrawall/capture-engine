@@ -434,6 +434,7 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.mipBiasMode = sharedMem->graphicsConfig.mipBiasMode;
         result.forceMipBiasClamp = sharedMem->graphicsConfig.forceMipBiasClamp;
         result.msaaSamples = sharedMem->graphicsConfig.msaaSamples;
+        result.nvLodSpreadFix = sharedMem->graphicsConfig.nvLodSpreadFix;
         result.cpuPrerenderLimit = sharedMem->graphicsConfig.prerenderLimit;
         result.backbufferCount = sharedMem->graphicsConfig.backbufferCount;
         result.frameLatency = sharedMem->graphicsConfig.frameLatency;

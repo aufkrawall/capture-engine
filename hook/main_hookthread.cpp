@@ -246,12 +246,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
       g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
 
-  // Force the NVIDIA GL/VK driver's LOD-spread setting for nv_lod_spread_fix.
-  // Arming here also sweeps an ICD that is already mapped, which is what covers a
-  // late injection; the ordinary case is picked up by NotifyHookModuleLoaded when
-  // the Vulkan loader or opengl32 maps nvoglv*.dll.
-  ce::nv_lod_spread::Install(ce::nv_lod_spread::ParseMode(
-      g_pLocalConfig ? g_pLocalConfig->graphics.nvLodSpreadFix : std::string()));
+  // Retain inject-side coverage for OpenGL and already-loaded ICDs. Vulkan's
+  // ordinary path is patched earlier by the Vulkan layer, before vkCreateDevice.
+  ce::nv_lod_spread::Install(GetActiveGraphicsConfig().nvLodSpreadFix
+                                 ? ce::nv_lod_spread::Mode::kOn
+                                 : ce::nv_lod_spread::Mode::kOff);
 
   // Install the low-level loader hook for DLL redirection and early module-load
   // observation. GTA Enhanced can bring up the official FFX runtime through a

@@ -1,4 +1,18 @@
 #include "vulkan_layer_internal.h"
+#include "nv_lod_spread_override.h"
+
+namespace {
+
+void ApplyConfiguredNvLodSpreadFix() {
+    if (!g_LayerState.whitelisted) {
+        return;
+    }
+    const SharedMemoryLayout* shared = g_IPCClient.GetSharedMem();
+    const bool enabled = shared && shared->graphicsConfig.nvLodSpreadFix;
+    ce::nv_lod_spread::Install(enabled ? ce::nv_lod_spread::Mode::kOn : ce::nv_lod_spread::Mode::kOff);
+}
+
+}  // namespace
 
 void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance, PFN_vkGetInstanceProcAddr gipa) {
     dispatch->instance = instance;
@@ -154,6 +168,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
     if (shm)
         shm->runtimeState.vulkanLayerActive = true;
 
+    // The ICD may already be mapped before the layer sees vkCreateInstance. If
+    // so, patch it now; otherwise the second call below catches the module that
+    // the next layer maps while creating the instance.
+    ApplyConfiguredNvLodSpreadFix();
+
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)NULL;
     VkLayerInstanceCreateInfo* chain_info = (VkLayerInstanceCreateInfo*)pCreateInfo->pNext;
     LayerLog("Vulkan Layer: Searching for VK_LAYER_LINK_INFO in pNext chain...");
@@ -256,6 +275,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
     if (res != VK_SUCCESS)
         return res;
 
+    // This is the decisive DXVK/native-Vulkan boundary: the ICD is now mapped,
+    // but vkCreateDevice and its filtering-state initialization have not run.
+    ApplyConfiguredNvLodSpreadFix();
+
     auto* dispatch = new InstanceDispatch();
     PopulateInstanceDispatch(dispatch, *pInstance, gipa);
     VulkanLayerState::Get().RegisterInstance(*pInstance, dispatch);
@@ -302,6 +325,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         LayerLog("Vulkan Layer: [Error] Capture_vkCreateDevice called with NULL pDevice");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+
+    // Defensive coverage for loaders that mapped the ICD after instance return.
+    ApplyConfiguredNvLodSpreadFix();
 
     LayerLog(
         "Vulkan Layer: Device create info - queueCreateInfoCount=%u, "
