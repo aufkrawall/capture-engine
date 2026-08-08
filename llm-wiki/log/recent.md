@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-08-08 - dlss_debug_overlay never worked: one-shot IAT patch could not see nvngx
+
+- **Symptom**: `dlss_debug_overlay=on` in `[Profile.gta]` showed no indicator in GTA V Enhanced even with DLSS SR and
+  FG both active. Session `installed/captureengine/logs/20260808_024421`.
+- **Root cause**: the spoof was an IAT patch of `advapi32!RegQueryValueExW` applied once from `HookThread`
+  (`InitializeAdvapi32Hooks`). The log shows it patching exactly two already-loaded modules at `02:44:42.300`; the
+  modules that actually read the value, `nvngx_dlss.dll` / `nvngx_dlssg.dll`, only load at `~02:44:53` and were never
+  patched. `PatchIATAllModules` is a snapshot, so nothing loaded afterwards is covered.
+- Confirmed empirically rather than assumed: the UTF-16 `ShowDlssIndicator` string exists in `nvngx_dlss.dll` and
+  `nvngx_dlssg.dll` only (not `nvngx.dll`, `sl.dlss.dll`, `sl.dlss_g.dll`, `sl.common.dll`), both import
+  `ADVAPI32!RegOpenKeyExW`+`RegQueryValueExW`, and `HKLM\...\NGXCore` exists on this machine with only `FullPath` and
+  `Installed` - **no `ShowDlssIndicator` value at all**, so the answer has to be fully synthesized.
+- **Second, independent bug** in the old detour: it wrote the payload but never set `*lpType` or `*lpcbData`, and it
+  bailed out entirely on the `lpData == nullptr` size probe. Even a correctly placed patch would have handed NGX a
+  DWORD with an unset type.
+- **Fix**: new `hook/common/dlss_indicator_spoof.{h,cpp}` inline-hooks `kernelbase!RegQueryValueExW` and
+  `kernelbase!RegGetValueW` once (advapi32 as fallback), with the pure decision logic split out for tests.
+  `hook/main_redirect.cpp`'s `HookedRegQueryValueExW`, its globals, and `IATHook::InitializeAdvapi32Hooks` are deleted.
+- **Why kernelbase, not advapi32**: `advapi32!RegQueryValueExW` is a 7-byte `48 FF 25 <rel32>` thunk into kernelbase
+  followed by `int3` padding - a bad 14-byte-patch target, and invisible to api-set importers. kernelbase's bodies
+  start with exactly 14 relocation-free prologue bytes (`48 8b c4 4c 89 48 20 48 89 48 08 53 56 57`), and advapi32's
+  thunk lands there anyway. Installed via `InstallPublished` so the trampoline is live before the patch is.
+- Rejected: re-running the IAT patch from the periodic module scan. It would have worked in practice but reintroduces
+  a load-vs-patch race, which the project rules forbid as a fix.
+- **Coverage**: `tests/test_dlss_indicator_spoof.cpp` - mode parsing, passthrough, non-matching value names, the
+  complete DWORD answer, size probe, `ERROR_MORE_DATA`, `RRF_RT_*` handling, plus config-layer tests that a
+  `[Profile.*]` value beats the global one.
+- **Verification**: `--verify` on `0.1.5856` - build, unit tests, Python self-tests, lint (clang-tidy 0 warnings),
+  sanitizer cadence, privacy scan all OK.
+- **Stale risk**: high until a real GTA V Enhanced run confirms the indicator appears. Look for
+  `DLSS indicator: dlss_debug_overlay=on armed` and then `DLSS indicator: answered RegQueryValueExW(...)` in
+  `hook_debug.log`; if the second line is missing, a newer NGX build reads the value some other way.
+
 ### 2026-08-08 - Repo recreated to purge the scrubbed objects; runner workFolder is load-bearing
 
 - The dangling pre-scrub commits could not be removed by a force-push (see the previous

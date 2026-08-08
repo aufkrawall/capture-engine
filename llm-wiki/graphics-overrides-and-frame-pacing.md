@@ -1,17 +1,17 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-06
+Last cross-checked: 2026-08-08
 
 Primary sources:
 - `common/config.{h,cpp}`
 - `common/mip_mapping_policy.h`
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
-- `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils}.*`
+- `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof}.cpp`
 
 ## Configuration contract
 
@@ -31,6 +31,10 @@ Primary sources:
   present depth.
 - DLSS preset input is exactly one trimmed `A-Z` character or `default`. Sharpening is exactly `default`, `off`, or a
   finite full-string value in `0.0-1.0`.
+- `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
+  `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
+  driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
+  "DLSS on-screen indicator" below.
 - Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
   exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
 
@@ -108,6 +112,28 @@ Primary sources:
   general cap.
 - Frame-generation scaling depends on the captured source. WGC/DXGI see final presented/generated frames and scale the
   base target; inject capture publishes application-rendered frames and does not divide its capture-sync target.
+## DLSS on-screen indicator
+
+- The modules that read `ShowDlssIndicator` are `nvngx_dlss.dll` (super resolution) and `nvngx_dlssg.dll` (frame
+  generation) - verified by the UTF-16 string being present in both, and absent from `nvngx.dll`, `sl.dlss.dll`,
+  `sl.dlss_g.dll` and `sl.common.dll`. Both statically import `ADVAPI32!RegOpenKeyExW` + `RegQueryValueExW`; the `sl.*`
+  plugins use `RegGetValueW` for their own NGXCore lookups.
+- Those modules load only when the game creates its DLSS features - roughly ten seconds into a GTA V Enhanced session,
+  long after CE's hook thread runs. Any one-shot IAT patch taken at hook-install time therefore never reaches them.
+  The answer must be an inline hook on the shared implementation, installed once and independent of module load order,
+  import style, and `GetProcAddress` resolution.
+- `hook/common/dlss_indicator_spoof.cpp` hooks **`kernelbase!RegQueryValueExW` and `kernelbase!RegGetValueW`**, not the
+  advapi32 exports: `advapi32!RegQueryValueExW` is only a 7-byte `48 FF 25` thunk (followed by `int3` padding) that
+  jumps into kernelbase, so it is both a poor trampoline target and blind to api-set importers. kernelbase's bodies
+  begin with exactly 14 relocation-free prologue bytes. advapi32 remains a documented fallback in the module list.
+- A synthesized answer must be complete, because the value genuinely does not exist: `*lpType = REG_DWORD`,
+  `*lpcbData = 4`, payload `0x400`/`0`, `ERROR_MORE_DATA` on an undersized buffer, and `ERROR_SUCCESS` with the size
+  only on an `lpData == nullptr` probe. `RegGetValueW` additionally honors the caller's `RRF_RT_*` restriction and
+  answers `ERROR_UNSUPPORTED_TYPE` when DWORD was excluded. Matching is on the value name alone, case-insensitively.
+- `default` installs nothing at all, so an unconfigured process keeps a completely untouched registry path.
+- Invariant: CE never writes `ShowDlssIndicator` to HKLM. The setting is process-local by construction, so it cannot
+  leak into other applications or survive the session.
+
 ## Diagnostics and stale-risk
 
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate

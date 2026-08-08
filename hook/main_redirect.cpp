@@ -133,32 +133,3 @@ bool NeedsLowLevelModuleLoadObservationHook() {
   // cache API pointers such as ffxConfigure.
   return true;
 }
-
-// Hooked RegQueryValueExW - For DLSS Debug Overlay
-LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
-                                      LPDWORD lpReserved, LPDWORD lpType,
-                                      LPBYTE lpData, LPDWORD lpcbData) {
-  LSTATUS status = OriginalRegQueryValueExW(hKey, lpValueName, lpReserved,
-                                            lpType, lpData, lpcbData);
-
-  // Check if probing for DLSS Indicator
-  if (lpValueName && _wcsicmp(lpValueName, L"ShowDlssIndicator") == 0) {
-    // Only if we have a config override
-    if (g_pLocalConfig && !g_pLocalConfig->graphics.dlssDebugOverlay.empty() &&
-        g_pLocalConfig->graphics.dlssDebugOverlay != "default") {
-      // If caller provided buffer to read data
-      if (lpData && lpcbData && *lpcbData >= 4) {
-        DWORD *outData = (DWORD *)lpData;
-        if (g_pLocalConfig->graphics.dlssDebugOverlay == "on") {
-          *outData = 0x400; // Force ON
-          // HookLog("RegQueryValueExW: Force-enabled DLSS Indicator");
-        } else if (g_pLocalConfig->graphics.dlssDebugOverlay == "off") {
-          *outData = 0; // Force OFF
-        }
-        return ERROR_SUCCESS; // Pretend we succeeded even if registry key
-                              // didn't exist
-      }
-    }
-  }
-  return status;
-}

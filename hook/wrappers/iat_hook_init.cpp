@@ -439,30 +439,6 @@ bool InitializeKernel32Hooks(void* LoadLibraryAHook, void** pOriginalLoadLibrary
     return success;
 }
 
-bool InitializeAdvapi32Hooks(void* RegQueryValueExWHook, void** pOriginalRegQueryValueExW) {
-    WrapperLog("IAT: Initializing advapi32 hooks...");
-
-    HMODULE hAdvapi32 = GetModuleHandleA("advapi32.dll");
-    if (!hAdvapi32) {
-        WrapperLog("IAT: advapi32.dll not loaded");
-        return false;
-    }
-
-    // Get original function address
-    if (pOriginalRegQueryValueExW) {
-        *pOriginalRegQueryValueExW = (void*)GetProcAddress(hAdvapi32, "RegQueryValueExW");
-    }
-
-    // Patch in all modules
-    void* dummy;
-    if (RegQueryValueExWHook) {
-        PatchIATAllModules("advapi32.dll", "RegQueryValueExW", RegQueryValueExWHook, &dummy);
-    }
-
-    WrapperLog("IAT: advapi32 hooks initialized");
-    return true;
-}
-
 void ShutdownIATHooks() {
     std::lock_guard<std::mutex> lock(g_PatchLock);
 

@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 553,
+    "entries": 555,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -272,6 +272,7 @@
       "hook/common/custom_overlay_vk.cpp",
       "hook/common/custom_overlay_vk_render.cpp",
       "hook/common/d3d9_capture_policy.cpp",
+      "hook/common/dlss_indicator_spoof.cpp",
       "hook/common/dx12_dred.cpp",
       "hook/common/dx12_fg_transition_model.cpp",
       "hook/common/dx12_sampler_policy.cpp",
@@ -492,6 +493,7 @@
       "tests/test_cursor_geometry.cpp",
       "tests/test_d3d11_context_wrapper_source.cpp",
       "tests/test_d3d9_capture_policy.cpp",
+      "tests/test_dlss_indicator_spoof.cpp",
       "tests/test_dx12_fg_trace_replay.cpp",
       "tests/test_dx12_fg_transition_sequences.cpp",
       "tests/test_dx12_process_frame_diagnostics.cpp",

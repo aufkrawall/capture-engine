@@ -45,8 +45,6 @@ std::atomic<CreateProcessA_t> OriginalCreateProcessA{nullptr};
 
 std::atomic<CreateProcessW_t> OriginalCreateProcessW{nullptr};
 
-RegQueryValueExW_t OriginalRegQueryValueExW = nullptr;
-
 std::mutex g_HookMutex;
 
 HANDLE g_hCheckHooksEvent = NULL;

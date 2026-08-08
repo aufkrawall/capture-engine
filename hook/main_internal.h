@@ -58,6 +58,8 @@ class IConsoleVariable;
 
 #include "common/hook_context.h"
 
+#include "common/dlss_indicator_spoof.h"
+
 #include "common/input_manager.h"
 
 #include "common/ipc_client.h"
@@ -178,11 +180,6 @@ typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
                                        LPSECURITY_ATTRIBUTES, BOOL, DWORD,
                                        LPVOID, LPCWSTR, LPSTARTUPINFOW,
                                        LPPROCESS_INFORMATION);
-
-// Registry Hook Typedefs (for DLSS Debug Overlay)
-typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
-                                            LPDWORD lpReserved, LPDWORD lpType,
-                                            LPBYTE lpData, LPDWORD lpcbData);
 
 // ----------------------------------------------------------------------------
 // LdrRegisterDllNotification: authoritative, loader-safe DLL load/unload tracking
@@ -343,8 +340,6 @@ bool NeedsLoaderRedirectionHook();
 
 bool NeedsLowLevelModuleLoadObservationHook();
 
-LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData);
-
 void InitializeThirdPartyOverlayDetection();
 
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
@@ -461,8 +456,6 @@ extern std::atomic<GetCommandLineW_t> OriginalGetCommandLineW;
 extern std::atomic<CreateProcessA_t> OriginalCreateProcessA;
 
 extern std::atomic<CreateProcessW_t> OriginalCreateProcessW;
-
-extern RegQueryValueExW_t OriginalRegQueryValueExW;
 
 extern std::mutex g_HookMutex;
 

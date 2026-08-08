@@ -236,14 +236,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
 
-  // Install RegQueryValueExW for DLSS Debug Overlay
-  if (GetModuleHandleA("advapi32.dll")) {
-    HookLog("Installing RegQueryValueExW hook via IAT patching...");
-    IATHook::InitializeAdvapi32Hooks((void *)&HookedRegQueryValueExW,
-                                     (void **)&OriginalRegQueryValueExW);
-  } else {
-    HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
-  }
+  // Answer the NGX ShowDlssIndicator registry probe for dlss_debug_overlay.
+  // This must be an inline hook on the shared advapi32 exports, not an IAT
+  // patch: nvngx_dlss.dll / nvngx_dlssg.dll are the modules that read the value
+  // and they load minutes into a session, long after any IAT snapshot taken
+  // here would have been applied.
+  ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
+      g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
 
   // Install the low-level loader hook for DLL redirection and early module-load
   // observation. GTA Enhanced can bring up the official FFX runtime through a

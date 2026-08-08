@@ -455,7 +455,10 @@ dlss_rr_preset=default
 dlss_sharpening=default
 ; Frame-generation multiplier: default, 2x, 3x, or 4x.
 dlss_fg_factor=default
-; default, on, or off.
+; NVIDIA's on-screen DLSS indicator (super resolution and frame generation).
+; default leaves the machine's ShowDlssIndicator registry setting alone; on and
+; off answer the NGX runtime's probe inside the game process only, so nothing is
+; written to the registry and other applications are unaffected.
 dlss_debug_overlay=default
 ; The DLL path overrides below are implemented by CaptureEngine's injected hook.
 ; They are not NVIDIA's official DLL override feature and are not anti-cheat safe.

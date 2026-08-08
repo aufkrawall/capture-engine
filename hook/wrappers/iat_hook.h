@@ -184,11 +184,6 @@ bool InitializeKernel32Hooks(void* LoadLibraryAHook, void** pOriginalLoadLibrary
                              void** pOriginalCreateProcessA, void* CreateProcessWHook, void** pOriginalCreateProcessW);
 
 /**
- * Initialize advapi32 hooks (RegQueryValueExW)
- */
-bool InitializeAdvapi32Hooks(void* RegQueryValueExWHook, void** pOriginalRegQueryValueExW);
-
-/**
  * Register a hook for GetProcAddress interception.
  * Used for dynamic hooking of APIs loaded via GetProcAddress (e.g. OpenGL,
  * NVNGX).
