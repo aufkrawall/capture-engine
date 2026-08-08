@@ -346,6 +346,8 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
 
 void ArmManualReflexQueryHookIfConfigured(const char *source);
 
+void ArmNgxFgPresetOverrideIfConfigured(const char *source);
+
 LPSTR WINAPI HookedGetCommandLineA();
 
 LPWSTR WINAPI HookedGetCommandLineW();

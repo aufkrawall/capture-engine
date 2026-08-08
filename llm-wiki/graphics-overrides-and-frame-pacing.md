@@ -8,11 +8,12 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
-- `hook/common/ngx_module_policy.h`
+- `hook/common/{ngx_module_policy.h,ngx_fg_preset_override.*,reflex_limiter.h}`
+- `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_module_policy}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_module_policy,test_ngx_fg_preset_override}.cpp`
 
 ## Configuration contract
 
@@ -32,6 +33,10 @@ Primary sources:
   present depth.
 - DLSS preset input is exactly one trimmed `A-Z` character or `default`. Sharpening is exactly `default`, `off`, or a
   finite full-string value in `0.0-1.0`.
+- `dlss_fg_preset=default|A-Z` overrides the DLSS **frame generation** render preset. It parses exactly like the SR/RR
+  presets, but it is not delivered like them - see "DLSS Frame Generation render preset" below. The resolved value
+  travels in `SharedGraphicsConfig::dlssFGPreset` (the slot previously retained as padding, so the layout and ABI
+  signature are unchanged and a pre-feature host publishes a zero that reads as "no override").
 - `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
@@ -154,6 +159,50 @@ Primary sources:
 - The parameter machinery downstream (vtable hooks on `SetUI`/`SetI` plus `InjectPreset` at parameter creation) was
   already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
   no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.
+
+## DLSS Frame Generation render preset
+
+- The FG preset is **not** an NGX parameter. `nvngx_dlssg.dll` exposes no `*.Hint.Render.Preset.*` name at all; the
+  create-time parameters it parses are `DLSSG.UserInterfaceRecompositionEnabled`, `MenuDetectionEnabled`,
+  `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel`. The preset comes from the driver settings
+  (DRS), read in `DLSSGDRSKeys::ReadValuesFromDRSImpl` - the same channel the NVIDIA app and profile editors write.
+  So the SR/RR approach (rewrite the value the game hands NGX) cannot work here; there is nothing to rewrite.
+- Verified by disassembly of `nvngx_dlssg.dll` 310.6 and 310.7: the snippet iterates a table of **eight** DRS setting
+  ids (`0x10E41DF6`, `0x104596A1..A3`, `0x104D6667`, `0x104C9A99`, `0x10E41DF1`, `0x10308298`), reading each with
+  `NvAPI_DRS_GetSetting`. `0x10E41DF1` is the render preset: the value is logged as `INFO: Preset ID: %d`, `1` selects
+  preset A ("Preset A selected, disabling UIR") and `2` selects preset B ("Preset B selected, enabling UIR"). A value
+  of `0x10E41DF6` bit 2 means "Not parsing presets due to private flag overrides". So in 310.7 the preset letters are
+  exactly a UI-recomposition switch, but the selection itself is a plain 1-based index, so CE accepts A-Z.
+- Version floor: 310.4 (shipped with GTA V Enhanced) and the 310.2.1 driver-store copy contain neither the preset
+  strings nor `0x10E41DF1`. The bundled testapp runtime is 310.6 and does support it. On an older runtime the override
+  is simply inert.
+- `NvAPI_DRS_GetSetting` is function id **0x73BF8338**, resolved by the snippet through `nvapi_QueryInterface`
+  (nvapi64.dll exports only `nvapi_QueryInterface` and `nvapi_Direct_GetMethod`) and cached for the process on first
+  use. CE therefore wraps that one resolution: `hook/common/ngx_fg_preset_override.cpp` returns a detour that forwards
+  every call and substitutes only setting `0x10E41DF1`.
+- Invariant: nvapi64.dll's code bytes are never patched. The interception is CE's existing filtered
+  `nvapi_QueryInterface` GetProcAddress/IAT path (`ReflexLimiter::EnsureNvApiQueryInterfaceInterception`), for the same
+  reason the Reflex limiter refuses to patch NvAPI prologues - DLSS FG integrations validate them during Reflex setup.
+- Invariant: nothing is written to the machine's driver profiles. The answer is process-local, so other applications
+  and later sessions are unaffected.
+- `nvngx_dlssg` is classified as a Streamline/FG module, and those callers are deliberately bypassed in
+  `DetourGetProcAddress`. `ShouldAllowNgxFrameGenerationPresetDynamicHook` is the single narrow exception: only that
+  snippet, only `nvapi_QueryInterface`, and only while a preset is configured. `ShouldReturnWrapperToCaller` still
+  refuses to hand Reflex wrappers to FG modules, so the snippet's view of NvAPI changes for the DRS getter alone.
+- The substituted `NVDRS_SETTING` must look like an explicitly set current-profile DWORD: `settingLocation = 0`
+  (`NVDRS_CURRENT_PROFILE_LOCATION`) and `isCurrentPredefined = 0`, because `util::drsReadKey` rejects anything else.
+  Only the fields the snippet reads are written; `version` and `settingName` are left alone, and an unrecognized
+  struct version is forwarded untouched. `ngx_fg_preset_override.h` mirrors the NvAPI ABI with `static_assert`s on
+  `sizeof` (0x3020), `settingId`/`settingType`/`settingLocation`/`currentValue` offsets, and `NVDRS_SETTING_VER1`
+  (0x13020) so a layout mistake fails the build instead of corrupting the caller's stack buffer.
+- `dlss_fg_preset=default` arms nothing: no dynamic hook registration, no IAT patch, no bypass exception, and the
+  wrapper is never returned. Arming happens from config load, shared-memory connect, and `nvapi64.dll` /
+  `nvngx_dlssg.dll` load; the snippet's own `kernel32!GetProcAddress` import is patched at its module-load
+  notification because the process-wide `PatchIATAllModules` snapshots predate it.
+- Diagnostics: `NGX FG preset: armed ...`, `... GetProcAddress import patch on nvngx_dlssg.dll installed`,
+  `... wrapping NvAPI_DRS_GetSetting for ...`, then rate-limited `... answered NvAPI_DRS_GetSetting(0x10E41DF1) with
+  preset 'X'`. Without the wrapping line the resolution never reached CE. The snippet's own `INFO: Preset ID: %d` in
+  `nvngx` logging is the independent confirmation.
 
 ## Diagnostics and stale-risk
 

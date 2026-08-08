@@ -92,6 +92,23 @@ inline bool ShouldAllowStreamlineProxyExportToBypassDynamicHook(bool targetIsStr
     return targetIsStreamlineFrameGenerationModule && IsDXGIFactoryDynamicHookName(functionName);
 }
 
+inline bool IsNvApiQueryInterfaceDynamicHookName(const char* functionName) {
+    return functionName && strcmp(functionName, "nvapi_QueryInterface") == 0;
+}
+
+// nvngx_dlssg.dll reads the DLSS FG render preset out of the driver settings
+// through nvapi_QueryInterface, so `dlss_fg_preset` can only be honored if that
+// one resolution reaches CE's dispatcher. Streamline/FG modules are otherwise
+// deliberately left on untouched driver pointers, so this exception stays as
+// narrow as the feature: the DLSS-G snippet, that single export, and only while
+// a preset is actually configured.
+inline bool ShouldAllowNgxFrameGenerationPresetDynamicHook(bool ngxFgPresetOverrideArmed,
+                                                           bool callerIsNgxFrameGenerationSnippet,
+                                                           const char* functionName) {
+    return ngxFgPresetOverrideArmed && callerIsNgxFrameGenerationSnippet &&
+           IsNvApiQueryInterfaceDynamicHookName(functionName);
+}
+
 inline bool ShouldAllowDynamicHookForThirdPartyOverlayCaller(bool targetIsFFXFrameGenerationModule,
                                                              const char* functionName) {
     // GTA Enhanced can route official FFX module lookups through an overlay

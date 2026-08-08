@@ -294,6 +294,8 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         reader.GetStrCompat("DLSS", "dlss_sharpening", "Graphics", "dlss_sharpening", "default");
     config.graphics.dlssFgFactor =
         reader.GetStrCompat("DLSS", "dlss_fg_factor", "Graphics", "dlss_fg_factor", "default");
+    config.graphics.dlssFgPreset =
+        reader.GetStrCompat("DLSS", "dlss_fg_preset", "Graphics", "dlss_fg_preset", "default");
     // DLL Overrides
     config.graphics.dlssSrDllPath = reader.GetStrCompat("DLSS", "dlss_sr_dll_path", "Graphics", "dlss_sr_dll_path", "");
     config.graphics.dlssRrDllPath = reader.GetStrCompat("DLSS", "dlss_rr_dll_path", "Graphics", "dlss_rr_dll_path", "");
@@ -323,6 +325,7 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
 
     config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     config.graphics.parsed.dlssFGFactor = ParseDlssFGFactor(config.graphics.dlssFgFactor);
+    config.graphics.parsed.fgPreset = ParseDlssFGPreset(config.graphics.dlssFgPreset);
 
     // Log parsed presets for debugging
     if (IsDebugLoggingEnabled(config.logLevel)) {
@@ -331,6 +334,11 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         if (config.graphics.parsed.srPreset > 0) {
             LogInfo("Config: Global SR Preset Override Active: '%c'",
                     (config.graphics.parsed.srPreset <= 26) ? ('A' + config.graphics.parsed.srPreset - 1) : '?');
+        }
+        if (config.graphics.parsed.fgPreset > 0) {
+            LogInfo("Config: Frame Generation Preset Override Active: '%c' (ID %u)",
+                    (config.graphics.parsed.fgPreset <= 26) ? ('A' + config.graphics.parsed.fgPreset - 1) : '?',
+                    config.graphics.parsed.fgPreset);
         }
     }
 

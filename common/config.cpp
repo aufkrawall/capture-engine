@@ -89,6 +89,13 @@ uint32_t ParseDlssRRPreset(const std::string& val) {
     return ParseDlssPreset(val);
 }
 
+// Helper to parse Frame Generation presets (A-Z -> 1-26, Default -> 0).
+// NVIDIA currently defines only A and B, but the driver-side selection is a
+// plain 1-based index, so the whole alphabet is accepted here as well.
+uint32_t ParseDlssFGPreset(const std::string& val) {
+    return ParseDlssPreset(val);
+}
+
 // Helper to parse DLSS sharpening (-2.0 default, -1.0 off, 0.0-1.0 value)
 float ParseDlssSharpening(const std::string& val) {
     const std::string normalized = Trim(val, " \t\r\n\"");

@@ -112,6 +112,25 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
+      ArmNgxFgPresetOverrideIfConfigured(baseName);
+    }
+    // The DLSS-G snippet reads the frame generation render preset out of the
+    // driver settings through nvapi_QueryInterface, which it resolves with
+    // GetProcAddress after its own load completes. Patch that import here so the
+    // first resolution already reaches CE's dispatcher.
+    if (ce::ngx_fg_preset::IsFrameGenerationSnippetModulePath(moduleNameOrPath)) {
+      ArmNgxFgPresetOverrideIfConfigured(baseName);
+      if (ce::ngx_fg_preset::IsArmed()) {
+        void *originalGetProcAddress = nullptr;
+        const bool patched =
+            IATHook::PatchIAT(module, "kernel32.dll", "GetProcAddress",
+                              reinterpret_cast<void *>(&IATHook::DetourGetProcAddress),
+                              &originalGetProcAddress);
+        HookLogImportant(
+            "NGX FG preset: GetProcAddress import patch on %s %s (module=%p orig=%p)",
+            baseName, patched ? "installed" : "FAILED", (void *)module,
+            originalGetProcAddress);
+      }
     }
     if (ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleNameOrPath)) {
       HookLogImportant(
@@ -174,6 +193,27 @@ void ArmManualReflexQueryHookIfConfigured(const char *source) {
     HookLogImportant(
         "ReflexLimiter: Early filtered nvapi_QueryInterface hook armed from %s "
         "manual Reflex configuration",
+        source && source[0] ? source : "current");
+  }
+}
+
+void ArmNgxFgPresetOverrideIfConfigured(const char *source) {
+  // GetActiveGraphicsConfig() publishes the resolved preset to the override unit.
+  GetActiveGraphicsConfig();
+  const uint32_t preset = ce::ngx_fg_preset::GetConfiguredPreset();
+  if (preset == 0)
+    return;
+
+  // nvngx_dlssg resolves NvAPI_DRS_GetSetting lazily and caches the pointer for
+  // the rest of the process, so the filtered nvapi_QueryInterface path has to
+  // exist before the first frame generation feature is created.
+  g_ReflexLimiter.EnsureNvApiQueryInterfaceInterception();
+
+  static std::atomic<bool> s_loggedArm{false};
+  if (!s_loggedArm.exchange(true, std::memory_order_acq_rel)) {
+    HookLogImportant(
+        "NGX FG preset: armed the DRS render-preset override for preset '%c' from %s",
+        ce::ngx_fg_preset::PresetIdToLetter(preset),
         source && source[0] ? source : "current");
   }
 }

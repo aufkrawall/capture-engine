@@ -64,7 +64,7 @@ Primary sources:
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, early raw/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements.
 - `graphics-overrides-and-frame-pacing.md`
-  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting (incl. gate-every-present native-Vulkan grid pacing), phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-08-06.
+  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting (incl. gate-every-present native-Vulkan grid pacing), phase-preserving capture-sync/FG rules, the DLSS on-screen indicator and the DRS-sourced DLSS FG render preset, diagnostics, and runtime validation matrix. Last verified 2026-08-08.
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants, including independent no-callback cleanup on GetState-first post-FSR ownership repair, single-submit all-transport exact PostSL suspension keep-alive, first-confirmed Reflex suspend, and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-29.
 - `vulkan-fg-switch-test.md`

@@ -455,6 +455,14 @@ dlss_rr_preset=default
 dlss_sharpening=default
 ; Frame-generation multiplier: default, 2x, 3x, or 4x.
 dlss_fg_factor=default
+; Frame-generation render preset letter: default, or A-Z. NVIDIA ships A and B
+; so far (A disables and B enables the runtime's UI recomposition); later letters
+; are accepted here and take effect once a runtime defines them. Unlike the SR/RR
+; presets above, the game never sets this one: nvngx_dlssg.dll reads it from the
+; NVIDIA driver settings, so CaptureEngine answers that read inside the game
+; process only. Nothing is written to your driver profiles. Requires a DLSS frame
+; generation runtime of 310.6 or newer; older ones ignore presets entirely.
+dlss_fg_preset=default
 ; NVIDIA's on-screen DLSS indicator (super resolution and frame generation).
 ; default leaves the machine's ShowDlssIndicator registry setting alone; on and
 ; off answer the NGX runtime's probe inside the game process only, so nothing is

@@ -19,6 +19,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
     ArmManualReflexQueryHookIfConfigured("config.ini");
+    ArmNgxFgPresetOverrideIfConfigured("config.ini");
 
     // Load wrapper DLLs for all graphics APIs
     {
@@ -180,6 +181,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       g_pSharedMem = g_IPC->GetSharedMem();
       g_pSharedMem->SetSourcePid(GetCurrentProcessId());
       ArmManualReflexQueryHookIfConfigured("shared memory");
+      ArmNgxFgPresetOverrideIfConfigured("shared memory");
     }
 
     // Initialize HookContext and sync with legacy globals

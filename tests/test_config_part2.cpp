@@ -362,6 +362,28 @@ TEST(ConfigHelpersTest, DlssPresetParsingAcceptsFutureLetters) {
     EXPECT_EQ(ParseDlssRRPreset("AB"), 0u);
 }
 
+TEST(ConfigHelpersTest, DlssFGPresetParsingMatchesTheOtherPresetFamilies) {
+    // NVIDIA currently defines only A and B for frame generation, but the driver
+    // selection is a 1-based index, so later letters must survive parsing.
+    EXPECT_EQ(ParseDlssFGPreset("default"), 0u);
+    EXPECT_EQ(ParseDlssFGPreset(""), 0u);
+    EXPECT_EQ(ParseDlssFGPreset("A"), 1u);
+    EXPECT_EQ(ParseDlssFGPreset("b"), 2u);
+    EXPECT_EQ(ParseDlssFGPreset(" C "), 3u);
+    EXPECT_EQ(ParseDlssFGPreset("Z"), 26u);
+    EXPECT_EQ(ParseDlssFGPreset("AB"), 0u);
+    EXPECT_EQ(ParseDlssFGPreset("1"), 0u);
+    EXPECT_EQ(ParseDlssFGPreset("A-suffix"), 0u);
+}
+
+TEST(ConfigHelpersTest, DlssFGPresetSharedMemoryNormalizationRejectsOutOfRange) {
+    EXPECT_EQ(NormalizeDLSSFGPreset(0u), 0u);
+    EXPECT_EQ(NormalizeDLSSFGPreset(1u), 1u);
+    EXPECT_EQ(NormalizeDLSSFGPreset(26u), 26u);
+    EXPECT_EQ(NormalizeDLSSFGPreset(27u), 0u);
+    EXPECT_EQ(NormalizeDLSSFGPreset(0xFFFFFFFFu), 0u);
+}
+
 TEST(ConfigHelpersTest, NvngxParameterVtableSlotsMatchSdkAbi) {
     EXPECT_EQ(ce::nvngx_parameter_abi::kSetI, 3u);
     EXPECT_EQ(ce::nvngx_parameter_abi::kSetUI, 4u);

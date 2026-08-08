@@ -184,6 +184,9 @@ anchors that predate the split are approximate.
 - `hook/common/streamline_runtime_policy.h` - Streamline PostSL startup/suspend
   policy helpers.
 - `hook/common/overlay_compat.h` - third-party overlay and FFX module detection helpers.
+- `hook/common/ngx_fg_preset_override.{h,cpp}` - `dlss_fg_preset`: the DLSS FG render
+  preset is a driver-settings (DRS) key, not an NGX parameter, so this wraps the
+  `NvAPI_DRS_GetSetting` pointer `nvngx_dlssg.dll` resolves.
 - `mediaengine/mediaengine_*.cpp` + `mediaengine_internal.h` - capture/CFR/audio
   pipeline; the audio loop and pull phases live in the `mediaengine_audio_loop_*`
   and `mediaengine_audio_pull*` units.

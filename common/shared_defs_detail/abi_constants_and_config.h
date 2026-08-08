@@ -77,6 +77,12 @@ inline int NormalizeDLSSFGFactor(int32_t dlssFGFactor) {
     return (dlssFGFactor >= 2 && dlssFGFactor <= 4) ? dlssFGFactor : 0;
 }
 
+// Frame Generation render preset letters map to 1-based driver selection values
+// (A=1, B=2, ...). Anything outside A-Z means "leave the driver alone".
+inline uint32_t NormalizeDLSSFGPreset(uint32_t dlssFGPreset) {
+    return (dlssFGPreset >= 1 && dlssFGPreset <= 26) ? dlssFGPreset : 0u;
+}
+
 inline uint32_t DLSSFGMultiplierToGeneratedFrames(int32_t dlssFGFactor) {
     const int normalized = NormalizeDLSSFGFactor(dlssFGFactor);
     return normalized > 0 ? static_cast<uint32_t>(normalized - 1) : 0u;
@@ -394,9 +400,11 @@ struct SharedGraphicsConfig {
     float dlssSharpening;  // -2.0 = default, -1.0 = off, else value
     int32_t dlssFGFactor;  // 0 = default, 2/3/4 = Frame Generation multiplier override
 
-    // Retained padding. Smooth Motion compatibility is always detected and applied
-    // automatically; it is not a user setting.
-    int32_t reservedGraphicsConfig0;
+    // Frame Generation render preset - 0=Default, 1-26 = A-Z. Occupies the slot
+    // previously retained as padding after Smooth Motion became automatic, so the
+    // layout and ABI signature are unchanged: a host that predates this field
+    // leaves it zero, which reads back as "no override".
+    uint32_t dlssFGPreset;
 };
 
 enum CaptureRuntimeFlags : uint32_t {

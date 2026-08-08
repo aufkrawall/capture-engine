@@ -1,5 +1,49 @@
 # llm-wiki Log
 
+### 2026-08-08 - dlss_fg_preset added: the FG preset is a DRS key, not an NGX parameter
+
+- **Request**: mirror the SR/RR preset-letter overrides for DLSS frame generation, which NVIDIA introduced in 2026
+  (presets A and B so far) and which the driver and NVIDIA Profile Inspector can override.
+- **Finding that changed the design**: there is no application-facing NGX parameter for it. Strings and disassembly of
+  `nvngx_dlssg.dll` 310.7 (and 310.6) show the create-time parameter set is `DLSSG.UserInterfaceRecompositionEnabled`,
+  `MenuDetectionEnabled`, `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel` - no `Preset` name
+  anywhere. The preset is read from the driver settings in `DLSSGDRSKeys::ReadValuesFromDRSImpl`, which is why NPI can
+  set it: it writes the same DRS profile. Rewriting a parameter the game sets, the SR/RR technique, has nothing to act
+  on here.
+- **Reverse engineering** (all against a standalone `nvngx_dlssg.dll` 310.7.0.0): the DRS loop at
+  `.text+0x1a2bf` walks an 8-entry id table at `.rdata` RVA `0xa0508` = `0x10E41DF6`, `0x104596A1`, `0x104596A2`,
+  `0x104596A3`, `0x104D6667`, `0x104C9A99`, `0x10E41DF1`, `0x10308298`. The preset consumer at `.text+0x38223` reads
+  `0x10E41DF6` (bit 2 = "Not parsing presets due to private flag overrides") and then `0x10E41DF1`, logging
+  `INFO: Preset ID: %d`; `1` -> "Preset A selected, disabling UIR", `2` -> "Preset B selected, enabling UIR",
+  `0xFFFFFE`/`0xFFFFFF` are sentinels that land on the same two branches. The read path stamps
+  `NVDRS_SETTING_VER1 = 0x13020` and requires `settingLocation == 0`, reading the value from `currentValue.u32Value`
+  at struct offset `0x201C`. `NvAPI_DRS_GetSetting` is resolved as function id `0x73BF8338` via `nvapi_QueryInterface`
+  and cached at first use.
+- **Version floor**: 310.4 (GTA V Enhanced's shipped copy) and the 310.2.1 driver-store copy contain neither the preset
+  strings nor `0x10E41DF1`; the repo's testapp runtime is 310.6 and does. So `installed/testapp/dx12_dlss_fg_test.exe`
+  can validate this locally - GTA V Enhanced cannot until its FG runtime is newer.
+- **Implementation**: `hook/common/ngx_fg_preset_override.{h,cpp}` wraps the resolved `NvAPI_DRS_GetSetting` for that
+  one setting id, `config` gains `dlss_fg_preset` (`[DLSS]`/`[Graphics]`, `default|A-Z`, in the default template), and
+  the value rides in `SharedGraphicsConfig::dlssFGPreset` - the slot that was retained as padding, so layout and the
+  ABI signature are unchanged and an older host publishes a zero that reads as "no override".
+- Deliberately **not** done: writing the DRS profile like NPI does (persistent, machine-wide, needs elevation), and
+  emulating preset A/B by flipping `DLSSG.UserInterfaceRecompositionEnabled` (that is today's meaning of the letters,
+  not the letters themselves, and a driver-side preset would still win).
+- **Interception constraints**: nvapi64.dll code bytes are never patched - CE reuses the filtered
+  `nvapi_QueryInterface` GetProcAddress/IAT path for the same reason `reflex_limiter.h` documents. `nvngx_dlssg` is a
+  Streamline/FG module, which `DetourGetProcAddress` deliberately bypasses, so
+  `IATHook::ShouldAllowNgxFrameGenerationPresetDynamicHook` is one narrow exception: that snippet, that export, only
+  while a preset is configured. With `default` nothing is armed at all.
+- **Coverage**: `tests/test_ngx_fg_preset_override.cpp` (8 tests) pins the ABI mirror, the setting-id and struct-version
+  scoping, the current-profile/non-predefined shape of the answer, the module and function-id gating, and the dynamic
+  hook exception; `tests/test_config_part2.cpp` and `tests/test_config_override.cpp` cover parsing and per-profile
+  resolution.
+- **Stale risk**: high until a real run. Expect `NGX FG preset: armed ...`, the `GetProcAddress import patch on
+  nvngx_dlssg.dll installed` line, `wrapping NvAPI_DRS_GetSetting`, and then `answered NvAPI_DRS_GetSetting(0x10E41DF1)
+  with preset 'X'`. If the wrapping line never appears the snippet resolved nvapi before CE patched its import.
+- **Open question**: whether NVIDIA keeps `0x10E41DF1` as the preset key in later runtimes. The id is not derived at
+  runtime; a future snippet that moves it would silently stop honoring the setting (fail-open, no misbehavior).
+
 ### 2026-08-08 - dlss_sr_preset never reached NGX: Streamline resolves it past every snapshot hook
 
 - **Symptom**: `dlss_sr_preset=m` in `[Profile.gta]` left GTA V Enhanced running preset K, with a custom

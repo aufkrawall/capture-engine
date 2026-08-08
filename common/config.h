@@ -219,6 +219,7 @@ struct GraphicsConfig {
     // DLSS Sharpening: "default", "off", or float value (0.0 to 1.0)
     std::string dlssSharpening;
     std::string dlssFgFactor;  // "default", "2x", "3x", "4x"
+    std::string dlssFgPreset;  // "default", "A"..."Z" (NVIDIA ships A and B so far)
 
     // Internal parsed versions for efficiency
     struct {
@@ -241,6 +242,7 @@ struct GraphicsConfig {
 
         float dlssSharpening = -2.0f;  // -2.0 = default, -1.0 = off, else value
         int dlssFGFactor = 0;          // 0 = default, 2/3/4 = Frame Generation multiplier override
+        uint32_t fgPreset = 0;         // 0 = default, 1-26 = A-Z Frame Generation render preset
 
     } parsed;
 
@@ -626,6 +628,7 @@ bool IsVideoCaptureDisabledMethod(const std::string& val);
 // Parsing helpers
 uint32_t ParseDlssPreset(const std::string& val);
 uint32_t ParseDlssRRPreset(const std::string& val);
+uint32_t ParseDlssFGPreset(const std::string& val);
 float ParseDlssSharpening(const std::string& val);
 int ParseDlssFGFactor(const std::string& val);
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"

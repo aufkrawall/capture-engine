@@ -149,6 +149,7 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
 
     pSharedMem->graphicsConfig.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     pSharedMem->graphicsConfig.dlssFGFactor = config.graphics.parsed.dlssFGFactor;
+    pSharedMem->graphicsConfig.dlssFGPreset = NormalizeDLSSFGPreset(config.graphics.parsed.fgPreset);
 
     pSharedMem->configVersion.fetch_add(1, std::memory_order_release);
 

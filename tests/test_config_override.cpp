@@ -639,6 +639,38 @@ TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {
     EXPECT_EQ(config.graphics.parsed.srPreset, 12u);
 }
 
+TEST_F(ConfigOverrideTest, PerAppDLSSFGPresetOverride) {
+    std::string iniContent =
+        "[DLSS]\n"
+        "dlss_fg_preset=A\n"
+        "\n"
+        "[App.1]\n"
+        "Process=RoboCop-Win64-Shipping.exe\n"
+        "dlss_fg_preset=B\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig matched;
+    LoadConfig(tempConfigFile, matched, "RoboCop-Win64-Shipping.exe");
+    EXPECT_EQ(matched.graphics.dlssFgPreset, "B");
+    EXPECT_EQ(matched.graphics.parsed.fgPreset, 2u);
+
+    AppConfig unmatched;
+    LoadConfig(tempConfigFile, unmatched, "other.exe");
+    EXPECT_EQ(unmatched.graphics.dlssFgPreset, "A");
+    EXPECT_EQ(unmatched.graphics.parsed.fgPreset, 1u);
+}
+
+TEST_F(ConfigOverrideTest, DLSSFGPresetDefaultsToNoOverride) {
+    WriteConfig("[DLSS]\ndlss_fg_factor=default\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "any.exe");
+
+    EXPECT_EQ(config.graphics.dlssFgPreset, "default");
+    EXPECT_EQ(config.graphics.parsed.fgPreset, 0u);
+}
+
 TEST_F(ConfigOverrideTest, StreamlineDllPathParsing) {
     std::string iniContent =
         "[Graphics]\n"

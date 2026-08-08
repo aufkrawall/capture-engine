@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 556,
+    "entries": 558,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -295,6 +295,7 @@
       "hook/common/hook_common.cpp",
       "hook/common/input_manager.cpp",
       "hook/common/ipc_client.cpp",
+      "hook/common/ngx_fg_preset_override.cpp",
       "hook/common/overlay_adapter.cpp",
       "hook/common/overlay_adapter_render.cpp",
       "hook/common/overlay_adapter_render_frame.cpp",
@@ -538,6 +539,7 @@
       "tests/test_module_enumeration.cpp",
       "tests/test_monitor_selection.cpp",
       "tests/test_mux_invariants.cpp",
+      "tests/test_ngx_fg_preset_override.cpp",
       "tests/test_ngx_module_policy.cpp",
       "tests/test_overlay_compat.cpp",
       "tests/test_overlay_fg_status_publication.cpp",

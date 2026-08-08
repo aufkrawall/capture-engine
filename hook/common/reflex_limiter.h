@@ -31,6 +31,7 @@
 #include "fg_detection.h"
 #include "fps_limiter_policy.h"
 #include "hook_common.h"
+#include "ngx_fg_preset_override.h"
 #include "overlay_compat.h"
 #include "reflex_defs.h"
 #include "streamline_runtime_policy.h"
@@ -147,6 +148,13 @@ public:
     void SetManualLimiterConfiguredOrActive(bool configured);
     bool IsManualLimiterConfiguredOrActive() const;
     void EnsureGameOwnedReflexHooks();
+
+    // Arms only the filtered nvapi_QueryInterface resolution path (dynamic
+    // GetProcAddress entry plus IAT patch) without enabling any Reflex-specific
+    // behavior. Consumers that merely need to observe or wrap an NvAPI pointer -
+    // currently the DLSS FG render-preset override - use this so a single hook
+    // owns that export.
+    void EnsureNvApiQueryInterfaceInterception();
 
 #ifdef CE_UNIT_TESTS
     void TestInstallSetSleepModeForUnitTest(PFN_NvAPI_D3D_SetSleepMode setSleepMode, IUnknown* device) {
@@ -328,6 +336,12 @@ inline bool ReflexLimiter::IsManualLimiterConfiguredOrActive() const {
     return false;
 }
 
+inline void ReflexLimiter::EnsureNvApiQueryInterfaceInterception() {
+#if REFLEX_IAT_HOOK_AVAILABLE
+    RegisterQueryInterfaceHook();
+#endif
+}
+
 inline void ReflexLimiter::EnsureGameOwnedReflexHooks() {
 #if REFLEX_IAT_HOOK_AVAILABLE
     if (IsManualLimiterConfiguredOrActive()) {
@@ -449,6 +463,15 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t functio
     s_insideQueryInterface = true;
     void* result = queryInterface(functionId);
     s_insideQueryInterface = false;
+
+    // This detour is the process-wide nvapi_QueryInterface resolution point, so
+    // the DLSS FG render-preset override plugs in here rather than installing a
+    // second hook on the same export. It only claims the DRS getter resolved by
+    // nvngx_dlssg and only while `dlss_fg_preset` is configured.
+    if (void* fgPresetWrapper = ce::ngx_fg_preset::MaybeWrapQueryInterface(functionId, result,
+                                                                           __builtin_return_address(0))) {
+        return fgPresetWrapper;
+    }
 
     if (functionId != NVAPI_ID_D3D_SetSleepMode && functionId != NVAPI_ID_D3D_Sleep) {
         return result;
