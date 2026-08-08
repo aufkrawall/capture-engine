@@ -101,6 +101,18 @@
   resolved nvapi before CE patched its import.
 - **Open question**: whether NVIDIA keeps `0x10E41DF1` as the preset key in later runtimes. The id is not derived at
   runtime; a future snippet that moves it would silently stop honoring the setting (fail-open, no misbehavior).
+- **Open question**: no NVIDIA-side readback of the applied preset has been observed. The snippet's own
+  `INFO: Preset ID: %d` / `Preset A selected, disabling UIR` lines need NGX logging, which comes from `LogLevel` /
+  `EnableConsoleLogging` under the NGXCore key; 310.6 exposes only `__NGX_SHOW_INDICATOR` and
+  `__NGX_CUBIN_DISABLE_RESOURCE_CACHE` as environment variables, and the on-screen indicator text carries no preset
+  letter. Extending the existing in-process `dlss_indicator_spoof` registry answering to those value names would
+  prove the runtime side without touching the machine's registry.
+- **Unexplained, seen once**: during preset-A validation the test app froze at ~197 s, main thread parked in
+  `dx12_dlss_fg_test!MoveToNextFrame` -> `WaitForSingleObjectEx` on a D3D12 fence, no device-removed in the log. It
+  did **not** reproduce: standalone-without-CE ran 376 s, CE-injected-without-the-preset 330 s, and a CE-injected
+  preset-A repeat 330 s, all responsive. In the hang dump no CE thread and neither Streamline worker (`sl.pacer`,
+  `sl.dlssg`, both parked on condition variables) is blocked inside CE code. Cause not established; treat as an open
+  item rather than as an exonerated one, and re-check if it recurs.
 
 ### 2026-08-08 - dlss_sr_preset never reached NGX: Streamline resolves it past every snapshot hook
 
