@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <new>
 #include "../common/raii_helpers.h"
@@ -92,25 +93,31 @@ std::unique_ptr<uint8_t[]> ScaleBitmapNearestNeighbor(const uint8_t* src, uint32
     if (!src || srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) {
         return nullptr;
     }
+    constexpr uint64_t kMaxPixels = static_cast<uint64_t>((std::numeric_limits<size_t>::max)()) / 4u;
+    const uint64_t srcPixels = static_cast<uint64_t>(srcW) * srcH;
+    const uint64_t dstPixels = static_cast<uint64_t>(dstW) * dstH;
+    if (srcPixels > kMaxPixels || dstPixels > kMaxPixels) {
+        return nullptr;
+    }
+    const size_t srcStride = static_cast<size_t>(srcW) * 4u, dstStride = static_cast<size_t>(dstW) * 4u;
+    const size_t dstSize = static_cast<size_t>(dstPixels) * 4u;
     if (srcW == dstW && srcH == dstH) {
         // No scaling needed - return a copy
-        uint32_t size = dstW * dstH * 4;
-        auto result = std::make_unique<uint8_t[]>(size);
-        memcpy(result.get(), src, size);
+        auto result = std::make_unique<uint8_t[]>(dstSize);
+        memcpy(result.get(), src, dstSize);
         return result;
     }
-
-    auto result = std::make_unique<uint8_t[]>(dstW * dstH * 4);
+    auto result = std::make_unique<uint8_t[]>(dstSize);
     uint8_t* dst = result.get();
 
     for (uint32_t dy = 0; dy < dstH; dy++) {
-        uint32_t sy = dy * srcH / dstH;
-        const uint8_t* srcRow = src + sy * srcW * 4;
-        uint8_t* dstRow = dst + dy * dstW * 4;
+        const uint32_t sy = static_cast<uint32_t>(static_cast<uint64_t>(dy) * srcH / dstH);
+        const uint8_t* srcRow = src + static_cast<size_t>(sy) * srcStride;
+        uint8_t* dstRow = dst + static_cast<size_t>(dy) * dstStride;
         for (uint32_t dx = 0; dx < dstW; dx++) {
-            uint32_t sx = dx * srcW / dstW;
-            const uint8_t* srcPixel = srcRow + sx * 4;
-            uint8_t* dstPixel = dstRow + dx * 4;
+            const uint32_t sx = static_cast<uint32_t>(static_cast<uint64_t>(dx) * srcW / dstW);
+            const uint8_t* srcPixel = srcRow + static_cast<size_t>(sx) * 4u;
+            uint8_t* dstPixel = dstRow + static_cast<size_t>(dx) * 4u;
             dstPixel[0] = srcPixel[0];  // B
             dstPixel[1] = srcPixel[1];  // G
             dstPixel[2] = srcPixel[2];  // R

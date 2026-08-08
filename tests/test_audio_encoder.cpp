@@ -14,16 +14,14 @@ extern "C" {
 
 // Helper to create dummy PCM data
 std::vector<uint8_t> CreateDummyAudio(int milliseconds, int sampleRate, int channels) {
-    int numSamples = (sampleRate * milliseconds) / 1000;
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    int sizeBytes = numSamples * channels * sizeof(int16_t);
+    const size_t numSamples = static_cast<size_t>(sampleRate) * static_cast<size_t>(milliseconds) / 1000u;
+    const size_t sizeBytes = numSamples * static_cast<size_t>(channels) * sizeof(int16_t);
     return std::vector<uint8_t>(sizeBytes, 0);
 }
 
 std::vector<uint8_t> CreateDummyFloatAudio(int milliseconds, int sampleRate, int channels) {
-    int numSamples = (sampleRate * milliseconds) / 1000;
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    int sizeBytes = numSamples * channels * sizeof(float);
+    const size_t numSamples = static_cast<size_t>(sampleRate) * static_cast<size_t>(milliseconds) / 1000u;
+    const size_t sizeBytes = numSamples * static_cast<size_t>(channels) * sizeof(float);
     return std::vector<uint8_t>(sizeBytes, 0);
 }
 

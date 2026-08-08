@@ -302,13 +302,21 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice,
                                                             const D3D10_SAMPLER_DESC* pSamplerDesc,
                                                             ID3D10SamplerState** ppSamplerState);
 
+inline void LogVTableHookInstalled11(const char* name, bool additionalVtable, UINT slotIndex) {
+    if (additionalVtable) {
+        HookLog("DX11: %s hook installed on additional vtable (slot=%u)", name, slotIndex);
+    } else {
+        HookLog("DX11: %s hook installed (slot=%u)", name, slotIndex);
+    }
+}
+
 template <typename Fn>
-static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn& original, const char* name) {
+static bool EnsureVTableHookSlot11(void** vtable, UINT slotIndex, LPVOID detour, Fn& original, const char* name) {
     if (!vtable || !detour) {
         return false;
     }
 
-    void** slot = &vtable[index];
+    void** slot = &vtable[slotIndex];
     void* current = *slot;
     if (current == detour) {
         return true;
@@ -320,7 +328,7 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
         int idx = s_mismatchLogs.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
             HookLogImportant("DX11: %s hook skipped on alternate vtable (slot=%u current=%p knownOriginal=%p)", name,
-                             index, current, knownOriginal);
+                             slotIndex, current, knownOriginal);
         }
         return false;
     }
@@ -331,7 +339,7 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
     if (status == VTableHook::Success) {
         int idx = dx11_hook_g_DiagSamplerRuntimeHookInstalled.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
-            HookLog("DX11: %s hook installed%s (slot=%u)", name, knownOriginal ? " on additional vtable" : "", index);
+            LogVTableHookInstalled11(name, knownOriginal != nullptr, slotIndex);
         }
         return true;
     }
@@ -339,7 +347,7 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
     static std::atomic<int> s_failureLogs{0};
     int idx = s_failureLogs.fetch_add(1, std::memory_order_relaxed);
     if (idx < 12) {
-        HookLogImportant("DX11: %s hook install failed status=%d slot=%u current=%p", name, status, index, current);
+        HookLogImportant("DX11: %s hook install failed status=%d slot=%u current=%p", name, status, slotIndex, current);
     }
     return false;
 }
