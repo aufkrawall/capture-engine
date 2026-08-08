@@ -185,6 +185,10 @@ struct GraphicsConfig {
     std::string mipBias;     // "default", "0", "0.5", "-0.5", etc.
     std::string mipBiasMode = "strict";  // "strict", "offset", "base"
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
+    // "off" (default) or "on": force the NVIDIA GL/VK driver's FERMI_UNOPT_LOD_SPREAD
+    // setting ON inside the game process, which fixes its negative-LOD-bias texture
+    // filtering quality. Process-local; the driver files stay untouched.
+    std::string nvLodSpreadFix;
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
     float cpuPrerenderLimit = -1.0f;     // integer semantics: -1 = default, 0 = fully serialized, 1-6 = queued frames
     int backbufferCount = -1;            // -1 = app controlled, 2-6

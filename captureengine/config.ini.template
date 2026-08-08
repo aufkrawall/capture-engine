@@ -422,6 +422,19 @@ mip_bias=default
 mip_bias_mode=strict
 ; true forces mip bias to zero and takes precedence over the two settings above.
 force_mip_bias_clamp=false
+; on fixes NVIDIA's long-standing texture filtering quality bug with negative LOD
+; bias in OpenGL and Vulkan, by forcing the driver's FERMI_UNOPT_LOD_SPREAD setting
+; ON. NVIDIA defaults it to off, which drops the LOD spread to zero. This is the
+; same fix as the well-known nvoglv64.dll byte patch, except that CaptureEngine
+; applies it to its own copy of the already-loaded driver inside the injected
+; application: nothing is written to disk, your NVIDIA driver files keep their
+; signature, and other applications are unaffected. It only ever takes effect when
+; the running driver still matches the documented layout, and it is verified again
+; once the driver has initialized. NVIDIA cards only; ignored everywhere else.
+; Note that patching a graphics driver in memory - even read-only for other
+; processes - is the kind of thing some anti-cheat systems object to, so leave this
+; off for competitive online games.
+nv_lod_spread_fix=off
 ; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.

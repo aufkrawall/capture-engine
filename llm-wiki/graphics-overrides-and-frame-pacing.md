@@ -204,6 +204,45 @@ Primary sources:
   preset 'X'`. Without the wrapping line the resolution never reached CE. The snippet's own `INFO: Preset ID: %d` in
   `nvngx` logging is the independent confirmation.
 
+## NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`)
+
+- The NVIDIA GL/VK ICD (`nvoglv64.dll` / `nvoglv32.dll`) still carries the `FERMI_UNOPT_LOD_SPREAD` driver setting.
+  It defaults to OFF, which emits a LOD spread of `0` into the texture-filtering state record (header `0xA0030E46`)
+  instead of `0x10`, and that is the long-standing negative-LOD-bias filtering quality bug. The literal string
+  `FERMI_UNOPT_LOD_SPREAD` is **not** in either DLL; the setting is identified by its ON/OFF enum payloads
+  `0x37299934` / `0x56023627`.
+- **Finding that chose the mechanism**: across the whole 48MB image the setting global has exactly **one reader**
+  (`cmp dword ptr [<global>], 0x37299934`) and **one writer**, no descriptor table points at it, and no base
+  relocation targets it. Because there is one reader, writing the ON payload into the global is *equivalent* to
+  NOPing the branch that guards the OFF path, but it touches only a private copy-on-write page of the driver's
+  `.data` instead of its `.text` - the same reason `ngx_fg_preset_override` never patches NvAPI code bytes.
+- The writer is `mov [<global>], eax`, guarded by `test al,al / je`, immediately after
+  `mov edx, 0x3001ac; call <settings accessor>`. So **`0x003001AC` is this setting's DRS id**, the store is
+  conditional on that query succeeding, and the accessor is a single internal `.data` function pointer shared by
+  ~1000 setting reads (1038 disp32 slots in 1088). It is *not* an import, so CE's IAT machinery cannot see it.
+- CE therefore writes the ON payload at ICD module load (`NotifyHookModuleLoaded`, i.e. inside the driver's own
+  `LoadLibrary`, before any instance/device/sampler/pipeline exists), then re-checks it from
+  `vulkan-1.dll!vkCreateDevice` (entry and return) and `opengl32.dll!wglMakeCurrent` - ordinary system modules, so no
+  driver code is touched to obtain the anchor. The ICD is mapped from *inside* the caller's `vkCreateInstance` /
+  context creation, which is why the anchors deliberately target the next creation step rather than the one already
+  executing. Only if the driver is *observed* overwriting CE's value does it fall back to NOPing the branch.
+- Detection is pattern-based and self-validating, never fixed-offset: the resolved address must actually hold one of
+  the two documented payloads, and the fallback site must be a short `jcc` whose two paths load table slots exactly
+  four bytes apart with the ON slot on the fall-through side. Anything else is refused and logged. Verified against
+  32.0.16.1088 and 32.0.16.2012 (620.12), x64 and x86, resolving to the documented offsets in all four; on an
+  already-patched driver the branch correctly fails validation, so no wrong site can be NOPed.
+- `nv_lod_spread_fix=off` (the default) arms nothing. The machine's driver files are never written, so they keep
+  their NVIDIA signature, and other processes are unaffected. Caveat carried in `config.ini.template`: patching a
+  graphics driver in memory is the kind of thing anti-cheat systems object to.
+- Source anchors: `hook/common/nv_lod_spread_override.{h,cpp}`, armed in `hook/main_hookthread.cpp`, load
+  participation in `hook/main_overlay_detect.cpp`, coverage in `tests/test_nv_lod_spread_override.cpp`.
+- Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ...` (with the resolved addresses and whether a
+  fallback branch was validated), `... re-check anchor installed on ...`, and, only when the driver fights back,
+  `... the driver overwrote the setting with 0x... (occurrence N)` followed by `... code fallback applied`.
+- Open question / stale-risk: whether a stock driver's `0x003001AC` query succeeds (and therefore clobbers the data
+  write) is **not yet observed on real hardware** - the first run's log answers it. Steady state on a driver that
+  leaves the setting alone is that no executable page of the driver is ever modified.
+
 ## Diagnostics and stale-risk
 
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate

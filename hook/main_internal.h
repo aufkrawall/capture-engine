@@ -60,6 +60,8 @@ class IConsoleVariable;
 
 #include "common/dlss_indicator_spoof.h"
 
+#include "common/nv_lod_spread_override.h"
+
 #include "common/input_manager.h"
 
 #include "common/ipc_client.h"

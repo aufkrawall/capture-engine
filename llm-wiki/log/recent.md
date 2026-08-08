@@ -1,5 +1,34 @@
 # llm-wiki Log
 
+### 2026-08-08 - nv_lod_spread_fix: the NVIDIA LOD-spread patch done in memory, as data not code
+
+- **Request**: implement the community `nvoglv64.dll` byte patch (FERMI_UNOPT_LOD_SPREAD, which fixes NVIDIA's
+  negative-LOD-bias texture filtering quality on Vulkan/OpenGL) as a runtime feature that modifies the driver only in
+  memory, with nothing written to disk, and without acting too late to matter.
+- **Finding that changed the design**: the reference scripts NOP the `jne` guarding the OFF path, but analysis of the
+  unpatched 32.0.16.1088 image shows the setting global has exactly one reader and one writer in the whole 48MB
+  binary, with no descriptor table and no relocation targeting it. One reader means writing the ON payload
+  (`0x37299934`) into the global is *equivalent* to NOPing the branch - and it touches `.data`, not `.text`.
+- The single writer is `mov [<global>], eax` guarded by `test al,al / je`, right after
+  `mov edx, 0x3001ac; call <settings accessor>`: **`0x003001AC` is the DRS id of this setting**, the store only
+  happens when that query succeeds, and the accessor is one internal `.data` function pointer shared by ~1000 setting
+  reads (not an import, so IAT hooking cannot reach it). That conditional store is the only thing that can undo the
+  data write, which is what the re-check exists for.
+- Timing turned out to be the easy part: the ICD is loaded by the Vulkan loader at `vkCreateInstance` and by opengl32
+  at context creation, both far later than CE injects, and Windows maps images copy-on-write so the write is private
+  to the process. Patching at the loader notification is before any instance/device/sampler/pipeline exists.
+- The re-check anchors are `vulkan-1.dll!vkCreateDevice` and `opengl32.dll!wglMakeCurrent` - deliberately the *next*
+  creation step, because the ICD is mapped from inside the call that is already executing, so a hook installed then
+  cannot catch that same call. Ordinary system modules, so no driver code is touched to get the anchor.
+- Validation: replayed the shipped C++ scanner against real images. 1088 and 620.12, x64 and x86, all four resolve to
+  the offsets `LOD_SPREAD_PATCH.md` documents. On an already-patched driver the branch fails validation, so the
+  fallback cannot NOP a wrong site. `tests/test_nv_lod_spread_override.cpp` covers the shipped encoding, the 32-bit
+  absolute form, and every refusal path.
+- Incidental: this machine's installed driver is currently patched **on disk** (SHA-256 `DE954C92...F037`, the
+  documented patched hash), so the feature's payoff here is restoring NVIDIA's signed original.
+- **Not yet validated on hardware**: whether a stock driver's `0x003001AC` query succeeds and therefore clobbers the
+  data write. The first real run's log decides whether the code fallback ever fires.
+
 ### 2026-08-08 - dlss_fg_preset added: the FG preset is a DRS key, not an NGX parameter
 
 - **Request**: mirror the SR/RR preset-letter overrides for DLSS frame generation, which NVIDIA introduced in 2026

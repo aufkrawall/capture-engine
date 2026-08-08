@@ -98,6 +98,12 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // so the first resolution already lands on our detours.
   NVNGXHook::Get().OnModuleLoaded(module, moduleNameOrPath);
 
+  // The NVIDIA GL/VK ICD is mapped by the Vulkan loader on vkCreateInstance and by
+  // opengl32 on context creation, always long after CE's hook thread starts.
+  // Patching it here, inside its own load, is before any instance, device, sampler
+  // or pipeline exists, so the filtering record is always built from CE's value.
+  ce::nv_lod_spread::OnModuleLoaded(module, moduleNameOrPath);
+
   // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately
   // so our dynamic hook is registered before the game calls GetProcAddress.
   if (moduleNameOrPath) {
