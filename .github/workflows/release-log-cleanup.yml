@@ -21,17 +21,27 @@ name: release-log-cleanup
 #   1. `workflows: ["release-stable"]` matched a single workflow BY NAME. Two runs
 #      of a `debug-token` workflow - successful, on the self-hosted runner - were
 #      never covered, and once that workflow file was deleted nothing would ever
-#      have cleaned them. The trigger now matches every workflow and the job
-#      decides from the run's own jobs API whether it actually executed on a
-#      self-hosted runner. GitHub-hosted logs (hardening-ci) are left alone: they
-#      carry no hostname, so deleting them would only destroy diagnostics.
+#      have cleaned them.
+#      `workflows:` cannot simply be dropped to fix that: it is REQUIRED for
+#      workflow_run, and omitting it makes the whole file invalid. GitHub then
+#      reports the workflow by file path instead of name and every push fails - it
+#      does not fall back to matching everything. So the name filter stays for the
+#      fast path, and the scheduled sweep below is the name-independent mechanism
+#      that actually closes this hole: it decides from each run's own jobs API
+#      whether it executed on a self-hosted runner, so renamed, new and
+#      since-deleted workflows are all covered.
 #   2. A failed run's log was kept indefinitely pending a MANUAL delete "once
 #      investigated". That step is easy to forget and was forgotten six times.
-#      Failed logs are still kept - they are the only diagnostic material for the
-#      failure - but the scheduled sweep below now removes them after a grace
-#      period, so retention is bounded instead of open-ended.
+#      Failed logs are still kept briefly - they are the only diagnostic material
+#      for the failure - but the sweep removes them after a grace period, and
+#      removes SUCCESSFUL self-hosted logs at any age, since those carry the
+#      hostname and no diagnostic value worth keeping.
+#
+# GitHub-hosted logs (hardening-ci) are deliberately left alone throughout: they
+# carry no hostname, so deleting them would only destroy diagnostics.
 on:
   workflow_run:
+    workflows: ["release-stable"]
     types: [completed]
   schedule:
     # Daily sweep for self-hosted run logs past the grace period. Bounded
@@ -139,12 +149,15 @@ jobs:
           # Paginate: the sweep must not silently stop at the first page and
           # leave older logs published.
           runs="$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
-            --jq '.workflow_runs[] | "\(.id) \(.created_at)"')"
+            --jq '.workflow_runs[] | "\(.id) \(.created_at) \(.conclusion // "none")"')"
 
-          while read -r id created; do
+          while read -r id created conclusion; do
             [ -n "$id" ] || continue
             created_epoch="$(date -u -d "$created" +%s)"
-            if [ "$created_epoch" -ge "$cutoff" ]; then
+            # A successful self-hosted run's log has no diagnostic value worth
+            # keeping and does carry the hostname, so age is irrelevant for it.
+            # Only failures get the grace period.
+            if [ "$conclusion" != "success" ] && [ "$created_epoch" -ge "$cutoff" ]; then
               kept=$((kept+1)); continue
             fi
 

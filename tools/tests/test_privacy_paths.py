@@ -245,30 +245,42 @@ class ReleaseLogCleanupPolicyTest(unittest.TestCase):
             "release-log-cleanup.yml is missing; release run logs would keep publishing the runner hostname",
         )
 
-    def test_cleanup_is_not_keyed_to_one_workflow_name(self) -> None:
-        # Replaces a test that asserted `workflows: ["release-stable"]` was
-        # present. Keying on a single name is what left two `debug-token` runs
-        # published forever - successful, self-hosted, and outside the filter, with
-        # nothing to clean them once that workflow file was deleted. The trigger
-        # must now match every workflow, and the job decides from the run's own
-        # labels whether the log carries a hostname.
+    def test_cleanup_workflow_run_trigger_is_valid(self) -> None:
+        # `workflows:` is REQUIRED for workflow_run. An earlier revision dropped it
+        # so the trigger would match every workflow; GitHub rejected the file
+        # instead, reported it by path rather than name, and every push failed -
+        # there is no fallback to matching everything. The release run's log then
+        # stayed published because the cleanup never ran at all.
         #
-        # Assert on the YAML, not the raw text: the comments in that file quote the
-        # old pattern, so a text match is satisfied by prose and passes vacuously -
-        # which is exactly how this test kept passing after the design changed.
+        # Assert on parsed YAML, not raw text: that file's comments quote the
+        # patterns being discussed, so a text match is satisfied by prose.
         events = _cleanup_events()
         self.assertIn("workflow_run", events)
-        self.assertEqual(
-            events["workflow_run"].get("types"),
-            ["completed"],
-            "workflow_run must fire on completed runs, when the log archive is final",
-        )
-        self.assertNotIn(
+        trigger = events["workflow_run"] or {}
+        self.assertIn(
             "workflows",
-            events["workflow_run"] or {},
-            "the trigger must not filter by workflow name; scope is decided from the run's labels",
+            trigger,
+            "workflow_run requires `workflows:`; without it GitHub treats the file as invalid",
         )
-        self.assertIn("self-hosted", self.text, "the job must still gate on the self-hosted label")
+        release_name = re.search(r"^name:\s*(\S+)", RELEASE_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertIsNotNone(release_name)
+        assert release_name is not None
+        self.assertIn(
+            release_name.group(1),
+            trigger["workflows"],
+            "the fast path must name the current release workflow; renaming it detaches the trigger",
+        )
+        self.assertEqual(trigger.get("types"), ["completed"], "logs are only final once the run completes")
+        self.assertIn("self-hosted", self.text, "the job must gate on the self-hosted label")
+
+    def test_cleanup_sweep_is_the_name_independent_mechanism(self) -> None:
+        # Because the trigger above must name a workflow, the sweep is what covers
+        # renamed, new and since-deleted workflows - the `debug-token` case, whose
+        # two successful self-hosted logs nothing would ever have cleaned. It must
+        # therefore decide from the run's own labels, not from a workflow name, and
+        # must not let a successful self-hosted log sit out a grace period.
+        self.assertIn("actions/runs/$id/jobs", self.text, "the sweep must inspect each run's labels")
+        self.assertIn('conclusion" != "success"', self.text, "the sweep must treat successes as deletable now")
 
     def test_cleanup_retention_is_bounded(self) -> None:
         # A failed run's log is kept deliberately as the only diagnostic material,
