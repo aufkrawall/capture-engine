@@ -175,13 +175,14 @@ def _create_7z_archive(cmake_exe: str, staging_root: str, root_name: str, archiv
             os.remove(temporary_archive)
 
 
-def package_build_outputs() -> Tuple[str, str]:
-    """Create clean CaptureEngine and test-app 7z archives after a successful product build."""
+def package_build_outputs() -> Tuple[str, ...]:
+    """Create clean binary and corresponding-source archives after a successful product build."""
     package_start = time.time()
     staging_root = os.path.join(WORKSPACE_TEMP_DIR, "package-staging")
     _reset_package_staging_directory(staging_root)
     capture_stage = os.path.join(staging_root, "captureengine")
     testapps_stage = os.path.join(staging_root, "testapps")
+    source_stage = os.path.join(staging_root, "ffmpeg-corresponding-source")
     try:
         capture_files = _stage_captureengine_package(
             CAPTURE_BIN_DIR,
@@ -189,12 +190,25 @@ def package_build_outputs() -> Tuple[str, str]:
             os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
         )
         testapp_files = _stage_testapps_package(TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE)
+        source_files = []
+        if IS_WINDOWS:
+            source_files = _stage_ffmpeg_corresponding_source(
+                os.path.join(PROJECT_ROOT, "ffmpeg_build", "repos", "ffmpeg"),
+                os.path.join(PROJECT_ROOT, "ffmpeg_build", "dependencies", "downloads"),
+                source_stage,
+            )
 
         cmake_exe = _get_cmake_archiver()
         capture_archive = os.path.join(PACKAGE_OUTPUT_DIR, CAPTUREENGINE_PACKAGE_NAME)
         testapps_archive = os.path.join(PACKAGE_OUTPUT_DIR, TESTAPPS_PACKAGE_NAME)
+        source_archive = os.path.join(PACKAGE_OUTPUT_DIR, FFMPEG_SOURCE_PACKAGE_NAME)
         capture_members = _create_7z_archive(cmake_exe, staging_root, "captureengine", capture_archive)
         testapp_members = _create_7z_archive(cmake_exe, staging_root, "testapps", testapps_archive)
+        source_members = []
+        if IS_WINDOWS:
+            source_members = _create_7z_archive(
+                cmake_exe, staging_root, "ffmpeg-corresponding-source", source_archive
+            )
 
         required_capture_member = "captureengine/captureengine.exe"
         required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
@@ -202,9 +216,16 @@ def package_build_outputs() -> Tuple[str, str]:
             raise RuntimeError("Automatic package verification failed: required archive member is missing")
         if any(member.lower().endswith(".dll") for member in testapp_members):
             raise RuntimeError("Automatic package verification failed: test-app archive contains a vendor DLL")
+        if IS_WINDOWS and not {
+            "ffmpeg-corresponding-source/SOURCE_MANIFEST.txt",
+            "ffmpeg-corresponding-source/ffmpeg/configure",
+        }.issubset(source_members):
+            raise RuntimeError("Automatic package verification failed: corresponding-source archive is incomplete")
 
         record_verification_artifact("captureengine_package", capture_archive)
         record_verification_artifact("testapps_package", testapps_archive)
+        if IS_WINDOWS:
+            record_verification_artifact("ffmpeg_source_package", source_archive)
         record_verification_step(
             "package_archives",
             "passed",
@@ -212,13 +233,19 @@ def package_build_outputs() -> Tuple[str, str]:
             details={
                 "captureengine_files": len(capture_files),
                 "testapp_files": len(testapp_files),
+                "ffmpeg_source_files": len(source_files),
                 "captureengine_archive": capture_archive,
                 "testapps_archive": testapps_archive,
+                "ffmpeg_source_archive": source_archive if IS_WINDOWS else "not produced on this host",
             },
         )
         log(f"Packaged CaptureEngine: {capture_archive} ({os.path.getsize(capture_archive)} bytes)")
         log(f"Packaged test apps: {testapps_archive} ({os.path.getsize(testapps_archive)} bytes)")
-        return capture_archive, testapps_archive
+        archives = [capture_archive, testapps_archive]
+        if IS_WINDOWS:
+            log(f"Packaged FFmpeg corresponding source: {source_archive} ({os.path.getsize(source_archive)} bytes)")
+            archives.append(source_archive)
+        return tuple(archives)
     except Exception as error:
         record_verification_step(
             "package_archives",

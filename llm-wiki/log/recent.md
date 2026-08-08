@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-08-08 - Public-release boundary hardened after the pre-public audit
+
+- Stable releases now switch to and verify the exact `github.sha` from dispatch, then run the single nested
+  `python build.py --verify --verify-clean --skip-updates --concise` gate. The former build-only command and redundant
+  preflight test list are gone, so published verification evidence must cover native/Python tests, lint, and
+  sanitizers. Official Actions are immutable commit pins, and the GitHub token is present only in sync, visibility,
+  and publish steps, not dependency builds.
+- Windows packaging adds `ffmpeg-corresponding-source.7z`: the exact clean pinned FFmpeg tree with CE patches applied,
+  the build/dependency/PGP inputs, and the verified upstream and signed MSYS2 libiconv source packages. The release
+  workflow requires and attests it beside the binaries. `SECURITY.md` restores private vulnerability reporting;
+  README documents unsigned binaries, artifact verification, source contents, and the actual PR policy.
+- Self-hosted logs are deleted immediately after every conclusion. The scheduled name-independent sweep likewise
+  removes every remaining self-hosted log without a failure grace period; detailed failure artifacts remain locally
+  in the persistent runner workspace. The workflow now derives the persistent toolchain root below `USERPROFILE`
+  from a relative/default path instead of publishing an absolute profile path as a repository variable.
+- The NVIDIA LOD branch patch is process-wide serialized across the hook/layer DLL copies and uses an aligned 32-bit
+  compare/exchange for the live two-byte replacement. Cross-word layouts fail closed. The regression fixture is now
+  wholly synthetic rather than carrying a driver-derived instruction excerpt.
+- Validation: focused NVIDIA units passed; packaging/workflow/privacy policy tests passed; 60-second-per-target fuzz
+  passed (`config_parser` 2,667 units, `ipc_deserialize` 16,766,720 units); and the required strict-clean
+  `--verify --verify-clean` gate passed as build `0.1.5868` in 445 seconds (native/Python tests, isolated ASan/UBSan,
+  PE/import/PDB/privacy checks, Python style/types, clang-tidy 0 warnings). Packaging produced 22.0 MB product,
+  2.6 MB test-app, and 18.6 MB corresponding-source archives. Read-only 7z inspection found single valid roots,
+  10,689 source members, both applied patch markers, both libiconv source inputs, no `.git`, and no profile-path,
+  machine-name, or bare-user hit in either binary archive. The harness denied a temporary extract/delete audit before
+  execution; no file was created or removed, and the non-destructive stream/list audit supplied the same checks.
+
 ### 2026-08-08 - NGX export hooks recursed into the core: unfiltered GetProcAddress interception
 
 - **Symptom**: `installed/testapp/dx12_dlss_fg_test.exe` died ~1.5 s after launch with `0xC00000FD` (stack overflow)

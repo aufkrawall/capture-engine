@@ -20,6 +20,7 @@ so fork PRs cannot run at all; that is the current containment.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 from typing import Dict, List, Set
@@ -136,6 +137,41 @@ class WorkflowSecurityPolicyTest(unittest.TestCase):
         self.assertTrue(labels, "expected a runs-on label")
         for label in labels:
             self.assertNotIn("self-hosted", label)
+
+    def test_actions_are_pinned_to_full_commit_shas(self) -> None:
+        findings: List[str] = []
+        for path in _workflows():
+            document = _load(path)
+            for job_name, job in (document.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    action = step.get("uses")
+                    if action and action.startswith("actions/") and not re.fullmatch(
+                        r"actions/[^@]+@[0-9a-f]{40}", action
+                    ):
+                        findings.append(f"{path.name}:{job_name}: {action}")
+        self.assertEqual([], findings, "Official Actions must be immutable commit pins: " + ", ".join(findings))
+
+    def test_release_build_is_exact_full_clean_verification(self) -> None:
+        document = _load(WORKFLOW_DIR / "release-stable.yml")
+        job = document["jobs"]["build-release"]
+        steps = {step["name"]: step for step in job["steps"]}
+        sync = steps["Sync repository (persistent workspace, never cleans)"]["run"]
+        build = steps["Build release product"]
+        self.assertIn("$env:GITHUB_REF -ne 'refs/heads/main'", sync)
+        self.assertIn("git switch -C main $env:GITHUB_SHA", sync)
+        self.assertIn("$actual -ne $env:GITHUB_SHA", sync)
+        self.assertIn("python build.py --verify --verify-clean --skip-updates --concise", build["run"])
+        self.assertNotIn("gh auth setup-git", sync)
+        self.assertIn("GIT_CONFIG_VALUE_0", sync)
+        self.assertNotIn("GITHUB_TOKEN", job.get("env") or {})
+        self.assertNotIn("GH_TOKEN", build.get("env") or {})
+
+    def test_release_publishes_and_attests_corresponding_source(self) -> None:
+        document = _load(WORKFLOW_DIR / "release-stable.yml")
+        steps = {step["name"]: step for step in document["jobs"]["build-release"]["steps"]}
+        source_name = "ffmpeg-corresponding-source.7z"
+        self.assertIn(source_name, steps["Attest release assets"]["with"]["subject-path"])
+        self.assertIn(source_name, steps["Publish stable tag and GitHub release"]["run"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-08-06
+Last cross-checked: 2026-08-08
 
 Primary sources:
 - top-level repo layout (verified against the working tree)
@@ -43,6 +43,7 @@ anchors that predate the split are approximate.
     | `build_vulkan_layer.py` | `compile_vulkan_layer` (x64/x86) |
     | `build_project.py` | `compile_project`: phases 1-5 (common, hook DLL, mediaengine, captureengine) |
     | `build_project_finalize.py` | `_finalize_project_build`: phases 6-8 (FG SDK, test apps, vulkan layer), licenses, PE hardening, packaging |
+    | `build_corresponding_source.py` | exact pinned/patched FFmpeg + LGPL libiconv corresponding-source staging |
     | `build_packaging.py` | `captureengine.7z` / `testapps.7z` staging + validation |
     | `build_cli.py` | `main()` CLI dispatch and top-level orchestration |
 - `tools/config/`

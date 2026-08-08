@@ -103,6 +103,11 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
 // table slot load. Returns false when the window holds no unambiguous candidate.
 bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp);
 
+// The live two-byte branch replacement is performed through an aligned 32-bit
+// compare/exchange. Refuse the one layout that would straddle that word rather
+// than exposing an instruction stream containing one old and one new byte.
+bool CanPatchTwoBytesAtomically(const void* address);
+
 // Runtime state, for diagnostics and tests of the decision logic.
 struct Status {
     bool armed = false;

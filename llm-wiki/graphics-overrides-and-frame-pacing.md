@@ -240,6 +240,12 @@ Primary sources:
   32.0.16.1088 and 32.0.16.2012 (620.12), x64 and x86, resolving to the documented offsets in all four; on an
   already-patched driver is accepted only when `90 90`, the ON load, the skip jump, and the adjacent OFF table slot
   remain structurally provable.
+- The injected hook and Vulkan layer each compile their own copy of the patcher. Their scans and protection changes
+  are serialized through one per-process named mutex, so nested `VirtualProtect` calls cannot restore the code page
+  to another copy's temporary writable protection. The live two-byte NOP replacement uses one aligned 32-bit
+  `InterlockedCompareExchange`; a branch pair that would straddle that word is refused. The instruction cache is
+  flushed before the original protection is restored, and any lock/protection/layout failure is logged and leaves
+  the driver untouched where possible.
 - `nv_lod_spread_fix=off` (the default) arms nothing. The machine's driver files are never written, so they keep
   their NVIDIA signature, and other processes are unaffected. Caveat carried in `config.ini.template`: patching a
   graphics driver in memory is the kind of thing anti-cheat systems object to.

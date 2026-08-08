@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 
 namespace {
 
+using ce::nv_lod_spread::CanPatchTwoBytesAtomically;
 using ce::nv_lod_spread::FindOnBranch;
 using ce::nv_lod_spread::FindSettingSite;
 using ce::nv_lod_spread::FindTableLoadDisp;
@@ -24,9 +26,9 @@ using ce::nv_lod_spread::Mode;
 using ce::nv_lod_spread::ParseMode;
 using ce::nv_lod_spread::Site;
 
-// Layout of the synthetic image the scanner is exercised against. The code bytes
-// below are copied from nvoglv64.dll 32.0.16.1088 so a regression here means CE
-// stopped recognizing a driver it is known to handle.
+// Layout of the purpose-built synthetic image the scanner is exercised against.
+// It preserves only the structural relationships the scanner validates; it is
+// not an excerpt from a driver binary.
 constexpr size_t kImageSize = 0x4000;
 constexpr size_t kTextRva = 0x1000;
 constexpr size_t kTextSize = 0x1000;
@@ -36,8 +38,8 @@ constexpr size_t kSettingRva = 0x3000;
 // absolute address, and the tests build for both architectures.
 constexpr uintptr_t kFakeImageBase = 0x10000000u;
 
-// Distances measured in the shipped driver: the guarding jne sits 0x21 bytes past
-// the cmp and skips 0x15 bytes into the OFF path.
+// Representative distances that leave unrelated synthetic instructions between
+// the compare, branch, and two paths.
 constexpr size_t kBranchDelta = 0x21;
 constexpr uint8_t kBranchDisplacement = 0x15;
 constexpr uint8_t kOnSlotDisp = 0x30;
@@ -74,14 +76,9 @@ std::vector<uint8_t> MakeImage(const ImageOptions& options) {
     const uint32_t immediate = kSettingOn;
     memcpy(&image[kCmpRva + 6], &immediate, sizeof(immediate));
 
-    // The instructions the driver runs between the compare and the branch. None
-    // of them may be mistaken for the branch or for a table load.
-    PutBytes(image, kCmpRva + kCmpLength,
-             {0x4C, 0x8B, 0xD0,                          // mov r10, rax
-              0x48, 0x8B, 0x8E, 0xE0, 0x69, 0x02, 0x00,  // mov rcx, [rsi+0x269E0]
-              0x48, 0x89, 0x45, 0x20,                    // mov [rbp+0x20], rax
-              0x44, 0x8B, 0x59, 0x24,                    // mov r11d, [rcx+0x24]
-              0x44, 0x0F, 0xB6, 0x49, 0x28});            // movzx r9d, byte [rcx+0x28]
+    // Fill the unrelated area with synthetic sentinels so it cannot be mistaken
+    // for a branch, table load, or pre-existing NOP patch.
+    std::fill(image.begin() + kCmpRva + kCmpLength, image.begin() + kCmpRva + kBranchDelta, 0xCC);
 
     // jne <off path>
     PutBytes(image, kCmpRva + kBranchDelta, {0x75, kBranchDisplacement});
@@ -137,7 +134,15 @@ TEST(NvLodSpreadOverride, IsIcdModuleNameMatchesBothArchitectures) {
     EXPECT_FALSE(IsIcdModuleName(nullptr));
 }
 
-TEST(NvLodSpreadOverride, FindsShippedDriverEncoding) {
+TEST(NvLodSpreadOverride, AtomicPatchLayoutRejectsOnlyACrossWordPair) {
+    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1000})));
+    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1001})));
+    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1002})));
+    EXPECT_FALSE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1003})));
+    EXPECT_FALSE(CanPatchTwoBytesAtomically(nullptr));
+}
+
+TEST(NvLodSpreadOverride, FindsValidatedSyntheticEncoding) {
     const ImageOptions options;
     const std::vector<uint8_t> image = MakeImage(options);
 
@@ -244,7 +249,7 @@ TEST(NvLodSpreadOverride, WithholdsThePatchWhenNoShortBranchGuardsThePath) {
     EXPECT_FALSE(site.branchFound);
 }
 
-TEST(NvLodSpreadOverride, RecognizesTheStructurallyValidatedOnDiskPatch) {
+TEST(NvLodSpreadOverride, RecognizesTheStructurallyValidatedNopPatch) {
     const ImageOptions options;
     std::vector<uint8_t> image = MakeImage(options);
     image[kCmpRva + kBranchDelta] = 0x90;

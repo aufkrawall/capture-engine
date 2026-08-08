@@ -19,18 +19,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Cache Linux MSYS2 packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build/msys64_linux
-          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'tools/build/build_part_*.py') }}
+          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py', 'tools/build/*.py', 'tools/ffmpeg_dependencies.json') }}
 
       - name: Install Linux build dependencies
         shell: bash

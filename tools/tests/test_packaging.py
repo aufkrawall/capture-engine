@@ -15,6 +15,52 @@ import build
 
 
 class PackagingTests(unittest.TestCase):
+    def test_corresponding_source_stages_patched_ffmpeg_and_verified_libiconv_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "ffmpeg-repo"
+            downloads = root / "downloads"
+            destination = root / "stage" / "ffmpeg-corresponding-source"
+            (source / ".git").mkdir(parents=True)
+            downloads.mkdir()
+            (source / "configure").write_text("synthetic source", encoding="utf-8")
+            (source / ".git" / "private").write_text("not packaged", encoding="utf-8")
+            libiconv = next(
+                item for item in build.FFMPEG_DEPENDENCY_MANIFEST_DATA["dependencies"] if item["name"] == "libiconv"
+            )
+            upstream_name = os.path.basename(libiconv["upstream_source_url"])
+            for name in (upstream_name, libiconv["source_package"], libiconv["source_package"] + ".sig"):
+                (downloads / name).write_bytes(name.encode("utf-8"))
+
+            hashes = {
+                upstream_name: libiconv["upstream_source_sha256"],
+                libiconv["source_package"]: libiconv["source_package_sha256"],
+            }
+            command_results = [build.FFMPEG_SOURCE_REF, "", ""] + [
+                "" for _ in (Path(build.PROJECT_ROOT) / "tools" / "patches" / "ffmpeg").glob("*.patch")
+            ]
+            with patch.object(build.shutil, "which", return_value="git"), patch.object(
+                build, "run_command", side_effect=command_results
+            ), patch.object(build, "normalize_custom_patch_targets", return_value=[]), patch.object(
+                build, "sha256_file", side_effect=lambda path: hashes[Path(path).name]
+            ):
+                copied = build._stage_ffmpeg_corresponding_source(
+                    str(source), str(downloads), str(destination)
+                )
+
+            self.assertIn("ffmpeg/configure", copied)
+            self.assertIn("SOURCE_MANIFEST.txt", copied)
+            self.assertTrue((destination / "captureengine-build-inputs" / "build.py").is_file())
+            self.assertTrue((destination / "libiconv-source" / upstream_name).is_file())
+            self.assertFalse((destination / "ffmpeg" / ".git").exists())
+
+    def test_corresponding_source_refuses_a_dirty_ffmpeg_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            build.shutil, "which", return_value="git"
+        ), patch.object(build, "run_command", side_effect=[build.FFMPEG_SOURCE_REF, " M libavcodec/example.c"]):
+            with self.assertRaisesRegex(RuntimeError, "checkout is dirty"):
+                build._stage_ffmpeg_corresponding_source(temporary, temporary, os.path.join(temporary, "stage"))
+
     def test_captureengine_staging_excludes_local_state_and_uses_clean_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

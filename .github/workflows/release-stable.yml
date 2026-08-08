@@ -46,12 +46,6 @@ jobs:
     # files and never touches ignored trees or junctions. See llm-wiki.
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 180
-    # This self-hosted runner (broker flow) does not populate the GITHUB_TOKEN
-    # environment variable automatically, although the github.token context is
-    # available. Pass it explicitly so steps/actions that read the env var work.
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-
     steps:
       - name: Check the workspace path is short enough to link in
         shell: pwsh
@@ -86,11 +80,19 @@ jobs:
 
       - name: Sync repository (persistent workspace, never cleans)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw "Stable releases must be dispatched from main, got '$env:GITHUB_REF'"
+          }
           if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
             throw "GitHub CLI (gh) is required on the self-hosted runner; install it from https://cli.github.com/ and make sure it is on PATH."
           }
-          gh auth setup-git
+          $basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
+          $env:GIT_CONFIG_COUNT = '1'
+          $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basicAuth"
           git config --local --unset-all http.https://github.com/.extraheader 2>$null
           if (-not (Test-Path .git)) {
             git init -b main
@@ -98,18 +100,30 @@ jobs:
           }
           git remote set-url origin "https://github.com/$env:GITHUB_REPOSITORY.git"
           git fetch --prune origin main
-          git switch -C main origin/main
-          Write-Output "Workspace synced to $env:GITHUB_SHA; persistent ignored trees preserved"
+          git cat-file -e "$env:GITHUB_SHA^{commit}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Dispatched commit $env:GITHUB_SHA is not available after fetching origin/main"
+          }
+          git switch -C main $env:GITHUB_SHA
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:GITHUB_SHA) {
+            throw "Workspace is at $actual, expected dispatched commit $env:GITHUB_SHA"
+          }
+          Write-Output "Workspace synced to exact dispatched commit $actual; persistent ignored trees preserved"
 
       - name: Prepare persistent toolchain junctions
         shell: pwsh
         env:
-          TOOLCHAIN_ROOT: ${{ vars.CE_TOOLCHAIN_ROOT }}
+          TOOLCHAIN_RELATIVE_ROOT: ${{ vars.CE_TOOLCHAIN_RELATIVE_ROOT }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TOOLCHAIN_ROOT)) {
-            throw "Repository variable CE_TOOLCHAIN_ROOT must point to the maintainer's dev checkout (e.g. %USERPROFILE%\Programme\build\captureproject)."
+          $relativeRoot = $env:TOOLCHAIN_RELATIVE_ROOT
+          if ([string]::IsNullOrWhiteSpace($relativeRoot)) {
+            $relativeRoot = 'Programme\build\captureproject'
           }
-          $root = [System.IO.Path]::GetFullPath($env:TOOLCHAIN_ROOT)
+          if ([System.IO.Path]::IsPathRooted($relativeRoot) -or $relativeRoot.Split(@('\', '/')) -contains '..') {
+            throw "CE_TOOLCHAIN_RELATIVE_ROOT must be a path below USERPROFILE without '..'."
+          }
+          $root = [System.IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $relativeRoot))
           function Get-Redacted([string]$path) {
             if (-not $env:USERPROFILE) { return $path }
             return $path.Replace($env:USERPROFILE, '%USERPROFILE%').Replace($env:USERPROFILE.Replace('\','/'), '%USERPROFILE%')
@@ -163,14 +177,16 @@ jobs:
           }
           Write-Output "FFmpeg and its full source dependency closure will be built by this job"
 
-      - name: Run build policy tests
-        shell: pwsh
-        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_build_testapp_tasks tools.tests.test_pe_hardening tools.tests.test_privacy_paths tools.tests.test_ffmpeg_dependencies tools.tests.test_dependency_pgp tools.tests.test_workflow_security
-
       - name: Resolve release version
         id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          $basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
+          $env:GIT_CONFIG_COUNT = '1'
+          $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basicAuth"
           $inputVersion = "${{ inputs.version }}".Trim()
           if ($inputVersion) {
             if ($inputVersion -notmatch '^0\.1\.(\d+)$') {
@@ -220,7 +236,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Python 3.12 or newer is required on the self-hosted runner."
           }
-          python build.py --skip-updates
+          python build.py --verify --verify-clean --skip-updates --concise
 
       - name: Verify built version
         shell: pwsh
@@ -241,6 +257,7 @@ jobs:
         shell: pwsh
         env:
           ATTEST_INPUT: ${{ inputs.attest }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $mode = $env:ATTEST_INPUT
           if ($mode -notin @('auto', 'always', 'never')) {
@@ -272,11 +289,12 @@ jobs:
 
       - name: Attest release assets
         if: steps.attest.outputs.run == 'true'
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             build/packages/captureengine.7z
             build/packages/testapps.7z
+            build/packages/ffmpeg-corresponding-source.7z
             build/verification/latest_manifest.json
             build/verification/latest_summary.txt
 
@@ -285,10 +303,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
             throw "GitHub CLI (gh) is required on the self-hosted runner; install it from https://cli.github.com/ and make sure it is on PATH."
           }
+          $basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
+          $env:GIT_CONFIG_COUNT = '1'
+          $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basicAuth"
           $version = $env:VERSION
           $tag = "v$version"
           $existing = git ls-remote --tags origin "refs/tags/$tag"
@@ -301,6 +324,7 @@ jobs:
           $assets = @(
             "build/packages/captureengine.7z",
             "build/packages/testapps.7z",
+            "build/packages/ffmpeg-corresponding-source.7z",
             "build/verification/latest_manifest.json",
             "build/verification/latest_summary.txt"
           )
@@ -315,5 +339,5 @@ jobs:
           git push origin $tag
           gh release create $tag `
             --title "Stable release $version" `
-            --notes "Stable release $version built from $env:COMMIT.`n`nAssets: captureengine.7z (product), testapps.7z (test apps), latest_manifest.json / latest_summary.txt (build verification evidence)." `
+            --notes "Stable release $version built and fully verified from $env:COMMIT.`n`nAssets: captureengine.7z (product), testapps.7z (test apps), ffmpeg-corresponding-source.7z (LGPL corresponding source), latest_manifest.json / latest_summary.txt (build verification evidence).`n`nFFmpeg is distributed as shared libraries under LGPL-2.1-or-later; see the bundled notices and corresponding source. Binaries are not currently Authenticode-signed." `
             @assets

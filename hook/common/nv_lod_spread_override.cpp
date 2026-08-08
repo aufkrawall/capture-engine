@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <cwchar>
 
 #ifdef VK_LAYER_CE_OVERLAY
 #include "../vulkan_layer/layer_main.h"
@@ -22,6 +23,39 @@ std::atomic<bool> g_codePatchApplied{false};
 std::atomic<bool> g_branchWasAlreadyPatched{false};
 std::atomic<HMODULE> g_patchedModule{nullptr};
 std::atomic<uint8_t*> g_branchAddress{nullptr};
+
+class ProcessPatchMutex {
+   public:
+    ProcessPatchMutex() {
+        wchar_t name[64] = {};
+        _snwprintf_s(name, _TRUNCATE, L"Local\\CaptureEngine-NvLodSpread-%lu",
+                     static_cast<unsigned long>(GetCurrentProcessId()));
+        handle_ = CreateMutexW(nullptr, FALSE, name);
+        if (!handle_) {
+            return;
+        }
+        const DWORD waitResult = WaitForSingleObject(handle_, INFINITE);
+        acquired_ = waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED;
+    }
+
+    ~ProcessPatchMutex() {
+        if (acquired_) {
+            ReleaseMutex(handle_);
+        }
+        if (handle_) {
+            CloseHandle(handle_);
+        }
+    }
+
+    ProcessPatchMutex(const ProcessPatchMutex&) = delete;
+    ProcessPatchMutex& operator=(const ProcessPatchMutex&) = delete;
+
+    bool Acquired() const { return acquired_; }
+
+   private:
+    HANDLE handle_ = nullptr;
+    bool acquired_ = false;
+};
 
 std::string Trimmed(const std::string& value) {
     size_t first = 0;
@@ -52,18 +86,39 @@ const char* BaseName(const char* path) {
     return base;
 }
 
-bool WriteCodePatch(uint8_t* address, const uint8_t* bytes, size_t size) {
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+bool WriteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1) {
+    if (!CanPatchTwoBytesAtomically(address)) {
         return false;
     }
 
-    memcpy(address, bytes, size);
-    FlushInstructionCache(GetCurrentProcess(), address, size);
+    const uintptr_t alignedAddress = reinterpret_cast<uintptr_t>(address) & ~uintptr_t{3};
+    const unsigned shift = static_cast<unsigned>((reinterpret_cast<uintptr_t>(address) - alignedAddress) * 8);
+    constexpr uint32_t kPatchedBytes = 0x9090u;
+    const uint32_t mask = 0xFFFFu << shift;
+    const uint32_t expectedBytes = (static_cast<uint32_t>(expected0) | (static_cast<uint32_t>(expected1) << 8))
+                                   << shift;
+
+    DWORD oldProtect = 0;
+    auto* word = reinterpret_cast<volatile LONG*>(alignedAddress);
+    if (!VirtualProtect(const_cast<LONG*>(word), sizeof(*word), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return false;
+    }
+
+    const LONG current = InterlockedCompareExchange(word, 0, 0);
+    const uint32_t currentBits = static_cast<uint32_t>(current);
+    bool cacheFlushed = true;
+    bool patched = ((currentBits & mask) >> shift) == kPatchedBytes;
+    if (!patched && (currentBits & mask) == expectedBytes) {
+        const uint32_t desiredBits = (currentBits & ~mask) | (kPatchedBytes << shift);
+        patched = InterlockedCompareExchange(word, static_cast<LONG>(desiredBits), current) == current;
+        if (patched) {
+            cacheFlushed = FlushInstructionCache(GetCurrentProcess(), address, 2) != FALSE;
+        }
+    }
 
     DWORD restored = 0;
-    const bool protectionRestored = VirtualProtect(address, size, oldProtect, &restored) != FALSE;
-    return protectionRestored && memcmp(address, bytes, size) == 0;
+    const bool protectionRestored = VirtualProtect(const_cast<LONG*>(word), sizeof(*word), oldProtect, &restored) != FALSE;
+    return patched && cacheFlushed && protectionRestored && address[0] == 0x90 && address[1] == 0x90;
 }
 
 // Locates the mapped image's bounds and its executable section. The ICD always
@@ -149,6 +204,13 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
         return false;
     }
 
+    ProcessPatchMutex patchMutex;
+    if (!patchMutex.Acquired()) {
+        NV_LOD_LOG("NV LOD spread: could not acquire the process patch lock for %s - nothing patched",
+                   modulePath ? modulePath : "the ICD");
+        return false;
+    }
+
     if (g_patchedModule.load(std::memory_order_acquire) == module) {
         uint8_t* branch = g_branchAddress.load(std::memory_order_acquire);
         if (branch && branch[0] == 0x90 && branch[1] == 0x90) {
@@ -183,6 +245,12 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
     }
 
     uint8_t* branch = const_cast<uint8_t*>(image + site.branchRva);
+    if (!CanPatchTwoBytesAtomically(branch)) {
+        NV_LOD_LOG("NV LOD spread: validated branch at +0x%zX in %s crosses an atomic patch boundary - "
+                   "nothing patched",
+                   site.branchRva, modulePath ? modulePath : "the ICD");
+        return false;
+    }
     g_patchedModule.store(module, std::memory_order_release);
     g_branchAddress.store(branch, std::memory_order_release);
 
@@ -194,10 +262,9 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
         return true;
     }
 
-    constexpr uint8_t kNops[] = {0x90, 0x90};
     const uint8_t original0 = branch[0];
     const uint8_t original1 = branch[1];
-    if (!WriteCodePatch(branch, kNops, sizeof(kNops))) {
+    if (!WriteCodePatch(branch, original0, original1)) {
         NV_LOD_LOG("NV LOD spread: FAILED to patch the validated OFF branch at %p in %s", branch,
                    modulePath ? modulePath : "the ICD");
         return false;
@@ -231,6 +298,10 @@ bool IsIcdModuleName(const char* modulePathOrName) {
         return false;
     }
     return _stricmp(base, "nvoglv64.dll") == 0 || _stricmp(base, "nvoglv32.dll") == 0;
+}
+
+bool CanPatchTwoBytesAtomically(const void* address) {
+    return address && (reinterpret_cast<uintptr_t>(address) & uintptr_t{3}) != 3;
 }
 
 bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp) {

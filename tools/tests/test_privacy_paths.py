@@ -277,17 +277,17 @@ class ReleaseLogCleanupPolicyTest(unittest.TestCase):
         # Because the trigger above must name a workflow, the sweep is what covers
         # renamed, new and since-deleted workflows - the `debug-token` case, whose
         # two successful self-hosted logs nothing would ever have cleaned. It must
-        # therefore decide from the run's own labels, not from a workflow name, and
-        # must not let a successful self-hosted log sit out a grace period.
+        # therefore decide from the run's own labels, not from a workflow name.
         self.assertIn("actions/runs/$id/jobs", self.text, "the sweep must inspect each run's labels")
-        self.assertIn('conclusion" != "success"', self.text, "the sweep must treat successes as deletable now")
+        self.assertIn(".workflow_runs[].id", self.text, "the sweep must enumerate every run")
 
-    def test_cleanup_retention_is_bounded(self) -> None:
-        # A failed run's log is kept deliberately as the only diagnostic material,
-        # but the manual "delete once investigated" follow-up was forgotten six
-        # times, leaving the hostname published. A scheduled sweep bounds it.
+    def test_cleanup_retention_is_immediate_for_failures_too(self) -> None:
+        # Failed logs carry the same hostname. Detailed diagnostics remain on the
+        # persistent runner, so no GitHub-side grace period is justified.
         events = _cleanup_events()
-        self.assertIn("schedule", events, "no scheduled sweep; retention would be open-ended again")
+        self.assertIn("schedule", events, "no scheduled sweep; missed logs would stay published")
+        self.assertNotIn("grace_days", self.text)
+        self.assertNotIn('if [ "$CONCLUSION" != "success" ]', self.text)
 
     def test_cleanup_runs_on_a_github_hosted_runner(self) -> None:
         # Running the cleanup on the self-hosted runner would write the very

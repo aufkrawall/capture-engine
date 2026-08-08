@@ -25,8 +25,8 @@ bottom of this page.
 
 ## Contributing
 
-Pull requests are currently disabled. This may change once a viable workflow with LLM-agent-based PR reviews is in
-place. Bug reports and other feedback remain welcome — see [Bug reports and support
+Pull requests are not currently accepted or reviewed. This may change once a viable workflow with LLM-agent-based PR
+reviews is in place. Bug reports and other feedback remain welcome — see [Bug reports and support
 expectations](#bug-reports-and-support-expectations).
 
 ## Highlights
@@ -72,6 +72,22 @@ The default configuration records through WGC or DXGI Desktop Duplication withou
 desktop overlay can show recording status while those paths are active. Before enabling injected capture, overlays, or
 graphics overrides with any software, read [Anti-cheat safety](#anti-cheat-safety) and the [app profile
 example](#app-profile-example) below; the generated `config.ini` also ends with more safe/unsafe profile examples.
+
+### Release verification
+
+Official stable releases contain `captureengine.7z`, the separate `testapps.7z` validation bundle,
+`ffmpeg-corresponding-source.7z`, and `latest_manifest.json` / `latest_summary.txt` from the full clean build,
+test, lint, and sanitizer gate. Public releases also carry GitHub artifact attestations. After downloading an asset,
+GitHub CLI can verify that it was produced by this repository's release workflow:
+
+```powershell
+gh attestation verify .\captureengine.7z --repo aufkrawall/capture-engine
+```
+
+CaptureEngine binaries are not currently Authenticode-signed, so Windows may show a SmartScreen warning. An
+attestation verifies the downloaded bytes and their GitHub Actions provenance; it does not make unsigned code safe.
+Security vulnerabilities should be reported privately through the [security policy](SECURITY.md), not in a public
+issue.
 
 ## App profile example
 
@@ -490,10 +506,13 @@ through an MSYS shell. `build.py` is a small compatibility facade; its ordered s
 The build covers the x64 application and hook, the x86 compatibility hook, MediaEngine, both Vulkan layers, shaders
 and resources, the native graphics test applications, and the unit-test binaries. Shipping files are staged under
 `installed/captureengine`; validation-only programs remain under `installed/testapp`. After binary verification, a
-product build atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z`. The product
+product build atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z`; native Windows
+builds also create `build/packages/ffmpeg-corresponding-source.7z`. The product
 archive contains a clean `captureengine/` folder without local logs, captures, backups, stale files, or the current
 user configuration. The separate `testapps/` archive contains only first-party executables/PDBs plus a runtime note;
-it does not redistribute the FSR, Streamline, DLSS/NGX, Reflex, or driver DLLs staged for local validation.
+it does not redistribute the FSR, Streamline, DLSS/NGX, Reflex, or driver DLLs staged for local validation. The source
+archive contains the exact pinned, locally patched FFmpeg tree, its release build inputs, and verified source archives
+for the bundled LGPL libiconv runtime.
 
 Dependency handling is deliberately reproducible and fail-closed. The MSYS2 bootstrap is authenticated using its
 detached signature and a pinned signing key. Source packages and upstream archives are checked against pinned
@@ -519,17 +538,18 @@ python build.py --incremental --tests-only --run-tests --gtest-filter=<suite-or-
 python build.py --incremental --skip-updates --concise
 python build.py --no-build --run-tests --skip-updates --concise
 
-# Complete clean gate for high-risk or build-system changes
-python build.py --verify --skip-updates --concise
+# Complete strict-clean gate for high-risk or build-system changes
+python build.py --verify --verify-clean --skip-updates --concise
 ```
 
-`--verify` is a nested all-in-one gate, not an extra step after the normal gate: it performs a clean product build,
+`--verify` is a nested all-in-one gate, not an extra step after the normal gate: it performs a content-validated product build,
 the full native and Python test suites, content-addressed clang-tidy and file-size ratchets, and isolated ASan/UBSan
-validation. On a cache miss, the sanitizer build runs concurrently with the clean product build in separate output
-roots. `--skip-updates` keeps routine development on the already verified dependency set; stale or missing outputs
-are still rebuilt. `--concise` keeps the terminal readable while preserving complete commands and subprocess output
-in the detailed build log. A plain `python build.py` uses the managed default-quality path and may refresh MSYS2 and
-source-built dependencies when required.
+validation. Add `--verify-clean` when build machinery, toolchain policy, shared ABI, or gate policy requires a strict
+clean product rebuild. On a cache miss, the sanitizer build runs concurrently with the product build in separate
+output roots. `--skip-updates` keeps routine development on the already verified dependency set; stale or missing
+outputs are still rebuilt. `--concise` keeps the terminal readable while preserving complete commands and subprocess
+output in the detailed build log. A plain `python build.py` uses the managed default-quality path and may refresh
+MSYS2 and source-built dependencies when required.
 
 ## Testing
 

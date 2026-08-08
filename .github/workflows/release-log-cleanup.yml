@@ -30,12 +30,10 @@ name: release-log-cleanup
 #      that actually closes this hole: it decides from each run's own jobs API
 #      whether it executed on a self-hosted runner, so renamed, new and
 #      since-deleted workflows are all covered.
-#   2. A failed run's log was kept indefinitely pending a MANUAL delete "once
-#      investigated". That step is easy to forget and was forgotten six times.
-#      Failed logs are still kept briefly - they are the only diagnostic material
-#      for the failure - but the sweep removes them after a grace period, and
-#      removes SUCCESSFUL self-hosted logs at any age, since those carry the
-#      hostname and no diagnostic value worth keeping.
+#   2. A failed run's log was retained for diagnosis, but that still published the
+#      hostname and manual cleanup was repeatedly forgotten. Every self-hosted
+#      run log is now deleted immediately regardless of conclusion. Detailed
+#      diagnostics remain in the persistent local verification directory.
 #
 # GitHub-hosted logs (hardening-ci) are deliberately left alone throughout: they
 # carry no hostname, so deleting them would only destroy diagnostics.
@@ -44,16 +42,9 @@ on:
     workflows: ["release-stable"]
     types: [completed]
   schedule:
-    # Daily sweep for self-hosted run logs past the grace period. Bounded
-    # retention is the point: nothing is kept because someone forgot.
+    # Daily, name-independent defense in depth for any missed self-hosted log.
     - cron: "17 4 * * *"
   workflow_dispatch:
-    inputs:
-      grace_days:
-        description: "Delete self-hosted run logs older than this many days (sweep only)."
-        required: false
-        default: "7"
-        type: string
 
 # Deleting run logs needs actions:write. The repository default for
 # GITHUB_TOKEN is read-only, which only sets the default; an explicit block
@@ -72,7 +63,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Delete the run log if it ran on a self-hosted runner and succeeded
+      - name: Delete the run log if it ran on a self-hosted runner
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,11 +88,6 @@ jobs:
               ;;
           esac
 
-          if [ "$CONCLUSION" != "success" ]; then
-            echo "::warning::Run $RUN_ID ended '$CONCLUSION' on the self-hosted runner. Its log is kept for diagnosis and DOES contain the runner hostname. The scheduled sweep deletes it after the grace period; delete it sooner once investigated: gh api -X DELETE repos/$REPO/actions/runs/$RUN_ID/logs"
-            exit 0
-          fi
-
           gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs" --silent
           # Fail closed: a 204 from the DELETE is not proof the archive is gone,
           # and a surviving log still publishes the hostname. Ask for the log
@@ -124,23 +110,20 @@ jobs:
           esac
 
   sweep-retained-self-hosted-logs:
-    # Bounded retention for the logs the job above deliberately keeps. Without
-    # this, a failed run's log stays published until somebody remembers.
+    # Name-independent defense in depth for any log missed by the fast path.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Delete self-hosted run logs past the grace period
+      - name: Delete all remaining self-hosted run logs
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          GRACE_DAYS: ${{ inputs.grace_days || '7' }}
         run: |
           set -euo pipefail
-          cutoff="$(date -u -d "-${GRACE_DAYS} days" +%s)"
-          echo "Deleting self-hosted run logs created before $(date -u -d "@$cutoff" '+%Y-%m-%d %H:%M UTC') (grace ${GRACE_DAYS}d)"
+          echo "Deleting every discoverable self-hosted run log regardless of age or conclusion"
 
           deleted=0
           kept=0
@@ -148,18 +131,10 @@ jobs:
 
           # Paginate: the sweep must not silently stop at the first page and
           # leave older logs published.
-          runs="$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
-            --jq '.workflow_runs[] | "\(.id) \(.created_at) \(.conclusion // "none")"')"
+          runs="$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[].id')"
 
-          while read -r id created conclusion; do
+          while read -r id; do
             [ -n "$id" ] || continue
-            created_epoch="$(date -u -d "$created" +%s)"
-            # A successful self-hosted run's log has no diagnostic value worth
-            # keeping and does carry the hostname, so age is irrelevant for it.
-            # Only failures get the grace period.
-            if [ "$conclusion" != "success" ] && [ "$created_epoch" -ge "$cutoff" ]; then
-              kept=$((kept+1)); continue
-            fi
 
             # Nothing to do when the archive is already gone.
             status="$(curl -sS -o /dev/null -w '%{http_code}' \
