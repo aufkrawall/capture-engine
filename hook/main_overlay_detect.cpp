@@ -93,6 +93,11 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
 
+  // nvngx.dll is loaded by sl.common.dll, which then resolves every NGX entry
+  // point with GetProcAddress. Hook its exports here, inside LoadLibrary,
+  // so the first resolution already lands on our detours.
+  NVNGXHook::Get().OnModuleLoaded(module, moduleNameOrPath);
+
   // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately
   // so our dynamic hook is registered before the game calls GetProcAddress.
   if (moduleNameOrPath) {

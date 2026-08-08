@@ -26,7 +26,11 @@ struct NVSDK_NGX_DLSS_Create_Params;
 
 #include "../common/nvngx_parameter_abi.h"
 
+#include "../common/ngx_module_policy.h"
+
 #include "../wrappers/iat_hook.h"
+
+#include "../wrappers/inline_hook.h"
 
 #include "../wrappers/vtable_hook.h"
 

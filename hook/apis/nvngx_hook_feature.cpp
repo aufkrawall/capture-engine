@@ -374,7 +374,108 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN(void* ctx, int featureID, N
     return Hooked_CreateFeature_Process(oCreateFeature_VULKAN, ctx, featureID, params, handle);
 }
 
+// Inline-hook the NVSDK_NGX_* entry points inside the module that really
+// exports them.
+//
+// Streamline is the reason this is required rather than optional: sl.common.dll
+// loads nvngx.dll and resolves every entry point with GetProcAddress when the
+// game creates its DLSS feature, roughly ten seconds into a session. CE's IAT
+// patches and its GetProcAddress interception are both snapshots of the modules
+// loaded when they ran, so neither can ever reach sl.common.dll. Patching the
+// export bodies makes interception independent of how - and of when - the
+// caller obtained the pointer.
+static void InstallNGXExportInlineHooks() {
+    static std::mutex s_ExportHookLock;
+    static HMODULE s_HookedModule = nullptr;
+
+    HMODULE hNGX = GetModuleHandleA("nvngx.dll");
+    const char* moduleName = "nvngx.dll";
+    if (!hNGX) {
+        hNGX = GetModuleHandleA("_nvngx.dll");
+        moduleName = "_nvngx.dll";
+    }
+    if (!hNGX)
+        return;
+
+    std::lock_guard<std::mutex> lock(s_ExportHookLock);
+    if (s_HookedModule == hNGX)
+        return;
+
+    struct ExportHook {
+        const char* name;
+        void* detour;
+        void** original;
+    };
+    const ExportHook exports[] = {
+        {"NVSDK_NGX_D3D11_GetParameters", (void*)&Hooked_GetParams_D3D11, (void**)&nvngx_hook_oGetParameters_D3D11},
+        {"NVSDK_NGX_D3D11_AllocateParameters", (void*)&Hooked_AllocParams_D3D11,
+         (void**)&nvngx_hook_oAllocateParameters_D3D11},
+        {"NVSDK_NGX_D3D11_GetCapabilityParameters", (void*)&Hooked_GetCaps_D3D11,
+         (void**)&nvngx_hook_oGetCapabilityParameters_D3D11},
+        {"NVSDK_NGX_D3D11_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_D3D11,
+         (void**)&nvngx_hook_oGetFeatureRequirements_D3D11},
+        {"NVSDK_NGX_D3D11_CreateFeature", (void*)&Hooked_CreateFeature_D3D11,
+         (void**)&nvngx_hook_oCreateFeature_D3D11},
+        {"NVSDK_NGX_D3D12_GetParameters", (void*)&Hooked_GetParams_D3D12, (void**)&nvngx_hook_oGetParameters_D3D12},
+        {"NVSDK_NGX_D3D12_AllocateParameters", (void*)&Hooked_AllocParams_D3D12,
+         (void**)&nvngx_hook_oAllocateParameters_D3D12},
+        {"NVSDK_NGX_D3D12_GetCapabilityParameters", (void*)&Hooked_GetCaps_D3D12,
+         (void**)&nvngx_hook_oGetCapabilityParameters_D3D12},
+        {"NVSDK_NGX_D3D12_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_D3D12,
+         (void**)&nvngx_hook_oGetFeatureRequirements_D3D12},
+        {"NVSDK_NGX_D3D12_CreateFeature", (void*)&Hooked_CreateFeature_D3D12,
+         (void**)&nvngx_hook_oCreateFeature_D3D12},
+        {"NVSDK_NGX_VULKAN_GetParameters", (void*)&Hooked_GetParams_VULKAN, (void**)&nvngx_hook_oGetParameters_VULKAN},
+        {"NVSDK_NGX_VULKAN_AllocateParameters", (void*)&Hooked_AllocParams_VULKAN,
+         (void**)&nvngx_hook_oAllocateParameters_VULKAN},
+        {"NVSDK_NGX_VULKAN_GetCapabilityParameters", (void*)&Hooked_GetCaps_VULKAN,
+         (void**)&nvngx_hook_oGetCapabilityParameters_VULKAN},
+        {"NVSDK_NGX_VULKAN_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_VULKAN,
+         (void**)&nvngx_hook_oGetFeatureRequirements_VULKAN},
+        {"NVSDK_NGX_VULKAN_CreateFeature", (void*)&Hooked_CreateFeature_VULKAN, (void**)&oCreateFeature_VULKAN},
+    };
+
+    int hooked = 0;
+    int missing = 0;
+    int failed = 0;
+    for (const ExportHook& entry : exports) {
+        void* target = (void*)GetProcAddress(hNGX, entry.name);
+        if (!target) {
+            ++missing;
+            continue;
+        }
+        void* trampoline = nullptr;
+        if (!InlineHook::Install(target, entry.detour, &trampoline) || !trampoline) {
+            ++failed;
+            HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name, target);
+            continue;
+        }
+        // Overwrite unconditionally. An earlier IAT pass may have captured the
+        // raw export address here; calling that now re-enters our own detour.
+        *entry.original = trampoline;
+        ++hooked;
+    }
+
+    if (hooked > 0)
+        s_HookedModule = hNGX;
+
+    HookLogImportant("NVNGX: inline-hooked %d export(s) in %s at %p (absent=%d failed=%d); preset/parameter overrides "
+                     "now apply regardless of how the caller resolved them",
+                     hooked, moduleName, (void*)hNGX, missing, failed);
+}
+
+void NVNGXHook::OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
+    if (!module || !ce::ngx::IsNgxCoreModulePath(moduleNameOrPath))
+        return;
+    // Runs inside the caller's LoadLibrary, before it can resolve an export.
+    InstallNGXExportInlineHooks();
+}
+
 void NVNGXHook::Install() {
+    // Independent of the one-shot latch below: the NGX provider usually appears
+    // long after the first successful Install() pass.
+    InstallNGXExportInlineHooks();
+
     if (m_Installed.exchange(true))
         return;
 
@@ -449,17 +550,15 @@ void NVNGXHook::Install() {
     }
 
     // Phase 2: Patch IAT entries in already-loaded modules (requires DLL to be present).
+    // Only the real provider counts. sl.dlss.dll used to satisfy this check, but
+    // it exports no NVSDK_NGX_* symbol at all, so accepting it merely latched the
+    // hook as "installed" and stopped every later retry.
     const char* foundDllName = "nvngx.dll";
     HMODULE hNGX = GetModuleHandleA("nvngx.dll");
     if (!hNGX) {
         hNGX = GetModuleHandleA("_nvngx.dll");
         if (hNGX)
             foundDllName = "_nvngx.dll";
-    }
-    if (!hNGX) {
-        hNGX = GetModuleHandleA("sl.dlss.dll");
-        if (hNGX)
-            foundDllName = "sl.dlss.dll";
     }
 
     if (!hNGX) {

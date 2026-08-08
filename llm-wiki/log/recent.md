@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-08-08 - dlss_sr_preset never reached NGX: Streamline resolves it past every snapshot hook
+
+- **Symptom**: `dlss_sr_preset=m` in `[Profile.gta]` left GTA V Enhanced running preset K, with a custom
+  `dlss_sr_dll_path` DLL that does contain preset M. Session `logs/20260808_031448`.
+- The config side was fine end to end: `Config: Local srPreset is 13`, `Received SRPreset 13 from SHM`, and
+  `nvngx_debug.log` full of `NVNGX: Config forced SR Preset to 'M' (via Install)`. What is **absent** from that log is
+  the tell: not one `SetUI`, `CreateFeature` or parameter line. Interception never engaged.
+- **Root cause**: in a Streamline title nothing CE hooks is ever on the path.
+  - `sl.dlss.dll` has no nvngx import and no `NVSDK_NGX_*` strings - only the `DLSS.Hint.Render.Preset.*` parameter
+    names. `sl.common.dll` is the real client: it holds ASCII `NVSDK_NGX_D3D12_AllocateParameters` / `CreateFeature` /
+    `Init_Ext` (GetProcAddress names) and UTF-16 `nvngx.dll` / `_nvngx.dll` (LoadLibraryW names).
+  - `_nvngx.dll` is not in System32 here, so sl.common reads `HKLM\...\NGXCore\FullPath` and loads the driver-store
+    `nvngx.dll` directly, then GetProcAddresses every entry point.
+  - `sl.common.dll` loaded at **03:15:19.991**. CE's GetProcAddress IAT patch ran at 03:15:09.431 and 03:15:14.455 and
+    **never again** - `InitializeGetProcAddressHook` is `PatchIATAllModules`, a snapshot. So sl.common's
+    `GetProcAddress` import was never patched and the dynamic-hook table was unreachable.
+  - Compounding it: `NVNGXHook::Install` accepted **`sl.dlss.dll`** as "the NGX DLL", logged
+    `NVNGX: Found 'sl.dlss.dll' ... IAT patches installed`, and latched `m_Installed` - on a module that exports no NGX
+    symbol whatsoever. Every later retry, including after nvngx.dll actually loaded, returned at the latch.
+- **Fix**: `InstallNGXExportInlineHooks()` in `nvngx_hook_feature.cpp` inline-hooks the `NVSDK_NGX_*` export bodies in
+  nvngx.dll/_nvngx.dll, driven from `NVNGXHook::OnModuleLoaded` in `NotifyHookModuleLoaded` so the patch lands inside
+  sl.common's own `LoadLibrary`, before its first `GetProcAddress`. Hooking the body is authoritative: it does not care
+  how or when the caller obtained the pointer. Also called ahead of the `m_Installed` latch on the periodic path, and
+  the provider search no longer accepts Streamline plugins (`hook/common/ngx_module_policy.h`).
+- The captured trampoline **overwrites** `nvngx_hook_o*` unconditionally: an earlier IAT pass may have stored the raw
+  export address, which after inline hooking would re-enter our own detour.
+- Rejected: inline-hooking `GetProcAddress`. `kernel32!GetProcAddress` is a `4c 8b 04 24` + `48 ff 25` caller-forwarding
+  thunk into `kernelbase!GetProcAddressForCaller` (a *different* export from `kernelbase!GetProcAddress`), so full
+  coverage needs both, and the `__builtin_return_address(0)` caller filtering in `DetourGetProcAddress` breaks. Also
+  rejected: re-running the IAT snapshot on module load - it works in practice but is a load-vs-patch race.
+- Downstream parameter machinery needed no change; it was complete and simply never reached.
+- **Coverage**: `tests/test_ngx_module_policy.cpp` pins that sl.dlss/sl.common/sl.interposer are never the provider,
+  that `nvngx_dlss.dll`/`nvngx_dlssg.dll` (feature DLLs, no NGX API) are rejected, and that the driver-store path and
+  the `_nvngx.dll` stub are accepted.
+- **Verification**: `--verify` on `0.1.5857`, all stages OK.
+- **Stale risk**: high until a real GTA V Enhanced run. Expect `NVNGX: inline-hooked N export(s) in nvngx.dll` in
+  `hook_debug.log`, then `SetUI`/`CreateFeature` lines in `nvngx_debug.log`. If the inline-hook line never appears,
+  nvngx.dll is being loaded by a path that bypasses `LdrLoadDll`.
+
 ### 2026-08-08 - dlss_debug_overlay never worked: one-shot IAT patch could not see nvngx
 
 - **Symptom**: `dlss_debug_overlay=on` in `[Profile.gta]` showed no indicator in GTA V Enhanced even with DLSS SR and

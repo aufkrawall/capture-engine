@@ -8,10 +8,11 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
+- `hook/common/ngx_module_policy.h`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_module_policy}.cpp`
 
 ## Configuration contract
 
@@ -133,6 +134,26 @@ Primary sources:
 - `default` installs nothing at all, so an unconfigured process keeps a completely untouched registry path.
 - Invariant: CE never writes `ShowDlssIndicator` to HKLM. The setting is process-local by construction, so it cannot
   leak into other applications or survive the session.
+
+## Where NGX must be intercepted
+
+- Only `nvngx.dll` (driver store) and the `_nvngx.dll` System32 stub export `NVSDK_NGX_*`. On this machine
+  `_nvngx.dll` does not exist, so `sl.common.dll` reads `HKLM\...\NGXCore\FullPath`, `LoadLibraryW`s the driver-store
+  `nvngx.dll`, and resolves every entry point with **GetProcAddress** at DLSS-feature-creation time. `sl.dlss.dll`
+  contains neither the NGX symbol names nor an nvngx import - it only holds the `DLSS.Hint.Render.Preset.*` parameter
+  strings and reaches NGX through `sl.common.dll`.
+- Consequence: neither IAT patching nor CE's `GetProcAddress` dynamic-hook table can reach a Streamline game. Both are
+  snapshots of the modules loaded when they ran (`PatchIATAllModules`), and `sl.common.dll` loads about ten seconds
+  into a session, after the last pass. `hook/common/ngx_module_policy.h` + `InstallNGXExportInlineHooks()` therefore
+  **inline-hook the export bodies in nvngx.dll itself**, driven from `NotifyHookModuleLoaded` so the patch lands inside
+  the caller's `LoadLibrary`, before the first `GetProcAddress`. This is resolution-method and load-order independent.
+- Invariant: when an export is inline-hooked, the captured trampoline **overwrites** any `nvngx_hook_o*` pointer an
+  earlier IAT pass stored. Leaving a raw export address there would make the "original" call re-enter the detour.
+- Invariant: a Streamline plugin is never accepted as the NGX provider. `NVNGXHook::Install` previously accepted
+  `sl.dlss.dll`, which latched `m_Installed` on a module that exports nothing and stopped every later retry.
+- The parameter machinery downstream (vtable hooks on `SetUI`/`SetI` plus `InjectPreset` at parameter creation) was
+  already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
+  no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.
 
 ## Diagnostics and stale-risk
 
