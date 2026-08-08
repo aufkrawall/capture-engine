@@ -222,7 +222,16 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str, *, prefer_static: bool = False
 # ============================================================================
 
 # --- FFmpeg Configuration ---
-FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
+# Equivalent upstream sources, tried in order. The canonical host is preferred,
+# while the FFmpeg project's official GitHub mirror keeps clean release builds
+# available during an outage. This is safe because FFMPEG_SOURCE_REF is a pinned
+# commit; both hosts serve tree a3241d83fee8f268d5f114df09c74535f89ba38e
+# for the pin below.
+FFMPEG_URLS = (
+    "https://git.ffmpeg.org/ffmpeg.git",
+    "https://github.com/FFmpeg/FFmpeg.git",
+)
+FFMPEG_URL = FFMPEG_URLS[0]  # retained for callers expecting a single URL
 # Pinned upstream source. Until 2026-08-07 the clone tracked master HEAD, so every
 # fresh build shipped whatever upstream had merged that day and two builds a week
 # apart were not the same product.

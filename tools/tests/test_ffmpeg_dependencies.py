@@ -622,8 +622,12 @@ class FfmpegSourcePinTest(unittest.TestCase):
         # prebuilt DLLs exist, before the source is consulted, so otherwise a pin
         # change would silently keep shipping the previous FFmpeg.
         self.assertRegex(build.FFMPEG_SOURCE_REF, r"^(n\d+\.\d+[\w.]*|[0-9a-f]{40})$")
+        self.assertGreaterEqual(len(build.FFMPEG_URLS), 2, "no fallback source configured")
+        self.assertEqual(len(build.FFMPEG_URLS), len(set(build.FFMPEG_URLS)), "duplicate FFmpeg source")
+        for url in build.FFMPEG_URLS:
+            self.assertTrue(url.startswith("https://"), url)
         source = build.read_source_text()
-        self.assertIn("ref=FFMPEG_SOURCE_REF", source)
+        self.assertIn('git_clone(FFMPEG_URLS, "ffmpeg"', source)
         self.assertIn("digest.update(FFMPEG_SOURCE_REF.encode(", source)
 
     def test_pin_keeps_the_nmr_aac_coder_available(self) -> None:

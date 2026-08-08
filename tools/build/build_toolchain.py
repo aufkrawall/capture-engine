@@ -92,7 +92,7 @@ def compile_custom_ffmpeg(skip_updates=False):
     else:
         # Check for updates
         update = not skip_updates
-        _, updated = builder.git_clone(FFMPEG_URL, "ffmpeg", update=update, ref=FFMPEG_SOURCE_REF)
+        _, updated = builder.git_clone(FFMPEG_URLS, "ffmpeg", update=update, ref=FFMPEG_SOURCE_REF)
 
         if updated:
             needs_rebuild = True

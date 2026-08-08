@@ -524,7 +524,7 @@ class FFmpegBuilder:
     def build_ffmpeg(self, update=True):
         """Build FFmpeg. Returns True if build was performed."""
         log("[FFmpeg] Building FFmpeg...")
-        src_dir, updated = self.git_clone(FFMPEG_URL, "ffmpeg", update=update, ref=FFMPEG_SOURCE_REF)
+        src_dir, updated = self.git_clone(FFMPEG_URLS, "ffmpeg", update=update, ref=FFMPEG_SOURCE_REF)
         build_dir = os.path.join(self.working_dir, "ffmpeg")
 
         if os.path.exists(build_dir):
