@@ -103,10 +103,48 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
 // table slot load. Returns false when the window holds no unambiguous candidate.
 bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp);
 
-// The live two-byte branch replacement is performed through an aligned 32-bit
-// compare/exchange. Refuse the one layout that would straddle that word rather
+// The live two-byte branch replacement uses the narrowest aligned atomic word
+// that fully contains it: 32-bit normally, or 64-bit when the pair crosses a
+// 32-bit boundary. A pair crossing the widest supported word is refused rather
 // than exposing an instruction stream containing one old and one new byte.
+enum class AtomicPatchWidth : uint8_t { kNone = 0, k32Bit = 4, k64Bit = 8 };
+
+AtomicPatchWidth SelectAtomicPatchWidth(const void* address);
 bool CanPatchTwoBytesAtomically(const void* address);
+
+enum class CodePatchResult : uint8_t {
+    kPatched,
+    kAlreadyPatched,
+    kInvalidAddress,
+    kUnsupportedAlignment,
+    kProtectionFailed,
+    kUnexpectedBytes,
+    kCompareExchangeLost,
+    kInstructionCacheFlushFailed,
+    kProtectionRestoreFailed,
+    kVerificationFailed,
+};
+
+struct CodePatchOutcome {
+    CodePatchResult result = CodePatchResult::kInvalidAddress;
+    AtomicPatchWidth width = AtomicPatchWidth::kNone;
+    bool bytesPatched = false;
+    bool wroteBytes = false;
+    bool instructionCacheFlushed = false;
+    bool protectionRestored = false;
+    bool verified = false;
+
+    bool Succeeded() const {
+        return result == CodePatchResult::kPatched || result == CodePatchResult::kAlreadyPatched;
+    }
+};
+
+// Testable write primitive used only after the scanner has structurally
+// validated that replacing `expected0 expected1` with NOPs selects the ON path.
+// The full containing word participates in the compare/exchange, so a concurrent
+// adjacent-byte change is detected rather than overwritten.
+CodePatchOutcome WriteTwoByteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1);
+const char* GetCodePatchResultName(CodePatchResult result);
 
 // Runtime state, for diagnostics and tests of the decision logic.
 struct Status {

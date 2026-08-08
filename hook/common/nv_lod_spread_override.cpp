@@ -17,6 +17,9 @@ namespace ce::nv_lod_spread {
 
 namespace {
 
+static_assert(sizeof(LONG) == 4);
+static_assert(sizeof(LONG64) == 8);
+
 std::atomic<Mode> g_mode{Mode::kOff};
 std::atomic<bool> g_moduleSeen{false};
 std::atomic<bool> g_codePatchApplied{false};
@@ -86,39 +89,15 @@ const char* BaseName(const char* path) {
     return base;
 }
 
-bool WriteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1) {
-    if (!CanPatchTwoBytesAtomically(address)) {
-        return false;
+uint64_t AtomicCompareExchangeWord(void* word, AtomicPatchWidth width, uint64_t exchange, uint64_t comparand) {
+    if (width == AtomicPatchWidth::k32Bit) {
+        auto* destination = static_cast<volatile LONG*>(word);
+        return static_cast<uint32_t>(InterlockedCompareExchange(destination, static_cast<LONG>(exchange),
+                                                                 static_cast<LONG>(comparand)));
     }
-
-    const uintptr_t alignedAddress = reinterpret_cast<uintptr_t>(address) & ~uintptr_t{3};
-    const unsigned shift = static_cast<unsigned>((reinterpret_cast<uintptr_t>(address) - alignedAddress) * 8);
-    constexpr uint32_t kPatchedBytes = 0x9090u;
-    const uint32_t mask = 0xFFFFu << shift;
-    const uint32_t expectedBytes = (static_cast<uint32_t>(expected0) | (static_cast<uint32_t>(expected1) << 8))
-                                   << shift;
-
-    DWORD oldProtect = 0;
-    auto* word = reinterpret_cast<volatile LONG*>(alignedAddress);
-    if (!VirtualProtect(const_cast<LONG*>(word), sizeof(*word), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        return false;
-    }
-
-    const LONG current = InterlockedCompareExchange(word, 0, 0);
-    const uint32_t currentBits = static_cast<uint32_t>(current);
-    bool cacheFlushed = true;
-    bool patched = ((currentBits & mask) >> shift) == kPatchedBytes;
-    if (!patched && (currentBits & mask) == expectedBytes) {
-        const uint32_t desiredBits = (currentBits & ~mask) | (kPatchedBytes << shift);
-        patched = InterlockedCompareExchange(word, static_cast<LONG>(desiredBits), current) == current;
-        if (patched) {
-            cacheFlushed = FlushInstructionCache(GetCurrentProcess(), address, 2) != FALSE;
-        }
-    }
-
-    DWORD restored = 0;
-    const bool protectionRestored = VirtualProtect(const_cast<LONG*>(word), sizeof(*word), oldProtect, &restored) != FALSE;
-    return patched && cacheFlushed && protectionRestored && address[0] == 0x90 && address[1] == 0x90;
+    auto* destination = static_cast<volatile LONG64*>(word);
+    return static_cast<uint64_t>(InterlockedCompareExchange64(destination, static_cast<LONG64>(exchange),
+                                                               static_cast<LONG64>(comparand)));
 }
 
 // Locates the mapped image's bounds and its executable section. The ICD always
@@ -245,16 +224,9 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
     }
 
     uint8_t* branch = const_cast<uint8_t*>(image + site.branchRva);
-    if (!CanPatchTwoBytesAtomically(branch)) {
-        NV_LOD_LOG("NV LOD spread: validated branch at +0x%zX in %s crosses an atomic patch boundary - "
-                   "nothing patched",
-                   site.branchRva, modulePath ? modulePath : "the ICD");
-        return false;
-    }
-    g_patchedModule.store(module, std::memory_order_release);
-    g_branchAddress.store(branch, std::memory_order_release);
-
     if (site.branchAlreadyPatched) {
+        g_patchedModule.store(module, std::memory_order_release);
+        g_branchAddress.store(branch, std::memory_order_release);
         g_codePatchApplied.store(true, std::memory_order_release);
         g_branchWasAlreadyPatched.store(true, std::memory_order_release);
         NV_LOD_LOG("NV LOD spread: %s already has the validated ON branch patch at +0x%zX",
@@ -262,19 +234,45 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
         return true;
     }
 
-    const uint8_t original0 = branch[0];
-    const uint8_t original1 = branch[1];
-    if (!WriteCodePatch(branch, original0, original1)) {
-        NV_LOD_LOG("NV LOD spread: FAILED to patch the validated OFF branch at %p in %s", branch,
-                   modulePath ? modulePath : "the ICD");
+    const AtomicPatchWidth patchWidth = SelectAtomicPatchWidth(branch);
+    if (patchWidth == AtomicPatchWidth::kNone) {
+        NV_LOD_LOG("NV LOD spread: validated branch at +0x%zX in %s crosses the widest supported aligned atomic "
+                   "word (addressMod8=%zu) - nothing patched",
+                   site.branchRva, modulePath ? modulePath : "the ICD",
+                   reinterpret_cast<uintptr_t>(branch) & uintptr_t{7});
         return false;
     }
 
+    const uint8_t original0 = branch[0];
+    const uint8_t original1 = branch[1];
+    const CodePatchOutcome outcome = WriteTwoByteCodePatch(branch, original0, original1);
+    if (!outcome.Succeeded()) {
+        if (outcome.bytesPatched && outcome.verified) {
+            g_patchedModule.store(module, std::memory_order_release);
+            g_branchAddress.store(branch, std::memory_order_release);
+            g_codePatchApplied.store(true, std::memory_order_release);
+        }
+        NV_LOD_LOG("NV LOD spread: FAILED to safely complete the validated OFF-branch patch at %p in %s "
+                   "(result=%s, atomicWidth=%u-bit, bytesPatched=%u, wroteBytes=%u, cacheFlushed=%u, "
+                   "protectionRestored=%u, verified=%u)",
+                   branch, modulePath ? modulePath : "the ICD", GetCodePatchResultName(outcome.result),
+                   static_cast<unsigned>(outcome.width) * 8u, outcome.bytesPatched ? 1u : 0u,
+                   outcome.wroteBytes ? 1u : 0u, outcome.instructionCacheFlushed ? 1u : 0u,
+                   outcome.protectionRestored ? 1u : 0u, outcome.verified ? 1u : 0u);
+        return false;
+    }
+
+    g_patchedModule.store(module, std::memory_order_release);
+    g_branchAddress.store(branch, std::memory_order_release);
     g_codePatchApplied.store(true, std::memory_order_release);
+    if (outcome.result == CodePatchResult::kAlreadyPatched) {
+        g_branchWasAlreadyPatched.store(true, std::memory_order_release);
+    }
     NV_LOD_LOG("NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in %s (validated branch +0x%zX: %02X %02X -> "
-               "90 90, check +0x%zX, setting 0x%08X) - process-local, the driver file is untouched",
-               modulePath ? modulePath : "the ICD", site.branchRva, original0, original1, site.cmpRva,
-               site.settingValue);
+               "90 90 via atomic %u-bit compare/exchange, check +0x%zX, setting 0x%08X) - process-local, the driver "
+               "file is untouched",
+               modulePath ? modulePath : "the ICD", site.branchRva, original0, original1,
+               static_cast<unsigned>(outcome.width) * 8u, site.cmpRva, site.settingValue);
     return true;
 }
 
@@ -300,8 +298,108 @@ bool IsIcdModuleName(const char* modulePathOrName) {
     return _stricmp(base, "nvoglv64.dll") == 0 || _stricmp(base, "nvoglv32.dll") == 0;
 }
 
+AtomicPatchWidth SelectAtomicPatchWidth(const void* address) {
+    if (!address) {
+        return AtomicPatchWidth::kNone;
+    }
+    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+    if ((value & uintptr_t{3}) != 3) {
+        return AtomicPatchWidth::k32Bit;
+    }
+    if ((value & uintptr_t{7}) != 7) {
+        return AtomicPatchWidth::k64Bit;
+    }
+    return AtomicPatchWidth::kNone;
+}
+
 bool CanPatchTwoBytesAtomically(const void* address) {
-    return address && (reinterpret_cast<uintptr_t>(address) & uintptr_t{3}) != 3;
+    return SelectAtomicPatchWidth(address) != AtomicPatchWidth::kNone;
+}
+
+CodePatchOutcome WriteTwoByteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1) {
+    CodePatchOutcome outcome;
+    outcome.width = SelectAtomicPatchWidth(address);
+    if (!address) {
+        return outcome;
+    }
+    if (outcome.width == AtomicPatchWidth::kNone) {
+        outcome.result = CodePatchResult::kUnsupportedAlignment;
+        return outcome;
+    }
+
+    const size_t wordSize = static_cast<size_t>(outcome.width);
+    const uintptr_t alignedAddress = reinterpret_cast<uintptr_t>(address) & ~(static_cast<uintptr_t>(wordSize) - 1);
+    const unsigned shift = static_cast<unsigned>((reinterpret_cast<uintptr_t>(address) - alignedAddress) * 8);
+    constexpr uint64_t kPatchedBytes = 0x9090u;
+    const uint64_t mask = uint64_t{0xFFFF} << shift;
+    const uint64_t expectedPair = static_cast<uint64_t>(expected0) | (static_cast<uint64_t>(expected1) << 8);
+    void* word = reinterpret_cast<void*>(alignedAddress);
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(word, wordSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        outcome.result = CodePatchResult::kProtectionFailed;
+        return outcome;
+    }
+
+    const uint64_t current = AtomicCompareExchangeWord(word, outcome.width, 0, 0);
+    const uint64_t currentPair = (current & mask) >> shift;
+    if (currentPair == kPatchedBytes) {
+        outcome.result = CodePatchResult::kAlreadyPatched;
+        outcome.bytesPatched = true;
+    } else if (currentPair != expectedPair) {
+        outcome.result = CodePatchResult::kUnexpectedBytes;
+    } else {
+        const uint64_t desired = (current & ~mask) | (kPatchedBytes << shift);
+        const uint64_t observed = AtomicCompareExchangeWord(word, outcome.width, desired, current);
+        if (observed != current) {
+            outcome.result = CodePatchResult::kCompareExchangeLost;
+        } else {
+            outcome.result = CodePatchResult::kPatched;
+            outcome.bytesPatched = true;
+            outcome.wroteBytes = true;
+            outcome.instructionCacheFlushed = FlushInstructionCache(GetCurrentProcess(), address, 2) != FALSE;
+        }
+    }
+
+    outcome.verified = address[0] == 0x90 && address[1] == 0x90;
+    outcome.bytesPatched = outcome.bytesPatched || outcome.verified;
+    DWORD restored = 0;
+    outcome.protectionRestored = VirtualProtect(word, wordSize, oldProtect, &restored) != FALSE;
+
+    if (outcome.wroteBytes && !outcome.instructionCacheFlushed) {
+        outcome.result = CodePatchResult::kInstructionCacheFlushFailed;
+    } else if (!outcome.protectionRestored) {
+        outcome.result = CodePatchResult::kProtectionRestoreFailed;
+    } else if (outcome.bytesPatched && !outcome.verified) {
+        outcome.result = CodePatchResult::kVerificationFailed;
+    }
+    return outcome;
+}
+
+const char* GetCodePatchResultName(CodePatchResult result) {
+    switch (result) {
+        case CodePatchResult::kPatched:
+            return "patched";
+        case CodePatchResult::kAlreadyPatched:
+            return "already-patched";
+        case CodePatchResult::kInvalidAddress:
+            return "invalid-address";
+        case CodePatchResult::kUnsupportedAlignment:
+            return "unsupported-alignment";
+        case CodePatchResult::kProtectionFailed:
+            return "protection-failed";
+        case CodePatchResult::kUnexpectedBytes:
+            return "unexpected-bytes";
+        case CodePatchResult::kCompareExchangeLost:
+            return "compare-exchange-lost";
+        case CodePatchResult::kInstructionCacheFlushFailed:
+            return "instruction-cache-flush-failed";
+        case CodePatchResult::kProtectionRestoreFailed:
+            return "protection-restore-failed";
+        case CodePatchResult::kVerificationFailed:
+            return "verification-failed";
+    }
+    return "unknown";
 }
 
 bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp) {

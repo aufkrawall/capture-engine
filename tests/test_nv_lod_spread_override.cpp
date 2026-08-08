@@ -14,7 +14,9 @@
 
 namespace {
 
+using ce::nv_lod_spread::AtomicPatchWidth;
 using ce::nv_lod_spread::CanPatchTwoBytesAtomically;
+using ce::nv_lod_spread::CodePatchResult;
 using ce::nv_lod_spread::FindOnBranch;
 using ce::nv_lod_spread::FindSettingSite;
 using ce::nv_lod_spread::FindTableLoadDisp;
@@ -24,7 +26,9 @@ using ce::nv_lod_spread::kSettingOff;
 using ce::nv_lod_spread::kSettingOn;
 using ce::nv_lod_spread::Mode;
 using ce::nv_lod_spread::ParseMode;
+using ce::nv_lod_spread::SelectAtomicPatchWidth;
 using ce::nv_lod_spread::Site;
+using ce::nv_lod_spread::WriteTwoByteCodePatch;
 
 // Layout of the purpose-built synthetic image the scanner is exercised against.
 // It preserves only the structural relationships the scanner validates; it is
@@ -50,6 +54,30 @@ struct ImageOptions {
     uint32_t settingValue = kSettingOff;
     uint8_t onSlotDisp = kOnSlotDisp;
     uint8_t offSlotDisp = kOffSlotDisp;
+};
+
+class VirtualPage {
+   public:
+    VirtualPage()
+        : data_(static_cast<uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE))) {}
+    ~VirtualPage() {
+        if (data_) {
+            VirtualFree(data_, 0, MEM_RELEASE);
+        }
+    }
+
+    VirtualPage(const VirtualPage&) = delete;
+    VirtualPage& operator=(const VirtualPage&) = delete;
+
+    uint8_t* Data() const { return data_; }
+
+    bool MakeExecutableReadOnly() const {
+        DWORD oldProtect = 0;
+        return data_ && VirtualProtect(data_, 4096, PAGE_EXECUTE_READ, &oldProtect) != FALSE;
+    }
+
+   private:
+    uint8_t* data_ = nullptr;
 };
 
 void PutBytes(std::vector<uint8_t>& image, size_t offset, std::initializer_list<uint8_t> bytes) {
@@ -134,12 +162,88 @@ TEST(NvLodSpreadOverride, IsIcdModuleNameMatchesBothArchitectures) {
     EXPECT_FALSE(IsIcdModuleName(nullptr));
 }
 
-TEST(NvLodSpreadOverride, AtomicPatchLayoutRejectsOnlyACrossWordPair) {
-    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1000})));
-    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1001})));
-    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1002})));
-    EXPECT_FALSE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1003})));
+TEST(NvLodSpreadOverride, AtomicPatchLayoutUses64BitsAcrossA32BitBoundary) {
+    EXPECT_EQ(SelectAtomicPatchWidth(reinterpret_cast<const void*>(uintptr_t{0x1000})), AtomicPatchWidth::k32Bit);
+    EXPECT_EQ(SelectAtomicPatchWidth(reinterpret_cast<const void*>(uintptr_t{0x1001})), AtomicPatchWidth::k32Bit);
+    EXPECT_EQ(SelectAtomicPatchWidth(reinterpret_cast<const void*>(uintptr_t{0x1002})), AtomicPatchWidth::k32Bit);
+    EXPECT_EQ(SelectAtomicPatchWidth(reinterpret_cast<const void*>(uintptr_t{0x1003})), AtomicPatchWidth::k64Bit);
+    EXPECT_EQ(SelectAtomicPatchWidth(reinterpret_cast<const void*>(uintptr_t{0x1007})), AtomicPatchWidth::kNone);
+
+    EXPECT_TRUE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1003})));
+    EXPECT_FALSE(CanPatchTwoBytesAtomically(reinterpret_cast<const void*>(uintptr_t{0x1007})));
     EXPECT_FALSE(CanPatchTwoBytesAtomically(nullptr));
+}
+
+TEST(NvLodSpreadOverride, AtomicallyPatchesTheObservedStrangeBrigadeX64Alignment) {
+    VirtualPage page;
+    ASSERT_NE(page.Data(), nullptr);
+
+    // The failing 32.0.16.1088 x64 site was nvoglv64+0x4E35DB. Module
+    // bases are page-aligned, so +0xDB reproduces the exact word alignment.
+    constexpr size_t kPatchOffset = 0xDB;
+    for (size_t i = kPatchOffset - 3; i < kPatchOffset + 5; ++i) {
+        page.Data()[i] = static_cast<uint8_t>(0x40 + i - (kPatchOffset - 3));
+    }
+    page.Data()[kPatchOffset] = 0x75;
+    page.Data()[kPatchOffset + 1] = 0x05;
+    uint8_t before[8] = {};
+    memcpy(before, page.Data() + kPatchOffset - 3, sizeof(before));
+    ASSERT_TRUE(page.MakeExecutableReadOnly());
+
+    const auto outcome = WriteTwoByteCodePatch(page.Data() + kPatchOffset, 0x75, 0x05);
+
+    EXPECT_TRUE(outcome.Succeeded());
+    EXPECT_EQ(outcome.result, CodePatchResult::kPatched);
+    EXPECT_EQ(outcome.width, AtomicPatchWidth::k64Bit);
+    EXPECT_TRUE(outcome.bytesPatched);
+    EXPECT_TRUE(outcome.wroteBytes);
+    EXPECT_TRUE(outcome.instructionCacheFlushed);
+    EXPECT_TRUE(outcome.protectionRestored);
+    EXPECT_TRUE(outcome.verified);
+    EXPECT_EQ(page.Data()[kPatchOffset], 0x90);
+    EXPECT_EQ(page.Data()[kPatchOffset + 1], 0x90);
+    for (size_t i = 0; i < sizeof(before); ++i) {
+        if (i == 3 || i == 4) {
+            continue;
+        }
+        EXPECT_EQ(page.Data()[kPatchOffset - 3 + i], before[i]);
+    }
+}
+
+TEST(NvLodSpreadOverride, AtomicallyPatchesAnOrdinary32BitContainer) {
+    VirtualPage page;
+    ASSERT_NE(page.Data(), nullptr);
+
+    constexpr size_t kPatchOffset = 0xD9;
+    page.Data()[kPatchOffset - 1] = 0xCC;
+    page.Data()[kPatchOffset] = 0x75;
+    page.Data()[kPatchOffset + 1] = 0x05;
+    page.Data()[kPatchOffset + 2] = 0xC3;
+    ASSERT_TRUE(page.MakeExecutableReadOnly());
+
+    const auto outcome = WriteTwoByteCodePatch(page.Data() + kPatchOffset, 0x75, 0x05);
+
+    EXPECT_TRUE(outcome.Succeeded());
+    EXPECT_EQ(outcome.result, CodePatchResult::kPatched);
+    EXPECT_EQ(outcome.width, AtomicPatchWidth::k32Bit);
+    EXPECT_EQ(page.Data()[kPatchOffset - 1], 0xCC);
+    EXPECT_EQ(page.Data()[kPatchOffset], 0x90);
+    EXPECT_EQ(page.Data()[kPatchOffset + 1], 0x90);
+    EXPECT_EQ(page.Data()[kPatchOffset + 2], 0xC3);
+}
+
+TEST(NvLodSpreadOverride, RefusesAPairCrossingThe64BitAtomicWord) {
+    alignas(8) uint8_t bytes[16] = {};
+    bytes[7] = 0x75;
+    bytes[8] = 0x05;
+
+    const auto outcome = WriteTwoByteCodePatch(bytes + 7, 0x75, 0x05);
+
+    EXPECT_FALSE(outcome.Succeeded());
+    EXPECT_EQ(outcome.result, CodePatchResult::kUnsupportedAlignment);
+    EXPECT_EQ(outcome.width, AtomicPatchWidth::kNone);
+    EXPECT_EQ(bytes[7], 0x75);
+    EXPECT_EQ(bytes[8], 0x05);
 }
 
 TEST(NvLodSpreadOverride, FindsValidatedSyntheticEncoding) {

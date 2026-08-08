@@ -242,10 +242,17 @@ Primary sources:
   remain structurally provable.
 - The injected hook and Vulkan layer each compile their own copy of the patcher. Their scans and protection changes
   are serialized through one per-process named mutex, so nested `VirtualProtect` calls cannot restore the code page
-  to another copy's temporary writable protection. The live two-byte NOP replacement uses one aligned 32-bit
-  `InterlockedCompareExchange`; a branch pair that would straddle that word is refused. The instruction cache is
-  flushed before the original protection is restored, and any lock/protection/layout failure is logged and leaves
-  the driver untouched where possible.
+  to another copy's temporary writable protection. The live two-byte NOP replacement uses the narrowest aligned
+  atomic word that contains the pair: 32-bit normally and 64-bit when it crosses a 32-bit boundary. The complete
+  containing word participates in `InterlockedCompareExchange`, so a concurrent adjacent-byte change loses the CAS
+  rather than being overwritten. A pair crossing the aligned 64-bit word remains unsupported and fails closed. The
+  instruction cache is flushed before the original protection is restored, and failures report the selected width,
+  whether bytes changed, cache-flush/protection state, and final byte verification.
+- Strange Brigade Vulkan x64 session `20260808_214315` exposed the former 32-bit-only writer gap: 32.0.16.1088's
+  validated branch is at `nvoglv64+0x4E35DB`, so its two bytes cross a 32-bit word but fit at byte 3 of the aligned
+  64-bit word. All three Vulkan-boundary attempts correctly found the site and then refused it, making the option a
+  no-op. The width-aware writer selects a 64-bit CAS for that exact layout. A structurally proven pre-patched driver
+  is accepted before writer-width selection because it needs no live write at all.
 - `nv_lod_spread_fix=off` (the default) arms nothing. The machine's driver files are never written, so they keep
   their NVIDIA signature, and other processes are unaffected. Caveat carried in `config.ini.template`: patching a
   graphics driver in memory is the kind of thing anti-cheat systems object to.
@@ -255,9 +262,10 @@ Primary sources:
 - Source anchors: `hook/common/nv_lod_spread_override.{h,cpp}`, the pre-device calls in
   `hook/vulkan_layer/vulkan_layer_hooks.cpp`, inject fallback in `hook/main_{hookthread,overlay_detect}.cpp`, and
   coverage in `tests/test_nv_lod_spread_override.cpp`.
-- Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ... (validated branch +0x...: 75 .. -> 90 90,
-  check +0x..., setting 0x...)`, or an explicit structural-validation/write failure. Hardware re-validation of the
-  corrected build remains required; the supplied failing run proves the root cause and ordering, not the final pixels.
+- Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ... (validated branch +0x...: 75 .. -> 90 90 via
+  atomic 32-bit/64-bit compare/exchange, check +0x..., setting 0x...)`, or an explicit structural-validation/write
+  failure with post-write state. Hardware re-validation of the corrected build remains required; the supplied failing
+  runs prove the root causes and ordering, not the final pixels.
 
 ## Diagnostics and stale-risk
 

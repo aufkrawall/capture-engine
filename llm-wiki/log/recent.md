@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-08-08 - Strange Brigade x64 exposed the NVIDIA patch writer's 32-bit boundary gap
+
+- Session `20260808_214315` is conclusive rather than visual-only: the Vulkan layer resolved
+  `nv_lod_spread_fix=on`, structurally validated `nvoglv64+0x4E35DB`, then refused the write before instance creation,
+  after instance creation, and at device entry because the pair crossed its aligned 32-bit CAS word. The final refusal
+  was at `21:43:23.744`, before `vkCreateDevice` returned at `21:43:23.823`, so timing and config propagation were
+  correct but the stock `75 05` branch remained live. Driver 32.0.16.1088 x64 places the pair at byte 3 of an aligned
+  64-bit word; this explains why the x64 game looked unfixed.
+- Root fix: select the narrowest aligned atomic container that holds both bytes - 32-bit for ordinary layouts and
+  64-bit for this cross-dword layout. The complete word is compared and exchanged, preserving all adjacent bytes and
+  refusing a concurrent adjacent-code change. A pair crossing the 64-bit word still fails closed. Structurally proven
+  pre-patched drivers are now accepted before write-width selection because no live write is required.
+- The write result now distinguishes protection, unexpected-byte, lost-CAS, cache-flush, restore, and final-verification
+  failures and logs the selected width plus every post-write state bit. Regression coverage performs a real
+  executable-page write at page offset `0xDB`, verifies a 64-bit CAS and all six neighboring bytes, retains the normal
+  32-bit path, and pins the unsupported cross-64-bit boundary. Focused `NvLodSpreadOverride.*` tests and the complete
+  `python build.py --verify --skip-updates --concise` gate passed as build 0.1.5871 (native/Python tests, x64 ASan/UBSan,
+  x64/x86 products and Vulkan layers, PE/privacy/package checks, clang-tidy 0 warnings). Corrected-build Strange Brigade
+  pixel validation remains pending.
+
 ### 2026-08-08 - Public-release boundary hardened after the pre-public audit
 
 - Stable releases now switch to and verify the exact `github.sha` from dispatch, then run the single nested
@@ -15,9 +35,9 @@
   removes every remaining self-hosted log without a failure grace period; detailed failure artifacts remain locally
   in the persistent runner workspace. The workflow now derives the persistent toolchain root below `USERPROFILE`
   from a relative/default path instead of publishing an absolute profile path as a repository variable.
-- The NVIDIA LOD branch patch is process-wide serialized across the hook/layer DLL copies and uses an aligned 32-bit
-  compare/exchange for the live two-byte replacement. Cross-word layouts fail closed. The regression fixture is now
-  wholly synthetic rather than carrying a driver-derived instruction excerpt.
+- At this stage the NVIDIA LOD branch patch used an aligned 32-bit compare/exchange and rejected cross-word layouts.
+  The Strange Brigade finding immediately above subsequently expanded this to a width-aware 32/64-bit writer. The
+  regression fixture remains wholly synthetic rather than carrying a driver-derived instruction excerpt.
 - Validation: focused NVIDIA units passed; packaging/workflow/privacy policy tests passed; 60-second-per-target fuzz
   passed (`config_parser` 2,667 units, `ipc_deserialize` 16,766,720 units); and the required strict-clean
   `--verify --verify-clean` gate passed as build `0.1.5868` in 445 seconds (native/Python tests, isolated ASan/UBSan,
