@@ -7,6 +7,7 @@ namespace {
 using ce::ngx::IsNgxCoreModulePath;
 using ce::ngx::IsStreamlineNgxClientPath;
 using ce::ngx::ModuleFileName;
+using ce::ngx::ShouldInterceptNgxExportLookup;
 
 TEST(NgxModulePolicy, ModuleFileNameStripsBothSeparators) {
     EXPECT_STREQ(ModuleFileName("C:\\Windows\\System32\\DriverStore\\nv_dispi\\nvngx.dll"), "nvngx.dll");
@@ -46,6 +47,28 @@ TEST(NgxModulePolicy, FeatureAndUnrelatedModulesAreRejected) {
     EXPECT_FALSE(IsNgxCoreModulePath(nullptr));
     EXPECT_FALSE(IsStreamlineNgxClientPath(nullptr));
     EXPECT_FALSE(IsStreamlineNgxClientPath("sl.reflex.dll"));
+}
+
+// Regression: the NGX export GetProcAddress hooks were registered unfiltered, so
+// they also answered the core's *internal* dispatch lookups into the feature
+// snippets. The detour then forwarded through the single per-symbol original -
+// the core's own inline-hook trampoline - re-entering the core body until the
+// stack overflowed (0xC00000FD in nvapi64_impl.dll during
+// NVSDK_NGX_D3D12_GetFeatureRequirements). Only the core may be intercepted.
+TEST(NgxModulePolicy, ExportLookupInterceptionIsLimitedToTheCoreProvider) {
+    EXPECT_TRUE(ShouldInterceptNgxExportLookup("nvngx.dll"));
+    EXPECT_TRUE(ShouldInterceptNgxExportLookup("_nvngx.dll"));
+    EXPECT_TRUE(ShouldInterceptNgxExportLookup("C:\\games\\app\\_nvngx.dll"));
+
+    // These export the same NVSDK_NGX_* names and are resolved by the core.
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup("nvngx_dlss.dll"));
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup("nvngx_dlssg.dll"));
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup("nvngx_dlssd.dll"));
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup("C:\\games\\app\\nvngx_dlssg.dll"));
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup("nvngx_deepdvc.dll"));
+
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup(nullptr));
+    EXPECT_FALSE(ShouldInterceptNgxExportLookup(""));
 }
 
 TEST(NgxModulePolicy, UnderscoreStubIsNotConfusedWithTheBareName) {

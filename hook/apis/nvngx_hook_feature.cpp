@@ -512,8 +512,17 @@ void NVNGXHook::Install() {
     // This must happen before the DLL-presence check so that if the game loads
     // nvngx.dll after this point and immediately calls GetProcAddress, we intercept it.
     // RegisterDynamicHook is idempotent — safe to call on every retry.
+    //
+    // The lookups are restricted to the NGX core provider. The feature snippets
+    // export the same NVSDK_NGX_* names and the core resolves them internally to
+    // dispatch into the feature; answering that with our detour makes the detour
+    // forward through the core's own trampoline and re-enter the core body until
+    // the stack overflows. See ce::ngx::ShouldInterceptNgxExportLookup.
     auto RegisterDynamic = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
-        IATHook::RegisterDynamicHook(name, pHook, ppOrig);
+        IATHook::RegisterDynamicHookFiltered(name, pHook, ppOrig,
+                                             [](const char* moduleBaseName, HMODULE) {
+                                                 return ce::ngx::ShouldInterceptNgxExportLookup(moduleBaseName);
+                                             });
     };
 
     RegisterDynamic("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&nvngx_hook_oGetParameters_D3D11);

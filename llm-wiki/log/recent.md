@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-08 - NGX export hooks recursed into the core: unfiltered GetProcAddress interception
+
+- **Symptom**: `installed/testapp/dx12_dlss_fg_test.exe` died ~1.5 s after launch with `0xC00000FD` (stack overflow)
+  inside `nvapi64_impl.dll`. The dump stack is an unbroken alternation of
+  `capture_hook_x64!Hooked_ProcessFeatureRequirements` and `_nvngx!NVSDK_NGX_D3D12_GetFeatureRequirements+0x1c3`.
+  Sessions `logs/20260808_143537` and `logs/20260808_143801`.
+- **Root cause**: `NVNGXHook::Install` registered the NGX export names with the *unfiltered*
+  `IATHook::RegisterDynamicHook`. The feature snippets (`nvngx_dlss.dll`, `nvngx_dlssg.dll`, `nvngx_dlssd.dll`) export
+  the same `NVSDK_NGX_*` names, and the core resolves them out of the snippet to dispatch into the feature. CE answered
+  that internal lookup with its detour, and the detour forwards through the single per-symbol `nvngx_hook_o*`, which the
+  export inline hooks had set to the **core's own trampoline** - so the core body ran again, resolved again, forever.
+  The log tell is `GetProcAddress: Intercepting NVSDK_NGX_D3D12_GetFeatureRequirements from nvngx_dlssg.dll`.
+- Introduced by 3a02cd0f: before the export inline hooks existed, the shared `original` could not lead back into a
+  hooked body. Proven independent of `dlss_fg_preset` by an A/B run (identical crash with the setting removed).
+- **Why it needs an app-local `_nvngx.dll`**: the testapp ships its own, so the caller is not under `\system32\` and
+  `DetourGetProcAddress`'s system-module caller bypass never fires. A driver-store `nvngx.dll` sits under
+  `\System32\DriverStore\`, which the bypass does catch - that is why GTA V Enhanced had not hit this. Any title
+  bundling `_nvngx.dll` would.
+- **Fix**: `ce::ngx::ShouldInterceptNgxExportLookup` (`hook/common/ngx_module_policy.h`) plus
+  `RegisterDynamicHookFiltered` in `nvngx_hook_feature.cpp` - export-name interception now applies to the core provider
+  only. This also stops the shared `original` from hiding the snippet's real entry point.
+- **Validated on hardware**: `dx12_dlss_fg_test.exe` on build 0.1.5864 now runs indefinitely with zero crash dumps, and
+  the same session shows the DLSS FG preset override completing end to end (below).
+- **Coverage**: `tests/test_ngx_module_policy.cpp::ExportLookupInterceptionIsLimitedToTheCoreProvider`.
+
 ### 2026-08-08 - nv_lod_spread_fix: the NVIDIA LOD-spread patch done in memory, as data not code
 
 - **Request**: implement the community `nvoglv64.dll` byte patch (FERMI_UNOPT_LOD_SPREAD, which fixes NVIDIA's
@@ -67,9 +92,13 @@
   scoping, the current-profile/non-predefined shape of the answer, the module and function-id gating, and the dynamic
   hook exception; `tests/test_config_part2.cpp` and `tests/test_config_override.cpp` cover parsing and per-profile
   resolution.
-- **Stale risk**: high until a real run. Expect `NGX FG preset: armed ...`, the `GetProcAddress import patch on
-  nvngx_dlssg.dll installed` line, `wrapping NvAPI_DRS_GetSetting`, and then `answered NvAPI_DRS_GetSetting(0x10E41DF1)
-  with preset 'X'`. If the wrapping line never appears the snippet resolved nvapi before CE patched its import.
+- **VALIDATED on hardware** 2026-08-08, build 0.1.5864, session `logs/20260808_150232`, after the NGX export-hook
+  recursion fix above unblocked it: `configured preset is now 'B'` -> `armed the DRS render-preset override` ->
+  `GetProcAddress import patch on nvngx_dlssg.dll installed` -> `wrapping NvAPI_DRS_GetSetting for ...nvngx_dlssg.dll`
+  -> `answered NvAPI_DRS_GetSetting(0x10E41DF1) with preset 'B' (value 2, driver status -160, call 1)`. The driver
+  status is NvAPI's "setting not found" for a profile that never set it, which is exactly the case the substitution
+  exists for, and it is answered once during feature setup. If the `wrapping` line is ever missing, the snippet
+  resolved nvapi before CE patched its import.
 - **Open question**: whether NVIDIA keeps `0x10E41DF1` as the preset key in later runtimes. The id is not derived at
   runtime; a future snippet that moves it would silently stop honoring the setting (fail-open, no misbehavior).
 

@@ -156,6 +156,15 @@ Primary sources:
   earlier IAT pass stored. Leaving a raw export address there would make the "original" call re-enter the detour.
 - Invariant: a Streamline plugin is never accepted as the NGX provider. `NVNGXHook::Install` previously accepted
   `sl.dlss.dll`, which latched `m_Installed` on a module that exports nothing and stopped every later retry.
+- Invariant: the export-name **GetProcAddress** interception applies to the core provider only
+  (`ce::ngx::ShouldInterceptNgxExportLookup` + `RegisterDynamicHookFiltered`). The feature snippets
+  (`nvngx_dlss.dll`, `nvngx_dlssg.dll`, `nvngx_dlssd.dll`) export the same `NVSDK_NGX_*` names and the core resolves
+  them out of the snippet to dispatch into the feature. Answering that internal lookup made the detour forward through
+  the single per-symbol `nvngx_hook_o*` - which the inline hooks had pointed at the core's own trampoline - so the core
+  body re-entered itself until the stack overflowed (`0xC00000FD` in `nvapi64_impl.dll` during
+  `NVSDK_NGX_D3D12_GetFeatureRequirements`). It also hid the snippet's real entry point behind that shared pointer.
+  The system-module caller bypass masks this for a driver-store `nvngx.dll`; a title shipping its own `_nvngx.dll`
+  hits it immediately.
 - The parameter machinery downstream (vtable hooks on `SetUI`/`SetI` plus `InjectPreset` at parameter creation) was
   already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
   no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.

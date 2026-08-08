@@ -63,6 +63,25 @@ inline bool IsNgxCoreModulePath(const char* moduleNameOrPath) {
     return EqualsAsciiInsensitive(fileName, "nvngx.dll") || EqualsAsciiInsensitive(fileName, "_nvngx.dll");
 }
 
+// GetProcAddress interception for the NGX exports must apply to the core
+// provider only.
+//
+// The feature snippets - nvngx_dlss.dll, nvngx_dlssg.dll, nvngx_dlssd.dll -
+// export the same NVSDK_NGX_* names, and the core resolves those out of the
+// snippet to dispatch into the feature. Answering that internal lookup with
+// CE's detour is unbounded recursion: the detour forwards through the single
+// per-symbol `original`, which is the core's own inline-hook trampoline, so the
+// core body runs again, resolves again, and the stack overflows. Observed as a
+// 0xC00000FD inside nvapi64_impl.dll during
+// NVSDK_NGX_D3D12_GetFeatureRequirements, with the dump alternating
+// Hooked_ProcessFeatureRequirements and _nvngx!NVSDK_NGX_D3D12_GetFeatureRequirements.
+//
+// Restricting the lookup to the core also keeps the snippet's real entry point
+// reachable, which the shared `original` pointer would otherwise hide.
+inline bool ShouldInterceptNgxExportLookup(const char* queriedModuleNameOrPath) {
+    return IsNgxCoreModulePath(queriedModuleNameOrPath);
+}
+
 // Streamline plugins reach NGX through sl.common.dll; they export no NGX entry
 // points of their own and must never terminate the search for the provider.
 inline bool IsStreamlineNgxClientPath(const char* moduleNameOrPath) {
