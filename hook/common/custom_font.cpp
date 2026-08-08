@@ -70,6 +70,7 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
 
     textureWidth = atlasWidth;
     textureHeight = atlasHeight;
+    const size_t atlasByteSize = static_cast<size_t>(atlasWidth) * static_cast<size_t>(atlasHeight) * 4u;
 
     // Create DIB section for rendering
     BITMAPINFO bmi = {};
@@ -92,7 +93,7 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     HBITMAP oldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
 
     // Clear to black
-    memset(bits, 0, atlasWidth * atlasHeight * 4);
+    memset(bits, 0, atlasByteSize);
 
     // Set text rendering
     SetTextColor(hdc, RGB(255, 255, 255));
@@ -174,13 +175,14 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     GdiFlush();
 
     // Convert bitmap to RGBA texture data
-    textureData.resize(atlasWidth * atlasHeight * 4);
+    textureData.resize(atlasByteSize);
     uint8_t* src = (uint8_t*)bits;
     uint8_t* dst = textureData.data();
 
     for (int y = 0; y < atlasHeight; y++) {
         for (int x = 0; x < atlasWidth; x++) {
-            int idx = (y * atlasWidth + x) * 4;
+            const size_t idx =
+                (static_cast<size_t>(y) * static_cast<size_t>(atlasWidth) + static_cast<size_t>(x)) * 4u;
             // Source is BGRA, we want RGBA
             uint8_t b = src[idx + 0];
             uint8_t g = src[idx + 1];

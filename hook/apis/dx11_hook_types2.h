@@ -331,7 +331,11 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
     if (status == VTableHook::Success) {
         int idx = dx11_hook_g_DiagSamplerRuntimeHookInstalled.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
-            HookLog("DX11: %s hook installed%s (slot=%u)", name, knownOriginal ? " on additional vtable" : "", index);
+            if (knownOriginal) {
+                HookLog("DX11: %s hook installed on additional vtable (slot=%u)", name, index);
+            } else {
+                HookLog("DX11: %s hook installed (slot=%u)", name, index);
+            }
         }
         return true;
     }

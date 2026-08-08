@@ -20,7 +20,7 @@ if (scQueue && scQueue != queue && dx12_hook_g_State.crossQueueFence && !cachedS
             HookLog(
                 "DX12: PostSL cross-queue pre-sync Signal failed hr=0x%08X "
                 "(scQueue=%p may reject external signals)",
-                sigHr);
+                static_cast<unsigned>(sigHr), static_cast<void*>(scQueue));
     }
 }
 ID3D12CommandList* lists[] = {list};
@@ -500,4 +500,3 @@ if (FAILED(postDevReason)) {
 bb->Release();
     return PostSLFlow::kContinue;
 }
-

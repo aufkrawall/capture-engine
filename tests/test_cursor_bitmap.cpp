@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "../mediaengine/cursor_bitmap_utils.h"
 #include "../mediaengine/cursor_renderer.h"
 
@@ -43,6 +45,13 @@ TEST(CursorBitmapTest, MonochromeInvertPixelGetsStableOpaqueApproximation) {
     EXPECT_EQ(result.g, 255);
     EXPECT_EQ(result.r, 255);
     EXPECT_EQ(result.a, 255);
+}
+
+TEST(CursorBitmapTest, ScalingRejectsBitmapDimensionsThatOverflowAddressableStorage) {
+    const uint8_t pixel[4] = {0, 0, 0, 0};
+    const uint32_t maxDimension = (std::numeric_limits<uint32_t>::max)();
+
+    EXPECT_EQ(ScaleBitmapNearestNeighbor(pixel, maxDimension, maxDimension, 1, 1), nullptr);
 }
 
 TEST(CursorBitmapTest, LoadsSystemCursorThroughCanonicalDrawIconRepresentation) {
