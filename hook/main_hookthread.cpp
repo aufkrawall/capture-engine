@@ -238,6 +238,14 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
 
+  // When the profile configures runtime override paths (dlss_sr_dll_path,
+  // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override
+  // copies NOW so name-based loads later resolve to them instead of the game's
+  // own (often older) runtime. The LoadLibrary redirect alone cannot cover
+  // Streamline-internal loads, which run through the IAT of modules that load
+  // after this snapshot pass.
+  PreloadConfiguredGraphicsRuntimeDlls();
+
   // Answer the NGX ShowDlssIndicator registry probe for dlss_debug_overlay.
   // This must be an inline hook on the shared advapi32 exports, not an IAT
   // patch: nvngx_dlss.dll / nvngx_dlssg.dll are the modules that read the value

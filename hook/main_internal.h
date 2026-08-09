@@ -50,6 +50,8 @@ struct ChildInjectParams;
 
 #include "common/fg_detection.h"
 
+#include "common/graphics_runtime_module_policy.h"
+
 #include "common/hook_common.h"
 
 #include "common/hook_context.h"
@@ -329,6 +331,26 @@ std::string GetRedirectedPath(const std::string &requestedPath);
 bool NeedsLoaderRedirectionHook();
 
 bool NeedsLowLevelModuleLoadObservationHook();
+
+// Loads the configured Streamline/NGX runtime override DLLs (dlss_sr_dll_path,
+// dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path) into the process up
+// front, before the game's own runtime loads, so later name-based loads resolve
+// to the override copies instead of the game's older ones. Loads through the
+// original loader entry and notifies CE's module hooks immediately. No-op when
+// no override paths are configured.
+void PreloadConfiguredGraphicsRuntimeDlls();
+
+// Loads a runtime override DLL through the original (non-hooked) loader entry
+// and notifies CE's module hooks. Used by the runtime preload so it does not
+// re-enter the redirect hook.
+HMODULE LoadRuntimeDllViaOriginal(const wchar_t *fullPath, const char *utf8Path);
+
+// Patches the kernel32 LoadLibrary* IAT entries of a module that loaded after
+// the initial IAT pass (e.g. sl.common.dll), so Streamline-internal loads also
+// reach the redirect and module-load observation. No-op unless redirection
+// overrides are configured. Never patches CE's own modules or third-party
+// overlay modules.
+void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath);
 
 void InitializeThirdPartyOverlayDetection();
 

@@ -26,6 +26,35 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
     }
+    // Record the resolved full path for the configurable graphics runtime
+    // family on every load mechanism (LoadLibrary, LdrLoadDll, dependent
+    // loads). This is the authoritative evidence of which physical DLL the
+    // game actually uses - the redirect logs alone only prove the redirect
+    // decision, not which copy won.
+    // The NGX model cache (C:\ProgramData\NVIDIA\NGX\models\sl_*_0\...) loads
+    // Streamline plugins under hashed names (1B0_E658703.dll etc.) that never
+    // match the sl.* base-name family, so classify the resolved full path too.
+    wchar_t fullPath[MAX_PATH] = {};
+    const DWORD pathLen =
+        GetModuleFileNameW(static_cast<HMODULE>(data->DllBase), fullPath, MAX_PATH);
+    char narrowPath[MAX_PATH] = {};
+    const bool hasPath = pathLen > 0 && pathLen < MAX_PATH;
+    if (hasPath) {
+      WideCharToMultiByte(CP_UTF8, 0, fullPath, -1, narrowPath, MAX_PATH, nullptr, nullptr);
+    }
+    if (ce::graphics_runtime::IsRuntimeModuleBaseName(base) ||
+        (hasPath && ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath))) {
+      if (hasPath) {
+        HookLogImportant("Loader: runtime module loaded: %s -> %s (base=%p size=0x%zX%s)", base,
+                         narrowPath, data->DllBase, data->SizeOfImage,
+                         ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath)
+                             ? ", NGX model repository"
+                             : "");
+      } else {
+        HookLogImportant("Loader: runtime module loaded: %s (base=%p size=0x%zX, path unavailable)",
+                         base, data->DllBase, data->SizeOfImage);
+      }
+    }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
     UE5::NotifyModuleUnloaded(data->DllBase, data->SizeOfImage);
     const char *matched = ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
@@ -84,6 +113,13 @@ void InitializeThirdPartyOverlayDetection() {
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module)
     return;
+
+  // Modules that loaded after the initial IAT snapshot keep their real
+  // LoadLibrary* imports; patch them here so their internal runtime loads
+  // (e.g. sl.common.dll loading the DLSS plugins) reach the redirect and
+  // module-load observation. No-op when no redirection overrides are
+  // configured.
+  PatchLoadLibraryIatForLateLoadedModule(module, moduleNameOrPath);
 
   // A DLL just loaded. Update third-party-overlay detection ONLY if this module is itself a
   // known overlay module — a cheap base-name compare, no loader walk. Unrelated loads (e.g.

@@ -44,6 +44,23 @@ LdrLoadDll_t GetOriginalLdrLoadDll() {
 }
 }
 
+// Loads a configured runtime override DLL through the original (non-hooked)
+// loader entry so the runtime preload does not re-enter the redirect hook, and
+// notifies CE's module hooks (NVNGX inline hooks, Streamline hook install, FFX
+// bridge) before the game can use the module.
+HMODULE LoadRuntimeDllViaOriginal(const wchar_t *fullPath, const char *utf8Path) {
+  LoadLibraryW_t original = GetOriginalLoadLibraryW();
+  if (!original || !fullPath || !utf8Path) {
+    return nullptr;
+  }
+
+  HMODULE hMod = original(fullPath);
+  if (hMod) {
+    NotifyHookModuleLoaded(hMod, utf8Path);
+  }
+  return hMod;
+}
+
 // Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
   LoadLibraryA_t original = GetOriginalLoadLibraryA();

@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-09 - DLSS/Streamline override DLLs never loaded in RoboCop; runtime preload + late-module IAT fix
+
+- Sessions `installed/captureengine/logs/talosdlssoverride` and `robocopdlssoverride` (build 0.1.5895, identical
+  profiles: `dlss_sr_preset=m`, `dlss_rr_preset=e`, `force_ray_reconstruction=on`, `dlss_debug_overlay=on`, all
+  `*_dll_path=%USERPROFILE%\Programme\npi\sl`): Talos created/evaluated NGX Feature 13 (RR) and applied preset M;
+  RoboCop created/evaluated ordinary Feature 1 (SR) and never even queried Feature 13 requirements - the RR override
+  installed (`persistent r.NGX.DLSS.DenoiserMode=1 override installed ... score=130`) but the plugin still read SR.
+  The HUD worked in both (registry spoof, runtime-independent).
+- Root cause is loader coverage, not the RR CVar: only `sl.interposer.dll` ever produced a `Redirecting ...` line in
+  either game. `InitializeKernel32Hooks` is a one-time IAT snapshot, so Streamline-internal loads (sl.common ->
+  sl.dlss/sl.dlss_g + NGX snippets/core) run through the IAT of modules that load seconds later and were never
+  patched; `LdrLoadDll` is owned by Steam's overlay and CE's chain-hook refuses overlay modules. RoboCop's D: install
+  (updated 2026-08-09 04:07) ships an older Streamline stack and its own `nvngx_dlss.dll`/`nvngx_dlssg.dll`, so the
+  effective runtime stayed old and preset M / RR never engaged. Talos ships a newer stack, masking the gap.
+- Additional bypass found in the same RoboCop log: its FG plugin loads from the **NGX model repository**
+  (`C:\ProgramData\NVIDIA\NGX\models\sl_dlss_g_0\versions\133888\files\1B0_E658703.dll`) - the driver-managed
+  Streamline plugin store where every plugin file is literally named `1B0_E658703.dll` inside a per-model folder.
+  The hashed base name carries no `sl.*` token, so the base-name redirect cannot match it; it is covered by a new
+  model-folder mapping (`sl_dlss_g_0` -> `sl.dlss_g.dll` etc.) in `GetRedirectedPath`.
+- Fix (build 0.1.5896): `PreloadConfiguredGraphicsRuntimeDlls()` loads the configured override stack at hook-thread
+  start via the original loader entry (name-dedup makes later loads - including Streamline-internal ones - resolve to
+  the override copies; already-loaded names are skipped). `PatchLoadLibraryIatForLateLoadedModule()` patches the
+  kernel32 LoadLibrary* IAT of modules that load after the snapshot when overrides are configured, so Streamline-
+  internal loads and the model-repository loads reach the redirect even without the preload. The
+  LdrRegisterDllNotification callback now logs the resolved full path of every runtime-family and model-repository
+  module load (`Loader: runtime module loaded: ...`), covering all load mechanisms. Classification and the model
+  segment mapping live in `hook/common/graphics_runtime_module_policy.h`; unit tests `GraphicsRuntimeModulePolicy.*`
+  in `tests/test_graphics_runtime_module_policy.cpp`.
+- Coverage: incremental x64/x86 build + full unit suite + Python tool self-tests pass. Fresh Talos/RoboCop runtime
+  validation is pending - the `Loader:` lines in a new RoboCop run must show the NPI paths for sl.interposer,
+  sl.common, sl.dlss_g, nvngx_dlss.dll and nvngx_dlssg.dll.
+
 ### 2026-08-09 - RoboCop overlay drew one PostSL frame then starved in the confirmed-startup settling window
 
 - Build 0.1.5894 session `installed/captureengine/logs/20260809_144640`: the late-handoff

@@ -174,6 +174,45 @@ Primary sources:
   already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
   no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.
 
+## DLSS/Streamline runtime DLL override loading (`dlss_sr_dll_path` etc.)
+
+- The per-profile override paths (`dlss_sr_dll_path`, `dlss_fg_dll_path`, `dlss_rr_dll_path`, `streamline_dll_path`)
+  redirect loads of the NGX snippets and the Streamline stack to the configured folder (e.g. NVIDIA Profile
+  Inspector's `sl` runtime) via `GetRedirectedPath()` in `hook/main_redirect.cpp` + the loader hooks in
+  `hook/main_loadlibrary.cpp`. This is how a newer `nvngx_dlss.dll` (preset letters) or `sl.dlss_g.dll` reaches a game
+  that ships an older runtime.
+- Coverage limit (root cause of "override works in Talos but not RoboCop"): the redirect only fires when the load
+  goes through CE's hooked LoadLibrary* imports. The IAT pass (`InitializeKernel32Hooks` -> `PatchIATAllModules`) is a
+  one-time snapshot of the modules loaded at hook-install time, so **Streamline-internal loads bypass it**: sl.common
+  loads the plugin DLLs (sl.dlss/sl.dlss_g/sl.dlss_d) and the NGX core through its own IAT, which was never patched
+  because sl.common itself loads seconds later. `LdrLoadDll` is exported-hookable but Steam's overlay owns that export
+  on this machine and CE's chain-hook refuses overlay modules (recursion), so direct-ntdll loads bypass it too. Net
+  effect: only `sl.interposer.dll` (loaded by the game exe through a patched import) got redirected; everything
+  Streamline loads internally came from the game's own folder. Talos ships a Streamline 2.x stack close enough to the
+  override that presets/RR still worked; RoboCop ships an older stack, so SR preset M / RR never took effect there.
+  The debug HUD is independent (registry spoof at `kernelbase!RegQueryValueExW`), which is why it works everywhere.
+- Fix (build 0.1.5896): `PreloadConfiguredGraphicsRuntimeDlls()` in `hook/main_redirect.cpp` loads the configured
+  override stack at hook-thread start (sl.interposer, sl.common, sl.dlss, sl.dlss_g, sl.dlss_d, nvngx_dlss,
+  nvngx_dlssg, nvngx_dlssd), through the original loader entry, in dependency order. Once a base name is registered,
+  every later name-based load - including Streamline's internal loads - resolves to the override copy. The preload
+  skips a name that is already loaded (the game's own copy won in the ordering race; adding a second instance would
+  not take effect). `PatchLoadLibraryIatForLateLoadedModule()` additionally patches the kernel32 LoadLibrary* IAT of
+  every module that loads after the snapshot (when overrides are configured), so Streamline-internal loads reach the
+  redirect even without the preload. Only loader imports are touched - no graphics API wrapper is installed into
+  runtime modules.
+- Diagnostics: every load of a runtime-family module (sl.*, nvngx_dlss*/nvngx core, nvapi64) now logs its **resolved
+  full path** from the LdrRegisterDllNotification callback (`Loader: runtime module loaded: <name> -> <path>`), which
+  covers LoadLibrary, LdrLoadDll, and dependent loads. This is the authoritative answer to "which physical DLL did the
+  game actually load"; the `Redirecting ... to:` lines only prove the redirect decision. Classification lives in
+  `hook/common/graphics_runtime_module_policy.h` (`ce::graphics_runtime::IsRuntimeModuleBaseName`), pinned by
+  `tests/test_graphics_runtime_module_policy.cpp`; its sl.* prefix rule deliberately mirrors `GetRedirectedPath`.
+- **NGX model repository:** NVIDIA's driver stores Streamline plugins in
+  `C:\ProgramData\NVIDIA\NGX\models\sl_<name>_<id>\versions\<v>\files\` with every file literally named
+  `1B0_E658703.dll` (observed RoboCop 2026-08-09). Since build 0.1.5897 `GetRedirectedPath` maps such paths back to the real DLL
+  (`sl_dlss_g_0` -> `sl.dlss_g.dll`) and redirects them to the configured `streamline_dll_path` when set; the loader
+  logging tags those loads as `NGX model repository`. The mapping (`ModelSegmentToDllName`,
+  `IsNgxModelRepositoryPath`) is unit-tested.
+
 ## UE5 DLSS Ray Reconstruction force policy
 
 - NVIDIA's UE plugin declares `CVarNGXDLSSDenoiserMode` as a static `TAutoConsoleVariable<int32>` and selects SR
