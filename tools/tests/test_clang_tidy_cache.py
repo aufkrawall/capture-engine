@@ -145,18 +145,22 @@ class ClangTidyCacheTest(unittest.TestCase):
             list,
         )
 
-    def test_concurrent_atomic_writers_use_independent_staging_files(self) -> None:
+    def test_concurrent_atomic_writers_publish_only_the_first_completed_generation(self) -> None:
         destination = self.root / "concurrent.json"
+        destination.write_text('{"writer": -1}\n', encoding="utf-8")
         worker_count = 8
         write_barrier = threading.Barrier(worker_count)
         original_write_text = Path.write_text
+        original_replace = os.replace
 
         def synchronized_write_text(path: Path, *args, **kwargs):
             result = original_write_text(path, *args, **kwargs)
             write_barrier.wait(timeout=5)
             return result
 
-        with patch.object(Path, "write_text", synchronized_write_text):
+        with patch.object(Path, "write_text", synchronized_write_text), patch.object(
+            clang_tidy_cache.os, "replace", wraps=original_replace
+        ) as replace:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = [
                     executor.submit(clang_tidy_cache._atomic_write_json, destination, {"writer": writer})
@@ -167,7 +171,15 @@ class ClangTidyCacheTest(unittest.TestCase):
 
         payload = json.loads(destination.read_text(encoding="utf-8"))
         self.assertIn(payload["writer"], range(worker_count))
+        self.assertEqual(replace.call_count, 1)
         self.assertEqual(list(self.root.glob("concurrent.json.tmp.*")), [])
+
+    def test_sequential_atomic_writer_replaces_the_previous_generation(self) -> None:
+        destination = self.root / "sequential.json"
+        clang_tidy_cache._atomic_write_json(destination, {"generation": 1})
+        clang_tidy_cache._atomic_write_json(destination, {"generation": 2})
+
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), {"generation": 2})
 
 
 if __name__ == "__main__":

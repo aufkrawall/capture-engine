@@ -179,15 +179,19 @@ Primary sources:
 - NVIDIA's UE plugin declares `CVarNGXDLSSDenoiserMode` as a static `TAutoConsoleVariable<int32>` and selects SR
   (`0`) versus RR (`1`) with `GetValueOnRenderThread()`. CE therefore changes the exact value source the plugin reads,
   rather than periodically issuing a console command that a map/device-profile reload can undo.
-- On opt-in, `hook/main_ue5.cpp` scans the initial x64 module set once and then only newly loaded modules. It finds the
-  exact NUL-terminated UTF-16 `r.NGX.DLSS.DenoiserMode` literal, correlates nearby x64 RIP-relative constructor/store
-  references, and accepts only one strongly distinguished live `TAutoConsoleVariable<int32>` candidate. Validation
-  proves the writable 24-byte `FAutoConsoleObject`/`Target`/`Ref` layout, callable object and target vtables, readable
-  `TConsoleVariableData<int32>`, and plausible `{game, render}` shadow values of `0` or `1`. Ambiguous or unfamiliar
-  layouts leave memory untouched.
+- On opt-in, `hook/main_ue5.cpp` scans the main x64 game module first, then the remaining initial module set, and after
+  that only newly loaded modules. It finds the exact NUL-terminated UTF-16 `r.NGX.DLSS.DenoiserMode` literal and
+  correlates nearby x64 RIP-relative constructor/store references. Raw candidates first have to prove the writable
+  24-byte `FAutoConsoleObject`/`Target`/`Ref` layout, callable object and target vtables, readable
+  `TConsoleVariableData<int32>`, and plausible `{game, render}` shadow values of `0` or `1`; impossible layouts are
+  discarded before one combined executable-code pass counts reference evidence for every survivor. Only one strongly
+  distinguished live candidate is accepted, and ambiguous or unfamiliar layouts leave memory untouched. The single
+  reference pass is an invariant: Talos exposes 35 raw nearby candidates, so a pass per candidate delayed selection
+  by 6.8 seconds and changed SR to RR during live rendering.
 - Graphics-hook installation always precedes the optional module scan, both on initial startup and periodic service
-  passes. Large UE5 shipping modules can take several seconds to inspect; allowing that discovery to run first can
-  miss the game's initial DXGI swapchain creation and leave the Streamline PostSL overlay without a captured queue.
+  passes. This ordering protects DXGI queue capture even if an unfamiliar large image remains expensive to inspect;
+  RR discovery itself must also finish early enough to select the denoiser before the first DLSS feature rather than
+  hot-switching an active renderer.
 - CE atomically redirects only the `Ref` pointer to page-aligned process-lifetime `{1,1}` shadow storage. The game's
   real console variable and priority/history state remain intact; later Engine.ini, scalability, level, or game code
   writes update the original shadow but cannot change the plugin's direct read. Disabling the setting or shutting the
@@ -209,9 +213,10 @@ Primary sources:
   copying `nvngx_dlssd.dll` cannot create engine-side RR integration that is absent.
 - Expected proof sequence: `force policy enabled`, `persistent ... DenoiserMode=1 override installed`, Feature 13
   creation, then either NGX `Feature 13 evaluation succeeded` or Streamline `kFeatureDLSS_RR (1001) evaluation
-  succeeded`. An ordinary Feature 1/feature 0 evaluation while forced is an explicit fallback diagnostic. Runtime
-  validation remains required on a known title where an Engine.ini-only `DenoiserMode=1` already works, then on
-  map-transition and software-RT cases.
+  succeeded`. The install line reports `scanMs` plus validated/raw candidate counts. An ordinary Feature 1/feature 0
+  evaluation while forced is an explicit fallback diagnostic; if it precedes the install line, RR discovery was too
+  late and caused a live renderer transition. Talos runtime logs have confirmed forced Feature 13 evaluation and
+  preset E without an on-disk CVar override; repeated level transitions and software-RT cases remain validation work.
 
 ## DLSS Frame Generation render preset
 

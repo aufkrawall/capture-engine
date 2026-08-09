@@ -47,6 +47,18 @@ struct Candidate {
   int score = -1;
 };
 
+enum class CandidateReferenceField : uint8_t {
+  Base,
+  Target,
+  Reference,
+};
+
+struct CandidateReferenceTarget {
+  uintptr_t address = 0;
+  std::size_t candidateIndex = 0;
+  CandidateReferenceField field = CandidateReferenceField::Base;
+};
+
 struct OverrideState {
   HMODULE module = nullptr;
   void* volatile* referenceField = nullptr;
@@ -277,7 +289,23 @@ const char* ModuleBaseName(HMODULE module, char (&path)[MAX_PATH]) {
   return base ? base + 1 : path;
 }
 
-void CountCandidateReferences(const ModuleView& image, Candidate& candidate) {
+void CountCandidateReferences(const ModuleView& image, std::vector<Candidate>& candidates) {
+  if (candidates.empty())
+    return;
+
+  std::vector<CandidateReferenceTarget> targets;
+  targets.reserve(candidates.size() * kAutoConsoleVariablePointerCount);
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    const uintptr_t object = candidates[index].object;
+    targets.push_back({object, index, CandidateReferenceField::Base});
+    targets.push_back({object + sizeof(void*), index, CandidateReferenceField::Target});
+    targets.push_back({object + sizeof(void*) * 2, index, CandidateReferenceField::Reference});
+  }
+  std::sort(targets.begin(), targets.end(), [](const CandidateReferenceTarget& left,
+                                                const CandidateReferenceTarget& right) {
+    return left.address < right.address;
+  });
+
   for (const SectionView& section : image.sections) {
     if (!(section.characteristics & IMAGE_SCN_MEM_EXECUTE) || section.size < 6)
       continue;
@@ -287,17 +315,29 @@ void CountCandidateReferences(const ModuleView& image, Candidate& candidate) {
           bytes + offset, section.size - offset, section.begin + offset);
       if (!reference.valid)
         continue;
-      if (reference.target == candidate.object)
-        ++candidate.evidence.baseReferenceCount;
-      else if (reference.target == candidate.object + sizeof(void*))
-        ++candidate.evidence.targetFieldReferenceCount;
-      else if (reference.target == candidate.object + sizeof(void*) * 2)
-        ++candidate.evidence.referenceFieldReferenceCount;
+      auto target = std::lower_bound(
+          targets.begin(), targets.end(), reference.target,
+          [](const CandidateReferenceTarget& entry, uintptr_t address) { return entry.address < address; });
+      while (target != targets.end() && target->address == reference.target) {
+        Candidate& candidate = candidates[target->candidateIndex];
+        switch (target->field) {
+          case CandidateReferenceField::Base:
+            ++candidate.evidence.baseReferenceCount;
+            break;
+          case CandidateReferenceField::Target:
+            ++candidate.evidence.targetFieldReferenceCount;
+            break;
+          case CandidateReferenceField::Reference:
+            ++candidate.evidence.referenceFieldReferenceCount;
+            break;
+        }
+        ++target;
+      }
     }
   }
 }
 
-void ValidateCandidate(const ModuleView& image, Candidate& candidate) {
+void ValidateCandidateLayout(const ModuleView& image, Candidate& candidate) {
   candidate.evidence.objectAligned = (candidate.object % alignof(void*)) == 0;
   candidate.evidence.objectInWritableSection =
       FindSection(image, candidate.object, sizeof(void*) * kAutoConsoleVariablePointerCount,
@@ -324,8 +364,6 @@ void ValidateCandidate(const ModuleView& image, Candidate& candidate) {
     candidate.originalReference = referenceData;
   }
   candidate.evidence.instructionDistance = candidate.instructionDistance;
-  CountCandidateReferences(image, candidate);
-  candidate.score = ce::ue5_rr::ScoreCandidate(candidate.evidence);
 }
 
 ForcedConsoleVariableData* GetOrCreateForcedData() {
@@ -350,7 +388,8 @@ ForcedConsoleVariableData* GetOrCreateForcedData() {
   return allocated;
 }
 
-bool ApplyCandidate(const ModuleView& image, const Candidate& candidate) {
+bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
+                    std::size_t validatedCandidates, ULONGLONG scanElapsedMs) {
   ForcedConsoleVariableData* forcedData = GetOrCreateForcedData();
   if (!forcedData) {
     HookLogImportant("UE5 RR: unable to allocate process-lifetime DenoiserMode storage (error=%lu)",
@@ -376,14 +415,17 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate) {
   char modulePath[MAX_PATH];
   HookLogImportant(
       "UE5 RR: persistent r.NGX.DLSS.DenoiserMode=1 override installed in %s "
-      "(module=%p objectRva=0x%llX oldGame=%d oldRender=%d score=%d)",
+      "(module=%p objectRva=0x%llX oldGame=%d oldRender=%d score=%d scanMs=%llu "
+      "candidates=%zu/%zu)",
       ModuleBaseName(image.module, modulePath), image.module,
       static_cast<unsigned long long>(candidate.object - image.base), candidate.gameThreadValue,
-      candidate.renderThreadValue, candidate.score);
+      candidate.renderThreadValue, candidate.score, static_cast<unsigned long long>(scanElapsedMs),
+      validatedCandidates, discoveredCandidates);
   return true;
 }
 
 bool ScanModule(HMODULE module) {
+  const ULONGLONG scanStart = GetTickCount64();
   ScopedModuleReference reference(module);
   if (!reference.Get())
     return false;
@@ -469,8 +511,19 @@ bool ScanModule(HMODULE module) {
     }
   }
 
+  const std::size_t discoveredCandidateCount = candidates.size();
   for (Candidate& candidate : candidates)
-    ValidateCandidate(image, candidate);
+    ValidateCandidateLayout(image, candidate);
+  // Constructor windows overlap heavily in monolithic UE images. Reject dead
+  // layouts first, then collect every survivor's reference evidence in one
+  // executable pass; a whole-image pass per raw candidate delays RR until live rendering.
+  candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+                     return ce::ue5_rr::ScoreCandidate(candidate.evidence) < 0;
+                   }),
+                   candidates.end());
+  CountCandidateReferences(image, candidates);
+  for (Candidate& candidate : candidates)
+    candidate.score = ce::ue5_rr::ScoreCandidate(candidate.evidence);
   std::sort(candidates.begin(), candidates.end(),
             [](const Candidate& left, const Candidate& right) { return left.score > right.score; });
 
@@ -482,12 +535,15 @@ bool ScanModule(HMODULE module) {
       char modulePath[MAX_PATH];
       HookLogImportant(
           "UE5 RR: found DenoiserMode literal in %s but no unique validated TAutoConsoleVariable "
-          "(strings=%zu candidates=%zu best=%d second=%d); leaving game memory unchanged",
-          ModuleBaseName(image.module, modulePath), strings.size(), candidates.size(), bestScore, secondBestScore);
+          "(strings=%zu candidates=%zu/%zu best=%d second=%d scanMs=%llu); leaving game memory unchanged",
+          ModuleBaseName(image.module, modulePath), strings.size(), candidates.size(), discoveredCandidateCount,
+          bestScore, secondBestScore,
+          static_cast<unsigned long long>(GetTickCount64() - scanStart));
     }
     return false;
   }
-  return ApplyCandidate(image, candidates.front());
+  return ApplyCandidate(image, candidates.front(), discoveredCandidateCount, candidates.size(),
+                        GetTickCount64() - scanStart);
 }
 
 void ClearPendingModules() {
@@ -504,7 +560,14 @@ bool ScanAllLoadedModules() {
   }
 
   const ULONGLONG start = GetTickCount64();
+  HMODULE mainModule = GetModuleHandleW(nullptr);
+  if (mainModule && ScanModule(mainModule)) {
+    ClearPendingModules();
+    return true;
+  }
   for (HMODULE module : modules) {
+    if (module == mainModule)
+      continue;
     if (ScanModule(module)) {
       ClearPendingModules();
       return true;

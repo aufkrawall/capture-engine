@@ -73,3 +73,31 @@ TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExp
     ASSERT_NE(periodicRRRefresh, std::string::npos);
     EXPECT_LT(periodicHookInstall, periodicRRRefresh);
 }
+
+TEST(RayReconstructionForceSourceTest, CountsCandidateReferencesInOneCombinedExecutableScan) {
+    const std::string source = ReadProjectSource("hook/main_ue5.cpp");
+
+    const size_t layoutValidation = source.find("ValidateCandidateLayout(image, candidate);");
+    const size_t invalidLayoutFilter = source.find("candidates.erase(std::remove_if");
+    const size_t combinedReferenceScan = source.find("CountCandidateReferences(image, candidates);");
+    ASSERT_NE(layoutValidation, std::string::npos);
+    ASSERT_NE(invalidLayoutFilter, std::string::npos);
+    ASSERT_NE(combinedReferenceScan, std::string::npos);
+    EXPECT_LT(layoutValidation, invalidLayoutFilter);
+    EXPECT_LT(invalidLayoutFilter, combinedReferenceScan);
+    EXPECT_EQ(source.find("CountCandidateReferences(image, candidates);", combinedReferenceScan + 1),
+              std::string::npos);
+    EXPECT_EQ(source.find("CountCandidateReferences(image, candidate)"), std::string::npos);
+}
+
+TEST(RayReconstructionForceSourceTest, ScansTheMonolithicGameModuleBeforeDependencies) {
+    const std::string source = ReadProjectSource("hook/main_ue5.cpp");
+
+    const size_t mainModule = source.find("HMODULE mainModule = GetModuleHandleW(nullptr);");
+    const size_t mainModuleScan = source.find("ScanModule(mainModule)", mainModule);
+    const size_t dependencyLoop = source.find("for (HMODULE module : modules)", mainModule);
+    ASSERT_NE(mainModule, std::string::npos);
+    ASSERT_NE(mainModuleScan, std::string::npos);
+    ASSERT_NE(dependencyLoop, std::string::npos);
+    EXPECT_LT(mainModuleScan, dependencyLoop);
+}

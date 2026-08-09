@@ -53,8 +53,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _destination_identity(path: Path) -> Optional[Tuple[int, int, int, int, int]]:
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    starting_identity = _destination_identity(path)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f"{path.name}.tmp.{os.getpid()}.",
@@ -63,14 +72,14 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     temporary = Path(temporary_name)
     try:
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        # Cache misses finish on worker threads. A PID-only temporary name let
-        # simultaneous writers overwrite or move the same staging file, while
-        # concurrent replacement of one destination is needlessly fragile on
-        # Windows. Each writer now owns its staging file and only the atomic
-        # publication step is serialized; clang-tidy execution remains fully
-        # parallel.
+        # Cache misses finish on worker threads. Each writer owns its staging
+        # file, while the destination generation check makes overlapping writes
+        # first-publisher-wins. Later writers discard their now-stale staging
+        # file instead of repeatedly replacing a just-published Windows file;
+        # a sequential writer observes the new generation and can replace it.
         with _ATOMIC_REPLACE_LOCK:
-            os.replace(temporary, path)
+            if _destination_identity(path) == starting_identity:
+                os.replace(temporary, path)
     finally:
         try:
             temporary.unlink(missing_ok=True)

@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-09 - RR discovery no longer hot-switches Talos after a multiplicative executable scan
+
+- Talos session `installed/captureengine/logs/20260809_030710` is not a recurrence of the earlier CE-to-Steam
+  deadlock. The freeze dump has no active CE, Steam, DXGI Present, Streamline evaluate, or NVIDIA driver stack; the
+  DLSS-G worker and Render/RHI/task workers are asleep while the GameThread waits in Unreal's end-of-frame render
+  fence. CE's last overlay command list reached its final GPU breadcrumb and the device was healthy.
+- The last material transition still exposed a concrete CE startup defect: the RR owner scan took 6.8 seconds,
+  ordinary Feature 1 SR rendered first, CE installed the override at `03:08:59.705`, Feature 13 RR first evaluated at
+  `03:09:00.124`, and presentation stopped at `03:09:00.744` during rapid intro/menu transition. Four preceding
+  launches survived the same late switch, so the dump does not prove CE owned the final wait, but the intermittent
+  timing and downstream engine-fence state make that avoidable live SR-to-RR switch a credible race amplifier.
+- Root cause of the delay was multiplicative validation: Talos's 173 MB monolithic executable produces 35 raw
+  constructor-window candidates, and each candidate triggered another whole executable-code reference scan. Layout
+  validation now discards impossible candidates first, then one sorted target table accumulates reference evidence
+  for all survivors in a single code pass, including overlapping object/field addresses. Initial discovery explicitly
+  tries the monolithic game module before dependencies. The accepted-candidate log includes scan milliseconds and
+  validated/raw candidate counts; healthy Talos validation should install the override before any Feature 1 evaluate
+  and proceed directly to Feature 13.
+
 ### 2026-08-09 - Steam invocation is source-Present-thread-only under FG runtimes
 
 - Talos session `installed/captureengine/logs/20260809_015416` stopped presenting for 51 seconds after rapid intro
@@ -31,10 +50,12 @@
   process in `012207` installed them first and captured the same creation normally.
 - Initial and periodic graphics-hook checks now run before RR discovery. A source regression test pins both orderings;
   the RR selector remains persistent and the scan remains off every render/present path.
-- The first closing verify reached a separate pre-existing clang-tidy-cache race: Windows rejected a JSON replace
-  because every writer in one process reused `<cache>.tmp.<pid>`. Atomic publication now gives each writer an
-  exclusive staging file and serializes only destination replacement; a barrier-driven eight-writer regression
-  reproduces the old collision without sleeps.
+- The first closing verify reached a separate clang-tidy-cache race: the original PID-only staging collision had been
+  removed, but eight overlapping writers still performed eight successive replacements of the same newly published
+  Windows destination. Under full verification I/O, one lost to `WinError 5`. Each writer now snapshots the starting
+  destination identity; the first completed writer publishes under the existing lock and later overlapping writers
+  discard their stale staging files, while a sequential update still replaces the prior generation. Barrier-driven
+  overlap and sequential-generation regressions cover both properties without retries or sleeps.
 
 ### 2026-08-09 - UE5 DLSS Ray Reconstruction force became persistent and observable
 
@@ -51,8 +72,9 @@
   Release plus Streamline feature 1001/0 evaluation now publish and log actual rendering evidence; Feature 13 is not
   called active merely because creation succeeded. Correct capability keys are
   `SuperSamplingDenoising.Available` / `.FeatureInitResult`. Focused config, scanner-policy, lifecycle, source-policy,
-  and Streamline ordering tests passed, as did incremental x64/x86 product build 0.1.5878. Known-working Engine.ini
-  equivalence, map transitions, software-RT projects, and titles lacking engine-side RR inputs remain runtime tests.
+  and Streamline ordering tests passed, as did incremental x64/x86 product build 0.1.5878. Later Talos runtime logs
+  confirmed forced Feature 13 evaluation and preset E without an on-disk CVar override; repeated map transitions,
+  software-RT projects, and titles lacking engine-side RR inputs remain runtime tests.
 
 ### 2026-08-08 - Strange Brigade x64 exposed the NVIDIA patch writer's 32-bit boundary gap
 
