@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-08-09 - RoboCop third crash: proactive scan truncated at 8 candidates, missing the real slot
+
+- Build 0.1.5892 session `installed/captureengine/logs/20260809_143040` still crashed with
+  the same RIP=0 signature at `gameoverlayrenderer64!OverlayHookD3D3+0x13e8f` even though the
+  proactive patch ran and logged `Steam NULL-callback slot discovery: found 8 candidate
+  slot(s)` plus six `patched slot ... -> DXGI bypass` lines. The crash slot (steam+0x167340,
+  confirmed by dump disassembly: `mov rax,[rip+0xD348B]; ...; call rax` at 0x13eae/0x13ebd)
+  was NOT patched: the candidate cap of 8 truncated the module scan before reaching it,
+  because an earlier cluster of six NULL slots (steam+0x1668B0..0x166990) plus two more
+  candidates consumed the budget. The VEH backstop also still produced no logs (the
+  instrumented early-return paths never fired), so the unpatched slot crashed again.
+- Fix: `kSteamNullCallbackMaxSlots` raised 8 -> 256 so the one-time module scan covers the
+  whole image (the six-slot cluster at 0x1668B0..0x166990 is NOT the only family; the real
+  faulting site at 0x167340 comes later), plus a rate-limited fail-open log when the cap is
+  reached so a future truncation is visible. `tests/test_dxgi_shared_part12.cpp` gained
+  `SteamNullCallbackScannerDoesNotTruncateAtSmallCap`, which pins the 143040 layout (earlier
+  cluster + late faulting slot) and asserts the production cap stays >= 64.
+- Product build 0.1.5893 (x64/x86) and the full unit/Python suites pass. Fresh RoboCop
+  runtime validation is pending; the expected healthy log is a discovery count >= 9 with a
+  patch line for steam+0x167340 (or whatever slot the current Steam build faults on).
+
 ### 2026-08-09 - RoboCop still crashed: VEH Steam recovery was shadowed, so NULL callback slots are now patched proactively
 
 - Build 0.1.5891 session `installed/captureengine/logs/20260809_141705` still crashed the

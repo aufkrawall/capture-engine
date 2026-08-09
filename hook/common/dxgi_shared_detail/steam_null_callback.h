@@ -9,8 +9,13 @@ namespace detail {
 
 // Max Present-shaped NULL callback slots CE proactively patches per Steam
 // overlay build, and the max instruction distance between the slot load and
-// the `call (e)ax` that dispatches through it.
-constexpr size_t kSteamNullCallbackMaxSlots = 8;
+// the `call (e)ax` that dispatches through it. The production scan must cover
+// the WHOLE module: RoboCop session 20260809_143040 crashed because an 8-slot
+// cap stopped the scan before the actual faulting slot (steam+0x167340) was
+// reached (six earlier NULL slots in the 0x1668B0-0x166990 cluster consumed
+// the budget). Keep this generous; a cap that truncates the scan fails open
+// into a crash.
+constexpr size_t kSteamNullCallbackMaxSlots = 256;
 constexpr size_t kSteamNullCallbackMaxCallLead = 16;
 
 // Scan an executable range for Steam's OverlayHookD3D3 NULL-callback pattern:

@@ -141,6 +141,60 @@ TEST(DXGISharedSourceTest, SteamNullCallbackScannerHandlesX86Patterns) {
     EXPECT_EQ(slots[0], kSlot);
 }
 
+// Regression for session 20260809_143040: an 8-slot cap stopped the module
+// scan before the actual faulting slot (steam+0x167340) was reached, because
+// an earlier cluster of six NULL slots (steam+0x1668B0..0x166990) consumed
+// the budget. The production cap must be large enough to cover every candidate
+// in a real module, and a full-size scan must find the late site too.
+TEST(DXGISharedSourceTest, SteamNullCallbackScannerDoesNotTruncateAtSmallCap) {
+    EXPECT_GE(kSteamNullCallbackMaxSlots, 64u);
+
+    constexpr uintptr_t kModuleStart = 0x1000;
+    constexpr uintptr_t kModuleEnd = 0x20000;
+    std::vector<uint8_t> code(0x19000, 0x90);
+
+    size_t expected = 0;
+    constexpr uintptr_t kClusterBaseSlot = 0x8000;
+    for (size_t candidate = 0; candidate < 6; ++candidate) {
+        const size_t movOffset = 0x100 + candidate * 0x40;
+        const uintptr_t slot = kClusterBaseSlot + candidate * 0x10;
+        const int32_t disp = static_cast<int32_t>(slot - (kModuleStart + movOffset + 7));
+        code[movOffset] = 0x48;
+        code[movOffset + 1] = 0x8B;
+        code[movOffset + 2] = 0x05;
+        std::memcpy(code.data() + movOffset + 3, &disp, sizeof(disp));
+        code[movOffset + 0x0F] = 0xFF;
+        code[movOffset + 0x10] = 0xD0;
+        ++expected;
+    }
+
+    // The late crash-site candidate (steam+0x167340 analog), far beyond the
+    // earlier cluster.
+    const size_t lateOffset = 0x1000;
+    constexpr uintptr_t kLateSlot = 0x9000;
+    const int32_t lateDisp = static_cast<int32_t>(kLateSlot - (kModuleStart + lateOffset + 7));
+    code[lateOffset] = 0x48;
+    code[lateOffset + 1] = 0x8B;
+    code[lateOffset + 2] = 0x05;
+    std::memcpy(code.data() + lateOffset + 3, &lateDisp, sizeof(lateDisp));
+    code[lateOffset + 0x0F] = 0xFF;
+    code[lateOffset + 0x10] = 0xD0;
+    ++expected;
+
+    uintptr_t slots[kSteamNullCallbackMaxSlots] = {};
+    const size_t found = FindSteamNullCallbackSlotCandidates(
+        code.data(), code.size(), kModuleStart, kModuleEnd, slots, kSteamNullCallbackMaxSlots, true);
+    EXPECT_EQ(found, expected);
+
+    bool foundLate = false;
+    for (size_t i = 0; i < found; ++i) {
+        if (slots[i] == kLateSlot) {
+            foundLate = true;
+        }
+    }
+    EXPECT_TRUE(foundLate);
+}
+
 TEST(DXGISharedSourceTest, SteamNullCallbackProactivePatchIsWiredBeforeEverySteamInvoke) {
     namespace fs = std::filesystem;
     const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";

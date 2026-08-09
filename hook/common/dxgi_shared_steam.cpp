@@ -296,6 +296,15 @@ size_t EnsureSteamNullCallbacksPatched(PFN_Present presentBypass) {
                 "Steam NULL-callback slot discovery: found %zu candidate slot(s) in Steam overlay (base=%p)",
                 s_slotCache.slotCount, (void*)moduleBase);
         }
+        if (s_slotCache.slotCount >= detail::kSteamNullCallbackMaxSlots) {
+            static std::atomic<int> s_capLogCount{0};
+            if (s_capLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                HookLogImportant(
+                    "Steam NULL-callback slot discovery: candidate cap %zu reached - later NULL callback slots may "
+                    "remain unpatched (base=%p); VEH backstop still armed",
+                    detail::kSteamNullCallbackMaxSlots, (void*)moduleBase);
+            }
+        }
     }
 
     size_t patched = 0;
