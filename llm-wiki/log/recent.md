@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-09 - RoboCop overlay visible but RHI thread crashed: unguarded SL fast-path Steam E9 transport
+
+- After the Vulkan misclassification fix (build 0.1.5890) the overlay rendered in RoboCop,
+  but session `installed/captureengine/logs/20260809_140551` crashed the RHI thread 16 s
+  after start with `0xC0000005` at RIP=0 (call through NULL). The stack is
+  `gameoverlayrenderer64!OverlayHookD3D3+0x13e8f` -> `capture_hook_x64!CallOriginalPresent+0xf90`
+  -> `DetourPresent` -> `slGetPluginFunction` -> `sl_interposer` -> game. The external
+  `external_sl-sha-68a19a3_*.dmp` dump is the same single crash; the freeze dump 31 s later
+  shows the RHI thread wedged inside CE's own crash handler (`TraceCrash` mutex) after the
+  unhandled AV, with CE's overlay GPU breadcrumb complete — the freeze is downstream of the crash.
+- Root cause: the moment Streamline DLSS FG turned on (`Streamline FG ON` at 14:05:59.763),
+  `CallOriginalPresent`'s SL fast-path (`slLoaded && presentOriginal != DetourPresent`) called
+  `dxgi!Present` through Steam's E9 JMP with NO source-thread provenance rule and NO
+  NULL-callback VEH recovery — unlike every other Steam transport. Steam's internal rendering
+  callback was still NULL on the real swapchain (the temp-swapchain pre-init initializes
+  Steam's "next" handler but not the rendering callback; gameoverlayrenderer64 build
+  2026-08-03), so Steam's handler called through NULL and crashed. Talos did not hit this
+  because its Steam callback is already initialized.
+- Fix (`hook/common/dxgi_shared_original.cpp`): the SL fast-path now carries the same two
+  protections as `TryInvokeGuardedExternalSteamOverlayPresent` — (1) when a worker-capable FG
+  runtime is active, Steam is only touched on the verified `DX12_GetGamePresentThreadId`;
+  unknown/worker provenance fails closed to the DXGI bypass trampoline (extends the
+  `20260809_015416` Talos freeze rule to this path); (2) the E9 call runs under
+  `ScopedSteamNullCallbackRecoveryGuard`, which patches the faulting Steam slot to CE's DXGI
+  bypass and retries. Source-thread presents with a valid Steam callback (Talos) are byte-for-
+  byte the same call as before.
+- Coverage: `tests/test_dxgi_shared_part11.cpp::SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamTransport`
+  pins the ordering (Steam-only gate, worker check, thread check, NULL-callback guard, then the
+  E9 return); the existing Talos guard-order tests still pass. Incremental product build
+  0.1.5891 (x64/x86) and the full unit/Python suites pass. Fresh RoboCop and Talos runtime
+  validation is pending.
+
 ### 2026-08-09 - RoboCop DX12 overlay dead: present path misclassified the game as Vulkan
 
 - RoboCop: Rogue City (UE5, DX12) session `installed/captureengine/logs/20260809_134642`

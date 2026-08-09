@@ -295,3 +295,39 @@ TEST(DXGISharedSourceTest, PureDLSSSelectedQueueFallbackCannotFallThroughToSecon
     EXPECT_NE(directBody.find("execute it exactly once"), std::string::npos);
     EXPECT_NE(text.find("PostSL submit invariant violated"), std::string::npos);
 }
+
+// RoboCop: Rogue City session 20260809_140551 crashed the RHI thread with
+// RIP=0: once DLSS FG turned on, CallOriginalPresent's SL fast-path called
+// dxgi!Present through Steam's E9 JMP (gameoverlayrenderer64!OverlayHookD3D3)
+// whose internal rendering callback was still NULL. Every other Steam
+// transport runs under the NULL-callback VEH recovery and the source-thread
+// provenance rule; the SL fast-path must get the same protections.
+TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamTransport) {
+    namespace fs = std::filesystem;
+    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    ASSERT_TRUE(fs::exists(originalSource));
+    const std::string original = ce::test_source::ReadFile(originalSource);
+    ASSERT_FALSE(original.empty());
+
+    const size_t fastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
+    const size_t steamOverlayCheck = original.find("IsSteamOverlayModule(overlayModule)", fastPath);
+    const size_t workerCheck = original.find("CanRuntimePresentFromWorkerForExternalOverlay(", fastPath);
+    const size_t threadCheck = original.find("ShouldInvokeSynchronousExternalOverlayPresentForThreadState(", fastPath);
+    const size_t nullGuard = original.find("ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(", fastPath);
+    const size_t fastPathReturn = original.find("return presentOriginal(pSwapChain, SyncInterval, Flags);", fastPath);
+    ASSERT_NE(fastPath, std::string::npos);
+    ASSERT_NE(steamOverlayCheck, std::string::npos);
+    ASSERT_NE(workerCheck, std::string::npos);
+    ASSERT_NE(threadCheck, std::string::npos);
+    ASSERT_NE(nullGuard, std::string::npos);
+    ASSERT_NE(fastPathReturn, std::string::npos);
+    EXPECT_LT(fastPath, steamOverlayCheck);
+    EXPECT_LT(steamOverlayCheck, workerCheck);
+    EXPECT_LT(workerCheck, threadCheck);
+    EXPECT_LT(threadCheck, nullGuard);
+    EXPECT_LT(nullGuard, fastPathReturn);
+
+    EXPECT_NE(original.find("SL fast-path E9 transport", nullGuard), std::string::npos);
+    EXPECT_NE(original.find("SL fast-path refusing Steam Present transport on runtime worker", workerCheck),
+              std::string::npos);
+}

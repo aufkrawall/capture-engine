@@ -425,6 +425,52 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X)", presentOriginal, fastPathNum,
                     GetCurrentThreadId());
         }
+
+        // When a Steam overlay owns the E9 JMP on dxgi!Present, this transport is
+        // the "natural E9" route from the third-party coexistence rules. It gets
+        // the same two protections as every other Steam transport:
+        //   1. Under an FG runtime that can Present from workers, Steam may only
+        //      be touched on the verified source Present thread; unknown/worker
+        //      provenance fails closed to the DXGI bypass trampoline.
+        //   2. Steam's internal rendering callback can still be NULL on the real
+        //      swapchain (the temp-swapchain pre-init initializes Steam's "next"
+        //      handler but not the rendering callback), so the E9 call must run
+        //      under the NULL-callback VEH recovery which patches the faulting
+        //      slot and retries. Without it Steam crashes the render thread with
+        //      RIP=0 (RoboCop: Rogue City session 20260809_140551).
+        const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+        const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+        if (steamOverlay && presentBypass) {
+            const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+            const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
+            const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+            const bool isD3D12SwapChain = DetectAPIType(pSwapChain) == APIType::D3D12;
+            const bool runtimeCanPresentFromWorker = DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(
+                isD3D12SwapChain, false, streamlineFGRunning, postSLConfirmedRendering,
+                ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
+                HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
+            const uint32_t currentThreadId = GetCurrentThreadId();
+            const uint32_t trackedSourcePresentThreadId = DX12_GetGamePresentThreadId();
+            if (runtimeCanPresentFromWorker &&
+                !DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+                    true, trackedSourcePresentThreadId, currentThreadId)) {
+                static std::atomic<int> s_slFastPathWorkerBypassLogCount{0};
+                const int bypassNum = s_slFastPathWorkerBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassNum <= 20 || bypassNum == 50 || (bypassNum % 500) == 0) {
+                    HookLogImportant(
+                        "CallOriginalPresent: SL fast-path refusing Steam Present transport on runtime worker #%d; "
+                        "using DXGI bypass (runtime=%s slFG=%d confirmed=%d sourceTid=0x%04X currentTid=0x%04X)",
+                        bypassNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), streamlineFGRunning ? 1 : 0,
+                        postSLConfirmedRendering ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
+
+            ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
+                presentBypass != nullptr, "SL fast-path Steam Present", "SL fast-path E9 transport",
+                reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass), false, false);
+        }
+
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }
 
