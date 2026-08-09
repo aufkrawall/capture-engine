@@ -1,23 +1,28 @@
 # llm-wiki Log
 
-### 2026-08-09 - Talos rapid-skip freeze traced to CE's live D3D12 queue probe
+### 2026-08-09 - Talos rapid-skip freeze traced to split PostSL state and duplicate ECL submission
 
-- Talos session `installed/captureengine/logs/20260809_035333` reproduced the exact engine-fence hang from
-  `20260809_030710` even though build `0.1.5886` installed the RR override in ~0.5 seconds, before the first Present
-  and before any Feature 1 SR evaluation. This disproves the earlier late SR-to-RR transition as the root cause.
-- Both independent hangs stop after exactly three PostSL submits immediately following
-  `DX12_ServiceDeferredECLProbe()`. That probe created a temporary COMPUTE queue on the live game/Streamline device.
-  Successful launches survived the same mutation, so the failure is timing-sensitive, but the repeated boundary and
-  the historical Talos `20260502_233427` queue-probe crash establish CE's live-device mutation as the race trigger.
-  The dumps agree: GameThread waits in Unreal's end-of-frame render fence; RenderThread, RHIThread, RHI submission,
-  Streamline pacer, and DLSS-G worker are asleep; no thread is executing in CE, Steam, NGX, Present, or the driver;
-  CE's last overlay command list reached its final GPU breadcrumb and the device remains healthy.
-- `ProbeRealD3D12ECL` is now passive. It resolves ECL and Signal only from originals/vtables already captured by CE's
-  queue hook, validates exact `d3d12.dll` / `D3D12Core.dll` ownership (including a guarded direct-jump target), and
-  never calls `CreateCommandQueue`. If no native method has been captured yet, the deferred request stays pending,
-  retries only after the captured queue-method generation changes, and the existing guarded selected-queue PostSL
-  fallback remains active. Source regressions prohibit a live probe queue and prohibit clearing the deferred request
-  before passive proof exists. Fresh rapid-skip Talos validation is pending.
+- Talos session `installed/captureengine/logs/20260809_042528` reproduces the same downstream Unreal engine-fence
+  hang on build `0.1.5888` without creating a temporary queue. `ProbeRealD3D12ECL` resolves purely from the captured
+  primary queue original at `04:27:41.153`; three later PostSL callbacks complete, then presentation stops. The dump
+  again has GameThread waiting in the end-of-frame render fence while RenderThread, RHIThread, RHI submission,
+  Streamline pacer, and DLSS-G worker are asleep. No CE/Steam/NGX/Present/driver stack owns the wait, CE's overlay
+  command list completed, and the device remains healthy. This disproves live queue creation as the sole cause of the
+  `030710`/`035333` family, although the historical `20260502_233427` crash still requires passive-only discovery.
+- The decisive pre-resolution line is `Post-SL overlay SUBMIT #230 ... virtualCall=1 ... origECL=1`. The pure-DLSS
+  no-proof fallback called `selectedQueueOrigECL`, then fell through into the no-wrapper virtual bootstrap and executed
+  the same overlay command list a second time. Publishing the passive real-ECL proof changed that live path from two
+  submissions to one exactly at the recurring freeze boundary. Bootstrap selection is now an explicit mutually
+  exclusive policy: the saved selected-queue original is one complete submit, rejection returns, and wrapper/virtual
+  bootstrap is a separate alternative. A rate-limited runtime invariant diagnoses any future logical PostSL frame
+  that selects zero or multiple ECL paths.
+- The semantic-unit split also left function-local copies of `s_postSLRenders`, `s_postSLSkipFence`,
+  `s_reactivationEpoch`, `s_callsSinceReactivation`, and `s_postSLProbeFrames` in `Chunk0`, while the later gate/route/
+  submit units consumed different file-scope variables. That is why the failing trace still reported every later-stage
+  operation as `epoch=0/call#=0`; reactivation and probe resets never reached the stages that relied on them. The
+  shadows are removed so all PostSL stages share the single definitions in `dx12_hook_postsl_render.cpp`.
+- Focused and complete DXGI/FG policy/source tests cover the single-submit decision and forbid semantic-unit state
+  shadows. Fresh rapid-skip Talos validation is pending.
 
 ### 2026-08-09 - RR discovery no longer hot-switches Talos after a multiplicative executable scan
 
@@ -31,8 +36,8 @@
   launches survived the same late switch, so the dump does not prove CE owned the final wait, but the intermittent
   timing and downstream engine-fence state make that avoidable live SR-to-RR switch a credible race amplifier.
   Session `20260809_035333` later reproduced the same hang with RR installed before rendering, so this was a real
-  startup/performance defect but not the freeze's root cause; the passive D3D12 queue-method fix above supersedes that
-  attribution.
+  startup/performance defect but not the freeze's root cause. Session `20260809_042528` and the PostSL single-submit/
+  shared-state correction above supersede both earlier freeze attributions.
 - Root cause of the delay was multiplicative validation: Talos's 173 MB monolithic executable produces 35 raw
   constructor-window candidates, and each candidate triggered another whole executable-code reference scan. Layout
   validation now discards impossible candidates first, then one sorted target table accumulates reference evidence

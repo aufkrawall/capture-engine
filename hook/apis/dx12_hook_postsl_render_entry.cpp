@@ -4,9 +4,7 @@
 
 PostSLFlow PostSLRenderSession::Chunk0() {
 static std::atomic<int> s_postSLCalls{0};
-static std::atomic<int> s_postSLRenders{0};
 static std::atomic<int> s_postSLSkipLock{0};
-static std::atomic<int> s_postSLSkipFence{0};
 static std::atomic<int> s_postSLSkipOther{0};
 const bool normalRouteDrawPendingAtEntry = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
                                            dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
@@ -48,9 +46,6 @@ if ((callNum % 500) == 0) {
         "DX12: PostSL stats: calls=%d renders=%d skipLock=%d skipFence=%d skipOther=%d (render%%=%.0f%%)", callNum,
         renders, skipL, skipF, skipO, callNum > 0 ? (renders * 100.0 / callNum) : 0.0);
 }
-static int s_reactivationEpoch = 0;
-static int s_callsSinceReactivation = 0;
-static int s_postSLProbeFrames = 0;
 static bool s_wasActive = false;
 static uint32_t s_seenLifecycleEpoch = 0;
 static HANDLE s_dedicatedFenceEvent = nullptr;

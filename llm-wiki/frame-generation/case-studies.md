@@ -1,15 +1,19 @@
 # Frame Generation Switching — Case Studies
 
-- Talos rapid-intro-skip sessions `installed/captureengine/logs/20260809_030710` and `20260809_035333` identify a
-  timing-sensitive CE-owned hang at deferred D3D12 queue-method discovery. Both runs stop presenting after exactly
-  three PostSL submits immediately after `DX12_ServiceDeferredECLProbe()` creates a temporary COMPUTE queue on the
-  live game/Streamline device. The second run had already installed forced RR before first Present, ruling out the
-  earlier late SR-to-RR transition theory. Both dumps show Unreal's GameThread waiting in its frame-end render fence
-  while RenderThread, RHIThread, RHI submission, Streamline pacer, and DLSS-G worker are asleep; no active CE/Steam/
-  NGX/Present/driver stack owns the wait, CE's overlay GPU breadcrumb is complete, and the device is healthy. This is
-  the downstream signature of CE perturbing the live runtime rather than a CPU lock retained by the probing thread.
-  `ProbeRealD3D12ECL` now derives ECL/Signal only from already captured queue originals/vtables, rejects non-native
-  module ownership, never creates a diagnostic queue, and keeps passive resolution pending until proof exists.
+- Talos rapid-intro-skip sessions `installed/captureengine/logs/20260809_030710`, `20260809_035333`, and
+  `20260809_042528` identify a timing-sensitive CE-owned hang at deferred D3D12 queue-method discovery. All stop after
+  exactly three PostSL callbacks following real-ECL publication. The third session uses the passive-only resolver, so
+  it disproves the earlier temporary-COMPUTE-queue attribution as the sole root cause. Its decisive preceding submit
+  reports both `virtualCall=1` and `origECL=1`: CE's pure-DLSS fallback submitted the same overlay command list through
+  the saved original, then fell through and submitted it again through the queue vtable. Passive ECL proof changed the
+  established path from two ECLs to one at the repeated freeze boundary. The semantic-unit refactor independently
+  shadowed all lifecycle/probe/accounting counters used by later PostSL stages, leaving every submit at
+  `epoch=0/call#=0` and preventing reactivation resets from reaching route/probe logic. Current code shares one state
+  definition across stages and chooses exactly one of saved-original, reject, or wrapper/virtual bootstrap; an
+  invariant log detects zero/multiple paths. Dumps retain the same downstream signature: Unreal GameThread waits in
+  its frame-end render fence; RenderThread, RHIThread, RHI submission, Streamline pacer, and DLSS-G worker are asleep;
+  no active CE/Steam/NGX/Present/driver stack owns the wait, CE's GPU breadcrumb is complete, and the device is healthy.
+  `ProbeRealD3D12ECL` remains passive because Talos `20260502_233427` independently proved live queue creation unsafe.
 
 - Talos `installed/captureengine/logs/20260729_190753` on build `0.1.5250` proved the DLSS-FG enable freeze was
   CE-owned, not a Streamline-only startup failure. The dump puts a Streamline generated-output Present thread in

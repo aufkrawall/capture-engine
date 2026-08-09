@@ -209,89 +209,85 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                                  realQ);
             s_directLog++;
         } else {
-            const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
-                dx12_hook_g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr);
-            if (!allowWrapperBootstrap) {
-                // For pure-DLSS startup (no FSR history), the real ECL might not
-                // be available yet if the deferred ECL probe hasn't fired (it's
-                // deferred until the Streamline startup window expires, and the
-                // window may still be active when PostSL first renders).  In this
-                // case, selectedQueueOrigECL is still valid (saved from the vtable
-                // hook on the swapchain queue).  Fall back to submitting through
-                // selectedQueueOrigECL on the queue itself rather than refusing
-                // and dropping every overlay frame.
-                if (!dx12_hook_g_HadFSRFGPhase && selectedQueueOrigECL && selectedQueueIsSwapchainQueue) {
-                    submittedQueue = queue;
-                    selectedQueueOrigECL(queue, 1, lists);
-                    usedOrigECL = true;
-                    static int s_pureDLSSBootstrapFallbackLog = 0;
-                    if (s_pureDLSSBootstrapFallbackLog < 10) {
-                        HookLogImportant(
-                            "DX12: PostSL pure-DLSS bootstrap fallback via selectedQueueOrigECL on %p "
-                            "(realECL not yet probed, scQueue=%p)",
-                            queue, scQueue);
-                    }
-                    s_pureDLSSBootstrapFallbackLog++;
-                } else {
+            const auto bootstrapPath = ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(
+                dx12_hook_g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr,
+                selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr);
+            if (bootstrapPath == ce::dx12_overlay_policy::PostSLBootstrapSubmitPath::kSelectedQueueOriginal) {
+                // Pure-DLSS startup may render before passive real-ECL discovery.
+                // The queue hook's saved original is already the final D3D12
+                // submit path, so execute it exactly once and do not fall through
+                // into the virtual bootstrap path.
+                submittedQueue = queue;
+                selectedQueueOrigECL(queue, 1, lists);
+                usedOrigECL = true;
+                static int s_pureDLSSBootstrapFallbackLog = 0;
+                if (s_pureDLSSBootstrapFallbackLog < 10) {
                     HookLogImportant(
-                        "DX12: PostSL refusing SL wrapper bootstrap without direct path "
-                        "(queue=%p scQueue=%p wrapper=%p)",
-                        queue, scQueue, (void*)slQueue);
-                    bb->Release();
-        return PostSLFlow::kReturn;
+                        "DX12: PostSL pure-DLSS single-submit fallback via selectedQueueOrigECL on %p "
+                        "(realECL not yet probed, scQueue=%p)",
+                        queue, scQueue);
                 }
-            }
-
-            // Bootstrap: submit through SL's wrapper to capture real queue on first call
-            if (!slQueue && dx12_hook_g_HadFSRFGPhase) {
+                s_pureDLSSBootstrapFallbackLog++;
+            } else if (bootstrapPath == ce::dx12_overlay_policy::PostSLBootstrapSubmitPath::kReject) {
                 HookLogImportant(
-                    "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)",
-                    queue, scQueue);
+                    "DX12: PostSL refusing SL wrapper bootstrap without direct path "
+                    "(queue=%p scQueue=%p wrapper=%p)",
+                    queue, scQueue, (void*)slQueue);
                 bb->Release();
         return PostSLFlow::kReturn;
-            }
-            if (slQueue) {
-                submittedQueue = slQueue;
-                dx12_hook_s_insidePostSLOverlayECL = true;
-                slQueue->ExecuteCommandLists(1, lists);
-                dx12_hook_s_insidePostSLOverlayECL = false;
-                usedVirtualCall = true;
-                HookLogImportant(
-                    "DX12: PostSL bootstrap via SL wrapper %p (will capture real queue for direct path)", slQueue);
             } else {
-                if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
-                        slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
-                        selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL,
-                        queue == dx12_hook_g_OriginalGameQueue)) {
+                // Bootstrap: submit through SL's wrapper to capture real queue on first call
+                if (!slQueue && dx12_hook_g_HadFSRFGPhase) {
                     HookLogImportant(
-                        "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
-                        "(queue=%p scQueue=%p realQ=%p realECL=%p)",
-                        queue, scQueue, realQ, (void*)realECL);
+                        "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)",
+                        queue, scQueue);
                     bb->Release();
-
         return PostSLFlow::kReturn;
                 }
-                if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
-                    selectedQueueOrigECL) {
-                    submittedQueue = queue;
-                    selectedQueueOrigECL(queue, 1, lists);
-                    usedOrigECL = true;
-                    static int s_noWrapperDirectSelectedQueueLog = 0;
-                    if (s_noWrapperDirectSelectedQueueLog < 10 || (s_noWrapperDirectSelectedQueueLog % 200) == 0) {
-                        HookLogImportant(
-                            "DX12: PostSL no-wrapper direct selected-queue submit #%d on %p "
-                            "(scQueue=%p origECL matches realECL)",
-                            s_noWrapperDirectSelectedQueueLog, queue, scQueue);
-                    }
-                    s_noWrapperDirectSelectedQueueLog++;
-                } else {
+                if (slQueue) {
+                    submittedQueue = slQueue;
                     dx12_hook_s_insidePostSLOverlayECL = true;
-                    queue->ExecuteCommandLists(1, lists);
+                    slQueue->ExecuteCommandLists(1, lists);
                     dx12_hook_s_insidePostSLOverlayECL = false;
                     usedVirtualCall = true;
-                    static int s_noSlQ = 0;
-                    if (s_noSlQ++ < 3)
-                        HookLogImportant("DX12: PostSL no SL wrapper queue, using origGame %p", queue);
+                    HookLogImportant(
+                        "DX12: PostSL bootstrap via SL wrapper %p (will capture real queue for direct path)", slQueue);
+                } else {
+                    if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
+                            slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
+                            selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL,
+                            queue == dx12_hook_g_OriginalGameQueue)) {
+                        HookLogImportant(
+                            "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
+                            "(queue=%p scQueue=%p realQ=%p realECL=%p)",
+                            queue, scQueue, realQ, (void*)realECL);
+                        bb->Release();
+
+        return PostSLFlow::kReturn;
+                    }
+                    if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
+                        selectedQueueOrigECL) {
+                        submittedQueue = queue;
+                        selectedQueueOrigECL(queue, 1, lists);
+                        usedOrigECL = true;
+                        static int s_noWrapperDirectSelectedQueueLog = 0;
+                        if (s_noWrapperDirectSelectedQueueLog < 10 ||
+                            (s_noWrapperDirectSelectedQueueLog % 200) == 0) {
+                            HookLogImportant(
+                                "DX12: PostSL no-wrapper direct selected-queue submit #%d on %p "
+                                "(scQueue=%p origECL matches realECL)",
+                                s_noWrapperDirectSelectedQueueLog, queue, scQueue);
+                        }
+                        s_noWrapperDirectSelectedQueueLog++;
+                    } else {
+                        dx12_hook_s_insidePostSLOverlayECL = true;
+                        queue->ExecuteCommandLists(1, lists);
+                        dx12_hook_s_insidePostSLOverlayECL = false;
+                        usedVirtualCall = true;
+                        static int s_noSlQ = 0;
+                        if (s_noSlQ++ < 3)
+                            HookLogImportant("DX12: PostSL no SL wrapper queue, using origGame %p", queue);
+                    }
                 }
             }
         }
@@ -316,6 +312,18 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             queue->ExecuteCommandLists(1, lists);
             usedVirtualCall = true;
         }
+    }
+}
+const int submitPathCount = (usedRealECL ? 1 : 0) + (usedOrigECL ? 1 : 0) + (usedVirtualCall ? 1 : 0);
+if (submitPathCount != 1) {
+    static std::atomic<int> s_submitPathInvariantLogCount{0};
+    const int logCount = s_submitPathInvariantLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 200) == 0) {
+        HookLogImportant(
+            "DX12: PostSL submit invariant violated — expected one ECL path, observed %d "
+            "(queue=%p scQueue=%p virtual=%d real=%d original=%d epoch=%d call#=%d log=%d)",
+            submitPathCount, submittedQueue, scQueue, usedVirtualCall ? 1 : 0, usedRealECL ? 1 : 0,
+            usedOrigECL ? 1 : 0, s_reactivationEpoch, s_callsSinceReactivation, logCount + 1);
     }
 }
 if (rendered) {

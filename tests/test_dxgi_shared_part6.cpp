@@ -647,6 +647,24 @@ TEST(DXGISharedTest, PostSLWrapperBootstrapRequiresDirectPathAndStaysBlockedAfte
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(true, false, true));
 }
 
+TEST(DXGISharedTest, PureDLSSBootstrapUsesOneSavedOriginalSubmitBeforePassiveRealECLProof) {
+    using Path = ce::dx12_overlay_policy::PostSLBootstrapSubmitPath;
+
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(false, false, false, true, true),
+              Path::kSelectedQueueOriginal);
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(false, false, false, true, false),
+              Path::kReject);
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(false, false, false, false, true),
+              Path::kReject);
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(true, false, false, true, true),
+              Path::kReject);
+
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(false, true, false, true, true),
+              Path::kWrapperOrVirtual);
+    EXPECT_EQ(ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(false, false, true, true, true),
+              Path::kWrapperOrVirtual);
+}
+
 TEST(DXGISharedTest, PostSLNoWrapperVirtualBootstrapBlockedDuringActiveStreamlineFG) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false,
                                                                                                 false, false, false));

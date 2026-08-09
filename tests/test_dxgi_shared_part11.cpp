@@ -194,12 +194,12 @@ TEST(DXGISharedSourceTest, DrawChainFailureElseBranchesNeverRunOnTheSuccessPath)
     EXPECT_NE(nullListBody.find("null list or alloc"), std::string::npos);
 }
 
-// Talos sessions 20260809_030710 and 20260809_035333 both stopped rendering
-// immediately after the deferred real-ECL probe created a diagnostic COMPUTE
-// queue. The two hangs landed after exactly three later PostSL submits, with CE's
-// overlay list complete and every engine render/RHI thread asleep. Resolution
-// must therefore stay observational: use queue methods already captured by the
-// vtable hook and never mutate the live D3D12/Streamline device to inspect it.
+// Talos 20260502_233427 proved a diagnostic COMPUTE queue can crash Streamline
+// during startup. Sessions 20260809_030710/035333 correlated later downstream
+// hangs with the same live-device mutation; 042528 subsequently proved that was
+// not their sole cause, but it does not make invasive discovery safe. Resolution
+// must stay observational: use queue methods already captured by the vtable hook
+// and never mutate the live D3D12/Streamline device to inspect it.
 TEST(DXGISharedSourceTest, RealECLResolutionNeverCreatesALiveRuntimeProbeQueue) {
     namespace fs = std::filesystem;
     const fs::path source =
@@ -232,4 +232,66 @@ TEST(DXGISharedSourceTest, DeferredRealECLResolutionRemainsPendingUntilPassivePr
     ASSERT_NE(proofGate, std::string::npos);
     ASSERT_NE(clear, std::string::npos);
     EXPECT_LT(proofGate, clear);
+}
+
+// The PostSL semantic-unit split originally left function-local copies of the
+// lifecycle/probe counters in Chunk0 while Chunk1-3 consumed file-scope copies.
+// Talos consequently logged every submit as epoch=0/call#=0 and later stages
+// never saw reactivation resets. These variables must have one shared definition.
+TEST(DXGISharedSourceTest, PostSLSemanticUnitsShareLifecycleAndAccountingState) {
+    namespace fs = std::filesystem;
+    const fs::path stateSource =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render.cpp";
+    const fs::path entrySource =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_entry.cpp";
+    ASSERT_TRUE(fs::exists(stateSource));
+    ASSERT_TRUE(fs::exists(entrySource));
+
+    const std::string state = ce::test_source::ReadFile(stateSource);
+    const std::string entry = ce::test_source::ReadFile(entrySource);
+    ASSERT_FALSE(state.empty());
+    ASSERT_FALSE(entry.empty());
+
+    EXPECT_NE(state.find("std::atomic<int> s_postSLRenders{0};"), std::string::npos);
+    EXPECT_NE(state.find("std::atomic<int> s_postSLSkipFence{0};"), std::string::npos);
+    EXPECT_NE(state.find("int s_reactivationEpoch{0};"), std::string::npos);
+    EXPECT_NE(state.find("int s_callsSinceReactivation{0};"), std::string::npos);
+    EXPECT_NE(state.find("int s_postSLProbeFrames{0};"), std::string::npos);
+
+    EXPECT_EQ(entry.find("static std::atomic<int> s_postSLRenders"), std::string::npos);
+    EXPECT_EQ(entry.find("static std::atomic<int> s_postSLSkipFence"), std::string::npos);
+    EXPECT_EQ(entry.find("static int s_reactivationEpoch"), std::string::npos);
+    EXPECT_EQ(entry.find("static int s_callsSinceReactivation"), std::string::npos);
+    EXPECT_EQ(entry.find("static int s_postSLProbeFrames"), std::string::npos);
+}
+
+// Talos 20260809_042528 proved the pre-proof selectedQueueOrigECL fallback
+// executed and then fell through into queue->ExecuteCommandLists, submitting the
+// same overlay command list twice. Passive real-ECL publication removed the
+// second submit mid-session, exactly at the recurring freeze boundary.
+TEST(DXGISharedSourceTest, PureDLSSSelectedQueueFallbackCannotFallThroughToSecondECL) {
+    namespace fs = std::filesystem;
+    const fs::path source =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_submit.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+    const size_t select = text.find("SelectPostSLBootstrapSubmitPath(");
+    const size_t directBranch = text.find("PostSLBootstrapSubmitPath::kSelectedQueueOriginal", select);
+    const size_t rejectBranch = text.find("} else if (bootstrapPath ==", directBranch);
+    const size_t bootstrapBranch = text.find("} else {", rejectBranch);
+    ASSERT_NE(select, std::string::npos);
+    ASSERT_NE(directBranch, std::string::npos);
+    ASSERT_NE(rejectBranch, std::string::npos);
+    ASSERT_NE(bootstrapBranch, std::string::npos);
+    EXPECT_LT(select, directBranch);
+    EXPECT_LT(directBranch, rejectBranch);
+    EXPECT_LT(rejectBranch, bootstrapBranch);
+
+    const std::string directBody = text.substr(directBranch, rejectBranch - directBranch);
+    EXPECT_NE(directBody.find("selectedQueueOrigECL(queue, 1, lists);"), std::string::npos);
+    EXPECT_EQ(directBody.find("->ExecuteCommandLists(1, lists)"), std::string::npos);
+    EXPECT_NE(directBody.find("execute it exactly once"), std::string::npos);
+    EXPECT_NE(text.find("PostSL submit invariant violated"), std::string::npos);
 }

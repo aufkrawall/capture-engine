@@ -147,6 +147,31 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
 }
 
+enum class PostSLBootstrapSubmitPath : uint8_t {
+    kReject,
+    kSelectedQueueOriginal,
+    kWrapperOrVirtual,
+};
+
+inline PostSLBootstrapSubmitPath SelectPostSLBootstrapSubmitPath(bool hadFSRFGPhase,
+                                                                 bool hasRealQueueBehindWrapper,
+                                                                 bool hasRealD3D12ECL,
+                                                                 bool selectedQueueIsSwapchainQueue,
+                                                                 bool hasSelectedQueueOrigECL) {
+    if (ShouldAllowPostSLWrapperBootstrap(hadFSRFGPhase, hasRealQueueBehindWrapper, hasRealD3D12ECL)) {
+        return PostSLBootstrapSubmitPath::kWrapperOrVirtual;
+    }
+
+    if (!hadFSRFGPhase && selectedQueueIsSwapchainQueue && hasSelectedQueueOrigECL) {
+        // The saved original is already a complete submit path. It must be the
+        // only ECL for this logical overlay frame; continuing into the virtual
+        // bootstrap would execute the same command list a second time.
+        return PostSLBootstrapSubmitPath::kSelectedQueueOriginal;
+    }
+
+    return PostSLBootstrapSubmitPath::kReject;
+}
+
 inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
                                                                   bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
                                                                   bool selectedQueueIsSwapchainQueue,
