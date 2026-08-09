@@ -34,7 +34,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, stable fail-closed monitor selection, best-effort fullscreen-focus WGC/DXGI blackout, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-28.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, stable fail-closed monitor selection, best-effort fullscreen-focus WGC/DXGI blackout, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-08-09.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts including secondary DX12 renderer synchronization, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
 - `handoff-dx12-32bit-crash.md`
@@ -56,7 +56,7 @@ Primary sources:
 - `dx12-injection-bootstrap.md`
   - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-16.
 - `dx12-overlay-third-party-coexistence.md`
-  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including the audited x86 solid-text compatibility boundary. Last verified 2026-07-16.
+  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including source-Present-thread-only foreign handler invocation under FG runtimes and the audited x86 solid-text compatibility boundary. Last verified 2026-08-09.
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `cross-api-forced-af.md`
@@ -64,7 +64,7 @@ Primary sources:
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, early raw/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements.
 - `graphics-overrides-and-frame-pacing.md`
-  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting (incl. gate-every-present native-Vulkan grid pacing), phase-preserving capture-sync/FG rules, the DLSS on-screen indicator, the DRS-sourced DLSS FG render preset, the process-local NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`, the validated branch patch applied by the Vulkan layer before device creation), diagnostics, and runtime validation matrix. Last verified 2026-08-08.
+  - Cross-API sampler/config semantics including normalized mip filtering, CPU/present queue-depth enforcement, adaptive rational FPS limiting (incl. gate-every-present native-Vulkan grid pacing), phase-preserving capture-sync/FG rules, the DLSS on-screen indicator, persistent fail-closed UE5 Ray Reconstruction selection, authoritative NGX/Streamline RR lifecycle evidence, the DRS-sourced DLSS FG render preset, the process-local NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`, the validated branch patch applied by the Vulkan layer before device creation), diagnostics, and runtime validation matrix. Last verified 2026-08-09.
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants, including independent no-callback cleanup on GetState-first post-FSR ownership repair, single-submit all-transport exact PostSL suspension keep-alive, first-confirmed Reflex suspend, and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-29.
 - `vulkan-fg-switch-test.md`

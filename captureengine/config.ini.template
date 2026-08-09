@@ -442,6 +442,15 @@ backbuffer_count=-1
 ; auto exposure and exposure normalization accept default, on, or off.
 dlss_auto_exposure=default
 dlss_exposure_normalization=default
+; Opt-in x64 UE5 compatibility override. When the game already contains a
+; capable NVIDIA DLSS Ray Reconstruction integration, CaptureEngine persistently
+; selects its r.NGX.DLSS.DenoiserMode=1 path in memory. No Engine.ini or game
+; files are changed, and map/config reloads cannot reset the plugin's direct
+; CVar read. This cannot add missing RR render inputs or make unsupported
+; hardware/runtime combinations work; use dlss_rr_dll_path below if the title
+; also needs a compatible nvngx_dlssd.dll. Injecting/overriding vendor features
+; is not anti-cheat safe, so leave this off for competitive online games.
+force_ray_reconstruction=off
 ; Presets accept A-Z or default.
 dlss_preset_dlaa=default
 dlss_preset_quality=default

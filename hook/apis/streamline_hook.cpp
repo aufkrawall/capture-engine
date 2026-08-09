@@ -158,6 +158,7 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
     }
 
     if (invalidatedSlots > 0 || moduleBit != 0) {
+        streamline_hook_g_LastUpscalerEvaluation.store(0xFFFFFFFFu, std::memory_order_release);
         HookLogImportant(
             "Streamline Hook: Module %s unloaded (base=%p size=0x%zX) — invalidated %d stale hook slot(s); the next "
             "load of this name re-installs hooks for the fresh instance",

@@ -1,5 +1,74 @@
 #include "test_dxgi_shared_shared.h"
 
+TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamTouchAndInvoke) {
+    namespace fs = std::filesystem;
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path coreSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    ASSERT_TRUE(fs::exists(coreSource));
+
+    const std::string steam = ce::test_source::ReadFile(steamSource);
+    const std::string core = ce::test_source::ReadFile(coreSource);
+    ASSERT_FALSE(steam.empty());
+    ASSERT_FALSE(core.empty());
+
+    const size_t entry = steam.find("bool TryInvokeGuardedExternalSteamOverlayPresent(");
+    const size_t provenance = steam.find("ShouldInvokeSynchronousExternalOverlayPresentForThreadState(", entry);
+    const size_t reject = steam.find("if (!synchronousPresentThreadAllowed)", provenance);
+    const size_t callbackRead = steam.find("TryReadSteamOverlayNullCallbackSlot", reject);
+    const size_t recoveryGuard = steam.find("ScopedSteamNullCallbackRecoveryGuard", callbackRead);
+    const size_t externalInvoke = steam.find("const HRESULT hr = externalPresent", recoveryGuard);
+    ASSERT_NE(entry, std::string::npos);
+    ASSERT_NE(provenance, std::string::npos);
+    ASSERT_NE(reject, std::string::npos);
+    ASSERT_NE(callbackRead, std::string::npos);
+    ASSERT_NE(recoveryGuard, std::string::npos);
+    ASSERT_NE(externalInvoke, std::string::npos);
+    EXPECT_LT(provenance, reject);
+    EXPECT_LT(reject, callbackRead);
+    EXPECT_LT(callbackRead, recoveryGuard);
+    EXPECT_LT(recoveryGuard, externalInvoke);
+    EXPECT_NE(steam.find("this is not the verified source Present thread", reject), std::string::npos);
+
+    EXPECT_NE(core.find("SL external-overlay vtable transport"), std::string::npos);
+    EXPECT_EQ(core.find("\"SL startup bypass\""), std::string::npos);
+
+    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    ASSERT_TRUE(fs::exists(originalSource));
+    const std::string original = ce::test_source::ReadFile(originalSource);
+    ASSERT_FALSE(original.empty());
+    const size_t naturalGuard = original.find("refusing Steam Present transport on runtime worker");
+    const size_t inlineTrampoline = original.find("if (presentTrampoline)");
+    const size_t forcedBypassRoute = original.find("if (forceSteamDX12Bypass)");
+    const size_t slFastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
+    ASSERT_NE(naturalGuard, std::string::npos);
+    ASSERT_NE(inlineTrampoline, std::string::npos);
+    ASSERT_NE(forcedBypassRoute, std::string::npos);
+    ASSERT_NE(slFastPath, std::string::npos);
+    EXPECT_LT(naturalGuard, inlineTrampoline);
+    EXPECT_LT(naturalGuard, forcedBypassRoute);
+    EXPECT_LT(naturalGuard, slFastPath);
+}
+
+TEST(DXGISharedSourceTest, RuntimeWorkerCannotReplaceTrackedSourcePresentThread) {
+    namespace fs = std::filesystem;
+    const fs::path phase2Source =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp";
+    ASSERT_TRUE(fs::exists(phase2Source));
+    const std::string phase2 = ce::test_source::ReadFile(phase2Source);
+    ASSERT_FALSE(phase2.empty());
+
+    const size_t tracking = phase2.find("Track the application's source Present thread");
+    const size_t sourceGate = phase2.find("if (applicationSourcePresent)", tracking);
+    const size_t threadStore = phase2.find("dx12_hook_g_GamePresentThreadId.store", sourceGate);
+    ASSERT_NE(tracking, std::string::npos);
+    ASSERT_NE(sourceGate, std::string::npos);
+    ASSERT_NE(threadStore, std::string::npos);
+    EXPECT_LT(tracking, sourceGate);
+    EXPECT_LT(sourceGate, threadStore);
+    EXPECT_EQ(phase2.find("if (!slFGNow)", tracking), std::string::npos);
+}
+
 // Strange Brigade DX12 session 20260806_165849: every Present re-initialized the
 // whole overlay (ImGui + RTVs + 16 allocators + fence) because the ProcessFrame
 // semantic-unit refactor (3398151e) hoisted the GetBuffer-failure recovery out of

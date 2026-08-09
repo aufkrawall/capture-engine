@@ -484,6 +484,12 @@ CaptureEngine for first-run creation.
 
 See the [app profile example](#app-profile-example) for a minimal per-game setup.
 
+For an x64 UE5 title whose NVIDIA plugin already supports Ray Reconstruction,
+`[DLSS] force_ray_reconstruction=on` persistently selects the plugin's
+`r.NGX.DLSS.DenoiserMode=1` path in memory. It does not edit `Engine.ini`, invent missing RR inputs, spoof driver
+support, or block ordinary DLSS SR if RR fails. A compatible `nvngx_dlssd.dll` can still be supplied separately with
+`dlss_rr_dll_path` when the title's shipped DLL is the missing piece.
+
 While CaptureEngine is running, it checks `config.ini` for live changes and applies them where possible — for
 example switching the FPS limiter on or off or changing the target FPS. Settings that are used when a recording
 starts take effect the next time recording starts.

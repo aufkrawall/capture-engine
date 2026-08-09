@@ -1,8 +1,5 @@
 #include "main_internal.h"
 
-#include <algorithm>
-#include <cstring>
-
 std::atomic<LoadLibraryA_t> OriginalLoadLibraryA{nullptr};
 
 std::atomic<LoadLibraryW_t> OriginalLoadLibraryW{nullptr};
@@ -12,66 +9,6 @@ std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA{nullptr};
 std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW{nullptr};
 
 std::atomic<LdrLoadDll_t> OriginalLdrLoadDll{nullptr};
-
-namespace {
-
-// Writes a bounded, masked copy of the command line into out (always
-// NUL-terminated). Values of sensitive "key=value" arguments (including
-// quoted values) are replaced with '*' and the excerpt is capped; the full
-// length is reported through totalLength so callers can log it separately.
-void MaskCommandLineForLog(const char* raw, char* out, size_t outSize,
-                           size_t& totalLength) {
-  totalLength = raw ? strlen(raw) : 0;
-  if (outSize == 0) {
-    return;
-  }
-  out[0] = '\0';
-  if (!raw || raw[0] == '\0') {
-    return;
-  }
-
-  char maskBuffer[2048];
-  const size_t copyLength = std::min<size_t>(totalLength, sizeof(maskBuffer) - 1);
-  memcpy(maskBuffer, raw, copyLength);
-  maskBuffer[copyLength] = '\0';
-  for (size_t i = 0; maskBuffer[i]; ++i) {
-    const bool boundaryOk =
-        i == 0 || maskBuffer[i - 1] == ' ' || maskBuffer[i - 1] == '\t' ||
-        maskBuffer[i - 1] == '"' || maskBuffer[i - 1] == '-';
-    if (!boundaryOk) {
-      continue;
-    }
-    for (const char* sensitive : {
-             "token", "key", "secret", "password", "passwd", "auth", "code",
-             "session", "access_token", "refresh_token", "credential"}) {
-      const size_t keyLength = strlen(sensitive);
-      if (i + keyLength >= copyLength || maskBuffer[i + keyLength] != '=') {
-        continue;
-      }
-      if (_strnicmp(maskBuffer + i, sensitive, keyLength) != 0) {
-        continue;
-      }
-      size_t valueStart = i + keyLength + 1;
-      const bool inQuotes = maskBuffer[valueStart] == '"';
-      if (inQuotes) {
-        ++valueStart;
-      }
-      size_t valueEnd = valueStart;
-      while (maskBuffer[valueEnd] && maskBuffer[valueEnd] != ' ' &&
-             maskBuffer[valueEnd] != '\t' &&
-             (!inQuotes || maskBuffer[valueEnd] != '"')) {
-        maskBuffer[valueEnd++] = '*';
-      }
-      break;
-    }
-  }
-
-  const size_t excerptLength = std::min<size_t>(strlen(maskBuffer), outSize - 1);
-  memcpy(out, maskBuffer, excerptLength);
-  out[excerptLength] = '\0';
-}
-
-}  // namespace
 
 namespace {
 LoadLibraryA_t GetOriginalLoadLibraryA() {
@@ -105,74 +42,6 @@ namespace {
 LdrLoadDll_t GetOriginalLdrLoadDll() {
   return ResolveOriginalProc(OriginalLdrLoadDll, "ntdll.dll", "LdrLoadDll");
 }
-}
-
-LPSTR WINAPI HookedGetCommandLineA() {
-  LPSTR original = OriginalGetCommandLineA.load(std::memory_order_acquire)();
-
-  // Only spoof if config is loaded and feature forced
-  if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
-    static bool s_Logged = false;
-    if (!s_Logged) {
-      char masked[288];
-      size_t totalLength = 0;
-      MaskCommandLineForLog(original, masked, sizeof(masked), totalLength);
-      HookLog("HookedGetCommandLineA called (full length=%zu). Original "
-              "(masked excerpt): %s",
-              totalLength, masked);
-      s_Logged = true;
-    }
-
-    if (main_g_SpoofedCmdLineA.empty()) {
-      if (original)
-        main_g_SpoofedCmdLineA = original;
-
-      // Check if argument already exists to avoid duplication
-      if (main_g_SpoofedCmdLineA.find("r.NGX.DLSS.denoisermode") ==
-          std::string::npos) {
-        main_g_SpoofedCmdLineA += " -r.NGX.DLSS.denoisermode=1";
-        // Also force the RR feature cvar just in case (some plugins use this)
-        main_g_SpoofedCmdLineA += " -r.NGX.DLSS.RayReconstruction=1";
-        HookLog("HookedGetCommandLineA: Appended CVar flags.");
-      }
-    }
-    return (LPSTR)main_g_SpoofedCmdLineA.c_str();
-  }
-  return original;
-}
-
-LPWSTR WINAPI HookedGetCommandLineW() {
-  LPWSTR original = OriginalGetCommandLineW.load(std::memory_order_acquire)();
-
-  if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
-    static bool s_Logged = false;
-    if (!s_Logged) {
-      // wchar conversion for logging
-      char buf[2048];
-      WideCharToMultiByte(CP_UTF8, 0, original, -1, buf, 2048, NULL, NULL);
-      char masked[288];
-      size_t totalLength = 0;
-      MaskCommandLineForLog(buf, masked, sizeof(masked), totalLength);
-      HookLog("HookedGetCommandLineW called (full length=%zu). Original "
-              "(masked excerpt): %s",
-              totalLength, masked);
-      s_Logged = true;
-    }
-
-    if (main_g_SpoofedCmdLineW.empty()) {
-      if (original)
-        main_g_SpoofedCmdLineW = original;
-
-      if (main_g_SpoofedCmdLineW.find(L"r.NGX.DLSS.denoisermode") ==
-          std::wstring::npos) {
-        main_g_SpoofedCmdLineW += L" -r.NGX.DLSS.denoisermode=1";
-        main_g_SpoofedCmdLineW += L" -r.NGX.DLSS.RayReconstruction=1";
-        HookLog("HookedGetCommandLineW: Appended CVar flags.");
-      }
-    }
-    return (LPWSTR)main_g_SpoofedCmdLineW.c_str();
-  }
-  return original;
 }
 
 // Hooked Functions - Signal Event & Redirect

@@ -3,7 +3,9 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,6 +144,30 @@ class ClangTidyCacheTest(unittest.TestCase):
             json.loads((snapshot / "compile_commands.json").read_text(encoding="utf-8")),
             list,
         )
+
+    def test_concurrent_atomic_writers_use_independent_staging_files(self) -> None:
+        destination = self.root / "concurrent.json"
+        worker_count = 8
+        write_barrier = threading.Barrier(worker_count)
+        original_write_text = Path.write_text
+
+        def synchronized_write_text(path: Path, *args, **kwargs):
+            result = original_write_text(path, *args, **kwargs)
+            write_barrier.wait(timeout=5)
+            return result
+
+        with patch.object(Path, "write_text", synchronized_write_text):
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(clang_tidy_cache._atomic_write_json, destination, {"writer": writer})
+                    for writer in range(worker_count)
+                ]
+                for future in futures:
+                    future.result()
+
+        payload = json.loads(destination.read_text(encoding="utf-8"))
+        self.assertIn(payload["writer"], range(worker_count))
+        self.assertEqual(list(self.root.glob("concurrent.json.tmp.*")), [])
 
 
 if __name__ == "__main__":

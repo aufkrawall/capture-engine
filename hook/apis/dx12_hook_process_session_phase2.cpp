@@ -680,16 +680,15 @@ if (!gameQueue) {
     }
 }
 
-// Track the game's Present thread ID for pre-SL overlay rendering.
-// During SL FG, SL's worker threads also call Present (for generated frames).
-// Pre-SL overlay must ONLY run on the game thread — SL's workers call Present
-// at the wrong timing (during FG frame Present, not game frame Present).
+// Track the application's source Present thread. Streamline and FFX can both
+// call Present from runtime-owned workers; never let one of those calls replace
+// the provenance used by overlay and pacing policy.
 {
     DWORD currentTid = GetCurrentThreadId();
-    bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-    if (!slFGNow) {
-        // When SL FG is NOT active, the current thread IS the game thread.
-        // Update the tracked ID (game might switch render threads).
+    if (applicationSourcePresent) {
+        // Non-FG calls are source Presents by definition and can establish or
+        // refresh the thread. During FG this can only rewrite the same proven
+        // source ID; unknown/worker provenance remains unable to self-promote.
         dx12_hook_g_GamePresentThreadId.store(currentTid, std::memory_order_release);
         g_RenderWatchdog.SetMonitoredThread(currentTid);
     }

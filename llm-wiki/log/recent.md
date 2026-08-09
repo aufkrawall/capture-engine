@@ -1,5 +1,59 @@
 # llm-wiki Log
 
+### 2026-08-09 - Steam invocation is source-Present-thread-only under FG runtimes
+
+- Talos session `installed/captureengine/logs/20260809_015416` stopped presenting for 51 seconds after rapid intro
+  skipping moved presentation from source/RHI thread `0x6878` to DLSS-G worker `0x0B44`. Both dumps, five seconds
+  apart, captured the worker blocked in `gameoverlayrenderer64` after CE synchronously called Steam from
+  `TryInvokeGuardedExternalSteamOverlayPresent`; PostSL had submitted normally and no device removal/TDR occurred.
+- Root cause: plugin-lookup and Steam NULL-callback guards covered re-entrancy/crash hazards but were incorrectly
+  treated as sufficient to call an unbounded foreign Present handler from a runtime worker. The vtable topology also
+  keeps physical `s_slRoutingActive=false`, so the block labeled `SL startup bypass` remained live after PostSL was
+  stable.
+- The guarded-Steam helper and `CallOriginalPresent`'s natural Steam E9 transport now derive every worker-capable
+  runtime state and require the exact tracked game Present thread before touching Steam. Unknown/runtime-worker calls
+  fail closed to the existing native DXGI bypass; verified source calls retain Steam, and CE's PostSL draw remains
+  intact. The shared thread tracker now refreshes only from calls already classified as application-source Presents,
+  preventing either Streamline or FFX workers from overwriting provenance; the wrapped/direct DX12 frame path now
+  includes both FSR runtime-mode and FSR API activity in that classification. Focused Steam/external-overlay policy
+  tests cover the Talos TIDs, unknown provenance, every runtime ownership signal, both existing guards, and tracker
+  update ordering.
+
+### 2026-08-09 - RR startup discovery no longer starves DXGI queue capture
+
+- Talos RR validation sessions `20260809_012602`, `012642`, `012805`, and `012924` proved Feature 13 evaluation and
+  preset E worked, but the inject overlay rendered zero frames. PostSL and the DX12/ImGui backend initialized; every
+  callback then reported `PostSL SKIP — no queue` with a live Streamline wrapper command queue but null `scQueue` and
+  `origGame`.
+- Root cause was startup ordering introduced with the RR force: the synchronous first UE5 module scan ran before
+  `CheckAndInstallHooks()`. In `012924` it occupied 6.8 seconds (`01:29:29.604` to `01:29:36.429`), while the game
+  created its initial swapchain at `01:29:33.740`. DXGI queue-capture hooks therefore arrived too late. The force-off
+  process in `012207` installed them first and captured the same creation normally.
+- Initial and periodic graphics-hook checks now run before RR discovery. A source regression test pins both orderings;
+  the RR selector remains persistent and the scan remains off every render/present path.
+- The first closing verify reached a separate pre-existing clang-tidy-cache race: Windows rejected a JSON replace
+  because every writer in one process reused `<cache>.tmp.<pid>`. Atomic publication now gives each writer an
+  exclusive staging file and serializes only destination replacement; a barrier-driven eight-writer regression
+  reproduces the old collision without sleeps.
+
+### 2026-08-09 - UE5 DLSS Ray Reconstruction force became persistent and observable
+
+- `[DLSS] force_ray_reconstruction=on` now reaches the injected hook through initial publication, profile resolution,
+  live IPC updates, and a byte of the existing `SharedGraphicsConfig` alignment gap (size/offset assertions keep ABI
+  38 unchanged). The first-run template documents the opt-in, anti-cheat boundary, DLL override relationship, and
+  missing-integration limitation.
+- The former command-line append and guessed UE console-manager/vtable calls were removed. The x64 hook now finds the
+  exact UTF-16 `r.NGX.DLSS.DenoiserMode` owner, requires one strongly distinguished live
+  `TAutoConsoleVariable<int32>` layout, and atomically redirects only its `Ref` to process-lifetime `{1,1}` shadow
+  storage. This survives level/config CVar writes, restores by compare/exchange on disable/shutdown, rescans an owner
+  module reload, never polls the render path, and leaves unfamiliar/ambiguous layouts untouched.
+- RR support is never spoofed and SR fallback remains unblocked. NGX D3D11/D3D12/Vulkan Create/Evaluate/Evaluate_C/
+  Release plus Streamline feature 1001/0 evaluation now publish and log actual rendering evidence; Feature 13 is not
+  called active merely because creation succeeded. Correct capability keys are
+  `SuperSamplingDenoising.Available` / `.FeatureInitResult`. Focused config, scanner-policy, lifecycle, source-policy,
+  and Streamline ordering tests passed, as did incremental x64/x86 product build 0.1.5878. Known-working Engine.ini
+  equivalence, map transitions, software-RT projects, and titles lacking engine-side RR inputs remain runtime tests.
+
 ### 2026-08-08 - Strange Brigade x64 exposed the NVIDIA patch writer's 32-bit boundary gap
 
 - Session `20260808_214315` is conclusive rather than visual-only: the Vulkan layer resolved

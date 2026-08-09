@@ -26,6 +26,40 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const PFN_Present presentOriginal = dxgi_shared_oPresent;
     const PFN_Present presentBypass = EnsurePresentBypassTrampoline();
     bool slLoaded = IsSLInterposerLoaded();
+    const char* forcedBypassOverlay = nullptr;
+    bool isD3D12SteamSwapChain = false;
+    const bool forceSteamDX12Bypass = ShouldForceSteamDX12Bypass(
+        pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay, &isD3D12SteamSwapChain);
+
+    // Steam can be entered explicitly, through its E9 hook in presentOriginal,
+    // or through a pre-existing inline chain. Apply the runtime-worker boundary
+    // before choosing any of those transports.
+    if (presentBypass && IsSteamOverlayModule(forcedBypassOverlay)) {
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
+        const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+        const bool runtimeCanPresentFromWorker = DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(
+            isD3D12SteamSwapChain, false, streamlineFGRunning, postSLConfirmedRendering,
+            ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
+            HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
+        if (runtimeCanPresentFromWorker) {
+            const uint32_t currentThreadId = GetCurrentThreadId();
+            const uint32_t trackedSourcePresentThreadId = DX12_GetGamePresentThreadId();
+            if (!DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+                    true, trackedSourcePresentThreadId, currentThreadId)) {
+                static std::atomic<int> s_steamRuntimeWorkerBypassLogCount{0};
+                const int bypassNum = s_steamRuntimeWorkerBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassNum <= 20 || bypassNum == 50 || (bypassNum % 500) == 0) {
+                    HookLogImportant(
+                        "CallOriginalPresent: refusing Steam Present transport on runtime worker #%d; using DXGI "
+                        "bypass (runtime=%s slFG=%d confirmed=%d sourceTid=0x%04X currentTid=0x%04X)",
+                        bypassNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), streamlineFGRunning ? 1 : 0,
+                        postSLConfirmedRendering ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
+        }
+    }
 
     // Inline-hook path: trampoline always bypasses the detour safely.
     if (presentTrampoline) {
@@ -36,12 +70,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentTrampoline(pSwapChain, SyncInterval, Flags);
     }
 
-    const char* forcedBypassOverlay = nullptr;
-    if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
+    if (forceSteamDX12Bypass) {
         // With Streamline loaded but FG not yet running, some Steam hook chains
         // can accept our direct guarded call without advancing the real Present.
-        // Use the DXGI bypass until FG owns the chain; once FG is running the
-        // guarded path keeps Steam's overlay in the generated-frame path.
+        // Use the DXGI bypass until FG owns the chain. During FG, Steam is
+        // serviced only on the verified source Present thread; runtime workers
+        // keep using the bypass.
         const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         const bool nativeFSRPresentationActive = ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode) ||

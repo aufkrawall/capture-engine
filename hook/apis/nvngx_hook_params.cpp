@@ -1,5 +1,29 @@
 #include "nvngx_hook_internal.h"
 
+namespace {
+
+bool IsRayReconstructionCapabilityParameter(const char* name) {
+    return name &&
+           (strcmp(name, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available) == 0 ||
+            strcmp(name, NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult) == 0);
+}
+
+template <typename T>
+void LogObservedRayReconstructionCapability(const char* name, NVSDK_NGX_Result result, const T* value,
+                                            const char* getter) {
+    if (!IsRayReconstructionCapabilityParameter(name) || !GetActiveGraphicsConfig().forceRayReconstruction)
+        return;
+    if (result == NVSDK_NGX_Result_Success && value) {
+        LogOncePerParam(name, "NVNGX RR: observed real %s via %s = %lld (result=0x%08X; not spoofed)", name,
+                        getter, static_cast<long long>(*value), static_cast<unsigned int>(result));
+    } else {
+        LogOncePerParam(name, "NVNGX RR: real %s query via %s failed (result=0x%08X; not spoofed)", name,
+                        getter, static_cast<unsigned int>(result));
+    }
+}
+
+}  // namespace
+
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue) {
     const PFN_SetI original = GetParameterOriginals(pThis).setI;
     if (!original)
@@ -341,6 +365,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetI(NVSDK_NGX_Parameter* pThis, const
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     NVSDK_NGX_Result res = original(pThis, InName, OutValue);
+    if (IsSafeString(InName))
+        LogObservedRayReconstructionCapability(InName, res, OutValue, "GetI");
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
         // If the game/driver is reading back a preset or quality value, we capture
         // it
@@ -360,6 +386,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     NVSDK_NGX_Result res = original(pThis, InName, OutValue);
+    if (IsSafeString(InName))
+        LogObservedRayReconstructionCapability(InName, res, OutValue, "GetUI");
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_PerfQualityValue) == 0) {
             std::lock_guard<std::mutex> lock(nvngx_hook_g_ParamMapMutex);
@@ -513,28 +541,6 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
         ((PFN_SetF)vtable[6])(pParams, NVSDK_NGX_Parameter_Sharpness_Alt, overrideVal);
     }
 
-    // Force Ray Reconstruction Availability
-    if (cfg.forceRayReconstruction) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-            LogOncePerParam("NVNGX_ForceRR_Caps",
-                            "NVNGX: Injecting RayReconstruction.Available=1 and "
-                            "FeatureInitResult=1");
-        }
-        // Force available = 1 (true)
-        if (vtable[3])
-            ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_RayReconstruction_Available, 1);
-        if (vtable[4])
-            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_RayReconstruction_Available, 1);
-
-        // Force init result = 0 (Success/Supported check usually looks for 0 or 1
-        // depending on param, but FeatureInitResult is often a success code 0 or 1)
-        // Actually FeatureInitResult usually stores the NVSDK_NGX_Result. 1 =
-        // Success.
-        if (vtable[3])
-            ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult, 1);
-        if (vtable[4])
-            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult, 1);
-    }
 }
 
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessParameters(PFN_NVSDK_NGX_GetParameters original,
@@ -592,38 +598,20 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetCaps_VULKAN(NVSDK_NGX_Parameter** p
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(
     PFN_NVSDK_NGX_GetFeatureRequirements original, void* InAdapter,
     const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
-    NVSDK_NGX_Result res = NVSDK_NGX_Result_Success;
-
-    // Call original first to populate real data
-    if (original) {
-        res = original(InAdapter, InDiscoveryInfo, OutSupported);
-    } else {
-        // Fallback if original missing (unlikely if hooked)
-        res = (NVSDK_NGX_Result)0xBAD00000;  // Fail
-    }
-
-    if (InDiscoveryInfo && OutSupported) {
-        // Feature 13 is Ray Reconstruction
-        if (InDiscoveryInfo->FeatureID == 13) {
-            const auto& cfg = GetActiveGraphicsConfig();
-            if (cfg.forceRayReconstruction) {
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-                    LogOncePerParam("GetFeatureRequirements_13",
-                                    "NVNGX: Spoofing Ray Reconstruction (Feature 13) as SUPPORTED");
-                }
-
-                // Force Success Result
-                res = NVSDK_NGX_Result_Success;
-
-                // Force Structure
-                OutSupported->FeatureSupported = 0;  // NVSDK_NGX_FeatureSupportResult_Supported
-
-                // Fill placeholders if empty
-                if (OutSupported->MinHWArchitecture == 0)
-                    OutSupported->MinHWArchitecture = 0;  // Supported
-                if (OutSupported->MinOSVersion[0] == 0)
-                    strcpy_s(OutSupported->MinOSVersion, "10.0.19041");
-            }
+    const NVSDK_NGX_Result res =
+        original ? original(InAdapter, InDiscoveryInfo, OutSupported) : (NVSDK_NGX_Result)0xBAD00000;
+    if (InDiscoveryInfo && InDiscoveryInfo->FeatureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction &&
+        GetActiveGraphicsConfig().forceRayReconstruction) {
+        if (OutSupported) {
+            LogOncePerParam(
+                "GetFeatureRequirements_13",
+                "NVNGX RR: observed real Feature 13 requirements result=0x%08X support=%d minArch=%u "
+                "(not spoofed)",
+                static_cast<unsigned int>(res), OutSupported->FeatureSupported, OutSupported->MinHWArchitecture);
+        } else {
+            LogOncePerParam("GetFeatureRequirements_13",
+                            "NVNGX RR: Feature 13 requirements returned no output (result=0x%08X; not spoofed)",
+                            static_cast<unsigned int>(res));
         }
     }
     return res;

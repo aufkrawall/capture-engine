@@ -21,11 +21,13 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
   base[n] = '\0';
 
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
+    UE5::NotifyModuleLoaded(static_cast<HMODULE>(data->DllBase));
     const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCache(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
     }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
+    UE5::NotifyModuleUnloaded(data->DllBase, data->SizeOfImage);
     const char *matched = ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module unloaded: %s", matched);
@@ -92,6 +94,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
+  UE5::NotifyModuleLoaded(module);
 
   // nvngx.dll is loaded by sl.common.dll, which then resolves every NGX entry
   // point with GetProcAddress. Hook its exports here, inside LoadLibrary,

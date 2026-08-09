@@ -259,6 +259,8 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         reader.GetStrCompat("DLSS", "dlss_auto_exposure", "Graphics", "dlss_auto_exposure", "default");
     config.graphics.dlssExposureNormalization = reader.GetStrCompat(
         "DLSS", "dlss_exposure_normalization", "Graphics", "dlss_exposure_normalization", "default");
+    config.graphics.forceRayReconstruction = reader.GetBoolCompat(
+        "DLSS", "force_ray_reconstruction", "Graphics", "force_ray_reconstruction", false);
 
     // DLSS Presets
     config.graphics.dlssPresetDLAA =

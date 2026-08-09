@@ -278,8 +278,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   HookLogImportant("HookThread: IAT hooks installed");
 
-  // Initial Check
+  // Install the graphics hooks before any optional engine-memory discovery.
+  // The UE5 RR CVar scan can take several seconds in large shipping modules;
+  // running it first lets the game create its initial swapchain before the
+  // DXGI queue-capture hooks exist and strands the PostSL overlay without an
+  // authoritative queue.
   CheckAndInstallHooks();
+
+  const GraphicsConfig initialGraphicsConfig = GetActiveGraphicsConfig();
+  UE5::RefreshRayReconstructionOverride(initialGraphicsConfig.forceRayReconstruction);
 
   HookLogImportant("HookThread: All hooks installed, entering exit monitor loop");
 
@@ -299,19 +306,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // Periodically update active graphics config state
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are
     // calling it yet
-    GetActiveGraphicsConfig();
+    const GraphicsConfig activeGraphicsConfig = GetActiveGraphicsConfig();
 
     // Process deferred releases (D3D11) on background thread
     // This prevents render thread stalls when destroying capture resources
     if (g_DX11Hook)
       g_DX11Hook->ProcessDeferredReleases();
-
-    // --- UE5 Enforce RR ---
-    static DWORD s_LastRRCheck = 0;
-    if (now - s_LastRRCheck > 2000) {
-      s_LastRRCheck = now;
-      UE5::EnforceRR();
-    }
 
     bool periodicHookCheckDue = (now - lastPeriodicHookCheck) >= 1000;
     if (waitResult == WAIT_OBJECT_0 || periodicHookCheckDue) {
@@ -321,6 +321,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       // Event signaled or periodic tick - run detection
       CheckAndInstallHooks();
     }
+
+    // Keep graphics/module hook installation ahead of the optional UE5 module
+    // scan on every service pass as well as during initial startup.
+    UE5::RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction);
 
     // Check for recording state changes
     static bool s_WasRecording = false;
@@ -387,6 +391,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       }
     }
   }
+
+  UE5::ShutdownRayReconstructionOverride();
 
   // Cleanup Event
   CloseCheckHooksEvent();

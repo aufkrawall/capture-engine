@@ -177,6 +177,9 @@ inline thread_local int streamline_hook_g_ExternalOverlayPresentGuardDepth = 0;
 
 inline constexpr slResult streamline_hook_kSlResultOk = 0;
 
+inline constexpr uint32_t streamline_hook_kFeatureDLSS = 0;
+inline constexpr uint32_t streamline_hook_kFeatureDLSSRR = 1001;
+
 inline constexpr slResult streamline_hook_kSlResultErrorInvalidState = 38;
 
 inline constexpr uint32_t streamline_hook_kSLFeatureDLSSG = 1000;
@@ -408,6 +411,8 @@ inline std::atomic<bool> streamline_hook_g_SLSetTagHooked{false};
 inline std::atomic<bool> streamline_hook_g_SLSetTagForFrameHooked{false};
 
 inline std::atomic<bool> streamline_hook_g_SLEvaluateFeatureHooked{false};
+
+inline std::atomic<uint32_t> streamline_hook_g_LastUpscalerEvaluation{0xFFFFFFFFu};
 
 inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsHooked{false};
 

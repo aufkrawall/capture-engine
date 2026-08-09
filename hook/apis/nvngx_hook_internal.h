@@ -24,6 +24,8 @@ struct NVSDK_NGX_DLSS_Create_Params;
 
 #include "../common/hook_common.h"
 
+#include "../common/ngx_feature_lifecycle.h"
+
 #include "../common/nvngx_parameter_abi.h"
 
 #include "../common/ngx_module_policy.h"
@@ -99,9 +101,10 @@ typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_NVSDK_NGX_GetFeatureRequirements
 #define NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality \
     "RayReconstruction.Hint.Render.Preset.UltraQuality"
 
-#define NVSDK_NGX_Parameter_RayReconstruction_Available "RayReconstruction.Available"
+#define NVSDK_NGX_Parameter_SuperSamplingDenoising_Available "SuperSamplingDenoising.Available"
 
-#define NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult "RayReconstruction.FeatureInitResult"
+#define NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult \
+    "SuperSamplingDenoising.FeatureInitResult"
 
 // DLSS Multi-Frame Generation (MFG) parameter
 #define NVSDK_NGX_Parameter_FrameGenerationMultiplier "FrameGenerationMultiplier"  // 2=2x, 3=3x, 4=4x
@@ -154,6 +157,14 @@ typedef struct NVSDK_NGX_FeatureRequirement {
 typedef NVSDK_NGX_Result(__cdecl* PFN_NVSDK_NGX_CreateFeature)(void* InCmdList, int InFeatureID,
                                                                NVSDK_NGX_Parameter* InParameters, void** OutHandle);
 
+typedef NVSDK_NGX_Result(__cdecl* PFN_NVSDK_NGX_CreateFeatureVulkan1)(
+    void* InDevice, void* InCmdList, int InFeatureID, NVSDK_NGX_Parameter* InParameters, void** OutHandle);
+
+typedef NVSDK_NGX_Result(__cdecl* PFN_NVSDK_NGX_EvaluateFeature)(
+    void* InCmdList, const void* InFeatureHandle, const NVSDK_NGX_Parameter* InParameters, void* InCallback);
+
+typedef NVSDK_NGX_Result(__cdecl* PFN_NVSDK_NGX_ReleaseFeature)(void* InFeatureHandle);
+
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue);
 
 void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InName, unsigned int InValue);
@@ -194,13 +205,33 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetFeatureRequirements_D3D12(void* InA
 
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetFeatureRequirements_VULKAN(void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported);
 
-NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeature original, void* ctx, int featureID, NVSDK_NGX_Parameter* params, void** handle);
-
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_D3D11(void* ctx, int featureID, NVSDK_NGX_Parameter* params, void** handle);
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_D3D12(void* ctx, int featureID, NVSDK_NGX_Parameter* params, void** handle);
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN(void* ctx, int featureID, NVSDK_NGX_Parameter* params, void** handle);
+
+NVSDK_NGX_Result __cdecl Hooked_CreateFeature_VULKAN1(void* device, void* ctx, int featureID,
+                                                      NVSDK_NGX_Parameter* params, void** handle);
+
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D11(void* ctx, const void* handle,
+                                                       const NVSDK_NGX_Parameter* params, void* callback);
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D11_C(void* ctx, const void* handle,
+                                                         const NVSDK_NGX_Parameter* params, void* callback);
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D12(void* ctx, const void* handle,
+                                                       const NVSDK_NGX_Parameter* params, void* callback);
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D12_C(void* ctx, const void* handle,
+                                                         const NVSDK_NGX_Parameter* params, void* callback);
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_VULKAN(void* ctx, const void* handle,
+                                                        const NVSDK_NGX_Parameter* params, void* callback);
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_VULKAN_C(void* ctx, const void* handle,
+                                                          const NVSDK_NGX_Parameter* params, void* callback);
+
+NVSDK_NGX_Result __cdecl Hooked_ReleaseFeature_D3D11(void* handle);
+NVSDK_NGX_Result __cdecl Hooked_ReleaseFeature_D3D12(void* handle);
+NVSDK_NGX_Result __cdecl Hooked_ReleaseFeature_VULKAN(void* handle);
+
+void TrackNgxFeatureCreation(int featureID, NVSDK_NGX_Result result, void** handle);
 
 struct NVSDK_NGX_Parameter {
     virtual ~NVSDK_NGX_Parameter() {}
@@ -369,6 +400,19 @@ inline PFN_NVSDK_NGX_GetParameters nvngx_hook_oGetCapabilityParameters_VULKAN = 
 inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D11 = nullptr;
 
 inline PFN_NVSDK_NGX_CreateFeature nvngx_hook_oCreateFeature_D3D12 = nullptr;
+
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_D3D11 = nullptr;
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_D3D11_C = nullptr;
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_D3D12 = nullptr;
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_D3D12_C = nullptr;
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_VULKAN = nullptr;
+inline PFN_NVSDK_NGX_EvaluateFeature nvngx_hook_oEvaluateFeature_VULKAN_C = nullptr;
+
+inline PFN_NVSDK_NGX_ReleaseFeature nvngx_hook_oReleaseFeature_D3D11 = nullptr;
+inline PFN_NVSDK_NGX_ReleaseFeature nvngx_hook_oReleaseFeature_D3D12 = nullptr;
+inline PFN_NVSDK_NGX_ReleaseFeature nvngx_hook_oReleaseFeature_VULKAN = nullptr;
+
+inline ce::ngx_lifecycle::FeatureHandleRegistry<64> nvngx_hook_g_FeatureRegistry;
 
 // DLSS Create Params (Approximation based on common RE)
 struct NVSDK_NGX_DLSS_Create_Params {

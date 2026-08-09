@@ -18,6 +18,10 @@
         "--cross-file-rename"
     ],
 
+    // Keep VS Code's Git initialization and publish flow aligned with the
+    // repository's protected default branch.
+    "git.defaultBranchName": "main",
+
     // EditorConfig mirror: the committed config lives in tools/config/.editorconfig,
     // which editors cannot discover from a non-root location.
     "files.eol": "\n",

@@ -350,15 +350,18 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         }
     }
 
-    // CRITICAL: SL startup guard.  During SL DllMain / startup and subsequent
-    // SL-originated Present calls, Steam may query Streamline from inside its
-    // overlay Present hook.  Once CE has hooked Streamline's plugin lookup, the
-    // guarded Steam path can safely return no-op SL callbacks for that
-    // re-entrant query. Until then, fall back to the bypass trampoline so the
-    // game remains stable.
-    if (ctx.callerFromStreamlineModule && !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) && ctx.steamOverlayLoaded) {
+    // Streamline external-overlay transport guard. On Steam's E9/vtable-hook
+    // topology s_slRoutingActive intentionally remains false for the complete
+    // swapchain lifetime, so this is a topology boundary rather than a startup
+    // lifetime test. The guarded Steam path is allowed only on the verified
+    // application source-Present thread; runtime-generated worker Presents use
+    // the bypass trampoline and cannot synchronously enter a foreign handler.
+    if (ctx.callerFromStreamlineModule &&
+        !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) &&
+        ctx.steamOverlayLoaded) {
         HRESULT guardedSteamHr = S_OK;
-        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags, "SL startup bypass",
+        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
+                                                        "SL external-overlay vtable transport",
                                                         &guardedSteamHr)) {
             if (ctx.api == APIType::D3D12) {
                 InvokeDX12FlushDeferredSignal();
@@ -371,10 +374,13 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
 
         PFN_Present bypass = EnsurePresentBypassTrampoline();
         if (bypass) {
-            static std::atomic<int> s_startupBypassCount{0};
-            int bypassNum = s_startupBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            static std::atomic<int> s_streamlineExternalOverlayBypassCount{0};
+            int bypassNum = s_streamlineExternalOverlayBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 500) == 0) {
-                HookLogImportant("DetourPresent: Startup bypass #%d (tid=0x%04X)", bypassNum, GetCurrentThreadId());
+                HookLogImportant(
+                    "DetourPresent: Streamline external-overlay transport bypass #%d "
+                    "(sourceTid=0x%04X tid=0x%04X)",
+                    bypassNum, DX12_GetGamePresentThreadId(), GetCurrentThreadId());
             }
             HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
             if (ctx.api == APIType::D3D12) {

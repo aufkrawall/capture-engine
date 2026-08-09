@@ -49,6 +49,8 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
             externalProcessFrame);
     const size_t wrapperEntry =
         dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {");
+    const size_t wrapperFSRRuntime = dx12Text.find("RuntimeModeUsesFSR(runtimeMode)", wrapperEntry);
+    const size_t wrapperFSRApi = dx12Text.find("g_FGCompat.IsFSRFGApiActive()", wrapperFSRRuntime);
     const size_t wrapperClassification =
         dx12Text.find("ShouldApplyDX12PrerenderLimitOnPresent(", wrapperEntry);
     ASSERT_NE(minimalProcessFrame, std::string::npos);
@@ -56,7 +58,11 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_NE(externalProcessFrame, std::string::npos);
     ASSERT_NE(externalForward, std::string::npos);
     ASSERT_NE(wrapperEntry, std::string::npos);
+    ASSERT_NE(wrapperFSRRuntime, std::string::npos);
+    ASSERT_NE(wrapperFSRApi, std::string::npos);
     ASSERT_NE(wrapperClassification, std::string::npos);
+    EXPECT_LT(wrapperFSRRuntime, wrapperClassification);
+    EXPECT_LT(wrapperFSRApi, wrapperClassification);
     // In-file flow: the minimal forward runs first, the wrapper entry classifies the limiter, and the
     // 5-argument ProcessFrame implementation is forwarded to afterwards (all in the process unit).
     EXPECT_LT(minimalForward, wrapperEntry);
@@ -569,14 +575,17 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
         streamline.find("StructTypesEqual(input->structType, streamline_hook_kResourceTagStructType)", evaluateGate);
     const size_t evaluateRecord =
         streamline.find("TryRecordOfficialUiResourceTag(frameToken, tag, streamline_hook_commandBuffer)", evaluateLocalTag);
-    const size_t evaluateForward = streamline.find("return originalEvaluateFeature", evaluateRecord);
+    const size_t evaluateForward = streamline.find("originalEvaluateFeature(feature", evaluateRecord);
+    const size_t evaluateReturn = streamline.find("return result", evaluateForward);
     ASSERT_NE(evaluateGate, std::string::npos);
     ASSERT_NE(evaluateLocalTag, std::string::npos);
     ASSERT_NE(evaluateRecord, std::string::npos);
     ASSERT_NE(evaluateForward, std::string::npos);
+    ASSERT_NE(evaluateReturn, std::string::npos);
     EXPECT_LT(evaluateGate, evaluateLocalTag)
         << "steady-state evaluate calls must remain one atomic bootstrap gate before input scanning";
     EXPECT_LT(evaluateRecord, evaluateForward) << "Streamline's local volatile-tag use/copy must include CE's UI draw";
+    EXPECT_LT(evaluateForward, evaluateReturn) << "RR/SR evidence must observe only the real Streamline result";
     EXPECT_NE(streamline.find("{\"slEvaluateFeature\", &streamline_hook_g_SLEvaluateFeatureTarget"), std::string::npos)
         << "evaluate hook state must invalidate safely across Streamline unload/reload";
 

@@ -384,13 +384,21 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
 inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(
     bool externalPresentHookAvailable, bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
     bool inWrapperPresent, bool isWrappedSwapChain, bool externalOverlayPresentInvokeInProgress,
-    bool streamlineStackActive, bool streamlinePluginLookupGuardAvailable,
+    bool streamlineStackActive, bool synchronousPresentThreadAllowed, bool streamlinePluginLookupGuardAvailable,
     bool steamNullCallbackRecoveryAvailable = true) {
     // Directly calling Steam's saved Present hook is only safe when CE has a
     // bypass trampoline available for any recursive Present that Steam may issue
     // internally.  Wrapped swapchains already have their own cooperation path.
     if (!externalPresentHookAvailable || !bypassAvailable || !isSteamOverlay || !isD3D12SwapChain || inWrapperPresent ||
         isWrappedSwapChain || externalOverlayPresentInvokeInProgress) {
+        return false;
+    }
+
+    // A foreign Present handler is an unbounded synchronous call. Frame-
+    // generation runtimes can issue Present from workers that are not valid
+    // application/overlay presentation threads; entering Steam there can wait
+    // on application-thread work while the application waits for that worker.
+    if (!synchronousPresentThreadAllowed) {
         return false;
     }
 
@@ -404,6 +412,26 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(
     }
 
     return true;
+}
+
+inline bool ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+    bool runtimeCanPresentFromWorker, uint32_t trackedSourcePresentThreadId, uint32_t currentThreadId) {
+    if (!runtimeCanPresentFromWorker) {
+        return true;
+    }
+
+    // Unknown provenance fails closed. A later non-FG/source Present can
+    // establish or refresh the tracked thread without ever risking a foreign
+    // handler call from a runtime-owned worker.
+    return trackedSourcePresentThreadId != 0 && trackedSourcePresentThreadId == currentThreadId;
+}
+
+inline bool CanRuntimePresentFromWorkerForExternalOverlay(
+    bool isD3D12SwapChain, bool streamlineStackActive, bool streamlineFGRunning, bool postSLConfirmedRendering,
+    bool fsrRuntimeActive, bool fsrApiActive, bool runtimeOwnedNativeFGPresentPath, bool runtimeOwnsSwapchain) {
+    return isD3D12SwapChain &&
+           (streamlineStackActive || streamlineFGRunning || postSLConfirmedRendering || fsrRuntimeActive ||
+            fsrApiActive || runtimeOwnedNativeFGPresentPath || runtimeOwnsSwapchain);
 }
 
 inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(

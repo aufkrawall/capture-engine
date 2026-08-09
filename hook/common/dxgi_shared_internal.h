@@ -242,7 +242,8 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain);
 }
 
 namespace DXGIShared {
-bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable, bool slLoaded, const char** overlayModuleOut = nullptr);
+bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable, bool slLoaded,
+                                const char** overlayModuleOut = nullptr, bool* isD3D12SwapChainOut = nullptr);
 }
 
 namespace DXGIShared {

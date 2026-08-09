@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-01
+Last cross-checked: 2026-08-09
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -60,6 +60,10 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - NVENC `lookahead` is deliberately not Boolean: it accepts `off`, `auto`, or a depth from `1` through `31`. `spatial_aq` and `temporal_aq` are independent Booleans, and `aq_strength` applies only to spatial AQ (`0` asks NVENC to choose, otherwise `1..15`).
 - NVENC `split_encode=0..4` controls native single-session split-frame encoding for HEVC and AV1. `0` explicitly disables it and is the fresh/default policy; `1` forces splitting when multiple engines exist and lets the driver choose the strip count; `2..4` request that many physical encoder strips when available. H.264 accepts only `0`. The former `auto`, `disabled`, and `forced` spellings remain compatibility inputs for existing configs, where `auto` retains NVIDIA's preset/tuning/resolution policy. Splitting favors throughput over a small amount of compression efficiency; it is not multiple independent recordings or GOP concatenation.
 - NVIDIA Smooth Motion compatibility is detected and applied automatically. There is no user-facing compatibility switch; failures must be fixed in the detection/compatibility code.
+- `[DLSS] force_ray_reconstruction=on` is an opt-in injected x64 UE5 override. It persistently selects the existing
+  NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` read without changing Engine.ini; legacy `[Graphics]` and qualified
+  `DLSS.force_ray_reconstruction` profile input remain supported. It cannot add an absent RR integration or render
+  inputs and does not falsify runtime capability/support results.
 - `msaa_samples`, `sgssaa`, and `disable_auto_mip_bias` remain parser/runtime-compatible graphics overrides but are intentionally absent from the fresh template. They are specialized legacy controls rather than useful defaults.
 - Default-render system loopback and process loopback share one render latency domain. Per-source latency differences within that domain recreate an A/V mismatch. Microphones use the separate input latency domain. Fresh configs disable microphone capture for privacy/predictability.
 - Empty video and screenshot output directories both resolve to the `captures` directory beside the executable. The two paths are independent when customized. `crash_dump_dir` accepts only a safe relative subfolder beneath `logs`; absolute and parent-traversal paths are ignored.
@@ -71,6 +75,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Validation boundary
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
+- `force_ray_reconstruction` defaults off, is live-reloadable, and is published through an existing shared-config
+  alignment gap; static offset/size assertions keep the shared-memory ABI unchanged.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.
