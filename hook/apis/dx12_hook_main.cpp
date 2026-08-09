@@ -376,6 +376,7 @@ void DX12Hook::Shutdown() {
         std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
         dx12_hook_g_ExecuteCommandListsOriginalByVTable.clear();
         oExecuteCommandLists = nullptr;
+        dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
     }
     dx12_hook_g_LastExecuteCommandListsVTable.store(nullptr, std::memory_order_release);
     dx12_hook_g_LastExecuteCommandListsOriginal.store(nullptr, std::memory_order_release);
@@ -420,4 +421,3 @@ void DX12Hook::CleanupResources() {
             res->Release();
     trackedResources.clear();
 }
-

@@ -1,5 +1,16 @@
 # Frame Generation Switching — Case Studies
 
+- Talos rapid-intro-skip sessions `installed/captureengine/logs/20260809_030710` and `20260809_035333` identify a
+  timing-sensitive CE-owned hang at deferred D3D12 queue-method discovery. Both runs stop presenting after exactly
+  three PostSL submits immediately after `DX12_ServiceDeferredECLProbe()` creates a temporary COMPUTE queue on the
+  live game/Streamline device. The second run had already installed forced RR before first Present, ruling out the
+  earlier late SR-to-RR transition theory. Both dumps show Unreal's GameThread waiting in its frame-end render fence
+  while RenderThread, RHIThread, RHI submission, Streamline pacer, and DLSS-G worker are asleep; no active CE/Steam/
+  NGX/Present/driver stack owns the wait, CE's overlay GPU breadcrumb is complete, and the device is healthy. This is
+  the downstream signature of CE perturbing the live runtime rather than a CPU lock retained by the probing thread.
+  `ProbeRealD3D12ECL` now derives ECL/Signal only from already captured queue originals/vtables, rejects non-native
+  module ownership, never creates a diagnostic queue, and keeps passive resolution pending until proof exists.
+
 - Talos `installed/captureengine/logs/20260729_190753` on build `0.1.5250` proved the DLSS-FG enable freeze was
   CE-owned, not a Streamline-only startup failure. The dump puts a Streamline generated-output Present thread in
   `capture_hook_x64!ApplyPrerenderLimitDX12`, waiting indefinitely for CE fence value 5. The hook trace shows

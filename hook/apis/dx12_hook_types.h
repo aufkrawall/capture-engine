@@ -387,6 +387,7 @@ struct Dx12FocusAnalysisSample {
 
 extern std::recursive_mutex dx12_hook_g_ExecuteCommandListsHookStateMutex;
 extern std::map<void**, ExecuteCommandListsPtr> dx12_hook_g_ExecuteCommandListsOriginalByVTable;
+extern std::atomic<uint64_t> dx12_hook_g_ExecuteCommandListsCaptureGeneration;
 extern std::atomic<void**> dx12_hook_g_LastExecuteCommandListsVTable;
 extern std::atomic<ExecuteCommandListsPtr> dx12_hook_g_LastExecuteCommandListsOriginal;
 extern std::atomic<ExecuteCommandListsPtr> dx12_hook_g_RealD3D12ECL;

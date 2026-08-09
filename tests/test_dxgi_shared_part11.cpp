@@ -193,3 +193,43 @@ TEST(DXGISharedSourceTest, DrawChainFailureElseBranchesNeverRunOnTheSuccessPath)
     const std::string nullListBody = text.substr(resetElseEnd, nullListEnd - resetElseEnd);
     EXPECT_NE(nullListBody.find("null list or alloc"), std::string::npos);
 }
+
+// Talos sessions 20260809_030710 and 20260809_035333 both stopped rendering
+// immediately after the deferred real-ECL probe created a diagnostic COMPUTE
+// queue. The two hangs landed after exactly three later PostSL submits, with CE's
+// overlay list complete and every engine render/RHI thread asleep. Resolution
+// must therefore stay observational: use queue methods already captured by the
+// vtable hook and never mutate the live D3D12/Streamline device to inspect it.
+TEST(DXGISharedSourceTest, RealECLResolutionNeverCreatesALiveRuntimeProbeQueue) {
+    namespace fs = std::filesystem;
+    const fs::path source =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_queue_method_resolution.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+    EXPECT_EQ(text.find("CreateCommandQueue("), std::string::npos);
+    EXPECT_NE(text.find("dx12_hook_g_ExecuteCommandListsOriginalByVTable"), std::string::npos);
+    EXPECT_NE(text.find("dx12_hook_g_LastExecuteCommandListsOriginal"), std::string::npos);
+    EXPECT_NE(text.find("dx12_hook_g_ExecuteCommandListsCaptureGeneration"), std::string::npos);
+    EXPECT_NE(text.find("refusing temporary queue creation during live runtime"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, DeferredRealECLResolutionRemainsPendingUntilPassiveProofExists) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_process.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+    const size_t service = text.find("void DX12_ServiceDeferredECLProbe() {");
+    const size_t nextFunction = text.find("DWORD WINAPI UnloadThread", service);
+    ASSERT_NE(service, std::string::npos);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const std::string body = text.substr(service, nextFunction - service);
+    const size_t proofGate = body.find("if (srvProbed) {");
+    const size_t clear = body.find("dx12_hook_g_ProbeRealD3D12ECLDeferred.store(false", proofGate);
+    ASSERT_NE(proofGate, std::string::npos);
+    ASSERT_NE(clear, std::string::npos);
+    EXPECT_LT(proofGate, clear);
+}

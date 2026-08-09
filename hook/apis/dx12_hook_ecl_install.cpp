@@ -136,6 +136,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         if (hookStatus == VTableHook::Success && original) {
             std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
             dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
+            dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
             if (!oExecuteCommandLists)
                 oExecuteCommandLists = original;
         }
@@ -144,6 +145,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         if (dx12_hook_g_ExecuteCommandListsOriginalByVTable.find(vtbl) == dx12_hook_g_ExecuteCommandListsOriginalByVTable.end() &&
             oExecuteCommandLists) {
             dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = oExecuteCommandLists;
+            dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
         }
     }
 
@@ -401,4 +403,3 @@ HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queu
     }
     return hr;
 }
-

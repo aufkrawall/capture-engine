@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-09 - Talos rapid-skip freeze traced to CE's live D3D12 queue probe
+
+- Talos session `installed/captureengine/logs/20260809_035333` reproduced the exact engine-fence hang from
+  `20260809_030710` even though build `0.1.5886` installed the RR override in ~0.5 seconds, before the first Present
+  and before any Feature 1 SR evaluation. This disproves the earlier late SR-to-RR transition as the root cause.
+- Both independent hangs stop after exactly three PostSL submits immediately following
+  `DX12_ServiceDeferredECLProbe()`. That probe created a temporary COMPUTE queue on the live game/Streamline device.
+  Successful launches survived the same mutation, so the failure is timing-sensitive, but the repeated boundary and
+  the historical Talos `20260502_233427` queue-probe crash establish CE's live-device mutation as the race trigger.
+  The dumps agree: GameThread waits in Unreal's end-of-frame render fence; RenderThread, RHIThread, RHI submission,
+  Streamline pacer, and DLSS-G worker are asleep; no thread is executing in CE, Steam, NGX, Present, or the driver;
+  CE's last overlay command list reached its final GPU breadcrumb and the device remains healthy.
+- `ProbeRealD3D12ECL` is now passive. It resolves ECL and Signal only from originals/vtables already captured by CE's
+  queue hook, validates exact `d3d12.dll` / `D3D12Core.dll` ownership (including a guarded direct-jump target), and
+  never calls `CreateCommandQueue`. If no native method has been captured yet, the deferred request stays pending,
+  retries only after the captured queue-method generation changes, and the existing guarded selected-queue PostSL
+  fallback remains active. Source regressions prohibit a live probe queue and prohibit clearing the deferred request
+  before passive proof exists. Fresh rapid-skip Talos validation is pending.
+
 ### 2026-08-09 - RR discovery no longer hot-switches Talos after a multiplicative executable scan
 
 - Talos session `installed/captureengine/logs/20260809_030710` is not a recurrence of the earlier CE-to-Steam
@@ -11,6 +30,9 @@
   `03:09:00.124`, and presentation stopped at `03:09:00.744` during rapid intro/menu transition. Four preceding
   launches survived the same late switch, so the dump does not prove CE owned the final wait, but the intermittent
   timing and downstream engine-fence state make that avoidable live SR-to-RR switch a credible race amplifier.
+  Session `20260809_035333` later reproduced the same hang with RR installed before rendering, so this was a real
+  startup/performance defect but not the freeze's root cause; the passive D3D12 queue-method fix above supersedes that
+  attribution.
 - Root cause of the delay was multiplicative validation: Talos's 173 MB monolithic executable produces 35 raw
   constructor-window candidates, and each candidate triggered another whole executable-code reference scan. Layout
   validation now discards impossible candidates first, then one sorted target table accumulates reference evidence

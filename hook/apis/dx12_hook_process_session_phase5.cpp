@@ -228,11 +228,9 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             }
             dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
 
-            // Clear realECL — it was probed from a temporary queue during
-            // SL activation and may reference per-instance driver dispatch
-            // state that doesn't match the game queue.  After SL teardown,
-            // fall back to origECL (saved from the game queue's vtable
-            // before our hook was installed).
+            // Clear realECL so the next SL generation revalidates the method
+            // against its currently tracked queue originals. Resolution is
+            // passive and never creates a live diagnostic queue.
             {
                 auto* oldRealECL = (void*)dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
                 dx12_hook_g_RealD3D12ECL.store(nullptr, std::memory_order_release);
@@ -245,8 +243,9 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             // Probe real D3D12 ECL when SL FG first activates — PostSL needs it
             // to bypass SL's COM wrapper.  The inner transition handler also does
             // this, but the epoch sync skips it for transitions already handled here.
-            // Defer if Streamline startup window is active to avoid creating a
-            // temporary COMPUTE queue during Streamline's critical initialization.
+            // Retain the conservative startup-window deferral even though the
+            // resolver is passive; no Streamline initialization callback needs
+            // to absorb the module/vtable inspection work.
             auto* dev = g_Device.load(std::memory_order_acquire);
             const bool startupWindowActiveForProbe = DXGIShared::IsStreamlineStartupTransitionWindowActive();
             if (dev && IsStreamlineLoaded()) {

@@ -89,7 +89,8 @@ anchors that predate the split are approximate.
       proxy_present), `dx12_hook_ecl*.cpp` (ecl, ecl_install),
       `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/
       draw_transition/draw_main/draw_submit/draw_tail), `dx12_hook_postsl_render*.cpp`
-      (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp` +
+      (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp`,
+      `dx12_hook_queue_method_resolution.cpp` +
       themed helper units (overlay_coverage, overlay_breadcrumbs, ffx_startup,
       fg_heuristics, postsl_queue, swapchain_create, observer, overlay_render,
       prerender, hook_install, screenshot, overlay_dedicated_queue,

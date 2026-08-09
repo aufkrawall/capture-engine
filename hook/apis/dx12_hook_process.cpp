@@ -125,9 +125,9 @@ void DX12Hook::ClassifyFrame(int commandListCount) {
     g_FGCompat.RecordFrame(commandListCount);
 }
 // FIXED: Clean up the global hook instance if allocated
-// Service the deferred ECL probe: if ProbeRealD3D12ECL was skipped because
-// the Streamline startup window was active, try to probe now that the window
-// has expired.  Safe to call from any thread at any time.
+// Service the deferred ECL resolution: if it was skipped because the
+// Streamline startup window was active, retry from already captured queue
+// methods once the window expires. No live D3D12 objects are created here.
 void DX12_ServiceDeferredECLProbe() {
     if (!dx12_hook_g_ProbeRealD3D12ECLDeferred.load(std::memory_order_acquire)) {
         return;
@@ -139,8 +139,10 @@ void DX12_ServiceDeferredECLProbe() {
     if (srvDev && IsStreamlineLoaded()) {
         ProbeRealD3D12ECL(srvDev);
         auto* srvProbed = (void*)dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-        dx12_hook_g_ProbeRealD3D12ECLDeferred.store(false, std::memory_order_release);
-        HookLogImportant("DX12: ServiceDeferredECLProbe — realECL=%p", srvProbed);
+        if (srvProbed) {
+            dx12_hook_g_ProbeRealD3D12ECLDeferred.store(false, std::memory_order_release);
+            HookLogImportant("DX12: ServiceDeferredECLProbe — passively resolved realECL=%p", srvProbed);
+        }
     }
 }
 DWORD WINAPI UnloadThread(LPVOID lpParam) {

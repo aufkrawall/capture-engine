@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 565,
+    "entries": 566,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -192,6 +192,7 @@
       "hook/apis/dx12_hook_process_session_phase3.cpp",
       "hook/apis/dx12_hook_process_session_phase4.cpp",
       "hook/apis/dx12_hook_process_session_phase5.cpp",
+      "hook/apis/dx12_hook_queue_method_resolution.cpp",
       "hook/apis/dx12_hook_screenshot.cpp",
       "hook/apis/dx12_hook_streamline_fg_transition.cpp",
       "hook/apis/dx12_hook_swapchain.cpp",

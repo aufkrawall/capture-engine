@@ -122,9 +122,8 @@ if (SUCCEEDED(qiHr) && pQueue) {
             ID3D12Device* handoffDevice = nullptr;
             const HRESULT handoffDeviceHr = pQueue->GetDevice(IID_PPV_ARGS(&handoffDevice));
             if (SUCCEEDED(handoffDeviceHr) && handoffDevice) {
-                // Defer probe if the Streamline startup window is active — creating
-                // a temporary COMPUTE queue during SL's critical init can crash SL
-                // with a null pointer call (same as the other probe deferral sites).
+                // Retain the startup-window deferral for passive method inspection;
+                // the resolver itself never creates a D3D12 queue or mutates SL.
                 if (!DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
                     ProbeRealD3D12ECL(handoffDevice);
                     HookLogImportant(
@@ -572,4 +571,3 @@ if (SUCCEEDED(hr) && ppSC && *ppSC && hWnd) {
 
 return hr;
 }
-

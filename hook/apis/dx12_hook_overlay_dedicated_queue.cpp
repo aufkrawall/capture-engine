@@ -375,13 +375,6 @@ return false;
 }
 
 
-// Probe the real D3D12 ECL by creating a temporary COMPUTE queue.
-// SL only vtable-hooks DIRECT queues for FG; COMPUTE queues keep the
-// pristine d3d12.dll function pointer.  When DIRECT and COMPUTE queues
-// share the same vtable (all hooks applied to the shared vtable), we
-// fall back to scanning SL's hook for an indirect JMP/CALL target.
-
-
 void DisableDedicatedOverlayQueueForOverlayCompat() {
 // When FG goes inactive, we keep the dedicated overlay queue alive to avoid
 // a destructive teardown/rebuild cycle during FG mode switches (e.g. 2x→3x).
