@@ -236,4 +236,107 @@ TEST(DXGISharedSourceTest, SlFastPathProactivePatchPrecedesTheSteamE9Return) {
     EXPECT_LT(proactivePatch, fastPathReturn);
 }
 
+// RoboCop session 20260809_143910: the Streamline runtime created the real
+// swapchain before CE captured the original game queue, so the create-time
+// retention never ran and PostSL startup activation stayed half-armed forever
+// ("No startup activation swapchain available ... weakLast=<live>"). The live
+// swapchain fallback must fire exactly in that late-handoff window.
+TEST(DXGISharedSourceTest, LateHandoffLiveSwapchainFallbackPolicy) {
+    using ce::dx12_overlay_policy::ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation;
+
+    // The RoboCop case: no retained swapchain, live swapchain usable, pure-DLSS
+    // startup activation pending, no native FSR path, Streamline FG running.
+    EXPECT_TRUE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        /*retainedSwapchainAvailable=*/false,
+        /*liveSwapchainUsable=*/true,
+        /*startupActivationPending=*/true,
+        /*nativeFSRPresentPathActive=*/false,
+        /*fsrApiActive=*/false,
+        /*streamlineFGRunning=*/true));
+
+    // Never when a retained swapchain already exists (Talos topology).
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        true, true, true, false, false, true));
+    // Never when the live swapchain is unusable.
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        false, false, true, false, false, true));
+    // Never outside the pending activation window.
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        false, true, false, false, false, true));
+    // Never on a native-FSR present path or FSR API activity.
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        false, true, true, true, false, true));
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        false, true, true, false, true, true));
+    // Never when Streamline FG is not actually running.
+    EXPECT_FALSE(ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+        false, true, true, false, false, false));
+}
+
+TEST(DXGISharedSourceTest, LateHandoffLiveSwapchainFallbackPrecedesMissingLog) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t fallback = text.find("ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(");
+    const size_t retain = text.find("DX12_RetainStreamlineStartupActivationSwapchain(liveSwapchain", fallback);
+    const size_t missingLog = text.find("No startup activation swapchain available", retain);
+    ASSERT_NE(fallback, std::string::npos);
+    ASSERT_NE(retain, std::string::npos);
+    ASSERT_NE(missingLog, std::string::npos);
+    EXPECT_LT(fallback, retain);
+    EXPECT_LT(retain, missingLog);
+}
+
+// RoboCop session 20260809_144640: NVIDIA Streamline loads its runtime DLLs
+// under obfuscated hashed names (1B0_E658703.dll) that contain none of the
+// sl.* path tokens, so callerFromStreamlineModule stayed false and the PostSL
+// routing never classified the runtime presents as Streamline-originated.
+// Recognition must fall back to the Streamline plugin API exports.
+TEST(DXGISharedSourceTest, StreamlineModuleRecognitionFallsBackToPluginExports) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t resolver = text.find("bool ResolveIsStreamlineModuleHandle(HMODULE moduleHandle)");
+    const size_t nameTokens = text.find("sl.dlss_g", resolver);
+    const size_t exportFallback = text.find("GetProcAddress(moduleHandle, \"slGetPluginFunction\")", resolver);
+    const size_t featureExport = text.find("GetProcAddress(moduleHandle, \"slGetFeatureFunction\")", resolver);
+    const size_t function = text.find("bool IsStreamlineModuleHandle(HMODULE moduleHandle)");
+    ASSERT_NE(resolver, std::string::npos);
+    ASSERT_NE(nameTokens, std::string::npos);
+    ASSERT_NE(exportFallback, std::string::npos);
+    ASSERT_NE(featureExport, std::string::npos);
+    ASSERT_NE(function, std::string::npos);
+    EXPECT_LT(resolver, nameTokens);
+    EXPECT_LT(nameTokens, exportFallback);
+    EXPECT_LT(exportFallback, featureExport);
+    EXPECT_LT(featureExport, function);
+}
+
+// The late-handoff fallback must consume the one-shot top-level bootstrap so
+// the confirmed-startup settling window is covered by the normal keep-startup
+// route; otherwise the overlay starves after the first confirmed frame.
+TEST(DXGISharedSourceTest, LateHandoffFallbackConsumesTopLevelBootstrap) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t retain = text.find("DX12_RetainStreamlineStartupActivationSwapchain(liveSwapchain");
+    const size_t consume =
+        text.find("streamlineStartupTopLevelPresentConsumed.exchange", retain);
+    const size_t reacquire = text.find("AcquireRetainedStreamlineStartupActivationSwapchain()", consume);
+    ASSERT_NE(retain, std::string::npos);
+    ASSERT_NE(consume, std::string::npos);
+    ASSERT_NE(reacquire, std::string::npos);
+    EXPECT_LT(retain, consume);
+    EXPECT_LT(consume, reacquire);
+}
+
 } // namespace

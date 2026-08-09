@@ -29,19 +29,65 @@ bool IsSteamOverlayModule(const char* overlayModule) {
 }
 
 namespace DXGIShared {
-bool IsStreamlineModuleHandle(HMODULE moduleHandle) {
-    if (!moduleHandle) {
-        return false;
-    }
+namespace {
+// NVIDIA Streamline can load its runtime DLLs under obfuscated hashed names
+// (e.g. "1B0_E658703.dll") that contain none of the sl.* path tokens. Those
+// modules still export the Streamline plugin API, so recognition falls back to
+// the exports. Results are cached per module handle because this runs on the
+// Present classification path (CapturePresentCallContext).
+struct StreamlineModuleCacheEntry {
+    HMODULE module = nullptr;
+    bool isStreamline = false;
+};
+constexpr size_t kStreamlineModuleCacheSize = 16;
+StreamlineModuleCacheEntry g_streamlineModuleCache[kStreamlineModuleCacheSize];
+std::mutex g_streamlineModuleCacheMutex;
 
+bool ResolveIsStreamlineModuleHandle(HMODULE moduleHandle) {
     char modulePath[MAX_PATH] = {};
     if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
         return false;
     }
 
-    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.interposer") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.common") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.dlss_g");
+    if (ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.interposer") ||
+        ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.common") ||
+        ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.dlss_g")) {
+        return true;
+    }
+
+    // Obfuscated Streamline runtime (RoboCop: Rogue City loads its runtime as
+    // "1B0_E658703.dll"): recognized by its plugin API export.
+    return GetProcAddress(moduleHandle, "slGetPluginFunction") != nullptr ||
+           GetProcAddress(moduleHandle, "slGetFeatureFunction") != nullptr;
+}
+} // namespace
+
+bool IsStreamlineModuleHandle(HMODULE moduleHandle) {
+    if (!moduleHandle) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_streamlineModuleCacheMutex);
+        for (const auto& entry : g_streamlineModuleCache) {
+            if (entry.module == moduleHandle) {
+                return entry.isStreamline;
+            }
+        }
+    }
+
+    const bool resolved = ResolveIsStreamlineModuleHandle(moduleHandle);
+    {
+        std::lock_guard<std::mutex> lock(g_streamlineModuleCacheMutex);
+        for (auto& entry : g_streamlineModuleCache) {
+            if (entry.module == nullptr) {
+                entry.module = moduleHandle;
+                entry.isStreamline = resolved;
+                break;
+            }
+        }
+    }
+    return resolved;
 }
 }
 

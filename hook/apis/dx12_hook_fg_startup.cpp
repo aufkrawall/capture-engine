@@ -148,6 +148,52 @@ static IDXGISwapChain* AcquireSwapchainForStartupActivation(const char* source) 
         return retained;
     }
 
+    // Late-handoff fallback: the Streamline runtime can create the real
+    // swapchain before CE captures the original game queue, so the create-time
+    // retention (freshAuthoritativeStreamlineHandoff) never ran. The live
+    // swapchain is still the correct PostSL activation target - retain it now
+    // so the pending startup activation completes instead of staying
+    // half-armed forever (RoboCop: Rogue City session 20260809_143910).
+    IDXGISwapChain* liveSwapchain = dx12_hook_g_LastSwapChain;
+    if (ce::dx12_overlay_policy::ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+            false, liveSwapchain != nullptr && IsUsableStartupActivationSwapchainPointer(liveSwapchain) &&
+                       IsDX12Swapchain(liveSwapchain),
+            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
+            HookHasRuntimeOwnedNativeFGPresentPath(), g_FGCompat.IsFSRFGApiActive(),
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))) {
+        static std::atomic<int> s_lateHandoffRetainLogCount{0};
+        const int logCount = s_lateHandoffRetainLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "DX12: Late-handoff PostSL startup activation - retaining live swapchain %p as activation "
+                "swapchain (source=%s log=%d)",
+                liveSwapchain, source ? source : "unknown", logCount + 1);
+        }
+        DX12_RetainStreamlineStartupActivationSwapchain(liveSwapchain, "late-handoff live swapchain fallback");
+        // The one-shot Streamline top-level startup bootstrap was consumed by
+        // this late-handoff activation service (the create-time top-level
+        // Present promotion never ran because the original game queue was
+        // unknown when the swapchain was created). Mark it consumed so the
+        // confirmed-startup settling window can be covered by the normal
+        // keep-startup route; without it the overlay starves after the first
+        // confirmed frame until settling ends (RoboCop 20260809_144640).
+        if (!DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.exchange(
+                true, std::memory_order_acq_rel)) {
+            static std::atomic<int> s_consumedBootstrapLogCount{0};
+            const int consumedLog = s_consumedBootstrapLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (consumedLog < 20 || (consumedLog % 200) == 0) {
+                HookLogImportant(
+                    "DX12: Late-handoff PostSL startup activation consumed the one-shot top-level bootstrap "
+                    "(source=%s swapchain=%p log=%d)",
+                    source ? source : "unknown", liveSwapchain, consumedLog + 1);
+            }
+        }
+        retained = AcquireRetainedStreamlineStartupActivationSwapchain();
+        if (retained) {
+            return retained;
+        }
+    }
+
     static std::atomic<int> s_missingStartupActivationSwapchainLogCount{0};
     const int logCount = s_missingStartupActivationSwapchainLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 10 || (logCount % 100) == 0) {
@@ -332,4 +378,3 @@ return IsUsableStartupActivationSwapchainPointer(dx12_hook_g_StreamlineStartupAc
 bool HasStartupActivationSwapchainCandidateForECLProbe() {
 return HasUsableRetainedStreamlineStartupActivationSwapchainCandidate();
 }
-

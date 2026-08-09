@@ -341,6 +341,22 @@ inline bool ShouldPreferRetainedStreamlineStartupActivationSwapchain(bool retain
     return retainedSwapchainAvailable && (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
+// Late-handoff fallback for the retained Streamline startup activation
+// swapchain. The create-time retention requires a known original game queue
+// (freshAuthoritativeStreamlineHandoff); when the Streamline runtime creates
+// the real swapchain BEFORE CE captures origGame (RoboCop: Rogue City session
+// 20260809_143910: swapchain at 14:39:18.173, origGame only at 14:39:18.218),
+// that retention never runs and PostSL startup activation stays half-armed
+// forever ("No startup activation swapchain available ... weakLast=<live>").
+// In that case the live swapchain is still the correct PostSL activation
+// target, so retain it when the pure-DLSS startup activation is pending.
+inline bool ShouldFallbackRetainLiveSwapchainForPostSLStartupActivation(
+    bool retainedSwapchainAvailable, bool liveSwapchainUsable, bool startupActivationPending,
+    bool nativeFSRPresentPathActive, bool fsrApiActive, bool streamlineFGRunning) {
+    return !retainedSwapchainAvailable && liveSwapchainUsable && startupActivationPending &&
+           !nativeFSRPresentPathActive && !fsrApiActive && streamlineFGRunning;
+}
+
 inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shouldKeepOffChurnDeferred,
                                                                       bool startupTransitionWindowActive,
                                                                       bool activationPending,

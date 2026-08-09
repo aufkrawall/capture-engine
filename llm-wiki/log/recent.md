@@ -1,5 +1,40 @@
 # llm-wiki Log
 
+### 2026-08-09 - RoboCop overlay drew one PostSL frame then starved in the confirmed-startup settling window
+
+- Build 0.1.5894 session `installed/captureengine/logs/20260809_144640`: the late-handoff
+  fallback worked (`Late-handoff PostSL startup activation - retaining live swapchain ...`,
+  `PostSL CONFIRMED rendering`, `Post-SL overlay SUBMIT #1 ... rendered=1`), but after that
+  single frame the overlay starved: every later present logged `drawObserved=0`, the warmup
+  stall counter climbed past 1000, and `stableFrames` stayed at 1.
+- Two root causes, both specific to how NVIDIA Streamline loads in RoboCop:
+  1. **The runtime is obfuscated.** The dumps show Streamline's runtime loaded as
+     `1B0_E658703.dll` (multiple instances) - a hashed name with none of the `sl.*` path
+     tokens. `IsStreamlineModuleHandle` matched only by path, so
+     `callerFromStreamlineModule=false` for every runtime-originated Present and the PostSL
+     routing could not classify them. (Talos ships a normally-named `sl.dlss_g`, which is why
+     it works there.)
+  2. **The one-shot top-level bootstrap was never consumed.** The create-time
+     fresh-authoritative-handoff arming never ran (origGame was unknown at swapchain create),
+     so `streamlineStartupTopLevelPresentConsumed` stayed false. During the 8-frame
+     confirmed-startup settling window the overlay is supposed to be drawn by the
+     keep-startup normal route, but that route requires
+     `streamlineStartupTopLevelPresentConsumed` (or post-FSR proof) - so nothing drew, the
+     stable counter never advanced, and settling never ended. Circular starvation.
+- Fixes (build 0.1.5895):
+  - `IsStreamlineModuleHandle` now falls back to the Streamline plugin API exports
+    (`slGetPluginFunction` / `slGetFeatureFunction`) with a small per-module cache, so the
+    obfuscated runtime is recognized name-independently.
+  - The late-handoff activation fallback now marks
+    `streamlineStartupTopLevelPresentConsumed` when it retains the live swapchain, because
+    the activation service effectively consumed the one-shot bootstrap. The settling window
+    is then covered by the normal keep-startup route and the confirmed-standalone route
+    takes over after frame 8.
+- Talos impact: the module cache returns the same name-based results for normally-named
+  modules, and the bootstrap-consumed arming only runs in the late-handoff fallback (which
+  never fires when a retained swapchain exists). Focused and full unit/Python suites pass;
+  fresh RoboCop runtime validation is pending.
+
 ### 2026-08-09 - RoboCop third crash: proactive scan truncated at 8 candidates, missing the real slot
 
 - Build 0.1.5892 session `installed/captureengine/logs/20260809_143040` still crashed with
