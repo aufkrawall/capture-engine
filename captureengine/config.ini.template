@@ -625,6 +625,7 @@ dx12_focus_analysis=false
 ;Video.encoder=hevc_nvenc
 ;Video.fps=60
 ;Graphics.vsync_mode=off
+;Graphics.nv_lod_spread_fix=on
 ;FpsLimiter.general_enabled=true
 ;FpsLimiter.general_fps=120
 ;DLSS.dlss_preset_quality=K

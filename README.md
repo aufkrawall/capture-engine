@@ -126,6 +126,29 @@ Graphics.mip_bias=-1.5
 DLSS.dlss_fg_factor=3x
 ```
 
+The following example is a full-featured injected profile for STALKER 2: app audio capture on track 1, forced
+V-Sync, forced 16x anisotropic filtering, DLSS super-resolution, frame-generation, and Streamline DLL overrides,
+a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, forced UE5 Ray Reconstruction with preset E:
+
+```ini
+[Profile.stalker]
+process=Stalker2-Win64-Shipping.exe
+dll_injection=always
+audio_enabled=true
+audio_track=1
+vsync_mode=fifo
+;cpu_prerender_limit=1
+anisotropic_filtering=16x
+dlss_sr_dll_path=C:\path\to\dlls\folder
+dlss_fg_dll_path=C:\path\to\dlls\folder
+streamline_dll_path=C:\path\to\dlls\folder
+dlss_fg_factor=3x
+dlss_fg_preset=b
+dlss_debug_overlay=on
+force_ray_reconstruction=on
+dlss_rr_preset=e
+```
+
 `process=` is the executable name and is matched case-insensitively; the profile name is only a label. Any setting
 from the sections above can be overridden per game with `Section.key=value`, as `Video.fps=60` and
 `Graphics.vsync_mode=off` show. Injection is what anti-cheat software detects — see
@@ -406,6 +429,13 @@ Safe mode preserves structurally special samplers such as comparison/reduction, 
 other API-specific unsafe cases. Aggressive mode broadens ordinary material coverage without opting protected sampler
 families in. D3D10, D3D12, and Vulkan have no bind/draw overhead after sampler creation; legacy APIs and OpenGL do only
 event-driven bookkeeping. Decisions, retries, bootstrap failures, and summaries are rate-limited in the debug logs.
+
+`[Graphics] nv_lod_spread_fix=on` additionally fixes NVIDIA's long-standing texture filtering quality bug with
+negative LOD bias in OpenGL and Vulkan by forcing the driver's `FERMI_UNOPT_LOD_SPREAD` setting ON, where NVIDIA's
+default drops the LOD spread to zero. The Vulkan layer applies it after instance creation and before device creation,
+so DXVK/native Vulkan cannot initialize first. NVIDIA cards only; it is ignored everywhere else. Patching a graphics
+driver in memory — even read-only for other processes — is the kind of thing some anti-cheat systems object to, so
+leave it off for competitive online games.
 
 ## Encoding and FFmpeg patches
 
