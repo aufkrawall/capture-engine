@@ -95,6 +95,12 @@ namespace DXGIShared {
 //   the handler first resolves the slot dynamically from the faulting mov/call.
 LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION) {
+        static std::atomic<int> s_nonAvDeclineLogCount{0};
+        const int n = s_nonAvDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined non-AV exception 0x%08lX (n=%d)",
+                    (unsigned long)ep->ExceptionRecord->ExceptionCode, n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -104,6 +110,12 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     const int kCallOpcodeSize = 2;  // FF D0 = call rax (2 bytes)
     // RIP=0, RAX=0: calling through NULL (`call rax` where RAX loaded from NULL ptr)
     if (ep->ContextRecord->Rip != 0 || ep->ContextRecord->Rax != 0) {
+        static std::atomic<int> s_contextDeclineLogCount{0};
+        const int n = s_contextDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined context rip=%p rax=%p (n=%d)",
+                    (void*)ep->ContextRecord->Rip, (void*)ep->ContextRecord->Rax, n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
     uintptr_t returnAddress = 0;
@@ -125,20 +137,42 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
 #endif
 
     if (!returnAddress) {
+        static std::atomic<int> s_noReturnAddressDeclineLogCount{0};
+        const int n = s_noReturnAddressDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined missing return address (n=%d)", n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
     HMODULE steamMod = GetModuleHandleW(steamModuleName);
     if (!steamMod) {
+        static std::atomic<int> s_noSteamModuleDeclineLogCount{0};
+        const int n = s_noSteamModuleDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined Steam module not loaded (n=%d)", n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
     MODULEINFO modInfo = {};
     if (!GetModuleInformation(GetCurrentProcess(), steamMod, &modInfo, sizeof(modInfo))) {
+        static std::atomic<int> s_moduleInfoDeclineLogCount{0};
+        const int n = s_moduleInfoDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined GetModuleInformation failure (n=%d)", n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
     uintptr_t steamStart = (uintptr_t)steamMod;
     uintptr_t steamEnd = steamStart + modInfo.SizeOfImage;
     if (returnAddress < steamStart || returnAddress >= steamEnd) {
+        static std::atomic<int> s_outsideModuleDeclineLogCount{0};
+        const int n = s_outsideModuleDeclineLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 200) == 0) {
+            HookLog("SteamOverlayInitVehHandler: declined return address outside Steam module "
+                    "(ret=%p steam=%p-%p n=%d)",
+                    (void*)returnAddress, (void*)steamStart, (void*)steamEnd, n);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
 

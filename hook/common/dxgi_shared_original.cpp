@@ -250,6 +250,11 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // return address, so it chains to the original dxgi!Present
                     // after rendering Steam overlay.
                     if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
+                        // Preemptively patch Steam's Present-shaped NULL
+                        // callback slot(s) to the bypass (same recovery the VEH
+                        // below would apply at crash time, applied up front so a
+                        // shadowed VEH dispatch cannot leave a fault behind).
+                        DXGIShared::EnsureSteamNullCallbacksPatched(presentBypass);
                         ScopedSteamNullCallbackRecoveryGuard steamInvokeGuard(
                             presentBypass != nullptr, "non-SL Steam Present", "E9 JMP steady Present",
                             reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass), false,
@@ -465,6 +470,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 }
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
+
+            // Preemptively patch Steam's Present-shaped NULL callback slot(s)
+            // to the bypass so the E9 transport below cannot fault through
+            // NULL even if the crash-time VEH recovery is shadowed by other
+            // exception handlers.
+            DXGIShared::EnsureSteamNullCallbacksPatched(presentBypass);
 
             ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
                 presentBypass != nullptr, "SL fast-path Steam Present", "SL fast-path E9 transport",

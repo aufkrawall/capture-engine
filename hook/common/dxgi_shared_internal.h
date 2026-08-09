@@ -14,6 +14,8 @@ struct PresentCallContext;
 
 #include "dxgi_shared.h"
 
+#include "dxgi_shared_detail/steam_null_callback.h"
+
 #include "../../common/raii_helpers.h"
 
 #include "../apis/dx11_hook.h"
@@ -336,6 +338,13 @@ PFN_Present1 EnsurePresent1BypassTrampoline();
 
 namespace DXGIShared {
 bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut);
+}
+
+namespace DXGIShared {
+// Discover Steam's Present-shaped NULL callback slot(s) in the loaded overlay
+// module and preemptively patch NULL ones to CE's DXGI bypass trampoline.
+size_t DiscoverSteamNullCallbackSlots(HMODULE steamModule, uintptr_t* slotsOut, size_t maxSlots);
+size_t EnsureSteamNullCallbacksPatched(PFN_Present presentBypass);
 }
 
 namespace DXGIShared {

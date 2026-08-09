@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-08-09 - RoboCop still crashed: VEH Steam recovery was shadowed, so NULL callback slots are now patched proactively
+
+- Build 0.1.5891 session `installed/captureengine/logs/20260809_141705` still crashed the
+  RHI thread with the identical RIP=0 signature (`gameoverlayrenderer64!OverlayHookD3D3+0x13e8f`
+  -> `CallOriginalPresent` -> `DetourPresent` -> Streamline runtime -> game) even though the
+  SL fast-path now installed `ScopedSteamNullCallbackRecoveryGuard`. The guard log appeared
+  (`Guarded Steam Present hook installed Steam null-callback VEH recovery #1`), but no VEH
+  handler log ever followed: the crash-time recovery was shadowed and never patched. The
+  `external_sl-sha-68a19a3_*.dmp` is NVIDIA Streamline's own crash dump
+  (`C:\ProgramData\NVIDIA\Streamline\...`), i.e. Streamline has its own exception handling in
+  the chain; the repeated AVs and the later freeze are all downstream of the unpatched NULL call.
+- The faulting slot in this Steam overlay build (gameoverlayrenderer64 2026-08-03) is at RVA
+  **0x167340**, loaded by `mov rax,[rip+0xD348B]` immediately before `call rax` at
+  `OverlayHookD3D3+0x13ebd` - not the legacy 0x1621d8 fallback. So the slot moves per Steam
+  build and must be discovered from the code pattern.
+- Fix: proactive NULL-callback slot patching (`hook/common/dxgi_shared_steam.cpp`). Before any
+  Steam transport runs, `EnsureSteamNullCallbacksPatched(bypass)` scans the Steam overlay for
+  the `48 8B 05 <disp32> ... FF D0` (x64) / `A1|8B 05 <abs32> ... FF D0` (x86) Present-shaped
+  callback pattern, caches the slot addresses per module version, and patches any slot whose
+  value is NULL or below 0x10000 to CE's DXGI bypass trampoline. It runs at the top of
+  `TryInvokeGuardedExternalSteamOverlayPresent`, in the SL fast-path, and in the non-SL E9 path,
+  all before Steam's hook is touched. The VEH recovery stays as a backstop and its silent
+  early-return paths are now logged for future diagnosis.
+- Talos safety: the patch only writes NULL/invalid slots; in working sessions (Talos) Steam's
+  callback is already non-NULL so the function is a no-op, and it writes exactly the same bypass
+  value the crash-time VEH recovery already uses. The source-thread provenance rule from
+  `20260809_015416` is untouched.
+- Coverage: `tests/test_dxgi_shared_part12.cpp` pins the pattern scanner (RoboCop x64 pattern,
+  out-of-module rejection, missing-call rejection, lead-window/cap behavior, x86 A1/8B05
+  patterns) and the wiring order (proactive patch precedes the callback read in the guarded
+  helper, and precedes the E9 return in the SL fast-path). Product build 0.1.5892 (x64/x86) and
+  the full unit/Python suites pass. Fresh RoboCop and Talos runtime validation is pending.
+
 ### 2026-08-09 - RoboCop overlay visible but RHI thread crashed: unguarded SL fast-path Steam E9 transport
 
 - After the Vulkan misclassification fix (build 0.1.5890) the overlay rendered in RoboCop,

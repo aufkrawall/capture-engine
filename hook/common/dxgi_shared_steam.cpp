@@ -1,5 +1,7 @@
 #include "dxgi_shared_internal.h"
 
+#include "dxgi_shared_detail/steam_null_callback.h"
+
 namespace DXGIShared {
 // Fallback only: Steam's NULL Present-shaped callbacks should normally be
 // patched to CE's DXGI bypass trampoline so Steam can keep chaining to a real
@@ -206,10 +208,8 @@ bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut) {
 
 #ifdef _WIN64
     const wchar_t* steamModuleName = L"gameoverlayrenderer64.dll";
-    const uintptr_t kSteamCallbackRva = 0x1621d8;
 #else
     const wchar_t* steamModuleName = L"gameoverlayrenderer.dll";
-    const uintptr_t kSteamCallbackRva = 0x1621d8;
 #endif
 
     HMODULE steamMod = GetModuleHandleW(steamModuleName);
@@ -217,13 +217,118 @@ bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut) {
         return false;
     }
 
-    void** callbackSlot = reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(steamMod) + kSteamCallbackRva);
-    if (!IsReadableMemory(reinterpret_cast<const void*>(callbackSlot), sizeof(void*))) {
-        return false;
+    uintptr_t slots[detail::kSteamNullCallbackMaxSlots] = {};
+    const size_t slotCount = DiscoverSteamNullCallbackSlots(steamMod, slots, detail::kSteamNullCallbackMaxSlots);
+    for (size_t i = 0; i < slotCount; ++i) {
+        auto* callbackSlot = reinterpret_cast<void**>(slots[i]);
+        if (IsReadableMemory(reinterpret_cast<const void*>(callbackSlot), sizeof(void*))) {
+            *callbackValueOut = *callbackSlot;
+            return true;
+        }
+    }
+    return false;
+}
+}
+
+namespace DXGIShared {
+size_t DiscoverSteamNullCallbackSlots(HMODULE steamModule, uintptr_t* slotsOut, size_t maxSlots) {
+    if (!steamModule || !slotsOut || maxSlots == 0) {
+        return 0;
     }
 
-    *callbackValueOut = *callbackSlot;
-    return true;
+    MODULEINFO modInfo = {};
+    if (!GetModuleInformation(GetCurrentProcess(), steamModule, &modInfo, sizeof(modInfo))) {
+        return 0;
+    }
+    const auto* code = static_cast<const uint8_t*>(modInfo.lpBaseOfDll);
+    const uintptr_t moduleStart = reinterpret_cast<uintptr_t>(modInfo.lpBaseOfDll);
+    const uintptr_t moduleEnd = moduleStart + modInfo.SizeOfImage;
+    if (!IsReadableMemory(code, modInfo.SizeOfImage)) {
+        return 0;
+    }
+#ifdef _WIN64
+    constexpr bool kX64Pattern = true;
+#else
+    constexpr bool kX64Pattern = false;
+#endif
+    return detail::FindSteamNullCallbackSlotCandidates(code, modInfo.SizeOfImage, moduleStart, moduleEnd,
+                                                       slotsOut, maxSlots, kX64Pattern);
+}
+}
+
+namespace DXGIShared {
+// Steam's OverlayHookD3D3 dispatches a Present-shaped rendering callback
+// through a data slot that can still be NULL on the real game swapchain (the
+// temp-swapchain pre-init does not initialize it). Instead of relying only on
+// crash-time VEH recovery, patch the NULL slot(s) to CE's DXGI bypass BEFORE
+// invoking Steam's hook. The slot addresses are cached per module version so
+// steady-state presents only read and compare a few pointers. RoboCop: Rogue
+// City session 20260809_141705 proved the crash-time recovery can be shadowed
+// by other exception handlers (Streamline's own crash handling), so the
+// preemptive patch is the primary fix; the VEH stays as a backstop for unknown
+// Steam builds.
+size_t EnsureSteamNullCallbacksPatched(PFN_Present presentBypass) {
+#ifdef _WIN64
+    const wchar_t* steamModuleName = L"gameoverlayrenderer64.dll";
+#else
+    const wchar_t* steamModuleName = L"gameoverlayrenderer.dll";
+#endif
+    HMODULE steamMod = GetModuleHandleW(steamModuleName);
+    if (!steamMod || !presentBypass) {
+        return 0;
+    }
+
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(steamMod);
+    struct SlotCache {
+        uintptr_t moduleBase = 0;
+        size_t slotCount = 0;
+        uintptr_t slots[detail::kSteamNullCallbackMaxSlots] = {};
+    };
+    static SlotCache s_slotCache;
+
+    if (s_slotCache.moduleBase != moduleBase) {
+        s_slotCache.moduleBase = moduleBase;
+        s_slotCache.slotCount = DiscoverSteamNullCallbackSlots(steamMod, s_slotCache.slots,
+                                                               detail::kSteamNullCallbackMaxSlots);
+        static std::atomic<int> s_discoverLogCount{0};
+        if (s_discoverLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant(
+                "Steam NULL-callback slot discovery: found %zu candidate slot(s) in Steam overlay (base=%p)",
+                s_slotCache.slotCount, (void*)moduleBase);
+        }
+    }
+
+    size_t patched = 0;
+    for (size_t i = 0; i < s_slotCache.slotCount; ++i) {
+        auto* slot = reinterpret_cast<void**>(s_slotCache.slots[i]);
+        if (!IsReadableMemory(reinterpret_cast<const void*>(slot), sizeof(void*))) {
+            continue;
+        }
+        void* value = *slot;
+        if (value != nullptr && reinterpret_cast<uintptr_t>(value) >= 0x10000) {
+            continue;
+        }
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            static std::atomic<int> s_patchFailLogCount{0};
+            if (s_patchFailLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "Steam NULL-callback patch: VirtualProtect failed at slot %p (steam+0x%zX) err=%lu",
+                    slot, s_slotCache.slots[i] - moduleBase, GetLastError());
+            }
+            continue;
+        }
+        *slot = reinterpret_cast<void*>(presentBypass);
+        VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), oldProtect, &oldProtect);
+        ++patched;
+        static std::atomic<int> s_patchLogCount{0};
+        if (s_patchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLogImportant(
+                "Steam NULL-callback patch: patched slot %p (steam+0x%zX, was=%p) -> DXGI bypass %p",
+                slot, s_slotCache.slots[i] - moduleBase, value, (void*)presentBypass);
+        }
+    }
+    return patched;
 }
 }
 
@@ -290,6 +395,11 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         }
         return false;
     }
+
+    // Preemptively patch Steam's Present-shaped NULL callback slot(s) to the
+    // DXGI bypass so invoking Steam's hook cannot fault through NULL. The
+    // crash-time VEH recovery below remains as a backstop for unknown builds.
+    EnsureSteamNullCallbacksPatched(presentBypass);
 
     void* steamCallbackBefore = nullptr;
     const bool steamCallbackReadable = TryReadSteamOverlayNullCallbackSlot(&steamCallbackBefore);
