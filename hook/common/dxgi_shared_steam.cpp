@@ -430,7 +430,21 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         isD3D12SwapChain, streamlineStackActive, streamlineFGRunning, postSLConfirmedRendering,
         ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
         HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
+    const bool isTrackedGameThread =
+        trackedSourcePresentThreadId != 0 && trackedSourcePresentThreadId == currentThreadId;
+    // During DLSS FG the frames actually displayed are the worker's generated
+    // presents; Steam's GUI drawn only on the game thread's source-frame
+    // presents is overwritten by the runtime and stays invisible. Steady-state
+    // DLSS FG may therefore service Steam from the worker (the 015416 stall was
+    // confined to the startup transition window, which stays strict).
+    const bool streamlineWorkerSteamAllowed =
+        !isTrackedGameThread &&
+        DXGIShared::ShouldInvokeSteamOnStreamlineWorkerPresent(
+            streamlineFGRunning, postSLConfirmedRendering, startupTransitionWindowActive,
+            postSLConfirmedButStartupSettling, HookHasRuntimeOwnedNativeFGPresentPath(),
+            ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive());
     const bool synchronousPresentThreadAllowed =
+        isTrackedGameThread || streamlineWorkerSteamAllowed ||
         DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
             runtimeCanPresentFromWorker, trackedSourcePresentThreadId, currentThreadId);
     if (!synchronousPresentThreadAllowed) {
@@ -441,11 +455,14 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
                 HookLogImportant(
                     "DXGIShared: Skipping guarded Steam Present hook #%d for %s because an FG runtime can Present "
                     "from workers and this is not the verified source Present thread; using bypass trampoline "
-                    "instead (runtime=%s slFG=%d confirmed=%d streamlineStack=%d sourceTid=0x%04X "
+                    "instead (runtime=%s slFG=%d confirmed=%d settling=%d startupWindow=%d streamlineStack=%d "
+                    "workerSteam=%d sourceTid=0x%04X "
                     "currentTid=0x%04X)",
                     skipNum, reason ? reason : "Present", ce::fg_runtime::GetRuntimeModeName(runtimeMode),
                     streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    streamlineStackActive ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+                    postSLConfirmedButStartupSettling ? 1 : 0, startupTransitionWindowActive ? 1 : 0,
+                    streamlineStackActive ? 1 : 0, streamlineWorkerSteamAllowed ? 1 : 0, trackedSourcePresentThreadId,
+                    currentThreadId);
             }
         }
         return false;

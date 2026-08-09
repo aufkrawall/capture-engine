@@ -426,6 +426,25 @@ inline bool ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
     return trackedSourcePresentThreadId != 0 && trackedSourcePresentThreadId == currentThreadId;
 }
 
+// Steam may be entered from a DLSS-G worker Present only in steady-state
+// Streamline FG. During FG the frames actually displayed are the worker's
+// generated-output presents; Steam's overlay GUI drawn on the game thread's
+// source-frame presents is overwritten by the runtime's re-render of those
+// buffers and stays invisible. The 2026-08-09 Talos stall (20260809_015416)
+// happened when CE called Steam from the worker during the startup transition
+// window, so that window stays strict: only a confirmed, settled, non-startup
+// DLSS-FG epoch may service Steam from the worker. Native-FSR paths (no-callback
+// composition, runtime-owned native FSR present) keep the strict game-thread
+// rule - they have their own compositing invariants.
+inline bool ShouldInvokeSteamOnStreamlineWorkerPresent(
+    bool streamlineFGRunning, bool postSLConfirmedRendering, bool startupTransitionWindowActive,
+    bool postSLConfirmedButStartupSettling, bool runtimeOwnedNativeFGPresentPath, bool fsrRuntimeActive,
+    bool fsrApiActive) {
+    return streamlineFGRunning && postSLConfirmedRendering && !startupTransitionWindowActive &&
+           !postSLConfirmedButStartupSettling && !runtimeOwnedNativeFGPresentPath && !fsrRuntimeActive &&
+           !fsrApiActive;
+}
+
 inline bool CanRuntimePresentFromWorkerForExternalOverlay(
     bool isD3D12SwapChain, bool streamlineStackActive, bool streamlineFGRunning, bool postSLConfirmedRendering,
     bool fsrRuntimeActive, bool fsrApiActive, bool runtimeOwnedNativeFGPresentPath, bool runtimeOwnsSwapchain) {

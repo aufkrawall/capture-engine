@@ -28,6 +28,35 @@ TEST(DXGISharedTest, StreamlineWrapperPresentsAreSourceFramesForTheThreadTracker
     EXPECT_TRUE(IsRuntimeGeneratedFrame(false, false, false, false, true));   // runtime-owned native FSR
 }
 
+TEST(DXGISharedTest, StreamlineWorkerMayServiceSteamOnlyInSteadyStateDLSSFG) {
+    using DXGIShared::ShouldInvokeSteamOnStreamlineWorkerPresent;
+
+    // The DLSS-G worker presents the frames that are actually displayed during
+    // FG; Steam's GUI drawn on game-thread source presents is overwritten by
+    // the runtime. Steady-state DLSS FG may service Steam from the worker.
+    EXPECT_TRUE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        /*streamlineFGRunning=*/true, /*postSLConfirmedRendering=*/true,
+        /*startupTransitionWindowActive=*/false, /*postSLConfirmedButStartupSettling=*/false,
+        /*runtimeOwnedNativeFGPresentPath=*/false, /*fsrRuntimeActive=*/false, /*fsrApiActive=*/false));
+
+    // The 20260809_015416 stall happened during the startup transition window;
+    // every non-steady-state condition keeps the strict game-thread rule.
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        false, true, false, false, false, false, false));  // FG not running
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, false, false, false, false, false, false));  // not confirmed rendering
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, true, true, false, false, false, false));    // startup transition window
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, true, false, true, false, false, false));    // startup settling
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, true, false, false, true, false, false));    // runtime-owned native FSR
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, true, false, false, false, true, false));    // FSR runtime mode
+    EXPECT_FALSE(ShouldInvokeSteamOnStreamlineWorkerPresent(
+        true, true, false, false, false, false, true));    // FSR API active
+}
+
 TEST(DXGISharedSourceTest, PresentSourceClassificationExcludesStreamlineWrapperCaller) {
     namespace fs = std::filesystem;
     const fs::path presentCore = fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp";
@@ -61,6 +90,26 @@ TEST(DXGISharedSourceTest, PresentSourceClassificationExcludesStreamlineWrapperC
     EXPECT_NE(coreText.find("HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, "
                             "frameGenerationPresentationActive);"),
               std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, GuardedSteamInvokeServicesSteadyStateStreamlineWorkers) {
+    namespace fs = std::filesystem;
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    const std::string steamText = ce::test_source::ReadLogicalSource(steamSource);
+
+    // The guarded Steam invoke must allow the DLSS-G worker in steady state
+    // (the displayed frames during FG), while the game thread stays the
+    // primary path.
+    EXPECT_NE(steamText.find("DXGIShared::ShouldInvokeSteamOnStreamlineWorkerPresent("), std::string::npos);
+    EXPECT_NE(steamText.find("const bool isTrackedGameThread =\n"
+                             "        trackedSourcePresentThreadId != 0 && trackedSourcePresentThreadId == "
+                             "currentThreadId;"),
+              std::string::npos);
+    EXPECT_NE(steamText.find("const bool synchronousPresentThreadAllowed =\n"
+                             "        isTrackedGameThread || streamlineWorkerSteamAllowed ||"),
+              std::string::npos);
+    EXPECT_NE(steamText.find("workerSteam=%d"), std::string::npos);
 }
 
 TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntimeGeneratedPresents) {

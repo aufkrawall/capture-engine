@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-09 - Steam overlay GUI invisible during DLSS FG: Steam must be serviced on the worker's displayed presents
+
+- Session `logs/20260809_160835` (Talos, build 0.1.5900) validated the source-thread latch: `sourceTid=0x09CC`
+  latched, `Invoking guarded Steam Present hook` fires continuously on the game thread (including during FG, #50 with
+  `slFG=1`, #1000 at 16:09:07), and worker presents (T:5CF0) correctly skip. The user sees the Steam overlay
+  startup animation but Shift+Tab does not open the GUI in-game. CE's own hotkeys are CTRL+9/8/0/- (not Shift+Tab),
+  so input is not stolen.
+- Root cause: during DLSS FG the frames actually displayed are the DLSS-G worker's generated-output presents (CE's
+  PostSL overlay draws on those and is visible), while Steam's hook only runs on the game thread's source-frame
+  presents - the runtime re-renders those buffers, so Steam's GUI is overwritten and never visible. The startup
+  animation works because it renders pre-FG on directly displayed presents.
+- Fix (build 0.1.5901): `ShouldInvokeSteamOnStreamlineWorkerPresent` in
+  `hook/common/dxgi_shared_detail/types_and_state.h` allows `TryInvokeGuardedExternalSteamOverlayPresent` to service
+  Steam from a DLSS-G worker Present only in steady state: `streamlineFGRunning && postSLConfirmedRendering &&
+  !startupTransitionWindowActive && !postSLConfirmedButStartupSettling && !runtimeOwnedNativeFGPresentPath &&
+  !fsrRuntimeActive && !fsrApiActive`. The 20260809_015416 stall happened during the startup transition window and
+  stays strict; native-FSR paths keep the game-thread-only rule. The skip log now reports `workerSteam=` and the
+  settling/startup fields. Coverage: `tests/test_dxgi_shared_part10.cpp`
+  (`StreamlineWorkerMayServiceSteamOnlyInSteadyStateDLSSFG`,
+  `GuardedSteamInvokeServicesSteadyStateStreamlineWorkers`).
+- Runtime validation pending: Shift+Tab during DLSS FG must open the Steam GUI (now drawn on worker presents); watch
+  for any worker stall inside Steam (the 015416 signature) - the startup-window gate is the main mitigation.
+
 ### 2026-08-09 - Steam overlay invisible in Streamline games: source-thread tracker could never latch
 
 - Sessions `logs/robocopgoodnew` and `logs/talosgoodnew` (build 0.1.5899) confirmed the runtime override + overlay
