@@ -24,6 +24,12 @@ inline constexpr uint32_t kExternalDumpStormTerminateHitThreshold = 3;
 inline constexpr DWORD kExternalDumpStormTerminationExitCode = 0xE000D00D;
 inline constexpr DWORD kFailFastExceptionExitCode = 0xC0000409;
 inline constexpr DWORD kBreakpointExceptionExitCode = EXCEPTION_BREAKPOINT;
+// STATUS_PROCESS_IS_TERMINATING. NVIDIA's DLSS snippet worker calls
+// NtTerminateProcess with this sentinel during process teardown (observed with
+// the 310.7 runtime in Talos/RoboCop on 2026-08-09); the game has already
+// exited cleanly, so this concurrent call is a losing teardown race, not a
+// crash. The severity bits would otherwise classify it as a crash-like exit.
+inline constexpr DWORD kProcessIsTerminatingExitCode = 0xC000004B;
 
 inline constexpr MINIDUMP_TYPE kRichCrashDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -287,7 +293,8 @@ inline bool ShouldTerminateAfterExternalDumpStorm(bool strongSignature, uint32_t
 }
 
 inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
-    if (exitCode == kExternalDumpStormTerminationExitCode) {
+    if (exitCode == kExternalDumpStormTerminationExitCode ||
+        exitCode == kProcessIsTerminatingExitCode) {
         return false;
     }
     if (exitCode == kFailFastExceptionExitCode || exitCode == kBreakpointExceptionExitCode ||
@@ -303,7 +310,11 @@ inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
 
 inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
                                             bool frameGenerationRuntimeActiveOrRecent = false) {
-    if (!targetIsCurrentProcess || alreadyAttempted || exitCode == kExternalDumpStormTerminationExitCode) {
+    // STATUS_PROCESS_IS_TERMINATING is the runtime's own "the process is
+    // already exiting" sentinel; it never represents a genuine abnormal exit,
+    // so it must also skip the active-FG fallback below.
+    if (!targetIsCurrentProcess || alreadyAttempted || exitCode == kExternalDumpStormTerminationExitCode ||
+        exitCode == kProcessIsTerminatingExitCode) {
         return false;
     }
     if (IsCrashLikeProcessExitCode(exitCode)) {

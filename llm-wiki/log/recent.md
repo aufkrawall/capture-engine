@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-09 - NVIDIA DLSS teardown 0xC000004B is not a crash; pre-termination dump policy exempts it
+
+- RoboCop/Talos validation sessions `logs/robogood` and `logs/talosgood` (build 0.1.5898) confirmed the runtime
+  override fix end to end: every sl.*/nvngx_dlss* module loads from the configured NPI folder (preload + redirect,
+  including the NGX model-repository redirects `Redirecting 1B0_E658703.dll (NGX model sl_*_0)`), RoboCop now
+  creates and evaluates NGX Feature 13 (RR) with preset E, SR preset M is applied, and the overlay renders
+  continuously through PostSL (1180+ / 2085+ submits, all rendered=1, devRemoved=0, no crash markers).
+- Both sessions ended with a `crash_external_fatal_exit_NtTerminateProcess_c000004b_*.dmp` (~130 MB) although the
+  games exited cleanly (WMI exit code 0). The captured stack is deterministic in both games:
+  `nvngx_dlss.dll` (NPI 310.7) -> `nvapi64.dll` -> `NtTerminateProcess(0xC000004B)`. 0xC000004B is
+  `STATUS_PROCESS_IS_TERMINATING`: the DLSS snippet worker's losing teardown race against the game's clean
+  ExitProcess(0) - not a crash. CE's pre-termination policy classified it as crash-like purely by the NTSTATUS
+  severity bits.
+- Fix (build 0.1.5899): `common/crash_dump_policy.h` adds `kProcessIsTerminatingExitCode = 0xC000004B` and exempts
+  it in both `IsCrashLikeProcessExitCode` and `ShouldCapturePreTerminationDump` (including the active-FG fallback).
+  Regression coverage in `tests/test_crash_dump_policy.cpp`.
+
 ### 2026-08-09 - DLSS/Streamline override DLLs never loaded in RoboCop; runtime preload + late-module IAT fix
 
 - Sessions `installed/captureengine/logs/talosdlssoverride` and `robocopdlssoverride` (build 0.1.5895, identical

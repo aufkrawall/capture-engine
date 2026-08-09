@@ -151,6 +151,14 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeE
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false));
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false));
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false));
+
+    // STATUS_PROCESS_IS_TERMINATING (0xC000004B) is NVIDIA's DLSS snippet
+    // worker teardown race, not a crash: the game exits cleanly (code 0) and
+    // the concurrent NtTerminateProcess loses the race. No dump should be
+    // written, with or without an active FG runtime.
+    EXPECT_FALSE(policy::IsCrashLikeProcessExitCode(policy::kProcessIsTerminatingExitCode));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kProcessIsTerminatingExitCode, false));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kProcessIsTerminatingExitCode, false, true));
 }
 
 TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntimeExits) {
