@@ -11,6 +11,58 @@ TEST(DXGISharedTest, DX12PrerenderLimiterRunsOnlyOnProvenSourcePresentsDuringFra
     EXPECT_TRUE(ShouldApplyDX12PrerenderLimitOnPresent(true, 0x5444, 0x5444));
 }
 
+TEST(DXGISharedTest, StreamlineWrapperPresentsAreSourceFramesForTheThreadTracker) {
+    using ce::dx12_overlay_policy::IsRuntimeGeneratedFrame;
+
+    // A real-frame Present through the Streamline wrapper (FG off, game-owned
+    // swapchain, no FFX, no native FSR) is NOT runtime-generated: it must be
+    // able to establish the source Present thread, otherwise the guarded Steam
+    // overlay invoke stays permanently blocked in Streamline games.
+    EXPECT_FALSE(IsRuntimeGeneratedFrame(false, false, false, false, false));
+
+    // Every actual runtime-generated family disqualifies a present.
+    EXPECT_TRUE(IsRuntimeGeneratedFrame(true, false, false, false, false));   // native no-callback FSR
+    EXPECT_TRUE(IsRuntimeGeneratedFrame(false, true, false, false, false));   // Streamline FG active
+    EXPECT_TRUE(IsRuntimeGeneratedFrame(false, false, true, false, false));   // runtime-owned swapchain
+    EXPECT_TRUE(IsRuntimeGeneratedFrame(false, false, false, true, false));   // FFX caller
+    EXPECT_TRUE(IsRuntimeGeneratedFrame(false, false, false, false, true));   // runtime-owned native FSR
+}
+
+TEST(DXGISharedSourceTest, PresentSourceClassificationExcludesStreamlineWrapperCaller) {
+    namespace fs = std::filesystem;
+    const fs::path presentCore = fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp";
+    const fs::path present1 = fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp";
+    ASSERT_TRUE(fs::exists(presentCore));
+    ASSERT_TRUE(fs::exists(present1));
+    const std::string coreText = ce::test_source::ReadLogicalSource(presentCore);
+    const std::string present1Text = ce::test_source::ReadLogicalSource(present1);
+
+    // The guarded Steam overlay invoke requires a verified source Present
+    // thread. In Streamline games every present runs through the wrapper, so
+    // the source classification must come from IsRuntimeGeneratedFrame (which
+    // deliberately excludes callerFromStreamlineModule) instead of the broad
+    // frameGenerationPresentationActive set - otherwise sourceTid stays 0 and
+    // Steam's overlay never renders.
+    const size_t coreClassification =
+        coreText.find("const bool runtimeGeneratedFrame = ce::dx12_overlay_policy::IsRuntimeGeneratedFrame(");
+    const size_t coreLimiterUse =
+        coreText.find("runtimeGeneratedFrame, DX12_GetGamePresentThreadId(), ctx.currentThreadId");
+    const size_t present1Classification =
+        present1Text.find("const bool runtimeGeneratedFrame = ce::dx12_overlay_policy::IsRuntimeGeneratedFrame(");
+    const size_t present1LimiterUse =
+        present1Text.find("runtimeGeneratedFrame, DX12_GetGamePresentThreadId(), currentThreadId");
+    ASSERT_NE(coreClassification, std::string::npos);
+    ASSERT_NE(coreLimiterUse, std::string::npos);
+    ASSERT_NE(present1Classification, std::string::npos);
+    ASSERT_NE(present1LimiterUse, std::string::npos);
+
+    // The broad frame-generation set must still feed the ProcessFrame flow so
+    // overlay/queue semantics stay unchanged.
+    EXPECT_NE(coreText.find("HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, "
+                            "frameGenerationPresentationActive);"),
+              std::string::npos);
+}
+
 TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntimeGeneratedPresents) {
     namespace fs = std::filesystem;
     const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";

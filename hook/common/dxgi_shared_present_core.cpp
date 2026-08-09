@@ -196,9 +196,17 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 ctx.callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath();
             // Non-FG calls keep existing queue-depth behavior. Once a runtime
             // can emit its own Presents, only the pre-FG game thread may pace.
+            // The runtime-generated classification deliberately excludes
+            // callerFromStreamlineModule: the wrapper forwards the game's own
+            // real-frame presents even before FG, and those must be able to
+            // establish the source Present thread (otherwise the guarded Steam
+            // overlay invoke can never fire in Streamline games).
+            const bool runtimeGeneratedFrame = ce::dx12_overlay_policy::IsRuntimeGeneratedFrame(
+                noCallbackFSRFG, ctx.streamlineFGRunning, ctx.runtimeOwnedSwapchainActive,
+                ctx.callerFromFFXFrameGenerationModule, HookHasRuntimeOwnedNativeFGPresentPath());
             const bool applicationSourcePresent =
                 ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
-                    frameGenerationPresentationActive, DX12_GetGamePresentThreadId(), ctx.currentThreadId);
+                    runtimeGeneratedFrame, DX12_GetGamePresentThreadId(), ctx.currentThreadId);
             {
                 // Transition-edge diagnostic: the post-startup ProcessFrame route log is rate-limited, so the
                 // FSR<->off handoff is otherwise invisible. Mark the exact edge + ownership/queue state so the

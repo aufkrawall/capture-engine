@@ -18,6 +18,23 @@ struct ID3D12Fence;
 
 namespace ce::dx12_overlay_policy {
 
+// True when the present is a runtime-generated frame (native FSR no-callback
+// output, Streamline FG active, a runtime-owned swapchain, an FFX caller, or a
+// runtime-owned native FSR present path). Deliberately excludes
+// "callerFromStreamlineModule": the interposer forwards the game's own Present
+// calls even while FG is not running, so a wrapper caller alone must not mark
+// a real frame as runtime-generated - otherwise the source-thread tracker can
+// never be established in Streamline games and the guarded Steam overlay
+// invoke stays permanently blocked (sourceTid stays 0, every present bypasses
+// Steam, Steam overlay never renders). Worker-generated frames are still
+// classified here via streamlineFGRunning / runtime-owned swapchain.
+inline bool IsRuntimeGeneratedFrame(bool noCallbackFSR, bool streamlineFGRunning, bool runtimeOwnedSwapchainActive,
+                                    bool callerFromFFXFrameGenerationModule,
+                                    bool runtimeOwnedNativeFGPresentPath) {
+    return noCallbackFSR || streamlineFGRunning || runtimeOwnedSwapchainActive ||
+           callerFromFFXFrameGenerationModule || runtimeOwnedNativeFGPresentPath;
+}
+
 inline bool ShouldApplyDX12PrerenderLimitOnPresent(bool frameGenerationPresentationActive,
                                                    uint32_t trackedGamePresentThreadId, uint32_t currentThreadId) {
     if (!frameGenerationPresentationActive) {

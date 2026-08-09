@@ -619,8 +619,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         const bool frameGenerationPresentationActive =
             streamlineFGRunning || runtimeOwnedSwapchainActive || callerFromStreamlineModule ||
             callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath();
+        // See DetourPresent: the runtime-generated classification excludes
+        // callerFromStreamlineModule so the game's real-frame presents through
+        // the wrapper can establish the source Present thread and unblock the
+        // guarded Steam overlay invoke.
+        const bool runtimeGeneratedFrame = ce::dx12_overlay_policy::IsRuntimeGeneratedFrame(
+            /*noCallbackFSR=*/false, streamlineFGRunning, runtimeOwnedSwapchainActive,
+            callerFromFFXFrameGenerationModule, HookHasRuntimeOwnedNativeFGPresentPath());
         const bool applicationSourcePresent = ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
-            frameGenerationPresentationActive, DX12_GetGamePresentThreadId(), currentThreadId);
+            runtimeGeneratedFrame, DX12_GetGamePresentThreadId(), currentThreadId);
         HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
     } else if (DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
         if (api == APIType::D3D10) {

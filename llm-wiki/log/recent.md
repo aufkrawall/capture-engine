@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-09 - Steam overlay invisible in Streamline games: source-thread tracker could never latch
+
+- Sessions `logs/robocopgoodnew` and `logs/talosgoodnew` (build 0.1.5899) confirmed the runtime override + overlay
+  fixes and the absent exit dumps, but the user reported the Steam overlay no longer renders. All six retained DLSS
+  sessions (0.1.5895 through 0.1.5899) show the same signature: `Skipping guarded Steam Present hook #N ... using
+  bypass trampoline instead (... sourceTid=0x0000 ...)` and zero `Invoking guarded Steam Present hook` lines.
+- Root cause: the 2026-08-09 source-thread provenance rule (session `20260809_015416` deadlock fix) requires a
+  verified source Present thread before Steam may be invoked, but the tracker could never latch one in Streamline
+  games. `applicationSourcePresent` was derived from `frameGenerationPresentationActive`, which includes
+  `callerFromStreamlineModule`; the interposer forwards the game's own Present calls even while FG is off, so every
+  present looked runtime-generated, `dx12_hook_g_GamePresentThreadId` stayed 0, and the guarded Steam invoke was
+  permanently blocked -> Steam overlay never rendered (CE's overlay kept working via bypass/PostSL).
+- Fix (build 0.1.5900): new `ce::dx12_overlay_policy::IsRuntimeGeneratedFrame` classification used for the
+  `applicationSourcePresent` computation at both DetourPresent/DetourPresent1 sites. It deliberately excludes
+  `callerFromStreamlineModule` (the wrapper forwards real frames pre-FG); only actual runtime-generated frames
+  (no-callback FSR, Streamline FG active, runtime-owned swapchain, FFX caller, runtime-owned native FSR) disqualify a
+  present. Pre-FG wrapper presents now establish the game Present thread (observed: single thread 0x3A54 for
+  presents/ProcessFrame/PostSL in RoboCop), so during FG the guarded Steam invoke fires on the verified game thread
+  while worker presents still fail closed to the bypass. The worker deadlock protection from `20260809_015416` is
+  unchanged (workers can never be tracked). Coverage: `tests/test_dxgi_shared_part10.cpp`
+  (`StreamlineWrapperPresentsAreSourceFramesForTheThreadTracker`,
+  `PresentSourceClassificationExcludesStreamlineWrapperCaller`).
+- Runtime validation pending: a new RoboCop/Talos session must show `Invoking guarded Steam Present hook` with
+  `sourceTid=<game thread>` and the Steam overlay visible (Shift+Tab) during DLSS FG.
+
 ### 2026-08-09 - NVIDIA DLSS teardown 0xC000004B is not a crash; pre-termination dump policy exempts it
 
 - RoboCop/Talos validation sessions `logs/robogood` and `logs/talosgood` (build 0.1.5898) confirmed the runtime
