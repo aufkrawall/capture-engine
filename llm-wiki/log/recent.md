@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-08-09 - Desktop screenshot after closing an injected game stalls 15 s and shows no overlay confirmation
+
+- Session `logs/20260809_165328` (Robocop, build 0.1.5901): the in-game hook screenshot at 16:53:51 completed in
+  ~1.4 s, Robocop exited at 16:54:00, and the first desktop screenshot at 16:54:07 blocked until 16:54:22
+  (`[Screenshot] Hook request 2 failed (wait=258 status=1 error=0)`), after which 7 queued GDI screenshots fired in
+  ~1.3 s with a single late `Screenshot saved!` warning.
+- Root cause: the hook sets `sourcePid` in shared memory but lives inside the game process and dies with it, so
+  `GetSourcePid()` stayed stale after the exit. `TryHookScreenshot` saw the stale non-zero PID, published a request,
+  and waited the full 15 s hook timeout on an event no process would ever signal; the controller message loop,
+  overlay restore, and screenshot notification were blocked the whole time.
+- Fix: `captureengine/inject_main.cpp` detects the dead source PID in its main-loop monitor and clears
+  `sourcePid`/`luidSourcePid` plus the screenshot request protocol state; `captureengine/screenshot.cpp`
+  `TryHookScreenshot` verifies source-process liveness before publishing a request (dead source -> immediate desktop
+  fallback with a clean protocol reset), and a failed/timed-out hook request now resets the full protocol state
+  instead of leaving a stale Pending/Writing status that would make the next injected game's screenshot skip the
+  hook path. Liveness uses `PROCESS_QUERY_LIMITED_INFORMATION`; sources that deny even that query are treated as
+  alive, so protected games are never skipped. The 15 s timeout remains only as the backstop for a live but
+  unresponsive hook. Coverage: `tests/test_inject_source_lifecycle.cpp`,
+  `tests/test_screenshot_source.cpp` (dead-source skip, liveness helper, failure reset).
+
 ### 2026-08-09 - Steam overlay GUI invisible during DLSS FG: Steam must be serviced on the worker's displayed presents
 
 - Session `logs/20260809_160835` (Talos, build 0.1.5900) validated the source-thread latch: `sourceTid=0x09CC`

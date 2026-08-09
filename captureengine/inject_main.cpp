@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <new>
 #include "../common/config.h"
@@ -50,6 +51,30 @@ static void SetInjectOverlayRuntimeState(SharedMemoryLayout* sharedMemory, bool 
                                          const char* source) {
     SetInjectOverlayRuntimeFlag(sharedMemory, kCaptureRuntimeFlagInjectOverlayPending, pending, source);
     SetInjectOverlayRuntimeFlag(sharedMemory, kCaptureRuntimeFlagInjectOverlayActive, active, source);
+}
+
+static bool IsProcessAlive(uint32_t processId) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process)
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    DWORD exitCode = 0;
+    const bool alive = GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
+}
+
+static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory) {
+    if (!sharedMemory)
+        return;
+    sharedMemory->SetSourcePid(0);
+    sharedMemory->SetLuidSourcePid(0);
+    sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
+    sharedMemory->runtimeState.screenshotCompletedRequestId.store(0, std::memory_order_release);
+    sharedMemory->runtimeState.screenshotStatus.store(static_cast<uint32_t>(ScreenshotRequestStatus::Idle),
+                                                      std::memory_order_release);
+    sharedMemory->runtimeState.screenshotError.store(ERROR_SUCCESS, std::memory_order_relaxed);
+    sharedMemory->runtimeState.screenshotPayloadKind.store(static_cast<uint32_t>(ScreenshotPayloadKind::None),
+                                                           std::memory_order_relaxed);
 }
 
 // Console control handler for graceful cleanup
@@ -660,6 +685,17 @@ int InjectProcessMain(const AppConfig& config) {
         static uint32_t lastSourcePid = 0;
         static DWORD lastIdentityWarningTick = 0;
         uint32_t currentSourcePid = pSharedMem->GetSourcePid();
+        // The hook lives inside the source process and dies with it, so the
+        // hook-owned identity can only be cleared from here. A stale PID must
+        // not keep host consumers (desktop screenshots, media, sensors)
+        // treating a dead hook as an active source.
+        if (currentSourcePid != 0 && !IsProcessAlive(currentSourcePid)) {
+            LogInfo("[Inject] Hook source process exited (PID: %lu); clearing stale hook source identity",
+                    static_cast<unsigned long>(currentSourcePid));
+            ClearStaleHookSourceState(pSharedMem);
+            lastSourcePid = 0;
+            currentSourcePid = 0;
+        }
         if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
             std::string procName = GetProcessNameFromPID(currentSourcePid);
             if (procName.empty()) {

@@ -231,6 +231,31 @@ void CleanupHookPayload(const std::filesystem::path& partPath) {
         DeleteFileW(readyPath.c_str());
 }
 
+bool IsSourceProcessAlive(uint32_t processId) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process)
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    DWORD exitCode = 0;
+    const bool alive = GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
+}
+
+void ResetScreenshotRequestState(SharedMemoryLayout* sharedMemory) {
+    if (!sharedMemory)
+        return;
+    sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
+    sharedMemory->runtimeState.screenshotCompletedRequestId.store(0, std::memory_order_release);
+    sharedMemory->runtimeState.screenshotStatus.store(static_cast<uint32_t>(ScreenshotRequestStatus::Idle),
+                                                      std::memory_order_release);
+    sharedMemory->runtimeState.screenshotError.store(ERROR_SUCCESS, std::memory_order_relaxed);
+    sharedMemory->runtimeState.screenshotPayloadKind.store(static_cast<uint32_t>(ScreenshotPayloadKind::None),
+                                                           std::memory_order_relaxed);
+    memset(sharedMemory->runtimeState.screenshotPath, 0, sizeof(sharedMemory->runtimeState.screenshotPath));
+    memset(sharedMemory->runtimeState.screenshotCompletionEventName, 0,
+           sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
+}
+
 bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreenshot& screenshot) {
     HandleGuard discovery(OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY));
     if (!discovery.Get())
@@ -258,6 +283,16 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
     const uint32_t sourcePid = sharedMemory->GetSourcePid();
     if (sourcePid == 0) {
         LogInfo("[Screenshot] No active injected source; selecting desktop capture without a hook wait");
+        return false;
+    }
+    // The hook lives inside the source process and dies with it. A stale
+    // sourcePid after a game exit must never block the desktop fallback for
+    // the full hook timeout: verify liveness before publishing a request and
+    // leave the protocol state clean for the next injected source.
+    if (!IsSourceProcessAlive(sourcePid)) {
+        LogInfo("[Screenshot] Injected source PID %lu is gone; selecting desktop capture without a hook wait",
+                static_cast<unsigned long>(sourcePid));
+        ResetScreenshotRequestState(sharedMemory);
         return false;
     }
 
@@ -308,13 +343,17 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
         const auto payloadKind = static_cast<ScreenshotPayloadKind>(
             sharedMemory->runtimeState.screenshotPayloadKind.load(std::memory_order_acquire));
         const uint32_t error = sharedMemory->runtimeState.screenshotError.load(std::memory_order_acquire);
-        if (sharedMemory->runtimeState.screenshotRequestId.load(std::memory_order_acquire) == requestId)
+        const bool requestStillOurs =
+            sharedMemory->runtimeState.screenshotRequestId.load(std::memory_order_acquire) == requestId;
+        if (requestStillOurs)
             sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
 
         if (!completed || status != ScreenshotRequestStatus::Succeeded || payloadKind != ScreenshotPayloadKind::RawV2) {
             LogWarn("[Screenshot] Hook request %llu failed (wait=%lu status=%u error=%u)",
                     static_cast<unsigned long long>(requestId), waitResult, static_cast<unsigned>(status), error);
             CleanupHookPayload(partPath);
+            if (requestStillOurs)
+                ResetScreenshotRequestState(sharedMemory);
             return false;
         }
 

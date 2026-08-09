@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 566,
+    "entries": 571,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -288,6 +288,7 @@
       "hook/common/dxgi_shared_present_routing.cpp",
       "hook/common/dxgi_shared_resize.cpp",
       "hook/common/dxgi_shared_steam.cpp",
+      "hook/common/dxgi_shared_steam_routing.cpp",
       "hook/common/dxgi_shared_steam_veh.cpp",
       "hook/common/fg_detection.cpp",
       "hook/common/fg_session_state.cpp",
@@ -506,6 +507,7 @@
       "tests/test_dxgi_shared.cpp",
       "tests/test_dxgi_shared_part10.cpp",
       "tests/test_dxgi_shared_part11.cpp",
+      "tests/test_dxgi_shared_part12.cpp",
       "tests/test_dxgi_shared_part2.cpp",
       "tests/test_dxgi_shared_part3.cpp",
       "tests/test_dxgi_shared_part4.cpp",
@@ -530,12 +532,14 @@
       "tests/test_gpu_scheduling_policy.cpp",
       "tests/test_graphics_api_identity.cpp",
       "tests/test_graphics_api_reporting_source.cpp",
+      "tests/test_graphics_runtime_module_policy.cpp",
       "tests/test_hook_lifecycle.cpp",
       "tests/test_hook_system.cpp",
       "tests/test_host_metrics_policy.cpp",
       "tests/test_iat_hook.cpp",
       "tests/test_inject_capture_source.cpp",
       "tests/test_inject_frame_ring_lease.cpp",
+      "tests/test_inject_source_lifecycle.cpp",
       "tests/test_injection_lifetime_source.cpp",
       "tests/test_ipc_message_validation.cpp",
       "tests/test_logger_service_policy.cpp",
@@ -590,6 +594,7 @@
       "tests/test_vulkan_fg_build_policy.cpp",
       "tests/test_vulkan_fg_policy.cpp",
       "tests/test_vulkan_layer_registration.cpp",
+      "tests/test_vulkan_renderer_policy.cpp",
       "tests/test_vulkan_sampler_policy_source.cpp"
     ]
   }

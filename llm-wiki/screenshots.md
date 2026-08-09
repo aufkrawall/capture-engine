@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-08-01 (presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
+Last cross-checked: 2026-08-09 (stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
 
 Primary sources:
 - `common/shared_defs.h`
@@ -50,7 +50,7 @@ D3D9, D3D10/11, D3D12, OpenGL, and Vulkan all route mapped pixels through the sa
 
 Modern inject backends resolve the presentation contract rather than the texture format alone: successful DXGI `SetColorSpace1` calls distinguish SDR R10, HDR10/PQ R10, and linear scRGB; Vulkan uses the swapchain's `VkColorSpaceKHR`. The WGC fallback passes the captured frame's HDR state into R10/FP16 payload classification. Unsupported format/color-space combinations fail instead of publishing a wrong-color file.
 
-Desktop fallback must not wait 15 seconds merely because the injector service exists. The host validates the shared mapping and skips the hook request immediately when `GetSourcePid()==0`. HDR desktop fallback uses WGC. A split-device WGC frame is a consumer-side shared texture published at keyed-mutex key 1: screenshot readback queries the texture's owning D3D11 device/context, acquires key 1 before `CopyResource`/`Map`, and releases key 0 afterward. Using the bootstrap device or omitting mutex ownership can report a successful readback of the allocation's initial all-black contents.
+Desktop fallback must not wait 15 seconds merely because the injector service exists. The host validates the shared mapping and skips the hook request immediately when `GetSourcePid()==0` or when the source PID is no longer alive. The hook sets `sourcePid` but dies with its process, so a stale PID after a game exit would otherwise block the desktop fallback for the full 15-second hook timeout (session `20260809_165328`: hook screenshot in Robocop OK at 16:53:51, game exited 16:54:00, desktop screenshot 16:54:07 stalled until `Hook request 2 failed (wait=258 ...)` at 16:54:22). `TryHookScreenshot` now verifies source-process liveness before publishing a request (protected sources that deny even the limited query are treated as alive) and resets the request protocol state; the injector also clears the stale hook identity when it detects the source exited, and a failed/timed-out hook request resets the full protocol state so a later injected game never inherits a stale Pending/Writing status. HDR desktop fallback uses WGC. A split-device WGC frame is a consumer-side shared texture published at keyed-mutex key 1: screenshot readback queries the texture's owning D3D11 device/context, acquires key 1 before `CopyResource`/`Map`, and releases key 0 afterward. Using the bootstrap device or omitting mutex ownership can report a successful readback of the allocation's initial all-black contents.
 
 ## Diagnostics And Tests
 
