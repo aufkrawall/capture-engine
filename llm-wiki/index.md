@@ -54,7 +54,7 @@ Primary sources:
 - `d3d9-capture.md`
   - Native classic-D3D9 device preservation, opportunistic shared-ring probing, D3D9Ex incompatibilities, synchronization/reset lifetime, diagnostics, and GPU-based WGC fallback. Last verified 2026-07-12.
 - `dx12-injection-bootstrap.md`
-  - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-16.
+  - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, pseudo-overlay handoff behavior, and the evidence-based Vulkan renderer gate shared by hook install and the DXGI present/resize paths. Last verified 2026-08-09.
 - `dx12-overlay-third-party-coexistence.md`
   - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including source-Present-thread-only foreign handler invocation under FG runtimes and the audited x86 solid-text compatibility boundary. Last verified 2026-08-09.
 - `dx11-forced-af.md`

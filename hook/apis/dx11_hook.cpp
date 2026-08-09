@@ -256,12 +256,14 @@ bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConf
 void DX11Hook::Init() {
     HookLog("DX11Hook::Init()");
 
-    // CRITICAL FIX: Check if Vulkan is active before installing D3D11 hooks
-    // Vulkan games using WSI-to-DXGI mapping can freeze if we hook D3D11/DXGI
-    HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-    if (hVulkan) {
+    // CRITICAL FIX: Check if Vulkan actually owns rendering before installing
+    // D3D11 hooks.  Vulkan games using WSI-to-DXGI mapping can freeze if we
+    // hook D3D11/DXGI.  The decision is evidence-based and shared with
+    // CheckAndInstallHooks: mere vulkan-1.dll presence in a D3D process must
+    // not suppress the D3D11 hooks.
+    if (DXGIShared::IsVulkanActive()) {
         HookLog(
-            "DX11: Vulkan detected (vulkan-1.dll), SKIPPING D3D11 hook "
+            "DX11: Vulkan active (evidence-based), SKIPPING D3D11 hook "
             "installation");
         return;
     }

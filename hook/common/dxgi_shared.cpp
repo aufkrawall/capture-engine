@@ -609,29 +609,29 @@ void* GetPresent1Address(IDXGISwapChain* pSwapChain) {
 }
 
 namespace DXGIShared {
-// Global flag to disable DXGI hooks when Vulkan is active
-// This is set once at startup and prevents DXGI hooks from interfering with
-// Vulkan WSI
-bool s_vulkanPresent = false;
-}
+// Single source of truth for the DXGI present/resize pass-through decision.
+// Maintained by CheckAndInstallHooks, which decides from D3D usage evidence
+// (a DX12 UE5 process that merely loads vulkan-1.dll stays on the DXGI path).
+// Read on every Present/Present1/ResizeBuffers call.
+std::atomic<bool> s_dxgiVulkanActive{false};
 
-namespace DXGIShared {
-bool s_checkedVulkan = false;
-}
-
-namespace DXGIShared {
-bool IsVulkanActive() {
-    if (!s_checkedVulkan) {
-        HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-        s_vulkanPresent = (hVulkan != nullptr);
-        if (s_vulkanPresent) {
-            HookLog(
-                "DXGIShared: Vulkan detected (vulkan-1.dll), DXGI hooks will "
-                "pass through");
+void SetVulkanActiveForDXGIPresentPath(bool active) {
+    const bool previous = s_dxgiVulkanActive.exchange(active, std::memory_order_acq_rel);
+    if (active && !previous) {
+        static std::atomic<int> s_vulkanActiveLogCount{0};
+        if (s_vulkanActiveLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLog("DXGIShared: Vulkan active (evidence-based), DXGI hooks will pass through");
         }
-        s_checkedVulkan = true;
+    } else if (!active && previous) {
+        static std::atomic<int> s_vulkanInactiveLogCount{0};
+        if (s_vulkanInactiveLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLog("DXGIShared: Vulkan no longer active (D3D evidence), DXGI hooks will process presents");
+        }
     }
-    return s_vulkanPresent;
+}
+
+bool IsVulkanActive() {
+    return s_dxgiVulkanActive.load(std::memory_order_acquire);
 }
 }
 

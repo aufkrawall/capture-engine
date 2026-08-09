@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include "common/vulkan_renderer_policy.h"
+
 void CloseCheckHooksEvent() {
   HANDLE hEvent = reinterpret_cast<HANDLE>(InterlockedExchangePointer(
       reinterpret_cast<PVOID volatile *>(&g_hCheckHooksEvent), nullptr));
@@ -39,34 +41,32 @@ void CheckAndInstallHooks() {
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                            (GetModuleHandleA("d3d8.dll") != nullptr) ||
                            (GetModuleHandleA("ddraw.dll") != nullptr);
-    // DXVK's d3d11.dll is only a D3D front-end over Vulkan. Treat it as Vulkan-backed
-    // so the implicit Vulkan layer can take ownership once the loader finishes startup.
-    bool d3dDeviceCreated = false;
-    if (dxvkD3D11WrapperLoaded) {
-      d3dDeviceCreated = WasD3D12DeviceCreated();
-    } else {
-      // Also treat d3d12.dll/d3d11.dll presence as D3D evidence — UE5 loads
-      // vulkan-1.dll even for DX12 games, and our D3D12CreateDevice wrapper may
-      // not be installed yet if d3d12.dll loaded after our initial IAT scan.
-      bool d3dDllPresent = (GetModuleHandleA("d3d12.dll") != nullptr) ||
-                           (GetModuleHandleA("d3d11.dll") != nullptr);
-      d3dDeviceCreated = WasD3D12DeviceCreated() || d3dDllPresent ||
-                         WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
-    }
+    // D3D usage evidence includes D3D11/12 device creation, d3d12.dll/d3d11.dll
+    // presence (UE5 loads vulkan-1.dll even for DX12 games, and our D3D12CreateDevice
+    // wrapper may not be installed yet if d3d12.dll loaded after our initial IAT
+    // scan), and legacy D3D module presence (DX9/DX8/DDraw). DXVK's d3d11.dll is
+    // only a D3D front-end over Vulkan, so there only a real D3D12 device counts.
+    const bool d3dUsageEvidence = ce::vulkan_renderer_policy::HasD3DUsageEvidence(
+        dxvkD3D11WrapperLoaded, WasD3D12DeviceCreated(), WasD3D11Or10DeviceCreated(),
+        legacyD3DLoaded, GetModuleHandleA("d3d12.dll") != nullptr,
+        GetModuleHandleA("d3d11.dll") != nullptr);
+    const bool shouldTreatVulkanActive =
+        ce::vulkan_renderer_policy::ShouldTreatVulkanAsActiveRenderer(
+            hVulkan != nullptr, vulkanLayerOwned, d3dUsageEvidence);
     if (vulkanLayerOwned) {
       if (!s_vulkanActive) {
         EarlyLog("CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks");
       }
       s_vulkanActive = true;
       s_checkedForVulkan = true;
-    } else if (hVulkan && !d3dDeviceCreated) {
+    } else if (shouldTreatVulkanActive) {
       if (!s_vulkanActive) {
         EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll, no D3D usage evidence), "
                  "skipping D3D/DXGI hooks");
       }
       s_vulkanActive = true;
       s_checkedForVulkan = true;
-    } else if (d3dDeviceCreated) {
+    } else if (d3dUsageEvidence) {
       // D3D usage evidence present — even if vulkan-1.dll is present, use D3D hooks
       if (s_vulkanActive) {
         EarlyLog("CheckAndInstallHooks: D3D evidence appeared after Vulkan detection; enabling "
@@ -77,6 +77,11 @@ void CheckAndInstallHooks() {
     }
     // If neither Vulkan nor D3D evidence is present yet, don't lock in.
   }
+
+  // Publish the evidence-based decision for the DXGI present/resize paths so
+  // they agree with hook installation (a DX12 UE5 process that merely loads
+  // vulkan-1.dll keeps full DXGI processing and the overlay).
+  DXGIShared::SetVulkanActiveForDXGIPresentPath(s_vulkanActive);
 
   // WRAPPER-ONLY ARCHITECTURE: We use IAT-patched wrapper hooks for ALL games.
   // This is more robust than vtable hooks and avoids Steam overlay recursion

@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-08-09 - RoboCop DX12 overlay dead: present path misclassified the game as Vulkan
+
+- RoboCop: Rogue City (UE5, DX12) session `installed/captureengine/logs/20260809_134642`
+  injected and hooked cleanly, Streamline DLSS FG activated, ECLs flowed, but the overlay
+  never rendered: no `Captured original game queue`, no PostSL activation, and the ECL
+  hook repeatedly logged `no retained/fresh activation swapchain` with `startupPending=1
+  activeButUnconfirmed=0`.
+- Root cause: `DXGIShared::IsVulkanActive()` was a one-shot latch keyed only on
+  `GetModuleHandleW(L"vulkan-1.dll")`. RoboCop loads vulkan-1.dll as a transitive
+  dependency (UE5 does this even for DX12; `CheckAndInstallHooks` already documented it),
+  so the first Present at `13:46:57.416` latched `Vulkan detected (vulkan-1.dll), DXGI
+  hooks will pass through`. Every Present then early-returned through `CallOriginalPresent`
+  before `HandleDX12ProcessFrame`, so the original game queue was never captured, the
+  Streamline swapchain was never retained as the PostSL activation swapchain, and the
+  overlay pipeline stayed dead. Talos is unaffected because vulkan-1.dll is not loaded
+  there, which is why the failure looked title-specific.
+- Fix: one evidence-based Vulkan decision shared by hook installation and the DXGI
+  present/resize paths. `hook/common/vulkan_renderer_policy.h` provides
+  `HasD3DUsageEvidence` (D3D12/11 device creation, d3d12.dll/d3d11.dll presence, legacy
+  D3D modules; under DXVK only a real D3D12 device counts) and
+  `ShouldTreatVulkanAsActiveRenderer` (Vulkan layer ownership, or vulkan-1.dll without D3D
+  evidence). `CheckAndInstallHooks` publishes the result through
+  `DXGIShared::SetVulkanActiveForDXGIPresentPath`, and `DXGIShared::IsVulkanActive()` now
+  reads that atomic instead of latching module presence. The redundant inner guards in
+  `DX12Hook::Init` and `DX11Hook::Init` use the same flag, so a DX12 UE5 title that loads
+  vulkan-1.dll before injection also keeps its hooks.
+- The present/resize call sites (`dxgi_shared_present_routing.cpp`, `dxgi_shared_present1.cpp`,
+  `dxgi_shared_resize.cpp`) are unchanged; they keep consulting `IsVulkanActive()`.
+- Coverage: `tests/test_vulkan_renderer_policy.cpp` pins the RoboCop regression (vulkan-1.dll
+  + d3d12.dll present -> DXGI path active), pure-Vulkan, Vulkan-layer-ownership, DXVK d3d11
+  vs real D3D12 device, legacy/device evidence, the shared-flag plumbing, and the source
+  wiring. Incremental product build 0.1.5890 (x64/x86) and the full unit/Python suites pass.
+  Fresh RoboCop runtime validation is pending.
+
 ### 2026-08-09 - Talos rapid-skip freeze traced to split PostSL state and duplicate ECL submission
 
 - Talos session `installed/captureengine/logs/20260809_042528` reproduces the same downstream Unreal engine-fence

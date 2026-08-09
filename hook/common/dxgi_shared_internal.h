@@ -299,10 +299,6 @@ void InstallHooksIfPending(IDXGISwapChain* pSwapChain);
 }
 
 namespace DXGIShared {
-bool IsVulkanActive();
-}
-
-namespace DXGIShared {
 bool IsThirdPartyOverlayLoaded();
 }
 

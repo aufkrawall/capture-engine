@@ -73,12 +73,14 @@ void DX12Hook::Init() {
                                                        std::memory_order_release);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, "DX12Hook::Init");
 
-    // CRITICAL FIX: Check if Vulkan is active before installing ANY DXGI hooks
-    // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI
-    HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-    if (hVulkan) {
+    // CRITICAL FIX: Check if Vulkan actually owns rendering before installing
+    // ANY DXGI hooks.  Vulkan games using WSI-to-DXGI mapping can freeze if we
+    // hook DXGI.  The decision is evidence-based and shared with
+    // CheckAndInstallHooks: a DX12 UE5 process that merely loads vulkan-1.dll
+    // as a transitive dependency must still receive the DX12 hooks.
+    if (DXGIShared::IsVulkanActive()) {
         HookLog(
-            "DX12: Vulkan detected (vulkan-1.dll), SKIPPING ALL DXGI hook "
+            "DX12: Vulkan active (evidence-based), SKIPPING ALL DXGI hook "
             "installation");
         return;
     }
