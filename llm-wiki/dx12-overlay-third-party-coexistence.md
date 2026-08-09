@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-07-16 (RESOLVED: x86 DX12 no-vsync `dx12_test` DEVICE_HUNG fixed by rendering x86 DX12 overlay text as native solid glyph-span geometry; the NVIDIA/WoW64 driver attribution remains probable, not vendor-confirmed. See `handoff-dx12-32bit-crash.md` and `log/recent.md` 2026-06-09.)
+Last cross-checked: 2026-08-09 (Talos fast-start/menu transition freeze isolated to CE synchronously invoking Steam's Present handler from a DLSS-G worker; guarded external overlay calls now require verified source-Present-thread provenance whenever a runtime can Present from workers.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -9,7 +9,16 @@ Primary sources:
 - `hook/apis/ffx_hook.cpp`
 - `hook/main.cpp`
 - `hook/common/dxgi_shared.cpp`
+- `hook/common/dxgi_shared_present_core.cpp`
+- `hook/common/dxgi_shared_original.cpp`
+- `hook/common/dxgi_shared_steam.cpp`
+- `hook/common/dxgi_shared_detail/types_and_state.h`
+- `hook/apis/dx12_hook_process.cpp`
+- `hook/apis/dx12_hook_process_session_phase2.cpp`
 - `tests/test_dxgi_shared.cpp`
+- `tests/test_dxgi_shared_part8.cpp`
+- `tests/test_dxgi_shared_part10.cpp`
+- `tests/test_dxgi_shared_part11.cpp`
 - `tests/test_fps_limiter.cpp`
 - `installed/captureengine/logs/20260602_215620`
 - `installed/captureengine/logs/20260602_215334`
@@ -19,6 +28,7 @@ Primary sources:
 - `installed/captureengine/logs/20260601_212556`
 - `installed/captureengine/logs/20260531_232108/hook_debug.log`
 - `installed/captureengine/logs/20260531_230835_talosfsrfg/hook_debug.log`
+- `installed/captureengine/logs/20260809_015416`
 
 ## Scope
 This page records the current repo knowledge for making our DX12 overlay work well when other external overlays are active, including Steam, Rockstar Social Club, Epic EOS, and similar third-party overlay layers.
@@ -87,8 +97,10 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 - FFX dynamic export hooks must be registered before process-wide `GetProcAddress` interception is enabled. Otherwise an early FSR preload can call `GetProcAddress(ffxConfigure)` while the router is active but before the FFX names are registered, cache AMD's original function pointer, and later run native FSR without CE's callback bridge. `hook/main.cpp` calls `FFXHook::RegisterDynamicHooks()` before `IATHook::InitializeGetProcAddressHook()` so official AMD modules can use the IAT/dynamic route from the first preload.
 - IAT/dynamic FFX routing is not sufficient for every official SDK integration. `installed/captureengine/logs/20260530_234519` showed the switch app entering protected official FFX startup and then staying quiesced while app-side FSR callbacks were firing because CE never saw `ffxConfigure`. Official AMD DX12 modules therefore also arm a guarded re-arming `ffxConfigure` VEH fallback that catches SDK dispatch-table or intra-module calls while standard inline JMP hooks remain disabled. Healthy logs include either `GetProcAddress: Intercepted FFX API ffxConfigure` or `FFX Hook: Armed VEH breakpoint for ...!ffxConfigure`, followed by `Direct FFX API confirmation established from ffxConfigure ENABLED`.
 - Dynamic `GetProcAddress` filtering also has a narrow Streamline proxy exception: `CreateDXGIFactory*` exports from `sl.interposer.dll` must remain the real Streamline proxy exports. Hiding them behind CE wrappers makes the application create a CE/raw DXGI factory, prevents Streamline from owning its swapchain interposer, and can later crash the DLSS-G handoff path. This exception is only for Streamline's proxy DXGI factory exports; CE still hooks Streamline feature APIs such as `slDLSSGSetOptions` / `slDLSSGGetState` through the feature-hook paths.
+- **Synchronous foreign-Present calls require source-thread provenance whenever a runtime can Present from workers.** Talos session `installed/captureengine/logs/20260809_015416` supplied two dumps five seconds apart with the same `sl.dlssg` worker blocked in `WaitForSingleObjectEx -> gameoverlayrenderer64 -> capture_hook_x64!TryInvokeGuardedExternalSteamOverlayPresent`. CE had called Steam with reason `SL startup bypass`; game/render/RHI progress then waited downstream for 51 seconds. The Streamline plugin-lookup and Steam NULL-callback VEH guards prevent two crash/re-entrancy families, but cannot make an unbounded third-party handler thread-safe or nonblocking. Both `TryInvokeGuardedExternalSteamOverlayPresent` and `CallOriginalPresent`'s natural Steam E9 transport therefore check every runtime-owned presentation signal and permit Steam only when the current thread equals the previously proven `DX12_GetGamePresentThreadId`; unknown or worker provenance fails closed to the existing DXGI bypass. The tracker itself refreshes only from calls already classified as application-source Presents, so neither Streamline nor FFX workers can promote themselves by overwriting provenance. Never replace this with a timeout, cancellation, or dispatch to another worker.
+- On Steam's E9/vtable topology, `DetectSLPresentHook()` intentionally cannot establish physical SL routing and `s_slRoutingActive` remains false after PostSL is stable. The `callerFromStreamlineModule && !s_slRoutingActive && steamOverlayLoaded` block is consequently a lifetime external-overlay **transport guard**, not evidence of startup state. Source Presents may service Steam there; generated worker Presents must bypass Steam while retaining CE's established PostSL draw.
 - If the effective runtime mode is FSR FG, SL routing must stay suppressed even if the SL hook remains physically present on `Present`/`Present1`. Re-enabling SL routing in that state can deadlock the render thread inside the FFX runtime.
-- The forced-bypass Steam rule is split by FG owner. When Streamline is merely loaded and Streamline FG is not running, bypass-only remains the safe no-FG/startup default. When native FSR owns presentation, that same process state is still an FG-owned presentation path, so CE should try the guarded Steam Present hook first and fall back to the DXGI bypass trampoline if Steam does not safely advance Present. Talos `installed/captureengine/logs/20260531_230835_talosfsrfg` exposed the missing exception: native FSR was active, CE overlay rendered, but Steam disappeared because every frame logged the bypass-only `Streamline loaded but FG is not running` route.
+- The forced-bypass Steam rule is split by FG owner and thread provenance. When Streamline is merely loaded and Streamline FG is not running, bypass-only remains the safe no-FG/startup default. When native FSR owns presentation, CE may try the guarded Steam Present hook only on the verified source Present thread; a runtime worker or unknown thread uses the DXGI bypass. Talos `installed/captureengine/logs/20260531_230835_talosfsrfg` exposed the earlier missing FSR exception, while `20260809_015416` proved that invoking Steam indiscriminately from an FG worker deadlocks presentation.
 - Current DXGI startup pass-through windows are short and explicit: normally 3 frames, or 16 frames for Steam when bypass is available.
 - **The dedicated DX12 overlay queue is FG-ONLY (`ShouldUseDedicatedDX12OverlayQueue` returns `actualFGActive`).** A 2026-06-06 attempt to enable it for plain non-FG (to keep CE's overlay `ExecuteCommandLists` off the app's shared command-queue pool) was **REVERTED**: DXGI forbids a non-owning queue from rendering the swapchain backbuffer and returns `DXGI_ERROR_ACCESS_DENIED (0x887A002B)`, removing the device on the FIRST overlay submit (proven at 64-bit startup `logs/20260606_153428`: "DEVICE REMOVED after reinit submit #1", queue=dedicated, offscreen=0 → black window). **Only the swapchain's owning (app) queue may render the backbuffer.** A dedicated queue could therefore only do OFFSCREEN overlay work with the composite-onto-backbuffer still on the app's queue — it cannot remove CE's backbuffer submission from the app's queue. So "dedicated queue to offload the app's queue" is a dead end; don't retry direct-draw on a non-owning queue.
 - A post-FSR `FSR_FG -> DLSS_FG` comeback can hit a distinct third-party coexistence seam from the older unsafe-bootstrap failures: CE may already have enough shared-state evidence to keep the startup family on the normal Streamline route and invoke PostSL there, while Steam's DX12 hook for the fresh swapchain still has a stale or null saved original Present pointer. In that state, falling through `oPresent` re-enters `gameoverlayrenderer64` and Steam can crash even after the first recovered PostSL render if the path is still inside the short confirmed-startup-settling window.
@@ -119,7 +131,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 
 - **Steam overlay invisible when SL loaded but FG not running (build 0.1.2863 - PARTIAL fix)**: When SL (Streamline) is loaded (`sl.interposer.dll` present) but Streamline FG is not running, `ShouldForceSteamDX12Bypass` returns true in `CallOriginalPresent` / `CallOriginalPresent1`. This causes the path to go directly to the disk-bytes bypass trampoline, which skips ALL inline E9 JMP hooks including Steam's overlay. Initial fix: invoked Steam overlay in `CallOriginalPresent` and `CallOriginalPresent1` before the bypass trampoline.
 
-- **Steam overlay invisible when SL loaded (build 0.1.2866 - PROPER fix)**: The 0.1.2863 fix was insufficient because ALL Present calls were intercepted by EARLIER return paths in `DetourPresent`:
+- **Steam overlay invisible when SL loaded (build 0.1.2866 historical fix; thread-safety assumption superseded 2026-08-09)**: The 0.1.2863 fix was insufficient because ALL Present calls were intercepted by EARLIER return paths in `DetourPresent`:
   - **Startup bypass (DllMain guard, line 1669)**: When `callerFromStreamlineModule=true && !s_slRoutingActive && steamOverlayLoaded`, the code returned early via the disk-bytes bypass trampoline. Never reached `CallOriginalPresent`.
   - **Synthetic re-entrant path (line 1283)**: After DLSS FG activation, Present calls from SL modules go through the synthetic re-entrant path. The `steamOverlaySafe` guard (line 1318) was too restrictive: it required `postSLConfirmedRendering=true`, which never happened during the PostSL warm-up phase.
   - **Confirmed standalone normal route (line 1227)**: Same restrictive `steamOverlaySafeConfirmed` guard.
@@ -129,7 +141,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   2. **Synthetic re-entrant** (line 1318): Relaxed `steamOverlaySafe` from `!callerFromStreamlineModule || (postSLConfirmedRendering && !postSLConfirmedButStartupSettling)` to `!callerFromStreamlineModule || !postSLConfirmedButStartupSettling`. The warm-up phase (pre-confirmed rendering) is well past DllMain — SL modules are fully loaded and Steam TLS is initialized.
   3. **Confirmed standalone normal route** (line 1241): Same relaxation for `steamOverlaySafeConfirmed`.
   
-  Safety: `postSLConfirmedButStartupSettling` is the single guard for DllMain safety. When true, Steam overlay is skipped (RIP=0 crash risk). When false, DllMain has completed and Steam TLS is initialized on the calling thread.
+  Historical safety assumption, now disproven: `postSLConfirmedButStartupSettling` was treated as the only guard after DllMain. Talos `20260809_015416` proved that a later DLSS-G worker can still block indefinitely inside Steam even with plugin lookup and NULL-callback recovery ready. Current code additionally requires verified source-thread provenance.
   - Primary source anchors: `dxgi_shared.cpp` ~line 1669 (startup bypass), ~line 1318 (synthetic re-entrant), ~line 1241 (confirmed standalone normal route)
   - Root cause: callFromStreamlineModule remains true for ALL Present calls when SL interposer wraps the game's Present calls, causing DetourPresent to take early bypass paths that skip Steam overlay without our explicit invoke.
 
@@ -156,7 +168,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   - CE uses vtable hooking (vtable[8] = `DetourPresent`)
   - Steam's handler tries to find the "next" real Present by reading vtable[8]
   - Gets `DetourPresent` → can't resolve a valid handler → calls through NULL → RIP=0
-- **Fix**: Added `if (slLoaded)` guard around `TryInvokeGuardedExternalSteamOverlayPresent` in `CallOriginalPresent`. When Streamline is not loaded, skip Steam overlay invocation and use the bypass trampoline directly. The guarded Steam invocation is only safe when Streamline is on the Present stack (the `streamlineStackActive` guard in `ShouldInvokeGuardedExternalSteamOverlayPresentForState` protects against re-entrancy).
+- **Fix at that time**: Added `if (slLoaded)` around `TryInvokeGuardedExternalSteamOverlayPresent` in `CallOriginalPresent`. The old claim that a Streamline-stack guard alone made direct invocation safe is superseded: current code also requires the verified source Present thread and bypasses runtime workers.
 - Also added improved debug logging: explicit "skipping Steam overlay invoke" log and updated "forcing DXGI bypass" log to include `slLoaded` state.
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3035-3055` (call-site fix with `slLoaded` guard + logging), `tests/test_dxgi_shared.cpp` (regression test `StrangeBrigadeSteamOverlayCrashWithoutStreamline`).
 - **Edge cases covered**: (a) NvPresent loaded without Streamline also benefits from the same fix, (b) no bypass trampoline case unchanged (fundamental failure), (c) inline hook path (trampoline exists) unchanged.
@@ -311,7 +323,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 - **Problem**: Build 0.1.2942 (with the vtable[8] COM method fix) still produced black screen. Log confirmed `s_originalVtable8Present=00007FFF86A4D9F0 (same=1)` — the saved vtable[8] was identically `dxgi!Present` (the inner function). **There is no separate COM method.** The build 0.1.2941 fix was a complete no-op.
 - **Corrected root cause**: For this DX12 game, vtable[8] IS `dxgi!Present` (the inner function) — there is no COM wrapper method. Both `s_originalVtable8Present` and `presentOriginal` (= `oPresent`) point to the same address. Calling `dxgi!Present` (with Steam's E9 JMP) from `CallOriginalPresent` enters Steam's overlay handler via the inline JMP hook. The internal path Steam takes when entered through its E9 JMP on the function body differs from the path taken when invoked as a standalone hook target (`g_externalOverlayPresentHook`). The E9 JMP entry path produces black game content — the exact GPU-level mechanism is complex but confirmed by repeated testing.
 - **Fix**: Replace the `s_originalVtable8Present` / E9 JMP path with `TryInvokeGuardedExternalSteamOverlayPresent`. This calls Steam's overlay handler directly via `g_externalOverlayPresentHook` (the resolved E9 JMP target, saved during `InstallPresentInlineHooks` at line 2992-2996). Steam renders its overlay, calls "next" (original dxgi!Present body or re-entrant DetourPresent → bypass), and presents normally. CE's overlay submission + fence wait happens in `DetourPresent` before `CallOriginalPresent`.
-- **Why the delegation path doesn't block**: `CWrapDXGISwapChain::Present` sets `g_InWrapperPresent = false` before delegating to the detour hook (line 917 in `dxgi_swapchain_wrap.cpp`), so `ShouldInvokeGuardedExternalSteamOverlayPresentForState` does not reject the call.
+- **Historical wrapper observation, not a nonblocking guarantee**: `CWrapDXGISwapChain::Present` sets `g_InWrapperPresent = false` before delegating to the detour hook. That only clears the wrapper-policy rejection; source-thread provenance is still mandatory whenever a runtime can Present from workers.
 - **Fallback**: bypass trampoline (game content + CE overlay visible, Steam overlay dropped for that frame).
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3475-3516` (non-SL explicit Steam invoke), `dxgi_swapchain_wrap.cpp:916-920` (g_InWrapperPresent = false during delegation).
 - **Verification**: All 696 unit tests pass. Build 0.1.2943.

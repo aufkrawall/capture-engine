@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-09 - Steam invocation is source-Present-thread-only under FG runtimes
+
+- Talos session `installed/captureengine/logs/20260809_015416` stopped presenting for 51 seconds after rapid intro
+  skipping moved presentation from source/RHI thread `0x6878` to DLSS-G worker `0x0B44`. Both dumps, five seconds
+  apart, captured the worker blocked in `gameoverlayrenderer64` after CE synchronously called Steam from
+  `TryInvokeGuardedExternalSteamOverlayPresent`; PostSL had submitted normally and no device removal/TDR occurred.
+- Root cause: plugin-lookup and Steam NULL-callback guards covered re-entrancy/crash hazards but were incorrectly
+  treated as sufficient to call an unbounded foreign Present handler from a runtime worker. The vtable topology also
+  keeps physical `s_slRoutingActive=false`, so the block labeled `SL startup bypass` remained live after PostSL was
+  stable.
+- The guarded-Steam helper and `CallOriginalPresent`'s natural Steam E9 transport now derive every worker-capable
+  runtime state and require the exact tracked game Present thread before touching Steam. Unknown/runtime-worker calls
+  fail closed to the existing native DXGI bypass; verified source calls retain Steam, and CE's PostSL draw remains
+  intact. The shared thread tracker now refreshes only from calls already classified as application-source Presents,
+  preventing either Streamline or FFX workers from overwriting provenance; the wrapped/direct DX12 frame path now
+  includes both FSR runtime-mode and FSR API activity in that classification. Focused Steam/external-overlay policy
+  tests cover the Talos TIDs, unknown provenance, every runtime ownership signal, both existing guards, and tracker
+  update ordering.
+
 ### 2026-08-09 - RR startup discovery no longer starves DXGI queue capture
 
 - Talos RR validation sessions `20260809_012602`, `012642`, `012805`, and `012924` proved Feature 13 evaluation and

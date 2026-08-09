@@ -56,7 +56,7 @@ Primary sources:
 - `dx12-injection-bootstrap.md`
   - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-16.
 - `dx12-overlay-third-party-coexistence.md`
-  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including the audited x86 solid-text compatibility boundary. Last verified 2026-07-16.
+  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including source-Present-thread-only foreign handler invocation under FG runtimes and the audited x86 solid-text compatibility boundary. Last verified 2026-08-09.
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `cross-api-forced-af.md`

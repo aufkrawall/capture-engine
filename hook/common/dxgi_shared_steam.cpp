@@ -109,17 +109,25 @@ bool HasStreamlineModuleInCurrentStack() {
 
 namespace DXGIShared {
 bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable, bool slLoaded,
-                                       const char** overlayModuleOut ) {
+                                const char** overlayModuleOut, bool* isD3D12SwapChainOut) {
     const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
+    }
+    if (isD3D12SwapChainOut) {
+        *isD3D12SwapChainOut = false;
     }
     if (!pSwapChain || !bypassAvailable || !IsSteamOverlayModule(overlayModule)) {
         return false;
     }
 
+    const bool isD3D12SwapChain = DetectAPIType(pSwapChain) == APIType::D3D12;
+    if (isD3D12SwapChainOut) {
+        *isD3D12SwapChainOut = isD3D12SwapChain;
+    }
+
     return ShouldForceSteamDX12BypassForState(
-        bypassAvailable, true, DetectAPIType(pSwapChain) == APIType::D3D12, IsInWrapperPresent(),
+        bypassAvailable, true, isD3D12SwapChain, IsInWrapperPresent(),
         IsWrappedSwapChainObject(pSwapChain), slLoaded, g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
 }
@@ -255,6 +263,34 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     const bool postSLConfirmedButStartupSettling = isD3D12SwapChain && HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool startupTransitionWindowActive =
         isD3D12SwapChain && DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const uint32_t currentThreadId = GetCurrentThreadId();
+    const uint32_t trackedSourcePresentThreadId = isD3D12SwapChain ? DX12_GetGamePresentThreadId() : 0;
+    const bool runtimeCanPresentFromWorker = DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(
+        isD3D12SwapChain, streamlineStackActive, streamlineFGRunning, postSLConfirmedRendering,
+        ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
+        HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
+    const bool synchronousPresentThreadAllowed =
+        DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+            runtimeCanPresentFromWorker, trackedSourcePresentThreadId, currentThreadId);
+    if (!synchronousPresentThreadAllowed) {
+        if (externalPresent && presentBypass && isSteamOverlay && isD3D12SwapChain) {
+            static std::atomic<int> s_guardedSteamRuntimeWorkerSkipLogCount{0};
+            const int skipNum = s_guardedSteamRuntimeWorkerSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (skipNum <= 20 || skipNum == 50 || (skipNum % 500) == 0) {
+                HookLogImportant(
+                    "DXGIShared: Skipping guarded Steam Present hook #%d for %s because an FG runtime can Present "
+                    "from workers and this is not the verified source Present thread; using bypass trampoline "
+                    "instead (runtime=%s slFG=%d confirmed=%d streamlineStack=%d sourceTid=0x%04X "
+                    "currentTid=0x%04X)",
+                    skipNum, reason ? reason : "Present", ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+                    streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                    streamlineStackActive ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+            }
+        }
+        return false;
+    }
+
     void* steamCallbackBefore = nullptr;
     const bool steamCallbackReadable = TryReadSteamOverlayNullCallbackSlot(&steamCallbackBefore);
     const auto steamCallbackAddress = reinterpret_cast<uintptr_t>(steamCallbackBefore);
@@ -272,8 +308,8 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     const bool basePolicyAllowsGuardedSteamInvoke = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
         externalPresent != nullptr && externalPresent != DetourPresent, presentBypass != nullptr, isSteamOverlay,
         isD3D12SwapChain, IsInWrapperPresent(), IsWrappedSwapChainObject(pSwapChain),
-        dxgi_shared_s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive, streamlinePluginLookupGuardReady,
-        steamNullCallbackRecoveryReady);
+        dxgi_shared_s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive, synchronousPresentThreadAllowed,
+        streamlinePluginLookupGuardReady, steamNullCallbackRecoveryReady);
     const bool callbackStateAllowsGuardedSteamInvoke =
         DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
             basePolicyAllowsGuardedSteamInvoke, steamCallbackReadable, steamCallbackIsNull, steamCallbackIsCEDummy,
@@ -307,7 +343,7 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
                     postSLConfirmedButStartupSettling ? 1 : 0, startupTransitionWindowActive ? 1 : 0,
                     streamlinePluginLookupGuardReady ? 1 : 0, dxgi_shared_s_externalOverlayPresentInvokeDepth,
                     steamNullCallbackRecoveryReady ? 1 : 0, steamCallbackReadable ? 1 : 0, steamCallbackBefore,
-                    GetCurrentThreadId());
+                    currentThreadId);
             }
         }
         return false;
@@ -319,12 +355,12 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         HookLogImportant(
             "DXGIShared: Invoking guarded Steam Present hook #%d for %s "
             "(hook=%p bypass=%p slLoaded=%d streamlineFG=%d streamlineStack=%d pluginGuard=%d "
-            "steamNullGuard=%d steamCallbackReadable=%d steamCallback=%p tid=0x%04X)",
+            "steamNullGuard=%d steamCallbackReadable=%d steamCallback=%p sourceTid=0x%04X tid=0x%04X)",
             invokeNum, reason ? reason : "Present", (void*)externalPresent, (void*)presentBypass,
             ce::overlay_compat::IsStreamlineInterposerModuleLoaded() ? 1 : 0, streamlineFGRunning ? 1 : 0,
             streamlineStackActive ? 1 : 0, streamlinePluginLookupGuardReady ? 1 : 0,
             steamNullCallbackRecoveryReady ? 1 : 0, steamCallbackReadable ? 1 : 0, steamCallbackBefore,
-            GetCurrentThreadId());
+            trackedSourcePresentThreadId, currentThreadId);
     }
 
     ++dxgi_shared_s_externalOverlayPresentInvokeDepth;

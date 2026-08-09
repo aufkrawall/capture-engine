@@ -90,8 +90,10 @@ static void DX12_ProcessFrameExternalForPresent(IDXGISwapChain* pSwapChain, bool
     }
 }
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool frameGenerationPresentationActive =
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+        ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode) || g_FGCompat.IsFSRFGApiActive() ||
         DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() ||
         HookHasRuntimeOwnedNativeFGPresentPath();
     const bool applicationSourcePresent = ce::dx12_overlay_policy::ShouldApplyDX12PrerenderLimitOnPresent(
@@ -677,4 +679,3 @@ if (screenshotWantsOverlay && !screenshotUsePostSL) {
 
 sc3->Release();
 }
-

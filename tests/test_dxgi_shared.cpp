@@ -700,35 +700,46 @@ TEST(DXGISharedTest, SteamDX12BypassForNonSLSteamOverlay) {
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeRequiresBypassAndCleanDX12Path) {
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, true, false, false));
 
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(false, true, true, true, false,
-                                                                                    false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, false, true, true, false,
-                                                                                    false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, false, true, false,
-                                                                                    false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, false, false,
-                                                                                    false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, true, false,
-                                                                                    false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, true,
-                                                                                    false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        false, true, true, true, false, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, false, true, true, false, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, false, true, false, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, false, false, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, true, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, true, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, true, false, true, false, false));
 }
 
-TEST(DXGISharedTest, GuardedSteamOverlayInvokeOnStreamlineStackRequiresPluginLookupGuard) {
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, false, true));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, true, false));
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, true, true, true));
+TEST(DXGISharedTest, SynchronousExternalOverlayPresentRequiresVerifiedSourceThreadDuringRuntimePresentation) {
+    EXPECT_TRUE(DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(false, 0, 0x0B44));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(true, 0x6878, 0x6878));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(true, 0, 0x0B44));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(true, 0x6878, 0x0B44));
+}
+
+TEST(DXGISharedTest, GuardedSteamOverlayInvokeOnStreamlineStackRequiresSourceThreadAndBothGuards) {
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, false, true, true));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, true, true));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeWithoutStreamlineStackDoesNotRequireSteamNullGuard) {
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, false, false, false));
 }

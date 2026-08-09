@@ -487,6 +487,21 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
     EXPECT_FALSE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
 }
 
+TEST(DXGISharedTest, ExternalOverlayWorkerRiskIncludesEveryRuntimeOwnedPresentationSignal) {
+    EXPECT_FALSE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(false, true, true, true, true, true, true,
+                                                                          true));
+    EXPECT_FALSE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(true, false, false, false, false, false,
+                                                                          false, false));
+    EXPECT_TRUE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(true, true, false, false, false, false, false,
+                                                                         false));
+    EXPECT_TRUE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(true, false, true, false, false, false, false,
+                                                                         false));
+    EXPECT_TRUE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(true, false, false, true, false, false, false,
+                                                                         false));
+    EXPECT_TRUE(DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(true, false, false, false, true, true, true,
+                                                                         true));
+}
+
 // Regression: Strange Brigade DX12 crash — Steam overlay + no Streamline.
 // ShouldInvokeGuardedExternalSteamOverlayPresentForState returns true for this
 // scenario (external hook available, bypass available, Steam overlay, DX12,
@@ -511,32 +526,35 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayCrashWithoutStreamline) {
     //   - isWrappedSwapChain = false
     //   - externalOverlayPresentInvokeInProgress = false
     //   - streamlineStackActive = false (no Streamline present at all!)
+    //   - synchronousPresentThreadAllowed = true (no FG runtime worker path)
     //   - streamlinePluginLookupGuardAvailable = false (no Streamline to have a guard)
     //
     // The policy says: YES, invoke Steam's overlay hook.  But this crashes
     // because Steam reads vtable[8] (=DetourPresent), finds no valid "next"
     // handler, and calls through NULL (RIP=0).
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, true, false, false));
 
     // If Streamline IS on the stack but the plugin guard is not ready,
     // the policy correctly refuses (re-entrancy protection).
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, false, true));
 
-    // With Streamline on the stack, both the plugin lookup guard and the Steam
-    // NULL-callback recovery guard must be ready before direct invocation.
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, true, true, true));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, true, false));
+    // With Streamline on the stack, the verified source thread, plugin lookup
+    // guard, and Steam NULL-callback recovery guard are all required.
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, true, false, true, true));
 
     // The fix in CallOriginalPresent uses one-time vtable unhook + guarded
     // Steam callback recovery for the non-SL Steam overlay case.  The policy
     // alone still allows the dangerous path — the call-site fix is what
     // prevents the crash.
     const bool isNonSLStrangeBrigadeScenario = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, false, false);
+        true, true, true, true, false, false, false, false, true, false, false);
     EXPECT_TRUE(isNonSLStrangeBrigadeScenario);
     // The crash is prevented by the call-site logic in CallOriginalPresent,
     // not by the policy alone.
@@ -568,8 +586,8 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayVisibleNonSL) {
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
 
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
-                                                                                   false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, true, false, false));
 
     // Verify the recursion guard works for the vtable[8] re-entry path.
     // When Steam calls DetourPresent as the "next" handler, the reentrancy guard

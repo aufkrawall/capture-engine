@@ -49,6 +49,8 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
             externalProcessFrame);
     const size_t wrapperEntry =
         dx12Text.find("void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {");
+    const size_t wrapperFSRRuntime = dx12Text.find("RuntimeModeUsesFSR(runtimeMode)", wrapperEntry);
+    const size_t wrapperFSRApi = dx12Text.find("g_FGCompat.IsFSRFGApiActive()", wrapperFSRRuntime);
     const size_t wrapperClassification =
         dx12Text.find("ShouldApplyDX12PrerenderLimitOnPresent(", wrapperEntry);
     ASSERT_NE(minimalProcessFrame, std::string::npos);
@@ -56,7 +58,11 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
     ASSERT_NE(externalProcessFrame, std::string::npos);
     ASSERT_NE(externalForward, std::string::npos);
     ASSERT_NE(wrapperEntry, std::string::npos);
+    ASSERT_NE(wrapperFSRRuntime, std::string::npos);
+    ASSERT_NE(wrapperFSRApi, std::string::npos);
     ASSERT_NE(wrapperClassification, std::string::npos);
+    EXPECT_LT(wrapperFSRRuntime, wrapperClassification);
+    EXPECT_LT(wrapperFSRApi, wrapperClassification);
     // In-file flow: the minimal forward runs first, the wrapper entry classifies the limiter, and the
     // 5-argument ProcessFrame implementation is forwarded to afterwards (all in the process unit).
     EXPECT_LT(minimalForward, wrapperEntry);
