@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "../../common/log_meter.h"
 
 namespace FFXHook {
 void* GetPresentCallbackBridgeKey(void* ffx_hook_context) {
@@ -73,8 +74,22 @@ void Init() {
     for (size_t i = 0; i < _countof(ffxModules); ++i) {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
         if (hMod) {
-            if (!ffx_hook_g_Initialized.load(std::memory_order_acquire) || ffx_hook_g_HookedModule != hMod) {
+            // Metered diagnostic: a module that never becomes hookable (e.g. the
+            // real nvngx_dlssg.dll has no FFX exports) re-runs this scan about
+            // once per second, and the line below used to repeat on every scan
+            // because the hook latch never sticks (516 copies in one 8-minute
+            // trace session). Log the first 10 observations and then every 300th
+            // as a heartbeat; a genuinely new module pointer always logs.
+            static HMODULE s_lastFoundModuleLogged = nullptr;
+            static std::atomic<int> s_foundModuleLogCount{0};
+            const bool newModulePointer = s_lastFoundModuleLogged != hMod;
+            if ((!ffx_hook_g_Initialized.load(std::memory_order_acquire) || ffx_hook_g_HookedModule != hMod) &&
+                (newModulePointer ||
+                 ce::log_meter::ShouldLogCadence(
+                     static_cast<uint32_t>(s_foundModuleLogCount.fetch_add(1, std::memory_order_relaxed) + 1), 10,
+                     300))) {
                 HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
+                s_lastFoundModuleLogged = hMod;
             }
             g_FGCompat.SetFSRFGSupportPresent(true);
             if (ffx_hook_InstallHooksForModule(hMod, ffxModuleNames[i])) {

@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "../../common/log_meter.h"
 
 
 #include "ffx_hook_internal.h"
@@ -67,8 +68,20 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
         return false;
 
     const bool firstSeenModule = ffx_hook_g_HookedModule != hModule;
-    if (firstSeenModule) {
+    // Metered diagnostic: a module that never yields hookable exports (e.g. the
+    // real nvngx_dlssg.dll) re-enters with firstSeenModule=true on every ~1 s
+    // module scan because the hooked-module latch never sticks, so the line
+    // below used to repeat every scan (516 copies in one 8-minute trace
+    // session). Log the first 10 attempts and then every 300th as a heartbeat;
+    // a genuinely new module pointer always logs.
+    static HMODULE s_lastInstallAttemptModule = nullptr;
+    static std::atomic<int> s_installAttemptLogCount{0};
+    if (firstSeenModule && (s_lastInstallAttemptModule != hModule ||
+                            ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(
+                                                                s_installAttemptLogCount.fetch_add(1, std::memory_order_relaxed) + 1),
+                                                            10, 300))) {
         HookLog("FFX Hook: Installing hooks for module %s (%p)", ffx_hook_moduleName, hModule);
+        s_lastInstallAttemptModule = hModule;
     }
     g_FGCompat.SetFSRFGSupportPresent(true);
 

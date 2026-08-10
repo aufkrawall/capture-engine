@@ -15,12 +15,24 @@
   first-20 + every-600th cadence with a bounded dense window 1700-1900
   replacing the old crash-investigation "every frame after 1800"; wrapper/IAT
   retry scans log first 10 + every 300th (plus on summary change); FFX
-  per-export lines log only for a new module; inline-hook per-instruction trace
-  dumps limited to first 4 installs + every 100th; NVNGX `UpdatePresetHint`
-  logs only on value change and `SetI: Overriding` is deduped.
+  per-export lines log only for a new module and the module-level "Found
+  module"/"Installing hooks" lines are metered (first 10 + every 300th) for
+  modules that never become hookable (real nvngx_dlssg.dll has no FFX exports,
+  so the old code re-logged them every 1 s scan - 516 copies in the 214302
+  session); inline-hook per-instruction trace dumps limited to first 4 installs
+  + every 100th; NVNGX `UpdatePresetHint` logs only on value change and
+  `SetI: Overriding` is deduped.
 - Added `common/log_meter.h` (`ce::log_meter::ShouldLogCadence`) +
   `tests/test_log_meter.cpp`; conventions documented in
   `regression-testing-and-logging.md` ("Log metering conventions").
+- Session `logs/20260810_214302` (build 0.1.5904, trace level, ~8 min game)
+  confirmed the pass: hook_debug.log 13.9k lines/90 s -> 8.2k lines/~8 min
+  (~9.3k/min -> ~1k/min), UpdateOverlay duplicates gone (remaining lines are
+  real warn-blink transitions), wrapper IAT 154x -> ~11x, inline trace detail
+  174x -> ~18x, FFX per-export 129x -> gone; PostSL CONFIRMED/FG EVENT/fence
+  health and all WARNs still present. Remaining ~1k/min is ~25 deliberately
+  cadenced per-second/per-N-present diagnostics (ECL timing 1 s, fence/BB
+  health %200, routing state %300, DetourPresent %100, ...).
 
 ### 2026-08-10 - README STALKER 2 profile example: add the missing video source
 

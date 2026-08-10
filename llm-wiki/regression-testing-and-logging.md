@@ -102,6 +102,10 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   `ShouldLogRepeatedIATScan` metering as D3D9/D3D10/DDraw
   (`hook/wrappers/iat_hook_init.cpp`), and the FFX per-export "found at"
   lines are logged only for a newly seen module (`hook/apis/ffx_hook_install.cpp`).
+  The FFX module-level "Found module"/"Installing hooks for module" lines are
+  additionally metered (first 10 + every 300th) because a module without
+  hookable exports (e.g. real nvngx_dlssg.dll) never latches as hooked and
+  used to re-log both lines every ~1 s scan (`hook/apis/ffx_hook_api.cpp`).
 - Trace-only byte dumps: inline-hook per-instruction dumps are limited to the
   first 4 installs and every 100th install; the compact per-hook lines stay
   (`hook/wrappers/inline_hook.cpp`).
