@@ -157,8 +157,16 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
                                       reinterpret_cast<void*>(Hooked_ffxCreateContext), ffx_hook_g_Original_ffxCreateContext,
                                       ffx_hook_g_ffxCreateContextInlineHooked, ffx_hook_g_ffxCreateContextTarget, "ffxCreateContext");
         }
-        HookLog("FFX Hook: ffxCreateContext found at %p, hooking via %s (inline=%d)", createCtx,
-                allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
+        // Metered diagnostic: the periodic module rescan re-runs this function
+        // every second, and these per-export lines used to repeat on every scan
+        // (129 copies each in one 90-second trace session) even though nothing
+        // changed. The "Installing hooks for module" line above is already
+        // gated by firstSeenModule; these exports are only worth logging when
+        // the module itself is new.
+        if (firstSeenModule) {
+            HookLog("FFX Hook: ffxCreateContext found at %p, hooking via %s (inline=%d)", createCtx,
+                    allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
+        }
         if (allowIATHooks) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
@@ -173,8 +181,10 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
                                       reinterpret_cast<void*>(Hooked_ffxDestroyContext), ffx_hook_g_Original_ffxDestroyContext,
                                       ffx_hook_g_ffxDestroyContextInlineHooked, ffx_hook_g_ffxDestroyContextTarget, "ffxDestroyContext");
         }
-        HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via %s (inline=%d)", destroyCtx,
-                allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
+        if (firstSeenModule) {
+            HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via %s (inline=%d)", destroyCtx,
+                    allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
+        }
         if (allowIATHooks) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
@@ -197,10 +207,12 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
                     ffx_hook_moduleName ? ffx_hook_moduleName : "FFX", reinterpret_cast<void*>(configureCtx), logCount);
             }
         }
-        HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d veh=%d)", configureCtx,
-                allowIATHooks ? (armProtectedConfigureBreakpoint ? "IAT/dynamic+VEH" : "IAT/dynamic")
-                              : (armProtectedConfigureBreakpoint ? "dynamic+VEH" : "dynamic-only"),
-                allowInlineHooks ? 1 : 0, armProtectedConfigureBreakpoint ? 1 : 0);
+        if (firstSeenModule) {
+            HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d veh=%d)", configureCtx,
+                    allowIATHooks ? (armProtectedConfigureBreakpoint ? "IAT/dynamic+VEH" : "IAT/dynamic")
+                                  : (armProtectedConfigureBreakpoint ? "dynamic+VEH" : "dynamic-only"),
+                    allowInlineHooks ? 1 : 0, armProtectedConfigureBreakpoint ? 1 : 0);
+        }
         if (allowIATHooks) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);

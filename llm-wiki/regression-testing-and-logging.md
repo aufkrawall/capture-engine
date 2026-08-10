@@ -76,6 +76,43 @@ Primary sources:
 - For Win32 failures, include `GetLastError()` when useful.
 - For COM and D3D failures, include the `HRESULT` when useful.
 
+## Log metering conventions
+
+Trace/debug logs must stay readable: unconditional per-frame, per-tick, or
+per-retry log lines are spam and bury the transitions that matter. Session
+`20260810_210407` (trace level) showed ~9k hook_debug.log lines/minute, ~2.2k
+identical `UpdateOverlay` lines, ~2.2k per-frame inject "Read handle" lines,
+and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
+
+- State summaries: log on change (first call + whenever any displayed parameter
+  differs), not every evaluation. Applied to
+  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay_render.cpp`)
+  and `[Inject Thread] Read handle for texIdx` (`captureengine/media_main_threads_inject.cpp`,
+  per-slot handle change detection).
+- Hot-path heartbeats: use `ce::log_meter::ShouldLogCadence(callIndex,
+  firstBurstCount, stride)` from `common/log_meter.h` (tested in
+  `tests/test_log_meter.cpp`) — first N calls, then every stride-th. Applied to
+  the PostSL `SUBMIT` line (`hook/apis/dx12_hook_postsl_render_submit.cpp`,
+  first 20, then every 600th, plus the bounded dense window 1700-1900 that
+  replaced the old "every frame after 1800" crash investigation logging) and
+  the wrapper IAT retry scan (`hook/wrappers/wrapper_hooks_devices.cpp`, first
+  10, then every 300th, plus log-on-summary-change).
+- Retry/scan paths: never log the same "Initializing..." line on every retry.
+  `IAT: Initializing D3D11 hooks...` now uses the same
+  `ShouldLogRepeatedIATScan` metering as D3D9/D3D10/DDraw
+  (`hook/wrappers/iat_hook_init.cpp`), and the FFX per-export "found at"
+  lines are logged only for a newly seen module (`hook/apis/ffx_hook_install.cpp`).
+- Trace-only byte dumps: inline-hook per-instruction dumps are limited to the
+  first 4 installs and every 100th install; the compact per-hook lines stay
+  (`hook/wrappers/inline_hook.cpp`).
+- NVNGX preset hints (`hook/apis/nvngx_hook_internal.h`): `UpdatePresetHint`
+  logs only when the observed value actually changes (SR hints via the existing
+  atomic array, RR hints via a new per-quality sentinel array), and the
+  unconditional `SetI: Overriding` line is deduped through `LogOncePerParam`.
+- Already-fine patterns to keep: `% N`-counter gating (ECL timing windows,
+  fence health), `LogOncePerParam`, log-on-diff FG plan/transition lines, and
+  bounded "first K after transition" windows (Reinit/Post-transition/PostFGOff).
+
 ## High-Value Existing Test Files
 - `tests/test_fg_session_state.cpp`
   - Planner/session snapshot invariants, queue-role planning, and planner-side publication/authority coverage for the new FG session layer.

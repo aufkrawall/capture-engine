@@ -211,11 +211,46 @@ void PseudoOverlay::UpdateOverlay() {
         recordingNotifyUntil_.load(), recordingNotification_.load(std::memory_order_relaxed), ghostActive,
         statusDarkForCapture_);
 
-    LogDebug(
-        "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
-        "statusDark=%d shouldHaveVisible=%d",
-        config_.mode, static_cast<unsigned>(recordingState), isRecording ? 1 : 0, warnVisible_ ? 1 : 0,
-        ghostActive ? 1 : 0, statusDarkForCapture_ ? 1 : 0, shouldHaveVisibleOverlay ? 1 : 0);
+    // Metered diagnostic: this runs on every 500 ms timer tick plus every
+    // transition entry path, and the previous unconditional log emitted the
+    // same line ~2x/sec in steady state (1943 duplicates in one 15-minute
+    // session), drowning the transitions that actually matter. Log only on the
+    // first call and when any displayed parameter changes; every transition is
+    // still captured, but idle ticks produce no noise. Single-threaded: all
+    // callers are on the overlay UI thread.
+    static bool s_firstUpdateOverlayLog = true;
+    static int s_lastMode = -1;
+    static int s_lastRecordingState = -1;
+    static int s_lastIsRecording = -1;
+    static int s_lastWarnVisible = -1;
+    static int s_lastGhost = -1;
+    static int s_lastStatusDark = -1;
+    static int s_lastShouldHaveVisible = -1;
+    const int currentMode = config_.mode;
+    const int currentRecordingState = static_cast<int>(recordingState);
+    const int currentIsRecording = isRecording ? 1 : 0;
+    const int currentWarnVisible = warnVisible_ ? 1 : 0;
+    const int currentGhost = ghostActive ? 1 : 0;
+    const int currentStatusDark = statusDarkForCapture_ ? 1 : 0;
+    const int currentShouldHaveVisible = shouldHaveVisibleOverlay ? 1 : 0;
+    if (s_firstUpdateOverlayLog || currentMode != s_lastMode || currentRecordingState != s_lastRecordingState ||
+        currentIsRecording != s_lastIsRecording || currentWarnVisible != s_lastWarnVisible ||
+        currentGhost != s_lastGhost || currentStatusDark != s_lastStatusDark ||
+        currentShouldHaveVisible != s_lastShouldHaveVisible) {
+        LogDebug(
+            "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
+            "statusDark=%d shouldHaveVisible=%d",
+            currentMode, static_cast<unsigned>(recordingState), currentIsRecording, currentWarnVisible, currentGhost,
+            currentStatusDark, currentShouldHaveVisible);
+        s_firstUpdateOverlayLog = false;
+        s_lastMode = currentMode;
+        s_lastRecordingState = currentRecordingState;
+        s_lastIsRecording = currentIsRecording;
+        s_lastWarnVisible = currentWarnVisible;
+        s_lastGhost = currentGhost;
+        s_lastStatusDark = currentStatusDark;
+        s_lastShouldHaveVisible = currentShouldHaveVisible;
+    }
 
     if (!config_.enabled) {
         DestroyOverlayWindows();

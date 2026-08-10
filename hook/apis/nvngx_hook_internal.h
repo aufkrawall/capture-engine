@@ -20,6 +20,8 @@ struct NVSDK_NGX_DLSS_Create_Params;
 
 #include <vector>
 
+#include <cstdint>
+
 #include "../common/fg_detection.h"  // For FG_SetDLSSActive
 
 #include "../common/hook_common.h"
@@ -295,6 +297,28 @@ inline ParameterVTableOriginals GetParameterOriginals(NVSDK_NGX_Parameter* param
 // 5=DLAA) Initialize to '?'
 inline std::atomic<char> nvngx_hook_g_UserPresetHints[6] = {'?', '?', '?', '?', '?', '?'};
 
+// Last observed Ray Reconstruction hint per quality level (order matches
+// GetRRPresetIndex below). Initialized to a sentinel so the first observation
+// of each hint is always logged.
+inline std::atomic<uint32_t> nvngx_hook_g_UserRRPresetHints[6] = {UINT32_MAX, UINT32_MAX, UINT32_MAX,
+                                                                  UINT32_MAX, UINT32_MAX, UINT32_MAX};
+
+inline int GetRRPresetIndex(const char* paramName) {
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA) == 0)
+        return 0;
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality) == 0)
+        return 1;
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced) == 0)
+        return 2;
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance) == 0)
+        return 3;
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance) == 0)
+        return 4;
+    if (strcmp(paramName, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality) == 0)
+        return 5;
+    return -1;
+}
+
 inline char PresetIDToChar(uint32_t id) {
     if (id >= 1 && id <= 26)
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
@@ -319,14 +343,23 @@ inline void UpdatePresetHint(const char* paramName, uint32_t presetVal, const ch
 
     if (idx >= 0) {
         char c = PresetIDToChar(presetVal);
-        nvngx_hook_g_UserPresetHints[idx].store(c);
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
+        const char previous = nvngx_hook_g_UserPresetHints[idx].exchange(c);
+        // Metered diagnostic: the game re-applies the same hints repeatedly
+        // (SetI/SetUI/GetI/GetUI during startup and feature activation), and the
+        // old code logged every call even when the value did not change. Log
+        // only on actual changes; the first observation always logs because the
+        // array starts at '?'.
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging() && previous != c) {
             NVNGXLog("NVNGX: UpdatePresetHint [%s]: %s -> %u ('%c')", source, paramName, presetVal, c);
         }
     } else if (strstr(paramName, "RayReconstruction")) {
-        // Log RR presets too for visibility
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-            NVNGXLog("NVNGX: UpdatePresetHint RR [%s]: %s -> %u", source, paramName, presetVal);
+        const int rrIdx = GetRRPresetIndex(paramName);
+        if (rrIdx >= 0) {
+            const uint32_t previous = nvngx_hook_g_UserRRPresetHints[rrIdx].exchange(presetVal);
+            // Same change-only metering as the SR hints above.
+            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging() && previous != presetVal) {
+                NVNGXLog("NVNGX: UpdatePresetHint RR [%s]: %s -> %u", source, paramName, presetVal);
+            }
         }
     }
 }

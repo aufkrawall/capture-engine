@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <cstdio>
 
+#include "../../common/log_meter.h"
 #include "../../common/raii_helpers.h"
 
 // Include Windows header for MinGW compatibility
@@ -537,6 +538,17 @@ bool InitializeWrapperHooks() {
         s_WrapperHookActivityGeneration.fetch_add(1, std::memory_order_relaxed);
     });
 
+    // Metered diagnostic: this function is re-run by the periodic hook scan
+    // (about once per second) and on module-load events, so categories whose
+    // DLLs never load (e.g. DDraw/D3D9 in a DX12-only game) used to log their
+    // "Initializing..." line on every retry - 154 identical lines each in one
+    // 90-second trace session. Log the first 10 attempts and then every 300th
+    // attempt as a heartbeat; the summary line additionally logs whenever the
+    // initialized-category set actually changes so successes are never missed.
+    static std::atomic<int> s_wrapperInitScanLogCount{0};
+    const bool logWrapperScan = ce::log_meter::ShouldLogCadence(
+        static_cast<uint32_t>(s_wrapperInitScanLogCount.fetch_add(1, std::memory_order_relaxed) + 1), 10, 300);
+
     // Do NOT return early when g_WrappersActive is true from a previous
     // partial initialization (e.g. DllMain ran before D3D11.dll was loaded).
     // The per-category !s_*Initialized guards below let us retry categories
@@ -544,7 +556,9 @@ bool InitializeWrapperHooks() {
     // prevents double-running the category-independent setup below.
 
     if (!g_WrappersActive) {
-        EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
+        }
     }
 
     bool anySuccess = false;
@@ -554,21 +568,27 @@ bool InitializeWrapperHooks() {
     // categories that will ever load are done
 
     if (!s_DXGIInitialized) {
-        EarlyLog("Wrapper: Initializing DXGI hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing DXGI hooks...");
+        }
         s_DXGIInitialized = IATHook::InitializeDXGIHooks();
         if (s_DXGIInitialized)
             anySuccess = true;
     }
 
     if (!s_D3D10Initialized) {
-        EarlyLog("Wrapper: Initializing D3D10 hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing D3D10 hooks...");
+        }
         s_D3D10Initialized = IATHook::InitializeD3D10Hooks();
         if (s_D3D10Initialized)
             anySuccess = true;
     }
 
     if (!s_D3D11Initialized) {
-        EarlyLog("Wrapper: Initializing D3D11 hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing D3D11 hooks...");
+        }
         s_D3D11Initialized = IATHook::InitializeD3D11Hooks();
         if (s_D3D11Initialized) {
             anySuccess = true;
@@ -577,21 +597,27 @@ bool InitializeWrapperHooks() {
     }
 
     if (!s_D3D12Initialized) {
-        EarlyLog("Wrapper: Initializing D3D12 hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing D3D12 hooks...");
+        }
         s_D3D12Initialized = IATHook::InitializeD3D12Hooks();
         if (s_D3D12Initialized)
             anySuccess = true;
     }
 
     if (!s_D3D9Initialized) {
-        EarlyLog("Wrapper: Initializing D3D9 hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing D3D9 hooks...");
+        }
         s_D3D9Initialized = IATHook::InitializeD3D9Hooks();
         if (s_D3D9Initialized)
             anySuccess = true;
     }
 
     if (!s_DDrawInitialized) {
-        EarlyLog("Wrapper: Initializing DirectDraw hooks...");
+        if (logWrapperScan) {
+            EarlyLog("Wrapper: Initializing DirectDraw hooks...");
+        }
         s_DDrawInitialized = IATHook::InitializeDDrawHooks();
         if (s_DDrawInitialized)
             anySuccess = true;
@@ -603,11 +629,18 @@ bool InitializeWrapperHooks() {
         g_WrappersActive = true;
     }
 
-    EarlyLog(
-        "Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, "
-        "D3D12=%d, D3D9=%d, DDraw=%d)",
-        s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized,
-        s_DDrawInitialized);
+    static uint32_t s_lastLoggedIatSummary = 0;
+    const uint32_t iatSummary = (s_DXGIInitialized ? 1u : 0u) | (s_D3D10Initialized ? 2u : 0u) |
+                                (s_D3D11Initialized ? 4u : 0u) | (s_D3D12Initialized ? 8u : 0u) |
+                                (s_D3D9Initialized ? 16u : 0u) | (s_DDrawInitialized ? 32u : 0u);
+    if (logWrapperScan || iatSummary != s_lastLoggedIatSummary) {
+        EarlyLog(
+            "Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, "
+            "D3D12=%d, D3D9=%d, DDraw=%d)",
+            s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized,
+            s_DDrawInitialized);
+        s_lastLoggedIatSummary = iatSummary;
+    }
     return anySuccess;
 }
 

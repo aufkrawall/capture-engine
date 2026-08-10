@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_postsl_session.h"
+#include "../../common/log_meter.h"
 
 PostSLFlow PostSLRenderSession::Chunk3() {
 if (scQueue && scQueue != queue && dx12_hook_g_State.crossQueueFence && !cachedSLFGActive) {
@@ -491,7 +492,15 @@ if (SUCCEEDED(postDevReason) && submittedQueue != dx12_hook_g_PostSLLastWorkingQ
     HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", dx12_hook_g_PostSLLastWorkingQueue, submittedQueue);
     SetPostSLLastWorkingQueue(submittedQueue);
 }
-if (renderNum <= 20 || (renderNum % 10) == 0 || renderNum >= 1800 || FAILED(postDevReason)) {
+// Metered diagnostic: the old condition logged every frame once renderNum
+// passed 1800 (added during the SL-metadata DEVICE_HUNG investigation), which
+// at PostSL rates produced ~5.2k SUBMIT lines in a 90-second trace session.
+// Keep the first-burst + heartbeat cadence, retain a bounded dense window
+// around the historical crash region (frames 1700-1900), and always log device
+// failure. Routing/state transitions are already covered by dedicated
+// transition logs elsewhere.
+if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(renderNum), 20, 600) ||
+    (renderNum >= 1700 && renderNum <= 1900) || FAILED(postDevReason)) {
     HookLogImportant(
         "DX12: Post-SL overlay SUBMIT #%d (bufIdx=%u queue=%p scQueue=%p slWrapper=%d rendered=%d "
         "virtualCall=%d realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X epoch=%d)",

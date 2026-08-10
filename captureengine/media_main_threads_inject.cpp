@@ -231,7 +231,21 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         qf.shmemSlot = 0;
                         if (IsValidTextureIndex(texIdx)) {
                             qf.sharedHandle = (HANDLE)media_main_g_pSharedMem->GetSharedHandle(texIdx);
-                            LogDebug("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
+                            // Metered diagnostic: slot handles are allocated once
+                            // per shared-memory setup and rarely change, yet this
+                            // line used to fire on every ingested frame (~16
+                            // lines/frame in trace sessions). Log on first
+                            // observation per slot and on actual handle changes
+                            // only; that preserves the full handle-transition
+                            // history without the per-frame noise.
+                            static uint64_t s_lastLoggedSharedHandle[SHARED_TEXTURE_SLOT_COUNT] = {};
+                            static bool s_handleEverLogged[SHARED_TEXTURE_SLOT_COUNT] = {};
+                            const uint64_t handleValue = reinterpret_cast<uint64_t>(qf.sharedHandle);
+                            if (!s_handleEverLogged[texIdx] || s_lastLoggedSharedHandle[texIdx] != handleValue) {
+                                LogDebug("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
+                                s_handleEverLogged[texIdx] = true;
+                                s_lastLoggedSharedHandle[texIdx] = handleValue;
+                            }
                         } else {
                             qf.sharedHandle = (HANDLE)media_main_g_pSharedMem->GetSharedHandle(0);
                             LogDebug("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);

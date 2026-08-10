@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 571,
+    "entries": 572,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -542,6 +542,7 @@
       "tests/test_inject_source_lifecycle.cpp",
       "tests/test_injection_lifetime_source.cpp",
       "tests/test_ipc_message_validation.cpp",
+      "tests/test_log_meter.cpp",
       "tests/test_logger_service_policy.cpp",
       "tests/test_mip_mapping_policy.cpp",
       "tests/test_module_enumeration.cpp",

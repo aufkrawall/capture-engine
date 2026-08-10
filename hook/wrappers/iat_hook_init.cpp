@@ -199,7 +199,11 @@ bool InitializeD3D12Hooks() {
 }
 
 bool InitializeD3D11Hooks() {
-    WrapperLog("IAT: Initializing D3D11 hooks...");
+    static std::atomic<int> s_d3d11ScanLogCount{0};
+    const bool logScan = ShouldLogRepeatedIATScan(s_d3d11ScanLogCount);
+    if (logScan) {
+        WrapperLog("IAT: Initializing D3D11 hooks...");
+    }
 
     HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
 

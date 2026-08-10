@@ -113,8 +113,13 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             if (isDlssPreset) {
                 uint32_t val = (specificOverride > 0) ? specificOverride : cfg.parsed.srPreset;
                 if (val > 0) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
-                        NVNGXLog("NVNGX: SetI: Overriding %s: %d -> %u", InName, InValue, val);
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
+                        // Metered diagnostic: the game can re-apply the same
+                        // override every frame during startup/activation; log
+                        // once per changed (param, value) pair instead of every
+                        // call.
+                        LogOncePerParam(InName, "NVNGX: SetI: Overriding %s: %d -> %u", InName, InValue, val);
+                    }
                     InValue = (int)val;
                     UpdatePresetHint(InName, val, "SetI_Override");
                 } else {
