@@ -133,6 +133,7 @@ a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, forced UE
 ```ini
 [Profile.stalker]
 process=Stalker2-Win64-Shipping.exe
+video_capture=inject
 dll_injection=always
 audio_enabled=true
 audio_track=1

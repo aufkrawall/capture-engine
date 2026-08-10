@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-08-10 - README STALKER 2 profile example: add the missing video source
+
+- The `[Profile.stalker]` example in `README.md` set `dll_injection=always` without `video_capture`, which under
+  the canonical-profile contract resolves to no video route (overlay-only), so copying the example would not
+  record video. Added `video_capture=inject`; `dll_injection=always` is now redundant there (inject capture
+  already implies full injection) but harmless. The template's other `always` examples already name a working
+  video source (`dxgi_dup` overlay example, `wgc` unsafe overlay-only example, `inject` unsafe full-inject
+  example) and are unchanged. Docs invariant: any example with `dll_injection=always` must also name a video
+  source, or it is an overlay-only profile.
+
 ### 2026-08-09 - Desktop screenshot after closing an injected game stalls 15 s and shows no overlay confirmation
 
 - Session `logs/20260809_165328` (Robocop, build 0.1.5901): the in-game hook screenshot at 16:53:51 completed in
