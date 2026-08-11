@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-08-12 - RTSS + Steam coexistence: classification fixed, OSD still vanishes (0.1.5927/5928)
+
+- Session `installed/captureengine/logs/20260811_233748` (Strange Brigade DX12, Steam overlay + `RTSSHooks64.dll`): RTSS's OSD vanished after a brief moment while CE's overlay stayed, with both RTSS inject modes. The tracked-overlay cache reports the first loaded entry by list priority, so with Steam + RTSS loaded it names `gameoverlayrenderer64.dll` even though RTSS loaded later and owns the preserved `dxgi!Present` entry jump. CE then serviced RTSS's runtime thunk (`FF 25 00 00 00 00` + pointer into RTSSHooks64.dll) through the Steam guarded-invoke machinery.
+- Live probes (dx12_test, session `20260811_235651`): RTSS-only + CE keeps RTSS's OSD visible indefinitely on the plain trampoline forward; the failure needs Steam loaded as well. RTSS's restore/rehook cycle also re-enters Steam's handler nested inside the forward (RTSS saved Steam's E9 as its "original" bytes).
+- Fix 1 (commit `9c023489`): owner-based foreign-chain classification — resolve the thunk pointer to the owning DLL; unresolvable thunks fall back to last-load-order evidence recorded only from real load notifications. All Steam routing decisions (`IsSteamExternalChainTrampoline`, guarded invoke, forced bypass, startup pass, SL fast path, Present1) now use it. Non-Steam chains with Steam loaded keep Steam's NULL-callback patches + VEH around the bare forward. Install-time log: `External hook owner: ...`.
+- Validation (session `20260812_001959`, 0.1.5928): classification works, but **RTSS OSD still disappears** — the Steam guarded machinery was NOT the cause. ECL-timing drops from ~3 ECLs/frame (game + RTSS, same as working dx12_test) to ~1 over ~10 s while the game keeps ~1200 fps: RTSS's per-frame submissions stop. Finer ECL trace sampling added (commit `f8f3ecd2`, every 64th call) and `ce_dx12_trace` flag is set; next runs will attribute the loss per module and test Steam-overlay-disabled.
+- Tests: `tests/test_overlay_compat.cpp` (last-loaded, load-order decision), `tests/test_dxgi_shared_part11.cpp` (source-policy).
+
 ### 2026-08-11 - Late inject must hook already-loaded Streamline feature exports (slDLSSGSetOptions) — Talos 4x still reported as 2x
 
 - Session `logs/20260811_230524` (0.1.5924): the MultiFrameCount parameter
