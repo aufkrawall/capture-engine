@@ -335,11 +335,22 @@ const auto wgcLowSourceModeUpdate = ce::capture_policy::UpdateHeldMode(
 wgcLowSourceModeActive = wgcLowSourceModeUpdate.active;
 wgcLowSourceStateChangeTick = wgcLowSourceModeUpdate.stateChangeTick;
 if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
-    LogInfo(
-        "[WGC CFR] Low-source mode entered: state=%s src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-        ce::capture_policy::WgcLowSourceStateToString(wgcLowSourceStateCurrent), wgcRecentDeliveredFps,
-        wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps, wgcRecentInputMin250Fps,
-        wgcRecentInputMin500Fps, wgcNoFreshTickPermille, bufferedWgcFrames.size());
+    // Log only entries that have a reason to hold. The immediate-exit path
+    // (!encoderTooSlowForTargetCurrent && bufferedReserveRecovered) can revert an
+    // entry on the very next policy tick while the source stays below target, so
+    // an ungated "entered" line would otherwise repeat every ~280 ms for the
+    // whole episode even though each entry lasts a single tick. Those flap
+    // entries are still accounted for in the session summary
+    // (lowSourceImmediateExits); the real state (fps, empty permille, buffer
+    // depth) is visible at 1 Hz in the CFR jitter-budget diagnostics.
+    const bool wgcLowSourceEntryHolds = encoderTooSlowForTargetCurrent || !bufferedReserveRecovered;
+    if (wgcLowSourceEntryHolds) {
+        LogInfo(
+            "[WGC CFR] Low-source mode entered: state=%s src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+            ce::capture_policy::WgcLowSourceStateToString(wgcLowSourceStateCurrent), wgcRecentDeliveredFps,
+            wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps, wgcRecentInputMin250Fps,
+            wgcRecentInputMin500Fps, wgcNoFreshTickPermille, bufferedWgcFrames.size());
+    }
 } else if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
     if (wgcLowSourceModeUpdate.immediate) {
         ++captureSessionSummary.lowSourceImmediateExits;

@@ -44,7 +44,9 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         // sample_rate}
         codec_tb = {1, st->codecpar->sample_rate};
 
-        if (audioPacketCount++ % 100 == 0) {
+        // Verify audio packet flow on a bounded cadence (~5-10 s at typical
+        // 47-94 pkt/s); per-packet lines are unnecessary at trace level.
+        if (audioPacketCount++ % 500 == 0) {
             DLL_Log(
                 "[VideoEncoder] Queuing audio pkt #%d size=%d pts=%lld "
                 "dur=%lld stream_idx=%d",
@@ -143,8 +145,12 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
                     st->time_base.num, st->time_base.den);
         }
 
-        // DEBUG LEAK: Log queue stats every 100 video frames
-        if (vidDebugCount % 100 == 0) {
+        // DEBUG LEAK: Log queue stats every 600 video frames (~5 s at 120 fps).
+        // The CRITICAL overflow line below fires on the first cadence hit after
+        // the condition appears; the condition is persistent, so a ≤5 s delay
+        // does not lose it. The trend line needs only enough samples to show a
+        // queue that grows over time.
+        if (vidDebugCount % 600 == 0) {
             size_t qBytes = currentQueueBytes.load();
             size_t qSize = 0;
             {

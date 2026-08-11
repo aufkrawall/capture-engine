@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-08-01 (latched recording-capacity health and legacy overload attribution, full-duration inter-track content-offset detection, epoch-bootstrap liveness diagnostics, runtime-observed DXGI→WGC backend history, transition-scoped source-limited classification, typed audio-source prime diagnostics, stop-force-drain versus live-drift separation, recording-scoped attribution, target-relative app-latency classification, safe incremental/clean verification, and concise build diagnostics)
+Last cross-checked: 2026-08-11 (media-log cadence audit on sessions 20260811_032044 and 20260810_224930; held-mode entry log gating; 600-frame QUEUE STATS / 500-packet audio cadence; AppDiag kept at 1 s deliberately)
 
 Primary sources:
 - `AGENTS.md`
@@ -39,6 +39,10 @@ Primary sources:
 - `common/crash_handler.cpp`
 - `common/process_ipc.cpp`
 - `common/process_ipc.h`
+- `captureengine/media_main_encoder_05_loop_wgc_select.cpp`
+- `mediaengine/video_encoder_write.cpp`
+- `mediaengine/mediaengine_audio_loop_commit.cpp`
+- `mediaengine/mediaengine_audio_pull_encode_c.cpp`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_crash_dump_policy.cpp`
@@ -65,6 +69,8 @@ Primary sources:
 - `installed/captureengine/logs/20260602_030350`
 - `installed/captureengine/logs/20260602_161000_gtafreezestartwithfsrfg`
 - `installed/captureengine/logs/20260601_212556`
+- `installed/captureengine/logs/20260811_032044`
+- `installed/captureengine/logs/20260810_224930`
 - `tests/test_streamline_runtime_policy.cpp`
 
 ## Core Expectations
@@ -113,6 +119,30 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   logs only when the observed value actually changes (SR hints via the existing
   atomic array, RR hints via a new per-quality sentinel array), and the
   unconditional `SetI: Overriding` line is deduped through `LogOncePerParam`.
+- Held-mode transitions: log "entered" only when the entry has a reason to hold.
+  `[WGC CFR] Low-source mode entered` was re-logged at up to ~3.6 Hz with zero
+  "exited" lines (649/1203 per session) because the immediate-exit path
+  (`!encoderTooSlowForTargetCurrent && bufferedReserveRecovered`) reverts the
+  entry on the next policy tick while the source stays below target, and the
+  enter hold (120 ms) is shorter than the flap cycle. The log is gated on
+  `encoderTooSlowForTargetCurrent || !bufferedReserveRecovered`
+  (`captureengine/media_main_encoder_05_loop_wgc_select.cpp`); flap entries are
+  still counted in the session summary (`lowSourceImmediateExits`), and source
+  state stays visible at 1 Hz in the CFR jitter-budget diagnostics. This is a
+  log-only gate; the flap itself was left unchanged pending runtime smoothness
+  validation.
+- Trend diagnostics don't need 1 Hz where redundant higher-signal lines exist:
+  `[VideoEncoder] QUEUE STATS` moved from every 100 to every 600 video frames
+  (~5 s at 120 fps; the CRITICAL overflow line keeps firing on the first
+  cadence hit, and the 1 Hz `[EncoderThread] Alive` heartbeat reports queue
+  depth), and `[VideoEncoder] Queuing audio pkt` from every 100 to every 500
+  audio packets (~5-10 s; the 1 Hz `[AppDiag] consume` line and `[MuxAudio]`
+  cadence already cover flow).
+- Do NOT throttle the audio-sync smoking-gun lines: `[AppDiag] place`/`consume`
+  stay at their 1 s cadence (they pin the app-track-silence/backlog failure
+  class; ~2 lines/s per app source is the accepted cost), as do
+  `[AppAudioCapture] Source Sync`/`Content`, the `[AppLatency] WARNING` and the
+  `[PullAudio] Drift debug` counters.
 - Already-fine patterns to keep: `% N`-counter gating (ECL timing windows,
   fence health), `LogOncePerParam`, log-on-diff FG plan/transition lines, and
   bounded "first K after transition" windows (Reinit/Post-transition/PostFGOff).
