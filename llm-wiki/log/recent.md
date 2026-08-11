@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-11 - NVNGX FG multiplier: read MultiFrameCount on legacy FG IDs; late-inject FPS/latency audit
+
+- Sessions `logs/20260811_222500` (0.1.5922) and `logs/20260811_225034`
+  (0.1.5923): after late inject + Alt+Tab resume the overlay reported
+  `DLSS 2x` although the game runs 4x MFG, and the user perceived reduced FPS
+  and increased input latency vs. before injection.
+- Root cause (reporting): `Hooked_CreateFeature` hardcoded the legacy FG IDs
+  (9/0xB) to multiplier 2. The `FrameGenerationMultiplier` parameter read
+  added in 0.1.5923 did not help because this game's runtime never sets that
+  name: binary inspection of the game's `nvngx_dlssg.dll` proves the FG v2+
+  parameter is `MultiFrameCount` (generated frames between real frames,
+  1=2x/2=3x/3=4x). Fix (0.1.5924): `ReadNVNGXFGMultiplierParam` reads
+  `FrameGenerationMultiplier` first, then `MultiFrameCount` (+1), via both
+  getI and getUI; both FG and MFG branches share
+  `ResolveNVNGXFrameGenerationMultiplier` (config override, then param).
+- FPS/latency audit (0.1.5924): the perf CSV shows the game genuinely running
+  4x MFG with CE: post-FG output ~130 fps, real frames 25.6/s, present ratio
+  5.05, and 287/292 slow frames followed by exactly 3 fast frames (clean 1+3
+  MFG cadence). CE's per-present overlay ECL lands on the swapchain-owning
+  queue (the only queue DXGI permits; the DLSS-G queue rejects backbuffer
+  access with 0x887A002B) and does not disturb the FG cadence. Base FPS ~26
+  means ~38 ms real-frame latency - inherent to 4x MFG at that base rate, not
+  a CE regression. Reflex: late inject installs no sl.reflex hooks (module
+  already loaded) and CE's limiter is off, so CE cannot break the game's
+  Reflex path. The perceived problems matched the broken overlay data (2x +
+  zero/incorrect FPS readouts); re-validate with 0.1.5924.
+- Regression tests: `ResolvesDLSSFrameGenerationMultiplierFromParameter` and
+  `CreateFeatureFGBranchesResolveTheMultiplierParameter` in
+  `tests/test_ngx_feature_lifecycle.cpp`.
+- Source anchors: `hook/apis/nvngx_hook_feature.cpp`,
+  `hook/apis/nvngx_hook_internal.h`, `hook/common/ngx_feature_lifecycle.h`.
+
 ### 2026-08-11 - Late-inject DLSS FG resume crash: route overlay to the swapchain-owning queue (20260811_221202)
 
 - Session `installed/captureengine/logs/20260811_221202` (build 0.1.5921)
@@ -73,58 +105,6 @@
   dedicated-queue guard was necessary but not sufficient - session
   `20260811_221202` still crashed via the game-queue submit on the DLSS-G
   render queue. The guard stays in place as defense-in-depth.
-
-### 2026-08-11 - Rebind session diagnostics when a resident hook is reactivated (missing perf_metrics CSV)
-
-- Session `installed/captureengine/logs/20260811_212728` (build 0.1.5918): CE
-  was restarted while Strange Brigade kept running, so the injector
-  "Adopted resident hook ... for host reconnection". The new session dir had no
-  `perf_metrics_*.csv` and no `fps_limiter_trace.log`; the hook's 5771 frames
-  went into the previous session's CSV
-  (`20260811_212708/perf_metrics_21120.csv`).
-- Root cause: PerfLogger, the FPS limiter trace path, and the crash dump
-  directory were bound once at HookThread/DllMain init and never re-bound when
-  a replacement host reactivated the resident hook.
-- Fix: `TryReactivateHookRuntime` now calls `RebindHookSessionDiagnostics()`:
-  resolves the new DiscoveryInfo logs directory, updates
-  `SetCrashDumpDirectory`, force-rebinds `PerfLogger::Init(..., true)`
-  (finalizes the old CSV and starts a fresh frame sequence), and calls
-  `FpsLimiter::ResetTraceLogPath()` so the next trace reopens in the new
-  session. The Vulkan layer's reconnect path also force-rebinds its
-  PerfLogger.
-- Regression tests:
-  `PerfLoggerTest.ForceRebindFinalizesOldCsvAndStartsFreshSequence`
-  (functional file test) and
-  `DXGISharedSourceTest.ResidentHookReactivationRebindsSessionDiagnostics`
-  (source invariant).
-- Source anchors: `hook/main_host_lifecycle.cpp`,
-  `hook/common/perf_logger.{h,cpp}`, `hook/common/fps_limiter.h`,
-  `hook/common/fps_limiter_detail/lifecycle.h`, `hook/common/hook_common.{h,cpp}`,
-  `hook/vulkan_layer/layer_ipc.cpp`.
-
-### 2026-08-11 - Fix false FSR_FG ECL-pattern latch on late inject (Strange Brigade DX12)
-
-- Session `installed/captureengine/logs/20260811_211623` (build 0.1.5917):
-  late-injected Strange Brigade DX12 (no DLSS FG, no FSR FG, no Streamline)
-  rendered the overlay for only a few frames, then
-  `DX12: FG detected via ECL count pattern (real=5, interp=12)` latched
-  heuristic `FSR_FG` with `scQueue=null` and every later ProcessFrame hit
-  `ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay`.
-- Root cause: the ECL-pattern heuristic counted every zero-ECL present as an
-  "interpolated" frame. During late injection the game queue's ECL hook is not
-  live yet, so the first ~12 presents before the first counted real frame
-  looked like interpolation evidence and tripped the 5-real/10-interp
-  threshold on a non-FG game.
-- Fix: zero-ECL presents now count as interpolation evidence only after a real
-  frame has been observed and only once per real frame (interleaved cadence),
-  and a latched heuristic deactivates after 120 consecutive real frames without
-  interpolation evidence unless direct FFX API confirmation exists.
-- Regression tests: `ECLPatternHeuristicDoesNotCountWarmupZeroECLFramesBeforeFirstReal`,
-  `ECLPatternHeuristicRequiresCountThresholdsForDetection`,
-  `HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun` in
-  `tests/test_dxgi_shared_part5.cpp`.
-- Source anchors: `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`,
-  `hook/apis/dx12_hook_process.cpp`.
 
 ### 2026-08-11 - Guard the Steam external-chain trampoline transport (DLSS->FSR switch crash 20260811_195131)
 

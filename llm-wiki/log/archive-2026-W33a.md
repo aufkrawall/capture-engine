@@ -1,5 +1,57 @@
 # llm-wiki Log Archive
 
+### 2026-08-11 - Rebind session diagnostics when a resident hook is reactivated (missing perf_metrics CSV)
+
+- Session `installed/captureengine/logs/20260811_212728` (build 0.1.5918): CE
+  was restarted while Strange Brigade kept running, so the injector
+  "Adopted resident hook ... for host reconnection". The new session dir had no
+  `perf_metrics_*.csv` and no `fps_limiter_trace.log`; the hook's 5771 frames
+  went into the previous session's CSV
+  (`20260811_212708/perf_metrics_21120.csv`).
+- Root cause: PerfLogger, the FPS limiter trace path, and the crash dump
+  directory were bound once at HookThread/DllMain init and never re-bound when
+  a replacement host reactivated the resident hook.
+- Fix: `TryReactivateHookRuntime` now calls `RebindHookSessionDiagnostics()`:
+  resolves the new DiscoveryInfo logs directory, updates
+  `SetCrashDumpDirectory`, force-rebinds `PerfLogger::Init(..., true)`
+  (finalizes the old CSV and starts a fresh frame sequence), and calls
+  `FpsLimiter::ResetTraceLogPath()` so the next trace reopens in the new
+  session. The Vulkan layer's reconnect path also force-rebinds its
+  PerfLogger.
+- Regression tests:
+  `PerfLoggerTest.ForceRebindFinalizesOldCsvAndStartsFreshSequence`
+  (functional file test) and
+  `DXGISharedSourceTest.ResidentHookReactivationRebindsSessionDiagnostics`
+  (source invariant).
+- Source anchors: `hook/main_host_lifecycle.cpp`,
+  `hook/common/perf_logger.{h,cpp}`, `hook/common/fps_limiter.h`,
+  `hook/common/fps_limiter_detail/lifecycle.h`, `hook/common/hook_common.{h,cpp}`,
+  `hook/vulkan_layer/layer_ipc.cpp`.
+
+### 2026-08-11 - Fix false FSR_FG ECL-pattern latch on late inject (Strange Brigade DX12)
+
+- Session `installed/captureengine/logs/20260811_211623` (build 0.1.5917):
+  late-injected Strange Brigade DX12 (no DLSS FG, no FSR FG, no Streamline)
+  rendered the overlay for only a few frames, then
+  `DX12: FG detected via ECL count pattern (real=5, interp=12)` latched
+  heuristic `FSR_FG` with `scQueue=null` and every later ProcessFrame hit
+  `ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay`.
+- Root cause: the ECL-pattern heuristic counted every zero-ECL present as an
+  "interpolated" frame. During late injection the game queue's ECL hook is not
+  live yet, so the first ~12 presents before the first counted real frame
+  looked like interpolation evidence and tripped the 5-real/10-interp
+  threshold on a non-FG game.
+- Fix: zero-ECL presents now count as interpolation evidence only after a real
+  frame has been observed and only once per real frame (interleaved cadence),
+  and a latched heuristic deactivates after 120 consecutive real frames without
+  interpolation evidence unless direct FFX API confirmation exists.
+- Regression tests: `ECLPatternHeuristicDoesNotCountWarmupZeroECLFramesBeforeFirstReal`,
+  `ECLPatternHeuristicRequiresCountThresholdsForDetection`,
+  `HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun` in
+  `tests/test_dxgi_shared_part5.cpp`.
+- Source anchors: `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`,
+  `hook/apis/dx12_hook_process.cpp`.
+
 ### 2026-08-11 - Trace-level media-log reduction pass (sessions 20260811_032044, 20260810_224930)
 
 - The WGC desktop sessions still produced ~18 lines/s in media logs at trace

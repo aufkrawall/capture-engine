@@ -25,6 +25,27 @@ constexpr bool IsSuccessfulResult(uint32_t result) noexcept {
     return (result & 0xFFF00000u) != 0xBAD00000u;
 }
 
+// Resolve the DLSS frame-generation output multiplier (2x/3x/4x) for an NVNGX
+// CreateFeature call. Feature IDs 9/0xB (legacy FG) and 18 (MFG) all carry the
+// configured multiplier in the FrameGenerationMultiplier parameter; the legacy
+// FG branch must not hardcode 2x. Late injection depends on this because the
+// Streamline GetState path that keeps the multiplier fresh at startup is not
+// hooked when sl.dlssg was already loaded before hook installation (session
+// 20260811_222500: Talos configured for 4x MFG but the overlay showed DLSS
+// 2x). Precedence mirrors the MFG branch: a configured override wins over the
+// 2x default, and a valid parameter value (2/3/4) wins over the config.
+// paramMultiplier must be 0 when the parameter is absent or unreadable.
+inline int ResolveNVNGXFrameGenerationMultiplier(int configuredMultiplier, int paramMultiplier) noexcept {
+    int multiplier = 2;  // Standard FG default is 2x
+    if (configuredMultiplier > 0) {
+        multiplier = configuredMultiplier;
+    }
+    if (paramMultiplier >= 2 && paramMultiplier <= 4) {
+        multiplier = paramMultiplier;
+    }
+    return multiplier;
+}
+
 template <std::size_t Capacity>
 class FeatureHandleRegistry {
  public:

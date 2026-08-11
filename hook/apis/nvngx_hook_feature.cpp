@@ -3,6 +3,44 @@
 static PFN_NVSDK_NGX_CreateFeature oCreateFeature_VULKAN = nullptr;
 static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
 
+// Read the game's frame-generation multiplier from the CreateFeature
+// parameter object. Modern FG v2+ runtimes (DLSS 310.x) carry the generated
+// frame count in NVSDK_NGX_DLSSG_Parameter_MultiFrameCount (1=2x, 2=3x, 3=4x);
+// older SDKs use NVSDK_NGX_Parameter_FrameGenerationMultiplier (2=2x, 3=3x,
+// 4=4x). Talos Reawakened sets MultiFrameCount=3 for 4x MFG (verified in its
+// shipped nvngx_dlssg.dll, which contains the "MultiFrameCount" string but no
+// "FrameGenerationMultiplier"). Both getI and getUI are tried because the
+// runtime may store the value in either slot. Returns 0 when absent or
+// unreadable so the caller falls back to the default/config multiplier.
+static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
+                                      const ParameterVTableOriginals& parameterOriginals) {
+    if (!params) {
+        return 0;
+    }
+    auto readInt = [&](const char* name) -> int {
+        int value = 0;
+        if (parameterOriginals.getI &&
+            parameterOriginals.getI(params, name, &value) == NVSDK_NGX_Result_Success) {
+            return value;
+        }
+        unsigned int uvalue = 0;
+        if (parameterOriginals.getUI &&
+            parameterOriginals.getUI(params, name, &uvalue) == NVSDK_NGX_Result_Success) {
+            return static_cast<int>(uvalue);
+        }
+        return 0;
+    };
+    const int multiplier = readInt(NVSDK_NGX_Parameter_FrameGenerationMultiplier);
+    if (multiplier >= 2 && multiplier <= 4) {
+        return multiplier;
+    }
+    const int generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);
+    if (generatedFrames >= 1 && generatedFrames <= 3) {
+        return generatedFrames + 1;
+    }
+    return 0;
+}
+
 // Helper to get DLSS Version from loaded DLL
 static void UpdateDLSSVersion() {
     if (!g_IPC || !g_IPC->GetSharedMem())
@@ -249,22 +287,9 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     // DLSS Multi-Frame Generation (MFG) - Feature ID 18
                     // MFG generates 2x, 3x, or 4x frames per rendered frame
                     state.fgActive = true;
-
-                    // Try to read the multiplier from parameters
-                    int mfgMultiplier = 2;  // Default to 2x
-                    const auto& cfg = GetActiveGraphicsConfig();
-                    const int configuredMultiplier = GetConfiguredFGMultiplier(cfg);
-                    if (configuredMultiplier > 0) {
-                        mfgMultiplier = configuredMultiplier;
-                    }
-                    if (params && parameterOriginals.getI) {
-                        int multValue = 0;
-                        NVSDK_NGX_Result multRes =
-                            parameterOriginals.getI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, &multValue);
-                        if (multRes == NVSDK_NGX_Result_Success && multValue >= 2 && multValue <= 4) {
-                            mfgMultiplier = multValue;
-                        }
-                    }
+                    const int mfgMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
+                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
+                        ReadNVNGXFGMultiplierParam(params, parameterOriginals));
                     state.mfgMultiplier = mfgMultiplier;
 
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
@@ -277,15 +302,23 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     g_FGCompat.SetDLSSFGMultiplier(mfgMultiplier);
                     g_FGCompat.SetDLSSFGActive(true);
                 } else {
-                    // DLSS Frame Generation - Feature IDs 9 and 0xB (11)
+                    // DLSS Frame Generation - Feature IDs 9 and 0xB (11).
+                    // Current DLSS runtimes also carry 2x/3x/4x MFG through the
+                    // FrameGenerationMultiplier parameter on these legacy IDs;
+                    // do not hardcode 2x (session 20260811_222500: Talos
+                    // configured for 4x MFG but late inject showed DLSS 2x).
                     state.fgActive = true;
-                    state.mfgMultiplier = 2;  // Standard FG is a 2x output multiplier
+                    const int fgMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
+                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
+                        ReadNVNGXFGMultiplierParam(params, parameterOriginals));
+                    state.mfgMultiplier = fgMultiplier;
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
-                        NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X)", featureID);
+                        NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X, %dx multiplier)", featureID,
+                                 fgMultiplier);
 
                     // CRITICAL: Signal FG activation to the detection system
                     // This enables usage-based detection instead of DLL-based detection
-                    g_FGCompat.SetDLSSFGMultiplier(2);
+                    g_FGCompat.SetDLSSFGMultiplier(fgMultiplier);
                     g_FGCompat.SetDLSSFGActive(true);
                 }
             } else {

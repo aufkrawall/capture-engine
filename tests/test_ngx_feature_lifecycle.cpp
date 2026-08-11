@@ -1,12 +1,63 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "../hook/common/ngx_feature_lifecycle.h"
+#include "source_fragment_reader.h"
 
 TEST(NgxFeatureLifecycleTest, UsesTheOfficialNgxSuccessBitConvention) {
     EXPECT_TRUE(ce::ngx_lifecycle::IsSuccessfulResult(0x00000001u));
     EXPECT_TRUE(ce::ngx_lifecycle::IsSuccessfulResult(0x00012345u));
     EXPECT_FALSE(ce::ngx_lifecycle::IsSuccessfulResult(0xBAD00001u));
     EXPECT_FALSE(ce::ngx_lifecycle::IsSuccessfulResult(0xBADFFFFFu));
+}
+
+// Regression (session 20260811_222500): late-injected Talos is configured for
+// 4x MFG but the NVNGX CreateFeature hook hardcoded the legacy FG feature IDs
+// (9/0xB) to 2x, because the Streamline GetState path that keeps the
+// multiplier fresh at startup is not hooked when sl.dlssg was already loaded.
+// The multiplier resolution must accept the FrameGenerationMultiplier
+// parameter on the legacy FG IDs exactly like the MFG (ID 18) branch.
+TEST(NgxFeatureLifecycleTest, ResolvesDLSSFrameGenerationMultiplierFromParameter) {
+    using ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier;
+
+    // No config override, no parameter -> standard FG default 2x.
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 0), 2);
+    // THE regression: 4x MFG carried in the parameter (late inject, no
+    // Streamline latch, no config override).
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 4), 4);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 3), 3);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 2), 2);
+    // Config override wins over the default but not over a valid parameter.
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 0), 4);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 3), 3);
+    // Invalid parameter values (absent/unreadable=0, out of range) are ignored.
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 1), 2);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 5), 2);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 5), 4);
+}
+
+// Source invariant: both NVNGX CreateFeature FG branches (legacy IDs 9/0xB and
+// MFG ID 18) must resolve the multiplier through the shared resolver instead of
+// hardcoding 2x, so late injection reports the game's real MFG factor.
+TEST(NgxFeatureLifecycleTest, CreateFeatureFGBranchesResolveTheMultiplierParameter) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_feature.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    // Both branches route through the resolver helper.
+    EXPECT_NE(text.find("ResolveNVNGXFrameGenerationMultiplier("), std::string::npos);
+    // The legacy FG branch must publish the resolved multiplier, not a
+    // hardcoded 2x.
+    EXPECT_NE(text.find("SetDLSSFGMultiplier(fgMultiplier)"), std::string::npos);
+    // The resolver helper reads the parameter through the original vtable
+    // getI/getUI, covering both parameter spellings (legacy
+    // FrameGenerationMultiplier and FG-v2+ MultiFrameCount).
+    EXPECT_NE(text.find("NVSDK_NGX_Parameter_FrameGenerationMultiplier"), std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
 }
 
 TEST(NgxFeatureLifecycleTest, TracksCreateFirstEvaluateAndRelease) {
