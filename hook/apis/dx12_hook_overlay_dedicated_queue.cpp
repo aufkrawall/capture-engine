@@ -286,15 +286,31 @@ const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::mem
 const bool runtimeOwnsSwapchain = dx12_hook_g_FGRuntimeOwnsSwapchain;
 const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
 
-// When Streamline FG is active, do NOT use a dedicated overlay queue.
-// D3D12 rejects cross-queue access to swapchain backbuffers with
-// DXGI_ERROR_ACCESS_DENIED during SL FG (SL takes exclusive control
-// of the swapchain queue association).  Render on the game queue
-// instead, skipping fence operations to avoid interfering with SL's
-// internal frame synchronization.
-if (streamlineFGRunning) {
+// When NVIDIA DLSS FG is active (Streamline-signalled or planner-classified
+// legacy NVNGX route), do NOT use a dedicated overlay queue.  D3D12 rejects
+// cross-queue access to swapchain backbuffers with
+// DXGI_ERROR_ACCESS_DENIED (0x887A002B) during SL FG (SL takes exclusive
+// control of the swapchain queue association) and removes the device on the
+// first backbuffer-drawing submit.  Render on the game queue instead,
+// skipping fence operations to avoid interfering with SL's internal frame
+// synchronization.  Late injection can miss the Streamline FG signal and the
+// runtime-ownership latch (sl.dlssg loaded before hook installation); the
+// planner's DLSS runtime mode must disable the dedicated queue in that state
+// too (session 20260811_214252: Talos DLSS FG resume after Alt+Tab with late
+// inject crashed exactly this way).
+if (ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration(
+        streamlineFGRunning, g_FGCompat.GetRuntimeMode())) {
     if (disabledByOverlayModule)
         *disabledByOverlayModule = nullptr;
+    static std::atomic<int> s_nvidiaDedicatedQueueDisableLogCount{0};
+    const int logCount = s_nvidiaDedicatedQueueDisableLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 300) == 0) {
+        HookLogImportant(
+            "DX12: Dedicated overlay queue disabled for NVIDIA DLSS FG "
+            "(streamlineFG=%d runtime=%s scQueue=%p origGame=%p)",
+            streamlineFGRunning ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+            dx12_hook_g_SwapchainQueue, dx12_hook_g_OriginalGameQueue);
+    }
     return false;
 }
 

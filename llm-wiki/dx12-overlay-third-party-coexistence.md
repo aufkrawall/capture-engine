@@ -285,6 +285,59 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   install-time detection rule is shared, but Steam builds keep moving; the
   VEH guard remains the backstop for unknown slot/build shapes.
 
+### Build 0.1.5921 — the dedicated overlay queue is disabled for NVIDIA DLSS FG in every detection state (late-inject Alt+Tab crash 20260811_214252)
+
+- **Problem**: Talos session `logs/20260811_214252` (build 0.1.5919):
+  CaptureEngine was started while Talos was already running with DLSS FG
+  suspended; Alt+Tabbing back into the game resumed DLSS FG and the game
+  crashed. UE log: `Streamline/DLSSG present failed ... DXGI_ERROR_DEVICE_REMOVED
+  with Reason: 887A002B` immediately after `Engaging WAR4639162`; the UE
+  minidump stack ends in `sl.dlss_g` raising `STATUS_FATAL_APP_EXIT`.
+- **Root cause**: late injection loads `capture_hook_x64.dll` after
+  `sl.dlssg`/`sl.interposer` already exist, so CE never hooks their exports:
+  `g_StreamlineFGRunning` stays false and the runtime-ownership latch never
+  fires (`slFG=0`, `ownership=0` in the FG-transition log). The FG planner
+  still classifies `DLSS_FG` through the NVNGX `CreateFeature` hook, so at FG
+  resume `EnsureDedicatedOverlayQueueForFGCompat` saw "FG active" with no
+  dedicated queue and forced a sync reinit. The warm overlay backend records
+  normal-route command lists that draw DIRECTLY to the swapchain backbuffer;
+  the first submit of such a list on the dedicated (non-owning) queue returns
+  `DXGI_ERROR_ACCESS_DENIED (0x887A002B)` and removes the device - the exact
+  failure mode documented in `overlay_compat_detail/routing_policy.h`
+  (`logs/20260606_153428`). Healthy startup sessions never hit it because at
+  DLSS activation at least one of the Streamline/runtime-owned latches is
+  present and `ShouldUseDedicatedOverlayQueue()` already returned false.
+- **Fix**:
+  1. `ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration(streamlineFGRunning,
+     runtimeMode)` (new predicate in `fg_metrics_and_transitions.h`) disables
+     the dedicated queue when the Streamline latch is set OR the planner
+     runtime mode is `kDLSSFG`; `ShouldUseDedicatedOverlayQueue()` now uses it.
+     The FG-resume reinit therefore stays single-queue on the live present
+     queue exactly like the healthy startup paths, and the overlay keeps
+     drawing through the transition (no reinit, no blank).
+  2. Defense in depth: `ShouldUseDedicatedQueueForOverlaySubmit(...)` reserves
+     the dedicated queue for pure-offscreen lists. `DrawSubmitCoreTail` always
+     passes `recordedListTouchesBackbuffer=true` (the ProcessFrame list draws
+     or copies the backbuffer in every route), and `SubmitOverlayCommandList`
+     gained a `listTouchesBackbuffer` parameter (only caller: startup resource
+     priming, which is font-texture upload only and passes false). A future
+     policy state that again allows the dedicated queue cannot resurrect the
+     device removal because the submit sites fail closed to the game queue.
+- **Non-regression**: games without FG never enabled the dedicated queue
+  (`actualFGActive=false`); FSR FG and healthy DLSS FG were already disabled
+  through `fsrFGActive`/runtime-ownership/Streamline latches. The retained
+  session history shows the dedicated queue was created only in the crashing
+  session.
+- **Regression tests**: `tests/test_dxgi_shared_part14.cpp`
+  (`DedicatedOverlayQueueDisabledForNvidiaDLSSFrameGeneration`,
+  `DedicatedOverlayQueueSubmitRequiresOffscreenList`,
+  `DedicatedOverlayQueueSubmitGuardsBackbufferLists` source invariant).
+- **Stale-risk**: Low. The invariant is enforced by unit tests; the remaining
+  risk is a future FG runtime that changes the swapchain queue-association
+  rules, which the submit-time guard would surface as a forced game-queue
+  fallback with a rate-limited `Dedicated overlay queue bypassed for
+  backbuffer-touching ... submit` log.
+
 ### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
 - **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:

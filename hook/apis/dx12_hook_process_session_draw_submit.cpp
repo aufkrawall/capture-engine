@@ -52,8 +52,11 @@ return ProcessFrameFlow::kOverlayDone;
 return ProcessFrameFlow::kOverlayDone;
                     }
 
+                    // The priming list only uploads device-scoped resources
+                    // (font texture); it never touches the swapchain backbuffer,
+                    // so it is eligible for the dedicated overlay queue.
                     if (!SubmitOverlayCommandList(gameQueue, list, idx, "startup resource priming",
-                                                  false)) {
+                                                  false, /*listTouchesBackbuffer=*/false)) {
                         HookLogImportant(
                             "DX12: Startup resource priming submission failed; deferring first overlay "
                             "draw");

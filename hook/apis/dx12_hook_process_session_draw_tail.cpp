@@ -6,9 +6,31 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreTail() {
                             HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
                             dx12_hook_g_State.syncInit = false;
                         } else {
-                            // Choose submit queue: dedicated overlay queue when
-                            // available (SL FG active), otherwise game queue.
-                            bool useDedicated = dx12_hook_g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+                            // Choose submit queue.  The dedicated overlay queue
+                            // is reserved for pure-offscreen work; the
+                            // ProcessFrame overlay list always draws/copies the
+                            // swapchain backbuffer (normal RTV route or
+                            // offscreen-copy route), so these submits must go
+                            // to the game queue.  A backbuffer-touching list on
+                            // the dedicated queue returns
+                            // DXGI_ERROR_ACCESS_DENIED (0x887A002B) and removes
+                            // the device on the first submit (logs/20260606_153428
+                            // and late-inject DLSS FG resume 20260811_214252).
+                            const bool policyAllowsDedicatedQueue = ShouldUseDedicatedOverlayQueue();
+                            bool useDedicated = ce::dx12_overlay_policy::ShouldUseDedicatedQueueForOverlaySubmit(
+                                dx12_hook_g_State.overlayQueue != nullptr, policyAllowsDedicatedQueue,
+                                /*recordedListTouchesBackbuffer=*/true);
+                            if (dx12_hook_g_State.overlayQueue && policyAllowsDedicatedQueue && !useDedicated) {
+                                static std::atomic<int> s_dedicatedQueueBackbufferBypassLogCount{0};
+                                const int logCount =
+                                    s_dedicatedQueueBackbufferBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+                                if (logCount < 20 || (logCount % 300) == 0) {
+                                    HookLogImportant(
+                                        "DX12: Dedicated overlay queue bypassed for backbuffer-touching ProcessFrame "
+                                        "submit — using game queue (overlayQ=%p gameQ=%p log=%d)",
+                                        dx12_hook_g_State.overlayQueue, gameQueue, logCount + 1);
+                                }
+                            }
                             ID3D12CommandQueue* eclQueue = useDedicated ? dx12_hook_g_State.overlayQueue : gameQueue;
 
                             // One-time diagnostic: check if SL also hooked

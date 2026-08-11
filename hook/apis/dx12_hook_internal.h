@@ -541,7 +541,8 @@ bool IsStreamlineLoaded();;
 bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr);
 bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase);
 void ProbeRealD3D12ECL(ID3D12Device* device);
-bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex, const char* phase, bool requireGameQueueDrain);
+bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
+                              const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer);
 void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress);
 bool ShouldSuppressOverlayForStartupCompat( HWND gameWindow, const char** overlayModule = nullptr, ULONGLONG* remainingMs = nullptr, ce::overlay_compat::AuxiliaryProcessWindowInfo* activeWindow = nullptr);
 bool ShouldDeferOverlayInitForStartupCompat(HWND gameWindow, ULONGLONG* remainingMs = nullptr);

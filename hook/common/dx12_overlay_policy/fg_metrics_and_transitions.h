@@ -260,6 +260,38 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
     return fsrFGActive || runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
 }
 
+// NVIDIA DLSS FG must never use the dedicated overlay queue, in every
+// detection state. D3D12 rejects cross-queue access to the swapchain
+// backbuffers with DXGI_ERROR_ACCESS_DENIED (0x887A002B) and removes the
+// device on the first such submit; the runtime takes exclusive control of
+// the swapchain queue association (see the routing-policy note in
+// overlay_compat_detail/routing_policy.h). Late injection into an
+// already-running game can miss both the Streamline FG signal and the
+// runtime-ownership latch (sl.dlssg / sl.interposer were loaded before hook
+// installation), leaving the planner-classified legacy NVNGX DLSS mode as the
+// only evidence; that state must disable the dedicated queue as well.
+// Session 20260811_214252 (Talos DLSS FG resume after Alt+Tab with late
+// inject): the dedicated queue was created and the first backbuffer-drawing
+// overlay submit on it removed the device with reason 0x887A002B, after which
+// the game's StreamlineD3D12RHI reported the present failure and UE5 raised
+// STATUS_FATAL_APP_EXIT.
+inline bool ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration(bool streamlineFGRunning,
+                                                                       fg_runtime::RuntimeMode runtimeMode) {
+    return streamlineFGRunning || runtimeMode == fg_runtime::RuntimeMode::kDLSSFG;
+}
+
+// A dedicated overlay queue may only execute pure-offscreen overlay work.
+// Command lists that touch the swapchain backbuffer (direct RTV draw or the
+// offscreen-copy composite) must be submitted on the queue the swapchain
+// presents with; a backbuffer-touching list on the dedicated queue returns
+// DXGI_ERROR_ACCESS_DENIED (0x887A002B) and removes the device on the first
+// submit (logs/20260606_153428 and the late-inject DLSS FG resume crash
+// 20260811_214252).
+inline bool ShouldUseDedicatedQueueForOverlaySubmit(bool overlayQueueAvailable, bool policyAllowsDedicatedQueue,
+                                                    bool recordedListTouchesBackbuffer) {
+    return overlayQueueAvailable && policyAllowsDedicatedQueue && !recordedListTouchesBackbuffer;
+}
+
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
     bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath, bool ffxPresentCallbackFallbackAllowed = false,

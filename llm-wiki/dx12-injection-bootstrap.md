@@ -53,6 +53,20 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   confirmation exists. Session `logs/20260811_211623` (Strange Brigade DX12,
   no FG) latched phantom `FSR_FG` from 12 warmup zero-ECL presents + 5 real
   frames and skipped the overlay forever with `scQueue=null`.
+- Late injection into a game whose Streamline/DLSS-G modules are already
+  loaded misses the Streamline FG signal and the runtime-ownership latch, so
+  `g_StreamlineFGRunning` and `dx12_hook_g_FGRuntimeOwnsSwapchain` stay false
+  even when the FG planner correctly classifies `DLSS_FG` (via the NVNGX
+  `CreateFeature` hook). The dedicated overlay queue must stay disabled for
+  NVIDIA DLSS FG in that planner-only state too: the first backbuffer-drawing
+  overlay submit on the dedicated queue returns `DXGI_ERROR_ACCESS_DENIED
+  (0x887A002B)` and removes the device (session `logs/20260811_214252`, Talos
+  DLSS FG resume after Alt+Tab). Fix (build 0.1.5921):
+  `ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration` covers both
+  detection states, and the submit sites reserve the dedicated queue for
+  pure-offscreen lists (`ShouldUseDedicatedQueueForOverlaySubmit`). At FG
+  resume the warm overlay therefore keeps drawing on the live present queue
+  with no reinit and no blank, matching the healthy startup sessions.
 - Resident-hook reactivation re-binds all session-scoped diagnostics to the
   replacement host's log directory: the crash dump directory, the perf_metrics
   CSV (`PerfLogger::Init(..., true)` finalizes the old file and restarts frame

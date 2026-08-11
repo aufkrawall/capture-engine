@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-08-11 - Fix late-inject DLSS FG resume device removal (Talos Alt+Tab crash 20260811_214252)
+
+- Session `installed/captureengine/logs/20260811_214252` (build 0.1.5919):
+  late-injected Talos (DLSS FG suspended), Alt+Tab back into the game resumed
+  DLSS FG and UE5 fatal-exited (`STATUS_FATAL_APP_EXIT`). The UE log shows
+  `Streamline/DLSSG present failed ... DXGI_ERROR_DEVICE_REMOVED with Reason:
+  887A002B` right after `Engaging WAR4639162`; the crash dump stack ends in
+  `sl.dlss_g` calling `RaiseException`.
+- Root cause: with late injection, `sl.dlssg`/`sl.interposer` were already
+  loaded before hook installation, so CE missed the Streamline FG signal and
+  the runtime-ownership latch (`slFG=0`, `ownership=0`). The FG planner still
+  classified DLSS_FG via the NVNGX `CreateFeature` hook, and at FG resume
+  `EnsureDedicatedOverlayQueueForFGCompat` forced a sync reinit that created
+  the dedicated overlay queue. The warm overlay backend's normal-route command
+  list draws DIRECTLY to the swapchain backbuffer; the first such submit on the
+  dedicated (non-owning) queue returns `DXGI_ERROR_ACCESS_DENIED (0x887A002B)`
+  and removes the device - the documented `20260606_153428` failure mode, now
+  reachable through the planner-only DLSS state.
+- Fix (build 0.1.5921): `ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration`
+  disables the dedicated queue for NVIDIA DLSS FG in every detection state
+  (Streamline latch OR planner `kDLSSFG`), so the FG-resume reinit stays
+  single-queue on the live present queue like the healthy startup sessions.
+  Defense in depth: `ShouldUseDedicatedQueueForOverlaySubmit` keeps the
+  dedicated queue reserved for pure-offscreen lists; the two ProcessFrame
+  submit sites (`DrawSubmitCoreTail`, `SubmitOverlayCommandList`) pass
+  whether the recorded list touches the backbuffer and fall back to the game
+  queue. Non-FG games are untouched (`actualFGActive=false` already disabled
+  the queue); FSR and healthy DLSS paths were already disabled via the
+  runtime-owned/Streamline latches.
+- Regression tests: `tests/test_dxgi_shared_part14.cpp`
+  (`DedicatedOverlayQueueDisabledForNvidiaDLSSFrameGeneration`,
+  `DedicatedOverlayQueueSubmitRequiresOffscreenList`,
+  `DedicatedOverlayQueueSubmitGuardsBackbufferLists`).
+- Source anchors: `hook/apis/dx12_hook_overlay_dedicated_queue.cpp`,
+  `hook/apis/dx12_hook_process_session_draw_tail.cpp`,
+  `hook/apis/dx12_hook_overlay_render.cpp`,
+  `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`.
+
 ### 2026-08-11 - Rebind session diagnostics when a resident hook is reactivated (missing perf_metrics CSV)
 
 - Session `installed/captureengine/logs/20260811_212728` (build 0.1.5918): CE

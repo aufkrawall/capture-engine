@@ -1,11 +1,28 @@
 #include "dx12_hook_internal.h"
 
 
-bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex, const char* phase, bool requireGameQueueDrain) {
-// Use the dedicated queue only when FG is actually active.  The queue stays
-// alive across FG mode switches to avoid destructive reinit, but submissions
-// go to the game queue when FG is inactive.
-bool useDedicated = dx12_hook_g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
+                              const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer) {
+// Use the dedicated queue only when FG is actually active AND the submitted
+// list is pure offscreen work.  The queue stays alive across FG mode switches
+// to avoid destructive reinit, but submissions go to the game queue when FG is
+// inactive.  A list that touches the swapchain backbuffer must never go to the
+// dedicated queue: DXGI rejects cross-queue backbuffer access with
+// DXGI_ERROR_ACCESS_DENIED (0x887A002B) and removes the device on the first
+// submit (logs/20260606_153428 and late-inject DLSS FG resume 20260811_214252).
+const bool policyAllowsDedicatedQueue = ShouldUseDedicatedOverlayQueue();
+bool useDedicated = ce::dx12_overlay_policy::ShouldUseDedicatedQueueForOverlaySubmit(
+    dx12_hook_g_State.overlayQueue != nullptr, policyAllowsDedicatedQueue, listTouchesBackbuffer);
+if (dx12_hook_g_State.overlayQueue && policyAllowsDedicatedQueue && !useDedicated) {
+    static std::atomic<int> s_dedicatedQueueBackbufferBypassLogCount{0};
+    const int logCount = s_dedicatedQueueBackbufferBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 300) == 0) {
+        HookLogImportant(
+            "DX12: Dedicated overlay queue bypassed for backbuffer-touching %s — using game queue "
+            "(overlayQ=%p gameQ=%p log=%d)",
+            phase ? phase : "overlay command list", dx12_hook_g_State.overlayQueue, gameQueue, logCount + 1);
+    }
+}
 ID3D12CommandQueue* submitQueue = useDedicated ? dx12_hook_g_State.overlayQueue : gameQueue;
 if (!submitQueue || !list) {
     HookLogImportant("DX12: Cannot submit %s (submitQueue=%p, list=%p)", phase ? phase : "overlay command list",
