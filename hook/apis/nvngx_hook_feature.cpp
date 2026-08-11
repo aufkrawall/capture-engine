@@ -308,9 +308,18 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     // do not hardcode 2x (session 20260811_222500: Talos
                     // configured for 4x MFG but late inject showed DLSS 2x).
                     state.fgActive = true;
-                    const int fgMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
+                    const int resolvedMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
                         GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
                         ReadNVNGXFGMultiplierParam(params, parameterOriginals));
+                    // slDLSSGSetOptions (hooked at startup or via the late-inject
+                    // feature-function resolution) is the authoritative multiplier
+                    // source for FG v2+ games; the 2x CreateFeature default must
+                    // not clobber a latched Streamline multiplier (session
+                    // 20260811_231851: transient 4->2 flap before SetOptions
+                    // re-asserted 4).
+                    const int fgMultiplier = (resolvedMultiplier >= 3 || g_FGCompat.GetFGMultiplier() < 2)
+                                                 ? resolvedMultiplier
+                                                 : g_FGCompat.GetFGMultiplier();
                     state.mfgMultiplier = fgMultiplier;
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X, %dx multiplier)", featureID,

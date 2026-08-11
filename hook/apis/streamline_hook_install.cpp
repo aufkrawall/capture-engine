@@ -416,15 +416,25 @@ bool ScanLoadedStreamlineModules() {
     const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks();
     const bool resolvedReflex = TryResolveReflexFeatureHooks();
     if (resolvedDLSSG || resolvedReflex) {
-        HookLogImportant(
-            "Streamline Hook: Resolved feature hooks after loaded-module scan "
-            "(dlssgSetOptionsHooked=%d dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d "
-            "reflexSetConstantsHooked=%d)",
-            streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
+        // The runtime retry path re-scans while FG is active; only log the
+        // resolution summary until it is fully complete and then sparsely.
+        static std::atomic<int> s_featureResolveLogCount{0};
+        const int resolveLogCount = s_featureResolveLogCount.fetch_add(1, std::memory_order_relaxed);
+        const bool allFeatureHooksComplete = streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) &&
+                                             streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) &&
+                                             AreReflexFeatureHooksComplete();
+        if (resolveLogCount < 5 || !allFeatureHooksComplete || (resolveLogCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Resolved feature hooks after loaded-module scan "
+                "(dlssgSetOptionsHooked=%d dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d "
+                "reflexSetConstantsHooked=%d log=%d)",
+                streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                resolveLogCount + 1);
+        }
     }
 
     if (attempts > 1 && !streamline_hook_g_ModuleSnapshotRetrySuccessLogged.exchange(true, std::memory_order_acq_rel)) {
