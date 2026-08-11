@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-08-12 - RTSS + Steam: live-entry alone did not help; invoke RTSS's own thunk directly (0.1.5932)
+
+- Build 0.1.5931 (live-entry forward) still starved RTSS (session `20260812_005530`): the entry jump is stably owned by Steam (Steam rehooks last; the live-entry target equals the saved external hook `0x7FF842DC0000` every frame), so CE → Steam → (Steam's saved "next") → RTSS drew exactly one frame and then only Steam's overlay submitted. Steam's lazy init drops RTSS from its chain; without the slot patches that init crashes (004407), with the patches it completes and starves RTSS.
+- Fix 0.1.5932 (`e3085d89`): resolve RTSS's OWN FF25 hook thunk by scanning the executable region (±1 MB) around Steam's thunk for a payload pointer into `RTSSHooks64.dll`, and invoke it directly for non-Steam chains when Steam is loaded. RTSS's restore/rehook then reclaims the entry like the natural no-CE chain; Steam's handler is never entered (no NULL-callback crash, no init starvation). Falls back to live-entry/trampoline routing when no RTSS thunk is found (Steam-only games unchanged).
+- Validation pending: Strange Brigade + Steam + CE ~30 s — RTSS OSD must persist; the hook log must show `Resolved RTSS Present thunk ... (near saved external hook ...)` and `direct RTSS Present thunk forward`. `ce_dx12_trace` flag remains set.
+- Still open: whether Steam's overlay was actually visible in the user's no-CE baseline (it determines whether hiding Steam's overlay in the CE+RTSS+Steam configuration is acceptable).
+
+### 2026-08-12 - RTSS + Steam: patches are mandatory (crash without them); follow the live Present entry (0.1.5931)
+
+- Build 0.1.5930 removed Steam's NULL-callback slot pre-patching from the
+  non-Steam (RTSS) chain and crashed (session `20260812_004407`, dump
+  `StrangeBrigade_DX12.exe_2026-08-12_00-45-02.dmp`): RIP=0/RAX=0 during Steam's
+  lazy init on frame 2, return address inside
+  `gameoverlayrenderer64!VulkanSteamOverlayProcessCapturedFrame` — the classic
+  Steam NULL Present-shaped callback. The crash handler caught it instead of
+  `SteamOverlayInitVehHandler` (no VEH logs at all — open question why the
+  guard's handler did not run/decline-log); the 39 MB dump took 37 s because
+  `MiniDumpWriteDump` blocked on a Steam critical section.
+- Fix 0.1.5931 (`5aca4a2e`): Steam slot pre-patching + VEH backstop restored on
+  the non-Steam forward, AND the forward now follows the LIVE `dxgi!Present`
+  entry (once CE's prepend is gone — RTSS's restore/rehook wipes it on frame 1)
+  instead of the frozen install-time relay target, reproducing the natural chain
+  that keeps RTSS's OSD alive without CE. Entry-driven chain: if RTSS's E9 owns
+  the entry (the no-CE stable state), RTSS draws and Steam's handler is not
+  entered at all; if Steam's E9 owns it, Steam runs patched + VEH-guarded.
+- Validation pending with the user: Strange Brigade + Steam + CE ~30 s, RTSS OSD
+  must persist and no crash; `ce_dx12_trace` flag is still set for attribution.
+
 ### 2026-08-12 - RTSS + Steam coexistence: classification fixed, OSD still vanishes (0.1.5927/5928)
 
 - Session `installed/captureengine/logs/20260811_233748` (Strange Brigade DX12, Steam overlay + `RTSSHooks64.dll`): RTSS's OSD vanished after a brief moment while CE's overlay stayed, with both RTSS inject modes. The tracked-overlay cache reports the first loaded entry by list priority, so with Steam + RTSS loaded it names `gameoverlayrenderer64.dll` even though RTSS loaded later and owns the preserved `dxgi!Present` entry jump. CE then serviced RTSS's runtime thunk (`FF 25 00 00 00 00` + pointer into RTSSHooks64.dll) through the Steam guarded-invoke machinery.
