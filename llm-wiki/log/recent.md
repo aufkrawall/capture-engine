@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-08-11 - Guard the Steam external-chain trampoline transport (DLSS->FSR switch crash 20260811_195131)
+
+- Session `logs/20260811_195131` (build 0.1.5914): Talos starts fine with
+  DLSS FG active, but DLSS FG -> FSR FG crashes on the fresh FSR swapchain.
+- Root cause: CE's inline-hook trampoline was prepended over Steam's `E9`
+  entry jump at `dxgi!Present`; such a trampoline re-issues the foreign entry
+  jump, so `CallOriginalPresent`'s bare trampoline fast-path re-entered
+  `gameoverlayrenderer64` with no NULL-callback VEH recovery, and Steam's lazy
+  NULL rendering callback faulted on the new swapchain.
+- Fix (build 0.1.5917): `TrampolineChainsToExternalOverlay` /
+  `IsSteamExternalChainTrampoline` detect that transport (E9/FF25 entry,
+  matching the preserved external hook target or any target outside dxgi.dll);
+  Present routes it through `TryInvokeGuardedExternalSteamOverlayPresent`,
+  Present1 and the shutdown path use the clean bypass.
+- Regression tests: `DXGISharedSteamTrampolineChainTest` in
+  `tests/test_dxgi_shared_part13.cpp` plus the source-order guard test in
+  `tests/test_dxgi_shared_part11.cpp`.
+- Invariant and source anchors: `dx12-overlay-third-party-coexistence.md`,
+  "Build 0.1.5917" section.
+
 ### 2026-08-11 - Fix locked-read AV on the read-only DXGI class vftable (crash fallout 20260811_192706)
 
 - Session `logs/20260811_192706` (build 0.1.5914): every CE crash dump plus

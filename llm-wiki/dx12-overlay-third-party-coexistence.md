@@ -241,6 +241,50 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   0.1.2920 and 0.1.5914 incidents both stem from forgetting that the class
   vftable page is read-only outside repair/detach windows.
 
+### Build 0.1.5917 — external-chain trampoline transport runs under the Steam NULL-callback guard (20260811_195131)
+
+- **Problem**: Talos session `logs/20260811_195131` (build 0.1.5914): starting
+  with DLSS FG active works, but switching DLSS FG -> FSR FG crashes on the
+  fresh FSR swapchain. `hook_debug.log` shows CE's inline-hook trampoline
+  (`S:3860 trampoline path=...`) calling straight into Steam's chain, and the
+  install-time external `E9` (preserved `dxgi!Present` entry jump) is intact.
+  When CE prepends over an external overlay's `E9`/`FF25` entry, the trampoline
+  does not hold original code bytes - it re-issues the foreign entry jump, so
+  `CallOriginalPresent`'s bare trampoline fast-path re-enters
+  `gameoverlayrenderer64!OverlayHookD3D3`. On the fresh FSR swapchain Steam's
+  lazy NULL rendering callback faults there with no VEH recovery active - the
+  one Steam transport that had never been guarded.
+- **Fix** (`hook/common/dxgi_shared_steam.cpp`, `dxgi_shared_original.cpp`,
+  `dxgi_shared_internal.h`):
+  1. `TrampolineChainsToExternalOverlay(trampoline, externalHook)` recognizes
+     an `E9` or x64 `FF25` entry jump at the trampoline start and either
+     matches the preserved external hook target
+     (`dxgi_shared_g_externalOverlayPresentHook`) or, without a preserved
+     target (Present1), accepts any chain target outside the dxgi image -
+     the same rule as install-time external-jump detection.
+  2. `IsSteamExternalChainTrampoline(...)` gates that to D3D12 swapchains with
+     the Steam overlay module loaded.
+  3. In `CallOriginalPresent`, that transport now runs under
+     `TryInvokeGuardedExternalSteamOverlayPresent` (NULL-callback VEH +
+     proactive slot patch + source-thread provenance, same as every other
+     Steam invoke) and fails closed to the clean DXGI bypass. During shutdown
+     (no VEH recovery) the bypass is used directly.
+  4. `CallOriginalPresent1` has no Present1-specific guard, so a Steam-chain
+     Present1 trampoline uses the clean Present1 bypass, falling back to the
+     guarded Present transport.
+- **Invariant**: no Steam transport may run bare. Every path that can
+  re-enter Steam's hook chain must carry the NULL-callback VEH guard or use
+  the clean bypass - including the inline-hook trampoline when CE prepended
+  over Steam's entry jump.
+- **Regression tests**: `tests/test_dxgi_shared_part13.cpp`
+  (`DXGISharedSteamTrampolineChainTest`: FF25/E9 chain matching, generic
+  foreign-target mode, clean-trampoline and null-argument rejection);
+  `tests/test_dxgi_shared_part11.cpp` source-order guard
+  (`SteamExternalChainTrampolineNeverCalledBareBeforeGuardedTransport`).
+- **Stale-risk**: Low-Medium. The trampoline layout is CE-owned and the
+  install-time detection rule is shared, but Steam builds keep moving; the
+  VEH guard remains the backstop for unknown slot/build shapes.
+
 ### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
 - **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
