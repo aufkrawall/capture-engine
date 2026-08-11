@@ -225,12 +225,13 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
-// Scan the executable region around a foreign Present hook thunk for RTSS's own
-// hook thunk (FF25 + pointer into RTSSHooks64.dll). Used for RTSS + Steam
-// coexistence: the entry jump belongs to Steam, so RTSS's thunk is invoked
-// directly to let RTSS's restore/rehook reclaim the entry.
+// RTSS + Steam coexistence: the entry jump belongs to Steam, so RTSS's own
+// Present handler is invoked directly to let RTSS's restore/rehook reclaim the
+// entry. Resolved by module offset + prolog signature (RTSS 7.3.6, +0x72F20),
+// with a thunk scan around the saved external hook as fallback.
+void* ResolveRTSSPresentHandlerBySignature();
 void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk);
-void* GetRTSSPresentHookThunk();
+void* GetRTSSPresentHandler();
 }
 
 namespace DXGIShared {

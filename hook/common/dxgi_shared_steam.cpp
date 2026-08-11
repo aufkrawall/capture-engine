@@ -83,15 +83,42 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
-// Scan the executable region around a foreign Present hook thunk for a second
-// hook thunk whose payload pointer lands inside RTSSHooks64.dll. RTSS and Steam
-// both allocate their runtime thunks (`FF 25 00 00 00 00` + absolute handler
-// pointer) in the same nearby VirtualAlloc region: in Strange Brigade the entry
-// jump belongs to Steam (it hooked last), while RTSS's own thunk sits a few
-// pages away and is only reachable through Steam's saved "next" chain — which
-// Steam's lazy init drops (20260812_005530: RTSS drew exactly one frame, then
-// only Steam's overlay submitted). Invoking RTSS's thunk directly lets RTSS's
-// restore/rehook reclaim the entry, exactly like the natural no-CE chain.
+// Resolve RTSS's Present handler directly by module offset + prolog signature.
+// RTSS 7.3.6 (the version used in all 2026-08 sessions) implements the DXGI
+// Present hook as RTSSHooks64+0x72F20 with a fixed prolog; in Strange Brigade
+// the entry jump belongs to Steam (it hooked last) and RTSS is only reachable
+// through Steam's saved "next" chain, which Steam's lazy init drops after one
+// frame (20260812_005530: RTSS drew exactly once, then only Steam's overlay
+// submitted). Invoking RTSS's handler directly lets RTSS's restore/rehook
+// reclaim the entry, exactly like the natural no-CE chain.
+void* ResolveRTSSPresentHandlerBySignature() {
+    HMODULE rtssMod = GetModuleHandleA("RTSSHooks64.dll");
+    if (!rtssMod) {
+        return nullptr;
+    }
+    constexpr uintptr_t kRTSSPresentHandlerRva = 0x72F20;
+    const auto* handler = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(rtssMod) +
+                                                          kRTSSPresentHandlerRva);
+    static const uint8_t kPrologSignature[8] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C};
+    if (!IsReadableMemory(handler, 30)) {
+        return nullptr;
+    }
+    if (memcmp(handler, kPrologSignature, sizeof(kPrologSignature)) != 0) {
+        return nullptr;
+    }
+    // The reentrancy spin starts at +0x1A: `lock bts dword ptr [...], 0` (F0 0F BA 2D).
+    if (handler[0x1A] != 0xF0 || handler[0x1B] != 0x0F || handler[0x1C] != 0xBA || handler[0x1D] != 0x2D) {
+        return nullptr;
+    }
+    return const_cast<void*>(reinterpret_cast<const void*>(handler));
+}
+}
+
+namespace DXGIShared {
+// Fallback: scan the executable region around a foreign Present hook thunk for
+// a hook thunk whose payload pointer lands inside RTSSHooks64.dll. RTSS and
+// Steam both allocate their runtime thunks (`FF 25 00 00 00 00` + absolute
+// handler pointer) near the hooked function.
 void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk) {
     if (!anchorThunk) {
         return nullptr;
@@ -133,18 +160,25 @@ void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk) {
 }
 
 namespace DXGIShared {
-// Cached RTSS Present thunk next to the saved external hook. Resolved once off
-// the hot path; null when RTSS is not loaded or no nearby thunk resolves into
-// RTSSHooks64.dll (Steam-only games keep their existing routing).
-void* GetRTSSPresentHookThunk() {
+// Cached RTSS Present handler. Resolved once off the hot path; null when RTSS
+// is not loaded or neither the signature path nor the thunk scan resolves it
+// (Steam-only games keep their existing routing).
+void* GetRTSSPresentHandler() {
     static void* s_cached = []() -> void* {
+        void* handler = ResolveRTSSPresentHandlerBySignature();
+        if (handler) {
+            HookLogImportant("DXGIShared: Resolved RTSS Present handler %p (RTSSHooks64+0x72F20 signature match)",
+                             handler);
+            return handler;
+        }
+        HookLogImportant(
+            "DXGIShared: RTSS Present handler signature mismatch (RTSSHooks64=%p) - falling back to thunk scan",
+            (void*)GetModuleHandleA("RTSSHooks64.dll"));
         const void* anchor = reinterpret_cast<const void*>(dxgi_shared_g_externalOverlayPresentHook);
         void* thunk = ResolveRTSSPresentHookThunkNear(anchor);
         if (thunk) {
-            HookLogImportant("DXGIShared: Resolved RTSS Present thunk %p (near saved external hook %p)", thunk,
+            HookLogImportant("DXGIShared: Resolved RTSS Present thunk %p (scan near saved external hook %p)", thunk,
                              anchor);
-        } else {
-            HookLog("DXGIShared: No RTSS Present thunk found near %p", anchor);
         }
         return thunk;
     }();

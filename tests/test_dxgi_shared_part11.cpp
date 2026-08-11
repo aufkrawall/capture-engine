@@ -498,16 +498,17 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     // RTSS + Steam: invoke RTSS's own thunk directly so RTSS's restore/rehook
     // reclaims the entry (Steam's lazy init would otherwise drop RTSS from its
     // saved "next" chain after one frame, 20260812_005530).
-    EXPECT_NE(original.find("GetRTSSPresentHookThunk()", nestedSteamGuard), std::string::npos);
-    EXPECT_NE(original.find("return reinterpret_cast<PFN_Present>(rtssThunk)(pSwapChain, SyncInterval, Flags);",
+    EXPECT_NE(original.find("GetRTSSPresentHandler()", nestedSteamGuard), std::string::npos);
+    EXPECT_NE(original.find("return reinterpret_cast<PFN_Present>(rtssHandler)(pSwapChain, SyncInterval, Flags);",
                             nestedSteamGuard),
               std::string::npos);
     EXPECT_NE(original.find("ResolveE9JmpTarget(", nestedSteamGuard), std::string::npos);
     EXPECT_NE(original.find("ResolveFF25JmpTarget(", nestedSteamGuard), std::string::npos);
     EXPECT_NE(original.find("return livePresent(pSwapChain, SyncInterval, Flags);", nestedSteamGuard),
               std::string::npos);
+    EXPECT_NE(steam.find("void* ResolveRTSSPresentHandlerBySignature()"), std::string::npos);
     EXPECT_NE(steam.find("void* ResolveRTSSPresentHookThunkNear("), std::string::npos);
-    EXPECT_NE(steam.find("void* GetRTSSPresentHookThunk()"), std::string::npos);
+    EXPECT_NE(steam.find("void* GetRTSSPresentHandler()"), std::string::npos);
     const size_t bareTrampolineForward =
         original.find("return presentTrampoline(pSwapChain, SyncInterval, Flags);", nestedSteamGuard);
     ASSERT_NE(bareTrampolineForward, std::string::npos);

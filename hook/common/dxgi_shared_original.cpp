@@ -119,15 +119,15 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // entry exactly like the natural no-CE chain (which keeps RTSS's OSD
         // alive). Steam's handler is then never entered, so its lazy NULL
         // callback cannot crash and its init cannot starve RTSS.
-        void* rtssThunk = steamAlsoLoaded ? GetRTSSPresentHookThunk() : nullptr;
-        if (rtssThunk && rtssThunk != reinterpret_cast<void*>(dxgi_shared_g_externalOverlayPresentHook)) {
+        void* rtssHandler = steamAlsoLoaded ? GetRTSSPresentHandler() : nullptr;
+        if (rtssHandler && rtssHandler != reinterpret_cast<void*>(dxgi_shared_g_externalOverlayPresentHook)) {
             static std::atomic<int> s_rtssDirectForwardCount{0};
             const int rtssNum = s_rtssDirectForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (rtssNum <= 10 || (rtssNum % 1000) == 0) {
-                HookLogImportant("CallOriginalPresent: direct RTSS Present thunk forward #%d (thunk=%p)", rtssNum,
-                                 rtssThunk);
+                HookLogImportant("CallOriginalPresent: direct RTSS Present handler forward #%d (handler=%p)", rtssNum,
+                                 rtssHandler);
             }
-            return reinterpret_cast<PFN_Present>(rtssThunk)(pSwapChain, SyncInterval, Flags);
+            return reinterpret_cast<PFN_Present>(rtssHandler)(pSwapChain, SyncInterval, Flags);
         }
         // Follow the LIVE entry (dxgi!Present) instead of the frozen
         // install-time relay target once the entry is no longer CE's own prepend
