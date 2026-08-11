@@ -94,21 +94,53 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
-        // Non-Steam external chain (e.g. RTSS's thunk). Forward through the
-        // preserved foreign entry. When Steam's overlay is ALSO loaded, the
-        // frame-1 trace (20260812_002958) showed RTSS's OSD draw nested inside
-        // Steam's handler and then stopping permanently once Steam's overlay
-        // started drawing every frame — while the same Steam+RTSS chain without
-        // CE keeps RTSS's OSD alive. CE must NOT touch Steam's memory here:
-        // pre-patching Steam's Present-shaped callback slots to the DXGI bypass
-        // alters Steam's lazy init / next-chain and is the prime suspect for
-        // dropping RTSS from the chain. Only the passive crash-time VEH backstop
+        // Non-Steam external chain (e.g. RTSS's thunk). When Steam's overlay is
+        // ALSO loaded, the chain can re-enter Steam's handler (RTSS's saved
+        // "original" bytes are Steam's E9, restored before RTSS calls its
+        // "next"). Steam's lazy init faults through a NULL Present-shaped
+        // callback without pre-patching (crash 20260812_004407, RIP=0/RAX=0),
+        // so Steam's NULL-callback slots stay patched and the crash-time VEH
         // stays armed for the duration of the forward.
-        if (IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()) && presentBypass) {
+        const bool steamAlsoLoaded =
+            IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+        if (steamAlsoLoaded && presentBypass) {
+            EnsureSteamNullCallbacksPatched(presentBypass);
             ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
                 presentBypass != nullptr, "non-Steam external chain with Steam loaded",
                 "foreign trampoline chain", reinterpret_cast<void*>(presentTrampoline),
                 reinterpret_cast<void*>(presentBypass), false, false);
+        }
+        // Follow the LIVE entry (dxgi!Present) instead of the frozen
+        // install-time relay target once the entry is no longer CE's own prepend
+        // (RTSS's restore/rehook wipes CE's prepend on its first frame). The
+        // natural chain that keeps RTSS's OSD alive without CE is driven by
+        // whoever owns the entry right now; the frozen relay keeps invoking the
+        // hook owner captured at install time forever (20260812_002958: RTSS
+        // drew exactly one frame, then only Steam's overlay submitted while the
+        // entry's current owner was no longer the saved target).
+        bool useLiveEntry = false;
+        void* entryJumpTarget = nullptr;
+        const PFN_Present livePresent = dxgi_shared_s_originalVtable8Present;
+        const auto* entryCode =
+            livePresent ? reinterpret_cast<const uint8_t*>(livePresent) : nullptr;
+        if (livePresent && livePresent != DetourPresent && livePresent != presentTrampoline &&
+            IsReadableMemory(entryCode, 6)) {
+            if (entryCode[0] == 0xE9) {
+                entryJumpTarget = ResolveE9JmpTarget(const_cast<void*>(reinterpret_cast<const void*>(livePresent)));
+            } else if (entryCode[0] == 0xFF && entryCode[1] == 0x25) {
+                entryJumpTarget = ResolveFF25JmpTarget(const_cast<void*>(reinterpret_cast<const void*>(livePresent)));
+            }
+            const void* relayTail = reinterpret_cast<const uint8_t*>(presentTrampoline) + 16;
+            useLiveEntry = entryJumpTarget != relayTail;
+        }
+        if (useLiveEntry) {
+            static std::atomic<int> s_liveEntryForwardCount{0};
+            const int liveNum = s_liveEntryForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (liveNum <= 10 || (liveNum % 1000) == 0) {
+                HookLogImportant("CallOriginalPresent: live foreign entry forward #%d (entry=%p target=%p)",
+                                 liveNum, (void*)livePresent, (void*)entryJumpTarget);
+            }
+            return livePresent(pSwapChain, SyncInterval, Flags);
         }
         static int s_copLogCount = 0;
         if (s_copLogCount++ < 5) {
