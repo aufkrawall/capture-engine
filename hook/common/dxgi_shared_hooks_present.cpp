@@ -43,7 +43,12 @@ void PublishPresent1Trampoline(void* trampoline, void* context) {
 }
 
 VTableDetachResult DetachOwnedVTableSlot(void** entry, void* detour, void* predecessor, const char* method) {
-    void* current = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), nullptr, nullptr);
+    // The hooked swapchain vtable is the class vftable inside the DXGI image,
+    // whose page stays read-only between repair/detach operations. `lock
+    // cmpxchg` requires write access even when it is only used as a read, so
+    // observe with a plain volatile read; the atomic exchange below runs
+    // inside the VirtualProtect region.
+    void* current = *reinterpret_cast<void* volatile*>(entry);
     if (predecessor && current == predecessor)
         return VTableDetachResult::Detached;
     if (current != detour) {
@@ -376,7 +381,10 @@ void RepairVTableHooksIfNeeded() {
     const auto repairRestoredSlot = [&](void** entry, void* detour, void* predecessor, const char* method) {
         if (!predecessor)
             return false;
-        void* current = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), nullptr, nullptr);
+        // Same read-only class-vftable constraint as DetachOwnedVTableSlot:
+        // observation must be a plain volatile read, never a locked operation,
+        // which would fault on the read-only page before VirtualProtect runs.
+        void* current = *reinterpret_cast<void* volatile*>(entry);
         if (current == detour)
             return false;
         if (ce::vtable_hook_policy::ShouldPreserveForeignFollower(current, detour, predecessor)) {

@@ -182,8 +182,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     bool needVtableRestore = false;
                     void* savedVtable8 = nullptr;
                     if (dxgi_shared_s_hookedVTable && IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 9 * sizeof(void*))) {
-                        savedVtable8 = InterlockedCompareExchangePointer(
-                            reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), nullptr, nullptr);
+                        // Plain volatile read: the class vftable page is read-only
+                        // outside VirtualProtect regions, and `lock cmpxchg` faults
+                        // there even when used only as a read.
+                        savedVtable8 = *reinterpret_cast<void* volatile*>(&dxgi_shared_s_hookedVTable[8]);
                         if (savedVtable8 == (void*)DetourPresent && presentOriginal &&
                             presentOriginal != (PFN_Present)DetourPresent) {
                             DWORD oldProtect = 0;

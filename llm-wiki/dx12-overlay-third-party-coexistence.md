@@ -205,6 +205,42 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3076-3102`, `:3268-3297`, `tests/test_dxgi_shared.cpp:2536-2619`.
 - **Stale-risk**: Low. VirtualProtect pattern matches all other vtable write sites; regression test catches removal.
 
+### Build 0.1.5914 — locked slot reads fault on the read-only class vftable (20260811_192706 crash fallout)
+
+- **Problem**: Session `logs/20260811_192706` (build 0.1.5914): all CE crash
+  dumps (`dx12_fg_switch_test.exe` twice, Talos) plus the UE external minidump
+  die identically at `RepairVTableHooksIfNeeded::<lambda0>` — `lock cmpxchg
+  [rdx],r15` (0xC0000005 AV-WRITE) on `dxgi!CDXGISwapChain`'s class vftable
+  inside the dxgi image (read-only `.rdata`). The game stack runs
+  `sl_dlss_g!DllMain → DetourCreateSwapChainGlobal →
+  RefreshPresentHooksForRealSwapchain → RepairVTableHooksIfNeeded`.
+- **Root cause**: commit e9fa1341 replaced plain slot observations with
+  `InterlockedCompareExchangePointer(slot, nullptr, nullptr)`.
+  `lock cmpxchg` requires WRITE access even when only the result is used as a
+  read, so it faults on the read-only class vftable between VirtualProtect
+  windows — the same invariant family as the 0.1.2920 incident, now violated
+  on the observation path. The same latent pattern was introduced in
+  `DetachOwnedVTableSlot` and the Steam phase-A vtable[8] save in
+  `CallOriginalPresent` (`dxgi_shared_original.cpp`).
+- **Fix** (`hook/common/dxgi_shared_hooks_present.cpp`,
+  `hook/common/dxgi_shared_original.cpp`): slot observation is a plain
+  volatile read again in `repairRestoredSlot`, `DetachOwnedVTableSlot`, and
+  the Steam vtable save. Atomic compare-exchange writes stay inside the
+  existing VirtualProtect regions; CAS still preserves a concurrent foreign
+  replacement.
+- **Invariant**: never run a locked operation (cmpxchg/exchange) on a DXGI
+  class-vftable slot outside a VirtualProtect(PAGE_READWRITE) region — a
+  locked op is a write even when its result is discarded. Observation = plain
+  volatile read; mutation = VirtualProtect + CAS + restore.
+- **Regression test**: `tests/test_dxgi_shared_part13.cpp`
+  (`DXGISharedVTableRepairTest.RepairReclaimsRestoredSlotsOnReadOnlyClassVftable`
+  and `DetachRestoresOwnedSlotsOnReadOnlyClassVftable`) runs both paths
+  against a VirtualAlloc'd fake vtable locked to PAGE_READONLY; pre-fix the
+  unit suite exits 0xC0000005, post-fix both tests pass.
+- **Stale-risk**: Low. The invariant is enforced by the regression tests; the
+  0.1.2920 and 0.1.5914 incidents both stem from forgetting that the class
+  vftable page is read-only outside repair/detach windows.
+
 ### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
 - **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
