@@ -212,6 +212,32 @@ bool IsSteamOverlayModule(const char* overlayModule);
 }
 
 namespace DXGIShared {
+// Resolve a runtime-allocated Present hook thunk (`FF 25 00 00 00 00` + absolute
+// pointer) to the real handler address inside the owning overlay DLL. Returns the
+// hook address unchanged when it is not a resolvable thunk.
+const void* ResolveExternalPresentHookThunkTarget(const void* externalHook);
+}
+
+namespace DXGIShared {
+// Resolve the owning module path of a foreign Present hook (following its thunk
+// when present). Returns false when no module backs the handler.
+bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* modulePathOut, size_t modulePathOutCount);
+}
+
+namespace DXGIShared {
+// Authoritative "does this foreign Present chain belong to Steam" classification.
+// Resolves the thunk target into a module when possible; for unresolvable thunks
+// falls back to load-order evidence (the most recently loaded overlay owns the
+// entry jump) and then to the loaded-module name.
+bool IsExternalPresentHookSteamChain(const void* externalHook);
+}
+
+namespace DXGIShared {
+// Present-hot-path wrapper classifying the currently saved external Present hook.
+bool IsCurrentExternalPresentHookSteamChain();
+}
+
+namespace DXGIShared {
 bool IsStreamlineModuleHandle(HMODULE moduleHandle);
 }
 

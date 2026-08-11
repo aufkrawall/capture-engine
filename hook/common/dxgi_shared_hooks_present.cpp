@@ -234,6 +234,20 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                 dxgi_shared_g_externalOverlayPresentHook = (PFN_Present)hookTarget;
                 HookLog("InstallPresentInlineHooks: External %s target = %p (saved for guarded overlay routing)",
                         entryUsesE9 ? "E9" : "FF25", hookTarget);
+                char hookOwnerPath[MAX_PATH] = {};
+                if (ResolveExternalPresentHookOwnerPath(hookTarget, hookOwnerPath, sizeof(hookOwnerPath))) {
+                    HookLogImportant("InstallPresentInlineHooks: External hook owner: %s (thunk resolved)", hookOwnerPath);
+                } else {
+                    HookLogImportant(
+                        "InstallPresentInlineHooks: External hook owner: <unresolved thunk> "
+                        "(lastLoadedOverlay=%s loadedOverlay=%s)",
+                        ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                            ? ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                            : "none",
+                        ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                            ? ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                            : "none");
+                }
             } else {
                 HookLogImportant(
                     "InstallPresentInlineHooks: Could not resolve external JMP target at %p "

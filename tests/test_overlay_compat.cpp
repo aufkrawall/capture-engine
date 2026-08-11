@@ -219,6 +219,52 @@ TEST_F(OverlayModuleDetectionTest, IsThirdPartyOverlayLoadedTracksOverlaySubset)
     EXPECT_FALSE(IsThirdPartyOverlayLoaded());
 }
 
+// The last-loaded overlay (recorded from real load notifications only) decides
+// which overlay owns a foreign Present entry jump: the later hooker displaces the
+// earlier one's entry bytes. Steam wins the list-priority name cache even when
+// RTSS loaded after it and owns the chain (Strange Brigade + Steam + RTSS,
+// session 20260811_233748), so the load-order evidence must be tracked separately
+// from the loaded-set and must not be polluted by the refresh walk.
+TEST_F(OverlayModuleDetectionTest, LastLoadedOverlayIsTrackedOnlyFromNotifications) {
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // The plain cache update (seed walk / identity-refresh enumeration) must NOT
+    // record load order.
+    NoteModuleLoadedForOverlayCache("gameoverlayrenderer64.dll");
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // Real load notification records the most recent tracked overlay.
+    NoteModuleLoadedForOverlayCacheFromNotification("RTSSHooks64.dll");
+    ASSERT_NE(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+    EXPECT_NE(std::strstr(GetLastLoadedTrackedOverlayModuleName(), "RTSSHooks"), nullptr);
+
+    // A later Steam load replaces RTSS as the newest overlay.
+    NoteModuleLoadedForOverlayCacheFromNotification("gameoverlayrenderer64.dll");
+    EXPECT_TRUE(IsSteamName(GetLastLoadedTrackedOverlayModuleName()));
+
+    // Non-overlay loads must not disturb the last-loaded record.
+    NoteModuleLoadedForOverlayCacheFromNotification("d3d11.dll");
+    EXPECT_TRUE(IsSteamName(GetLastLoadedTrackedOverlayModuleName()));
+}
+
+// Pure decision for unresolvable foreign Present chains: RTSS as the most recently
+// loaded overlay owns the chain and must NOT be serviced as a Steam chain even
+// though Steam is loaded and wins the list-priority name cache.
+TEST_F(OverlayModuleDetectionTest, UnresolvableChainOwnerFollowsLoadOrderEvidence) {
+    // RTSS loaded last (Strange Brigade + Steam + RTSS): the chain is RTSS's.
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence("RTSSHooks64.dll", "gameoverlayrenderer64.dll"));
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence("RTSSHooks64.dll", "RTSSHooks64.dll"));
+
+    // Steam loaded last (or no load-order evidence at all): Steam owns the chain.
+    EXPECT_TRUE(IsSteamExternalChainOwnerByLoadOrderEvidence("gameoverlayrenderer64.dll", "gameoverlayrenderer64.dll"));
+    EXPECT_TRUE(IsSteamExternalChainOwnerByLoadOrderEvidence(nullptr, "gameoverlayrenderer64.dll"));
+
+    // No Steam anywhere: never a Steam chain.
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(nullptr, "RTSSHooks64.dll"));
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(nullptr, nullptr));
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence("RTSSHooks64.dll", nullptr));
+}
+
 // sl.interposer is tracked for a loader-free SL-loaded check (replaces a per-Present
 // GetModuleHandleA), but it is NOT an overlay/startup-blocking module.
 TEST_F(OverlayModuleDetectionTest, StreamlineInterposerTrackedButNotOverlay) {

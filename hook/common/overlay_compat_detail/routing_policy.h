@@ -50,6 +50,18 @@ inline std::atomic<bool>& TrackedOverlaySeeded() {
     return seeded;
 }
 
+// Index (into kTrackedOverlayModules) of the most recently loaded tracked overlay
+// module, recorded ONLY from real load notifications (LdrRegisterDllNotification /
+// LoadLibrary hooks). The seed walk and the identity-refresh enumeration see
+// modules in loader/enumeration order, not load order, so they must not touch
+// this. The last-load order decides which overlay owns a foreign Present entry
+// jump when two overlays both hook dxgi!Present (the later hooker displaces the
+// earlier one's entry jump, e.g. RTSS loading after Steam).
+inline std::atomic<int>& LastLoadedTrackedOverlayModuleIndex() {
+    static std::atomic<int> index{-1};
+    return index;
+}
+
 // Walks the loader ONCE to seed modules already loaded before our hooks/notification
 // installed. Returns the seeded bitmask (for logging/diagnostics). Call once from HookThread;
 // also lazy-triggered on first query.
@@ -112,6 +124,41 @@ inline const char* NoteModuleLoadedForOverlayCache(const char* moduleNameOrPath)
     return kTrackedOverlayModules[idx].name;
 }
 
+// Same as NoteModuleLoadedForOverlayCache, but additionally records this module as
+// the most recently loaded tracked overlay. Use ONLY from real load notifications
+// (LdrRegisterDllNotification callback and the LoadLibrary* hooks); the identity
+// refresh walk enumerates modules in a non-chronological order and must keep using
+// the plain variant.
+inline const char* NoteModuleLoadedForOverlayCacheFromNotification(const char* moduleNameOrPath) {
+    const char* matched = NoteModuleLoadedForOverlayCache(moduleNameOrPath);
+    if (matched) {
+        const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
+        LastLoadedTrackedOverlayModuleIndex().store(idx, std::memory_order_release);
+    }
+    return matched;
+}
+
+// Loader-free: canonical name of the most recently loaded tracked overlay module,
+// or null when no tracked overlay load was observed through the notification path.
+inline const char* GetLastLoadedTrackedOverlayModuleName() {
+    const int idx = LastLoadedTrackedOverlayModuleIndex().load(std::memory_order_acquire);
+    return idx >= 0 ? kTrackedOverlayModules[idx].name : nullptr;
+}
+
+// Pure decision for classifying an unresolvable foreign Present chain: the most
+// recently loaded tracked overlay owns the preserved entry jump (it displaced the
+// earlier hooker, e.g. RTSS loading after Steam). RTSS as the last loader means the
+// chain is NOT Steam's even when Steam is also loaded and wins the list-priority
+// name cache.
+inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedOverlayName,
+                                                         const char* loadedOverlayName) {
+    if (lastLoadedOverlayName && detail::ContainsInsensitive(lastLoadedOverlayName, "rtsshooks")) {
+        return false;
+    }
+    return loadedOverlayName != nullptr &&
+           detail::ContainsInsensitive(loadedOverlayName, "gameoverlayrenderer");
+}
+
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No
 // loader calls. Returns the canonical match (for logging) or null.
 inline const char* NoteModuleUnloadedForOverlayCache(const char* moduleNameOrPath) {
@@ -138,6 +185,7 @@ inline void SetIdentifiedOverlayIdentityLoaded(const char* canonicalIdentity, bo
 inline void ResetThirdPartyOverlayModuleCacheForTesting() {
     TrackedOverlayLoadedBits().store(0, std::memory_order_release);
     TrackedOverlaySeeded().store(true, std::memory_order_release);
+    LastLoadedTrackedOverlayModuleIndex().store(-1, std::memory_order_release);
     ResetIdentifiedThirdPartyOverlayModulePaths();
 }
 

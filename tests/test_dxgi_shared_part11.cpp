@@ -345,7 +345,9 @@ TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamT
     ASSERT_FALSE(original.empty());
 
     const size_t fastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
-    const size_t steamOverlayCheck = original.find("IsSteamOverlayModule(overlayModule)", fastPath);
+    // The Steam classification must be owner-based (thunk-resolved / load-order),
+    // not the priority-ordered loaded-module name (RTSS+Steam coexistence).
+    const size_t steamOverlayCheck = original.find("IsCurrentExternalPresentHookSteamChain()", fastPath);
     const size_t workerCheck = original.find("CanRuntimePresentFromWorkerForExternalOverlay(", fastPath);
     const size_t threadCheck = original.find("ShouldInvokeSynchronousExternalOverlayPresentForThreadState(", fastPath);
     const size_t nullGuard = original.find("ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(", fastPath);
@@ -409,7 +411,10 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
     EXPECT_LT(present1Bypass, barePresent1Call);
 
     // The helper must resolve both chainable entry-jump forms and gate on the
-    // Steam overlay module and the D3D12 API.
+    // chain owner (not the priority-ordered loaded-module name) and the D3D12
+    // API. With Steam AND RTSS both loaded the name cache reports Steam even
+    // though RTSS (loaded later) owns the entry jump; classifying by the name
+    // alone made CE service RTSS's chain as Steam (session 20260811_233748).
     const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
@@ -420,6 +425,78 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
     EXPECT_NE(steam.find("code[1] == 0x25", chainHelper), std::string::npos);
     const size_t steamGate = steam.find("bool IsSteamExternalChainTrampoline(", chainHelper);
     ASSERT_NE(steamGate, std::string::npos);
-    EXPECT_NE(steam.find("IsSteamOverlayModule(overlayModule)", steamGate), std::string::npos);
+    EXPECT_NE(steam.find("IsExternalPresentHookSteamChain(externalHook)", steamGate), std::string::npos);
     EXPECT_NE(steam.find("!isD3D12SwapChain", steamGate), std::string::npos);
+}
+
+// RTSS + Steam coexistence (session 20260811_233748): when Steam AND RTSS are
+// both loaded, the external Present chain belongs to RTSS (loaded later, it
+// displaced Steam's entry jump). The Steam guarded machinery must not run on
+// RTSS's chain, and the preserved-owner diagnostics must be emitted at install.
+// RTSS's restore/rehook cycle still re-enters Steam's handler inside the
+// forward, so Steam's NULL-callback patches must stay armed around the bare
+// trampoline call whenever Steam is loaded.
+TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority) {
+    namespace fs = std::filesystem;
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    const std::string steam = ce::test_source::ReadFile(steamSource);
+    ASSERT_FALSE(steam.empty());
+
+    // The authoritative classifier resolves the thunk target into a module and
+    // falls back to load-order evidence for unresolvable thunks.
+    const size_t classifier = steam.find("bool IsExternalPresentHookSteamChain(");
+    ASSERT_NE(classifier, std::string::npos);
+    EXPECT_NE(steam.find("ResolveExternalPresentHookOwnerPath(", classifier), std::string::npos);
+    EXPECT_NE(steam.find("IsSteamExternalChainOwnerByLoadOrderEvidence(", classifier), std::string::npos);
+    const size_t thunkResolver = steam.find("const void* ResolveExternalPresentHookThunkTarget(");
+    ASSERT_NE(thunkResolver, std::string::npos);
+    EXPECT_NE(steam.find("code[0] != 0xFF || code[1] != 0x25", thunkResolver), std::string::npos);
+
+    // All Steam-specific routing decisions must go through the owner-based
+    // classifier instead of the loaded-module name.
+    const size_t forcedBypass = steam.find("bool ShouldForceSteamDX12Bypass(");
+    ASSERT_NE(forcedBypass, std::string::npos);
+    EXPECT_NE(steam.find("IsCurrentExternalPresentHookSteamChain()", forcedBypass), std::string::npos);
+    const size_t guardedInvoke = steam.find("bool TryInvokeGuardedExternalSteamOverlayPresent(");
+    ASSERT_NE(guardedInvoke, std::string::npos);
+    EXPECT_NE(steam.find("IsCurrentExternalPresentHookSteamChain()", guardedInvoke), std::string::npos);
+
+    // The guarded Steam invoke must not fire for RTSS chains: its Steam callback
+    // checks stay gated on the owner classification.
+    EXPECT_NE(steam.find("const bool isSteamOverlay = IsCurrentExternalPresentHookSteamChain();", guardedInvoke),
+              std::string::npos);
+
+    // Install-time diagnostics resolve and log the foreign hook owner.
+    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(hooksSource));
+    const std::string hooks = ce::test_source::ReadFile(hooksSource);
+    ASSERT_FALSE(hooks.empty());
+    const size_t saveHook = hooks.find("saved for guarded overlay routing");
+    ASSERT_NE(saveHook, std::string::npos);
+    EXPECT_NE(hooks.find("ResolveExternalPresentHookOwnerPath(hookTarget", saveHook), std::string::npos);
+    EXPECT_NE(hooks.find("External hook owner:", saveHook), std::string::npos);
+
+    // The trampoline branch keeps Steam's NULL-callback patches (and VEH) armed
+    // around the bare forward when Steam is loaded alongside the foreign chain.
+    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    ASSERT_TRUE(fs::exists(originalSource));
+    const std::string original = ce::test_source::ReadFile(originalSource);
+    ASSERT_FALSE(original.empty());
+    const size_t trampolinePath = original.find("if (presentTrampoline) {");
+    ASSERT_NE(trampolinePath, std::string::npos);
+    const size_t nestedSteamGuard = original.find("non-Steam external chain with Steam loaded", trampolinePath);
+    ASSERT_NE(nestedSteamGuard, std::string::npos);
+    EXPECT_LT(trampolinePath, nestedSteamGuard);
+    EXPECT_NE(original.find("EnsureSteamNullCallbacksPatched(presentBypass);", nestedSteamGuard), std::string::npos);
+    EXPECT_NE(original.find("ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(", nestedSteamGuard),
+              std::string::npos);
+
+    // Load-order evidence is recorded only from real load notifications.
+    const fs::path detectSource = fs::current_path() / "hook" / "main_overlay_detect.cpp";
+    ASSERT_TRUE(fs::exists(detectSource));
+    const std::string detect = ce::test_source::ReadFile(detectSource);
+    ASSERT_FALSE(detect.empty());
+    EXPECT_NE(detect.find("NoteModuleLoadedForOverlayCacheFromNotification(base);"), std::string::npos);
+    EXPECT_NE(detect.find("NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);"), std::string::npos);
 }

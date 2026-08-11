@@ -94,6 +94,20 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
+        // Non-Steam external chain (e.g. RTSS's thunk). Forward through the
+        // preserved foreign entry. When Steam's overlay is ALSO loaded, RTSS's
+        // restore/rehook cycle re-enters Steam's handler inside this call (RTSS
+        // saved Steam's E9 as its "original bytes"), so keep Steam's
+        // Present-shaped NULL callback slots patched and the crash-time VEH
+        // recovery armed for the duration of the forward — the same protections
+        // the guarded Steam invoke applies, without any Steam routing.
+        if (IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()) && presentBypass) {
+            EnsureSteamNullCallbacksPatched(presentBypass);
+            ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
+                presentBypass != nullptr, "non-Steam external chain with Steam loaded",
+                "foreign trampoline chain", reinterpret_cast<void*>(presentTrampoline),
+                reinterpret_cast<void*>(presentBypass), false, false);
+        }
         static int s_copLogCount = 0;
         if (s_copLogCount++ < 5) {
             HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
@@ -489,7 +503,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         //      slot and retries. Without it Steam crashes the render thread with
         //      RIP=0 (RoboCop: Rogue City session 20260809_140551).
         const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-        const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+        const bool steamOverlay = IsCurrentExternalPresentHookSteamChain();
         if (steamOverlay && presentBypass) {
             const auto runtimeMode = g_FGCompat.GetRuntimeMode();
             const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -557,7 +571,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         static int s_copLogCount4 = 0;
         if (s_copLogCount4++ < 5) {
             const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-            const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+            const bool steamOverlay = IsCurrentExternalPresentHookSteamChain();
             HookLogImportant(
                 "CallOriginalPresent: fallback oPresent=%p (trampoline=%p bypass=%p slLoaded=%d steamOverlay=%d "
                 "overlay=%s)",
@@ -570,7 +584,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // trampoline instead to skip all in-memory hooks.
         if (!slLoaded && presentBypass) {
             const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-            if (IsSteamOverlayModule(overlayModule)) {
+            if (IsCurrentExternalPresentHookSteamChain()) {
                 static int s_steamNonSLBypassCount = 0;
                 if (s_steamNonSLBypassCount++ < 10) {
                     HookLogImportant(

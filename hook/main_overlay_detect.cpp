@@ -31,7 +31,10 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
 
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
     UE5::NotifyModuleLoaded(static_cast<HMODULE>(data->DllBase));
-    const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCache(base);
+    // Real load notification: also record load order so a later overlay that
+    // displaces another overlay's Present entry jump (e.g. RTSS after Steam)
+    // can be identified as the chain owner.
+    const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
     }
@@ -231,7 +234,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
-  ce::overlay_compat::NoteModuleLoadedForOverlayCache(moduleNameOrPath);
+  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);

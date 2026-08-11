@@ -14,7 +14,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(dxgi_shared_oPresentBypass != nullptr, &overlayModule, &startupPass);
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
-            const bool steamOverlayPresent = IsSteamOverlayModule(overlayModule);
+            const bool steamOverlayPresent = IsCurrentExternalPresentHookSteamChain();
             const bool useBypass = steamOverlayPresent && dxgi_shared_oPresentBypass && !dxgi_shared_oPresentTrampoline;
             HookLogImportant(
                 "DetourPresent: Startup compatibility pass #%d for third-party overlay %s "

@@ -2,6 +2,8 @@
 
 #include "dxgi_shared_detail/steam_null_callback.h"
 
+#include <cstring>
+
 namespace DXGIShared {
 // Fallback only: Steam's NULL Present-shaped callbacks should normally be
 // patched to CE's DXGI bypass trampoline so Steam can keep chaining to a real
@@ -25,6 +27,99 @@ void* SelectSteamNullCallbackRecoveryTarget(const SteamNullCallbackRecoveryConte
 namespace DXGIShared {
 bool IsSteamOverlayModule(const char* overlayModule) {
     return overlayModule && ce::overlay_compat::detail::ContainsInsensitive(overlayModule, "gameoverlayrenderer");
+}
+}
+
+namespace DXGIShared {
+// RTSS and Steam both hook dxgi!Present through runtime-allocated thunks that are
+// not backed by any module (GetModuleHandleExA(FROM_ADDRESS) fails for them, so the
+// install-time owner lookup reports "unknown"). Both thunk layouts share the x64
+// indirect form `FF 25 00 00 00 00` followed by an absolute pointer to the real
+// handler inside the overlay DLL. Resolving that pointer identifies the chain
+// owner. Falls back to returning the hook address itself when it is not a
+// resolvable thunk.
+const void* ResolveExternalPresentHookThunkTarget(const void* externalHook) {
+    if (!externalHook || !IsReadableMemory(externalHook, 16)) {
+        return externalHook;
+    }
+    const auto* code = static_cast<const uint8_t*>(externalHook);
+    if (code[0] != 0xFF || code[1] != 0x25) {
+        return externalHook;
+    }
+    const void* target = nullptr;
+    if (code[2] == 0 && code[3] == 0 && code[4] == 0 && code[5] == 0) {
+        // FF 25 00 00 00 00 : JMP qword ptr [rip+0] -> pointer at +6.
+        memcpy(&target, code + 6, sizeof(target));
+    } else {
+        // FF 25 disp32 : JMP qword ptr [rip+disp32].
+        int32_t disp = 0;
+        memcpy(&disp, code + 2, sizeof(disp));
+        const uintptr_t nextRip = reinterpret_cast<uintptr_t>(externalHook) + 6;
+        const uintptr_t pointerAddress = nextRip + static_cast<intptr_t>(disp);
+        if (!IsReadableMemory(reinterpret_cast<const void*>(pointerAddress), sizeof(target))) {
+            return externalHook;
+        }
+        memcpy(&target, reinterpret_cast<const void*>(pointerAddress), sizeof(target));
+    }
+    if (!target || !IsReadableMemory(target, 1)) {
+        return externalHook;
+    }
+    return target;
+}
+}
+
+namespace DXGIShared {
+bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* modulePathOut, size_t modulePathOutCount) {
+    if (!modulePathOut || modulePathOutCount == 0) {
+        return false;
+    }
+    modulePathOut[0] = '\0';
+    if (!externalHook) {
+        return false;
+    }
+    const void* handler = ResolveExternalPresentHookThunkTarget(externalHook);
+    return TryGetModulePathFromCodeAddress(handler, modulePathOut, modulePathOutCount);
+}
+}
+
+namespace DXGIShared {
+// Authoritative "is the current foreign Present chain Steam's" decision.
+//
+// The loaded-overlay module name alone is NOT sufficient: the module table reports
+// the first loaded tracked overlay by list priority, so when Steam AND RTSS are
+// both loaded it reports gameoverlayrenderer64.dll even though RTSS loaded later,
+// displaced Steam's entry jump, and therefore owns the E9/FF25 chain that CE
+// preserved (Strange Brigade + Steam + RTSS, session 20260811_233748 — RTSS's OSD
+// stopped rendering while CE serviced RTSS's thunk as a "Steam" chain). The chain
+// owner is classified from the resolved thunk target when possible; for
+// unresolvable thunks the last real load notification decides (the later overlay
+// displaced the earlier one).
+bool IsExternalPresentHookSteamChain(const void* externalHook) {
+    if (!externalHook) {
+        return false;
+    }
+    char ownerPath[MAX_PATH] = {};
+    if (ResolveExternalPresentHookOwnerPath(externalHook, ownerPath, sizeof(ownerPath))) {
+        return IsSteamOverlayModule(ownerPath);
+    }
+    // Unresolvable thunk (no module backs the handler address): use load-order
+    // evidence. RTSS as the most recently loaded overlay owns the chain.
+    const char* lastLoaded = ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName();
+    return ce::overlay_compat::IsSteamExternalChainOwnerByLoadOrderEvidence(
+        lastLoaded, ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+}
+}
+
+namespace DXGIShared {
+// Present-hot-path wrapper: classify the currently saved external Present hook.
+// When no foreign hook was saved, fall back to the loaded-module name so Steam
+// overlays that hook only via the swapchain vtable keep their existing treatment.
+bool IsCurrentExternalPresentHookSteamChain() {
+    const void* externalHook = reinterpret_cast<const void*>(dxgi_shared_g_externalOverlayPresentHook);
+    if (!externalHook) {
+        return IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+    }
+    return IsExternalPresentHookSteamChain(externalHook);
 }
 }
 
@@ -165,7 +260,12 @@ bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable
     if (isD3D12SwapChainOut) {
         *isD3D12SwapChainOut = false;
     }
-    if (!pSwapChain || !bypassAvailable || !IsSteamOverlayModule(overlayModule)) {
+    // The forced-bypass route exists to keep Steam's DX12 chain from faulting
+    // through lazy NULL callbacks. It must apply only when Steam actually owns the
+    // preserved external chain: when RTSS displaced Steam's entry jump (Steam and
+    // RTSS both loaded), the chain is RTSS's and forcing the bypass would skip
+    // RTSS's Present handler entirely, killing its overlay.
+    if (!pSwapChain || !bypassAvailable || !IsCurrentExternalPresentHookSteamChain()) {
         return false;
     }
 
@@ -208,7 +308,7 @@ DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const cha
         *overlayModuleOut = overlayModule;
     }
     const bool steamBypassShouldOwnPath = ShouldForceSteamDX12BypassForState(
-        bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
+        bypassAvailable, IsCurrentExternalPresentHookSteamChain(), true, false, false,
         ce::overlay_compat::IsStreamlineInterposerModuleLoaded(), g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
     const bool bypassReady = EnsurePresentBypassTrampoline() != nullptr;
@@ -230,7 +330,7 @@ DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const cha
     }
 
     static std::atomic<int> s_startupPassCount{0};
-    const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+    const bool steamOverlay = IsCurrentExternalPresentHookSteamChain();
     const int startupCompatFrames = (steamOverlay && bypassAvailable) ? 16 : 3;
     int expected = s_startupPassCount.load(std::memory_order_acquire);
     while (expected < startupCompatFrames) {
@@ -350,9 +450,21 @@ bool IsSteamExternalChainTrampoline(void* trampoline, void* externalHook, bool i
     if (!isD3D12SwapChain || !trampoline) {
         return false;
     }
-    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-    return IsSteamOverlayModule(overlayModule) &&
-           TrampolineChainsToExternalOverlay(trampoline, externalHook);
+    if (!TrampolineChainsToExternalOverlay(trampoline, externalHook)) {
+        return false;
+    }
+    if (externalHook) {
+        // Classify by the chain owner, not the priority-ordered loaded-module
+        // name: with Steam AND RTSS both loaded the name cache reports Steam
+        // even though RTSS (loaded later) owns the preserved entry jump.
+        return IsExternalPresentHookSteamChain(externalHook);
+    }
+    // No saved external hook (e.g. Present1, whose trampoline chains outside
+    // dxgi.dll): classify from loaded-overlay evidence. A later-loaded RTSS owns
+    // the chains on both Present entry points, so exclude it explicitly.
+    const char* lastLoaded = ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName();
+    return ce::overlay_compat::IsSteamExternalChainOwnerByLoadOrderEvidence(
+        lastLoaded, ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
 }
 }
 
@@ -467,8 +579,7 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
 
     PFN_Present externalPresent = dxgi_shared_g_externalOverlayPresentHook;
     PFN_Present presentBypass = EnsurePresentBypassTrampoline();
-    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-    const bool isSteamOverlay = IsSteamOverlayModule(overlayModule);
+    const bool isSteamOverlay = IsCurrentExternalPresentHookSteamChain();
     const bool isD3D12SwapChain = DetectAPIType(pSwapChain) == APIType::D3D12;
     const bool streamlineStackActive = isD3D12SwapChain && HasStreamlineModuleInCurrentStack();
     const bool streamlinePluginLookupGuardReady = StreamlineHook::IsExternalOverlayPluginLookupGuardReady();
