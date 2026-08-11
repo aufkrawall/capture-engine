@@ -110,6 +110,25 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 "foreign trampoline chain", reinterpret_cast<void*>(presentTrampoline),
                 reinterpret_cast<void*>(presentBypass), false, false);
         }
+        // RTSS + Steam coexistence: when Steam's overlay is ALSO loaded, the
+        // entry jump belongs to Steam (it hooked last) and RTSS is only
+        // reachable through Steam's saved "next" chain, which Steam's lazy init
+        // drops after one frame (20260812_005530: RTSS drew exactly once, then
+        // only Steam's overlay submitted). Invoke RTSS's own thunk directly —
+        // resolved next to Steam's thunk — so RTSS's restore/rehook reclaims the
+        // entry exactly like the natural no-CE chain (which keeps RTSS's OSD
+        // alive). Steam's handler is then never entered, so its lazy NULL
+        // callback cannot crash and its init cannot starve RTSS.
+        void* rtssThunk = steamAlsoLoaded ? GetRTSSPresentHookThunk() : nullptr;
+        if (rtssThunk && rtssThunk != reinterpret_cast<void*>(dxgi_shared_g_externalOverlayPresentHook)) {
+            static std::atomic<int> s_rtssDirectForwardCount{0};
+            const int rtssNum = s_rtssDirectForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (rtssNum <= 10 || (rtssNum % 1000) == 0) {
+                HookLogImportant("CallOriginalPresent: direct RTSS Present thunk forward #%d (thunk=%p)", rtssNum,
+                                 rtssThunk);
+            }
+            return reinterpret_cast<PFN_Present>(rtssThunk)(pSwapChain, SyncInterval, Flags);
+        }
         // Follow the LIVE entry (dxgi!Present) instead of the frozen
         // install-time relay target once the entry is no longer CE's own prepend
         // (RTSS's restore/rehook wipes CE's prepend on its first frame). The

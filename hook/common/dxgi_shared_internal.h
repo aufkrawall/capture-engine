@@ -225,6 +225,15 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
+// Scan the executable region around a foreign Present hook thunk for RTSS's own
+// hook thunk (FF25 + pointer into RTSSHooks64.dll). Used for RTSS + Steam
+// coexistence: the entry jump belongs to Steam, so RTSS's thunk is invoked
+// directly to let RTSS's restore/rehook reclaim the entry.
+void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk);
+void* GetRTSSPresentHookThunk();
+}
+
+namespace DXGIShared {
 // Authoritative "does this foreign Present chain belong to Steam" classification.
 // Resolves the thunk target into a module when possible; for unresolvable thunks
 // falls back to load-order evidence (the most recently loaded overlay owns the

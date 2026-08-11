@@ -83,6 +83,76 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
+// Scan the executable region around a foreign Present hook thunk for a second
+// hook thunk whose payload pointer lands inside RTSSHooks64.dll. RTSS and Steam
+// both allocate their runtime thunks (`FF 25 00 00 00 00` + absolute handler
+// pointer) in the same nearby VirtualAlloc region: in Strange Brigade the entry
+// jump belongs to Steam (it hooked last), while RTSS's own thunk sits a few
+// pages away and is only reachable through Steam's saved "next" chain — which
+// Steam's lazy init drops (20260812_005530: RTSS drew exactly one frame, then
+// only Steam's overlay submitted). Invoking RTSS's thunk directly lets RTSS's
+// restore/rehook reclaim the entry, exactly like the natural no-CE chain.
+void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk) {
+    if (!anchorThunk) {
+        return nullptr;
+    }
+    HMODULE rtssMod = GetModuleHandleA("RTSSHooks64.dll");
+    if (!rtssMod) {
+        return nullptr;
+    }
+    MODULEINFO rtssInfo = {};
+    if (!GetModuleInformation(GetCurrentProcess(), rtssMod, &rtssInfo, sizeof(rtssInfo))) {
+        return nullptr;
+    }
+    const uintptr_t rtssStart = reinterpret_cast<uintptr_t>(rtssMod);
+    const uintptr_t rtssEnd = rtssStart + rtssInfo.SizeOfImage;
+    const uintptr_t anchor = reinterpret_cast<uintptr_t>(anchorThunk);
+    constexpr uintptr_t kScanSpan = 0x100000;
+    const uintptr_t scanStart = anchor > kScanSpan ? (anchor - kScanSpan) & ~static_cast<uintptr_t>(0xFFF) : 0;
+    const uintptr_t scanEnd = anchor + kScanSpan;
+    for (uintptr_t page = scanStart; page <= scanEnd; page += 0x1000) {
+        if (!IsReadableMemory(reinterpret_cast<const void*>(page), 0x1000)) {
+            continue;
+        }
+        const auto* bytes = reinterpret_cast<const uint8_t*>(page);
+        for (size_t off = 0; off + 14 <= 0x1000; ++off) {
+            if (bytes[off] != 0xFF || bytes[off + 1] != 0x25 || bytes[off + 2] != 0 || bytes[off + 3] != 0 ||
+                bytes[off + 4] != 0 || bytes[off + 5] != 0) {
+                continue;
+            }
+            void* target = nullptr;
+            memcpy(&target, bytes + off + 6, sizeof(target));
+            const uintptr_t targetAddr = reinterpret_cast<uintptr_t>(target);
+            if (targetAddr >= rtssStart && targetAddr < rtssEnd) {
+                return reinterpret_cast<void*>(page + off);
+            }
+        }
+    }
+    return nullptr;
+}
+}
+
+namespace DXGIShared {
+// Cached RTSS Present thunk next to the saved external hook. Resolved once off
+// the hot path; null when RTSS is not loaded or no nearby thunk resolves into
+// RTSSHooks64.dll (Steam-only games keep their existing routing).
+void* GetRTSSPresentHookThunk() {
+    static void* s_cached = []() -> void* {
+        const void* anchor = reinterpret_cast<const void*>(dxgi_shared_g_externalOverlayPresentHook);
+        void* thunk = ResolveRTSSPresentHookThunkNear(anchor);
+        if (thunk) {
+            HookLogImportant("DXGIShared: Resolved RTSS Present thunk %p (near saved external hook %p)", thunk,
+                             anchor);
+        } else {
+            HookLog("DXGIShared: No RTSS Present thunk found near %p", anchor);
+        }
+        return thunk;
+    }();
+    return s_cached;
+}
+}
+
+namespace DXGIShared {
 // Authoritative "is the current foreign Present chain Steam's" decision.
 //
 // The loaded-overlay module name alone is NOT sufficient: the module table reports
