@@ -50,7 +50,11 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_traceEclN{0};
         const int sn = s_traceEclN.fetch_add(1, std::memory_order_relaxed);
-        if (sn < 80 || (sn % 300) == 0) {
+        // Finer steady-state sampling (every 64th ECL instead of every 300th) so
+        // per-module submission composition (game vs RTSS vs Steam overlay) can be
+        // tracked over time; needed to attribute ECL-activity loss (e.g. RTSS's
+        // OSD stops submitting in Strange Brigade while the game keeps ~1200 fps).
+        if (sn < 80 || (sn % 64) == 0) {
             char d[200];
             _snprintf_s(d, sizeof(d), _TRUNCATE, "queue=%p numLists=%u list0=%p seq=%d", (void*)pThis, NumCommandLists,
                         (NumCommandLists && ppCommandLists) ? (void*)ppCommandLists[0] : nullptr, sn);
