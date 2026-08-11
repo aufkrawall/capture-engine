@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-08-11 - Fix false FSR_FG ECL-pattern latch on late inject (Strange Brigade DX12)
+
+- Session `installed/captureengine/logs/20260811_211623` (build 0.1.5917):
+  late-injected Strange Brigade DX12 (no DLSS FG, no FSR FG, no Streamline)
+  rendered the overlay for only a few frames, then
+  `DX12: FG detected via ECL count pattern (real=5, interp=12)` latched
+  heuristic `FSR_FG` with `scQueue=null` and every later ProcessFrame hit
+  `ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay`.
+- Root cause: the ECL-pattern heuristic counted every zero-ECL present as an
+  "interpolated" frame. During late injection the game queue's ECL hook is not
+  live yet, so the first ~12 presents before the first counted real frame
+  looked like interpolation evidence and tripped the 5-real/10-interp
+  threshold on a non-FG game.
+- Fix: zero-ECL presents now count as interpolation evidence only after a real
+  frame has been observed and only once per real frame (interleaved cadence),
+  and a latched heuristic deactivates after 120 consecutive real frames without
+  interpolation evidence unless direct FFX API confirmation exists.
+- Regression tests: `ECLPatternHeuristicDoesNotCountWarmupZeroECLFramesBeforeFirstReal`,
+  `ECLPatternHeuristicRequiresCountThresholdsForDetection`,
+  `HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun` in
+  `tests/test_dxgi_shared_part5.cpp`.
+- Source anchors: `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`,
+  `hook/apis/dx12_hook_process.cpp`.
+
 ### 2026-08-11 - Guard the Steam external-chain trampoline transport (DLSS->FSR switch crash 20260811_195131)
 
 - Session `logs/20260811_195131` (build 0.1.5914): Talos starts fine with

@@ -420,6 +420,40 @@ TEST(DXGISharedTest, StaleAuthoritativeFSRDoesNotClearAfterDirectFFXApiConfirmat
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(1200, true));
 }
 
+TEST(DXGISharedTest, ECLPatternHeuristicDoesNotCountWarmupZeroECLFramesBeforeFirstReal) {
+    // Late injection: the game queue's ECL hook is not live yet, so every
+    // present is zero-ECL. None of those warmup presents may count as
+    // interpolation evidence.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(false, true));
+
+    // After the first real frame is observed, the next zero-ECL frame counts...
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(true, false));
+    // ...but a second consecutive zero-ECL frame requires a fresh real frame
+    // between counted interpolated frames.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(true, true));
+
+    // A fresh real frame re-arms interpolation evidence.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(true, false));
+}
+
+TEST(DXGISharedTest, ECLPatternHeuristicRequiresCountThresholdsForDetection) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDetectECLPatternFG(false, 4, 10));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDetectECLPatternFG(false, 5, 9));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDetectECLPatternFG(false, 5, 10));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDetectECLPatternFG(true, 5, 10));
+}
+
+TEST(DXGISharedTest, HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearHeuristicECLPatternAfterRealOnlyRun(119, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearHeuristicECLPatternAfterRealOnlyRun(120, false));
+
+    // Direct FFX API confirmation is authoritative; a real-only run must not
+    // tear down a live native FSR path.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearHeuristicECLPatternAfterRealOnlyRun(120, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearHeuristicECLPatternAfterRealOnlyRun(1200, true));
+}
+
 TEST(DXGISharedTest, TracksStaleRuntimeOwnedStreamlineNoFGOnlyOnRealFramesBackOnOriginalQueue) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
         false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));

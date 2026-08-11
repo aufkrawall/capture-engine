@@ -438,6 +438,8 @@ const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
     static int s_eclRealFrames = 0;
     static int s_eclInterpFrames = 0;
     static bool s_eclFGDetected = false;
+    static bool s_eclInterpSinceLastReal = false;
+    static int s_eclConsecutiveRealFrames = 0;
     // FG transitions, SL on/off handlers, and game-swapchain recovery edges
     // request a full reset: interpolated/real counts accumulated during a
     // finished FG phase are stale evidence and must not re-latch phantom
@@ -457,11 +459,15 @@ const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
         s_eclFGDetected = false;
         s_eclRealFrames = 0;
         s_eclInterpFrames = 0;
+        s_eclInterpSinceLastReal = false;
+        s_eclConsecutiveRealFrames = 0;
     }
     if (s_eclFGDetected && !g_FGCompat.IsHeuristicFSRFGActive()) {
         s_eclFGDetected = false;
         s_eclRealFrames = 0;
         s_eclInterpFrames = 0;
+        s_eclInterpSinceLastReal = false;
+        s_eclConsecutiveRealFrames = 0;
     }
 
     const bool shouldResetBlockedPatternEvidence =
@@ -487,18 +493,48 @@ const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
             s_eclFGDetected = false;
             s_eclRealFrames = 0;
             s_eclInterpFrames = 0;
+            s_eclInterpSinceLastReal = false;
+            s_eclConsecutiveRealFrames = 0;
         }
     } else {
-        if (isInterpolatedFrame)
-            ++s_eclInterpFrames;
-        else
+        if (isInterpolatedFrame) {
+            // Zero-ECL presents during hook warmup (late injection) or
+            // transition windows are not interpolation evidence by themselves.
+            // Only count them once a real frame has been observed and a fresh
+            // real frame has occurred since the last counted interpolated
+            // frame, so the evidence reflects a real alternating cadence.
+            if (ce::dx12_overlay_policy::ShouldCountECLPatternInterpolatedFrame(
+                    s_eclRealFrames > 0, s_eclInterpSinceLastReal)) {
+                ++s_eclInterpFrames;
+                s_eclInterpSinceLastReal = true;
+            }
+            s_eclConsecutiveRealFrames = 0;
+        } else {
             ++s_eclRealFrames;
-        if (!s_eclFGDetected && s_eclInterpFrames >= 10 && s_eclRealFrames >= 5) {
+            s_eclInterpSinceLastReal = false;
+            ++s_eclConsecutiveRealFrames;
+        }
+        if (ce::dx12_overlay_policy::ShouldDetectECLPatternFG(
+                s_eclFGDetected, s_eclRealFrames, s_eclInterpFrames)) {
             if (UpdateHeuristicFSRFGState(true, "ecl-pattern")) {
                 s_eclFGDetected = true;
                 HookLogImportant("DX12: FG detected via ECL count pattern (real=%d, interp=%d)", s_eclRealFrames,
                                  s_eclInterpFrames);
             }
+        }
+        if (s_eclFGDetected &&
+            ce::dx12_overlay_policy::ShouldClearHeuristicECLPatternAfterRealOnlyRun(
+                s_eclConsecutiveRealFrames, g_FGCompat.HasDirectFFXApiConfirmation())) {
+            HookLogImportant(
+                "DX12: Deactivating heuristic FSR FG after %d consecutive real frames without interpolation "
+                "evidence (real=%d interp=%d)",
+                s_eclConsecutiveRealFrames, s_eclRealFrames, s_eclInterpFrames);
+            UpdateHeuristicFSRFGState(false, "ecl-pattern-real-only");
+            s_eclFGDetected = false;
+            s_eclRealFrames = 0;
+            s_eclInterpFrames = 0;
+            s_eclInterpSinceLastReal = false;
+            s_eclConsecutiveRealFrames = 0;
         }
     }
 }

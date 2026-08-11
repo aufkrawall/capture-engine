@@ -139,6 +139,37 @@ inline bool ShouldResetBlockedECLPatternHeuristicEvidence(bool canUseFSRFGHeuris
            (eclPatternHeuristicDetected || hasRealFrameEvidence || hasInterpolatedFrameEvidence);
 }
 
+// ECL-pattern interpolated-frame evidence must be interleaved with real
+// frames, not a cumulative count of zero-ECL presents. During late injection
+// (or any warmup where the game queue's ECL hook is not live yet) every
+// present briefly looks like a zero-ECL "interpolated" frame, while a real FSR
+// FG runtime instead alternates real and interpolated frames continuously. A
+// zero-ECL present only counts as interpolation evidence once a real frame has
+// been observed in the current evidence window, and only once per real frame:
+// the next counted interpolated frame requires a fresh real frame between
+// them.
+inline bool ShouldCountECLPatternInterpolatedFrame(bool hasObservedRealFrame,
+                                                   bool countedInterpolatedSinceLastReal) {
+    return hasObservedRealFrame && !countedInterpolatedSinceLastReal;
+}
+
+inline bool ShouldDetectECLPatternFG(bool alreadyDetected, int realFrames, int interpolatedFrames) {
+    return !alreadyDetected && realFrames >= 5 && interpolatedFrames >= 10;
+}
+
+// A latched ECL-pattern heuristic is stale when presentation returns to an
+// exclusively real-frame cadence for a sustained run without any interpolation
+// evidence (and without direct FFX API confirmation). The queue-change
+// heuristic already deactivates after 120 consecutive original-queue frames;
+// mirror that bound here so a false latch cannot suppress the overlay forever.
+inline bool ShouldClearHeuristicECLPatternAfterRealOnlyRun(int consecutiveRealFrames,
+                                                           bool hasDirectFFXApiConfirmation) {
+    if (hasDirectFFXApiConfirmation) {
+        return false;
+    }
+    return consecutiveRealFrames >= 120;
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
