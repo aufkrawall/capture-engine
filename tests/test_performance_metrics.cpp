@@ -1,4 +1,8 @@
 #include <gtest/gtest.h>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include "../hook/common/overlay_metrics_publisher.h"
 #include "../hook/common/perf_logger.h"
 #include "../hook/common/performance_metrics.h"
@@ -223,4 +227,54 @@ TEST(PerfLoggerTest, PerfMetricsCsvFlushPolicyKeepsEarlyAndPeriodicFramesDurable
     EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(9));
     EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(31));
     EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(63));
+}
+
+TEST(PerfLoggerTest, ForceRebindFinalizesOldCsvAndStartsFreshSequence) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "ce_perf_rebind_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path firstCsv = dir / "perf_metrics_first.csv";
+    const fs::path secondCsv = dir / "perf_metrics_second.csv";
+
+    PerfLogger& logger = PerfLogger::Get();
+    logger.Shutdown();  // Finalize any state a previous test may have left open.
+
+    FrameMetrics metrics{};
+    metrics.qpcUs = PerfLogger::GetQpcUs();
+
+    logger.Init(firstCsv.string().c_str());
+    ASSERT_TRUE(logger.IsEnabled());
+    logger.LogFrame(metrics);
+
+    // A plain Init while a file is open must keep the original session file.
+    logger.Init(secondCsv.string().c_str());
+    EXPECT_TRUE(logger.IsEnabled());
+    EXPECT_TRUE(fs::exists(firstCsv));
+    EXPECT_FALSE(fs::exists(secondCsv));
+
+    // Resident-hook reactivation force-rebinds: finalize the old CSV and open
+    // the new session path with a fresh frame sequence.
+    logger.Init(secondCsv.string().c_str(), true);
+    ASSERT_TRUE(logger.IsEnabled());
+    logger.LogFrame(metrics);
+    logger.Shutdown();
+
+    EXPECT_TRUE(fs::exists(secondCsv));
+    std::ifstream first(firstCsv);
+    std::ifstream second(secondCsv);
+    std::stringstream firstText;
+    std::stringstream secondText;
+    firstText << first.rdbuf();
+    secondText << second.rdbuf();
+
+    // Both files carry the header and restart their row numbering at 1.
+    EXPECT_NE(firstText.str().find("frame,qpc_us,total_us"), std::string::npos);
+    EXPECT_NE(firstText.str().find("\n1,"), std::string::npos);
+    EXPECT_NE(secondText.str().find("frame,qpc_us,total_us"), std::string::npos);
+    EXPECT_NE(secondText.str().find("\n1,"), std::string::npos);
+
+    first.close();
+    second.close();
+    fs::remove_all(dir);
 }

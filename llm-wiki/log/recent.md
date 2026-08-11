@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-08-11 - Rebind session diagnostics when a resident hook is reactivated (missing perf_metrics CSV)
+
+- Session `installed/captureengine/logs/20260811_212728` (build 0.1.5918): CE
+  was restarted while Strange Brigade kept running, so the injector
+  "Adopted resident hook ... for host reconnection". The new session dir had no
+  `perf_metrics_*.csv` and no `fps_limiter_trace.log`; the hook's 5771 frames
+  went into the previous session's CSV
+  (`20260811_212708/perf_metrics_21120.csv`).
+- Root cause: PerfLogger, the FPS limiter trace path, and the crash dump
+  directory were bound once at HookThread/DllMain init and never re-bound when
+  a replacement host reactivated the resident hook.
+- Fix: `TryReactivateHookRuntime` now calls `RebindHookSessionDiagnostics()`:
+  resolves the new DiscoveryInfo logs directory, updates
+  `SetCrashDumpDirectory`, force-rebinds `PerfLogger::Init(..., true)`
+  (finalizes the old CSV and starts a fresh frame sequence), and calls
+  `FpsLimiter::ResetTraceLogPath()` so the next trace reopens in the new
+  session. The Vulkan layer's reconnect path also force-rebinds its
+  PerfLogger.
+- Regression tests:
+  `PerfLoggerTest.ForceRebindFinalizesOldCsvAndStartsFreshSequence`
+  (functional file test) and
+  `DXGISharedSourceTest.ResidentHookReactivationRebindsSessionDiagnostics`
+  (source invariant).
+- Source anchors: `hook/main_host_lifecycle.cpp`,
+  `hook/common/perf_logger.{h,cpp}`, `hook/common/fps_limiter.h`,
+  `hook/common/fps_limiter_detail/lifecycle.h`, `hook/common/hook_common.{h,cpp}`,
+  `hook/vulkan_layer/layer_ipc.cpp`.
+
 ### 2026-08-11 - Fix false FSR_FG ECL-pattern latch on late inject (Strange Brigade DX12)
 
 - Session `installed/captureengine/logs/20260811_211623` (build 0.1.5917):

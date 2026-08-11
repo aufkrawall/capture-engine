@@ -80,7 +80,11 @@ class PerfLogger {
 public:
     static PerfLogger& Get();
 
-    void Init(const char* logPath);
+    // forceRebind finalizes the previous session's CSV (if any) and opens the
+    // new session path with a fresh frame sequence. Resident hooks reactivated
+    // by a replacement CaptureEngine host must rebind so perf_metrics_*.csv
+    // lands in the new session directory.
+    void Init(const char* logPath, bool forceRebind = false);
     void Shutdown();
 
     void LogFrame(const FrameMetrics& metrics);

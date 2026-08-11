@@ -219,7 +219,7 @@ bool LayerIPC_Init() {
             }
 
             if (logPath[0] != '\0') {
-                PerfLogger::Get().Init(logPath);
+                PerfLogger::Get().Init(logPath, true);
             }
         }
 

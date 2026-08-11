@@ -42,9 +42,22 @@ PerfLogger& PerfLogger::Get() {
     return instance;
 }
 
-void PerfLogger::Init(const char* logPath) {
+void PerfLogger::Init(const char* logPath, bool forceRebind) {
     std::lock_guard<std::mutex> lock(fileMutex_);
-    if (file_ || !HookDebugLoggingEnabled())
+    if (file_ && !forceRebind)
+        return;
+    if (file_) {
+        fflush(file_);
+        fclose(file_);
+        file_ = nullptr;
+        // A reactivated resident hook starts a fresh session CSV: frame
+        // numbering, the QPC delta anchor, and the detailed sample summary
+        // belong to the previous session file and must not bleed across.
+        frameCount_.store(0, std::memory_order_relaxed);
+        lastLoggedQpcUs_ = 0;
+        ResetDebugSummaryLocked();
+    }
+    if (!HookDebugLoggingEnabled())
         return;
 
     qpcFreq_ = GetCachedQpcFrequency();

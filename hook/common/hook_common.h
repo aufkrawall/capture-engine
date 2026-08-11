@@ -60,6 +60,9 @@ void NVNGXLog(const char* fmt, ...);
 // Build a session-aware log file path using DiscoveryInfo.logsPath with fallback
 // to {moduleDir}\logs. Returns false if the path could not be constructed.
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
+// Resolve the current host session's logs directory (DiscoveryInfo.logsPath)
+// with fallback to {moduleDir}\logs. Returns false if it could not be built.
+bool GetSessionLogsDirectory(char* outDir, size_t outDirLen);
 void ReportLUID(uint32_t low, uint32_t high);
 inline std::atomic<ULONGLONG>& LastLargePresentGapTickStorage() {
     static std::atomic<ULONGLONG> tick{0};

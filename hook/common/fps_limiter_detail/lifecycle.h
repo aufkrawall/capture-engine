@@ -5,6 +5,22 @@
 
 #include "../fps_limiter.h"
 
+struct FpsLimiterTraceFileState {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    char path[MAX_PATH] = {0};
+    std::mutex mutex;
+    ~FpsLimiterTraceFileState() {
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+        }
+    }
+};
+
+inline FpsLimiterTraceFileState& GetFpsLimiterTraceFileState() {
+    static FpsLimiterTraceFileState state;
+    return state;
+}
+
 inline void FpsLimiter::TraceLog(const char* fmt, ...) {
     if (!HookDebugLoggingEnabled())
         return;
@@ -26,19 +42,9 @@ inline void FpsLimiter::TraceLog(const char* fmt, ...) {
                        st.wMilliseconds, buf);
     if (len <= 0)
         return;
-    static std::mutex s_TraceLogMutex;
-    struct TraceFileState {
-        HANDLE file = INVALID_HANDLE_VALUE;
-        char path[MAX_PATH] = {0};
-        ~TraceFileState() {
-            if (file != INVALID_HANDLE_VALUE) {
-                CloseHandle(file);
-            }
-        }
-    };
-    static TraceFileState s_TraceState;
+    FpsLimiterTraceFileState& s_TraceState = GetFpsLimiterTraceFileState();
 
-    std::unique_lock<std::mutex> lock(s_TraceLogMutex, std::defer_lock);
+    std::unique_lock<std::mutex> lock(s_TraceState.mutex, std::defer_lock);
     if (!lock.try_lock())
         return;  // Drop trace if another thread is writing; never stall Present
 
@@ -62,6 +68,16 @@ inline void FpsLimiter::TraceLog(const char* fmt, ...) {
         CloseHandle(s_TraceState.file);
         s_TraceState.file = INVALID_HANDLE_VALUE;
     }
+}
+
+inline void FpsLimiter::ResetTraceLogPath() {
+    FpsLimiterTraceFileState& s_TraceState = GetFpsLimiterTraceFileState();
+    std::lock_guard<std::mutex> lock(s_TraceState.mutex);
+    if (s_TraceState.file != INVALID_HANDLE_VALUE) {
+        CloseHandle(s_TraceState.file);
+        s_TraceState.file = INVALID_HANDLE_VALUE;
+    }
+    s_TraceState.path[0] = '\0';
 }
 
 inline void FpsLimiter::Shutdown() {

@@ -107,6 +107,9 @@ public:
 
     // Direct trace log for debugging — bypasses all log infrastructure
     void TraceLog(const char* fmt, ...);
+    // Close and forget the cached fps_limiter_trace.log path so the next
+    // TraceLog call re-resolves it against the current host session.
+    void ResetTraceLogPath();
 
     void ApplyPostPresent();
 

@@ -27,6 +27,21 @@ void QuiesceHostBoundCaptureResources() {
     g_OpenGLHook->OnHostDisconnect();
 }
 
+void RebindHookSessionDiagnostics() {
+  char sessionLogsDir[MAX_PATH] = {};
+  if (!GetSessionLogsDirectory(sessionLogsDir, sizeof(sessionLogsDir)))
+    return;
+  CreateDirectoryA(sessionLogsDir, NULL);
+  SetCrashDumpDirectory(sessionLogsDir);
+  if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
+    char perfLogPath[MAX_PATH];
+    snprintf(perfLogPath, sizeof(perfLogPath), "%s\\perf_metrics_%lu.csv", sessionLogsDir,
+             GetCurrentProcessId());
+    PerfLogger::Get().Init(perfLogPath, true);
+  }
+  g_SharedFpsLimiter.ResetTraceLogPath();
+}
+
 bool TryReactivateHookRuntime(bool launcherOnly) {
   // Consume the wakeup before inspecting discovery. A newer host that signals
   // while this attempt is in flight then remains visible for the next attempt.
@@ -49,6 +64,7 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
   }
   ResumeHookRuntime();
+  RebindHookSessionDiagnostics();
   if (g_InjectDormantEvent) {
     ResetEvent(g_InjectDormantEvent);
   }

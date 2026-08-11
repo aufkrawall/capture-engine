@@ -328,6 +328,49 @@ TEST(DXGISharedSourceTest, StartupTransportRetainSitesGatedAndHandoffReleasesRet
     EXPECT_NE(dx12.find("E_ACCESSDENIED runtime-managed minimal recovery"), std::string::npos);
 }
 
+// Resident-hook reactivation must rebind every session-scoped diagnostic to the
+// replacement host's log directory: crash dumps, perf_metrics_*.csv, and the
+// cached fps_limiter_trace.log path. Without this, a reactivated hook keeps
+// writing to the previous CE session (20260811_212728: no perf_metrics CSV in
+// the new session; frames landed in the old session's file).
+TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& p) {
+        EXPECT_TRUE(fs::exists(p)) << p.string();
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
+    };
+
+    const std::string lifecycle = readFile(fs::current_path() / "hook" / "main_host_lifecycle.cpp");
+    ASSERT_FALSE(lifecycle.empty());
+    EXPECT_NE(lifecycle.find("SetCrashDumpDirectory(sessionLogsDir)"), std::string::npos)
+        << "reactivation must re-point the crash dump directory to the new session";
+    EXPECT_NE(lifecycle.find("PerfLogger::Get().Init(perfLogPath, true)"), std::string::npos)
+        << "reactivation must force-rebind the perf metrics CSV to the new session";
+    EXPECT_NE(lifecycle.find("g_SharedFpsLimiter.ResetTraceLogPath()"), std::string::npos)
+        << "reactivation must drop the cached fps_limiter_trace.log path";
+
+    const std::string perfHeader = readFile(fs::current_path() / "hook" / "common" / "perf_logger.h");
+    ASSERT_FALSE(perfHeader.empty());
+    EXPECT_NE(perfHeader.find("void Init(const char* logPath, bool forceRebind = false);"), std::string::npos)
+        << "PerfLogger must expose the force-rebind entry point";
+
+    const std::string perfLogger = readFile(fs::current_path() / "hook" / "common" / "perf_logger.cpp");
+    ASSERT_FALSE(perfLogger.empty());
+    const size_t initPos = perfLogger.find("void PerfLogger::Init(");
+    ASSERT_NE(initPos, std::string::npos);
+    EXPECT_NE(perfLogger.find("fclose(file_)", initPos), std::string::npos)
+        << "force rebind must finalize the previous session CSV";
+    EXPECT_NE(perfLogger.find("frameCount_.store(0", initPos), std::string::npos)
+        << "force rebind must restart the CSV frame sequence";
+
+    const std::string limiterHeader = readFile(fs::current_path() / "hook" / "common" / "fps_limiter.h");
+    ASSERT_FALSE(limiterHeader.empty());
+    EXPECT_NE(limiterHeader.find("void ResetTraceLogPath();"), std::string::npos)
+        << "FpsLimiter must expose the trace-path reset entry point";
+}
+
 TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilConfirmed) {
     // During startup transition window with no confirmed rendering - defer
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, false));

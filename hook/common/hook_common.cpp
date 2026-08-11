@@ -98,12 +98,10 @@ void ce::SyncWithLegacyGlobals() {
     CE_LOG_DEBUG("HookCtx", "synced with legacy globals (api=%s)", GraphicsAPIName(ctx->activeAPI));
 }
 
-bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
-    if (!outPath || outPathLen == 0)
+bool GetSessionLogsDirectory(char* outDir, size_t outDirLen) {
+    if (!outDir || outDirLen == 0)
         return false;
-    outPath[0] = '\0';
-    if (!fileName || fileName[0] == '\0')
-        return false;
+    outDir[0] = '\0';
 
     // Try session-specific logs path from DiscoveryInfo first
     char logDir[MAX_PATH] = {};
@@ -122,7 +120,7 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
     if (logDir[0] == '\0') {
         HMODULE hMod = NULL;
         if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                (LPCSTR)address, &hMod) ||
+                                (LPCSTR)&GetSessionLogsDirectory, &hMod) ||
             !hMod) {
             return false;
         }
@@ -141,6 +139,27 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
         if (written <= 0 || written >= (int)sizeof(logDir))
             return false;
     }
+
+    int written = snprintf(outDir, outDirLen, "%s", logDir);
+    if (written <= 0 || (size_t)written >= outDirLen) {
+        outDir[0] = '\0';
+        return false;
+    }
+
+    return true;
+}
+
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
+    if (!outPath || outPathLen == 0)
+        return false;
+    outPath[0] = '\0';
+    if (!fileName || fileName[0] == '\0')
+        return false;
+    (void)address;
+
+    char logDir[MAX_PATH] = {};
+    if (!GetSessionLogsDirectory(logDir, sizeof(logDir)))
+        return false;
 
     if (HookDebugLoggingEnabled()) {
         CreateDirectoryA(logDir, NULL);
