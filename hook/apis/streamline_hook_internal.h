@@ -434,6 +434,14 @@ inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsReturnedWrapperFallba
 
 inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsReturnedWrapperFallbackLogged{false};
 
+// Bounded failure latch: slReflexSetConstants is genuinely absent from some
+// sl.reflex builds (slGetFeatureFunction never returns it). After a few failed
+// queries the runtime retry loop stops re-scanning for it (session
+// 20260811_231851: endless 2.5s rescans with setConstantsHooked=0).
+inline constexpr int kReflexSetConstantsUnavailableQueryLimit = 3;
+
+inline std::atomic<int> streamline_hook_g_ReflexSetConstantsUnavailableQueries{0};
+
 inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsProactiveFallbackLogged{false};
 
 inline std::atomic<bool> streamline_hook_g_DLSSGGetStateProactiveFallbackLogged{false};

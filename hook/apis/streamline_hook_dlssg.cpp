@@ -107,6 +107,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
             const uint64_t sleepLastMs = streamline_hook_g_ReflexSleepLastTickMs.load(std::memory_order_relaxed);
             const uint64_t reflexOptCount = streamline_hook_g_ReflexSetOptionsObservedCount.load(std::memory_order_relaxed);
             const uint64_t reflexOptLastMs = streamline_hook_g_ReflexSetOptionsLastTickMs.load(std::memory_order_relaxed);
+            const bool reflexSleepObserved = sleepCount > 0;
             char statusText[160];
             FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
             HookLogImportant(
@@ -114,14 +115,13 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                 "status=0x%X(%s) presented=%u generatedReq=%u capabilityMax=%u minWH=%u vsyncOk=%d dynMFG=%d "
                 "vramMB=%llu fence=%p fenceValue=%llu | Reflex evidence: sleepCalls=%llu (+%llu since last warn) "
                 "sleepAge=%llums setOptionsCalls=%llu setOptionsAge=%llums lastMode=%d sleepHooked=%d | "
-                "REFLEX-NOT-DETECTED in status = the game's Reflex pipeline is not running (DLSSG requires it); "
+                "REFLEX status bit %s (DLSSG hard-requires Reflex); CE-observed Reflex sleep calls: %llu%s; "
                 "status=ok with presented==1 and dynMFG=1 can be hardware flip metering — correlate with the "
                 "displayed fps",
                 static_cast<unsigned long long>(streak), state.status, statusText, state.numFramesActuallyPresented,
                 streamline_hook_options->numFramesToGenerate, capabilityMax, state.minWidthOrHeight,
                 static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
                 (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
-
                 state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
                 static_cast<unsigned long long>(sleepCount),
@@ -130,7 +130,10 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                 static_cast<unsigned long long>(reflexOptCount),
                 static_cast<unsigned long long>(reflexOptLastMs ? (nowMs - reflexOptLastMs) : 0),
                 streamline_hook_g_ReflexLastForwardedMode.load(std::memory_order_relaxed),
-                streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0);
+                streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+                reflexSleepObserved ? "absent in Streamline status (runtime-specific)" : "absent",
+                static_cast<unsigned long long>(sleepCount),
+                reflexSleepObserved ? " (game Reflex pipeline running)" : "");
         }
     } else if (result == streamline_hook_kSlResultOk && streamline_hook_options != nullptr && streamline_hook_options->mode == 0) {
         // Explicit OFF request: end any pending not-interpolating streak so a later re-enable starts a

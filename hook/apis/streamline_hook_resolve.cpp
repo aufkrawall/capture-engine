@@ -311,16 +311,23 @@ bool TryResolveReflexFeatureHooks() {
         }
     }
 
-    if (!streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
+    if (!streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) &&
+        streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire) <
+            kReflexSetConstantsUnavailableQueryLimit) {
         queriedSetConstants = true;
         setConstantsResult = originalGetFeatureFunction(streamline_hook_kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
         if (setConstantsResult == streamline_hook_kSlResultOk && setConstantsFunction) {
+            streamline_hook_g_ReflexSetConstantsUnavailableQueries.store(0, std::memory_order_release);
             const bool hooked = MaybeHookReflexSetConstants(setConstantsFunction, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
                 LogProactiveFeatureHookGapOnce(streamline_hook_g_ReflexSetConstantsProactiveFallbackLogged, "slReflexSetConstants",
                                                setConstantsFunction);
             }
+        } else {
+            // The runtime never provides this export; bound the failed queries
+            // so the late-inject retry loop does not re-scan forever.
+            streamline_hook_g_ReflexSetConstantsUnavailableQueries.fetch_add(1, std::memory_order_acq_rel);
         }
     }
 

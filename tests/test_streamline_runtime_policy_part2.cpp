@@ -35,10 +35,14 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleUnloadDispatchesHookInvalidati
 TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHookingModules) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
     ASSERT_TRUE(fs::exists(source));
+    ASSERT_TRUE(fs::exists(headerSource));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
+    const std::string headerText = ce::test_source::ReadLogicalSource(headerSource);
     ASSERT_FALSE(text.empty());
+    ASSERT_FALSE(headerText.empty());
 
     const size_t scanStart = text.find("bool ScanLoadedStreamlineModules()");
     ASSERT_NE(scanStart, std::string::npos);
@@ -54,6 +58,11 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     EXPECT_LT(snapshotClose, dlssgResolve);
     EXPECT_LT(snapshotClose, reflexResolve);
     EXPECT_NE(text.find("Resolved feature hooks after loaded-module scan", scanStart), std::string::npos);
+    // Reflex SetConstants can be genuinely absent from a sl.reflex build; the
+    // retry loop must bound the failed queries instead of re-scanning forever
+    // (session 20260811_231851 logged endless 2.5s rescans).
+    EXPECT_NE(headerText.find("kReflexSetConstantsUnavailableQueryLimit"), std::string::npos);
+    EXPECT_NE(headerText.find("streamline_hook_g_ReflexSetConstantsUnavailableQueries"), std::string::npos);
 }
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {

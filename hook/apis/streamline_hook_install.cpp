@@ -460,7 +460,9 @@ bool AreReflexFeatureHooksComplete() {
 
     return streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) &&
            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) &&
-           streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire);
+           (streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ||
+            streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire) >=
+                kReflexSetConstantsUnavailableQueryLimit);
 
 }
 
