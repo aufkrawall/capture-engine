@@ -477,8 +477,13 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     EXPECT_NE(hooks.find("ResolveExternalPresentHookOwnerPath(hookTarget", saveHook), std::string::npos);
     EXPECT_NE(hooks.find("External hook owner:", saveHook), std::string::npos);
 
-    // The trampoline branch keeps Steam's NULL-callback patches (and VEH) armed
-    // around the bare forward when Steam is loaded alongside the foreign chain.
+    // The trampoline branch keeps only the passive VEH backstop armed around the
+    // bare forward when Steam is loaded alongside a non-Steam chain. It must NOT
+    // pre-patch Steam's callback slots there: frame-1 trace 20260812_002958
+    // showed RTSS's OSD draw (nested inside Steam's handler) stopping permanently
+    // once Steam's overlay drew every frame, while the same Steam+RTSS chain
+    // without CE keeps RTSS's OSD alive — altering Steam's memory is the prime
+    // suspect for dropping RTSS from the chain.
     const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
@@ -488,7 +493,12 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     const size_t nestedSteamGuard = original.find("non-Steam external chain with Steam loaded", trampolinePath);
     ASSERT_NE(nestedSteamGuard, std::string::npos);
     EXPECT_LT(trampolinePath, nestedSteamGuard);
-    EXPECT_NE(original.find("EnsureSteamNullCallbacksPatched(presentBypass);", nestedSteamGuard), std::string::npos);
+    const size_t bareTrampolineForward =
+        original.find("return presentTrampoline(pSwapChain, SyncInterval, Flags);", nestedSteamGuard);
+    ASSERT_NE(bareTrampolineForward, std::string::npos);
+    const std::string trampolineBranchBody =
+        original.substr(nestedSteamGuard, bareTrampolineForward - nestedSteamGuard);
+    EXPECT_EQ(trampolineBranchBody.find("EnsureSteamNullCallbacksPatched"), std::string::npos);
     EXPECT_NE(original.find("ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(", nestedSteamGuard),
               std::string::npos);
 

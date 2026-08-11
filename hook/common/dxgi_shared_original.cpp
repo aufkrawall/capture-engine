@@ -95,14 +95,16 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
         // Non-Steam external chain (e.g. RTSS's thunk). Forward through the
-        // preserved foreign entry. When Steam's overlay is ALSO loaded, RTSS's
-        // restore/rehook cycle re-enters Steam's handler inside this call (RTSS
-        // saved Steam's E9 as its "original bytes"), so keep Steam's
-        // Present-shaped NULL callback slots patched and the crash-time VEH
-        // recovery armed for the duration of the forward — the same protections
-        // the guarded Steam invoke applies, without any Steam routing.
+        // preserved foreign entry. When Steam's overlay is ALSO loaded, the
+        // frame-1 trace (20260812_002958) showed RTSS's OSD draw nested inside
+        // Steam's handler and then stopping permanently once Steam's overlay
+        // started drawing every frame — while the same Steam+RTSS chain without
+        // CE keeps RTSS's OSD alive. CE must NOT touch Steam's memory here:
+        // pre-patching Steam's Present-shaped callback slots to the DXGI bypass
+        // alters Steam's lazy init / next-chain and is the prime suspect for
+        // dropping RTSS from the chain. Only the passive crash-time VEH backstop
+        // stays armed for the duration of the forward.
         if (IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()) && presentBypass) {
-            EnsureSteamNullCallbacksPatched(presentBypass);
             ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
                 presentBypass != nullptr, "non-Steam external chain with Steam loaded",
                 "foreign trampoline chain", reinterpret_cast<void*>(presentTrampoline),
