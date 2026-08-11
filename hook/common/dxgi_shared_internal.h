@@ -329,6 +329,14 @@ void* ResolveFF25JmpTarget(void* funcAddress);
 }
 
 namespace DXGIShared {
+bool TrampolineChainsToExternalOverlay(void* trampoline, void* externalHook);
+}
+
+namespace DXGIShared {
+bool IsSteamExternalChainTrampoline(void* trampoline, void* externalHook, bool isD3D12SwapChain);
+}
+
+namespace DXGIShared {
 PFN_Present EnsurePresentBypassTrampoline();
 }
 

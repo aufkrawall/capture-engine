@@ -303,6 +303,60 @@ size_t DiscoverSteamNullCallbackSlots(HMODULE steamModule, uintptr_t* slotsOut, 
 }
 
 namespace DXGIShared {
+// CE's inline-hook trampoline re-issues the foreign entry jump when CE
+// prepended over an external overlay's E9/FF25 (the trampoline does not hold
+// original code bytes in that case). Steam's handler can still fault through
+// lazy NULL rendering callbacks on a fresh swapchain (DLSS->FSR switch,
+// 20260811_195131), so Steam transports that chain through such a trampoline
+// must run under the NULL-callback VEH recovery, never bare.
+bool TrampolineChainsToExternalOverlay(void* trampoline, void* externalHook) {
+    if (!trampoline) {
+        return false;
+    }
+    const auto* code = static_cast<const uint8_t*>(trampoline);
+    if (!IsReadableMemory(code, 16)) {
+        return false;
+    }
+    void* resolved = nullptr;
+    if (code[0] == 0xE9) {
+        resolved = ResolveE9JmpTarget(trampoline);
+    } else if (code[0] == 0xFF && code[1] == 0x25) {
+        resolved = ResolveFF25JmpTarget(trampoline);
+    }
+    if (!resolved) {
+        return false;
+    }
+    if (externalHook) {
+        return resolved == externalHook;
+    }
+    // No preserved target (e.g. Present1): any chain target outside dxgi.dll
+    // is a foreign overlay entry, matching the install-time detection rule.
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    if (!hDXGI) {
+        return false;
+    }
+    MODULEINFO dxgiInfo = {};
+    if (!GetModuleInformation(GetCurrentProcess(), hDXGI, &dxgiInfo, sizeof(dxgiInfo))) {
+        return false;
+    }
+    const uintptr_t dxgiStart = reinterpret_cast<uintptr_t>(hDXGI);
+    const uintptr_t jumpTarget = reinterpret_cast<uintptr_t>(resolved);
+    return jumpTarget < dxgiStart || jumpTarget >= dxgiStart + dxgiInfo.SizeOfImage;
+}
+}
+
+namespace DXGIShared {
+bool IsSteamExternalChainTrampoline(void* trampoline, void* externalHook, bool isD3D12SwapChain) {
+    if (!isD3D12SwapChain || !trampoline) {
+        return false;
+    }
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    return IsSteamOverlayModule(overlayModule) &&
+           TrampolineChainsToExternalOverlay(trampoline, externalHook);
+}
+}
+
+namespace DXGIShared {
 // Steam's OverlayHookD3D3 dispatches a Present-shaped rendering callback
 // through a data slot that can still be NULL on the real game swapchain (the
 // temp-swapchain pre-init does not initialize it). Instead of relying only on

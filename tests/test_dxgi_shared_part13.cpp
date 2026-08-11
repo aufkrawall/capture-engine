@@ -82,7 +82,7 @@ TEST(DXGISharedVTableRepairTest, RepairReclaimsRestoredSlotsOnReadOnlyClassVftab
     // vftable in dxgi.dll.
     vtable[8] = (void*)DummyPresent;
     vtable[22] = (void*)DummyPresent1;
-    ASSERT_TRUE(MakePageReadOnly(vtable));
+    ASSERT_TRUE(MakePageReadOnly(static_cast<void*>(vtable)));
 
     DXGIShared::dxgi_shared_s_hookedVTable = vtable;
     DXGIShared::dxgi_shared_oPresent = &DummyPresent;
@@ -96,9 +96,9 @@ TEST(DXGISharedVTableRepairTest, RepairReclaimsRestoredSlotsOnReadOnlyClassVftab
 
     EXPECT_EQ(vtable[8], (void*)DXGIShared::DetourPresent);
     EXPECT_EQ(vtable[22], (void*)DXGIShared::DetourPresent1);
-    AssertPageStillReadOnly(vtable);
+    AssertPageStillReadOnly(static_cast<const void*>(vtable));
 
-    ReleaseVTablePage(vtable);
+    ReleaseVTablePage(static_cast<void*>(vtable));
 }
 
 TEST(DXGISharedVTableRepairTest, DetachRestoresOwnedSlotsOnReadOnlyClassVftable) {
@@ -109,7 +109,7 @@ TEST(DXGISharedVTableRepairTest, DetachRestoresOwnedSlotsOnReadOnlyClassVftable)
     vtable[22] = (void*)DXGIShared::DetourPresent1;
     vtable[13] = (void*)DXGIShared::DetourResizeBuffers;
     vtable[39] = (void*)DXGIShared::DetourResizeBuffers1;
-    ASSERT_TRUE(MakePageReadOnly(vtable));
+    ASSERT_TRUE(MakePageReadOnly(static_cast<void*>(vtable)));
 
     DXGIShared::dxgi_shared_s_hookedVTable = vtable;
     DXGIShared::dxgi_shared_oPresent = &DummyPresent;
@@ -127,7 +127,93 @@ TEST(DXGISharedVTableRepairTest, DetachRestoresOwnedSlotsOnReadOnlyClassVftable)
     EXPECT_EQ(vtable[13], (void*)DummyResizeBuffers);
     EXPECT_EQ(vtable[39], (void*)DummyResizeBuffers1);
     EXPECT_EQ(DXGIShared::dxgi_shared_s_hookedVTable, nullptr);
-    AssertPageStillReadOnly(vtable);
+    AssertPageStillReadOnly(static_cast<const void*>(vtable));
 
-    ReleaseVTablePage(vtable);
+    ReleaseVTablePage(static_cast<void*>(vtable));
+}
+namespace {
+
+// Regression 20260811_195131: CE's inline-hook trampoline re-issues the
+// foreign entry jump when it was prepended over an external overlay's
+// E9/FF25. The trampoline chain detector must recognize both jump forms and
+// only accept chains that match the preserved external hook target (or, in
+// generic mode, targets outside dxgi.dll).
+
+void WriteFF25Jump(void* page, void* target) {
+    auto* bytes = static_cast<uint8_t*>(page);
+    bytes[0] = 0xFF;
+    bytes[1] = 0x25;
+    bytes[2] = 0x00;
+    bytes[3] = 0x00;
+    bytes[4] = 0x00;
+    bytes[5] = 0x00;
+    memcpy(bytes + 6, static_cast<const void*>(&target), sizeof(target));
+}
+
+void WriteE9Jump(void* page, void* target) {
+    const int64_t displacement =
+        reinterpret_cast<int64_t>(target) - (reinterpret_cast<int64_t>(page) + 5);
+    ASSERT_GE(displacement, INT32_MIN);
+    ASSERT_LE(displacement, INT32_MAX);
+    auto* bytes = static_cast<uint8_t*>(page);
+    bytes[0] = 0xE9;
+    const int32_t displacement32 = static_cast<int32_t>(displacement);
+    memcpy(bytes + 1, &displacement32, sizeof(displacement32));
+}
+
+}  // namespace
+
+TEST(DXGISharedSteamTrampolineChainTest, FF25TrampolineMatchesPreservedExternalHook) {
+    void* page = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(page, nullptr);
+    // The resolved jump target itself is only compared (install-time rule),
+    // so a nearby unmapped address inside the same allocation works.
+    const auto target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(page) + 0x200);
+    WriteFF25Jump(page, target);
+
+    EXPECT_TRUE(DXGIShared::TrampolineChainsToExternalOverlay(page, target));
+    EXPECT_FALSE(DXGIShared::TrampolineChainsToExternalOverlay(
+        page, reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(target) + 0x10)));
+    VirtualFree(page, 0, MEM_RELEASE);
+}
+
+TEST(DXGISharedSteamTrampolineChainTest, E9TrampolineMatchesPreservedExternalHook) {
+    void* page = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(page, nullptr);
+    const auto target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(page) + 0x200);
+    WriteE9Jump(page, target);
+
+    EXPECT_TRUE(DXGIShared::TrampolineChainsToExternalOverlay(page, target));
+    VirtualFree(page, 0, MEM_RELEASE);
+}
+
+TEST(DXGISharedSteamTrampolineChainTest, GenericModeDetectsForeignChainTargets) {
+    void* page = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(page, nullptr);
+    const auto foreignTarget = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(page) + 0x200);
+    WriteFF25Jump(page, foreignTarget);
+
+    // No preserved hook target: a chain outside dxgi.dll counts as foreign.
+    EXPECT_TRUE(DXGIShared::TrampolineChainsToExternalOverlay(page, nullptr));
+
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    ASSERT_NE(hDXGI, nullptr);
+    WriteFF25Jump(page, reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hDXGI) + 0x1000));
+    EXPECT_FALSE(DXGIShared::TrampolineChainsToExternalOverlay(page, nullptr));
+    VirtualFree(page, 0, MEM_RELEASE);
+}
+
+TEST(DXGISharedSteamTrampolineChainTest, RejectsCleanTrampolineAndNullArguments) {
+    void* page = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(page, nullptr);
+    // Clean trampoline bytes (real dxgi!Present prolog): no entry jump.
+    auto* bytes = static_cast<uint8_t*>(page);
+    bytes[0] = 0x48;  // mov [rsp+8],rbx
+    bytes[1] = 0x89;
+    bytes[2] = 0x5C;
+    bytes[3] = 0x24;
+    bytes[4] = 0x10;
+    EXPECT_FALSE(DXGIShared::TrampolineChainsToExternalOverlay(page, nullptr));
+    EXPECT_FALSE(DXGIShared::TrampolineChainsToExternalOverlay(nullptr, nullptr));
+    VirtualFree(page, 0, MEM_RELEASE);
 }

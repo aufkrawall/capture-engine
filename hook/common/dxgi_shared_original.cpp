@@ -6,6 +6,15 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        // The trampoline can re-enter Steam's chain when CE prepended over its
+        // entry jump; during shutdown no VEH recovery is active, so prefer the
+        // clean bypass for that transport.
+        if (IsSteamExternalChainTrampoline((void*)dxgi_shared_oPresentTrampoline,
+                                           (void*)dxgi_shared_g_externalOverlayPresentHook,
+                                           DetectAPIType(pSwapChain) == APIType::D3D12) &&
+            dxgi_shared_oPresentBypass) {
+            return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
+        }
         if (dxgi_shared_oPresentTrampoline)
             return dxgi_shared_oPresentTrampoline(pSwapChain, SyncInterval, Flags);
         if (dxgi_shared_oPresent && dxgi_shared_oPresent != DetourPresent)
@@ -68,8 +77,23 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
     }
 
-    // Inline-hook path: trampoline always bypasses the detour safely.
+    // Inline-hook path: the trampoline bypasses the detour safely, except when
+    // CE prepended over Steam's entry jump - then it re-enters Steam's chain,
+    // which can fault through lazy NULL callbacks on a fresh swapchain
+    // (DLSS->FSR switch, 20260811_195131). Run that transport under the same
+    // NULL-callback VEH recovery as the other Steam invokes; the clean DXGI
+    // bypass is the fail-closed fallback.
     if (presentTrampoline) {
+        if (IsSteamExternalChainTrampoline((void*)presentTrampoline,
+                                           (void*)dxgi_shared_g_externalOverlayPresentHook,
+                                           DetectAPIType(pSwapChain) == APIType::D3D12)) {
+            HRESULT guardedSteamHr = S_OK;
+            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
+                                                            "Steam trampoline chain", &guardedSteamHr)) {
+                return guardedSteamHr;
+            }
+            return presentBypass(pSwapChain, SyncInterval, Flags);
+        }
         static int s_copLogCount = 0;
         if (s_copLogCount++ < 5) {
             HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
@@ -595,6 +619,13 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        // Same Steam external-chain hazard as Present - use the clean Present1
+        // bypass instead of re-entering Steam without VEH recovery.
+        if (IsSteamExternalChainTrampoline((void*)dxgi_shared_oPresent1Trampoline, nullptr,
+                                           DetectAPIType(pSwapChain) == APIType::D3D12) &&
+            dxgi_shared_oPresent1Bypass) {
+            return dxgi_shared_oPresent1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+        }
         if (dxgi_shared_oPresent1Trampoline)
             return dxgi_shared_oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
         if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1)
@@ -643,8 +674,18 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         }
     }
 
-    // Inline-hook path: trampoline always bypasses the detour safely.
+    // Inline-hook path: a trampoline prepended over Steam's Present1 entry
+    // re-enters Steam's chain; there is no Present1 NULL-callback guard, so
+    // the clean Present1 bypass (or the guarded Present transport) replaces
+    // the bare trampoline call for that transport.
     if (present1Trampoline) {
+        if (IsSteamExternalChainTrampoline((void*)present1Trampoline, nullptr,
+                                           DetectAPIType(pSwapChain) == APIType::D3D12)) {
+            if (present1Bypass) {
+                return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+            }
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
         return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
     }
 

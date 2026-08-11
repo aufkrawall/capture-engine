@@ -366,3 +366,60 @@ TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamT
     EXPECT_NE(original.find("SL fast-path refusing Steam Present transport on runtime worker", workerCheck),
               std::string::npos);
 }
+
+// Regression 20260811_195131 (Talos DLSS FG -> FSR FG switch): the inline-hook
+// trampoline re-enters Steam's hook chain when CE prepended over Steam's
+// entry jump. The bare trampoline call crashed through Steam's lazy NULL
+// rendering callback on the fresh FSR swapchain (RIP=0). Every Steam
+// transport must run under the NULL-callback VEH recovery (or the clean
+// bypass) before any bare trampoline call is reachable.
+TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuardedTransport) {
+    namespace fs = std::filesystem;
+    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    ASSERT_TRUE(fs::exists(originalSource));
+    const std::string original = ce::test_source::ReadFile(originalSource);
+    ASSERT_FALSE(original.empty());
+
+    // Present fast path: the Steam external-chain check and the guarded Steam
+    // invoke must precede the bare trampoline call.
+    const size_t trampolinePath = original.find("if (presentTrampoline) {");
+    ASSERT_NE(trampolinePath, std::string::npos);
+    const size_t steamChainCheck = original.find("IsSteamExternalChainTrampoline((void*)presentTrampoline", trampolinePath);
+    const size_t guardedSteamInvoke = original.find("TryInvokeGuardedExternalSteamOverlayPresent(", trampolinePath);
+    const size_t bareTrampolineCall = original.find("return presentTrampoline(pSwapChain, SyncInterval, Flags);", trampolinePath);
+    ASSERT_NE(steamChainCheck, std::string::npos);
+    ASSERT_NE(guardedSteamInvoke, std::string::npos);
+    ASSERT_NE(bareTrampolineCall, std::string::npos);
+    EXPECT_LT(steamChainCheck, guardedSteamInvoke);
+    EXPECT_LT(guardedSteamInvoke, bareTrampolineCall);
+
+    // Present1 fast path: same hazard; the clean Present1 bypass (or the
+    // guarded Present transport) must precede the bare Present1 trampoline call.
+    const size_t present1Entry = original.find("HRESULT CallOriginalPresent1(");
+    ASSERT_NE(present1Entry, std::string::npos);
+    const size_t present1TrampolinePath = original.find("if (present1Trampoline) {", present1Entry);
+    ASSERT_NE(present1TrampolinePath, std::string::npos);
+    const size_t present1ChainCheck = original.find("IsSteamExternalChainTrampoline((void*)present1Trampoline", present1TrampolinePath);
+    const size_t present1Bypass = original.find("return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
+    const size_t barePresent1Call = original.find("return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
+    ASSERT_NE(present1ChainCheck, std::string::npos);
+    ASSERT_NE(present1Bypass, std::string::npos);
+    ASSERT_NE(barePresent1Call, std::string::npos);
+    EXPECT_LT(present1ChainCheck, present1Bypass);
+    EXPECT_LT(present1Bypass, barePresent1Call);
+
+    // The helper must resolve both chainable entry-jump forms and gate on the
+    // Steam overlay module and the D3D12 API.
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    const std::string steam = ce::test_source::ReadFile(steamSource);
+    ASSERT_FALSE(steam.empty());
+    const size_t chainHelper = steam.find("bool TrampolineChainsToExternalOverlay(");
+    ASSERT_NE(chainHelper, std::string::npos);
+    EXPECT_NE(steam.find("code[0] == 0xE9", chainHelper), std::string::npos);
+    EXPECT_NE(steam.find("code[1] == 0x25", chainHelper), std::string::npos);
+    const size_t steamGate = steam.find("bool IsSteamExternalChainTrampoline(", chainHelper);
+    ASSERT_NE(steamGate, std::string::npos);
+    EXPECT_NE(steam.find("IsSteamOverlayModule(overlayModule)", steamGate), std::string::npos);
+    EXPECT_NE(steam.find("!isD3D12SwapChain", steamGate), std::string::npos);
+}
