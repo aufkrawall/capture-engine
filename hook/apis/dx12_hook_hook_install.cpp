@@ -1,5 +1,17 @@
 #include "dx12_hook_internal.h"
 
+namespace {
+
+void PublishCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
+    dx12_hook_s_oCreateSCForHwndInline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
+}
+
+void PublishDeepCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
+    dx12_hook_s_deepHookTrampoline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
+}
+
+}  // namespace
+
 
 void InstallGlobalVTableHooks() {
 HookLog("DX12: InstallGlobalVTableHooks called");
@@ -40,12 +52,13 @@ dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
 
 // Hook CreateSwapChain (vtable[10] for IDXGIFactory)
 // Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal, (LPVOID*)&dx12_hook_oCreateSwapChainGlobal)) {
+if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                       (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
     HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
 }
 
 if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal)) {
+                       (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success) {
     HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
 }
 
@@ -91,8 +104,8 @@ if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
 // patch the actual function code and catch ALL callers.
 if (realCreateSCForHwndAddr && !dx12_hook_s_oCreateSCForHwndInline) {
     void* trampoline = nullptr;
-    if (InlineHook::Install(realCreateSCForHwndAddr, (void*)DetourCreateSwapChainForHwndInline, &trampoline)) {
-        dx12_hook_s_oCreateSCForHwndInline = (PFN_CreateSwapChainForHwnd)trampoline;
+    if (InlineHook::InstallPublished(realCreateSCForHwndAddr, (void*)DetourCreateSwapChainForHwndInline,
+                                     &trampoline, PublishCreateSwapChainForHwndTrampoline, nullptr)) {
         HookLog("DX12: Installed INLINE hook on CreateSwapChainForHwnd at %p", realCreateSCForHwndAddr);
     } else {
         HookLog("DX12: FAILED to install inline hook on CreateSwapChainForHwnd");
@@ -107,9 +120,10 @@ if (realCreateSCForHwndAddr && !dx12_hook_s_oCreateSCForHwndInline) {
 // The full wrapper pre-releases stale swapchains AND post-tracks new ones,
 // ensuring SL's shadow swapchains are tracked for subsequent releases.
 if (realCreateSCForHwndAddr) {
-    void* trampoline = InlineHook::InstallDeepHook(realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd);
+    void* trampoline = InlineHook::InstallDeepHookPublished(
+        realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd,
+        PublishDeepCreateSwapChainForHwndTrampoline, nullptr);
     if (trampoline) {
-        dx12_hook_s_deepHookTrampoline = (PFN_CreateSwapChainForHwnd)trampoline;
         HookLog("DX12: Installed DEEP hook on CreateSwapChainForHwnd at %p (trampoline=%p)",
                 realCreateSCForHwndAddr, trampoline);
     } else {

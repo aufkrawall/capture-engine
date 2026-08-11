@@ -18,12 +18,28 @@ extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
 
+inline SharedMemoryLayout* GetHookSharedMemory() {
+    if (g_IPC) {
+        if (SharedMemoryLayout* sharedMemory = g_IPC->GetSharedMem())
+            return sharedMemory;
+    }
+#ifndef VK_LAYER_CE_OVERLAY
+    return g_pSharedMem;
+#else
+    return nullptr;
+#endif
+}
+
 inline bool HookIsShuttingDown() {
     return g_ShuttingDown.load(std::memory_order_acquire);
 }
 
 inline void RequestHookShutdown() {
     g_ShuttingDown.store(true, std::memory_order_release);
+}
+
+inline void ResumeHookRuntime() {
+    g_ShuttingDown.store(false, std::memory_order_release);
 }
 
 // Forward declare HookContext for accessor
@@ -78,11 +94,9 @@ bool IsProcessTerminating();
 extern AppConfig* g_pLocalConfig;
 
 inline bool HookDebugLoggingEnabled() {
-    if (g_IPC && g_IPC->GetSharedMem())
-        return g_IPC->GetSharedMem()->GetDebugLogging();
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory())
+        return sharedMemory->GetDebugLogging();
 #ifndef VK_LAYER_CE_OVERLAY
-    if (g_pSharedMem)
-        return g_pSharedMem->GetDebugLogging();
     if (g_pLocalConfig)
         return IsDebugLoggingEnabled(g_pLocalConfig->logLevel);
 #endif
@@ -90,11 +104,9 @@ inline bool HookDebugLoggingEnabled() {
 }
 
 inline bool HookTraceLoggingEnabled() {
-    if (g_IPC && g_IPC->GetSharedMem())
-        return static_cast<int>(g_IPC->GetSharedMem()->GetLogLevel()) >= static_cast<int>(LogLevel::Trace);
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory())
+        return static_cast<int>(sharedMemory->GetLogLevel()) >= static_cast<int>(LogLevel::Trace);
 #ifndef VK_LAYER_CE_OVERLAY
-    if (g_pSharedMem)
-        return static_cast<int>(g_pSharedMem->GetLogLevel()) >= static_cast<int>(LogLevel::Trace);
     if (g_pLocalConfig)
         return IsTraceLoggingEnabled(g_pLocalConfig->logLevel);
 #endif
@@ -102,13 +114,9 @@ inline bool HookTraceLoggingEnabled() {
 }
 
 inline OverlayConfig GetHookOverlayConfig() {
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        return g_IPC->GetSharedMem()->ReadOverlayConfig();
-    }
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory())
+        return sharedMemory->ReadOverlayConfig();
 #ifndef VK_LAYER_CE_OVERLAY
-    if (g_pSharedMem) {
-        return g_pSharedMem->ReadOverlayConfig();
-    }
     if (g_pLocalConfig) {
         return g_pLocalConfig->overlay;
     }

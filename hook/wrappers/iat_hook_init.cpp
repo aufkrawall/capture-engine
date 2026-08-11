@@ -449,10 +449,24 @@ void ShutdownIATHooks() {
 
     // Restore all patched entries
     for (auto& entry : g_PatchedEntries) {
+        MEMORY_BASIC_INFORMATION memory = {};
+        if (VirtualQuery(reinterpret_cast<const void*>(entry.iatEntry), &memory, sizeof(memory)) != sizeof(memory) ||
+            memory.State != MEM_COMMIT ||
+            memory.Type != MEM_IMAGE || memory.AllocationBase != entry.targetModule ||
+            (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || *entry.iatEntry != entry.hookFunction) {
+            WrapperLog("IAT: Shutdown preserved foreign or unavailable entry for %s!%s in module %p",
+                       entry.sourceModule.c_str(), entry.functionName.c_str(), entry.targetModule);
+            continue;
+        }
         DWORD oldProtect;
         if (VirtualProtect(reinterpret_cast<void*>(entry.iatEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            *entry.iatEntry = entry.originalFunction;
+            void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry.iatEntry),
+                                                               entry.originalFunction, entry.hookFunction);
             VirtualProtect(reinterpret_cast<void*>(entry.iatEntry), sizeof(void*), oldProtect, &oldProtect);
+            if (replaced != entry.hookFunction) {
+                WrapperLog("IAT: Shutdown preserved concurrent replacement %p for %s!%s in module %p", replaced,
+                           entry.sourceModule.c_str(), entry.functionName.c_str(), entry.targetModule);
+            }
         }
     }
 
@@ -487,6 +501,13 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     // suppressed CFG target and guarded indirect calls to it fast-fail in a
     // CFG-enabled host even though ordinary IAT calls are valid.
     FARPROC proc = ::GetProcAddress(hModule, lpProcName);
+
+    // Cooperative dejection leaves published function pointers resident. Do
+    // not hand out any new CE wrappers while dormant: callers must receive the
+    // exact address the current module export chain resolved.
+    if (HookIsShuttingDown()) {
+        return proc;
+    }
 
     // If getting address failed, or if name is invalid (ordinal), return result
     // immediately

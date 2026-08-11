@@ -408,8 +408,8 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-        if (g_pSharedMem) {
-            int32_t copyPrio = g_pSharedMem->GetCopyQueuePriority();
+        if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+            int32_t copyPrio = sharedMemory->GetCopyQueuePriority();
             if (copyPrio == 2) {
                 queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
                 HookLog("InitOverlaySync: Using high priority for overlay queue (copy_queue_priority=high)");
@@ -720,4 +720,3 @@ void CleanupRTVs() {
 void CleanupOverlay() {
 CleanupOverlay(false);
 }
-

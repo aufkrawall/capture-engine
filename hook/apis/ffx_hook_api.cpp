@@ -157,6 +157,32 @@ bool IsInitialized() {
 }
 
 namespace FFXHook {
+void EnterDormant() {
+    // Block a concurrent guarded forward from re-arming after we restore the
+    // byte. The VEH stays registered but has no breakpoint to service.
+    ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
+    ffx_hook_g_FfxConfigureDeferredRearm.store(false, std::memory_order_release);
+    ffx_hook_g_FfxConfigureDeferredRearmTarget.store(nullptr, std::memory_order_release);
+    RestoreFfxConfigureBreakpointIfCurrent(ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire),
+                                           "capture host dormant");
+    FFXHook_ClearSubstituteUiReRegistration();
+}
+
+void ReactivateResidentHooks() {
+    if (!ffx_hook_g_Initialized.load(std::memory_order_acquire) ||
+        ffx_hook_g_ffxConfigureInlineHooked.load(std::memory_order_acquire) ||
+        ffx_hook_g_DurableCachedConfigureRouteActive.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(false, std::memory_order_release);
+    void* target = ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (target) {
+        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target), "protected official FFX runtime",
+                                  "resident hook reactivation");
+    }
+}
+
 void Shutdown() {
     std::lock_guard<std::mutex> lock(ffx_hook_g_InitMutex);
 

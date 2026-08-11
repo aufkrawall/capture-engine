@@ -434,6 +434,53 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     layer_capture_g_CaptureStates[device] = std::move(state);
 }
 
+bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain) {
+    if (!g_IPCClient.GetSharedMem())
+        return false;
+
+    std::lock_guard<std::mutex> captureLock(layer_capture_g_CaptureMutex);
+    auto stateIt = layer_capture_g_CaptureStates.find(device);
+    if (stateIt == layer_capture_g_CaptureStates.end() || !stateIt->second.initialized ||
+        stateIt->second.swapchain != swapchain) {
+        return false;
+    }
+
+    VulkanCaptureState& state = stateIt->second;
+    bool publishedTextures = false;
+    {
+        std::lock_guard<std::mutex> textureLock(layer_capture_g_InteropMutex);
+        for (const SharedTextureEntry& entry : layer_capture_g_TextureCache) {
+            if (!entry.valid || entry.vkDevice != device || entry.luidKey != state.luidKey ||
+                entry.width != state.captureWidth || entry.height != state.captureHeight ||
+                entry.vkFormat != state.captureFormat) {
+                continue;
+            }
+
+            const std::vector<HANDLE>& handles = entry.hasIpcRelay ? entry.ipcHandles : entry.textureHandles;
+            if (!handles.empty()) {
+                LayerIPC_SetTextures(handles.data(), static_cast<uint32_t>(handles.size()), state.captureWidth,
+                                     state.captureHeight, VkFormatToDXGI(static_cast<VkFormat>(state.captureFormat)));
+                publishedTextures = true;
+            }
+            break;
+        }
+    }
+    if (!publishedTextures)
+        return false;
+
+    HANDLE fenceHandle = state.ipcFenceHandle ? state.ipcFenceHandle : state.sharedFenceHandle;
+    LayerIPC_SetFence(fenceHandle);
+    if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
+        // A replacement media process does not own any texture allocation that
+        // an earlier host may have supplied. It opens the still-live shared
+        // transport just like a game-owned generation.
+        sharedMemory->useEncoderTextures.store(false, std::memory_order_release);
+    }
+    LayerLog("[InjectLifecycle] Republished Vulkan capture transport for host generation (swapchain=%p)",
+             swapchain);
+    return true;
+}
+
 void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex) {
     std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
     auto current = layer_capture_g_CaptureStates.find(device);

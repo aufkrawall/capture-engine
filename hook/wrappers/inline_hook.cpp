@@ -11,6 +11,7 @@
 #include "inline_hook_internal.h"
 #include "inline_hook_lde.h"
 #include "inline_hook_policy.h"
+#include "hook_patch_transaction.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -21,9 +22,116 @@
 #include <string>
 #include <vector>
 #include "../common/hook_common.h"
+#include "../common/overlay_compat.h"
 #include "../../common/log_meter.h"
 
 namespace InlineHook {
+
+static void* ResolveExternalEntryJump(const uint8_t* code, bool is64bit) {
+    if (!ce::inline_hook_policy::IsPrependChainableEntryJump(code[0], code[1], is64bit))
+        return nullptr;
+    uintptr_t target = 0;
+    if (code[0] == 0xE9) {
+        int32_t displacement = 0;
+        memcpy(&displacement, code + 1, sizeof(displacement));
+        target = reinterpret_cast<uintptr_t>(code + 5) + displacement;
+    } else if (is64bit && code[0] == 0xFF && code[1] == 0x25) {
+        int32_t displacement = 0;
+        memcpy(&displacement, code + 2, sizeof(displacement));
+        const uintptr_t pointerAddress = reinterpret_cast<uintptr_t>(code + 6) + displacement;
+        MEMORY_BASIC_INFORMATION pointerMemory = {};
+        if (VirtualQuery(reinterpret_cast<void*>(pointerAddress), &pointerMemory, sizeof(pointerMemory)) == 0 ||
+            pointerMemory.State != MEM_COMMIT || (pointerMemory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            return nullptr;
+        }
+        memcpy(&target, reinterpret_cast<const void*>(pointerAddress), sizeof(target));
+    }
+
+    MEMORY_BASIC_INFORMATION targetMemory = {};
+    if (!target || VirtualQuery(reinterpret_cast<void*>(target), &targetMemory, sizeof(targetMemory)) == 0 ||
+        targetMemory.State != MEM_COMMIT ||
+        !(targetMemory.Protect &
+          (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+        return nullptr;
+    }
+    return reinterpret_cast<void*>(target);
+}
+
+static void WriteJumpWithoutLogging(uint8_t* destination, void* target) {
+#ifdef _WIN64
+    memcpy(destination + 6, static_cast<const void*>(&target), sizeof(target));
+    MemoryBarrier();
+    const uint8_t header[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+    memcpy(destination, header, sizeof(header));
+#else
+    const int32_t displacement =
+        static_cast<int32_t>(reinterpret_cast<uintptr_t>(target) - reinterpret_cast<uintptr_t>(destination + 5));
+    memcpy(destination + 1, &displacement, sizeof(displacement));
+    MemoryBarrier();
+    destination[0] = 0xE9;
+#endif
+}
+
+#ifdef _WIN64
+static bool WriteNearJumpWithoutLogging(uint8_t* destination, void* target) {
+    const int64_t displacement = static_cast<int64_t>(reinterpret_cast<uintptr_t>(target)) -
+                                 static_cast<int64_t>(reinterpret_cast<uintptr_t>(destination + 5));
+    if (displacement < INT32_MIN || displacement > INT32_MAX)
+        return false;
+    const int32_t displacement32 = static_cast<int32_t>(displacement);
+    memcpy(destination + 1, &displacement32, sizeof(displacement32));
+    MemoryBarrier();
+    destination[0] = 0xE9;
+    return true;
+}
+#endif
+
+static bool WriteOwnedEntryPatch(void* target, void* detour, int patchSize, const uint8_t* expectedBytes,
+                                 uint8_t* installedBytes) {
+    ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
+    if (!quiescence.IsReady())
+        return false;
+    if (memcmp(target, expectedBytes, patchSize) != 0)
+        return false;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+#ifdef _WIN64
+    if (patchSize == ce::inline_hook_policy::kExternalPrependPatchSize) {
+        if (!WriteNearJumpWithoutLogging(static_cast<uint8_t*>(target), detour)) {
+            DWORD ignoredProtect = 0;
+            VirtualProtect(target, patchSize, oldProtect, &ignoredProtect);
+            return false;
+        }
+    } else
+#endif
+    {
+        WriteJumpWithoutLogging(static_cast<uint8_t*>(target), detour);
+    }
+    for (int i = PATCH_SIZE; i < patchSize; ++i)
+        static_cast<uint8_t*>(target)[i] = 0x90;
+    DWORD ignoredProtect = 0;
+    VirtualProtect(target, patchSize, oldProtect, &ignoredProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, patchSize);
+    memcpy(installedBytes, target, patchSize);
+    return true;
+}
+
+static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
+    ce::hook_patch::ThreadQuiescence quiescence(hook.target, static_cast<size_t>(hook.patchSize));
+    if (!quiescence.IsReady())
+        return false;
+    if (memcmp(hook.target, hook.installedBytes, hook.patchSize) != 0)
+        return false;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(hook.target, hook.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+    memcpy(hook.target, hook.origBytes, hook.patchSize);
+    DWORD ignoredProtect = 0;
+    VirtualProtect(hook.target, hook.patchSize, oldProtect, &ignoredProtect);
+    FlushInstructionCache(GetCurrentProcess(), hook.target, hook.patchSize);
+    return true;
+}
 
 // ============================================================================
 // Public API
@@ -98,11 +206,9 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
 
     TraceDirect("is64bit=%d, checking if externally hooked...", is64bit ? 1 : 0);
 
-    // CRITICAL: Check if the target function appears to already be hooked
-    // by another component (another DLL, another process, overlay, etc.)
-    // CRITICAL FIX: Do NOT attempt to restore the prologue - the guessing is
-    // unreliable and causes black screens when the guess is wrong.
-    // Instead, skip hooking entirely and let the external overlay handle things.
+    // If another component owns a conventional entry jump, prepend CE at the
+    // real export entry and make our trampoline forward to that exact jump
+    // target. Never decode or patch inside the foreign detour body.
     const uint8_t* code = (const uint8_t*)target;
 
     // Dump first bytes of target
@@ -120,280 +226,86 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     LogDirect("First bytes of target: %s", firstBytes);
 
     if (IsAlreadyHooked(code, is64bit)) {
-        // External overlay detected - try chain hooking
-        // Resolve the chain target from either a JMP rel32 (E9) or indirect JMP (FF 25)
-        LogDirect("External hook detected, attempting chain hooking...");
-
-        uintptr_t chainTarget = 0;
-
-        if (code[0] == 0xE9) {
-            // JMP rel32 - valid on both x86 and x64
-            int32_t rel32 = *(const int32_t*)(code + 1);
-            uintptr_t overlayTarget = (uintptr_t)target + 5 + rel32;
-            LogDirect("JMP rel32 detected: rel32=0x%08X, overlay target=%p", (unsigned)rel32, (void*)overlayTarget);
-            HookLog("InlineHook: Chaining to overlay hook at %p", (void*)overlayTarget);
-
-            // Follow one more level of JMP rel32 if present (multi-level chaining)
-            const uint8_t* overlayCode = (const uint8_t*)overlayTarget;
-            if (overlayCode[0] == 0xE9) {
-                LogDirect("Overlay target also has JMP, following chain...");
-                int32_t rel32_2 = *(const int32_t*)(overlayCode + 1);
-                uintptr_t finalTarget = overlayTarget + 5 + rel32_2;
-                LogDirect("Second JMP target: %p", (void*)finalTarget);
-                overlayTarget = finalTarget;
-            }
-            chainTarget = overlayTarget;
-        } else if (is64bit && code[0] == 0xFF && code[1] == 0x25) {
-            // JMP [rip+disp32] on x64 - dereference indirect pointer to find real target
-            int32_t disp;
-            memcpy(&disp, code + 2, 4);
-            uintptr_t addrPtr = (uintptr_t)(code + 6) + disp;
-            MEMORY_BASIC_INFORMATION mbiFF;
-            if (VirtualQuery((void*)addrPtr, &mbiFF, sizeof(mbiFF)) > 0 && mbiFF.State == MEM_COMMIT &&
-                (mbiFF.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-                chainTarget = *(uintptr_t*)addrPtr;
-                LogDirect("JMP [rip+disp32] chain: indirect addr=%p, real target=%p", (void*)addrPtr,
-                          (void*)chainTarget);
-            } else {
-                LogDirect("FAILED: Cannot read FF25 indirect address %p", (void*)addrPtr);
-            }
+        void* chainedEntry = ResolveExternalEntryJump(code, is64bit);
+        if (!chainedEntry) {
+            LogDirect("FAILED: Existing entry patch at %p is not a chainable E9/FF25 jump", target);
+            HookLog("InlineHook: Existing entry patch at %p is not safely chainable", target);
+            return false;
         }
 
-        if (chainTarget != 0) {
-            // Verify the chain target is executable
-            MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery((void*)chainTarget, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-                LogDirect("Overlay target memory: Base=%p, Protect=0x%X", mbi.BaseAddress, mbi.Protect);
-
-                // CRITICAL: Check if chain target is inside a known overlay module.
-                // Installing a hook inside Steam/discord overlay code causes infinite recursion
-                // because the overlay's trampoline calls back into the original function.
-                HMODULE hModule = nullptr;
-                if (GetModuleHandleExA(
-                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                        (LPCSTR)chainTarget, &hModule)) {
-                    char moduleName[MAX_PATH] = {};
-                    GetModuleFileNameA(hModule, moduleName, MAX_PATH);
-                    std::string modLower(moduleName);
-                    std::transform(modLower.begin(), modLower.end(), modLower.begin(),
-                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                    if (modLower.find("gameoverlayrenderer") != std::string::npos ||
-                        modLower.find("d3doverlay") != std::string::npos ||
-                        modLower.find("discord") != std::string::npos || modLower.find("nvidia") != std::string::npos ||
-                        modLower.find("amd") != std::string::npos) {
-                        LogDirect("Chain target is inside overlay module %s - skipping to avoid recursion", moduleName);
-                        HookLog("InlineHook: Skipping chain hook into overlay module %s (would cause recursion)",
-                                moduleName);
-                        LogDirect("FAILED: Function at %p is already hooked by external overlay", target);
-                        HookLog("InlineHook: Function at %p is already hooked by external overlay", target);
-                        HookLog("InlineHook: Chain hooking skipped (overlay module protection)");
-                        return false;
-                    }
-                }
-
-                if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
-                                                               PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
-                    LogDirect("Overlay target is executable, attempting hook...");
-
-                    if (!IsAlreadyHooked((const uint8_t*)chainTarget, is64bit)) {
-                        LogDirect("Attempting chain install at overlay target %p", (void*)chainTarget);
-
-                        // Decode enough instructions to cover PATCH_SIZE bytes
-                        int chainCopySize = 0;
-                        const uint8_t* chainCode = (const uint8_t*)chainTarget;
-                        while (chainCopySize < PATCH_SIZE) {
-                            int len = GetInstructionLength(chainCode + chainCopySize, is64bit);
-                            if (len == 0) {
-                                LogDirect("FAILED: Cannot decode instruction at overlay target+%d", chainCopySize);
-                                break;
-                            }
-                            chainCopySize += len;
-                        }
-
-                        if (chainCopySize >= PATCH_SIZE) {
-                            LogDirect("Chain hook: copySize=%d, installing at %p", chainCopySize, (void*)chainTarget);
-
-                            // Allocate trampoline near chain target for RIP-relative safety
-                            uint8_t* chainTrampoline = GetTrampolineSlot((void*)chainTarget);
-                            if (!chainTrampoline) {
-                                LogDirect("FAILED: Could not allocate trampoline for chain hook");
-                                return false;
-                            }
-                            LogDirect("Chain hook trampoline allocated at %p", chainTrampoline);
-
-                            // Copy instructions to trampoline with RIP-relative fixups.
-                            // On x64 instructions may reference data via RIP+disp32; the displacement
-                            // must be recomputed when the instruction executes from a different address.
-                            int trampolineOff = 0;
-                            int srcOff = 0;
-                            bool fixupFailed = false;
-                            uintptr_t chainPendingAbsCallTarget = 0;
-                            bool chainHasPendingAbsCall = false;
-                            int chainPendingCallInstrOff = -1;
-                            while (srcOff < chainCopySize) {
-                                int instrLen = GetInstructionLength(chainCode + srcOff, is64bit);
-
-                                const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
-                                    chainCode + srcOff, reinterpret_cast<uintptr_t>(chainCode + srcOff), instrLen,
-                                    reinterpret_cast<uintptr_t>(chainCode), chainCopySize, chainTrampoline,
-                                    &trampolineOff, is64bit, "InlineHook(chain)");
-                                if (shortBranchResult == ShortControlRelocationResult::kFailed) {
-                                    LogDirect("Chain hook: short control relocation failed at srcOff=%d", srcOff);
-                                    fixupFailed = true;
-                                    break;
-                                }
-                                if (shortBranchResult == ShortControlRelocationResult::kHandled) {
-                                    srcOff += instrLen;
-                                    continue;
-                                }
-
-                                memcpy(chainTrampoline + trampolineOff, chainCode + srcOff, instrLen);
-
-                                int dispOff = GetRipRelativeDispOffset(chainCode + srcOff, instrLen, is64bit);
-                                if (dispOff >= 0) {
-                                    int32_t origDisp;
-                                    memcpy(&origDisp, chainCode + srcOff + dispOff, 4);
-                                    uintptr_t absTarget = (uintptr_t)(chainCode + srcOff + instrLen) + origDisp;
-                                    uintptr_t newInstrEnd = (uintptr_t)(chainTrampoline + trampolineOff + instrLen);
-                                    int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
-
-                                    if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
-                                        uint8_t op = chainCode[srcOff];
-                                        if (op == 0xE9 || op == 0xE8) {
-                                            if (op == 0xE9) {
-                                                // JMP: FF 25 00 00 00 00 [8-byte address]
-                                                chainTrampoline[trampolineOff] = 0xFF;
-                                                chainTrampoline[trampolineOff + 1] = 0x25;
-                                                chainTrampoline[trampolineOff + 2] = 0;
-                                                chainTrampoline[trampolineOff + 3] = 0;
-                                                chainTrampoline[trampolineOff + 4] = 0;
-                                                chainTrampoline[trampolineOff + 5] = 0;
-                                                memcpy(chainTrampoline + trampolineOff + 6, &absTarget, 8);
-                                                trampolineOff += 14;
-                                            } else {
-                                                // CALL: write FF 15 with placeholder; patch disp
-                                                // after loop+JMP-back when ptr location is known.
-                                                chainPendingCallInstrOff = trampolineOff;
-                                                chainTrampoline[trampolineOff] = 0xFF;
-                                                chainTrampoline[trampolineOff + 1] = 0x15;
-                                                chainTrampoline[trampolineOff + 2] = 0;  // placeholder
-                                                chainTrampoline[trampolineOff + 3] = 0;
-                                                chainTrampoline[trampolineOff + 4] = 0;
-                                                chainTrampoline[trampolineOff + 5] = 0;
-                                                trampolineOff += 6;
-                                                chainPendingAbsCallTarget = absTarget;
-                                                chainHasPendingAbsCall = true;
-                                            }
-                                            srcOff += instrLen;
-                                            continue;
-                                        }
-                                        LogDirect("Chain hook: RIP fixup out of range at srcOff=%d, aborting", srcOff);
-                                        fixupFailed = true;
-                                        break;
-                                    }
-                                    int32_t newDisp32 = (int32_t)newDisp;
-                                    memcpy(chainTrampoline + trampolineOff + dispOff, &newDisp32, 4);
-                                }
-                                trampolineOff += instrLen;
-                                srcOff += instrLen;
-                            }
-                            if (fixupFailed || trampolineOff > static_cast<int>(TRAMPOLINE_ENTRY_SIZE) - 5) {
-                                LogDirect("Chain hook: trampoline build failed (off=%d)", trampolineOff);
-                                AbandonCurrentTrampoline();
-                                return false;
-                            }
-
-                            // Add JMP back to chain code after the copied bytes.
-                            // E9 rel32 is safe: trampoline is within ±2GB of chainTarget.
-                            uint8_t* jmpSite = chainTrampoline + trampolineOff;
-                            jmpSite[0] = 0xE9;  // JMP rel32
-                            int32_t jmpOffset =
-                                (int32_t)((uintptr_t)(chainCode + chainCopySize) - (uintptr_t)(jmpSite + 5));
-                            memcpy(jmpSite + 1, &jmpOffset, 4);
-                            // If a CALL abs conversion was deferred, its ptr goes after the
-                            // E9 JMP-back. Patch the displacement in the FF 15 instruction now
-                            // that we know both locations.
-                            if (chainHasPendingAbsCall) {
-                                uint8_t* ptrAddr = jmpSite + 5;  // right after the 5-byte E9 JMP
-                                int32_t disp =
-                                    (int32_t)((uint8_t*)ptrAddr - (chainTrampoline + chainPendingCallInstrOff + 6));
-                                memcpy(chainTrampoline + chainPendingCallInstrOff + 2, &disp, 4);
-                                memcpy(ptrAddr, &chainPendingAbsCallTarget, 8);
-                            }
-                            LogDirect("Chain trampoline: %d src bytes -> %d trampoline bytes, JMP -> %p (rel=0x%08X)",
-                                      chainCopySize, trampolineOff, (void*)(chainCode + chainCopySize),
-                                      (unsigned)jmpOffset);
-                            const size_t chainTrampolineBytes = static_cast<size_t>(trampolineOff) + 5 +
-                                                                (chainHasPendingAbsCall ? 8u : 0u);
-                            if (!FinalizeCurrentTrampoline(chainTrampoline, chainTrampolineBytes)) {
-                                LogDirect("Chain hook: trampoline RX/CFG finalization failed");
-                                return false;
-                            }
-
-                            // Create the hook entry
-                            HookEntry newHook = {};
-                            newHook.target = (void*)chainTarget;
-                            newHook.trampoline = chainTrampoline;
-                            newHook.patchSize = chainCopySize;
-                            newHook.installed = false;
-                            memcpy(newHook.origBytes, chainCode, chainCopySize);
-
-                            // Save trampoline to caller's storage
-                            if (outTrampoline) {
-                                *outTrampoline = chainTrampoline;
-                            }
-                            if (publisher) {
-                                publisher(chainTrampoline, publisherContext);
-                            }
-
-                            // Patch chain target: use WriteJump for proper x64 support
-                            // (14-byte FF25+addr on x64, 5-byte E9 rel32 on x86)
-                            DWORD oldProtect;
-                            if (VirtualProtect((void*)chainTarget, chainCopySize, PAGE_EXECUTE_READWRITE,
-                                               &oldProtect)) {
-                                WriteJump((uint8_t*)chainTarget, detour);
-                                // NOP fill remaining bytes beyond PATCH_SIZE
-                                for (int i = PATCH_SIZE; i < chainCopySize; i++) {
-                                    ((uint8_t*)chainTarget)[i] = 0x90;
-                                }
-
-                                FlushInstructionCache(GetCurrentProcess(), (void*)chainTarget, chainCopySize);
-
-                                DWORD dummy;
-                                VirtualProtect((void*)chainTarget, chainCopySize, oldProtect, &dummy);
-
-                                newHook.installed = true;
-                                g_hooks.push_back(newHook);
-
-                                LogDirect("SUCCESS: Chain hook installed at %p -> %p (trampoline=%p)",
-                                          (void*)chainTarget, detour, chainTrampoline);
-                                HookLog("InlineHook: Chain hook installed at %p (trampoline=%p)", (void*)chainTarget,
-                                        chainTrampoline);
-                                return true;
-                            } else {
-                                LogDirect("FAILED: VirtualProtect failed for chain target");
-                                if (publisher) {
-                                    publisher(nullptr, publisherContext);
-                                }
-                                *outTrampoline = nullptr;
-                                ReleaseSealedTrampoline(chainTrampoline);
-                            }
-                        }
-                    } else {
-                        LogDirect("Overlay target also appears hooked, skipping");
-                    }
-                } else {
-                    LogDirect("Overlay target is NOT executable (Protect=0x%X)", mbi.Protect);
-                }
-            } else {
-                LogDirect("VirtualQuery failed for overlay target");
-            }
+        uint8_t* trampoline = GetTrampolineSlot(target);
+        if (!trampoline) {
+            return false;
+        }
+        WriteJump(trampoline, chainedEntry);
+#ifdef _WIN64
+        // A Detours/RTSS E9 trampoline can resume at target+5. Keep every byte
+        // after that existing jump intact: put CE's absolute jump in the same
+        // near RX page and claim only five bytes at the export entry.
+        uint8_t* prependTarget = trampoline + TRAMPOLINE_ALIGNMENT;
+        WriteJump(prependTarget, detour);
+        const int64_t relayDisplacement =
+            static_cast<int64_t>(reinterpret_cast<uintptr_t>(prependTarget)) -
+            static_cast<int64_t>(reinterpret_cast<uintptr_t>(target) +
+                                 ce::inline_hook_policy::kExternalPrependPatchSize);
+        if (relayDisplacement < INT32_MIN || relayDisplacement > INT32_MAX) {
+            AbandonCurrentTrampoline();
+            HookLogImportant("InlineHook: Could not allocate a near relay for external entry at %p", target);
+            return false;
+        }
+        const size_t trampolineBytes = TRAMPOLINE_ALIGNMENT + PATCH_SIZE;
+#else
+        void* prependTarget = detour;
+        const size_t trampolineBytes = PATCH_SIZE;
+#endif
+        if (!FinalizeCurrentTrampoline(trampoline, trampolineBytes)) {
+            return false;
         }
 
-        LogDirect("FAILED: Function at %p is already hooked by external overlay", target);
-        HookLog("InlineHook: Function at %p is already hooked by external overlay", target);
-        HookLog("InlineHook: Chain hooking failed or not supported");
-        return false;
+        HookEntry entry = {};
+        entry.target = target;
+        entry.detour = detour;
+        entry.trampoline = trampoline;
+        entry.patchSize = ce::inline_hook_policy::kExternalPrependPatchSize;
+        memcpy(entry.origBytes, code, entry.patchSize);
+        try {
+            g_hooks.push_back(entry);
+        } catch (...) {
+            HookLogImportant("InlineHook: Could not allocate ownership record for target %p", target);
+            ReleaseSealedTrampoline(trampoline);
+            return false;
+        }
+        *outTrampoline = trampoline;
+        if (publisher) {
+            publisher(trampoline, publisherContext);
+        }
+
+        if (!WriteOwnedEntryPatch(target, prependTarget, entry.patchSize, entry.origBytes,
+                                  g_hooks.back().installedBytes)) {
+            if (publisher) {
+                publisher(nullptr, publisherContext);
+            }
+            *outTrampoline = nullptr;
+            // Another established CE route can observe the published
+            // trampoline before this entry-point claim finishes. Roll back the
+            // pointer, but retain executable storage for any caller that
+            // already acquired it.
+            g_hooks.pop_back();
+            if (publisher)
+                HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
+            else
+                ReleaseSealedTrampoline(trampoline);
+            return false;
+        }
+        g_hooks.back().installed = true;
+
+        char ownerPath[MAX_PATH] = {};
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(chainedEntry, ownerPath, sizeof(ownerPath));
+        HookLogImportant(
+            "InlineHook: Prepended CE at %p while preserving external entry %p (owner=%s recognizedOverlay=%d)",
+            target, chainedEntry, ownerPath[0] ? ownerPath : "unknown",
+            ce::overlay_compat::IsThirdPartyOverlayModulePath(ownerPath) ? 1 : 0);
+        return true;
     }
 
     LogDirect("Not externally hooked, decoding instructions...");
@@ -602,11 +514,21 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     // Save original bytes
     HookEntry entry = {};
     entry.target = target;
+    entry.detour = detour;
     entry.trampoline = trampoline;
     entry.patchSize = copySize;
-    entry.installed = true;
+    entry.installed = false;
     memcpy(entry.origBytes, code, copySize);
 
+    try {
+        g_hooks.push_back(entry);
+    } catch (...) {
+        LogDirect("FAILED: Could not allocate ownership record for target %p", target);
+        ReleaseSealedTrampoline(trampoline);
+        return false;
+    }
+
+    *outTrampoline = trampoline;
     if (publisher) {
         // Publish the only safe bypass before any thread can observe the live
         // detour. Publication is harmless while the original entry remains
@@ -614,72 +536,25 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         publisher(trampoline, publisherContext);
     }
 
-    LogDirect("Patching target function...");
-    // Patch the target function
-    DWORD oldProtect;
-    if (!VirtualProtect(target, copySize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        LogDirect("FAILED: VirtualProtect failed (error=%lu)", GetLastError());
-        HookLog("InlineHook: VirtualProtect failed (error=%lu)", GetLastError());
+    LogDirect("Patching target function with peer threads quiesced...");
+    if (!WriteOwnedEntryPatch(target, detour, copySize, entry.origBytes, g_hooks.back().installedBytes)) {
+        LogDirect("FAILED: Could not safely patch target %p", target);
         if (publisher) {
             publisher(nullptr, publisherContext);
         }
-        ReleaseSealedTrampoline(trampoline);
+        *outTrampoline = nullptr;
+        // Publication precedes the live patch by design. A concurrent vtable
+        // detour may already be executing this safe bypass, so its RX page is
+        // retained even though new callers see the restored fallback.
+        g_hooks.pop_back();
+        if (publisher)
+            HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
+        else
+            ReleaseSealedTrampoline(trampoline);
         return false;
     }
-    LogDirect("VirtualProtect succeeded, oldProtect=0x%08X", oldProtect);
 
-    // CRITICAL ORDER: For x64, write the 8-byte absolute address FIRST,
-    // then the 6-byte JMP [RIP+0] header. This eliminates the race where a
-    // concurrent thread executing the target function decodes a partial JMP
-    // and jumps through zeros. The trampoline is already fully built and
-    // cache-flushed before we touch the target.
-    volatile uint8_t* pTarget = (volatile uint8_t*)target;
-#ifdef _WIN64
-    // x64: Use absolute jump via [RIP+0] - 14 bytes total
-    // FF 25 00 00 00 00 [8-byte absolute address]
-    uint8_t jmpBuf[14];
-    jmpBuf[0] = 0xFF;
-    jmpBuf[1] = 0x25;
-    jmpBuf[2] = 0x00;
-    jmpBuf[3] = 0x00;
-    jmpBuf[4] = 0x00;
-    jmpBuf[5] = 0x00;
-    memcpy(jmpBuf + 6, reinterpret_cast<const void*>(&detour), 8);
-
-    // Write the 8-byte target address first, so a concurrent thread that
-    // sees a partial JMP [RIP+0] header reads the correct target from dest+6.
-    memcpy((void*)(pTarget + 6), jmpBuf + 6, 8);
-    MemoryBarrier();
-    // Now write the 6-byte JMP header (FF 25 + disp32=0)
-    memcpy((void*)pTarget, jmpBuf, 6);
-#else
-    // x86: Calculate displacement for the actual target location.
-    // On x86 the E9 rel32 is only 5 bytes. Write the 4-byte displacement
-    // FIRST so a concurrent thread that sees a partial E9 reads a correct
-    // (or near-correct) displacement from a 4-byte natural write.
-    pTarget[0] = 0xE9;  // JMP rel32 opcode
-    int32_t rel = (int32_t)((uintptr_t)detour - (uintptr_t)((uint8_t*)target + 5));
-    // Write displacement atomically (32-bit aligned), then the opcode.
-    *(int32_t*)(pTarget + 1) = rel;
-    MemoryBarrier();
-    pTarget[0] = 0xE9;  // re-write opcode in case MemoryBarrier changed it
-    HookLog("InlineHook: Target JMP at %p -> %p (rel=0x%08X)", target, detour, (unsigned)rel);
-    // Verify the calculation
-    uintptr_t verify = (uintptr_t)((uint8_t*)target + 5) + rel;
-    HookLog("InlineHook: Verification: %p + 5 + 0x%08X = %p (expected %p)", target, (unsigned)rel, (void*)verify,
-            detour);
-#endif
-
-    // Fill any remaining bytes after the jump with NOPs
-    for (int i = PATCH_SIZE; i < copySize; i++) {
-        pTarget[i] = 0x90;
-    }
-
-    VirtualProtect(target, copySize, PAGE_EXECUTE_READ, &oldProtect);
-    FlushInstructionCache(GetCurrentProcess(), target, copySize);
-
-    g_hooks.push_back(entry);
-    *outTrampoline = trampoline;
+    g_hooks.back().installed = true;
 
     LogDirect("SUCCESS: Hook installed at %p -> %p (trampoline=%p)", target, detour, trampoline);
     HookLog("InlineHook: Installed hook at %p -> %p (trampoline=%p)", target, detour, trampoline);
@@ -698,6 +573,15 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
     return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
 }
 
+static bool OwnsInstalledEntryBytes(const HookEntry& hook) {
+    MEMORY_BASIC_INFORMATION memory = {};
+    return hook.target && hook.patchSize > 0 &&
+           VirtualQuery(hook.target, &memory, sizeof(memory)) == sizeof(memory) && memory.State == MEM_COMMIT &&
+           !(memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+           ce::inline_hook_policy::ShouldRestoreOwnedPatch(
+               memcmp(hook.target, hook.installedBytes, hook.patchSize) == 0);
+}
+
 bool Remove(void* target) {
     if (!target)
         return false;
@@ -706,19 +590,25 @@ bool Remove(void* target) {
 
     for (auto& h : g_hooks) {
         if (h.target == target && h.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy(h.target, h.origBytes, h.patchSize);
-                VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), h.target, h.patchSize);
+            if (!OwnsInstalledEntryBytes(h)) {
+                HookLogImportant(
+                    "InlineHook: Preserving foreign replacement at %p and retaining CE chain ownership",
+                    target);
+                return true;
+            }
+            if (RestoreOwnedEntryPatch(h)) {
                 h.installed = false;
                 HookLog("InlineHook: Removed hook at %p", target);
                 return true;
             }
+            if (!OwnsInstalledEntryBytes(h)) {
+                HookLogImportant(
+                    "InlineHook: Preserving concurrent foreign replacement at %p and retaining CE chain ownership",
+                    target);
+                return true;
+            }
             HookLog(
-                "InlineHook: Failed to remove hook at %p (VirtualProtect "
-                "error=%lu)",
-                target, GetLastError());
+                "InlineHook: Failed to quiesce peer threads while removing hook at %p; leaving it installed", target);
             return false;
         }
     }
@@ -734,50 +624,30 @@ void RemoveAll() {
 
     for (auto& h : g_hooks) {
         if (h.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy(h.target, h.origBytes, h.patchSize);
-                VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), h.target, h.patchSize);
+            if (!OwnsInstalledEntryBytes(h)) {
+                HookLogImportant(
+                    "InlineHook: RemoveAll preserved foreign replacement at %p and retained CE chain ownership",
+                    h.target);
+                continue;
             }
-            h.installed = false;
+            if (RestoreOwnedEntryPatch(h))
+                h.installed = false;
+            else if (!OwnsInstalledEntryBytes(h)) {
+                HookLogImportant(
+                    "InlineHook: RemoveAll preserved concurrent foreign replacement at %p and retained chain state",
+                    h.target);
+            } else
+                HookLog("InlineHook: RemoveAll could not safely quiesce %p; leaving CE hook installed", h.target);
         }
     }
-    g_hooks.clear();
+    g_hooks.erase(std::remove_if(g_hooks.begin(), g_hooks.end(),
+                                 [](const HookEntry& hook) { return !hook.installed; }),
+                  g_hooks.end());
 
-    // Also remove deep hooks
-    for (auto& d : g_deepHooks) {
-        if (d.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(d.hookAddr, d.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy(d.hookAddr, d.origBytes, d.patchSize);
-                VirtualProtect(d.hookAddr, d.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), d.hookAddr, d.patchSize);
-            }
-            d.installed = false;
-        }
-        if (d.trampoline) {
-            VirtualFree(d.trampoline, 0, MEM_RELEASE);
-            d.trampoline = nullptr;
-        }
-    }
-    g_deepHooks.clear();
+    RemoveAllDeepHooksLocked();
 
-    if (!g_trampolinePools.empty()) {
-        for (uint8_t* pool : g_trampolinePools) {
-            if (pool) {
-                HookLog("InlineHook::RemoveAll() - freeing trampoline pool at %p", pool);
-                VirtualFree(pool, 0, MEM_RELEASE);
-            }
-        }
-        g_trampolinePools.clear();
-    } else if (g_trampolinePool) {
-        // Backward compatibility for any pool not tracked in the vector.
-        HookLog("InlineHook::RemoveAll() - freeing trampoline pool at %p", g_trampolinePool);
-        VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
-    }
-    g_trampolinePool = nullptr;
-    g_trampolineOffset = 0;
+    HookLog("InlineHook::RemoveAll() - retaining %zu trampoline pools for foreign saved-chain safety",
+            g_trampolinePools.size());
 }
 
 }  // namespace InlineHook

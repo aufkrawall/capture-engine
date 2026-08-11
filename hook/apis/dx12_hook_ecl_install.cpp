@@ -248,6 +248,9 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
 
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                 IDXGISwapChain** ppSwapChain) {
+    if (HookIsShuttingDown())
+        return dx12_hook_oCreateSwapChain ? dx12_hook_oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain)
+                                          : DXGI_ERROR_INVALID_CALL;
     // Hook vtable only for game's original queue — skip FG runtime queues
     if (pDevice) {
         ID3D12CommandQueue* q = nullptr;
@@ -284,6 +287,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pTh
                                                        const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
                                                        IDXGISwapChain1** ppSC) {
+    if (HookIsShuttingDown()) {
+        return dx12_hook_oCreateSwapChainForHwnd
+                   ? dx12_hook_oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
     // Hook vtable only for game's original queue — skip FG runtime queues
     if (pDevice) {
         ID3D12CommandQueue* q = nullptr;

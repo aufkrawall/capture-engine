@@ -12,7 +12,7 @@ static GLsizei ParseGLMSAA(const char* msaa) {
 
 static void WINAPI DetourGlRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat,
                                                           GLsizei width, GLsizei height) {
-    if (g_IPC && g_IPC->GetSharedMem()) {
+    if (!HookIsShuttingDown() && g_IPC && g_IPC->GetSharedMem()) {
         const char* msaa = g_IPC->GetSharedMem()->graphicsConfig.msaaSamples;
         if (msaa[0] != 'd') {
             if (strcmp(msaa, "off") == 0)
@@ -32,7 +32,7 @@ static void WINAPI DetourGlRenderbufferStorageMultisample(GLenum target, GLsizei
 
 static void WINAPI DetourGlTexImage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
                                                  GLsizei height, GLboolean fixedsamplelocations) {
-    if (g_IPC && g_IPC->GetSharedMem()) {
+    if (!HookIsShuttingDown() && g_IPC && g_IPC->GetSharedMem()) {
         const char* msaa = g_IPC->GetSharedMem()->graphicsConfig.msaaSamples;
         if (msaa[0] != 'd') {
             if (strcmp(msaa, "off") == 0)
@@ -353,6 +353,11 @@ static void DrawOpenGLOverlay(HDC hdc) {
 // Swap hook logic
 static void SwapBegin(HDC hdc) {
     if (opengl_hook_g_SwapRecurse == 0) {
+        if (opengl_hook_g_HostGenerationResetPending.exchange(false, std::memory_order_acq_rel)) {
+            ResetTrackedOpenGLState(wglGetCurrentContext());
+            ce::opengl_sampler_override::NotifyContextChanged();
+            HookLog("[InjectLifecycle] OpenGL resources reset on their owner context for the new host");
+        }
         opengl_hook_g_LastOverlayUs = 0;
         TrackOpenGLContext(hdc);
 
@@ -557,6 +562,8 @@ static void SwapEnd(HDC hdc) {
 
 // Hook: SwapBuffers (GDI32)
 BOOL WINAPI DetourSwapBuffers(HDC hdc) {
+    if (HookIsShuttingDown())
+        return opengl_hook_oSwapBuffers ? opengl_hook_oSwapBuffers(hdc) : FALSE;
     SwapBegin(hdc);
     if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         LoadOpenGLExtensions();
@@ -568,6 +575,8 @@ BOOL WINAPI DetourSwapBuffers(HDC hdc) {
 
 // Hook: wglSwapBuffers
 BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
+    if (HookIsShuttingDown())
+        return opengl_hook_oWglSwapBuffers ? opengl_hook_oWglSwapBuffers(hdc) : FALSE;
     SwapBegin(hdc);
     BOOL result = opengl_hook_oWglSwapBuffers(hdc);
     SwapEnd(hdc);
@@ -576,6 +585,8 @@ BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
 
 // Hook: wglSwapLayerBuffers
 BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
+    if (HookIsShuttingDown())
+        return opengl_hook_oWglSwapLayerBuffers ? opengl_hook_oWglSwapLayerBuffers(hdc, fuPlanes) : FALSE;
     SwapBegin(hdc);
     BOOL result = opengl_hook_oWglSwapLayerBuffers(hdc, fuPlanes);
     SwapEnd(hdc);
@@ -584,6 +595,15 @@ BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
 
 // Hook: wglDeleteContext - cleanup when context is destroyed
 BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
+    if (HookIsShuttingDown()) {
+        // This is the final safe point to release CE objects owned by the game
+        // context. It is lifecycle cleanup only; rendering/capture stay dormant.
+        if (hglrc == opengl_hook_g_CaptureContext || hglrc == opengl_hook_g_OverlayContext ||
+            hglrc == opengl_hook_g_CurrentTrackedContext) {
+            ResetTrackedOpenGLState(hglrc);
+        }
+        return opengl_hook_oWglDeleteContext ? opengl_hook_oWglDeleteContext(hglrc) : FALSE;
+    }
     HookLog("OpenGL: wglDeleteContext called (ctx=0x%p)", hglrc);
     ResetTrackedOpenGLState(hglrc);
 
@@ -606,7 +626,7 @@ BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
 
 // Hook: wglSwapIntervalEXT (VSync)
 static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
-    if (g_IPC) {
+    if (!HookIsShuttingDown() && g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         if (gfx.vsyncMode != "default" && !gfx.vsyncMode.empty()) {
             if (gfx.vsyncMode == "off" || gfx.vsyncMode == "mailbox")
@@ -639,7 +659,7 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
 
 BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
     const BOOL result = opengl_hook_oWglMakeCurrent(hdc, hrc);
-    if (result) {
+    if (result && !HookIsShuttingDown()) {
         ce::opengl_sampler_override::NotifyContextChanged();
     }
     return result;
@@ -651,7 +671,7 @@ PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
         return NULL;
 
     // Log important requests
-    if (strstr(lpszProc, "Context") || strstr(lpszProc, "Swap")) {
+    if (!HookIsShuttingDown() && (strstr(lpszProc, "Context") || strstr(lpszProc, "Swap"))) {
         HookLog("OpenGL: wglGetProcAddress('%s')", lpszProc);
     }
 

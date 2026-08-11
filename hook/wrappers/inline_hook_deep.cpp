@@ -14,6 +14,7 @@
 #include "inline_hook_internal.h"
 #include "inline_hook_lde.h"
 #include "inline_hook_policy.h"
+#include "hook_patch_transaction.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -185,8 +186,11 @@ static bool TryFindVerifiedExternalHookResumeOffset(const char* context, const u
     return false;
 }
 
-void* InstallDeepHook(void* target, void* wrapperFn) {
+static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublisher publisher,
+                                 void* publisherContext) {
 #ifndef _WIN64
+    (void)publisher;
+    (void)publisherContext;
     HookLog("DeepHook: Only supported on x64");
     return nullptr;
 #else
@@ -282,6 +286,10 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
             return nullptr;
         }
         displaceSize += len;
+    }
+    if (displaceSize > 64) {
+        HookLog("DeepHook: Refusing oversized %d-byte displaced block", displaceSize);
+        return nullptr;
     }
 
     HookLog("DeepHook: Will displace %d bytes at offset %d (patch needs %d)", displaceSize, resumeOffset,
@@ -436,7 +444,7 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
 
     // Step 8: Build the in-place patch at resumeOffset
     // Format: add rsp, <stackUndo> ; jmp [rip+0] <wrapperFn>
-    uint8_t patchBuf[32];
+    uint8_t patchBuf[64];
     int pOff = 0;
 
     if (stackUndo <= 127) {
@@ -477,31 +485,57 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
     entry.trampoline = trampoline;
     entry.installed = false;
 
-    DWORD oldProtect;
-    if (!VirtualProtect((void*)resumeCode, displaceSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        HookLog("DeepHook: VirtualProtect failed (error=%lu)", GetLastError());
+    try {
+        g_deepHooks.push_back(entry);
+    } catch (...) {
+        HookLogImportant("DeepHook: Could not allocate ownership record for target %p", target);
         VirtualFree(trampoline, 0, MEM_RELEASE);
         return nullptr;
     }
 
-    // Write INT3 first for safety (atomic single-byte write)
-    volatile uint8_t* pPatch = (volatile uint8_t*)resumeCode;
-    pPatch[0] = 0xCC;
-    FlushInstructionCache(GetCurrentProcess(), (void*)resumeCode, 1);
+    if (publisher)
+        publisher(trampoline, publisherContext);
 
-    // Fill remaining with INT3
-    for (int i = 1; i < displaceSize; i++)
-        pPatch[i] = 0xCC;
+    bool patchInstalled = false;
+    DWORD patchError = ERROR_SUCCESS;
+    {
+        ce::hook_patch::ThreadQuiescence quiescence(resumeCode, static_cast<size_t>(displaceSize));
+        if (quiescence.IsReady() && memcmp(resumeCode, entry.origBytes, displaceSize) == 0) {
+            DWORD oldProtect = 0;
+            if (VirtualProtect((void*)resumeCode, displaceSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                // Peer threads are suspended outside the displaced range, so publish the
+                // complete patch without an executable INT3/partial-jump window.
+                memcpy((void*)resumeCode, patchBuf, displaceSize);
 
-    // Write the actual patch (add rsp + jmp wrapper)
-    memcpy((void*)resumeCode, patchBuf, displaceSize);
+                DWORD ignoredProtect = 0;
+                VirtualProtect((void*)resumeCode, displaceSize, oldProtect, &ignoredProtect);
+                FlushInstructionCache(GetCurrentProcess(), (void*)resumeCode, displaceSize);
+                memcpy(g_deepHooks.back().installedBytes, resumeCode, displaceSize);
+                patchInstalled = true;
+            } else {
+                patchError = GetLastError();
+            }
+        }
+    }
+    if (!patchInstalled) {
+        if (publisher)
+            publisher(nullptr, publisherContext);
+        HookLogImportant(
+            "DeepHook: Refusing live patch at %p because peer threads could not be quiesced, ownership changed, "
+            "or VirtualProtect failed (error=%lu)",
+            resumeCode, static_cast<unsigned long>(patchError));
+        // The publisher made this trampoline callable before the live patch
+        // attempt. Retain its RX allocation for an in-flight caller that
+        // acquired the pointer before rollback.
+        g_deepHooks.pop_back();
+        if (publisher)
+            HookLogImportant("DeepHook: Retaining rolled-back published trampoline %p", trampoline);
+        else
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+        return nullptr;
+    }
 
-    DWORD dummy;
-    VirtualProtect((void*)resumeCode, displaceSize, oldProtect, &dummy);
-    FlushInstructionCache(GetCurrentProcess(), (void*)resumeCode, displaceSize);
-
-    entry.installed = true;
-    g_deepHooks.push_back(entry);
+    g_deepHooks.back().installed = true;
 
     HookLog("DeepHook: SUCCESS at %p+%d (trampoline=%p, displaced=%d, continues at %p)", target, resumeOffset,
             trampoline, displaceSize, (void*)continueAddr);
@@ -509,32 +543,15 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
 #endif
 }
 
-bool RemoveDeepHook(void* target) {
-    if (!target)
-        return false;
+void* InstallDeepHook(void* target, void* wrapperFn) {
+    return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr);
+}
 
-    std::lock_guard<std::mutex> lock(g_hookMutex);
-
-    for (auto& d : g_deepHooks) {
-        if (d.target == target && d.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(d.hookAddr, d.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy(d.hookAddr, d.origBytes, d.patchSize);
-                VirtualProtect(d.hookAddr, d.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), d.hookAddr, d.patchSize);
-            }
-            d.installed = false;
-            if (d.trampoline) {
-                VirtualFree(d.trampoline, 0, MEM_RELEASE);
-                d.trampoline = nullptr;
-            }
-            HookLog("DeepHook: Removed at %p", target);
-            return true;
-        }
-    }
-
-    HookLog("DeepHook: No hook found for %p", target);
-    return false;
+void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
+                               void* publisherContext) {
+    if (!publisher)
+        return nullptr;
+    return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext);
 }
 
 // ============================================================================

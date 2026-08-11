@@ -123,11 +123,22 @@ inline const char* NoteModuleUnloadedForOverlayCache(const char* moduleNameOrPat
     return kTrackedOverlayModules[idx].name;
 }
 
+inline void SetIdentifiedOverlayIdentityLoaded(const char* canonicalIdentity, bool loaded) {
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(canonicalIdentity);
+    if (idx < 0)
+        return;
+    if (loaded)
+        TrackedOverlayLoadedBits().fetch_or(1u << idx, std::memory_order_acq_rel);
+    else
+        TrackedOverlayLoadedBits().fetch_and(~(1u << idx), std::memory_order_acq_rel);
+}
+
 // Test-only: clear all detection state and mark seeded so queries do not trigger a real loader
 // walk (tests fully control the loaded-set via NoteModuleLoaded/Unloaded).
 inline void ResetThirdPartyOverlayModuleCacheForTesting() {
     TrackedOverlayLoadedBits().store(0, std::memory_order_release);
     TrackedOverlaySeeded().store(true, std::memory_order_release);
+    ResetIdentifiedThirdPartyOverlayModulePaths();
 }
 
 // Loader-free (cached). Startup-blocking overlay modules (Social Club / EOS) gate early

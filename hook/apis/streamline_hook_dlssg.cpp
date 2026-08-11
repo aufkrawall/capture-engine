@@ -8,6 +8,8 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
     if (!originalGetState) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalGetState(viewport, state, streamline_hook_options);
 
     // Newer integrations can configure DLSS-G by passing options directly to GetState, after
     // slSetTagForFrame has already made the activation input volatile. Keep the latest inactive
@@ -254,6 +256,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
     if (!originalSetOptions) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalSetOptions(viewport, streamline_hook_options);
 
     slDLSSGOptions adjustedOptions = CloneDLSSGOptions(streamline_hook_options);
     const uint32_t viewportKey = GetViewportKey(viewport);

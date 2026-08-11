@@ -48,6 +48,41 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     EXPECT_LT(naturalGuard, inlineTrampoline);
     EXPECT_LT(naturalGuard, forcedBypassRoute);
     EXPECT_LT(naturalGuard, slFastPath);
+
+    const size_t present1Entry = original.find("HRESULT CallOriginalPresent1(");
+    const size_t present1WorkerGuard =
+        original.find("refusing Steam Present1 transport on runtime worker", present1Entry);
+    const size_t present1InlineTrampoline = original.find("if (present1Trampoline)", present1Entry);
+    const size_t present1ForcedBypass = original.find("if (forceSteamDX12Bypass)", present1Entry);
+    ASSERT_NE(present1Entry, std::string::npos);
+    ASSERT_NE(present1WorkerGuard, std::string::npos);
+    ASSERT_NE(present1InlineTrampoline, std::string::npos);
+    ASSERT_NE(present1ForcedBypass, std::string::npos);
+    EXPECT_LT(present1WorkerGuard, present1InlineTrampoline);
+    EXPECT_LT(present1WorkerGuard, present1ForcedBypass);
+}
+
+TEST(DXGISharedSourceTest, PresentBootstrapPreservesE9AndDetoursFF25ForeignEntries) {
+    namespace fs = std::filesystem;
+    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(hooksSource));
+    const std::string hooks = ce::test_source::ReadFile(hooksSource);
+    ASSERT_FALSE(hooks.empty());
+
+    const size_t e9Detection = hooks.find("const bool entryUsesE9");
+    const size_t ff25Detection = hooks.find("const bool entryUsesFF25");
+    const size_t ff25Resolve = hooks.find("ResolveFF25JmpTarget(presentAddr)", ff25Detection);
+    const size_t bypass = hooks.find("InlineHook::CreateBypassTrampoline(presentAddr)", ff25Resolve);
+    const size_t prepend = hooks.find("InlineHook::InstallPublished(presentAddr", bypass);
+    ASSERT_NE(e9Detection, std::string::npos);
+    ASSERT_NE(ff25Detection, std::string::npos);
+    ASSERT_NE(ff25Resolve, std::string::npos);
+    ASSERT_NE(bypass, std::string::npos);
+    ASSERT_NE(prepend, std::string::npos);
+    EXPECT_LT(e9Detection, ff25Resolve);
+    EXPECT_LT(ff25Detection, ff25Resolve);
+    EXPECT_LT(ff25Resolve, bypass);
+    EXPECT_LT(bypass, prepend);
 }
 
 TEST(DXGISharedSourceTest, RuntimeWorkerCannotReplaceTrackedSourcePresentThread) {

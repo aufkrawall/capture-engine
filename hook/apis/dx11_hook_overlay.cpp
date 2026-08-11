@@ -155,6 +155,7 @@ static bool IsReadableMemoryDX11(const void* ptr, size_t size) {
 }
 
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
+    dx11_hook_g_UnsafeSwapChainObserved = false;
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
     // when D3D device is destroyed while we're trying to use it
     if (HookIsShuttingDown()) {
@@ -177,8 +178,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
     // SAFETY: Verify the swapchain pointer is valid before accessing it
     if (!IsReadableMemoryDX11(pSwapChain, sizeof(void*))) {
-        EarlyLog("DX11: Swapchain memory not readable at frame %d — shutting down", frameCount);
-        RequestHookShutdown();
+        EarlyLog("DX11: Swapchain memory not readable at frame %d — skipping CE work for this Present", frameCount);
+        dx11_hook_g_UnsafeSwapChainObserved = true;
         return;
     }
 
@@ -224,13 +225,12 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     if (!currentHwnd || !IsWindow(currentHwnd)) {
         EarlyLog(
             "DX11: Window invalid at frame %d (hwnd=%p, IsWindow=%d) — "
-            "shutting down",
+            "skipping CE work for this Present",
             frameCount, currentHwnd, currentHwnd ? IsWindow(currentHwnd) : 0);
-        // CRITICAL: Set shutdown flag and tell overlay adapter to skip cleanup
-        // The app is tearing down and any Release() call can crash. Let OS clean
-        // up.
-        RequestHookShutdown();
-        g_OverlayAdapter.SetShutdownMode(true);  // Tell adapter to skip destructor cleanup
+        // Swapchain/window recreation is transient in many games and injectors.
+        // Abort this call without globally disabling hooks; a later valid
+        // swapchain must be able to recover the overlay.
+        dx11_hook_g_UnsafeSwapChainObserved = true;
         return;
     }
 
@@ -345,8 +345,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetHDR(isHDR, (int)desc.BufferDesc.Format);
 
     // Propagate HDR state to media engine via shared memory
-    if (g_pSharedMem) {
-        g_pSharedMem->SetIsHDR(isHDR);
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+        sharedMemory->SetIsHDR(isHDR);
     }
 
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());

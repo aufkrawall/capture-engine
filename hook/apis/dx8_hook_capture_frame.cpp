@@ -7,6 +7,8 @@ void DX8Capture::CaptureFrame(IDirect3DDevice8* device,  bool useFrontBuffer) {
         std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
         if (!captureLock.owns_lock())
             return;
+        if (HookIsShuttingDown())
+            return;
         if (!initialized || !d3d9DeviceEx || !d3d9SharedSurface)
             return;
 

@@ -104,7 +104,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
 
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
     LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d", res);
-    if (res == VK_SUCCESS && g_LayerState.whitelisted) {
+    if (res == VK_SUCCESS) {
         auto* sd = new SwapchainData();
         sd->swapchain = *pSwapchain;
         sd->device = device;
@@ -118,16 +118,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, sd->images.data());
         sd->imageCount = count;
 
-        HWND window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
-        LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
+        sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
         const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
-        if (isTinySwapchain) {
+        const bool activateNow = g_LayerState.whitelisted.load(std::memory_order_acquire);
+        if (activateNow && isTinySwapchain) {
             LayerLog(
                 "Vulkan Layer: [Info] Skipping overlay/capture init for tiny "
                 "swapchain %ux%u",
                 sd->extent.width, sd->extent.height);
-        } else {
+        } else if (activateNow) {
+            LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
             if (preferDX9Path) {
                 // DXVK d3d9: skip overlay (DX9 hook handles it) but still init capture for zero-copy
                 LayerLog("Vulkan Layer: DXVK d3d9 - skipping overlay, initializing Vulkan capture (%ux%u)",
@@ -146,12 +147,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 }
             } else {
                 InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count,
-                                  sd->images.data(), window);
+                                  sd->images.data(), sd->window);
                 LayerLog(
                     "Vulkan Layer: InitializeOverlay returned, registering "
                     "swapchain");
                 InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
             }
+        }
+        sd->runtimeInitialized.store(activateNow, std::memory_order_release);
+        if (activateNow) {
+            sd->captureHostGeneration.store(g_LayerHostGeneration.load(std::memory_order_acquire),
+                                            std::memory_order_release);
         }
 
         VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
@@ -180,6 +186,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, 
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    if (!g_LayerState.whitelisted.load(std::memory_order_acquire)) {
+        return (disp && disp->fp_vkQueuePresentKHR) ? disp->fp_vkQueuePresentKHR(queue, pPresentInfo)
+                                                   : VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     g_FGCompat.RecordPresentForNvidiaSmoothMotion();
 
     // Performance metrics for this frame
@@ -214,8 +226,29 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
     }
 
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
+
+    const bool runtimeEligible = sd && sd->extent.width >= 320 && sd->extent.height >= 180;
+    if (sd && !sd->runtimeInitialized.exchange(true, std::memory_order_acq_rel)) {
+        if (runtimeEligible) {
+            if (!preferDX9Path) {
+                InitializeOverlay(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageCount,
+                                  sd->images.data(), sd->window);
+            }
+            LayerLog("[InjectLifecycle] Late-initialized Vulkan swapchain %p", sd->swapchain);
+        }
+    }
+
+    if (runtimeEligible) {
+        const uint64_t hostGeneration = g_LayerHostGeneration.load(std::memory_order_acquire);
+        const uint64_t captureGeneration = sd->captureHostGeneration.load(std::memory_order_acquire);
+        if (hostGeneration != 0 && captureGeneration != hostGeneration) {
+            if (!RepublishCaptureTransportForHost(sd->device, sd->swapchain)) {
+                InitializeCapture(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageCount);
+            }
+            sd->captureHostGeneration.store(hostGeneration, std::memory_order_release);
+        }
+    }
 
     bool asyncPresentDetected = false;
     if (sd) {
@@ -454,6 +487,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkAcquireNextImageKHR)
         return VK_ERROR_INITIALIZATION_FAILED;
+    if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
+        return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
 
     SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(swapchain);
     const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
@@ -478,8 +513,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkCreateSampler || !pCreateInfo)
         return VK_ERROR_INITIALIZATION_FAILED;
+    if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
+        return disp->fp_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
     VkSamplerCreateInfo modified = *pCreateInfo;
-    if (g_LayerState.whitelisted) {
+    {
         auto& state = VulkanLayerState::Get();
 
         bool specialReduction = false;

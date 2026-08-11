@@ -49,6 +49,7 @@ enum class VulkanCaptureInteropMode {
 };
 
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace, VkExtent2D extent, uint32_t imageCount);
+bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
 
 void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 

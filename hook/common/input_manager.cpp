@@ -6,12 +6,13 @@ InputManager& InputManager::Get() {
     return instance;
 }
 
-InputManager::~InputManager() {
-    Shutdown();
-}
+// Window procedures and any foreign follower remain valid until process exit.
+// Do not call User32 from static destruction, whose ordering relative to the
+// game's window teardown and other injected runtimes is unknowable.
+InputManager::~InputManager() = default;
 
 void InputManager::HookWindow(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd))
+    if (HookIsShuttingDown() || !hwnd || !IsWindow(hwnd))
         return;
 
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -42,8 +43,18 @@ void InputManager::HookWindow(HWND hwnd) {
         return;
     }
 
-    // Install hook
-    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)HookWndProc);
+    // SetWindowLongPtr returns the procedure that actually occupied the slot at
+    // the instant of replacement. Use that value as our next link so a foreign
+    // overlay installing between the read above and this write is preserved.
+    SetLastError(ERROR_SUCCESS);
+    WNDPROC replaced = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                                                  reinterpret_cast<LONG_PTR>(HookWndProc)));
+    if (!replaced && GetLastError() != ERROR_SUCCESS) {
+        HookLog("InputManager: Failed to hook WndProc for hwnd %p (error=%lu)", hwnd, GetLastError());
+        return;
+    }
+    if (replaced)
+        original = replaced;
 
     // Store
     m_Hooks[hwnd] = {original, true};
@@ -67,6 +78,10 @@ void InputManager::UnhookWindow(HWND hwnd) {
                     "InputManager: Skip unhook, WndProc changed externally "
                     "(Current: %p, Us: %p)",
                     current, HookWndProc);
+                // The foreign WndProc may have saved HookWndProc as its next
+                // function. Keep CE's original mapping so that downstream call
+                // remains valid for the lifetime of that foreign chain.
+                return;
             }
         }
         m_Hooks.erase(it);
@@ -76,16 +91,26 @@ void InputManager::UnhookWindow(HWND hwnd) {
 void InputManager::Shutdown() {
     // Write operation - need exclusive lock
     std::lock_guard<std::mutex> lock(m_Mutex);
-    for (auto& pair : m_Hooks) {
-        HWND hwnd = pair.first;
-        if (IsWindow(hwnd) && pair.second.hooked) {
+    for (auto it = m_Hooks.begin(); it != m_Hooks.end();) {
+        HWND hwnd = it->first;
+        if (!IsWindow(hwnd)) {
+            it = m_Hooks.erase(it);
+            continue;
+        }
+        if (it->second.hooked) {
             WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
             if (current == HookWndProc) {
-                SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)pair.second.originalProc);
+                SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)it->second.originalProc);
+                it = m_Hooks.erase(it);
+                continue;
+            }
+            if (current == it->second.originalProc) {
+                it = m_Hooks.erase(it);
+                continue;
             }
         }
+        ++it;
     }
-    m_Hooks.clear();
 }
 
 LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

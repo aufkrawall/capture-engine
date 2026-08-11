@@ -15,14 +15,14 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
     perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     static uint64_t s_perfFrameNum = 0;
     perfMetrics.frameNum = ++s_perfFrameNum;
-    if (g_pSharedMem) {
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
         perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
-        perfMetrics.sourceCapturePhase = g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
-        perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+        perfMetrics.sourceCapturePhase = sharedMemory->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        perfMetrics.sourceEncoderQueueDepth = sharedMemory->encoderQueueDepth.load(std::memory_order_relaxed);
         perfMetrics.sourceMuxQueueKb =
-            (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+            (sharedMemory->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
         perfMetrics.sourceOverloadFlags =
-            g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+            sharedMemory->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
     perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
@@ -185,8 +185,8 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
                                           recordedColorSpace;
             UpdateLastKnownSwapchainHDRStateCache(frameDesc.BufferDesc.Format, isHdr, recordedColorSpace, true);
             g_OverlayAdapter.SetHDR(isHdr, static_cast<int>(frameDesc.BufferDesc.Format));
-            if (g_pSharedMem)
-                g_pSharedMem->SetIsHDR(isHdr);
+            if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory())
+                sharedMemory->SetIsHDR(isHdr);
             if (stateChanged) {
                 HookLogImportant("DX12: Presentation color state changed format=%d tracked=%d colorSpace=%d "
                                  "encoding=%s hdr=%d",

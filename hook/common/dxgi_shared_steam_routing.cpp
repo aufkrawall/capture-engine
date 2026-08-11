@@ -245,10 +245,19 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
         return false;
     }
 
-    // Save current vtable[8] (= DetourPresent) and restore to the real dxgi!Present
-    void* savedVtable8 = dxgi_shared_s_hookedVTable[8];
-    dxgi_shared_s_hookedVTable[8] = (void*)presentOriginal;
+    // Restore only CE's exact slot. A foreign injector may have replaced the
+    // entry after the initial check and must never be overwritten here.
+    void* savedVtable8 = InterlockedCompareExchangePointer(
+        reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), (void*)presentOriginal,
+        (void*)DetourPresent);
     VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
+    if (savedVtable8 != (void*)DetourPresent) {
+        HookLogImportant(
+            "AttemptSteamDX12OverlayInit: Preserving concurrent foreign vtable[8]=%p; Steam init handoff skipped",
+            savedVtable8);
+        dxgi_shared_s_steamDX12InitAttempted.store(false, std::memory_order_release);
+        return false;
+    }
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: vtable[8] temporarily restored to dxgi!Present=%p — "
@@ -278,8 +287,15 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
     if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        dxgi_shared_s_hookedVTable[8] = (void*)DetourPresent;
+        void* replaced = InterlockedCompareExchangePointer(
+            reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), (void*)DetourPresent,
+            (void*)presentOriginal);
         VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
+        if (replaced != (void*)presentOriginal) {
+            HookLogImportant(
+                "AttemptSteamDX12OverlayInit: Preserving foreign vtable[8]=%p installed during Steam init",
+                replaced);
+        }
     } else {
         // CRITICAL: VirtualProtect for re-hook failed — vtable[8] is exposed.
         // Our DetourPresent hook may be lost. Log prominently and continue.

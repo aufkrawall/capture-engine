@@ -406,6 +406,11 @@ void DX12Hook::Shutdown() {
 
 void DX12Hook::OnHostDisconnect() {
     g_IPCReady = false;
+    if (dx12_hook_g_SharedCaptureD3D12.IsActive()) {
+        std::lock_guard<std::recursive_mutex> capLock(dx12_hook_g_DX12CaptureMutex);
+        dx12_hook_g_SharedCaptureD3D12.Reset(true);
+        HookLog("DX12Hook::OnHostDisconnect() - retired host-bound capture transport");
+    }
 }
 
 void DX12Hook::TrackResource(IUnknown* res) {

@@ -238,6 +238,19 @@ void RefreshDirectOriginalForModuleReload(T& original, T resolved, std::atomic<b
     original = resolved;
 }
 
+template <typename T>
+struct FfxInlineHookPublication {
+    T* destination = nullptr;
+    T fallback = nullptr;
+};
+
+template <typename T>
+void PublishFfxInlineHookTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<FfxInlineHookPublication<T>*>(context);
+    *publication->destination =
+        trampoline ? reinterpret_cast<T>(trampoline) : publication->fallback;
+}
+
 inline template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
                            std::atomic<void*>& targetSlot, const char* hookName) {
@@ -281,13 +294,14 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
         targetSlot.store(nullptr, std::memory_order_release);
     }
 
+    FfxInlineHookPublication<T> publication{&original, original};
     void* trampoline = nullptr;
-    if (!InlineHook::Install(target, detour, &trampoline)) {
+    if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishFfxInlineHookTrampoline<T>,
+                                      &publication)) {
         HookLogImportant("FFX Hook: Failed to inline hook %s at %p", hookName, target);
         return false;
     }
 
-    original = reinterpret_cast<T>(trampoline);
     targetSlot.store(target, std::memory_order_release);
     installedFlag.store(true, std::memory_order_release);
     HookLogImportant("FFX Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target, trampoline);

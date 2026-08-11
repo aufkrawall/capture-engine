@@ -319,10 +319,7 @@ inline bool ReflexLimiter::IsManualLimiterConfiguredOrActive() const {
             shm->fpsLimiter.GetCaptureSyncLimiterMode(), kNativeMode);
     };
 
-    if (g_IPC && sharedMemoryWantsManualReflex(g_IPC->GetSharedMem())) {
-        return true;
-    }
-    if (sharedMemoryWantsManualReflex(g_pSharedMem)) {
+    if (sharedMemoryWantsManualReflex(GetHookSharedMemory())) {
         return true;
     }
     if (g_pLocalConfig) {
@@ -348,11 +345,23 @@ inline void ReflexLimiter::EnsureGameOwnedReflexHooks() {
         RegisterQueryInterfaceHook();
         if (origQueryInterface_ && !directQueryInterfaceHooked_) {
             void* trampoline = nullptr;
-            if (InlineHook::Install(reinterpret_cast<void*>(origQueryInterface_),
-                                    reinterpret_cast<void*>(&ReflexDetour_QueryInterface), &trampoline)) {
-                directQueryInterfaceHooked_ = true;
-                directQueryInterfaceTrampoline_ = reinterpret_cast<PFN_NvAPI_QueryInterface>(trampoline);
-                origQueryInterface_ = directQueryInterfaceTrampoline_;
+            struct QueryInterfacePublication {
+                ReflexLimiter* limiter;
+                PFN_NvAPI_QueryInterface fallback;
+            } publication{this, origQueryInterface_};
+            auto publishTrampoline = [](void* published, void* context) {
+                if (!context)
+                    return;
+                auto* state = static_cast<QueryInterfacePublication*>(context);
+                auto* limiter = state->limiter;
+                limiter->directQueryInterfaceTrampoline_ =
+                    reinterpret_cast<PFN_NvAPI_QueryInterface>(published);
+                limiter->origQueryInterface_ = published ? limiter->directQueryInterfaceTrampoline_ : state->fallback;
+                limiter->directQueryInterfaceHooked_ = published != nullptr;
+            };
+            if (InlineHook::InstallPublished(reinterpret_cast<void*>(origQueryInterface_),
+                                             reinterpret_cast<void*>(&ReflexDetour_QueryInterface), &trampoline,
+                                             publishTrampoline, &publication)) {
                 HookLogImportant(
                     "ReflexLimiter: Inline hook installed on NvAPI_QueryInterface as IAT fallback "
                     "(trampoline=%p detour=%p orig=%p)",
@@ -454,6 +463,8 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t functio
     if (!queryInterface || queryInterface == &ReflexDetour_QueryInterface) {
         return nullptr;
     }
+    if (HookIsShuttingDown())
+        return queryInterface(functionId);
 
     static thread_local bool s_insideQueryInterface = false;
     if (s_insideQueryInterface) {
@@ -542,6 +553,8 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_SetSleepMode(IUnknown* p
     if (!forwardSetSleepMode) {
         return NVAPI_ERROR;
     }
+    if (HookIsShuttingDown())
+        return forwardSetSleepMode(pDev, pParams);
 
     static thread_local bool s_InsideReflexSetSleepMode = false;
     if (s_InsideReflexSetSleepMode) {
@@ -564,6 +577,8 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
     if (!forwardSleep) {
         return NVAPI_ERROR;
     }
+    if (HookIsShuttingDown())
+        return forwardSleep(pDev);
 
     if (pDev && limiter.lastDevice_ != pDev) {
         limiter.lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);

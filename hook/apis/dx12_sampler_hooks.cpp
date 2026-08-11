@@ -172,7 +172,7 @@ HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown*
     if (!original)
         return E_FAIL;
     const HRESULT hr = original(factory, adapter, minimumFeatureLevel, riid, device);
-    if (SUCCEEDED(hr) && device && *device) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && device && *device) {
         ID3D12Device* baseDevice = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*device);
         if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) && baseDevice) {
@@ -348,6 +348,10 @@ void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* device, const D3D12_SAM
         originals.createSampler(device, desc, destination);
         return;
     }
+    if (HookIsShuttingDown()) {
+        originals.createSampler(device, desc, destination);
+        return;
+    }
 
     D3D12_SAMPLER_DESC modified = *desc;
     ApplyDynamicSampler(modified, "dynamic");
@@ -361,7 +365,7 @@ void STDMETHODCALLTYPE DetourCreateSampler2(IUnknown* device, const SamplerDesc2
         HookLogImportant("DX12 AF: CreateSampler2 detour has no per-vtable original for device=%p", device);
         return;
     }
-    if (!desc || (desc->Flags & 0x2u) != 0) {
+    if (HookIsShuttingDown() || !desc || (desc->Flags & 0x2u) != 0) {
         originals.createSampler2(device, desc, destination);
         return;
     }
@@ -382,6 +386,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT n
         HookLogImportant("DX12 AF: CreateRootSignature detour has no per-vtable original for device=%p", device);
         return E_FAIL;
     }
+    if (HookIsShuttingDown())
+        return originals.createRootSignature(device, nodeMask, blob, blobSize, riid, rootSignature);
 
     g_rootSignatureCalls.fetch_add(1, std::memory_order_relaxed);
     ID3DBlob* rewritten = nullptr;
@@ -399,7 +405,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT n
 }  // namespace
 
 bool HookDevice(ID3D12Device* device) {
-    if (!device) {
+    if (HookIsShuttingDown() || !device) {
         return false;
     }
     LogConfigOnce();
@@ -514,7 +520,7 @@ void LogSummary(const char* reason) {
 }  // namespace ce::dx12_sampler_hooks
 
 extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* desc) {
-    if (!desc) {
+    if (HookIsShuttingDown() || !desc) {
         return FALSE;
     }
     return ce::dx12_sampler_hooks::ApplyDynamicSampler(*desc, "wrapper-dynamic").Modified() ? TRUE : FALSE;
@@ -526,7 +532,7 @@ HRESULT WINAPI DetourD3D12CreateDeviceRaw(IUnknown* adapter, D3D_FEATURE_LEVEL m
         return E_FAIL;
     }
     const HRESULT hr = oD3D12CreateDeviceRaw(adapter, minimumFeatureLevel, riid, device);
-    if (FAILED(hr) || !device || !*device) {
+    if (FAILED(hr) || HookIsShuttingDown() || !device || !*device) {
         return hr;
     }
 
@@ -550,7 +556,7 @@ HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** objec
     if (!oD3D12GetInterface)
         return E_FAIL;
     const HRESULT hr = oD3D12GetInterface(clsid, riid, object);
-    if (SUCCEEDED(hr) && object && *object) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && object && *object) {
         static const GUID iidDeviceFactory = {
             0x61f307d3, 0xd34e, 0x4e7c, {0x83, 0x74, 0x3b, 0xa4, 0xde, 0x23, 0xcc, 0xcb}};
         IUnknown* factory = nullptr;

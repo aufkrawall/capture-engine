@@ -205,6 +205,9 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   if (!original) {
     return FALSE;
   }
+  if (HookIsShuttingDown()) {
+    return original(lpApp, lpCmd, lpPA, lpTA, bInherit, dwFlags, lpEnv, lpDir, lpSI, lpPI);
+  }
 
   const char *exePath = lpApp ? lpApp : lpCmd;
   bool shouldInject = ShouldInjectChild(exePath);
@@ -230,6 +233,9 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
   CreateProcessW_t original = GetOriginalCreateProcessW();
   if (!original) {
     return FALSE;
+  }
+  if (HookIsShuttingDown()) {
+    return original(lpApp, lpCmd, lpPA, lpTA, bInherit, dwFlags, lpEnv, lpDir, lpSI, lpPI);
   }
 
   // Convert wide to narrow for whitelist check

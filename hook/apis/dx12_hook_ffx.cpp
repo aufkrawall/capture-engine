@@ -608,6 +608,22 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
 }
 
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
+    if (HookIsShuttingDown()) {
+        ce::ffx_api::PresentCallback originalCallback = nullptr;
+        void* originalUserContext = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
+            const auto it = dx12_hook_g_FFXPresentCallbackBridges.find(userCtx);
+            if (it != dx12_hook_g_FFXPresentCallbackBridges.end()) {
+                originalCallback = it->second.originalCallback;
+                originalUserContext = it->second.originalUserContext;
+            }
+        }
+        return originalCallback && originalCallback != &DX12_RenderOverlayViaFFXPresentCallback
+                   ? originalCallback(desc, originalUserContext)
+                   : 0;
+    }
+
     dx12_hook_g_LastFFXPresentCallbackTickMs.store(GetTickCount64(), std::memory_order_release);
 
     static thread_local int s_ffxPresentCallbackDepth = 0;
@@ -768,4 +784,3 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
     return result;
 }
-

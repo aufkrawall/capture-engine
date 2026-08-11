@@ -1,11 +1,35 @@
 #include "ddraw_hook_internal.h"
 
+namespace {
+
+struct DirectDrawCreatePublication {
+    DirectDrawCreate_t fallback = nullptr;
+};
+
+struct DirectDrawCreateExPublication {
+    DirectDrawCreateEx_t fallback = nullptr;
+};
+
+void PublishDirectDrawCreateTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<DirectDrawCreatePublication*>(context);
+    ddraw_hook_oDirectDrawCreate =
+        trampoline ? reinterpret_cast<DirectDrawCreate_t>(trampoline) : publication->fallback;
+}
+
+void PublishDirectDrawCreateExTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<DirectDrawCreateExPublication*>(context);
+    ddraw_hook_oDirectDrawCreateEx =
+        trampoline ? reinterpret_cast<DirectDrawCreateEx_t>(trampoline) : publication->fallback;
+}
+
+}  // namespace
+
 
 void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api,  void* ddraw_hook_device,  bool newDevice, 
                                         const char* ddraw_hook_reason) {
 
 
-    if (!ddraw_hook_device)
+    if (HookIsShuttingDown() || !ddraw_hook_device)
         return;
 
     void** vtable = *(void***)ddraw_hook_device;
@@ -91,9 +115,10 @@ void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t ddraw_hook_directDrawC
     if (!ddraw_hook_directDrawCreate || ddraw_hook_g_DirectDrawCreateInlineInstalled)
         return;
 
+    DirectDrawCreatePublication publication{ddraw_hook_oDirectDrawCreate};
     void* trampoline = nullptr;
-    if (InlineHook::Install((void*)ddraw_hook_directDrawCreate, (void*)DetourDirectDrawCreate, &trampoline)) {
-        ddraw_hook_oDirectDrawCreate = reinterpret_cast<DirectDrawCreate_t>(trampoline);
+    if (InlineHook::InstallPublished((void*)ddraw_hook_directDrawCreate, (void*)DetourDirectDrawCreate, &trampoline,
+                                     PublishDirectDrawCreateTrampoline, &publication)) {
         ddraw_hook_g_DirectDrawCreateInlineInstalled = true;
         HookLog("DDraw: DirectDrawCreate inline hook installed");
     } else {
@@ -109,9 +134,10 @@ void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t ddraw_hook_directD
     if (!ddraw_hook_directDrawCreateEx || ddraw_hook_g_DirectDrawCreateExInlineInstalled)
         return;
 
+    DirectDrawCreateExPublication publication{ddraw_hook_oDirectDrawCreateEx};
     void* trampoline = nullptr;
-    if (InlineHook::Install((void*)ddraw_hook_directDrawCreateEx, (void*)DetourDirectDrawCreateEx, &trampoline)) {
-        ddraw_hook_oDirectDrawCreateEx = reinterpret_cast<DirectDrawCreateEx_t>(trampoline);
+    if (InlineHook::InstallPublished((void*)ddraw_hook_directDrawCreateEx, (void*)DetourDirectDrawCreateEx,
+                                     &trampoline, PublishDirectDrawCreateExTrampoline, &publication)) {
         ddraw_hook_g_DirectDrawCreateExInlineInstalled = true;
         HookLog("DDraw: DirectDrawCreateEx inline hook installed");
     } else {
@@ -637,6 +663,8 @@ void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7,  const char* ddraw_
 void HandleCapture(IDirectDrawSurface7* primarySurface,  IDirectDrawSurface7* explicitSourceSurface) {
 
 
+    if (HookIsShuttingDown())
+        return;
     ddraw_hook_g_CaptureRecurse++;
     if (ddraw_hook_g_CaptureRecurse > 1) {
         ddraw_hook_g_CaptureRecurse--;

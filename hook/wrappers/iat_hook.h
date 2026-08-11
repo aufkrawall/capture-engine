@@ -60,6 +60,32 @@ inline bool IsWindowsSystemModulePath(const wchar_t* modulePath) {
            IsWindowsSystemModulePathUnderRoot(modulePath, windowsDirectory);
 }
 
+inline bool IsGraphicsProxyModuleBaseName(const wchar_t* modulePath) {
+    if (!modulePath)
+        return false;
+    const wchar_t* base = modulePath;
+    for (const wchar_t* cursor = modulePath; *cursor; ++cursor) {
+        if (*cursor == L'\\' || *cursor == L'/')
+            base = cursor + 1;
+    }
+    static constexpr const wchar_t* candidates[] = {
+        L"dxgi.dll",       L"d3d12.dll",       L"d3d11.dll",      L"d3d10_1.dll",
+        L"d3d10.dll",      L"d3d9.dll",        L"d3d8.dll",       L"ddraw.dll",
+        L"opengl32.dll",   L"dinput8.dll",     L"dsound.dll",     L"xinput1_3.dll",
+        L"xinput9_1_0.dll", L"winmm.dll",       L"version.dll",    L"wininet.dll",
+        L"winhttp.dll",    L"dbghelp.dll",     L"nvngx.dll",
+    };
+    for (const wchar_t* candidate : candidates) {
+        if (_wcsicmp(base, candidate) == 0)
+            return true;
+    }
+    return false;
+}
+
+inline bool IsNonSystemGraphicsProxyModulePath(const wchar_t* modulePath) {
+    return IsGraphicsProxyModuleBaseName(modulePath) && !IsWindowsSystemModulePath(modulePath);
+}
+
 inline bool ShouldApplyDynamicHookForModule(DynamicHookModuleFilter moduleFilter, const char* moduleBaseName,
                                             HMODULE module) {
     return !moduleFilter || moduleFilter(moduleBaseName, module);

@@ -7,6 +7,32 @@ static PFN_D3D9_PresentEx_Inline oD3D9PresentExTrampoline = nullptr;
 
 static PFN_D3D9_SwapChain_Present_Inline oD3D9SwapChainPresentTrampoline = nullptr;
 
+namespace {
+
+struct Direct3DCreate9Publication {
+    Direct3DCreate9_t fallback = nullptr;
+};
+
+void PublishD3D9PresentTrampoline(void* trampoline, void*) {
+    oD3D9PresentTrampoline = reinterpret_cast<PFN_D3D9_Present_Inline>(trampoline);
+}
+
+void PublishD3D9PresentExTrampoline(void* trampoline, void*) {
+    oD3D9PresentExTrampoline = reinterpret_cast<PFN_D3D9_PresentEx_Inline>(trampoline);
+}
+
+void PublishD3D9SwapChainPresentTrampoline(void* trampoline, void*) {
+    oD3D9SwapChainPresentTrampoline = reinterpret_cast<PFN_D3D9_SwapChain_Present_Inline>(trampoline);
+}
+
+void PublishDirect3DCreate9Trampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<Direct3DCreate9Publication*>(context);
+    dx9_hook_oDirect3DCreate9 =
+        trampoline ? reinterpret_cast<Direct3DCreate9_t>(trampoline) : publication->fallback;
+}
+
+}  // namespace
+
 static std::atomic<bool> g_InlineHooksInProgress{false};  // Guard against re-entry (atomic for thread safety)
 
 static bool g_HooksInitialized = false;
@@ -183,7 +209,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
     if (HookIsShuttingDown()) {
         if (oD3D9PresentTrampoline)
             return oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-        return D3D_OK;
+        return D3DERR_INVALIDCALL;
     }
     if (ShouldSkipDX9PresentForVulkan()) {
         if (oD3D9PresentTrampoline)
@@ -230,7 +256,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
     if (HookIsShuttingDown()) {
         if (oD3D9PresentExTrampoline)
             return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-        return D3D_OK;
+        return D3DERR_INVALIDCALL;
     }
     if (ShouldSkipDX9PresentForVulkan()) {
         if (oD3D9PresentExTrampoline)
@@ -285,7 +311,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
         if (oD3D9SwapChainPresentTrampoline)
             return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
                                                    dwFlags);
-        return D3D_OK;
+        return D3DERR_INVALIDCALL;
     }
     if (ShouldSkipDX9PresentForVulkan()) {
         if (oD3D9SwapChainPresentTrampoline)
@@ -385,8 +411,8 @@ static bool InstallD3D9InlineHooks() {
         LogDirect("Installing Present inline hook at %p...", presentAddr);
         EarlyLog("DX9: Installing Present inline hook at %p...", presentAddr);
         void* trampoline = nullptr;
-        if (InlineHook::Install(presentAddr, (void*)DetourD3D9PresentInline, &trampoline)) {
-            oD3D9PresentTrampoline = (PFN_D3D9_Present_Inline)trampoline;
+        if (InlineHook::InstallPublished(presentAddr, (void*)DetourD3D9PresentInline, &trampoline,
+                                         PublishD3D9PresentTrampoline, nullptr)) {
             LogDirect("Present inline hook SUCCESS (addr=%p, trampoline=%p)", presentAddr, trampoline);
             EarlyLog("DX9: Present inline hook installed (addr=%p, trampoline=%p)", presentAddr, trampoline);
             anySuccess = true;
@@ -401,8 +427,8 @@ static bool InstallD3D9InlineHooks() {
     if (presentExAddr) {
         EarlyLog("DX9: Installing PresentEx inline hook at %p...", presentExAddr);
         void* trampoline = nullptr;
-        if (InlineHook::Install(presentExAddr, (void*)DetourD3D9PresentExInline, &trampoline)) {
-            oD3D9PresentExTrampoline = (PFN_D3D9_PresentEx_Inline)trampoline;
+        if (InlineHook::InstallPublished(presentExAddr, (void*)DetourD3D9PresentExInline, &trampoline,
+                                         PublishD3D9PresentExTrampoline, nullptr)) {
             EarlyLog("DX9: PresentEx inline hook installed (addr=%p, trampoline=%p)", presentExAddr, trampoline);
             anySuccess = true;
         } else {
@@ -415,8 +441,8 @@ static bool InstallD3D9InlineHooks() {
     if (swapChainPresentAddr) {
         EarlyLog("DX9: Installing SwapChain::Present inline hook at %p...", swapChainPresentAddr);
         void* trampoline = nullptr;
-        if (InlineHook::Install(swapChainPresentAddr, (void*)DetourD3D9SwapChainPresentInline, &trampoline)) {
-            oD3D9SwapChainPresentTrampoline = (PFN_D3D9_SwapChain_Present_Inline)trampoline;
+        if (InlineHook::InstallPublished(swapChainPresentAddr, (void*)DetourD3D9SwapChainPresentInline,
+                                         &trampoline, PublishD3D9SwapChainPresentTrampoline, nullptr)) {
             EarlyLog(
                 "DX9: SwapChain::Present inline hook installed (addr=%p, "
                 "trampoline=%p)",
@@ -500,9 +526,10 @@ void DX9Hook::Init() {
     // with the trampoline so calling it doesn't re-enter the inline hook.
     static bool s_direct3DCreate9InlineInstalled = false;
     if (pD3DCreate9 && !s_direct3DCreate9InlineInstalled) {
+        Direct3DCreate9Publication publication{dx9_hook_oDirect3DCreate9};
         void* trampoline = nullptr;
-        if (InlineHook::Install(pD3DCreate9, (void*)DetourDirect3DCreate9, &trampoline)) {
-            dx9_hook_oDirect3DCreate9 = (Direct3DCreate9_t)trampoline;
+        if (InlineHook::InstallPublished(pD3DCreate9, (void*)DetourDirect3DCreate9, &trampoline,
+                                         PublishDirect3DCreate9Trampoline, &publication)) {
             s_direct3DCreate9InlineInstalled = true;
             EarlyLog("DX9: Direct3DCreate9 inline hook installed (trampoline=%p)", trampoline);
         } else {

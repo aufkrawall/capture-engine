@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-08-08
+Last cross-checked: 2026-08-11
 
 Primary sources:
 - top-level repo layout (verified against the working tree)
@@ -69,7 +69,7 @@ anchors that predate the split are approximate.
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.
   - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_inject.cpp`,
-    `injection_security.cpp`, `inject_main.cpp`.
+    `injection_security.cpp`, `inject_main.cpp`, `inject_lifecycle.cpp`.
   - Recording/media orchestration: `media_main_encoder_0*.cpp` (session, loop start,
     WGC target, select, startup, emit, encode, health),
     `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target
@@ -78,7 +78,7 @@ anchors that predate the split are approximate.
     session, state, queue, init, frame_pump units + `wgc_capture.cpp` facade).
 - `hook/`
   - `main.cpp` + `main_*.cpp` (dllmain, injection, install, loadlibrary, hookthread,
-    redirect, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`;
+    host_lifecycle, redirect, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`;
     `main_ue5.cpp` owns validated persistent UE CVar shadow redirection and module lifecycle.
   - `apis/` - per-API hook sets, de-inlined into semantic units:
     - DX12: `dx12_hook.cpp` (facade) + `dx12_hook_internal.h` + semantic units:
@@ -128,7 +128,8 @@ anchors that predate the split are approximate.
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
     `system_metrics*.cpp` (metrics + gpu unit), `reflex_limiter.h`, `fps_limiter.h`.
   - `wrappers/` - `dxgi_swapchain_wrap*.cpp` (wrap, present, lifetime, frame_latency),
-    `hook_system.cpp`, `iat_hook.h`.
+    `hook_system.cpp`, `iat_hook.*`, `vtable_hook.cpp`, `inline_hook*.cpp`, and
+    `hook_patch_transaction.*` (thread-quiesced code-patch transactions).
 - `mediaengine/`
   - De-inlined `MediaEngine` class: `mediaengine.cpp` (facade) + semantic units:
     `mediaengine_audio_{helpers,thread,loop_poll,loop_commit,audio_pull,
@@ -172,8 +173,11 @@ anchors that predate the split are approximate.
 ## High-Risk / High-Value Files
 
 - `common/shared_defs.h` - shared-memory ABI (version `38`, source-verified).
-- `captureengine/injection.cpp` + `injection_manager.cpp` - host-side injection
-  timing and delayed-injection logic.
+- `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_inject.cpp` -
+  host-side startup/late injection, resident target adoption, and deject acknowledgement.
+- `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
+  `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
+  reactivation lifecycle across host generations.
 - `captureengine/inject_main.cpp` - shared-memory setup, config reloads, and
   inject-overlay runtime handoff flags.
 - `hook/main.cpp` + `main_injection.cpp` - hook bootstrap and wrapper-init decisions.
@@ -187,7 +191,11 @@ anchors that predate the split are approximate.
   routing, startup coexistence, and FG transitions.
 - `hook/common/streamline_runtime_policy.h` - Streamline PostSL startup/suspend
   policy helpers.
-- `hook/common/overlay_compat.h` - third-party overlay and FFX module detection helpers.
+- `hook/common/overlay_compat.h` + `overlay_compat_detail/module_table.h` - loader-free
+  hot-path identity for third-party overlays/injects and FFX modules.
+- `hook/wrappers/inline_hook*.cpp` + `hook_patch_transaction.*` + `vtable_hook.cpp` +
+  `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, and
+  thread-quiesced inline patching.
 - `hook/common/ngx_fg_preset_override.{h,cpp}` - `dlss_fg_preset`: the DLSS FG render
   preset is a driver-settings (DRS) key, not an NGX parameter, so this wraps the
   `NvAPI_DRS_GetSetting` pointer `nvngx_dlssg.dll` resolves.

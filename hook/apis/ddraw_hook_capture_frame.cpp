@@ -222,6 +222,8 @@ bool DDrawCapture::CaptureFrameFromSurface(IDirectDrawSurface7* surface) {
 
 
         std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (HookIsShuttingDown())
+            return false;
         if (!surface) {
             return false;
         }
@@ -250,6 +252,8 @@ void DDrawCapture::CaptureFrame(void* bits,  int pitch) {
 
 
         std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (HookIsShuttingDown())
+            return;
         if (!initialized || !bits)
             return;
 
@@ -329,6 +333,8 @@ void DDrawCapture::CaptureFrameViaGDI(IDirectDrawSurface7* surface) {
 
 
         std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (HookIsShuttingDown())
+            return;
         if (!initialized)
             return;
 

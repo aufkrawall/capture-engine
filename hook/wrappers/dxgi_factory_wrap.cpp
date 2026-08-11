@@ -287,6 +287,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::GetWindowAssociation(HWND* pWindowH
 
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                              IDXGISwapChain** ppSwapChain) {
+    if (HookIsShuttingDown())
+        return m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, ppSwapChain);
     WrapperLog("CreateSwapChain: CALLED (device=%p, hwnd=%p)", pDevice, pDesc ? pDesc->OutputWindow : nullptr);
 
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
@@ -367,6 +369,10 @@ HRESULT STDMETHODCALLTYPE
 CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                           const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                           IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+    if (HookIsShuttingDown()) {
+        return m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput,
+                                               ppSwapChain);
+    }
     WrapperLog("CreateSwapChainForHwnd: CALLED (device=%p, hwnd=%p)", pDevice, hWnd);
 
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
@@ -413,6 +419,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
                                                                           const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                                           IDXGIOutput* pRestrictToOutput,
                                                                           IDXGISwapChain1** ppSwapChain) {
+    if (HookIsShuttingDown()) {
+        return m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput,
+                                                     ppSwapChain);
+    }
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
     const bool d3d12CommandQueueSwapchain =
         CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForCoreWindow");
@@ -480,6 +490,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                                                                            const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                                            IDXGIOutput* pRestrictToOutput,
                                                                            IDXGISwapChain1** ppSwapChain) {
+    if (HookIsShuttingDown()) {
+        return m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, ppSwapChain);
+    }
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
     const bool d3d12CommandQueueSwapchain =
         CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForComposition");

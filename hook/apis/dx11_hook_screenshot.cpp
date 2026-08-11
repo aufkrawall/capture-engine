@@ -130,6 +130,7 @@ void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLay
 void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
 
 
+    dx11_hook_g_UnsafeSwapChainObserved = false;
     if (!pSwapChain)
         return;
 
@@ -177,6 +178,8 @@ void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     if (shouldDrawOverlay) {
         DrawDX11Overlay(pSwapChain);
     }
+    if (dx11_hook_g_UnsafeSwapChainObserved)
+        return;
     if (captureAfterOverlay) {
         doCapture(true);
     }

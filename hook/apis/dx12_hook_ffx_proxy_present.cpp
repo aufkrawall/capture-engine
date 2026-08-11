@@ -202,7 +202,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
-    if (outermost && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
+    if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present");
     }
     return original(self, SyncInterval, Flags);
@@ -222,7 +222,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
-    if (outermost && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
+    if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present1");
     }
     return original(self, SyncInterval, Flags, pParams);
@@ -408,4 +408,3 @@ void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason) {
         g_FFXProxyPreworkLastTid.load(std::memory_order_acquire),
         static_cast<unsigned long long>(g_FFXProxyPresentHookInstallQpc.load(std::memory_order_acquire)));
 }
-

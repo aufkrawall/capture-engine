@@ -372,6 +372,7 @@ inline bool opengl_hook_g_VersionChecked = false;
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - fixed short values stay in SSO; default construction is non-allocating
 inline std::string opengl_hook_g_OpenGLApiLabel = "OpenGL";
+inline std::atomic<bool> opengl_hook_g_HostGenerationResetPending{false};
 
 inline bool opengl_hook_g_LuidReported = false;
 

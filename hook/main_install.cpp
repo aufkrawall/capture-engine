@@ -33,9 +33,9 @@ void CheckAndInstallHooks() {
   if (!s_checkedForVulkan || s_vulkanActive) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
     bool vulkanLayerOwned = false;
-    if (g_pSharedMem) {
-      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-      vulkanLayerOwned = g_pSharedMem->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+      uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+      vulkanLayerOwned = sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
                          (lastVulkan != 0 && (GetTickCount64() - lastVulkan) < 2000);
     }
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||

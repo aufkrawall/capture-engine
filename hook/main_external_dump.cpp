@@ -1,5 +1,13 @@
 #include "main_internal.h"
 
+namespace {
+
+void PublishMiniDumpWriteDumpTrampoline(void* trampoline, void*) {
+  g_OriginalMiniDumpWriteDump.store(reinterpret_cast<MiniDumpWriteDump_t>(trampoline), std::memory_order_release);
+}
+
+}  // namespace
+
 std::mutex g_ExternalDumpStormMutex;
 
 std::unordered_map<std::string, ExternalDumpStormRecord> g_ExternalDumpStormRecords;
@@ -231,12 +239,12 @@ void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* module
     }
 
     void* trampoline = nullptr;
-    if (!InlineHook::Install(target, reinterpret_cast<void*>(&HookedMiniDumpWriteDump), &trampoline)) {
+    if (!InlineHook::InstallPublished(target, reinterpret_cast<void*>(&HookedMiniDumpWriteDump), &trampoline,
+                                      PublishMiniDumpWriteDumpTrampoline, nullptr)) {
       HookLog("CrashMirror: Failed to install MiniDumpWriteDump inline hook at %p", target);
       return;
     }
 
-    g_OriginalMiniDumpWriteDump.store(reinterpret_cast<MiniDumpWriteDump_t>(trampoline), std::memory_order_release);
     g_MiniDumpWriteDumpHookInstalled.store(true, std::memory_order_release);
     HookLogImportant("CrashMirror: Installed MiniDumpWriteDump hook at %p (trampoline=%p)", target, trampoline);
   });

@@ -17,6 +17,7 @@
 #include "../common/shared_defs.h"
 #include "host_metrics.h"
 #include "injection.h"
+#include "inject_lifecycle.h"
 
 namespace fs = std::filesystem;
 
@@ -500,6 +501,9 @@ int InjectProcessMain(const AppConfig& config) {
         LogInfo("[Inject] Created limiter events");
     }
 
+    InjectLifecycleControl injectLifecycle;
+    injectLifecycle.Initialize();
+
     pSharedMem->structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
     pSharedMem->abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE, std::memory_order_relaxed);
     pSharedMem->SetVersion(SHARED_MEMORY_VERSION);
@@ -747,11 +751,12 @@ int InjectProcessMain(const AppConfig& config) {
         }
     }
 
-    // Signal hook to exit
-    LogInfo("[Inject] Signaling hook to exit...");
+    // Withdraw readiness, then wake every resident hook/layer. Deactivation is
+    // cooperative because foreign chains and game wrappers can retain hook addresses.
+    LogInfo("[InjectLifecycle] Requesting cooperative hook deactivation...");
     SetInjectOverlayRuntimeState(pSharedMem, false, false, "injector:shutdown");
     pSharedMem->SetRequestExit(true);
-    Sleep(200);  // Give hook time to unload
+    injectLifecycle.SignalHostStopping();
 
     // Destroy injector explicitly before other cleanup so WMI teardown
     // (CancelAsyncCall + drain) completes while COM is still initialized.

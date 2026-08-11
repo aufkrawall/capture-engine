@@ -39,7 +39,8 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
 // Returns true on success.
 bool Remove(void* target);
 
-// Remove all installed hooks and free trampoline memory.
+// Remove all installed hooks that CE still owns. Trampolines remain resident so
+// foreign injectors that saved CE chain addresses cannot call freed code.
 void RemoveAll();
 
 // Install a deep hook that fully wraps a function past an external JMP patch.
@@ -60,6 +61,12 @@ void RemoveAll();
 // - wrapperFn: replacement function with same signature as target
 // Returns trampoline to call original function, or nullptr on failure.
 void* InstallDeepHook(void* target, void* wrapperFn);
+
+// Deep-hook variant that publishes its callable trampoline before the live
+// body patch becomes observable. The publisher receives nullptr if the patch
+// fails after publication.
+void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
+                               void* publisherContext);
 
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);

@@ -347,6 +347,10 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    if (!pSwapChain)
+        return DXGI_ERROR_INVALID_CALL;
+    if (HookIsShuttingDown())
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
     // DIAGNOSTIC: time the WHOLE DetourPresent call. The ECL diagnostic proved the Alt+Tab
@@ -456,10 +460,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             "DetourPresent: ENTRY #%d (pSwapChain=%p, IsInWrapper=%d, "
             "trampoline=%p)",
             entryNum, pSwapChain, IsInWrapperPresent() ? 1 : 0, dxgi_shared_oPresentTrampoline);
-    }
-
-    if (!pSwapChain) {
-        return DXGI_ERROR_INVALID_CALL;
     }
 
     const APIType api = DetectAPIType(pSwapChain);

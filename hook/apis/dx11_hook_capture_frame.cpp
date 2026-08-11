@@ -52,6 +52,8 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
             }
             return false;
         }
+        if (HookIsShuttingDown())
+            return false;
 
         static std::atomic<int> s_captureFrameCount{0};
         int frameNum = s_captureFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;

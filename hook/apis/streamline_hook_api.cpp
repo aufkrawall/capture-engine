@@ -11,6 +11,12 @@ slResult SlNullFunctionStub() {
 
 void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName) {
 
+    auto originalGetPluginFunction = GetCallableOriginalGetPluginFunction();
+    if (!originalGetPluginFunction) {
+        return streamline_hook_g_Original_slGetPluginFunction ? reinterpret_cast<void*>(SlNullFunctionStub) : nullptr;
+    }
+    if (HookIsShuttingDown())
+        return originalGetPluginFunction(streamline_hook_functionName);
 
     if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
         static std::atomic<int> s_externalOverlaySuppressedPluginLookupLogCount{0};
@@ -24,11 +30,6 @@ void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName) {
         return reinterpret_cast<void*>(SlNullFunctionStub);
     }
 
-    auto originalGetPluginFunction = GetCallableOriginalGetPluginFunction();
-    if (!originalGetPluginFunction) {
-        return streamline_hook_g_Original_slGetPluginFunction ? reinterpret_cast<void*>(SlNullFunctionStub) : nullptr;
-    }
-
     return originalGetPluginFunction(streamline_hook_functionName);
 
 }
@@ -36,6 +37,13 @@ void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName) {
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_hook_functionName,  void*& streamline_hook_function) {
 
+    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
+    if (!originalGetFeatureFunction) {
+        streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
+        return streamline_hook_kSlResultErrorInvalidState;
+    }
+    if (HookIsShuttingDown())
+        return originalGetFeatureFunction(feature, streamline_hook_functionName, streamline_hook_function);
 
     if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
         static std::atomic<int> s_externalOverlaySuppressedLookupLogCount{0};
@@ -46,12 +54,6 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_h
                 "Present (feature=%u name=%s depth=%d)",
                 feature, streamline_hook_functionName ? streamline_hook_functionName : "null", streamline_hook_g_ExternalOverlayPresentGuardDepth);
         }
-        streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
-        return streamline_hook_kSlResultErrorInvalidState;
-    }
-
-    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
-    if (!originalGetFeatureFunction) {
         streamline_hook_function = reinterpret_cast<void*>(SlNullFunctionStub);
         return streamline_hook_kSlResultErrorInvalidState;
     }
@@ -130,6 +132,8 @@ slResult Hooked_slSetD3DDevice(void* streamline_hook_d3dDevice) {
     if (!originalSetD3DDevice) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalSetD3DDevice(streamline_hook_d3dDevice);
 
     ID3D12Device* acceptedD3D12Device = nullptr;
     if (streamline_hook_d3dDevice) {
@@ -287,6 +291,8 @@ slResult Hooked_slSetTag(const slViewportHandle& viewport,  const slResourceTag*
     if (!originalSetTag) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalSetTag(viewport, tags, numTags, streamline_hook_commandBuffer);
 
     // Legacy/global resource tagging has no frame token. A monotonically unique opaque identity
     // lets the standby state roll across calls without dereferencing or fabricating an SL object.
@@ -308,6 +314,8 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& streamline_hook_frame,  
     if (!originalSetTagForFrame) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalSetTagForFrame(streamline_hook_frame, viewport, tags, numTags, streamline_hook_commandBuffer);
 
     TryRecordOfficialUiTag("slSetTagForFrame", &streamline_hook_frame, viewport, tags, numTags, streamline_hook_commandBuffer);
 
@@ -326,6 +334,8 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
     if (!originalEvaluateFeature) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalEvaluateFeature(feature, streamline_hook_frame, inputs, numInputs, streamline_hook_commandBuffer);
 
     // Streamline explicitly permits ResourceTag structures as local evaluate inputs; those tags
     // never pass through slSetTag/slSetTagForFrame. Talos uses this route. Keep the steady-state
@@ -427,6 +437,8 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame) {
     if (!originalReflexSleep) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalReflexSleep(streamline_hook_frame);
 
     // DLSSG-health evidence only: relaxed atomics + GetTickCount64 (shared-page read). No locks, no
     // logging, no syscalls — the manual Reflex FPS limiter's latency path through this hook is unchanged.
@@ -458,6 +470,8 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& streamline_hook_option
     if (!originalReflexSetOptions) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalReflexSetOptions(streamline_hook_options);
 
     slReflexOptions adjustedOptions = streamline_hook_options;
     streamline_hook_g_ReflexSetOptionsObservedCount.fetch_add(1, std::memory_order_relaxed);
@@ -498,6 +512,8 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& streamline_hook_co
     if (!originalReflexSetConstants) {
         return streamline_hook_kSlResultErrorInvalidState;
     }
+    if (HookIsShuttingDown())
+        return originalReflexSetConstants(streamline_hook_consts);
 
     SLReflexConstants adjustedConsts = streamline_hook_consts;
     const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();

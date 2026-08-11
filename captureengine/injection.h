@@ -98,10 +98,13 @@ private:
   std::string hookDllPathX86;
 
   struct InjectedProcess {
-    DWORD pid;
+    DWORD pid = 0;
     std::string name;
-    HANDLE hProcess;
-    LPVOID remoteMemory;  // Remote memory allocated for DLL path (APC injection)
+    HANDLE hProcess = nullptr;
+    LPVOID remoteMemory = nullptr;  // Remote DLL-path memory retained until LoadLibrary consumes it
+    HANDLE injectionThread = nullptr;  // Pending remote LoadLibrary thread, if any
+    HANDLE reactivateEvent = nullptr;  // Retained so a pre-load reactivation signal cannot disappear
+    HANDLE vulkanReactivateEvent = nullptr;
   };
 
   mutable std::vector<InjectedProcess> injectedProcesses;
@@ -130,6 +133,7 @@ private:
   bool wmiCoInitNeedsUninitialize = false;
 
   void ScanExistingProcesses();
+  void EjectWithDeadline(DWORD pid, ULONGLONG deadline);
   void LaunchDelayedInjectionThread(DWORD pid, const std::string &name,
                                     const char *sourceTag);
   void ReapCompletedDelayedInjectionThreadsLocked();

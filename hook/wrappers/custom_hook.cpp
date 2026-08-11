@@ -91,13 +91,7 @@ void Shutdown() {
             if (info->type == HookInfo::Type::IAT) {
                 // IAT hooks are cleaned up by IATHook::ShutdownIATHooks
             } else if (info->type == HookInfo::Type::VTable && info->original) {
-                // Restore VTable entry
-                void** entry = reinterpret_cast<void**>(target);
-                DWORD oldProtect;
-                if (VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-                    *entry = info->original;
-                    VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &oldProtect);
-                }
+                VTableHook::Remove(target, info->original);
             }
         }
         g_Hooks.clear();
@@ -187,17 +181,10 @@ Status UnhookVTableEntry(void** vtableEntry, void* original) {
         }
     }
 
-    // Restore original value
-    if (original) {
-        DWORD oldProtect;
-        if (VirtualProtect(reinterpret_cast<void*>(vtableEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            *vtableEntry = original;
-            VirtualProtect(reinterpret_cast<void*>(vtableEntry), sizeof(void*), oldProtect, &oldProtect);
-            HookLog("CustomHook: Unhooked VTable entry %p", vtableEntry);
-            return Status::Success;
-        }
-        return Status::ErrorMemoryProtect;
-    }
+    if (original)
+        return VTableHook::Remove(reinterpret_cast<void*>(vtableEntry), original) == VTableHook::Success
+                   ? Status::Success
+                   : Status::ErrorNotHooked;
 
     return Status::ErrorNotHooked;
 }

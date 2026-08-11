@@ -4,6 +4,9 @@ static std::atomic<bool> s_ResizeInProgress{false};
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                             DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    if (HookIsShuttingDown())
+        return m_pReal ? m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags)
+                       : DXGI_ERROR_INVALID_CALL;
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
     if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
@@ -239,6 +242,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) {
     if (!m_pReal3)
         return DXGI_ERROR_UNSUPPORTED;
+    if (HookIsShuttingDown())
+        return m_pReal3->SetColorSpace1(ColorSpace);
     return DXGIShared::SetSwapChainColorSpaceFromWrapper(m_pReal3, m_pReal, ColorSpace);
 }
 
@@ -246,6 +251,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
                                                              DXGI_FORMAT Format, UINT SwapChainFlags,
                                                              const UINT* pCreationNodeMask,
                                                              IUnknown* const* ppPresentQueue) {
+    if (HookIsShuttingDown()) {
+        return m_pReal3 ? m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
+                                                   pCreationNodeMask, ppPresentQueue)
+                        : DXGI_ERROR_INVALID_CALL;
+    }
     if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays

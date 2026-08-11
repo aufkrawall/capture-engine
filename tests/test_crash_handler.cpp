@@ -293,7 +293,7 @@ TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRout
         std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
     const std::string inlineContents = ReadSourceFile(inlineSource);
     ASSERT_FALSE(inlineContents.empty());
-    const size_t livePatch = inlineContents.find("LogDirect(\"Patching target function...\");");
+    const size_t livePatch = inlineContents.find("if (!WriteOwnedEntryPatch(target, detour");
     const size_t publish = inlineContents.rfind("publisher(trampoline, publisherContext);", livePatch);
     ASSERT_NE(publish, std::string::npos);
     ASSERT_NE(livePatch, std::string::npos);

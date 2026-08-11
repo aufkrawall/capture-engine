@@ -52,6 +52,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
         HookLog("FFX Hook: ffxCreateContext called but original not set!");
         return 1;  // Error
     }
+    if (HookIsShuttingDown())
+        return ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb);
 
     // Parse the swapchain creation descriptor before forwarding: the output pointer is populated by AMD, while
     // the exact game/presentation queue is an input. Direct proxy-backbuffer work is legal only on this queue.
@@ -134,6 +136,8 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
         HookLog("FFX Hook: ffxDestroyContext called but original not set!");
         return 1;  // Error
     }
+    if (HookIsShuttingDown())
+        return ffx_hook_g_Original_ffxDestroyContext(ffx_hook_context, memCb);
 
     const ffxContext contextHandle = ffx_hook_context ? *ffx_hook_context : nullptr;
 
@@ -257,6 +261,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         HookLog("FFX Hook: ffxConfigure called but original not set!");
         return 1;  // Error
     }
+    if (HookIsShuttingDown())
+        return CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc);
     const ffxContext contextHandle = ffx_hook_context ? *ffx_hook_context : nullptr;
 
     bool isVulkanContext = false;

@@ -82,6 +82,115 @@ BOOL CALLBACK FindAuxiliaryProcessWindowProc(HWND hwnd, LPARAM lParam);
 
 }  // namespace detail
 
+// Identity scans publish both narrow and wide hashes so generic proxy names in
+// non-ASCII install paths are classified consistently by A/W module callers.
+inline constexpr size_t kIdentifiedOverlayPathSlotCount = 32;
+
+inline std::atomic<uint64_t> (*IdentifiedOverlayPathHashBanks())[kIdentifiedOverlayPathSlotCount] {
+    static std::atomic<uint64_t> hashes[2][kIdentifiedOverlayPathSlotCount] = {};
+    return hashes;
+}
+
+inline std::atomic<uint32_t>& ActiveIdentifiedOverlayPathHashBank() {
+    static std::atomic<uint32_t> bank{0};
+    return bank;
+}
+
+inline std::atomic<uint64_t>& IdentifiedOverlayPathRefreshSequence() {
+    static std::atomic<uint64_t> sequence{0};
+    return sequence;
+}
+
+template <typename CharT>
+inline uint64_t HashOverlayModulePathInsensitive(const CharT* path) {
+    if (!path || !*path)
+        return 0;
+    uint64_t hash = 1469598103934665603ull;
+    for (; *path; ++path) {
+        hash ^= static_cast<uint64_t>(detail::ToLowerAscii(*path));
+        hash *= 1099511628211ull;
+    }
+    return hash ? hash : 1;
+}
+
+template <typename CharT>
+inline bool IsIdentifiedThirdPartyOverlayModulePath(const CharT* path) {
+    const uint64_t hash = HashOverlayModulePathInsensitive(path);
+    if (!hash)
+        return false;
+    for (;;) {
+        const uint64_t sequenceBefore = IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire);
+        const uint32_t bank = ActiveIdentifiedOverlayPathHashBank().load(std::memory_order_acquire);
+        auto* hashes = IdentifiedOverlayPathHashBanks()[bank];
+        bool found = false;
+        for (size_t i = 0; i < kIdentifiedOverlayPathSlotCount; ++i) {
+            if (hashes[i].load(std::memory_order_acquire) == hash) {
+                found = true;
+                break;
+            }
+        }
+        const uint64_t sequenceAfter = IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire);
+        if (sequenceBefore == sequenceAfter)
+            return found;
+    }
+}
+
+inline void ResetIdentifiedThirdPartyOverlayModulePaths() {
+    auto* banks = IdentifiedOverlayPathHashBanks();
+    for (size_t bank = 0; bank < 2; ++bank) {
+        for (size_t i = 0; i < kIdentifiedOverlayPathSlotCount; ++i)
+            banks[bank][i].store(0, std::memory_order_release);
+    }
+    ActiveIdentifiedOverlayPathHashBank().store(0, std::memory_order_release);
+    IdentifiedOverlayPathRefreshSequence().store(0, std::memory_order_release);
+}
+
+template <typename CharT>
+inline bool PublishIdentifiedThirdPartyOverlayModulePathToBank(const CharT* path, uint32_t bank) {
+    const uint64_t hash = HashOverlayModulePathInsensitive(path);
+    if (!hash || bank > 1)
+        return false;
+    auto* hashes = IdentifiedOverlayPathHashBanks()[bank];
+    for (size_t i = 0; i < kIdentifiedOverlayPathSlotCount; ++i) {
+        uint64_t expected = 0;
+        if (hashes[i].load(std::memory_order_acquire) == hash ||
+            hashes[i].compare_exchange_strong(expected, hash, std::memory_order_acq_rel))
+            return true;
+    }
+    return false;
+}
+
+inline uint32_t BeginIdentifiedThirdPartyOverlayModulePathRefresh() {
+    uint64_t sequence = IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire);
+    for (;;) {
+        while ((sequence & 1u) != 0) {
+            YieldProcessor();
+            sequence = IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire);
+        }
+        if (IdentifiedOverlayPathRefreshSequence().compare_exchange_weak(
+                sequence, sequence + 1, std::memory_order_acq_rel, std::memory_order_acquire))
+            break;
+    }
+    const uint32_t bank = 1u - ActiveIdentifiedOverlayPathHashBank().load(std::memory_order_acquire);
+    auto* hashes = IdentifiedOverlayPathHashBanks()[bank];
+    for (size_t i = 0; i < kIdentifiedOverlayPathSlotCount; ++i)
+        hashes[i].store(0, std::memory_order_relaxed);
+    return bank;
+}
+
+inline void CommitIdentifiedThirdPartyOverlayModulePathRefresh(uint32_t bank) {
+    if (bank <= 1) {
+        ActiveIdentifiedOverlayPathHashBank().store(bank, std::memory_order_release);
+        IdentifiedOverlayPathRefreshSequence().fetch_add(1, std::memory_order_release);
+    }
+}
+
+template <typename CharT>
+inline bool PublishIdentifiedThirdPartyOverlayModulePath(const CharT* path) {
+    const uint32_t bank = ActiveIdentifiedOverlayPathHashBank().load(std::memory_order_acquire);
+    return PublishIdentifiedThirdPartyOverlayModulePathToBank(path, bank);
+}
+
 struct AuxiliaryProcessWindowInfo {
     HWND hwnd = nullptr;
     DWORD threadId = 0;
@@ -132,6 +241,7 @@ inline bool IsThirdPartyOverlayModulePath(const char* path) {
     static constexpr const char* kOverlayTokens[] = {
         "gameoverlayrenderer",   "discord_hook", "socialclub", "eosovh",    "eossdk_win64_shipping",
         "eossdk-win64-shipping", "nvspcap",      "nvoverlay",  "rtsshooks", "specialk",
+        "reshade",               "optiscaler",
     };
 
     for (const char* token : kOverlayTokens) {
@@ -139,13 +249,14 @@ inline bool IsThirdPartyOverlayModulePath(const char* path) {
             return true;
         }
     }
-    return false;
+    return IsIdentifiedThirdPartyOverlayModulePath(path);
 }
 
 inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     static constexpr const wchar_t* kOverlayTokens[] = {
         L"gameoverlayrenderer",   L"discord_hook", L"socialclub", L"eosovh",    L"eossdk_win64_shipping",
         L"eossdk-win64-shipping", L"nvspcap",      L"nvoverlay",  L"rtsshooks", L"specialk",
+        L"reshade",               L"optiscaler",
     };
 
     for (const wchar_t* token : kOverlayTokens) {
@@ -153,7 +264,7 @@ inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
             return true;
         }
     }
-    return false;
+    return IsIdentifiedThirdPartyOverlayModulePath(path);
 }
 
 inline bool IsStartupBlockingOverlayModulePath(const char* path) {
@@ -448,6 +559,17 @@ inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     {"nvoverlay.dll", true, false, false},
     {"RTSSHooks64.dll", true, false, false},
     {"RTSSHooks.dll", true, false, false},
+    {"ReShade64.dll", true, false, false},
+    {"ReShade32.dll", true, false, false},
+    {"ReShade.dll", true, false, false},
+    {"SpecialK64.dll", true, false, false},
+    {"SpecialK32.dll", true, false, false},
+    {"SpecialK.dll", true, false, false},
+    {"OptiScaler.dll", true, false, false},
+    {"OptiScaler.asi", true, false, false},
+    {"CE.ReShadeProxyIdentity", true, false, false},
+    {"CE.SpecialKProxyIdentity", true, false, false},
+    {"CE.OptiScalerProxyIdentity", true, false, false},
     // Streamline interposer — NOT an overlay (no subset). Tracked only so SL-loaded checks on
     // the Present hot path can be answered from the cache instead of a per-Present
     // GetModuleHandleA("sl.interposer.dll") that stalls in the loader during the mode switch.

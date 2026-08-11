@@ -4,6 +4,8 @@
 HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
 
 
+    if (HookIsShuttingDown())
+        return dx9_hook_oEndScene ? dx9_hook_oEndScene(device) : D3DERR_INVALIDCALL;
     if (ShouldBypassDX9HooksForDevice(device)) {
         return dx9_hook_oEndScene(device);
     }
@@ -80,7 +82,7 @@ HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,  DWORD
 
 
     const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
         return callbacks.setSamplerState(device, Sampler, Type, Value);
     }
     return ce::dx9_sampler_state::SetSamplerState(device, Sampler, Type, Value, callbacks.setSamplerState,
@@ -92,7 +94,7 @@ HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device,  DWORD
 
 
     const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
         return callbacks.getSamplerState(device, Sampler, Type, Value);
     }
     return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, callbacks.getSamplerState,
@@ -104,7 +106,7 @@ HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device,  DWORD Stag
 
 
     const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
         return callbacks.setTexture(device, Stage, Texture);
     }
     return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, callbacks.setTexture, callbacks.setSamplerState,
@@ -131,7 +133,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device,  D3DS
     if (!callbacks.createStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.createStateBlock(device, type, stateBlock);
-    if (SUCCEEDED(hr) && stateBlock && *stateBlock)
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock)
         InstallD3D9StateBlockHooks(*stateBlock, "CreateStateBlock");
     return hr;
 
@@ -143,7 +145,7 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     if (!callbacks.endStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.endStateBlock(device, stateBlock);
-    if (SUCCEEDED(hr) && stateBlock && *stateBlock)
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock)
         InstallD3D9StateBlockHooks(*stateBlock, "EndStateBlock");
     return hr;
 
@@ -166,7 +168,7 @@ HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock
         return D3DERR_INVALIDCALL;
 
     const HRESULT hr = apply(stateBlock);
-    if (FAILED(hr) || dx9_hook_g_InOverlayRender)
+    if (FAILED(hr) || HookIsShuttingDown() || dx9_hook_g_InOverlayRender)
         return hr;
 
 
@@ -185,7 +187,7 @@ HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock
 void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock,  const char* reason) {
 
 
-    if (!stateBlock)
+    if (HookIsShuttingDown() || !stateBlock)
         return;
     uintptr_t* vtable = *(uintptr_t**)stateBlock;
     std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9StateBlockVTableMutex);
@@ -211,7 +213,7 @@ void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock,  const char* r
 void InstallD3D9SamplerHooks(uintptr_t* vtable) {
 
 
-    if (!vtable)
+    if (HookIsShuttingDown() || !vtable)
         return;
 
     std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
@@ -314,6 +316,9 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
 }
 void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device,  uintptr_t* deviceVTable) {
 
+
+    if (HookIsShuttingDown())
+        return;
 
     bool shouldCreate = false;
     {

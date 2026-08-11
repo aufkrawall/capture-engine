@@ -626,8 +626,8 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
                 // Propagate HDR state to media engine via shared memory
-                if (g_pSharedMem) {
-                    g_pSharedMem->SetIsHDR(isActualHDR);
+                if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+                    sharedMemory->SetIsHDR(isActualHDR);
                 }
 
                 if (dx12_hook_s_startupOverlayActivationStage ==

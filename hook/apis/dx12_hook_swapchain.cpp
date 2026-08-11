@@ -98,30 +98,31 @@ void DX12_NotifyCommandLists(UINT numCommandLists) {
 void RemoveGlobalVTableHooks() {
     // Remove deep hook first (patches function body past external JMP)
     if (dx12_hook_s_realCreateSCForHwndAddr) {
-        InlineHook::RemoveDeepHook(dx12_hook_s_realCreateSCForHwndAddr);
-        dx12_hook_s_realCreateSCForHwndAddr = nullptr;
-        dx12_hook_s_deepHookTrampoline = nullptr;
+        if (InlineHook::RemoveDeepHook(dx12_hook_s_realCreateSCForHwndAddr)) {
+            dx12_hook_s_realCreateSCForHwndAddr = nullptr;
+            dx12_hook_s_deepHookTrampoline = nullptr;
+        } else {
+            HookLogImportant(
+                "DX12: Retaining deep CreateSwapChain chain pointers because CE could not prove sole ownership");
+        }
     }
 
-    // Remove inline CreateSwapChainForHwnd hook
+    // RemoveAll owns the inline patch transaction. Keep its trampoline pointer
+    // resident because a foreign follower can retain the CE detour as its next
+    // chain link even after the export entry changes.
     if (dx12_hook_s_oCreateSCForHwndInline) {
-        // InlineHook::RemoveAll() is called from dxgi_shared.cpp during shutdown,
-        // but we also null our trampoline pointer to prevent use-after-free.
-        dx12_hook_s_oCreateSCForHwndInline = nullptr;
-        HookLog("DX12: Cleared inline CreateSwapChainForHwnd hook trampoline");
+        HookLog("DX12: Retaining inline CreateSwapChainForHwnd trampoline for saved-chain safety");
     }
 
     // Clear tracked swapchains (no Release needed — we don't AddRef tracked SCs)
     {
         std::lock_guard<std::mutex> lock(dx12_hook_s_hwndSwapchainMutex);
-        dx12_hook_s_hwndSwapchainMap.clear();
-    }
-    {
         for (const auto& entry : dx12_hook_s_hwndSwapchainMap) {
             for (IDXGISwapChain* swapchain : entry.second) {
                 DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(swapchain);
             }
         }
+        dx12_hook_s_hwndSwapchainMap.clear();
     }
 
     if (!dx12_hook_oCreateSwapChainGlobal && !dx12_hook_oCreateSwapChainForHwndGlobal) {

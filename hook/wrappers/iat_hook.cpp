@@ -13,6 +13,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "../apis/dx11_hook.h"
 #include "../apis/dx12_sampler_hooks.h"
@@ -102,6 +103,26 @@ static bool IsMemoryReadable(void* ptr, size_t size) {
     }
 
     return true;
+}
+
+// A caller-owned IAT replacement cannot be chained correctly from a process-
+// wide detour because the detour has no call-site identity. Preserve that slot
+// instead of stealing it: CE can still attach at the export body or graphics
+// object vtable, while the foreign injector keeps its exact predecessor.
+static bool IsForeignIATOwner(void* currentFunction, const char* sourceModule, const char* functionName) {
+    HMODULE source = GetModuleHandleA(sourceModule);
+    void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
+    if (!currentFunction || !expectedFunction || currentFunction == expectedFunction)
+        return false;
+
+    HMODULE expectedOwner = nullptr;
+    HMODULE currentOwner = nullptr;
+    const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(expectedFunction), &expectedOwner))
+        return false;
+    if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(currentFunction), &currentOwner))
+        return true;
+    return currentOwner != expectedOwner;
 }
 
 // ============================================================================
@@ -224,27 +245,69 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
                                        sourceModule, functionName, targetModule);
                             return false;
                         }
+                        if (IsForeignIATOwner(currentFunction, sourceModule, functionName)) {
+                            static std::atomic<uint32_t> preservedOwnerLogs{0};
+                            const uint32_t logIndex = preservedOwnerLogs.fetch_add(1, std::memory_order_relaxed);
+                            if (logIndex < 64 || (logIndex % 512) == 0) {
+                                WrapperLog(
+                                    "IAT: Preserving foreign owner %p for %s!%s in module %p; CE will attach "
+                                    "through export/vtable routes",
+                                    currentFunction, sourceModule, functionName, targetModule);
+                            }
+                            return false;
+                        }
+
+                        PatchedEntry trackingEntry{targetModule, {}, {}, hookFunction, currentFunction,
+                                                   reinterpret_cast<void**>(&iatEntry->u1.Function)};
+                        try {
+                            trackingEntry.sourceModule = sourceModule;
+                            trackingEntry.functionName = functionName;
+                        } catch (...) {
+                            WrapperLog("IAT: Could not allocate ownership record for %s!%s in module %p",
+                                       sourceModule, functionName, targetModule);
+                            return false;
+                        }
 
                         DWORD oldProtect;
                         if (VirtualProtect(&iatEntry->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                             // Save original
+                            void* previousOutOriginal = outOriginal ? *outOriginal : nullptr;
                             if (outOriginal) {
                                 *outOriginal = currentFunction;
                             }
+                            MemoryBarrier();
 
-                            // Patch
-                            iatEntry->u1.Function = reinterpret_cast<ULONG_PTR>(hookFunction);
+                            std::unique_lock<std::mutex> trackingLock(g_PatchLock);
+                            try {
+                                g_PatchedEntries.push_back(std::move(trackingEntry));
+                            } catch (...) {
+                                VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+                                if (outOriginal)
+                                    *outOriginal = previousOutOriginal;
+                                WrapperLog("IAT: Could not publish ownership record for %s!%s in module %p",
+                                           sourceModule, functionName, targetModule);
+                                return false;
+                            }
+
+                            // Claim the slot only if no foreign injector changed
+                            // it after our initial read.
+                            void* replaced = InterlockedCompareExchangePointer(
+                                reinterpret_cast<PVOID volatile*>(&iatEntry->u1.Function), hookFunction,
+                                currentFunction);
 
                             VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
 
+                            if (replaced != currentFunction) {
+                                g_PatchedEntries.pop_back();
+                                WrapperLog("IAT: Preserving concurrent replacement %p for %s!%s in module %p",
+                                           replaced, sourceModule, functionName, targetModule);
+                                if (outOriginal)
+                                    *outOriginal = previousOutOriginal;
+                                return false;
+                            }
+
                             WrapperLog("IAT: Successfully patched %s!%s in module %p", sourceModule, functionName,
                                        targetModule);
-
-                            // Track for restoration
-                            std::lock_guard<std::mutex> lock(g_PatchLock);
-                            g_PatchedEntries.push_back({targetModule, sourceModule, functionName, hookFunction,
-                                                        outOriginal ? *outOriginal : nullptr,
-                                                        reinterpret_cast<void**>(&iatEntry->u1.Function)});
 
                             WrapperLog("IAT: Patched %s!%s in module %p", sourceModule, functionName, targetModule);
                             return true;
@@ -285,7 +348,8 @@ bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionNa
                 std::wstring wsModName(szModName);
                 if (wsModName.find(L"capture_hook") != std::wstring::npos ||
                     wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
-                    ce::overlay_compat::IsThirdPartyOverlayModulePath(szModName)) {
+                    ce::overlay_compat::IsThirdPartyOverlayModulePath(szModName) ||
+                    IsNonSystemGraphicsProxyModulePath(szModName)) {
                     // Skip our own modules and third-party overlay DLLs that also hook
                     // graphics APIs. Patching their GetProcAddress IAT causes them to
                     // receive our hook address as the "original" function, creating a
@@ -342,12 +406,37 @@ bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* func
     std::lock_guard<std::mutex> lock(g_PatchLock);
 
     for (auto it = g_PatchedEntries.begin(); it != g_PatchedEntries.end(); ++it) {
-        if (it->targetModule == targetModule && _stricmp(it->sourceModule.c_str(), sourceModule) == 0 &&
+        if ((!targetModule || it->targetModule == targetModule) &&
+            _stricmp(it->sourceModule.c_str(), sourceModule) == 0 &&
             it->functionName == functionName) {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(reinterpret_cast<const void*>(it->iatEntry), &memory, sizeof(memory)) != sizeof(memory) ||
+                memory.State != MEM_COMMIT || memory.Type != MEM_IMAGE ||
+                memory.AllocationBase != it->targetModule ||
+                (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                WrapperLog("IAT: Dropping unavailable ownership record for %s!%s in module %p", sourceModule,
+                           functionName, it->targetModule);
+                g_PatchedEntries.erase(it);
+                return true;
+            }
+            void* current = *it->iatEntry;
+            if (current != it->hookFunction) {
+                WrapperLog("IAT: Preserving foreign replacement %p for %s!%s in module %p (CE hook=%p)",
+                           current, sourceModule, functionName, it->targetModule, it->hookFunction);
+                g_PatchedEntries.erase(it);
+                return true;
+            }
             DWORD oldProtect;
             if (VirtualProtect(reinterpret_cast<void*>(it->iatEntry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-                *it->iatEntry = originalFunction ? originalFunction : it->originalFunction;
+                void* restoreValue = originalFunction ? originalFunction : it->originalFunction;
+                void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(it->iatEntry),
+                                                                   restoreValue, it->hookFunction);
                 VirtualProtect(reinterpret_cast<void*>(it->iatEntry), sizeof(void*), oldProtect, &oldProtect);
+
+                if (replaced != it->hookFunction) {
+                    WrapperLog("IAT: Preserving concurrent replacement %p for %s!%s in module %p", replaced,
+                               sourceModule, functionName, it->targetModule);
+                }
 
                 g_PatchedEntries.erase(it);
                 return true;

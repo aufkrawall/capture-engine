@@ -164,6 +164,29 @@ inline void GenerateInjectFrameReadyEventName(wchar_t* outName, size_t maxLen, u
     swprintf(outName, maxLen, L"Local\\CE_InjectFrame_%08X", controllerPid);
 }
 
+// Process-lifetime injection control. Host stopping is a broadcast. Reactivation and dormant
+// acknowledgements are per target and per runtime so one injected process cannot consume or
+// reset another process's wakeup.
+inline void GenerateInjectHostStoppingEventName(wchar_t* outName, size_t maxLen) {
+    swprintf(outName, maxLen, L"Local\\CE_InjectHostStopping_%u", SHARED_MEMORY_VERSION);
+}
+
+inline void GenerateInjectReactivateEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
+    swprintf(outName, maxLen, L"Local\\CE_InjectReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+}
+
+inline void GenerateVulkanReactivateEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
+    swprintf(outName, maxLen, L"Local\\CE_VulkanReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+}
+
+inline void GenerateInjectDormantEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
+    swprintf(outName, maxLen, L"Local\\CE_InjectDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+}
+
+inline void GenerateVulkanDormantEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
+    swprintf(outName, maxLen, L"Local\\CE_VulkanDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+}
+
 // Bounds checking helpers for safe shared memory access
 inline bool IsValidTextureIndex(int32_t idx) {
     return idx >= 0 && idx < SHARED_TEXTURE_SLOT_COUNT;

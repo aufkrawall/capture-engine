@@ -65,6 +65,14 @@ void LogMissingOriginalOnce(const char* api) {
 
 LSTATUS WINAPI DetourRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData,
                                       LPDWORD lpcbData) {
+    const RegQueryValueExW_t original = g_origRegQueryValueExW.load(std::memory_order_acquire);
+    if (!original) {
+        LogMissingOriginalOnce("RegQueryValueExW");
+        return ERROR_FILE_NOT_FOUND;
+    }
+    if (HookIsShuttingDown())
+        return original(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+
     // A data buffer without a size is an invalid call; leave it to the real API.
     if (lpData == nullptr || lpcbData != nullptr) {
         const Mode mode = g_mode.load(std::memory_order_acquire);
@@ -85,16 +93,19 @@ LSTATUS WINAPI DetourRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lp
         }
     }
 
-    const RegQueryValueExW_t original = g_origRegQueryValueExW.load(std::memory_order_acquire);
-    if (!original) {
-        LogMissingOriginalOnce("RegQueryValueExW");
-        return ERROR_FILE_NOT_FOUND;
-    }
     return original(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
 }
 
 LSTATUS WINAPI DetourRegGetValueW(HKEY hkey, LPCWSTR lpSubKey, LPCWSTR lpValue, DWORD dwFlags, LPDWORD pdwType,
                                   PVOID pvData, LPDWORD pcbData) {
+    const RegGetValueW_t original = g_origRegGetValueW.load(std::memory_order_acquire);
+    if (!original) {
+        LogMissingOriginalOnce("RegGetValueW");
+        return ERROR_FILE_NOT_FOUND;
+    }
+    if (HookIsShuttingDown())
+        return original(hkey, lpSubKey, lpValue, dwFlags, pdwType, pvData, pcbData);
+
     if (pvData == nullptr || pcbData != nullptr) {
         const Mode mode = g_mode.load(std::memory_order_acquire);
         const Answer answer =
@@ -115,11 +126,6 @@ LSTATUS WINAPI DetourRegGetValueW(HKEY hkey, LPCWSTR lpSubKey, LPCWSTR lpValue, 
         }
     }
 
-    const RegGetValueW_t original = g_origRegGetValueW.load(std::memory_order_acquire);
-    if (!original) {
-        LogMissingOriginalOnce("RegGetValueW");
-        return ERROR_FILE_NOT_FOUND;
-    }
     return original(hkey, lpSubKey, lpValue, dwFlags, pdwType, pvData, pcbData);
 }
 
@@ -212,6 +218,7 @@ Mode GetActiveMode() {
 
 bool Install(Mode mode) {
     if (mode == Mode::kPassthrough) {
+        g_mode.store(mode, std::memory_order_release);
         HookLog("DLSS indicator: dlss_debug_overlay=default - leaving the NGX registry probe untouched");
         return false;
     }

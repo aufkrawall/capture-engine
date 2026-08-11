@@ -3,6 +3,7 @@
 IPCClient::IPCClient()
     : hMapFile(NULL),
       pSharedMem(nullptr),
+      publishedSharedMem(nullptr),
       hMapShmem(NULL),
       pShmem(nullptr),
       hInjectFrameReadyEvent(NULL) {}
@@ -14,6 +15,35 @@ IPCClient::~IPCClient() {
 extern void EarlyLog(const char* fmt, ...);
 
 bool IPCClient::Connect() {
+    std::lock_guard<std::mutex> lock(connectionMutex);
+    return ConnectLocked();
+}
+
+bool IPCClient::Reconnect() {
+    std::lock_guard<std::mutex> lock(connectionMutex);
+
+    // Do not unmap or close the previous session here. Other game threads can
+    // already be inside a CE detour with a pointer acquired before the runtime
+    // became dormant. The OS reclaims these rare, host-generation mappings when
+    // the game exits.
+    if (hInjectFrameReadyEvent)
+        CloseHandle(hInjectFrameReadyEvent);
+    // Mapping handles are not needed to keep an existing mapped view alive.
+    // Close them now so only the deliberately retained views survive a host
+    // generation change.
+    if (hMapShmem)
+        CloseHandle(hMapShmem);
+    if (hMapFile)
+        CloseHandle(hMapFile);
+    pSharedMem = nullptr;
+    hMapFile = NULL;
+    pShmem = nullptr;
+    hMapShmem = NULL;
+    hInjectFrameReadyEvent = NULL;
+    return ConnectLocked();
+}
+
+bool IPCClient::ConnectLocked() {
     if (pSharedMem)
         return true;
 
@@ -46,7 +76,17 @@ bool IPCClient::Connect() {
                     // local sizeof differs (e.g., 32-bit layer reading 64-bit shared memory).
                     pSharedMem = (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 
-                    if (pSharedMem && ValidateSharedMemory(pSharedMem) && pSharedMem->GetHostPID() != 0) {
+                    bool liveHost = false;
+                    if (pSharedMem && ValidateSharedMemory(pSharedMem) && pSharedMem->GetHostPID() != 0 &&
+                        !pSharedMem->GetRequestExit()) {
+                        HANDLE hostProcess = OpenProcess(SYNCHRONIZE, FALSE, pSharedMem->GetHostPID());
+                        if (hostProcess) {
+                            liveHost = WaitForSingleObject(hostProcess, 0) == WAIT_TIMEOUT;
+                            CloseHandle(hostProcess);
+                        }
+                    }
+                    if (liveHost) {
+                        publishedSharedMem.store(pSharedMem, std::memory_order_release);
                         UnmapViewOfFile(pDiscovery);
                         CloseHandle(hDiscovery);
                         EarlyLog("IPC: Connected! HostPID=%d ABI=0x%08X", pSharedMem->GetHostPID(),
@@ -94,6 +134,7 @@ bool IPCClient::Connect() {
 }
 
 ShmemBuffer* IPCClient::GetShmem() {
+    std::lock_guard<std::mutex> lock(connectionMutex);
     if (pShmem)
         return pShmem;
     if (!pSharedMem || !pSharedMem->GetShmemMappingCreated())
@@ -120,6 +161,7 @@ ShmemBuffer* IPCClient::GetShmem() {
 }
 
 bool IPCClient::SignalInjectFrameReady() {
+    std::lock_guard<std::mutex> lock(connectionMutex);
     if (!pSharedMem || pSharedMem->GetHostPID() == 0) {
         return false;
     }
@@ -149,6 +191,8 @@ bool IPCClient::SignalInjectFrameReady() {
 }
 
 void IPCClient::Disconnect() {
+    std::lock_guard<std::mutex> lock(connectionMutex);
+    publishedSharedMem.store(nullptr, std::memory_order_release);
     if (hInjectFrameReadyEvent) {
         CloseHandle(hInjectFrameReadyEvent);
         hInjectFrameReadyEvent = NULL;

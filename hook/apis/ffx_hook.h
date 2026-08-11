@@ -34,6 +34,12 @@ bool IsInitialized();
 // Cleanup hooks (called during shutdown)
 void Shutdown();
 
+// Cooperative host handoff keeps published API pointers resident. These only
+// retire/re-arm the one-shot protected-runtime breakpoint; detours themselves
+// remain installed and become exact forwarders through HookIsShuttingDown().
+void EnterDormant();
+void ReactivateResidentHooks();
+
 // FFX present-callback bridge storage uses a stable context key per configure call.
 void* GetPresentCallbackBridgeKey(void* context);
 

@@ -354,6 +354,21 @@ void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNa
 
 void InitializeThirdPartyOverlayDetection();
 
+void RefreshThirdPartyOverlayIdentityCache();
+
+void InitializeHookLifecycleControl();
+
+void MarkHookLifecycleBootstrapComplete();
+
+// Transitions every CE entry point to pass-through, acknowledges the host, and
+// blocks until a compatible host is published. The DLL deliberately remains
+// resident because games and foreign hook chains can retain CE code pointers.
+bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDied, bool launcherOnly = false);
+
+// Services host shutdown/reactivation for launcher-mode injections without
+// enabling graphics hooks or publishing the launcher as a capture source.
+void RunLauncherHookLifecycle();
+
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
 
 void ArmManualReflexQueryHookIfConfigured(const char *source);

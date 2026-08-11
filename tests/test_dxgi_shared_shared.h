@@ -17,6 +17,8 @@
 #include "../hook/common/ffx_api_parsing.h"
 #include "../hook/wrappers/iat_hook.h"
 #include "../hook/wrappers/inline_hook_policy.h"
+#include "../hook/wrappers/hook_patch_transaction.h"
+#include "../hook/wrappers/vtable_hook_policy.h"
 #include "source_fragment_reader.h"
 
 

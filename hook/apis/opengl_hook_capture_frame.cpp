@@ -12,6 +12,8 @@ void OpenGLCapture::CaptureFrame(HDC hDC) {
             }
             return;
         }
+        if (HookIsShuttingDown())
+            return;
         if (!initialized)
             return;
 

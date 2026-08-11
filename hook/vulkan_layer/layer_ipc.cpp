@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 #include <cstdarg>
 #include <cstdio>
+#include <mutex>
 #include "../common/ipc_client.h"
 #include "../common/perf_logger.h"
 #include "layer_main.h"
@@ -109,63 +110,70 @@ bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat) {
 }
 
 // Initialize layer IPC
+namespace {
+HANDLE g_LayerReactivateEvent = nullptr;
+HANDLE g_LayerHostStoppingEvent = nullptr;
+HANDLE g_LayerDormantEvent = nullptr;
+}
+
+static void RefreshLayerProcessName() {
+    char fullPath[MAX_PATH] = {};
+    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
+    const char* base = strrchr(fullPath, '\\');
+    strncpy(g_ProcessName, base ? base + 1 : fullPath, sizeof(g_ProcessName) - 1);
+    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+}
+
+static bool IsLayerProcessWhitelistedByCurrentHost() {
+    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!discovery)
+        return false;
+    auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
+    bool whitelisted = false;
+    if (ValidateDiscoveryInfo(info)) {
+        const char* entry = info->processWhitelist;
+        const char* end = entry + sizeof(info->processWhitelist);
+        while (entry < end && *entry != '\0') {
+            if (_stricmp(g_ProcessName, entry) == 0) {
+                whitelisted = true;
+                break;
+            }
+            const size_t remaining = static_cast<size_t>(end - entry);
+            const size_t length = strnlen(entry, remaining);
+            if (length == remaining)
+                break;
+            entry += length + 1;
+        }
+    }
+    if (info)
+        UnmapViewOfFile(info);
+    CloseHandle(discovery);
+    return whitelisted;
+}
+
 bool LayerIPC_Init() {
-    if (g_IPCClient.GetSharedMem())
-        return g_LayerState.whitelisted;
-    if (!g_LayerState.whitelisted) {
-        LayerLog("Layer IPC: Skipping host connection (process not whitelisted)");
+    static std::mutex initMutex;
+    std::lock_guard<std::mutex> initLock(initMutex);
+
+    SharedMemoryLayout* current = g_IPCClient.GetSharedMem();
+    if (current && !current->GetRequestExit() && g_LayerState.whitelisted.load(std::memory_order_acquire))
+        return true;
+
+    RefreshLayerProcessName();
+    if (!IsLayerProcessWhitelistedByCurrentHost()) {
+        g_LayerState.whitelisted.store(false, std::memory_order_release);
+        LayerLog("Layer IPC: Process '%s' is not whitelisted by the published host", g_ProcessName);
         return false;
     }
 
-    // Get process name
-    char fullPath[MAX_PATH];
-    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
-    char* p = strrchr(fullPath, '\\');
-    if (p) {
-        strncpy(g_ProcessName, p + 1, sizeof(g_ProcessName) - 1);
-        g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-    } else {
-        strncpy(g_ProcessName, fullPath, sizeof(g_ProcessName) - 1);
-        g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-    }
-
     // Connect to host
-    if (g_IPCClient.Connect()) {
+    if (current ? g_IPCClient.Reconnect() : g_IPCClient.Connect()) {
+        const uint64_t hostGeneration = g_LayerHostGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->GetHostPID());
-
-        // Check Whitelist Cache in Discovery Shared Memory
-        // Replicating isProcessWhitelistedFast logic
-        bool whitelisted = false;
-
-        HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-        if (hDisc) {
-            DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-            if (pDisc) {
-                if (ValidateDiscoveryInfo(pDisc)) {
-                    const char* pw = pDisc->processWhitelist;
-                    const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
-
-                    while (pw < end && *pw != '\0') {
-                        if (_stricmp(g_ProcessName, pw) == 0) {
-                            whitelisted = true;
-                            break;
-                        }
-                        pw += strlen(pw) + 1;
-                    }
-                }
-                UnmapViewOfFile(pDisc);
-            }
-            CloseHandle(hDisc);
-        }
-
-        g_LayerState.whitelisted = whitelisted;
-        if (!whitelisted) {
-            LayerLog("Layer IPC: Process '%s' NOT whitelisted. Layer dormant.", g_ProcessName);
-            g_IPCClient.Disconnect();  // Don't stay connected if dormant
-            return false;
-        }
-
-        LayerLog("Layer IPC: Process '%s' whitelisted. Layer active.", g_ProcessName);
+        g_LayerState.whitelisted.store(true, std::memory_order_release);
+        g_ShuttingDown.store(false, std::memory_order_release);
+        LayerLog("Layer IPC: Process '%s' whitelisted. Layer active (generation=%llu).", g_ProcessName,
+                 static_cast<unsigned long long>(hostGeneration));
 
         // Set vulkanLayerActive flag so other APIs (OpenGL, DX) know Vulkan is primary
         g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
@@ -233,6 +241,140 @@ bool LayerIPC_IsConnected() {
     return g_IPCClient.GetSharedMem() != nullptr;
 }
 
+namespace {
+
+uint32_t GetAdvertisedHostPid() {
+    uint32_t hostPid = 0;
+    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!discovery)
+        return 0;
+    auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
+    if (ValidateDiscoveryInfo(info))
+        hostPid = info->GetInjectPid();
+    if (info)
+        UnmapViewOfFile(info);
+    CloseHandle(discovery);
+    return hostPid;
+}
+
+void SetLayerDormant(const char* reason) {
+    g_ShuttingDown.store(true, std::memory_order_release);
+    g_LayerState.whitelisted.store(false, std::memory_order_release);
+    if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
+        sharedMemory->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
+        sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
+    }
+    if (g_LayerDormantEvent)
+        SetEvent(g_LayerDormantEvent);
+    LayerLog("[InjectLifecycle] Vulkan layer dormant (%s)", reason ? reason : "host unavailable");
+}
+
+bool TryReactivateLayer() {
+    // Consume this generation before inspecting discovery so a newer host's
+    // concurrent signal remains set for the next attempt.
+    if (g_LayerReactivateEvent)
+        ResetEvent(g_LayerReactivateEvent);
+    if (!LayerIPC_Init())
+        return false;
+    if (g_LayerDormantEvent)
+        ResetEvent(g_LayerDormantEvent);
+    SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
+    LayerLog("[InjectLifecycle] Vulkan layer reactivated for host PID %u",
+             sharedMemory ? sharedMemory->GetHostPID() : 0);
+    return true;
+}
+
+DWORD WINAPI LayerHostLifecycleThread(LPVOID) {
+    for (;;) {
+        if (g_LayerState.whitelisted.load(std::memory_order_acquire)) {
+            SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
+            const uint32_t hostPid = sharedMemory ? sharedMemory->GetHostPID() : 0;
+            HANDLE hostProcess = hostPid ? OpenProcess(SYNCHRONIZE, FALSE, hostPid) : nullptr;
+            if (!hostProcess) {
+                SetLayerDormant(hostPid ? "host process inaccessible" : "host identity unavailable");
+            } else {
+                HANDLE waits[3] = {};
+                DWORD count = 0;
+                DWORD hostStopIndex = MAXDWORD;
+                DWORD hostProcessIndex = MAXDWORD;
+                DWORD reactivateIndex = MAXDWORD;
+                if (g_LayerHostStoppingEvent) {
+                    hostStopIndex = count;
+                    waits[count++] = g_LayerHostStoppingEvent;
+                }
+                hostProcessIndex = count;
+                waits[count++] = hostProcess;
+                if (g_LayerReactivateEvent) {
+                    reactivateIndex = count;
+                    waits[count++] = g_LayerReactivateEvent;
+                }
+                const DWORD wait = count ? WaitForMultipleObjects(count, waits, FALSE, INFINITE) : WAIT_FAILED;
+                const DWORD signaledIndex = wait >= WAIT_OBJECT_0 && wait < WAIT_OBJECT_0 + count
+                                                ? wait - WAIT_OBJECT_0
+                                                : MAXDWORD;
+                const bool hostDied = signaledIndex == hostProcessIndex;
+                CloseHandle(hostProcess);
+
+                if (signaledIndex == reactivateIndex && GetAdvertisedHostPid() == hostPid) {
+                    // The injector signals before a newly loaded hook can connect.
+                    // If this layer was already active for that same host, consume
+                    // the redundant wakeup without toggling its runtime resources.
+                    ResetEvent(g_LayerReactivateEvent);
+                    continue;
+                }
+
+                const char* reason = hostDied                           ? "host process exited"
+                                     : signaledIndex == reactivateIndex ? "replacement host signaled"
+                                     : signaledIndex == hostStopIndex   ? "host requested shutdown"
+                                                                        : "host wait failed";
+                SetLayerDormant(reason);
+                if ((hostDied || signaledIndex == reactivateIndex) && TryReactivateLayer())
+                    continue;
+            }
+        }
+
+        if (!g_LayerReactivateEvent || WaitForSingleObject(g_LayerReactivateEvent, INFINITE) != WAIT_OBJECT_0)
+            return 0;
+        if (TryReactivateLayer())
+            continue;
+
+        // The wakeup was reset before this attempt. A later target signal can
+        // now retry a transient mapping/whitelist race without waiting for the
+        // currently advertised host process to terminate.
+        LayerLog("[InjectLifecycle] Vulkan reactivation unavailable; waiting for the next target signal");
+    }
+}
+
+}  // namespace
+
+void LayerIPC_StartHostLifecycleWatcher() {
+    static std::atomic<bool> started{false};
+    if (started.exchange(true, std::memory_order_acq_rel))
+        return;
+    wchar_t eventName[64] = {};
+    GenerateInjectHostStoppingEventName(eventName, _countof(eventName));
+    g_LayerHostStoppingEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
+    GenerateVulkanReactivateEventName(eventName, _countof(eventName), GetCurrentProcessId());
+    g_LayerReactivateEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
+    GenerateVulkanDormantEventName(eventName, _countof(eventName), GetCurrentProcessId());
+    g_LayerDormantEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
+    if (g_LayerState.whitelisted.load(std::memory_order_acquire)) {
+        // A late-injection signal can predate this watcher. The already-live IPC
+        // connection consumed that generation; do not reuse it when this host
+        // subsequently requests deactivation.
+        if (g_LayerReactivateEvent)
+            ResetEvent(g_LayerReactivateEvent);
+        if (g_LayerDormantEvent)
+            ResetEvent(g_LayerDormantEvent);
+    }
+
+    HANDLE thread = CreateThread(nullptr, 0, LayerHostLifecycleThread, nullptr, 0, nullptr);
+    if (thread)
+        CloseHandle(thread);
+    else
+        LayerLog("[InjectLifecycle] Failed to start Vulkan host watcher (error=%lu)", GetLastError());
+}
+
 // Global texture count
 static uint32_t g_PublishedTextureCount = 2;
 
@@ -253,7 +395,7 @@ static void LogPublishedFrame(uint32_t writeIndex, uint32_t readIndex, int32_t t
 }
 
 // Update shared texture handles (called when swapchain created)
-void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
+void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;

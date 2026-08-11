@@ -152,9 +152,10 @@ struct SwapchainData {
     VkExtent2D extent = {0, 0};
     uint32_t imageCount = 0;
     std::vector<VkImage> images;
+    HWND window = nullptr;
     uint32_t currentImageIndex = 0;
-    bool overlayInitialized = false;
-    bool captureEnabled = false;
+    std::atomic<bool> runtimeInitialized{false};
+    std::atomic<uint64_t> captureHostGeneration{0};
     std::atomic<uint32_t> lastAcquireThreadId{0};
     std::atomic<uint64_t> lastAcquireTick{0};
     std::atomic<bool> asyncPresentDetected{false};
@@ -331,6 +332,7 @@ PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,
                        uint32_t imageCount);
+bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
 void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 void CleanupCapture(VkDevice device);

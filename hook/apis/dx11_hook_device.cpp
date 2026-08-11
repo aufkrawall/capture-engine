@@ -33,7 +33,7 @@ HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_D
 }
 
 void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain)
+    if (HookIsShuttingDown() || !pSwapChain)
         return;
 
     // Check if it's really a D3D11 swapchain
@@ -53,6 +53,8 @@ void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain) {
 
 void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
                                            IDXGISwapChain* pSwapChain) {
+    if (HookIsShuttingDown())
+        return;
     HookLog("DX11: InstallDeviceAndContextHooks device=%p context=%p swapChain=%p", pDevice, pContext, pSwapChain);
     InstallVTableHooks(pDevice, pContext, pSwapChain);
 }
@@ -61,6 +63,12 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
                                                           HMODULE Software, UINT Flags, UINT SDKVersion,
                                                           DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
                                                           IDXGISwapChain** ppSwapChain, ID3D10Device** ppDevice) {
+    if (HookIsShuttingDown()) {
+        return oD3D10CreateDeviceAndSwapChain
+                   ? oD3D10CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, SDKVersion,
+                                                    pSwapChainDesc, ppSwapChain, ppDevice)
+                   : E_FAIL;
+    }
     EarlyLog("DX10: D3D10CreateDeviceAndSwapChain called");
 
     DXGI_SWAP_CHAIN_DESC desc;
@@ -103,6 +111,12 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapte
                                                            D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
                                                            DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
                                                            IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice) {
+    if (HookIsShuttingDown()) {
+        return oD3D10CreateDeviceAndSwapChain1
+                   ? oD3D10CreateDeviceAndSwapChain1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion,
+                                                     pSwapChainDesc, ppSwapChain, ppDevice)
+                   : E_FAIL;
+    }
     EarlyLog("DX10.1: D3D10CreateDeviceAndSwapChain1 called");
 
     DXGI_SWAP_CHAIN_DESC desc;
@@ -143,7 +157,7 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapte
 static HRESULT WINAPI DetourD3D10CreateDevice(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
                                               UINT Flags, UINT SDKVersion, ID3D10Device** ppDevice) {
     const HRESULT hr = oD3D10CreateDevice(pAdapter, DriverType, Software, Flags, SDKVersion, ppDevice);
-    if (SUCCEEDED(hr) && ppDevice && *ppDevice)
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppDevice && *ppDevice)
         DX10Hook_RegisterDeviceIdentity(*ppDevice, false, "D3D10CreateDevice");
     return hr;
 }
@@ -152,7 +166,7 @@ static HRESULT WINAPI DetourD3D10CreateDevice1(IDXGIAdapter* pAdapter, D3D10_DRI
                                                UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
                                                ID3D10Device1** ppDevice) {
     const HRESULT hr = oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
-    if (SUCCEEDED(hr) && ppDevice && *ppDevice)
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppDevice && *ppDevice)
         DX10Hook_RegisterDeviceIdentity(*ppDevice, true, "D3D10CreateDevice1");
     return hr;
 }

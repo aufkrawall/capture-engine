@@ -66,6 +66,8 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
                                         const NVSDK_NGX_Parameter* params, void* callback, const char* api) {
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    if (HookIsShuttingDown())
+        return original(ctx, handle, params, callback);
 
     const int expectedFeature = nvngx_hook_g_FeatureRegistry.FindFeature(const_cast<void*>(handle));
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
@@ -95,6 +97,8 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
 NVSDK_NGX_Result ProcessReleaseFeature(PFN_NVSDK_NGX_ReleaseFeature original, void* handle, const char* api) {
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    if (HookIsShuttingDown())
+        return original(handle);
     const NVSDK_NGX_Result result = original(handle);
     if (!ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result)))
         return result;

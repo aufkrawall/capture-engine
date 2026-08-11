@@ -19,8 +19,10 @@ namespace InlineHook {
 
 struct HookEntry {
     void* target;
+    void* detour;
     void* trampoline;
     uint8_t origBytes[32];
+    uint8_t installedBytes[32];
     int patchSize;
     bool installed;
 };
@@ -29,7 +31,8 @@ struct DeepHookEntry {
     void* target;           // Original function address
     void* hookAddr;         // Address where the JMP was written (target + resumeOffset)
     int patchSize;          // Size of displaced instructions at hookAddr
-    uint8_t origBytes[32];  // Original bytes at hookAddr (for removal)
+    uint8_t origBytes[64];  // Original bytes at hookAddr (for removal)
+    uint8_t installedBytes[64];
     uint8_t* trampoline;    // VirtualAlloc'd executable trampoline memory
     bool installed;
 };
@@ -73,6 +76,10 @@ void AbandonCurrentTrampoline();
 
 // Release a slot that was already sealed executable.
 void ReleaseSealedTrampoline(void* trampoline);
+
+// Called only while g_hookMutex is held. Restores deep hooks CE still owns and
+// retains any chain state that a foreign follower may still call.
+void RemoveAllDeepHooksLocked();
 
 // Emit an absolute (x64) or relative (x86) jump from 'dest' to 'target'.
 void WriteJump(uint8_t* dest, void* target);

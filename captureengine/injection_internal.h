@@ -163,6 +163,47 @@ inline LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName
 
 inline constexpr uint64_t injection_kPendingInjectionDelayMs = 1;
 
+inline void CreateTargetReactivationEvents(DWORD pid, bool signalInject, bool signalVulkan, HANDLE* injectEvent,
+                                           HANDLE* vulkanEvent) {
+    if (injectEvent)
+        *injectEvent = nullptr;
+    if (vulkanEvent)
+        *vulkanEvent = nullptr;
+
+    wchar_t eventName[64] = {};
+    GenerateInjectReactivateEventName(eventName, _countof(eventName), pid);
+    HANDLE localInjectEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
+    GenerateVulkanReactivateEventName(eventName, _countof(eventName), pid);
+    HANDLE localVulkanEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
+    if (localInjectEvent && signalInject)
+        SetEvent(localInjectEvent);
+    if (localVulkanEvent && signalVulkan)
+        SetEvent(localVulkanEvent);
+    if (!localInjectEvent || !localVulkanEvent) {
+        LogWarn("[InjectLifecycle] Failed to retain all reactivation events for PID %lu (inject=%p vulkan=%p error=%lu)",
+                static_cast<unsigned long>(pid), localInjectEvent, localVulkanEvent, GetLastError());
+    }
+    if (injectEvent)
+        *injectEvent = localInjectEvent;
+    else if (localInjectEvent)
+        CloseHandle(localInjectEvent);
+    if (vulkanEvent)
+        *vulkanEvent = localVulkanEvent;
+    else if (localVulkanEvent)
+        CloseHandle(localVulkanEvent);
+}
+
+inline void CloseTargetReactivationEvents(HANDLE* injectEvent, HANDLE* vulkanEvent) {
+    if (injectEvent && *injectEvent) {
+        CloseHandle(*injectEvent);
+        *injectEvent = nullptr;
+    }
+    if (vulkanEvent && *vulkanEvent) {
+        CloseHandle(*vulkanEvent);
+        *vulkanEvent = nullptr;
+    }
+}
+
 namespace {
 struct BstrGuard {
     BSTR value = nullptr;

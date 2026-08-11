@@ -35,6 +35,8 @@ int32_t __cdecl Detour_NvApiDrsGetSetting(void* session, void* profile, uint32_t
         // driver entry point is stored, so there is always something to forward to.
         return kNvApiError;
     }
+    if (HookIsShuttingDown())
+        return original(session, profile, settingId, setting);
 
     const uint32_t callerVersion = setting ? setting->version : 0;
     const int32_t status = original(session, profile, settingId, setting);
@@ -113,6 +115,9 @@ bool IsArmed() {
 }
 
 void* MaybeWrapQueryInterface(uint32_t functionId, void* resolved, const void* callerAddress) {
+    if (HookIsShuttingDown())
+        return nullptr;
+
     const uint32_t preset = g_ConfiguredPreset.load(std::memory_order_acquire);
     if (NormalizePreset(preset) == 0 || functionId != kNvApiIdDrsGetSetting || !resolved) {
         return nullptr;

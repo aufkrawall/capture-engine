@@ -278,6 +278,8 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 
+bool DX11Hook_ShouldPassThroughCurrentPresent();
+
 void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain);
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
@@ -463,6 +465,7 @@ inline thread_local int dx11_hook_g_ForcedCaptureBackBufferIndex = -1;
 // Capture can optionally reuse the RTV that overlay rendered to on this frame.
 // Leave this off when capture must happen before overlay.
 inline thread_local bool dx11_hook_g_CaptureUsesOverlayRTV = false;
+inline thread_local bool dx11_hook_g_UnsafeSwapChainObserved = false;
 
 // DX11 runtimes can expose D3D10 compatibility interfaces on the same swapchain.
 // Prefer the highest actual device API so DX11 swapchains do not fall into the

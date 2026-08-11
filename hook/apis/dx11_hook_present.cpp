@@ -1,7 +1,26 @@
 #include "dx11_hook_internal.h"
 
+namespace {
+
+HRESULT CallOriginalPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+    return dx11_hook_oPresent ? dx11_hook_oPresent(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
+}
+
+HRESULT CallOriginalPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
+                             const DXGI_PRESENT_PARAMETERS* parameters) {
+    if (dx11_hook_oPresent1)
+        return dx11_hook_oPresent1(swapChain, syncInterval, flags, parameters);
+    return CallOriginalPresent(swapChain, syncInterval, flags);
+}
+
+}  // namespace
+
+bool DX11Hook_ShouldPassThroughCurrentPresent() {
+    return dx11_hook_g_UnsafeSwapChainObserved;
+}
+
 void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
+    if (HookIsShuttingDown() || !g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return;
 
     ID3D11Device* dev = nullptr;
@@ -109,6 +128,13 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
 }
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    // Dormant hooks remain installed so game-held and foreign-hook pointers stay
+    // valid. Forward before diagnostics or config reads can touch retired host
+    // state.
+    if (HookIsShuttingDown()) {
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
+
     // Performance metrics for this frame
     FrameMetrics perfMetrics;
     perfMetrics.qpcUs = PerfLogger::GetQpcUs();
@@ -116,14 +142,14 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     static uint64_t s_perfFrameNum = 0;
     perfMetrics.frameNum = ++s_perfFrameNum;
-    if (g_pSharedMem) {
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
         perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
-        perfMetrics.sourceCapturePhase = g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
-        perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+        perfMetrics.sourceCapturePhase = sharedMemory->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        perfMetrics.sourceEncoderQueueDepth = sharedMemory->encoderQueueDepth.load(std::memory_order_relaxed);
         perfMetrics.sourceMuxQueueKb =
-            (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+            (sharedMemory->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
         perfMetrics.sourceOverloadFlags =
-            g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+            sharedMemory->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
     perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
@@ -143,13 +169,6 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     // Skip performance logging if disabled
     if (!PerfLogger::Get().IsEnabled()) {
         perfGuard.dismiss();
-    }
-
-    // CRITICAL ULTIMATE FIX: If shutdown flag is set, return immediately WITHOUT
-    // touching ANYTHING - no wrapper checks, no GetDesc, nothing. Just return.
-    // The device may already be destroyed and any D3D call can crash.
-    if (HookIsShuttingDown()) {
-        return S_OK;
     }
 
     // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
@@ -185,11 +204,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         }
 
         if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
-            // Window is being destroyed - app is shutting down
-            // Set shutdown flag and bail immediately without touching any D3D objects
-            RequestHookShutdown();
-            EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
-            return S_OK;
+            EarlyLog("DX11: Window unavailable (hwnd=%p), passing through this Present", desc.OutputWindow);
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
     }
 
@@ -216,8 +232,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
     // The app is already tearing down its D3D resources
-    if (HookIsShuttingDown()) {
-        return S_OK;  // Return success to avoid cascading errors
+    if (HookIsShuttingDown() || DX11Hook_ShouldPassThroughCurrentPresent()) {
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
     // CPU Prerender Limit
@@ -241,7 +257,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // CRITICAL: Check for shutdown first - if app is closing, don't touch
     // anything
     if (HookIsShuttingDown()) {
-        return S_OK;
+        return CallOriginalPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
     }
 
     // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
@@ -265,17 +281,16 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
         }
 
         if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
-            RequestHookShutdown();
-            EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
-            return S_OK;
+            EarlyLog("DX11: Window unavailable (hwnd=%p), passing through this Present1", desc.OutputWindow);
+            return CallOriginalPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
         }
     }
 
     // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND
     // presenting.
-    if (g_pSharedMem) {
-        uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-        if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+        uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+        if (sharedMemory->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
             if (dx11_hook_oPresent1)
                 return dx11_hook_oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
             return dx11_hook_oPresent(pSwapChain, SyncInterval, PresentFlags);
@@ -331,8 +346,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     HandleDX11ProcessFrame(pSwapChain, true);
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
-    if (HookIsShuttingDown()) {
-        return S_OK;
+    if (HookIsShuttingDown() || DX11Hook_ShouldPassThroughCurrentPresent()) {
+        return CallOriginalPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
     }
 
     // CPU Prerender Limit
@@ -355,16 +370,15 @@ thread_local int g_ResizeBuffersDepth = 0;
 // Handle SwapChain resize - must release RTV and reinitialize ImGui
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    // Preserve the application's exact arguments while dormant. In particular,
+    // do not add CE's waitable-object flag before forwarding.
+    if (HookIsShuttingDown()) {
+        return dx11_hook_oResizeBuffers
+                   ? dx11_hook_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
     if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-    // CRITICAL: Check for shutdown first - if app is closing, don't touch
-    // anything
-    if (HookIsShuttingDown()) {
-        if (dx11_hook_oResizeBuffers) {
-            return dx11_hook_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
-        }
-        return S_OK;
-    }
 
     // RECURSION BREAKER: If we are calling ourselves recursively, bail out
     // immediately. This handles the "Hooked the Hook" scenario or infinite
@@ -411,13 +425,19 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 
             void** vtable = *(void***)pSwapChain;
             DWORD oldProtect;
-            if (VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                // Double check we are overwriting OURSELVES (or a hook), not something
-                // random But actually we just want to restore 'oResizeBuffers' (the
-                // Real Original).
-                vtable[13] = (void*)dx11_hook_oResizeBuffers;
-                VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), oldProtect, &oldProtect);
-                HookLog("DX11: DetourResizeBuffers - VTable[13] restored to original.");
+            if (VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                void* replaced = InterlockedCompareExchangePointer(
+                    reinterpret_cast<PVOID volatile*>(&vtable[13]), reinterpret_cast<void*>(dx11_hook_oResizeBuffers),
+                    reinterpret_cast<void*>(DetourResizeBuffers));
+                DWORD ignoredProtect = 0;
+                VirtualProtect(reinterpret_cast<void*>(&vtable[13]), sizeof(void*), oldProtect, &ignoredProtect);
+                if (replaced == reinterpret_cast<void*>(DetourResizeBuffers)) {
+                    HookLog("DX11: DetourResizeBuffers - VTable[13] restored to original.");
+                } else if (replaced != reinterpret_cast<void*>(dx11_hook_oResizeBuffers)) {
+                    HookLogImportant(
+                        "DX11: DetourResizeBuffers - preserving foreign VTable[13] follower %p during DX12 handoff",
+                        replaced);
+                }
             } else {
                 HookLog("DX11: DetourResizeBuffers - FAILED to restore VTable[13]!");
             }
@@ -492,6 +512,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 
 namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+    if (HookIsShuttingDown())
+        return;
     // Deferred AF bootstrap: capture already-bound samplers/SRVs once so later
     // SRV changes can reconcile forced AF with resource context.
     ApplyDeferredSamplerOverrides11(pSwapChain);
@@ -510,7 +532,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
                                                    ID3D11SamplerState** ppSamplerState) {
     if (!pSamplerDesc)
         return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-    if (DX11Hook_IsWrapperSamplerForwarding())
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperSamplerForwarding())
         return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
@@ -639,7 +661,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
                                                      ID3D10SamplerState** ppSamplerState) {
     if (!pSamplerDesc)
         return dx11_hook_oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
-    if (DX11Hook_IsWrapperSamplerForwarding())
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperSamplerForwarding())
         return dx11_hook_oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
 
     D3D10_SAMPLER_DESC desc = *pSamplerDesc;
@@ -681,6 +703,7 @@ void DX11Hook::ProcessDeferredReleases() {
 
 // architecture)
 void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    if (HookIsShuttingDown())
+        return;
     HandleDX11ProcessFrame(pSwapChain, true);
 }
-

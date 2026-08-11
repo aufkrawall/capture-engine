@@ -122,6 +122,9 @@ static char GetPresetChar(int qualityValue) {
 template <typename CreateCall>
 NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureID, NVSDK_NGX_Parameter* params,
                                       void** handle) {
+    if (HookIsShuttingDown())
+        return create();
+
     static std::atomic<bool> s_firstCall{true};
     if (s_firstCall.exchange(false)) {
         HookLogImportant("NVNGX: First CreateFeature call — NVNGX hooks are active (featureID=%d)", featureID);
@@ -387,6 +390,14 @@ static void InstallNGXExportInlineHooks() {
         void* detour;
         void** original;
     };
+    struct TrampolinePublication {
+        void** destination;
+        void* fallback;
+    };
+    const auto publishTrampoline = [](void* trampoline, void* context) {
+        auto* publication = static_cast<TrampolinePublication*>(context);
+        *publication->destination = trampoline ? trampoline : publication->fallback;
+    };
     const ExportHook exports[] = {
         {"NVSDK_NGX_D3D11_GetParameters", (void*)&Hooked_GetParams_D3D11, (void**)&nvngx_hook_oGetParameters_D3D11},
         {"NVSDK_NGX_D3D11_AllocateParameters", (void*)&Hooked_AllocParams_D3D11,
@@ -453,15 +464,16 @@ static void InstallNGXExportInlineHooks() {
             ++aliased;
             continue;
         }
+        TrampolinePublication publication{entry.original, *entry.original};
         void* trampoline = nullptr;
-        if (!InlineHook::Install(target, entry.detour, &trampoline) || !trampoline) {
+        if (!InlineHook::InstallPublished(target, entry.detour, &trampoline, publishTrampoline, &publication) ||
+            !trampoline) {
             ++failed;
             HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name, target);
             continue;
         }
-        // Overwrite unconditionally. An earlier IAT pass may have captured the
-        // raw export address here; calling that now re-enters our own detour.
-        *entry.original = trampoline;
+        // Publication replaced any raw address captured by the earlier IAT pass
+        // before the export body became callable as our detour.
         hookedTargets.push_back({target, trampoline});
         ++hooked;
     }

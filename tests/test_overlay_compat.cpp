@@ -54,11 +54,55 @@ TEST_F(OverlayModuleDetectionTest, MatcherAcceptsKnownOverlayModulesCaseInsensit
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("gameoverlayrenderer64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("RTSSHooks64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("EOSOVH_Win64_Shipping.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("ReShade64.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("SpecialK64.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("OptiScaler.dll"), nullptr);
 
     // Case-insensitive.
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("SocialClub.DLL"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("GAMEOVERLAYRENDERER64.DLL"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("rtsshooks64.dll"), nullptr);
+}
+
+TEST_F(OverlayModuleDetectionTest, IdentifiedProxyPathIsRecognizedWithoutMatchingItsGenericFilename) {
+    const char* proxyPath = "C:\\Games\\Example\\dxgi.dll";
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_TRUE(PublishIdentifiedThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(L"c:\\games\\example\\DXGI.DLL"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("C:\\OtherGame\\dxgi.dll"));
+}
+
+TEST_F(OverlayModuleDetectionTest, IdentifiedProxySupportsWideNonAsciiInstallPaths) {
+    const wchar_t* proxyPath = L"C:\\Spiele\\\u00D6ffentlich\\dxgi.dll";
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_TRUE(PublishIdentifiedThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(proxyPath));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"C:\\Spiele\\Andere\\dxgi.dll"));
+}
+
+TEST_F(OverlayModuleDetectionTest, ProxyIdentityRefreshPublishesAtomically) {
+    const char* oldProxy = "C:\\Games\\Old\\dxgi.dll";
+    const char* newProxy = "C:\\Games\\New\\d3d11.dll";
+    ASSERT_TRUE(PublishIdentifiedThirdPartyOverlayModulePath(oldProxy));
+
+    const uint32_t refreshBank = BeginIdentifiedThirdPartyOverlayModulePathRefresh();
+    ASSERT_TRUE(PublishIdentifiedThirdPartyOverlayModulePathToBank(newProxy, refreshBank));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(oldProxy));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(newProxy));
+
+    CommitIdentifiedThirdPartyOverlayModulePathRefresh(refreshBank);
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(oldProxy));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(newProxy));
+}
+
+TEST_F(OverlayModuleDetectionTest, ExportIdentifiedProxyParticipatesInLoaderFreeOverlayState) {
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    SetIdentifiedOverlayIdentityLoaded("CE.ReShadeProxyIdentity", true);
+    ASSERT_NE(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_NE(std::strstr(GetLoadedThirdPartyOverlayModuleName(), "ReShade"), nullptr);
+    SetIdentifiedOverlayIdentityLoaded("CE.ReShadeProxyIdentity", false);
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
 }
 
 TEST_F(OverlayModuleDetectionTest, CanonicalNamePreservesSteamClassifier) {

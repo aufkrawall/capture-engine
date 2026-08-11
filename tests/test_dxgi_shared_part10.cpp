@@ -658,7 +658,9 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     const size_t legacySetTagHook = streamline.find("slResult Hooked_slSetTag(");
     ASSERT_NE(legacySetTagHook, std::string::npos);
     const size_t legacyRecord = streamline.find("TryRecordOfficialUiTag(\"slSetTag\"", legacySetTagHook);
-    const size_t legacyForward = streamline.find("return originalSetTag(viewport", legacySetTagHook);
+    // The dormant fast path forwards before all active-host work. Verify the
+    // active route's provider call that follows the official UI record.
+    const size_t legacyForward = streamline.find("return originalSetTag(viewport", legacyRecord);
     ASSERT_NE(legacyRecord, std::string::npos);
     ASSERT_NE(legacyForward, std::string::npos);
     EXPECT_LT(legacyRecord, legacyForward)
@@ -746,7 +748,9 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     ASSERT_NE(getStateDeclaration, std::string::npos);
     const size_t getStateHook = getStateDeclaration;
     const size_t callStandby = streamline.find("BeginPreactivationStandby(requestedOutputs)", getStateHook);
-    const size_t callOriginal = streamline.find("originalGetState(viewport, state, streamline_hook_options)", getStateHook);
+    // Ignore the deliberately earlier dormant exact-forward branch.
+    const size_t callOriginal =
+        streamline.find("originalGetState(viewport, state, streamline_hook_options)", callStandby);
     ASSERT_NE(callStandby, std::string::npos);
     ASSERT_NE(callOriginal, std::string::npos);
     EXPECT_LT(callStandby, callOriginal)

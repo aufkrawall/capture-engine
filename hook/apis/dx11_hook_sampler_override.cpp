@@ -334,6 +334,10 @@ void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext
     if (!originalFn) {
         return;
     }
+    if (HookIsShuttingDown()) {
+        originalFn(context, startSlot, numSamplers, ppSamplers);
+        return;
+    }
     if (DX11Hook_IsWrapperContextForwarding()) {
         originalFn(context, startSlot, numSamplers, ppSamplers);
         return;

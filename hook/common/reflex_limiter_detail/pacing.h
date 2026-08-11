@@ -233,12 +233,7 @@ inline void ReflexLimiter::Shutdown() {
     hasLastSleepModeParams_.store(false, std::memory_order_release);
     ZeroMemory(&lastSleepModeParams_, sizeof(lastSleepModeParams_));
     gameActivated_.store(false, std::memory_order_release);
-    available_.store(false, std::memory_order_release);
-    inited_.store(false, std::memory_order_release);
     lastDevice_ = nullptr;
-    origSetSleepMode_ = nullptr;
-    origSleep_ = nullptr;
-    origQueryInterface_ = nullptr;
     manualLimiterConfiguredOrActive_.store(false, std::memory_order_release);
     manualRearmBeforeNextPush_.store(false, std::memory_order_release);
     lastNativePacingSignalTick_.store(0, std::memory_order_release);
@@ -246,13 +241,8 @@ inline void ReflexLimiter::Shutdown() {
     gameSleepObserved_.store(false, std::memory_order_release);
     gameSleepCount_.store(0, std::memory_order_release);
     lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
-    directSetSleepModeHooked_ = false;
-    directSleepHooked_ = false;
-    directSetSleepModeTrampoline_ = nullptr;
-    directSleepTrampoline_ = nullptr;
-    realSetSleepModeForHook_ = nullptr;
-    realSleepForHook_ = nullptr;
     ceOwnedSleepLogged_.store(false, std::memory_order_release);
-    directQueryInterfaceHooked_ = false;
-    directQueryInterfaceTrampoline_ = nullptr;
+    // Cooperative dejection deliberately leaves code/IAT hooks resident.
+    // Preserve every predecessor/trampoline and installed bit so a dormant
+    // detour remains an exact forwarder and a later host can reactivate it.
 }

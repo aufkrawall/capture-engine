@@ -9,7 +9,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         if (dxgi_shared_oResizeBuffers) {
             return dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
         }
-        return S_OK;
+        return DXGI_ERROR_INVALID_CALL;
     }
 
     // Apply backbuffer count override from config
@@ -128,6 +128,12 @@ namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+    if (IsShuttingDown()) {
+        return dxgi_shared_oResizeBuffers1
+                   ? dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
+                                                 pCreationNodeMask, ppPresentQueue)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
     // Apply backbuffer count override from config
     {
         const auto& cfg = GetActiveGraphicsConfig();

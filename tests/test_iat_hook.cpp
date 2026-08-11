@@ -31,6 +31,18 @@ TEST(IATHookTargetFilterTest, WindowsRuntimeDirectoriesAreExcludedCaseInsensitiv
     EXPECT_FALSE(IATHook::IsPathUnderDirectoryRoot(L"C:\\WindowsOld\\System32\\kernel32.dll", L"C:\\Windows"));
 }
 
+TEST(IATHookTargetFilterTest, NonSystemGraphicsProxyModulesAreKeptOutOfCEsIAT) {
+    EXPECT_TRUE(IATHook::IsGraphicsProxyModuleBaseName(L"C:\\Games\\dxgi.dll"));
+    EXPECT_TRUE(IATHook::IsGraphicsProxyModuleBaseName(L"C:\\Mods\\VERSION.DLL"));
+    EXPECT_TRUE(IATHook::IsGraphicsProxyModuleBaseName(L"C:\\Mods\\dinput8.dll"));
+    EXPECT_TRUE(IATHook::IsGraphicsProxyModuleBaseName(L"C:\\Mods\\opengl32.dll"));
+    EXPECT_TRUE(IATHook::IsGraphicsProxyModuleBaseName(L"nvngx.dll"));
+    EXPECT_FALSE(IATHook::IsGraphicsProxyModuleBaseName(L"C:\\Games\\game.dll"));
+
+    EXPECT_TRUE(IATHook::IsNonSystemGraphicsProxyModulePath(L"C:\\Games\\dxgi.dll"));
+    EXPECT_FALSE(IATHook::IsNonSystemGraphicsProxyModulePath(L"C:\\Windows\\System32\\dxgi.dll"));
+}
+
 TEST(IATHookDynamicFilterTest, FilteredDynamicHookRoutesOnlyMatchingModules) {
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(StreamlineCoreModuleFilter, "sl.interposer.dll", nullptr));
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(StreamlineCoreModuleFilter, "SL.COMMON.DLL", nullptr));

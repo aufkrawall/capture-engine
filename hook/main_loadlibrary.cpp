@@ -67,6 +67,9 @@ HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
   if (!original) {
     return nullptr;
   }
+  if (HookIsShuttingDown()) {
+    return original(lpLibFileName);
+  }
 
   if (lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
@@ -85,6 +88,9 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
   LoadLibraryW_t original = GetOriginalLoadLibraryW();
   if (!original) {
     return nullptr;
+  }
+  if (HookIsShuttingDown()) {
+    return original(lpLibFileName);
   }
 
   char pathUtf8[MAX_PATH] = {};
@@ -125,6 +131,9 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
   if (!original) {
     return nullptr;
   }
+  if (HookIsShuttingDown()) {
+    return original(lpLibFileName, hFile, dwFlags);
+  }
 
   if (lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
@@ -150,6 +159,9 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
   LoadLibraryExW_t original = GetOriginalLoadLibraryExW();
   if (!original) {
     return nullptr;
+  }
+  if (HookIsShuttingDown()) {
+    return original(lpLibFileName, hFile, dwFlags);
   }
 
   char pathUtf8[MAX_PATH] = {};
@@ -181,8 +193,13 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
 NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
                                 PUNICODE_STRING DllName, PVOID *BaseAddress) {
   LdrLoadDll_t original = GetOriginalLdrLoadDll();
+  if (!original)
+    return STATUS_DLL_NOT_FOUND;
+  if (HookIsShuttingDown())
+    return original(SearchPath, DllCharacteristics, DllName, BaseAddress);
+
   std::string requestedPath;
-  if (DllName && DllName->Buffer && DllName->Length > 0 && original) {
+  if (DllName && DllName->Buffer && DllName->Length > 0) {
     std::wstring requestedW(DllName->Buffer, DllName->Length / sizeof(wchar_t));
 
     if (!requestedW.empty()) {
@@ -223,9 +240,6 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
       }
     }
   }
-
-  if (!original)
-    return STATUS_DLL_NOT_FOUND;
 
   NTSTATUS status = original(SearchPath, DllCharacteristics, DllName,
                              BaseAddress);

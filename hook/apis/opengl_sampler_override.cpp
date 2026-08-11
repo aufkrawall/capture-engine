@@ -21,6 +21,11 @@
 namespace ce::opengl_sampler_override {
 
 void WINAPI DetourTexParameteri(GLenum target, GLenum pname, GLint value) {
+    if (HookIsShuttingDown()) {
+        if (g_texParameteri)
+            g_texParameteri(target, pname, value);
+        return;
+    }
     ++g_parameterCalls;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     if (g_texParameteri)
@@ -30,6 +35,11 @@ void WINAPI DetourTexParameteri(GLenum target, GLenum pname, GLint value) {
 }
 
 void WINAPI DetourTexParameterf(GLenum target, GLenum pname, GLfloat value) {
+    if (HookIsShuttingDown()) {
+        if (g_texParameterf)
+            g_texParameterf(target, pname, value);
+        return;
+    }
     ++g_parameterCalls;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     if (g_texParameterf)
@@ -39,6 +49,11 @@ void WINAPI DetourTexParameterf(GLenum target, GLenum pname, GLfloat value) {
 }
 
 void WINAPI DetourTexParameteriv(GLenum target, GLenum pname, const GLint* values) {
+    if (HookIsShuttingDown()) {
+        if (g_texParameteriv)
+            g_texParameteriv(target, pname, values);
+        return;
+    }
     ++g_parameterCalls;
     if (!values || !IsControlledParameter(pname)) {
         if (g_texParameteriv)
@@ -52,6 +67,11 @@ void WINAPI DetourTexParameteriv(GLenum target, GLenum pname, const GLint* value
 }
 
 void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* values) {
+    if (HookIsShuttingDown()) {
+        if (g_texParameterfv)
+            g_texParameterfv(target, pname, values);
+        return;
+    }
     ++g_parameterCalls;
     if (!values || !IsControlledParameter(pname)) {
         if (g_texParameterfv)
@@ -66,6 +86,11 @@ void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* val
 
 #define DEFINE_SAMPLER_SCALAR_DETOUR(name, type, original, overrideFn)                  \
     void WINAPI name(GLuint sampler, GLenum pname, type value) {                        \
+        if (HookIsShuttingDown()) {                                                     \
+            if (original)                                                               \
+                original(sampler, pname, value);                                        \
+            return;                                                                     \
+        }                                                                               \
         ++g_parameterCalls;                                                             \
         const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                    \
         if (original)                                                                   \
@@ -79,6 +104,11 @@ DEFINE_SAMPLER_SCALAR_DETOUR(DetourSamplerParameterf, GLfloat, g_samplerParamete
 
 #define DEFINE_SAMPLER_VECTOR_DETOUR(name, type, original, overrideFn)                                           \
     void WINAPI name(GLuint sampler, GLenum pname, const type* values) {                                         \
+        if (HookIsShuttingDown()) {                                                                              \
+            if (original)                                                                                        \
+                original(sampler, pname, values);                                                                \
+            return;                                                                                              \
+        }                                                                                                        \
         ++g_parameterCalls;                                                                                      \
         if (!values || !IsControlledParameter(pname)) {                                                          \
             if (original)                                                                                        \
@@ -99,6 +129,11 @@ DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameterIuiv, GLuint, g_samplerParame
 
 #define DEFINE_TEXTURE_SCALAR_DETOUR(name, type, original, overrideFn)                  \
     void WINAPI name(GLuint texture, GLenum pname, type value) {                        \
+        if (HookIsShuttingDown()) {                                                     \
+            if (original)                                                               \
+                original(texture, pname, value);                                        \
+            return;                                                                     \
+        }                                                                               \
         ++g_parameterCalls;                                                             \
         const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                    \
         if (original)                                                                   \
@@ -112,6 +147,11 @@ DEFINE_TEXTURE_SCALAR_DETOUR(DetourTextureParameterf, GLfloat, g_textureParamete
 
 #define DEFINE_TEXTURE_VECTOR_DETOUR(name, type, original, overrideFn)                                           \
     void WINAPI name(GLuint texture, GLenum pname, const type* values) {                                         \
+        if (HookIsShuttingDown()) {                                                                              \
+            if (original)                                                                                        \
+                original(texture, pname, values);                                                                \
+            return;                                                                                              \
+        }                                                                                                        \
         ++g_parameterCalls;                                                                                      \
         if (!values || !IsControlledParameter(pname)) {                                                          \
             if (original)                                                                                        \
@@ -132,6 +172,11 @@ DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameterIuiv, GLuint, g_textureParame
 
 #define DEFINE_TEXTURE_EXT_SCALAR_DETOUR(name, type, original, overrideFn)                      \
     void WINAPI name(GLuint texture, GLenum target, GLenum pname, type value) {                 \
+        if (HookIsShuttingDown()) {                                                             \
+            if (original)                                                                       \
+                original(texture, target, pname, value);                                         \
+            return;                                                                             \
+        }                                                                                       \
         ++g_parameterCalls;                                                                     \
         const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                            \
         if (original)                                                                           \
@@ -145,6 +190,11 @@ DEFINE_TEXTURE_EXT_SCALAR_DETOUR(DetourTextureParameterfExt, GLfloat, g_textureP
 
 #define DEFINE_TEXTURE_EXT_VECTOR_DETOUR(name, type, original, overrideFn)                                       \
     void WINAPI name(GLuint texture, GLenum target, GLenum pname, const type* values) {                          \
+        if (HookIsShuttingDown()) {                                                                              \
+            if (original)                                                                                        \
+                original(texture, target, pname, values);                                                        \
+            return;                                                                                              \
+        }                                                                                                        \
         ++g_parameterCalls;                                                                                      \
         if (!values || !IsControlledParameter(pname)) {                                                          \
             if (original)                                                                                        \
@@ -207,6 +257,8 @@ bool MarkSamplerObjectForReconcile(GLuint sampler) {
 void WINAPI DetourBindTexture(GLenum target, GLuint texture) {
     if (g_bindTexture)
         g_bindTexture(target, texture);
+    if (HookIsShuttingDown())
+        return;
     if (MarkBoundTextureForReconcile(target, texture)) {
         g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
         ApplyTargetOverrides(target, CurrentResolver());
@@ -216,6 +268,8 @@ void WINAPI DetourBindTexture(GLenum target, GLuint texture) {
 void WINAPI DetourBindSampler(GLuint unit, GLuint sampler) {
     if (g_bindSampler)
         g_bindSampler(unit, sampler);
+    if (HookIsShuttingDown())
+        return;
     if (MarkSamplerObjectForReconcile(sampler)) {
         g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
         ApplySamplerOverrides(sampler, CurrentResolver());
@@ -225,6 +279,8 @@ void WINAPI DetourBindSampler(GLuint unit, GLuint sampler) {
 void WINAPI DetourBindTextureUnit(GLuint unit, GLuint texture) {
     if (g_bindTextureUnit)
         g_bindTextureUnit(unit, texture);
+    if (HookIsShuttingDown())
+        return;
     if (MarkTextureObjectForReconcile(texture)) {
         g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
         ApplyTextureOverrides(texture, CurrentResolver());
@@ -234,7 +290,7 @@ void WINAPI DetourBindTextureUnit(GLuint unit, GLuint texture) {
 void WINAPI DetourBindTextures(GLuint first, GLsizei count, const GLuint* textures) {
     if (g_bindTextures)
         g_bindTextures(first, count, textures);
-    if (!textures || count <= 0)
+    if (HookIsShuttingDown() || !textures || count <= 0)
         return;
     for (GLsizei i = 0; i < count; ++i) {
         if (MarkTextureObjectForReconcile(textures[i])) {
@@ -247,7 +303,7 @@ void WINAPI DetourBindTextures(GLuint first, GLsizei count, const GLuint* textur
 void WINAPI DetourBindSamplers(GLuint first, GLsizei count, const GLuint* samplers) {
     if (g_bindSamplers)
         g_bindSamplers(first, count, samplers);
-    if (!samplers || count <= 0)
+    if (HookIsShuttingDown() || !samplers || count <= 0)
         return;
     for (GLsizei i = 0; i < count; ++i) {
         if (MarkSamplerObjectForReconcile(samplers[i])) {
@@ -260,14 +316,14 @@ void WINAPI DetourBindSamplers(GLuint first, GLsizei count, const GLuint* sample
 void WINAPI DetourDeleteTextures(GLsizei count, const GLuint* textures) {
     if (g_deleteTextures)
         g_deleteTextures(count, textures);
-    if (count > 0 && textures)
+    if (!HookIsShuttingDown() && count > 0 && textures)
         g_objectGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void WINAPI DetourDeleteSamplers(GLsizei count, const GLuint* samplers) {
     if (g_deleteSamplers)
         g_deleteSamplers(count, samplers);
-    if (count > 0 && samplers)
+    if (!HookIsShuttingDown() && count > 0 && samplers)
         g_objectGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 

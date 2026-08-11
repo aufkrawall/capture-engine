@@ -9,7 +9,8 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
     // Determine architecture - use RAII HandleGuard to prevent leaks
     ce::HandleGuard hProcess(OpenProcess(
-        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD,
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD |
+            SYNCHRONIZE,
         FALSE, pid));
     if (!hProcess) {
         LogError("Failed to open process %lu for injection", (unsigned long)pid);
@@ -191,6 +192,15 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         return false;
     }
 
+    // Publish both target wakeups before LoadLibrary can start HookThread. A
+    // signaled manual-reset event survives until the newly loaded hook/layer
+    // consumes it, closing the narrow race where its first IPC mapping attempt
+    // runs before the host has finished publishing all session objects.
+    ce::HandleGuard reactivateEvent;
+    ce::HandleGuard vulkanReactivateEvent;
+    CreateTargetReactivationEvents(pid, true, true, reactivateEvent.addressof(),
+                                   vulkanReactivateEvent.addressof());
+
     ce::HandleGuard hThread(
         CreateRemoteThread(hProcess.get(), NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemotePath.get(), 0, NULL));
     if (!hThread) {
@@ -198,7 +208,23 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         return false;
     }
 
-    WaitForSingleObject(hThread.get(), 5000);  // Wait up to 5s
+    const DWORD loadWait = WaitForSingleObject(hThread.get(), 5000);
+    if (loadWait != WAIT_OBJECT_0) {
+        InjectedProcess pending;
+        pending.pid = pid;
+        pending.name = processName;
+        pending.hProcess = hProcess.release();
+        pending.remoteMemory = pRemotePath.release();
+        pending.injectionThread = hThread.release();
+        pending.reactivateEvent = reactivateEvent.release();
+        pending.vulkanReactivateEvent = vulkanReactivateEvent.release();
+        injectedProcesses.push_back(pending);
+        LogWarn(
+            "Remote LoadLibrary is still pending for PID %lu (wait=%lu error=%lu); retaining its path buffer until "
+            "completion or process exit",
+            static_cast<unsigned long>(pid), static_cast<unsigned long>(loadWait), GetLastError());
+        return true;
+    }
 
     DWORD exitCode = 0;
     if (GetExitCodeThread(hThread.get(), &exitCode)) {
@@ -232,7 +258,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
             }
         }
         if (!dllFound) {
-            LogError(
+            LogWarn(
                 "DLL injection verification failed - hook DLL not found in "
                 "module list for PID %lu",
                 (unsigned long)pid);
@@ -246,6 +272,9 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     ip.name = processName;
     ip.hProcess = hProcess.release();  // Transfer ownership
     ip.remoteMemory = nullptr;         // No remote memory for CreateRemoteThread injection (freed by RAII)
+    ip.injectionThread = nullptr;
+    ip.reactivateEvent = reactivateEvent.release();
+    ip.vulkanReactivateEvent = vulkanReactivateEvent.release();
     injectedProcesses.push_back(ip);
 
     LogInfo("Injected %s into %s (PID: %d)", isWow64 ? "x86" : "x64", processName.c_str(), pid);
@@ -256,7 +285,8 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     LogInfo("[APC] Attempting early APC injection for PID %lu", pid);
 
     HANDLE hProcess = OpenProcess(
-        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD,
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD |
+            SYNCHRONIZE,
         FALSE, pid);
     if (!hProcess) {
         LogError("[APC] OpenProcess failed for PID %d: %d", pid, GetLastError());
@@ -299,6 +329,11 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
         return false;
     }
 
+    ce::HandleGuard reactivateEvent;
+    ce::HandleGuard vulkanReactivateEvent;
+    CreateTargetReactivationEvents(pid, true, true, reactivateEvent.addressof(),
+                                   vulkanReactivateEvent.addressof());
+
     DWORD result = QueueUserAPC((PAPCFUNC)pLoadLibraryA, hMainThread, (ULONG_PTR)pRemotePath);
     if (!result) {
         LogError("[APC] QueueUserAPC failed: %lu", GetLastError());
@@ -317,15 +352,31 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     ip.name = dllPath;
     ip.hProcess = hProcess;
     ip.remoteMemory = pRemotePath;  // Store for later cleanup
+    ip.injectionThread = nullptr;
+    ip.reactivateEvent = reactivateEvent.release();
+    ip.vulkanReactivateEvent = vulkanReactivateEvent.release();
     injectedProcesses.push_back(ip);
 
     return true;
 }
 
 void InjectionManager::EjectAll() {
-    for (const auto& proc : injectedProcesses) {
-        Eject(proc.pid);
+    std::vector<DWORD> processIds;
+    {
+        std::lock_guard<std::mutex> lock(injectMutex);
+        processIds.reserve(injectedProcesses.size());
+        for (const auto& process : injectedProcesses)
+            processIds.push_back(process.pid);
     }
+
+    // Host shutdown is broadcast, so all targets deactivate concurrently. Use
+    // one bounded acknowledgement deadline for the whole set rather than
+    // multiplying shutdown latency by the number of injected processes.
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    for (DWORD pid : processIds)
+        EjectWithDeadline(pid, deadline);
+
+    std::lock_guard<std::mutex> lock(injectMutex);
     injectedProcesses.clear();
 }
 
@@ -347,8 +398,10 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            LogWarn("[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
-            t.detach();
+            LogWarn(
+                "[Injection] Delayed injection thread exceeded the shutdown deadline; waiting for its bounded "
+                "remote operation to finish so InjectionManager storage remains valid");
+            t.join();
             continue;
         }
 
@@ -362,12 +415,14 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
         } else {
             if (waitResult == WAIT_TIMEOUT) {
                 LogWarn(
-                    "[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
+                    "[Injection] Delayed injection thread exceeded the shutdown deadline; waiting for its bounded "
+                    "remote operation to finish so InjectionManager storage remains valid");
             } else {
-                LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); detaching",
+                LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); joining "
+                        "to preserve manager lifetime",
                         GetLastError());
             }
-            t.detach();
+            t.join();
         }
     }
     LogInfo("[Injection] All delayed injection threads cleaned up");
@@ -387,56 +442,96 @@ bool InjectionManager::HasPendingInjections() {
 }
 
 void InjectionManager::Eject(DWORD pid) {
+    EjectWithDeadline(pid, GetTickCount64() + 5000);
+}
+
+void InjectionManager::EjectWithDeadline(DWORD pid, ULONGLONG deadline) {
     std::lock_guard<std::mutex> lock(injectMutex);
     auto it = std::find_if(injectedProcesses.begin(), injectedProcesses.end(),
                            [&](const InjectedProcess& p) { return p.pid == pid; });
     HANDLE hProcess = (it != injectedProcesses.end()) ? it->hProcess : NULL;
-    bool openedProcessHandle = false;
 
     if (!hProcess) {
-        hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-        if (!hProcess)
-            return;
-        openedProcessHandle = true;
-    }
-
-    std::vector<HMODULE> hMods;
-    if (ce::EnumerateProcessModules(hProcess, hMods)) {
-        for (size_t i = 0; i < hMods.size(); i++) {
-            char szModName[MAX_PATH];
-            if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
-                std::string modName = szModName;
-                if (modName.find("capture_hook_x64.dll") != std::string::npos ||
-                    modName.find("capture_hook_x86.dll") != std::string::npos) {
-                    BOOL isWow64Target = FALSE;
-                    IsWow64Process(hProcess, &isWow64Target);
-
-                    LPTHREAD_START_ROUTINE pFreeLibrary = nullptr;
-                    if (isWow64Target) {
-                        LPVOID p = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "FreeLibrary");
-                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(p);
-                    } else {
-                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                            GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary"));
-                    }
-
-                    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, pFreeLibrary, (LPVOID)hMods[i], 0, NULL);
-                    if (hThread) {
-                        WaitForSingleObject(hThread, 500);
-                        CloseHandle(hThread);
-                    }
-
-                    // CRITICAL FIX: Free remote memory allocated during APC injection
-                    if (it != injectedProcesses.end() && it->remoteMemory) {
-                        VirtualFreeEx(hProcess, it->remoteMemory, 0, MEM_RELEASE);
-                        LogInfo("[Eject] Freed remote memory at %p for PID %d", it->remoteMemory, pid);
-                    }
-                    break;
+        hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION | SYNCHRONIZE, FALSE, pid);
+        if (!hProcess) {
+            const DWORD error = GetLastError();
+            if (it != injectedProcesses.end()) {
+                if (it->injectionThread) {
+                    CloseHandle(it->injectionThread);
+                    it->injectionThread = nullptr;
+                }
+                CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
+                if (it->hProcess) {
+                    CloseHandle(it->hProcess);
+                    it->hProcess = nullptr;
                 }
             }
+            LogWarn("[InjectLifecycle] Could not open PID %lu for dormant acknowledgement (error=%lu)",
+                    static_cast<unsigned long>(pid), static_cast<unsigned long>(error));
+            if (it != injectedProcesses.end())
+                injectedProcesses.erase(it);
+            return;
         }
     }
 
-    if (openedProcessHandle)
-        CloseHandle(hProcess);
+    const auto waitForDormantEvent = [&](const wchar_t* eventName, const char* owner) {
+        HANDLE event = OpenEventW(SYNCHRONIZE, FALSE, eventName);
+        if (!event)
+            return false;
+        const ULONGLONG now = GetTickCount64();
+        const DWORD timeout = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+        HANDLE waits[] = {event, hProcess};
+        const DWORD wait = WaitForMultipleObjects(_countof(waits), waits, FALSE, timeout);
+        if (wait == WAIT_OBJECT_0) {
+            LogInfo("[InjectLifecycle] %s acknowledged dormant state for PID %lu", owner,
+                    static_cast<unsigned long>(pid));
+            CloseHandle(event);
+            return true;
+        } else if (wait != WAIT_OBJECT_0 + 1) {
+            LogWarn("[InjectLifecycle] Timed out waiting for %s dormant acknowledgement for PID %lu (wait=%lu)",
+                    owner, static_cast<unsigned long>(pid), static_cast<unsigned long>(wait));
+        }
+        CloseHandle(event);
+        return false;
+    };
+
+    wchar_t injectDormantEventName[64] = {};
+    wchar_t vulkanDormantEventName[64] = {};
+    GenerateInjectDormantEventName(injectDormantEventName, _countof(injectDormantEventName), pid);
+    GenerateVulkanDormantEventName(vulkanDormantEventName, _countof(vulkanDormantEventName), pid);
+    const bool hookDormant = waitForDormantEvent(injectDormantEventName, "capture hook");
+    waitForDormantEvent(vulkanDormantEventName, "Vulkan layer");
+
+    // APC injection retains its path buffer until the queued LoadLibrary has consumed it.
+    if (it != injectedProcesses.end() && it->remoteMemory) {
+        if (hookDormant) {
+            void* remoteMemory = it->remoteMemory;
+            VirtualFreeEx(hProcess, remoteMemory, 0, MEM_RELEASE);
+            it->remoteMemory = nullptr;
+            LogInfo("[InjectLifecycle] Freed consumed injection path memory at %p for PID %lu", remoteMemory,
+                    static_cast<unsigned long>(pid));
+        } else {
+            LogWarn(
+                "[InjectLifecycle] Retaining injection path memory for PID %lu because remote LoadLibrary "
+                "consumption was not acknowledged",
+                static_cast<unsigned long>(pid));
+        }
+    }
+
+    if (it != injectedProcesses.end() && it->injectionThread) {
+        CloseHandle(it->injectionThread);
+        it->injectionThread = nullptr;
+    }
+    if (it != injectedProcesses.end()) {
+        CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
+    }
+
+    LogInfo(
+        "[InjectLifecycle] PID %lu is pass-through; capture_hook remains resident to preserve game wrappers and "
+        "foreign hook chains",
+        static_cast<unsigned long>(pid));
+
+    CloseHandle(hProcess);
+    if (it != injectedProcesses.end())
+        injectedProcesses.erase(it);
 }

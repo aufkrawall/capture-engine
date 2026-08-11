@@ -28,6 +28,10 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
     const PFN_SetI original = GetParameterOriginals(pThis).setI;
     if (!original)
         return;
+    if (HookIsShuttingDown()) {
+        original(pThis, InName, InValue);
+        return;
+    }
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
@@ -176,6 +180,10 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
     const PFN_SetUI original = GetParameterOriginals(pThis).setUI;
     if (!original)
         return;
+    if (HookIsShuttingDown()) {
+        original(pThis, InName, InValue);
+        return;
+    }
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
             // AutoExposure flag override
@@ -335,6 +343,10 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
     const PFN_SetF original = GetParameterOriginals(pThis).setF;
     if (!original)
         return;
+    if (HookIsShuttingDown()) {
+        original(pThis, InName, InValue);
+        return;
+    }
     if (IsSafeString(InName)) {
         const auto& cfg = GetActiveGraphicsConfig();
 
@@ -369,6 +381,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetI(NVSDK_NGX_Parameter* pThis, const
     const PFN_GetI original = GetParameterOriginals(pThis).getI;
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    if (HookIsShuttingDown())
+        return original(pThis, InName, OutValue);
     NVSDK_NGX_Result res = original(pThis, InName, OutValue);
     if (IsSafeString(InName))
         LogObservedRayReconstructionCapability(InName, res, OutValue, "GetI");
@@ -390,6 +404,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
     const PFN_GetUI original = GetParameterOriginals(pThis).getUI;
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    if (HookIsShuttingDown())
+        return original(pThis, InName, OutValue);
     NVSDK_NGX_Result res = original(pThis, InName, OutValue);
     if (IsSafeString(InName))
         LogObservedRayReconstructionCapability(InName, res, OutValue, "GetUI");
@@ -405,6 +421,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
 }
 
 void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
+    if (HookIsShuttingDown())
+        return;
     if (!IsSafePtr(pParams)) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("EnsureVTableHooks: Skipped (Unsafe Ptr %p)", pParams);
@@ -553,6 +571,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessParameters(PFN_NVSDK_NGX_GetPar
     if (!original)
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     NVSDK_NGX_Result res = original(OutParameters);
+    if (HookIsShuttingDown())
+        return res;
     if (res == NVSDK_NGX_Result_Success && OutParameters && *OutParameters) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("Hooked_ProcessParameters: Success, Params=%p, *Params=%p", OutParameters, *OutParameters);
@@ -605,6 +625,8 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(
     const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
     const NVSDK_NGX_Result res =
         original ? original(InAdapter, InDiscoveryInfo, OutSupported) : (NVSDK_NGX_Result)0xBAD00000;
+    if (HookIsShuttingDown())
+        return res;
     if (InDiscoveryInfo && InDiscoveryInfo->FeatureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction &&
         GetActiveGraphicsConfig().forceRayReconstruction) {
         if (OutSupported) {

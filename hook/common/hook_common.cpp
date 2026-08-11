@@ -436,26 +436,28 @@ void HookLog(LogLevel level, const char* fmt, ...) {
 GraphicsConfig GetActiveGraphicsConfig() {
     static GraphicsConfig mergedConfig;
     static uint32_t lastVersion = 0xFFFFFFFF;
+    static SharedMemoryLayout* lastSharedMemory = nullptr;
     static uint32_t lastUpdateTick = 0;
     static std::mutex configMutex;
 
     std::lock_guard<std::mutex> lock(configMutex);
 
-    uint32_t currentVersion = 0;
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
-    }
+    SharedMemoryLayout* currentSharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    uint32_t currentVersion = currentSharedMemory
+                                  ? currentSharedMemory->configVersion.load(std::memory_order_acquire)
+                                  : 0;
 
     DWORD now = GetTickCount();
-    if (currentVersion == lastVersion && (now - lastUpdateTick < 1000)) {
+    if (currentSharedMemory == lastSharedMemory && currentVersion == lastVersion && (now - lastUpdateTick < 1000)) {
         return mergedConfig;
     }
 
+    lastSharedMemory = currentSharedMemory;
     lastVersion = currentVersion;
     lastUpdateTick = now;
 
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        const auto& shmGfx = g_IPC->GetSharedMem()->graphicsConfig;
+    if (currentSharedMemory) {
+        const auto& shmGfx = currentSharedMemory->graphicsConfig;
         mergedConfig.vsyncMode = shmGfx.vsyncMode;
         mergedConfig.anisotropicFiltering = shmGfx.anisotropicFiltering;
         mergedConfig.samplerOverrideMode = shmGfx.samplerOverrideMode[0] ? shmGfx.samplerOverrideMode : "safe";
@@ -653,19 +655,23 @@ GraphicsConfig GetActiveGraphicsConfig() {
 const GraphicsConfig& GetActiveGraphicsConfigCached() {
     thread_local GraphicsConfig cachedConfig;
     thread_local uint32_t cachedVersion = 0xFFFFFFFFu;
+    thread_local SharedMemoryLayout* cachedSharedMemory = nullptr;
     thread_local DWORD lastRefreshTick = 0;
     thread_local bool initialized = false;
 
+    SharedMemoryLayout* currentSharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     uint32_t currentVersion = 0;
-    const bool hasSharedConfig = g_IPC && g_IPC->GetSharedMem();
+    const bool hasSharedConfig = currentSharedMemory != nullptr;
     if (hasSharedConfig) {
-        currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
+        currentVersion = currentSharedMemory->configVersion.load(std::memory_order_acquire);
     }
 
     const DWORD now = GetTickCount();
     const bool localRefreshDue = !hasSharedConfig && now - lastRefreshTick >= 1000;
-    if (!initialized || currentVersion != cachedVersion || localRefreshDue) {
+    if (!initialized || currentSharedMemory != cachedSharedMemory || currentVersion != cachedVersion ||
+        localRefreshDue) {
         cachedConfig = GetActiveGraphicsConfig();
+        cachedSharedMemory = currentSharedMemory;
         cachedVersion = currentVersion;
         lastRefreshTick = now;
         initialized = true;

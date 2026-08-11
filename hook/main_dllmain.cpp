@@ -30,18 +30,11 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     char myDllPath[MAX_PATH] = {0};
     GetModuleFileNameA(hinstDLL, myDllPath, MAX_PATH);
 
-    // PINNING STRATEGY:
-    // We MUST pin the DLL in *every* process that loads it (except our own
-    // tools). Why?
-    // 1. If we allow the DLL to unload (refcount=0) while the CBT hook is still
-    // active
-    //    globally, Windows might unload us right before or during a hook
-    //    callback, causing a crash (access violation executing freed memory).
-    // 2. For service/system processes, if we unload, the global hook will just
-    //    re-inject us immediately, causing a high-CPU "Load-Unload-Load" loop.
-    //
-    // By pinning, we ensure the DLL stays dormant in memory until the process
-    // exits.
+    // Residency barrier: games can retain CE COM wrappers and other injectors
+    // can save CE detour addresses in their own trampolines. Unmapping this DLL
+    // while either pointer remains callable is inherently unsafe, so deject is
+    // an acknowledged pass-through transition and the image remains resident
+    // until process exit.
 
     bool isOurTool = (_stricmp(fileName, "captureengine.exe") == 0 ||
                       _stricmp(fileName, "captureengine_x86.exe") == 0);
@@ -229,75 +222,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       return TRUE;
     }
 
-    // Only do cleanup for dynamic unload (FreeLibrary), not process exit
-    if (main_g_isDormant) {
-      return TRUE;
-    }
-
-    // CRITICAL: Remove DXGI factory vtable hooks FIRST before any other cleanup
-    // This prevents game code from calling through our hooks during shutdown
-    RemoveGlobalVTableHooks();
-
-    // CRITICAL: Remove all inline hooks BEFORE removing vtable hooks
-    // Inline hooks patch actual function code and must be restored early
-    InlineHook::RemoveAll();
-
-    // CRITICAL: Remove swapchain vtable hooks BEFORE setting g_ShuttingDown
-    // This ensures DetourPresent/DetourPresent1 won't be called after we start
-    // cleanup
-    DXGIShared::RemoveSwapchainVTableHooks();
-
+    // No loader-lock cleanup is safe here. Normal CE shutdown never unloads the
+    // module; it uses the cooperative dormant transition on HookThread. If a
+    // foreign component nevertheless drives a dynamic detach, make all entry
+    // points pass-through and leave process-owned resources for OS teardown.
+    g_ProcessTerminating.store(true, std::memory_order_release);
     RequestHookShutdown();
-    ShutdownScreenshotWorker();
-
-    // Signal HookThread to exit
-    if (g_hCheckHooksEvent) {
-      SetEvent(g_hCheckHooksEvent);
-    }
-
-    // CRITICAL FIX: Shutdown InputManager first to unhook WndProcs
-    // This must happen before graphics hooks are shut down to prevent
-    // the WndProc from calling into destroyed hook resources
-    HookLog("DLL_DETACH: Shutting down InputManager...");
-    InputManager::Get().Shutdown();
-    HookLog("DLL_DETACH: InputManager shutdown complete");
-
-    // Shutdown performance logger
-    PerfLogger::Get().Shutdown();
-
-    // CRITICAL FIX: Set swapchain wrapper shutdown flag BEFORE removing hooks
-    // This prevents COM calls on the wrapper from accessing freed memory
-    SetSwapchainWrapperShutdown();
-
-    // CRITICAL FIX: Remove Present vtable hooks BEFORE destroying wrappers
-    // This prevents DetourPresent from accessing freed wrapper memory
-    DXGIShared::RemovePresentHooks();
-
-    // CRITICAL FIX: Properly shutdown hooks using SafeShutdownHook template
-    // This calls Shutdown() which releases resources in the correct order
-    // Only do this for dynamic unload (lpReserved == NULL), not process exit
-    SafeShutdownHook(g_DX12Hook, "DX12Hook");
-    SafeShutdownHook(g_DX11Hook, "DX11Hook");
-    SafeShutdownHook(g_DX9Hook, "DX9Hook");
-    SafeShutdownHook(g_DDrawHook, "DDrawHook");
-    SafeShutdownHook(g_DX8Hook, "DX8Hook");
-    SafeShutdownHook(g_OpenGLHook, "OpenGLHook");
-
-    // CRITICAL FIX: Don't delete g_IPC during detach
-    // The IPC client may be used by other threads that are being terminated
-    // Just set to nullptr and let the process cleanup handle it
-    // Note: We're intentionally leaking g_IPC here to avoid crashes
-    // The shared memory will be cleaned up when the process exits
-    g_IPC = nullptr;
-    g_LocalConfigOwner.reset();
-    g_pLocalConfig = nullptr;
-
-    timeEndPeriod(1);
-
-    CloseCheckHooksEvent();
-
-    // CRITICAL FIX: Clean up TLS index if it was allocated
-    // (None currently used)
   }
   return TRUE;
 }

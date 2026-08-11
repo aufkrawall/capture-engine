@@ -303,3 +303,471 @@ TEST(InjectCaptureSourceTest, OpenGLSamplerOverridesCoverParameterAllocationAndB
     EXPECT_NE(storage.find("glTextureView"), std::string::npos);
     EXPECT_EQ(storage.find("glBindTexture"), std::string::npos);
 }
+
+TEST(InjectLifecycleSourceTest, HostShutdownUsesDormantHandshakeInsteadOfRemoteUnload) {
+    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    ASSERT_FALSE(injection.empty());
+    const size_t ejectAllBegin = injection.find("void InjectionManager::EjectAll()");
+    const size_t ejectBegin = injection.find("void InjectionManager::Eject(DWORD pid)");
+    ASSERT_NE(ejectAllBegin, std::string::npos);
+    ASSERT_NE(ejectBegin, std::string::npos);
+    const std::string ejectAll = injection.substr(ejectAllBegin, ejectBegin - ejectAllBegin);
+    const std::string eject = injection.substr(ejectBegin);
+
+    const size_t sharedDeadline = ejectAll.find("const ULONGLONG deadline = GetTickCount64() + 5000");
+    const size_t perProcessWait = ejectAll.find("EjectWithDeadline(pid, deadline)");
+    ASSERT_NE(sharedDeadline, std::string::npos);
+    ASSERT_NE(perProcessWait, std::string::npos);
+    EXPECT_LT(sharedDeadline, perProcessWait);
+    EXPECT_NE(eject.find("GenerateInjectDormantEventName"), std::string::npos);
+    EXPECT_NE(eject.find("GenerateVulkanDormantEventName"), std::string::npos);
+    EXPECT_EQ(eject.find("CreateRemoteThread"), std::string::npos);
+    EXPECT_EQ(eject.find("\"FreeLibrary\""), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, ShutdownNeverDetachesWorkersThatRetainManagerStorage) {
+    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    ASSERT_FALSE(injection.empty());
+    const size_t waitBegin = injection.find("void InjectionManager::WaitForInjectionThreads");
+    const size_t nextFunction = injection.find("bool InjectionManager::HasActiveInjections", waitBegin);
+    ASSERT_NE(waitBegin, std::string::npos);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const std::string wait = injection.substr(waitBegin, nextFunction - waitBegin);
+
+    EXPECT_NE(wait.find("t.join()"), std::string::npos);
+    EXPECT_EQ(wait.find("t.detach()"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DynamicDetachDoesNoLoaderLockCleanup) {
+    const std::string source = ReadSource("hook/main_dllmain.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t detachBegin = source.find("DLL_PROCESS_DETACH");
+    ASSERT_NE(detachBegin, std::string::npos);
+    const std::string detach = source.substr(detachBegin);
+
+    EXPECT_NE(detach.find("RequestHookShutdown()"), std::string::npos);
+    EXPECT_EQ(detach.find("InlineHook::RemoveAll()"), std::string::npos);
+    EXPECT_EQ(detach.find("SafeShutdownHook("), std::string::npos);
+    EXPECT_EQ(detach.find("InputManager::Get().Shutdown()"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, VulkanProcAddressesRemainStableWhileDormant) {
+    const std::string source = ReadSource("hook/vulkan_layer/layer_main.cpp");
+    const std::string lifecycle = ReadSource("hook/vulkan_layer/layer_ipc.cpp");
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(lifecycle.empty());
+
+    EXPECT_NE(source.find("Always expose forwarding hooks"), std::string::npos);
+    EXPECT_EQ(source.find("if (whitelisted)"), std::string::npos);
+    EXPECT_NE(source.find("Capture_vkQueuePresentKHR"), std::string::npos);
+    EXPECT_NE(source.find("GET_MODULE_HANDLE_EX_FLAG_PIN"), std::string::npos);
+    EXPECT_NE(lifecycle.find("if (!hostProcess)"), std::string::npos);
+    EXPECT_NE(lifecycle.find("host process inaccessible"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DormantPresentPathsForwardToTheirSavedPredecessors) {
+    const std::string dxgiPresent = ReadSource("hook/common/dxgi_shared_present.cpp");
+    const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");
+    const std::string dx9Present = ReadSource("hook/apis/dx9_hook_present_detours.cpp");
+    const std::string dx8Present = ReadSource("hook/apis/dx8_hook_detours.cpp");
+    const std::string openGLPresent = ReadSource("hook/apis/opengl_hook_capture.cpp");
+    ASSERT_FALSE(dxgiPresent.empty());
+    ASSERT_FALSE(dx11Present.empty());
+    ASSERT_FALSE(dx9Present.empty());
+    ASSERT_FALSE(dx8Present.empty());
+    ASSERT_FALSE(openGLPresent.empty());
+
+    EXPECT_NE(dxgiPresent.find("return CallOriginalPresent(pSwapChain, SyncInterval, Flags)"), std::string::npos);
+    EXPECT_NE(dx11Present.find("return CallOriginalPresent(pSwapChain, SyncInterval, Flags)"), std::string::npos);
+    EXPECT_NE(dx9Present.find("return dx9_hook_oPresent ? dx9_hook_oPresent"), std::string::npos);
+    EXPECT_NE(dx8Present.find("return dx8_hook_oD3D8Present"), std::string::npos);
+    EXPECT_NE(openGLPresent.find("return opengl_hook_oSwapBuffers ? opengl_hook_oSwapBuffers"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DormantLoaderAndVendorHooksAreExactPassThrough) {
+    const std::string loader = ReadSource("hook/main_loadlibrary.cpp");
+    const std::string getProc = ReadSource("hook/wrappers/iat_hook_init.cpp");
+    const std::string ngxParams = ReadSource("hook/apis/nvngx_hook_params.cpp");
+    const std::string ngxFeature = ReadSource("hook/apis/nvngx_hook_feature.cpp");
+    const std::string ngxLifecycle = ReadSource("hook/apis/nvngx_hook_lifecycle.cpp");
+    const std::string streamline = ReadSource("hook/apis/streamline_hook_api.cpp");
+    const std::string streamlineDlssg = ReadSource("hook/apis/streamline_hook_dlssg.cpp");
+    const std::string ffx = ReadSource("hook/apis/ffx_hook_context.cpp");
+    ASSERT_FALSE(loader.empty());
+    ASSERT_FALSE(getProc.empty());
+    ASSERT_FALSE(ngxParams.empty());
+    ASSERT_FALSE(ngxFeature.empty());
+    ASSERT_FALSE(ngxLifecycle.empty());
+    ASSERT_FALSE(streamline.empty());
+    ASSERT_FALSE(streamlineDlssg.empty());
+    ASSERT_FALSE(ffx.empty());
+
+    const std::string loadA = FunctionBody(loader, "HMODULE WINAPI HookedLoadLibraryA", "HMODULE WINAPI HookedLoadLibraryW");
+    EXPECT_NE(loadA.find("if (HookIsShuttingDown())"), std::string::npos);
+    EXPECT_NE(loadA.find("return original(lpLibFileName)"), std::string::npos);
+
+    const size_t realGetProc = getProc.find("FARPROC proc = ::GetProcAddress(hModule, lpProcName)");
+    const size_t dormantGetProc = getProc.find("if (HookIsShuttingDown())", realGetProc);
+    const size_t dynamicMap = getProc.find("g_DynamicHookLock", dormantGetProc);
+    ASSERT_NE(realGetProc, std::string::npos);
+    ASSERT_NE(dormantGetProc, std::string::npos);
+    ASSERT_NE(dynamicMap, std::string::npos);
+    EXPECT_LT(realGetProc, dormantGetProc);
+    EXPECT_LT(dormantGetProc, dynamicMap);
+
+    EXPECT_NE(ngxParams.find("if (HookIsShuttingDown())"), std::string::npos);
+    EXPECT_NE(ngxFeature.find("if (HookIsShuttingDown())\n        return create();"), std::string::npos);
+    EXPECT_NE(ngxLifecycle.find("return original(ctx, handle, params, callback)"), std::string::npos);
+    EXPECT_NE(ngxLifecycle.find("return original(handle)"), std::string::npos);
+    EXPECT_NE(streamline.find("return originalSetTag(viewport, tags, numTags, streamline_hook_commandBuffer)"),
+              std::string::npos);
+    EXPECT_NE(streamline.find("return originalEvaluateFeature(feature, streamline_hook_frame, inputs, numInputs"),
+              std::string::npos);
+    EXPECT_NE(streamlineDlssg.find("return originalGetState(viewport, state, streamline_hook_options)"),
+              std::string::npos);
+    EXPECT_NE(streamlineDlssg.find("return originalSetOptions(viewport, streamline_hook_options)"),
+              std::string::npos);
+    EXPECT_NE(ffx.find("return ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb)"),
+              std::string::npos);
+    EXPECT_NE(ffx.find("return CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc)"),
+              std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DormantReflexKeepsResidentPredecessorsAndForwardsCalls) {
+    const std::string reflex = ReadSource("hook/common/reflex_limiter.h");
+    const std::string pacing = ReadSource("hook/common/reflex_limiter_detail/pacing.h");
+    ASSERT_FALSE(reflex.empty());
+    ASSERT_FALSE(pacing.empty());
+
+    EXPECT_NE(reflex.find("return queryInterface(functionId)"), std::string::npos);
+    EXPECT_NE(reflex.find("return forwardSetSleepMode(pDev, pParams)"), std::string::npos);
+    EXPECT_NE(reflex.find("return forwardSleep(pDev)"), std::string::npos);
+    const size_t shutdownBegin = pacing.find("inline void ReflexLimiter::Shutdown()");
+    ASSERT_NE(shutdownBegin, std::string::npos);
+    const std::string shutdown = pacing.substr(shutdownBegin);
+    EXPECT_EQ(shutdown.find("origQueryInterface_ = nullptr"), std::string::npos);
+    EXPECT_EQ(shutdown.find("directQueryInterfaceTrampoline_ = nullptr"), std::string::npos);
+    EXPECT_NE(pacing.find("Preserve every predecessor/trampoline"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, OpenGLExtensionHooksStayStableAndDormantOverridesPassThrough) {
+    const std::string capture = ReadSource("hook/apis/opengl_hook_capture.cpp");
+    const std::string sampler = ReadSource("hook/apis/opengl_sampler_override.cpp");
+    const std::string storage = ReadSource("hook/apis/opengl_texture_storage_override.cpp");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(sampler.empty());
+    ASSERT_FALSE(storage.empty());
+
+    const size_t getProcBegin = capture.find("PROC WINAPI DetourWglGetProcAddress");
+    const size_t swapInterval = capture.find("wglSwapIntervalEXT", getProcBegin);
+    ASSERT_NE(getProcBegin, std::string::npos);
+    ASSERT_NE(swapInterval, std::string::npos);
+    const std::string getProcPrefix = capture.substr(getProcBegin, swapInterval - getProcBegin);
+    EXPECT_EQ(getProcPrefix.find("return opengl_hook_oWglGetProcAddress"), std::string::npos);
+
+    EXPECT_NE(sampler.find("if (HookIsShuttingDown())"), std::string::npos);
+    EXPECT_NE(sampler.find("if (!HookIsShuttingDown() && count > 0 && textures)"), std::string::npos);
+    EXPECT_NE(storage.find("if (!HookIsShuttingDown() && levels > 1)"), std::string::npos);
+    EXPECT_NE(storage.find("if (HookIsShuttingDown())\n        return;"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, TransientSwapchainLossDoesNotPermanentlyDormantTheRuntime) {
+    const std::string dx11Overlay = ReadSource("hook/apis/dx11_hook_overlay.cpp");
+    const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");
+    const std::string dxgiPresent = ReadSource("hook/common/dxgi_shared_present_routing.cpp");
+    const std::string dxgiPresent1 = ReadSource("hook/common/dxgi_shared_present1.cpp");
+    ASSERT_FALSE(dx11Overlay.empty());
+    ASSERT_FALSE(dx11Present.empty());
+    ASSERT_FALSE(dxgiPresent.empty());
+    ASSERT_FALSE(dxgiPresent1.empty());
+
+    EXPECT_EQ(dx11Overlay.find("RequestHookShutdown()"), std::string::npos);
+    EXPECT_EQ(dx11Present.find("RequestHookShutdown()"), std::string::npos);
+    EXPECT_EQ(dxgiPresent.find("RequestHookShutdown()"), std::string::npos);
+    EXPECT_EQ(dxgiPresent1.find("RequestHookShutdown()"), std::string::npos);
+    EXPECT_NE(dx11Overlay.find("dx11_hook_g_UnsafeSwapChainObserved = true"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, InitialLateConnectionDefersGraphicsReactivationUntilBootstrapCompletes) {
+    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
+    ASSERT_FALSE(lifecycle.empty());
+    ASSERT_FALSE(hookThread.empty());
+
+    EXPECT_NE(lifecycle.find("g_HookLifecycleBootstrapComplete.load"), std::string::npos);
+    EXPECT_NE(hookThread.find("MarkHookLifecycleBootstrapComplete()"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, ReactivationConsumesWakeupBeforeDiscoveryToPreserveNewerHostSignals) {
+    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string vulkan = ReadSource("hook/vulkan_layer/layer_ipc.cpp");
+    ASSERT_FALSE(lifecycle.empty());
+    ASSERT_FALSE(vulkan.empty());
+
+    const size_t hookAttempt = lifecycle.find("bool TryReactivateHookRuntime(bool launcherOnly)");
+    const size_t hookReset = lifecycle.find("ResetEvent(g_InjectReactivateEvent)", hookAttempt);
+    const size_t hookReconnect = lifecycle.find("g_IPC->Reconnect()", hookAttempt);
+    ASSERT_NE(hookReset, std::string::npos);
+    ASSERT_NE(hookReconnect, std::string::npos);
+    EXPECT_LT(hookReset, hookReconnect);
+
+    const size_t layerAttempt = vulkan.find("bool TryReactivateLayer()");
+    const size_t layerReset = vulkan.find("ResetEvent(g_LayerReactivateEvent)", layerAttempt);
+    const size_t layerConnect = vulkan.find("LayerIPC_Init()", layerAttempt);
+    ASSERT_NE(layerReset, std::string::npos);
+    ASSERT_NE(layerConnect, std::string::npos);
+    EXPECT_LT(layerReset, layerConnect);
+}
+
+TEST(InjectLifecycleSourceTest, TargetWakeupsExistBeforeRemoteOrApcLoadCanStart) {
+    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    ASSERT_FALSE(injection.empty());
+
+    const size_t remoteFunction = injection.find("bool InjectionManager::Inject(DWORD pid");
+    const size_t remoteWakeup = injection.find("CreateTargetReactivationEvents(pid, true, true", remoteFunction);
+    const size_t remoteLoad = injection.find("CreateRemoteThread", remoteFunction);
+    ASSERT_NE(remoteWakeup, std::string::npos);
+    ASSERT_NE(remoteLoad, std::string::npos);
+    EXPECT_LT(remoteWakeup, remoteLoad);
+
+    const size_t apcFunction = injection.find("bool InjectionManager::InjectEarly(");
+    const size_t apcWakeup = injection.find("CreateTargetReactivationEvents(pid, true, true", apcFunction);
+    const size_t apcLoad = injection.find("QueueUserAPC", apcFunction);
+    ASSERT_NE(apcWakeup, std::string::npos);
+    ASSERT_NE(apcLoad, std::string::npos);
+    EXPECT_LT(apcWakeup, apcLoad);
+}
+
+TEST(InjectLifecycleSourceTest, FailedReactivationWaitsForAnotherTargetSignal) {
+    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string vulkan = ReadSource("hook/vulkan_layer/layer_ipc.cpp");
+    ASSERT_FALSE(lifecycle.empty());
+    ASSERT_FALSE(vulkan.empty());
+
+    EXPECT_EQ(lifecycle.find("WaitForAdvertisedHostToEnd"), std::string::npos);
+    EXPECT_EQ(vulkan.find("WaitForAdvertisedHostToEnd"), std::string::npos);
+    EXPECT_NE(lifecycle.find("waiting for the next target signal"), std::string::npos);
+    EXPECT_NE(vulkan.find("waiting for the next target signal"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, LauncherHooksBecomeExactPassThroughAndWaitOnHostEvents) {
+    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
+    const std::string injection = ReadSource("hook/main_injection.cpp");
+    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    ASSERT_FALSE(hookThread.empty());
+    ASSERT_FALSE(injection.empty());
+    ASSERT_FALSE(lifecycle.empty());
+
+    const size_t launcherBegin = hookThread.find("main_g_ProcessCategory == ProcessCategory::Launcher");
+    const size_t launcherEnd = hookThread.find("// POTENTIAL GAMES", launcherBegin);
+    ASSERT_NE(launcherBegin, std::string::npos);
+    ASSERT_NE(launcherEnd, std::string::npos);
+    const std::string launcher = hookThread.substr(launcherBegin, launcherEnd - launcherBegin);
+    EXPECT_NE(launcher.find("RunLauncherHookLifecycle()"), std::string::npos);
+    EXPECT_EQ(launcher.find("Sleep("), std::string::npos);
+
+    const size_t createA = injection.find("BOOL WINAPI HookedCreateProcessA");
+    const size_t createW = injection.find("BOOL WINAPI HookedCreateProcessW");
+    ASSERT_NE(createA, std::string::npos);
+    ASSERT_NE(createW, std::string::npos);
+    const size_t dormantA = injection.find("HookIsShuttingDown()", createA);
+    const size_t whitelistA = injection.find("ShouldInjectChild", createA);
+    const size_t dormantW = injection.find("HookIsShuttingDown()", createW);
+    const size_t whitelistW = injection.find("ShouldInjectChild", createW);
+    ASSERT_NE(dormantA, std::string::npos);
+    ASSERT_NE(whitelistA, std::string::npos);
+    ASSERT_NE(dormantW, std::string::npos);
+    ASSERT_NE(whitelistW, std::string::npos);
+    EXPECT_LT(dormantA, whitelistA);
+    EXPECT_LT(dormantW, whitelistW);
+
+    EXPECT_NE(lifecycle.find("void RunLauncherHookLifecycle()"), std::string::npos);
+    EXPECT_NE(lifecycle.find("WaitForMultipleObjects(waitCount, waits, FALSE, INFINITE)"), std::string::npos);
+    EXPECT_NE(lifecycle.find("launcherOnly"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, HookRestorationRejectsReusedModuleStorage) {
+    const std::string iat = ReadSource("hook/wrappers/iat_hook.cpp");
+    const std::string vtable = ReadSource("hook/wrappers/vtable_hook.cpp");
+    ASSERT_FALSE(iat.empty());
+    ASSERT_FALSE(vtable.empty());
+
+    EXPECT_NE(iat.find("memory.Type != MEM_IMAGE"), std::string::npos);
+    EXPECT_NE(iat.find("memory.AllocationBase != it->targetModule"), std::string::npos);
+    EXPECT_NE(vtable.find("slotMemory.AllocationBase != ownership->second.allocationBase"), std::string::npos);
+    const size_t publication = vtable.find("MemoryBarrier()");
+    const size_t claim = vtable.find("InterlockedCompareExchangePointer", publication);
+    ASSERT_NE(publication, std::string::npos);
+    ASSERT_NE(claim, std::string::npos);
+    EXPECT_LT(publication, claim);
+}
+
+TEST(InjectLifecycleSourceTest, PublishedHookRollbackRetainsCallablePredecessorStorage) {
+    const std::string inlineHook = ReadSource("hook/wrappers/inline_hook.cpp");
+    const std::string deepHook = ReadSource("hook/wrappers/inline_hook_deep.cpp");
+    const std::string vtable = ReadSource("hook/wrappers/vtable_hook.cpp");
+    ASSERT_FALSE(inlineHook.empty());
+    ASSERT_FALSE(deepHook.empty());
+    ASSERT_FALSE(vtable.empty());
+
+    EXPECT_NE(inlineHook.find("Retaining rolled-back published trampoline"), std::string::npos);
+    EXPECT_NE(deepHook.find("Retaining rolled-back published trampoline"), std::string::npos);
+    EXPECT_NE(vtable.find("previousCallerOriginal"), std::string::npos);
+    EXPECT_NE(vtable.find("*ppOriginal = previousCallerOriginal"), std::string::npos);
+    EXPECT_NE(vtable.find("could create CE -> foreign -> CE"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, IATPatchingPreservesPreexistingForeignOwners) {
+    const std::string iat = ReadSource("hook/wrappers/iat_hook.cpp");
+    ASSERT_FALSE(iat.empty());
+
+    const size_t ownerCheck = iat.find("IsForeignIATOwner(currentFunction, sourceModule, functionName)");
+    const size_t slotClaim = iat.find("InterlockedCompareExchangePointer", ownerCheck);
+    ASSERT_NE(ownerCheck, std::string::npos);
+    ASSERT_NE(slotClaim, std::string::npos);
+    EXPECT_LT(ownerCheck, slotClaim);
+    EXPECT_NE(iat.find("Preserving foreign owner"), std::string::npos);
+    EXPECT_NE(iat.find("through export/vtable routes"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, OverlayNotificationRegistrationPrecedesSeedSnapshot) {
+    const std::string source = ReadSource("hook/main_overlay_detect.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t registration = source.find("registerFn(0, &OverlayDllNotificationCallback");
+    const size_t seed = source.find("SeedThirdPartyOverlayModuleCacheFromLoader()");
+    ASSERT_NE(registration, std::string::npos);
+    ASSERT_NE(seed, std::string::npos);
+    EXPECT_LT(registration, seed);
+}
+
+TEST(InjectLifecycleSourceTest, RenamedThirdPartyProxyIdentityUsesStableProjectMarkers) {
+    const std::string source = ReadSource("hook/main_overlay_detect.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("GetProcAddress(retained, \"ReShadeVersion\")"), std::string::npos);
+    EXPECT_NE(source.find("GetProcAddress(retained, \"ReShadeRegisterAddon\")"), std::string::npos);
+    EXPECT_NE(source.find("DllVersionStringContains(path, \"ReShade\")"), std::string::npos);
+    EXPECT_NE(source.find("GetProcAddress(retained, \"SK_GetDLL\")"), std::string::npos);
+    EXPECT_NE(source.find("GetProcAddress(retained, \"SK_Inject_GetRecord\")"), std::string::npos);
+    EXPECT_NE(source.find("DllVersionStringContains(path, \"Special K\")"), std::string::npos);
+    EXPECT_NE(source.find("DllVersionStringContains(path, \"OptiScaler\")"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTableOwners) {
+    const std::string install = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string presentHooks = ReadSource("hook/common/dxgi_shared_hooks_present.cpp");
+    const std::string original = ReadSource("hook/common/dxgi_shared_original.cpp");
+    const std::string steamRouting = ReadSource("hook/common/dxgi_shared_steam_routing.cpp");
+    const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(presentHooks.empty());
+    ASSERT_FALSE(original.empty());
+    ASSERT_FALSE(steamRouting.empty());
+    ASSERT_FALSE(dx11Present.empty());
+
+    EXPECT_NE(install.find("InterlockedCompareExchangePointer"), std::string::npos);
+    EXPECT_NE(presentHooks.find("Preserving foreign %s vtable replacement"), std::string::npos);
+    EXPECT_EQ(presentHooks.find("dxgi_shared_s_hookedVTable[8] ="), std::string::npos);
+    EXPECT_EQ(original.find("dxgi_shared_s_hookedVTable[8] ="), std::string::npos);
+    EXPECT_EQ(steamRouting.find("dxgi_shared_s_hookedVTable[8] ="), std::string::npos);
+    EXPECT_NE(dx11Present.find("InterlockedCompareExchangePointer"), std::string::npos);
+    EXPECT_NE(dx11Present.find("preserving foreign VTable[13] follower"), std::string::npos);
+    EXPECT_EQ(dx11Present.find("vtable[13] ="), std::string::npos);
+
+    const size_t externalChain = presentHooks.find("prepending CE at the original entry");
+    const size_t inlineInstall = presentHooks.find("InlineHook::InstallPublished(presentAddr", externalChain);
+    ASSERT_NE(externalChain, std::string::npos);
+    ASSERT_NE(inlineInstall, std::string::npos);
+    EXPECT_LT(externalChain, inlineInstall);
+}
+
+TEST(InjectLifecycleSourceTest, LateDeepHookPatchingUsesQuiescedExactByteOwnership) {
+    const std::string inlineHook = ReadSource("hook/wrappers/inline_hook.cpp");
+    const std::string deepHook = ReadSource("hook/wrappers/inline_hook_deep.cpp");
+    const std::string deepRemove = ReadSource("hook/wrappers/inline_hook_deep_remove.cpp");
+    ASSERT_FALSE(inlineHook.empty());
+    ASSERT_FALSE(deepHook.empty());
+    ASSERT_FALSE(deepRemove.empty());
+
+    EXPECT_NE(inlineHook.find("g_hooks.back().installedBytes"), std::string::npos);
+    EXPECT_NE(deepHook.find("ThreadQuiescence quiescence"), std::string::npos);
+    EXPECT_NE(deepHook.find("g_deepHooks.back().installedBytes"), std::string::npos);
+    EXPECT_NE(deepRemove.find("Preserving foreign replacement"), std::string::npos);
+    EXPECT_EQ(deepHook.find("pPatch[0] = 0xCC"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoingLive) {
+    const std::string installers =
+        ReadSource("hook/main_hookthread.cpp") + ReadSource("hook/main_external_dump.cpp") +
+        ReadSource("hook/common/dxgi_shared_hooks_present.cpp") + ReadSource("hook/apis/ddraw_hook_install.cpp") +
+        ReadSource("hook/apis/dx8_hook_detours.cpp") + ReadSource("hook/apis/dx9_hook.cpp") +
+        ReadSource("hook/apis/dx12_hook_hook_install.cpp") + ReadSource("hook/apis/nvngx_hook_feature.cpp") +
+        ReadSource("hook/apis/opengl_hook_install.cpp") + ReadSource("hook/apis/ffx_hook_internal.h") +
+        ReadSource("hook/apis/streamline_hook_internal.h");
+    ASSERT_FALSE(installers.empty());
+
+    EXPECT_EQ(installers.find("InlineHook::Install("), std::string::npos);
+    EXPECT_NE(installers.find("InlineHook::InstallPublished("), std::string::npos);
+    EXPECT_NE(installers.find("InlineHook::InstallDeepHookPublished("), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, GraphicsConfigCachesTreatReplacementSharedMemoryAsANewHostGeneration) {
+    const std::string source = ReadSource("hook/common/hook_common.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("currentSharedMemory == lastSharedMemory"), std::string::npos);
+    EXPECT_NE(source.find("currentSharedMemory != cachedSharedMemory"), std::string::npos);
+    EXPECT_NE(source.find("cachedSharedMemory = currentSharedMemory"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyingOverrides) {
+    const std::string dx11 = ReadSource("hook/apis/dx11_hook_present.cpp");
+    const std::string dx9 = ReadSource("hook/apis/dx9_hook_device.cpp");
+    const std::string vulkanHooks = ReadSource("hook/vulkan_layer/vulkan_layer_hooks.cpp");
+    const std::string vulkan = ReadSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    ASSERT_FALSE(dx11.empty());
+    ASSERT_FALSE(dx9.empty());
+    ASSERT_FALSE(vulkanHooks.empty());
+    ASSERT_FALSE(vulkan.empty());
+
+    const size_t lodFix = vulkanHooks.find("void ApplyConfiguredNvLodSpreadFix()");
+    const size_t lodDormant = vulkanHooks.find("if (!g_LayerState.whitelisted)", lodFix);
+    const size_t lodMutation = vulkanHooks.find("ce::nv_lod_spread::Install", lodFix);
+    ASSERT_NE(lodFix, std::string::npos);
+    ASSERT_NE(lodDormant, std::string::npos);
+    ASSERT_NE(lodMutation, std::string::npos);
+    EXPECT_LT(lodDormant, lodMutation);
+
+    const size_t dx11Resize = dx11.find("DetourResizeBuffers(");
+    const size_t dx11Dormant = dx11.find("HookIsShuttingDown()", dx11Resize);
+    const size_t dx11Override = dx11.find("HasBackbufferCountOverride", dx11Resize);
+    ASSERT_NE(dx11Resize, std::string::npos);
+    ASSERT_NE(dx11Dormant, std::string::npos);
+    ASSERT_NE(dx11Override, std::string::npos);
+    EXPECT_LT(dx11Dormant, dx11Override);
+
+    const size_t dx9Create = dx9.find("DetourCreateDeviceEx(");
+    const size_t dx9Dormant = dx9.find("HookIsShuttingDown()", dx9Create);
+    const size_t dx9Override = dx9.find("GetActiveGraphicsConfig()", dx9Create);
+    ASSERT_NE(dx9Create, std::string::npos);
+    ASSERT_NE(dx9Dormant, std::string::npos);
+    ASSERT_NE(dx9Override, std::string::npos);
+    EXPECT_LT(dx9Dormant, dx9Override);
+
+    const size_t acquire = vulkan.find("Capture_vkAcquireNextImageKHR(");
+    const size_t acquireDormant = vulkan.find("!g_LayerState.whitelisted.load", acquire);
+    const size_t acquireTracking = vulkan.find("GetSwapchainData", acquire);
+    ASSERT_NE(acquire, std::string::npos);
+    ASSERT_NE(acquireDormant, std::string::npos);
+    ASSERT_NE(acquireTracking, std::string::npos);
+    EXPECT_LT(acquireDormant, acquireTracking);
+
+    const size_t sampler = vulkan.find("Capture_vkCreateSampler(");
+    const size_t samplerDormant = vulkan.find("!g_LayerState.whitelisted.load", sampler);
+    const size_t samplerCopy = vulkan.find("VkSamplerCreateInfo modified", sampler);
+    ASSERT_NE(sampler, std::string::npos);
+    ASSERT_NE(samplerDormant, std::string::npos);
+    ASSERT_NE(samplerCopy, std::string::npos);
+    EXPECT_LT(samplerDormant, samplerCopy);
+}

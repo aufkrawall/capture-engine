@@ -70,7 +70,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object,  REFIID ii
         return E_NOINTERFACE;
 
     const HRESULT hr = original(object, iid, result);
-    if (FAILED(hr) || !result || !*result || g_D3D11InternalIdentityProbeDepth != 0)
+    if (FAILED(hr) || HookIsShuttingDown() || !result || !*result || g_D3D11InternalIdentityProbeDepth != 0)
         return hr;
 
     const unsigned deviceMinor = D3D11DeviceMinorFromIID(iid);

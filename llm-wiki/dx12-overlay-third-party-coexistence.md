@@ -1,13 +1,20 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-08-09 (Talos fast-start/menu transition freeze isolated to CE synchronously invoking Steam's Present handler from a DLSS-G worker; guarded external overlay calls now require verified source-Present-thread provenance whenever a runtime can Present from workers.)
+Last cross-checked: 2026-08-11 (generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle audited across graphics APIs; the prior DX12/FG provenance rules remain in force.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
+- `hook/common/overlay_compat_detail/module_table.h`
 - `hook/common/dx12_overlay_policy.h`
 - `hook/apis/dx12_hook_main.cpp`
 - `hook/apis/ffx_hook.cpp`
 - `hook/main.cpp`
+- `hook/main_host_lifecycle.cpp`
+- `hook/main_overlay_detect.cpp`
+- `hook/wrappers/inline_hook.cpp`
+- `hook/wrappers/hook_patch_transaction.cpp`
+- `hook/wrappers/iat_hook.cpp`
+- `hook/wrappers/vtable_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
 - `hook/common/dxgi_shared_present_core.cpp`
 - `hook/common/dxgi_shared_original.cpp`
@@ -31,7 +38,18 @@ Primary sources:
 - `installed/captureengine/logs/20260809_015416`
 
 ## Scope
-This page records the current repo knowledge for making our DX12 overlay work well when other external overlays are active, including Steam, Rockstar Social Club, Epic EOS, and similar third-party overlay layers.
+This page records the current repo knowledge for making our overlay and capture hooks coexist with external injects and overlays. The detailed historical cases are DX12-heavy, while the generic ownership and lifecycle invariants also cover DXGI, D3D8/9/11/12, DDraw, OpenGL, and Vulkan.
+
+## Cross-API Hook-Chain Invariants (2026-08-11)
+
+- Generic module identity tracking recognizes ReShade, Special K, OptiScaler, RTSS, Steam, Rockstar, EOS, Discord, Overwolf, and the established FFX/Streamline modules. Identification is refreshed off the Present thread from module paths, exports, and version metadata; the hot path reads only the published atomic registry.
+- CE prepends its inline detour at the original function entry when it finds a foreign relative `E9` jump or the x64 indirect `FF 25` entry shape used by common custom hooks and Microsoft Detours. On x64 it replaces only the five-byte foreign entry with an `E9` to a nearby CE relay; the saved predecessor trampoline enters the exact foreign target, and bytes from `target+5` onward remain untouched so an RTSS/Detours trampoline that resumes there stays valid. This preserves the existing chain instead of patching inside another tool's trampoline or bypassing it.
+- Inline and deep-hook byte writes are process-wide transactions: peer threads are suspended, their instruction pointers are proven outside the patch range, expected bytes are revalidated, and only then is the entry changed. Installation fails closed if the process cannot be quiesced. The old INT3 transition window is forbidden.
+- Removal is ownership-based. Inline/deep hooks restore bytes only when the live bytes are still CE's; IAT and vtable hooks use compare/exchange against the exact CE detour. If a later tool followed or replaced CE, removal preserves that foreign entry and CE's saved chain/trampoline remains resident so the later hook never calls freed code.
+- Graphics proxy DLLs (`dxgi`, D3D, OpenGL and common input/audio proxy names used by ReShade/Special K/OptiScaler) are excluded from CE's broad IAT patch scan. Their own imports and internal dispatch remain under the proxy's control; CE reaches the application/system entry chain instead.
+- Host shutdown is a dormant pass-through transition rather than a physical DLL unload. DirectX/OpenGL routes perform no CE work; Vulkan likewise disables CE rendering/capture/overrides but retains the minimum dispatch, queue, and swapchain metadata needed to forward correctly and reactivate. This keeps wrapper vtables, callbacks, trampolines, and foreign saved predecessors callable while the game continues, then permits target-specific reactivation by a later CaptureEngine host.
+- Every API detour must test CE runtime eligibility before overlay, capture, screenshot, limiter, override, or mutable state work. Dormant calls forward through the exact predecessor. This rule applies equally to Present/Present1, device wrappers, state/sampler detours, OpenGL swaps/context deletion, and Vulkan queue presentation.
+- Third-party overlay inclusion in a capture is **best effort and order-dependent**. If the foreign overlay draws before CE's capture point, it is included; if it draws later, forcing an extra invocation or reordering its private GPU work is unsafe. Coexistence and visibility take priority: CE must preserve the natural chain and must not hide or disable either overlay merely to force it into the recording.
 
 ## RESOLVED: x86 DX12 overlay DEVICE_HUNG (dx12_test) — fixed 2026-06-09
 Single hand-off reference: `handoff-dx12-32bit-crash.md`. Chronology: `log/recent.md` (2026-06-08..09).

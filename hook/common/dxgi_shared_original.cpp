@@ -5,6 +5,13 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    if (HookIsShuttingDown()) {
+        if (dxgi_shared_oPresentTrampoline)
+            return dxgi_shared_oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+        if (dxgi_shared_oPresent && dxgi_shared_oPresent != DetourPresent)
+            return dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
+        return DXGI_ERROR_INVALID_CALL;
+    }
 
     // Inline wait for DWM flip queue room (no separate function call)
     {
@@ -175,21 +182,31 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     bool needVtableRestore = false;
                     void* savedVtable8 = nullptr;
                     if (dxgi_shared_s_hookedVTable && IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 9 * sizeof(void*))) {
-                        savedVtable8 = dxgi_shared_s_hookedVTable[8];
+                        savedVtable8 = InterlockedCompareExchangePointer(
+                            reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), nullptr, nullptr);
                         if (savedVtable8 == (void*)DetourPresent && presentOriginal &&
                             presentOriginal != (PFN_Present)DetourPresent) {
                             DWORD oldProtect = 0;
                             if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-                                dxgi_shared_s_hookedVTable[8] = (void*)presentOriginal;
+                                void* replaced = InterlockedCompareExchangePointer(
+                                    reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]),
+                                    (void*)presentOriginal, (void*)DetourPresent);
                                 VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-                                needVtableRestore = true;
-                                vtableRestored = true;
-                                static std::atomic<int> s_vtableRestoreLogCount{0};
-                                if (s_vtableRestoreLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                if (replaced == (void*)DetourPresent) {
+                                    needVtableRestore = true;
+                                    vtableRestored = true;
+                                    static std::atomic<int> s_vtableRestoreLogCount{0};
+                                    if (s_vtableRestoreLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                        HookLogImportant(
+                                            "CallOriginalPresent: non-SL Steam — temp vtable[8]=%p "
+                                            "(was DetourPresent) for Steam overlay invoke",
+                                            (void*)presentOriginal);
+                                    }
+                                } else {
                                     HookLogImportant(
-                                        "CallOriginalPresent: non-SL Steam — temp vtable[8]=%p "
-                                        "(was DetourPresent) for Steam overlay invoke",
-                                        (void*)presentOriginal);
+                                        "CallOriginalPresent: Preserving concurrent foreign vtable[8]=%p; "
+                                        "skipping temporary Steam vtable handoff",
+                                        replaced);
                                 }
                             } else {
                                 static std::atomic<int> s_vtableRestoreFailCount{0};
@@ -331,8 +348,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     if (needVtableRestore && dxgi_shared_s_hookedVTable && IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 9 * sizeof(void*))) {
                         DWORD oldProtect = 0;
                         if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-                            if (dxgi_shared_s_hookedVTable[8] == (void*)presentOriginal) {
-                                dxgi_shared_s_hookedVTable[8] = (void*)DetourPresent;
+                            void* replaced = InterlockedCompareExchangePointer(
+                                reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]),
+                                (void*)DetourPresent, (void*)presentOriginal);
+                            if (replaced == (void*)presentOriginal) {
                                 VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
                                 static std::atomic<int> s_vtableRehookLogCount{0};
                                 if (s_vtableRehookLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
@@ -353,7 +372,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                     HookLogImportant(
                                         "CallOriginalPresent: non-SL Steam — vtable[8] was "
                                         "modified during Steam invoke (current=%p, expected=%p)",
-                                        (void*)dxgi_shared_s_hookedVTable[8], (void*)presentOriginal);
+                                        replaced, (void*)presentOriginal);
                                 }
                             }
                         } else {
@@ -573,6 +592,13 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    if (HookIsShuttingDown()) {
+        if (dxgi_shared_oPresent1Trampoline)
+            return dxgi_shared_oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
+        if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1)
+            return dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pParams);
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
 
     WaitBackbufferFrameLatency(pSwapChain);
     const PFN_Present1 present1Trampoline = dxgi_shared_oPresent1Trampoline;
@@ -580,13 +606,47 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     const PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
     bool slLoaded = IsSLInterposerLoaded();
 
+    const char* forcedBypassOverlay = nullptr;
+    bool isD3D12SteamSwapChain = false;
+    const bool forceSteamDX12Bypass = ShouldForceSteamDX12Bypass(
+        pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay, &isD3D12SteamSwapChain);
+
+    // A preserved foreign Present1 trampoline is still a synchronous call into
+    // that overlay. Apply the same provenance boundary as Present before the
+    // natural inline chain can be entered from an FG runtime worker.
+    if (present1Bypass && IsSteamOverlayModule(forcedBypassOverlay)) {
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
+        const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+        const bool runtimeCanPresentFromWorker = DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(
+            isD3D12SteamSwapChain, false, streamlineFGRunning, postSLConfirmedRendering,
+            ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
+            HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
+        const uint32_t currentThreadId = GetCurrentThreadId();
+        const uint32_t trackedSourcePresentThreadId = DX12_GetGamePresentThreadId();
+        if (runtimeCanPresentFromWorker &&
+            !DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+                true, trackedSourcePresentThreadId, currentThreadId)) {
+            static std::atomic<int> s_steamPresent1RuntimeWorkerBypassLogCount{0};
+            const int bypassNum =
+                s_steamPresent1RuntimeWorkerBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 20 || bypassNum == 50 || (bypassNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent1: refusing Steam Present1 transport on runtime worker #%d; using DXGI "
+                    "bypass (runtime=%s slFG=%d confirmed=%d sourceTid=0x%04X currentTid=0x%04X)",
+                    bypassNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), streamlineFGRunning ? 1 : 0,
+                    postSLConfirmedRendering ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+            }
+            return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+        }
+    }
+
     // Inline-hook path: trampoline always bypasses the detour safely.
     if (present1Trampoline) {
         return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
     }
 
-    const char* forcedBypassOverlay = nullptr;
-    if (ShouldForceSteamDX12Bypass(pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay)) {
+    if (forceSteamDX12Bypass) {
         if (slLoaded) {
             // SL case: use bypass trampoline (same as before, no Present1 guard available).
             static int s_forcedBypass1LogCount = 0;

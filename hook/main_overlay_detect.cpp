@@ -1,12 +1,21 @@
 #include "main_internal.h"
+#include "../common/module_enumeration.h"
 
 static PVOID g_DllNotificationCookie = nullptr;
+static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
 
 static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
                                                     PCLDR_DLL_NOTIFICATION_DATA data,
                                                     PVOID /*context*/) {
   if (!data || !data->BaseDllName || !data->BaseDllName->Buffer ||
       data->BaseDllName->Length == 0) {
+    return;
+  }
+  if (HookIsShuttingDown()) {
+    // The next active service pass performs a full retained-module identity
+    // refresh; do not install hooks or touch UE/vendor state under the loader
+    // lock while the resident runtime is dormant.
+    g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
     return;
   }
   // Narrow the (short) base name on the stack — loader-safe, no allocation.
@@ -70,6 +79,100 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
       StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
     }
   }
+  g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
+  if (g_hCheckHooksEvent)
+    SetEvent(g_hCheckHooksEvent);
+}
+
+static bool IsThirdPartyGraphicsProxyCandidate(const char* baseName) {
+  static constexpr const char* candidates[] = {
+      "dxgi.dll",      "d3d12.dll",  "d3d11.dll",    "d3d10_1.dll", "d3d10.dll",
+      "d3d9.dll",      "d3d8.dll",   "ddraw.dll",    "opengl32.dll", "dinput8.dll",
+      "dsound.dll",    "xinput1_3.dll", "xinput9_1_0.dll", "winmm.dll", "version.dll",
+      "wininet.dll",   "winhttp.dll", "dbghelp.dll", "nvngx.dll",    "OptiScaler.dll",
+  };
+  for (const char* candidate : candidates) {
+    if (_stricmp(baseName, candidate) == 0)
+      return true;
+  }
+  return false;
+}
+
+void RefreshThirdPartyOverlayIdentityCache() {
+  if (!g_OverlayIdentityRefreshNeeded.exchange(false, std::memory_order_acq_rel))
+    return;
+
+  std::vector<HMODULE> modules;
+  if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+    // Preserve the last complete bank and retry on the next service pass. An
+    // empty replacement published from a transient enumeration failure would
+    // briefly misclassify generic ReShade/Special K proxy filenames.
+    g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
+    return;
+  }
+
+  struct IdentifiedPath {
+    char narrow[MAX_PATH] = {};
+    wchar_t wide[MAX_PATH] = {};
+  } identifiedPaths[ce::overlay_compat::kIdentifiedOverlayPathSlotCount];
+  size_t identifiedPathCount = 0;
+  bool reshadeProxy = false;
+  bool specialKProxy = false;
+  bool optiScalerProxy = false;
+  for (HMODULE module : modules) {
+    HMODULE retained = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module), &retained))
+      continue;
+    char path[MAX_PATH] = {};
+    if (GetModuleFileNameA(retained, path, MAX_PATH)) {
+      const char* baseName = ce::overlay_compat::detail::ExtractBaseName(path);
+      ce::overlay_compat::NoteModuleLoadedForOverlayCache(baseName);
+      const bool proxyCandidate = IsThirdPartyGraphicsProxyCandidate(baseName);
+      const bool isReshade = GetProcAddress(retained, "ReShadeVersion") != nullptr ||
+                             GetProcAddress(retained, "ReShadeRegisterAddon") != nullptr ||
+                             GetProcAddress(retained, "ReShadeUnregisterAddon") != nullptr ||
+                             (proxyCandidate && DllVersionStringContains(path, "ReShade"));
+      const bool isSpecialK = GetProcAddress(retained, "SK_GetDLL") != nullptr ||
+                              GetProcAddress(retained, "SK_Inject_GetRecord") != nullptr ||
+                              (proxyCandidate && DllVersionStringContains(path, "Special K"));
+      const bool isOptiScaler = proxyCandidate && DllVersionStringContains(path, "OptiScaler");
+      if (isReshade || isSpecialK || isOptiScaler) {
+        if (identifiedPathCount < ce::overlay_compat::kIdentifiedOverlayPathSlotCount) {
+          auto& identified = identifiedPaths[identifiedPathCount++];
+          strncpy_s(identified.narrow, _countof(identified.narrow), path, _TRUNCATE);
+          GetModuleFileNameW(retained, identified.wide, MAX_PATH);
+        }
+        reshadeProxy |= isReshade;
+        specialKProxy |= isSpecialK;
+        optiScalerProxy |= isOptiScaler;
+      }
+    }
+    FreeLibrary(retained);
+  }
+
+  // Start the publication transaction only after every loader/file-version
+  // query has completed. Once the sequence is odd, the remainder is fixed-size
+  // atomic publication and cannot abandon the bank halfway through.
+  const uint32_t identityBank = ce::overlay_compat::BeginIdentifiedThirdPartyOverlayModulePathRefresh();
+  for (size_t i = 0; i < identifiedPathCount; ++i) {
+    ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identifiedPaths[i].narrow, identityBank);
+    if (identifiedPaths[i].wide[0]) {
+      ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identifiedPaths[i].wide, identityBank);
+    }
+  }
+
+  ce::overlay_compat::SetIdentifiedOverlayIdentityLoaded("CE.ReShadeProxyIdentity", reshadeProxy);
+  ce::overlay_compat::SetIdentifiedOverlayIdentityLoaded("CE.SpecialKProxyIdentity", specialKProxy);
+  ce::overlay_compat::SetIdentifiedOverlayIdentityLoaded("CE.OptiScalerProxyIdentity", optiScalerProxy);
+  ce::overlay_compat::CommitIdentifiedThirdPartyOverlayModulePathRefresh(identityBank);
+
+  const uint32_t identityMask = (reshadeProxy ? 1u : 0u) | (specialKProxy ? 2u : 0u) |
+                                (optiScalerProxy ? 4u : 0u);
+  static std::atomic<uint32_t> lastIdentityMask{UINT32_MAX};
+  if (lastIdentityMask.exchange(identityMask, std::memory_order_acq_rel) != identityMask) {
+    HookLogImportant("Third-party overlay identities changed (ReShade=%d SpecialK=%d OptiScaler=%d)",
+                     reshadeProxy ? 1 : 0, specialKProxy ? 1 : 0, optiScalerProxy ? 1 : 0);
+  }
 }
 
 // Seeds already-loaded overlays and registers the load/unload notification. MUST be called
@@ -82,13 +185,9 @@ void InitializeThirdPartyOverlayDetection() {
     return;
   }
 
-  // 1) Seed overlays already present before our hooks installed (one-time loader walk).
-  const uint32_t seeded = ce::overlay_compat::SeedThirdPartyOverlayModuleCacheFromLoader();
-  const char *seededName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-  HookLog("Third-party overlay detection: seed scan bits=0x%X active=%s", seeded,
-          seededName ? seededName : "none");
-
-  // 2) Register for all subsequent load/unload events (covers every load mechanism + unloads).
+  // Register before the seed walk. A DLL that loads or unloads during the walk
+  // is then reflected by the callback as well, so there is no observation gap
+  // between the initial snapshot and continuous notification coverage.
   HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   auto registerFn = ntdll ? reinterpret_cast<PFN_LdrRegisterDllNotification>(
                                 GetProcAddress(ntdll, "LdrRegisterDllNotification"))
@@ -108,10 +207,16 @@ void InitializeThirdPartyOverlayDetection() {
     HookLog("Third-party overlay detection: LdrRegisterDllNotification unavailable — falling "
             "back to LoadLibrary/LdrLoadDll notifications only");
   }
+
+  const uint32_t seeded = ce::overlay_compat::SeedThirdPartyOverlayModuleCacheFromLoader();
+  RefreshThirdPartyOverlayIdentityCache();
+  const char *seededName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+  HookLog("Third-party overlay detection: seed scan bits=0x%X active=%s", seeded,
+          seededName ? seededName : "none");
 }
 
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
-  if (!module)
+  if (!module || HookIsShuttingDown())
     return;
 
   // Modules that loaded after the initial IAT snapshot keep their real
@@ -127,6 +232,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
   ce::overlay_compat::NoteModuleLoadedForOverlayCache(moduleNameOrPath);
+  g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);

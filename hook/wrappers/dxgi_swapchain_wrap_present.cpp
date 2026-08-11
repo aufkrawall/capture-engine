@@ -104,6 +104,20 @@ void CWrapDXGISwapChain::DrawOverlay() {
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
+    if (HookIsShuttingDown()) {
+        IDXGISwapChain* real = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_ResourceLock);
+            real = m_pReal;
+            if (real)
+                real->AddRef();
+        }
+        if (!real)
+            return DXGI_ERROR_INVALID_CALL;
+        const HRESULT result = real->Present(SyncInterval, Flags);
+        real->Release();
+        return result;
+    }
     PresentDebugSample debugSample = {};
     PresentDebugSample* activeDebugSample = nullptr;
     int64_t presentStartUs = 0;
@@ -155,7 +169,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     static std::atomic<int> s_presentCallCount{0};
     int callCount = s_presentCallCount.fetch_add(1);
 
-    SharedMemoryLayout* debugSharedMem = (g_IPC && g_IPC->GetSharedMem()) ? g_IPC->GetSharedMem() : g_pSharedMem;
+    SharedMemoryLayout* debugSharedMem = GetHookSharedMemory();
     if (perfLoggingEnabled && debugSharedMem) {
         perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
         perfMetrics.sourceCapturePhase = debugSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
@@ -218,15 +232,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         WrapperLog("Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_IsD3D12=%d", callCount, threadId, pRealCached,
                    m_IsD3D12);
         WrapperLog("Present state - fgActive=%d, flipModel=%d", g_FGCompat.IsFGActive(), m_FlipModel.active);
-    }
-
-    // CRITICAL: Check for global shutdown - if app is closing, don't touch
-    // anything
-    if (HookIsShuttingDown()) {
-        if (pRealCached) {
-            return pRealCached->Present(SyncInterval, Flags);
-        }
-        return DXGI_ERROR_INVALID_CALL;
     }
 
     // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG
@@ -374,6 +379,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     } else {
         // DX11/DX10: DX11_ProcessFrameExternal handles both capture AND overlay
         DX11_ProcessFrameExternal(pRealCached);
+        if (DX11Hook_ShouldPassThroughCurrentPresent())
+            return pRealCached->Present(SyncInterval, Flags);
         if (perfLoggingEnabled) {
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
         }
@@ -493,10 +500,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // CRITICAL: Check for global shutdown - if app is closing, don't touch
     // anything
     if (HookIsShuttingDown()) {
-        if (m_pReal1) {
-            return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+        IDXGISwapChain1* real = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_ResourceLock);
+            real = m_pReal1;
+            if (real)
+                real->AddRef();
         }
-        return DXGI_ERROR_INVALID_CALL;
+        if (!real)
+            return DXGI_ERROR_INVALID_CALL;
+        const HRESULT result = real->Present1(SyncInterval, PresentFlags, pPresentParameters);
+        real->Release();
+        return result;
     }
 
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
@@ -604,6 +619,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
         DX11_ProcessFrameExternal(pReal1Cached);
+        if (DX11Hook_ShouldPassThroughCurrentPresent())
+            return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex

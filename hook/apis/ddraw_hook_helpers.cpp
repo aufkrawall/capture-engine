@@ -99,13 +99,7 @@ bool ShouldSuppressDirectDrawHooking() {
         return false;
     }
 
-    SharedMemoryLayout* shm = nullptr;
-    if (g_IPC) {
-        shm = g_IPC->GetSharedMem();
-    }
-    if (!shm) {
-        shm = g_pSharedMem;
-    }
+    SharedMemoryLayout* shm = GetHookSharedMemory();
     if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
         return false;
     }

@@ -1,5 +1,7 @@
 #pragma once
 #include <windows.h>
+#include <atomic>
+#include <mutex>
 #include "../../common/shared_defs.h"
 
 class IPCClient {
@@ -8,10 +10,14 @@ public:
     ~IPCClient();
 
     bool Connect();
+    // Atomically publishes a new host mapping while intentionally retaining the
+    // previous mapping. In-flight detours can therefore finish against the old
+    // session without a use-after-unmap during host restart.
+    bool Reconnect();
     void Disconnect();
 
-    SharedMemoryLayout* GetSharedMem() {
-        return pSharedMem;
+    SharedMemoryLayout* GetSharedMem() const {
+        return publishedSharedMem.load(std::memory_order_acquire);
     }
     ShmemBuffer* GetShmem();  // Returns current mapping or attempts to connect if
                               // metadata exists
@@ -21,7 +27,8 @@ public:
     // the short hidden startup warmup. WGC/DXGI recordings still set the session's
     // raw captureRequested bit for REC/limiter state, but do not enable hook copies.
     bool IsCaptureRequested() const {
-        return pSharedMem && pSharedMem->runtimeState.IsInjectVideoCaptureRequested();
+        SharedMemoryLayout* sharedMemory = GetSharedMem();
+        return sharedMemory && sharedMemory->runtimeState.IsInjectVideoCaptureRequested();
     }
 
     bool IsRecording() const {
@@ -29,8 +36,12 @@ public:
     }
 
 private:
+    bool ConnectLocked();
+
+    std::mutex connectionMutex;
     HANDLE hMapFile;
     SharedMemoryLayout* pSharedMem;
+    std::atomic<SharedMemoryLayout*> publishedSharedMem;
 
     HANDLE hMapShmem;
     ShmemBuffer* pShmem;

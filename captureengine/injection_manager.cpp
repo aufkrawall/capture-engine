@@ -92,26 +92,62 @@ bool InjectionManager::IsAlreadyInjectedLocked(DWORD pid) {
     // Also check if hook DLL is already loaded in the target process
     // This handles the case where a previous captureengine instance injected
     // and we're a new instance that doesn't know about it
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
     if (!hProcess)
         return false;
 
     bool found = false;
     std::vector<HMODULE> hMods;
-    if (ce::EnumerateProcessModules(hProcess, hMods)) {
+    const bool modulesEnumerated = ce::EnumerateProcessModules(hProcess, hMods);
+    if (modulesEnumerated) {
         for (size_t i = 0; i < hMods.size(); i++) {
             char szModName[MAX_PATH];
             if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
-                std::string modName = szModName;
-                if (modName.find("capture_hook_x64.dll") != std::string::npos ||
-                    modName.find("capture_hook_x86.dll") != std::string::npos) {
+                const char* baseName = strrchr(szModName, '\\');
+                baseName = baseName ? baseName + 1 : szModName;
+                if (_stricmp(baseName, "capture_hook_x64.dll") == 0 ||
+                    _stricmp(baseName, "capture_hook_x86.dll") == 0) {
                     found = true;
                     break;
                 }
             }
         }
+    } else {
+        // Protected/proxy-heavy processes can transiently deny module
+        // enumeration. The per-target dormant acknowledgement is created by
+        // HookThread before it connects, so it is a reliable resident marker
+        // for this still-live PID and avoids a redundant LoadLibrary.
+        wchar_t dormantEventName[64] = {};
+        GenerateInjectDormantEventName(dormantEventName, _countof(dormantEventName), pid);
+        HANDLE dormantEvent = OpenEventW(SYNCHRONIZE, FALSE, dormantEventName);
+        if (dormantEvent) {
+            found = true;
+            CloseHandle(dormantEvent);
+            LogInfo("[InjectLifecycle] Resident marker found for PID %lu after module enumeration failed",
+                    static_cast<unsigned long>(pid));
+        }
     }
-    CloseHandle(hProcess);
+    if (found) {
+        char processPath[MAX_PATH] = {};
+        DWORD processPathLength = _countof(processPath);
+        std::string processName = "retained hook";
+        if (QueryFullProcessImageNameA(hProcess, 0, processPath, &processPathLength)) {
+            const char* base = strrchr(processPath, '\\');
+            processName = base ? base + 1 : processPath;
+        }
+        InjectedProcess resident;
+        resident.pid = pid;
+        resident.name = processName;
+        resident.hProcess = hProcess;
+        resident.remoteMemory = nullptr;
+        resident.injectionThread = nullptr;
+        CreateTargetReactivationEvents(pid, true, true, &resident.reactivateEvent, &resident.vulkanReactivateEvent);
+        injectedProcesses.push_back(resident);
+        LogInfo("[InjectLifecycle] Adopted resident hook in %s (PID: %lu) for host reconnection",
+                processName.c_str(), static_cast<unsigned long>(pid));
+    } else {
+        CloseHandle(hProcess);
+    }
     return found;
 }
 
@@ -123,6 +159,38 @@ bool InjectionManager::IsAlreadyPendingLocked(DWORD pid) {
 void InjectionManager::Update() {
     std::lock_guard<std::mutex> lock(injectMutex);
 
+    // A co-injected process can hold the loader lock for longer than the normal
+    // remote-LoadLibrary window. Complete those injections asynchronously and
+    // release the remote argument only after the thread has definitely returned.
+    for (auto it = injectedProcesses.begin(); it != injectedProcesses.end();) {
+        if (!it->injectionThread || WaitForSingleObject(it->injectionThread, 0) != WAIT_OBJECT_0) {
+            ++it;
+            continue;
+        }
+
+        DWORD loadResult = 0;
+        const bool loaded = GetExitCodeThread(it->injectionThread, &loadResult) && loadResult != 0;
+        CloseHandle(it->injectionThread);
+        it->injectionThread = nullptr;
+        if (it->remoteMemory) {
+            VirtualFreeEx(it->hProcess, it->remoteMemory, 0, MEM_RELEASE);
+            it->remoteMemory = nullptr;
+        }
+        if (loaded) {
+            LogInfo("[Inject] Pending remote LoadLibrary completed for %s (PID: %lu)", it->name.c_str(),
+                    static_cast<unsigned long>(it->pid));
+            ++it;
+            continue;
+        }
+
+        LogError("[Inject] Pending remote LoadLibrary failed for %s (PID: %lu, result=0x%08lX)", it->name.c_str(),
+                 static_cast<unsigned long>(it->pid), static_cast<unsigned long>(loadResult));
+        failedInjections.push_back({it->pid, GetTickCount64()});
+        CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
+        CloseHandle(it->hProcess);
+        it = injectedProcesses.erase(it);
+    }
+
     // Cleanup dead processes
     injectedProcesses.erase(
         std::remove_if(injectedProcesses.begin(), injectedProcesses.end(),
@@ -133,6 +201,12 @@ void InjectionManager::Update() {
                                    "[Inject] Tracked injected process exited: %s (PID: %lu, exit=0x%08lX). If no "
                                    "session dump exists, the process ended outside CE's in-process crash/dump path.",
                                    p.name.c_str(), (unsigned long)p.pid, (unsigned long)exitCode);
+                               if (p.injectionThread)
+                                   CloseHandle(p.injectionThread);
+                               if (p.reactivateEvent)
+                                   CloseHandle(p.reactivateEvent);
+                               if (p.vulkanReactivateEvent)
+                                   CloseHandle(p.vulkanReactivateEvent);
                                CloseHandle(p.hProcess);
                                return true;
                            }

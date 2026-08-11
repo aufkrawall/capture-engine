@@ -3,11 +3,12 @@
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
-
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    if (HookIsShuttingDown())
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
     const APIType api = DetectAPIType(pSwapChain);
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {
@@ -392,12 +393,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
     if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) || !vtable[22]) {
-        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
 

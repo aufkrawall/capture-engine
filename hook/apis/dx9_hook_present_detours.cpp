@@ -5,6 +5,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* p
                                                HWND hDestWindowOverride,  CONST RGNDATA* pDirtyRegion) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx9_hook_oPresent ? dx9_hook_oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion)
+                                 : D3DERR_INVALIDCALL;
+    }
     if (ShouldBypassDX9HooksForDevice(device)) {
         return dx9_hook_oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
     }
@@ -44,6 +48,11 @@ HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST REC
                                                  CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx9_hook_oPresentEx
+                   ? dx9_hook_oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags)
+                   : D3DERR_INVALIDCALL;
+    }
     if (ShouldBypassDX9HooksForDevice(device)) {
         return dx9_hook_oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
@@ -90,6 +99,11 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
                                                    CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx9_hook_oPresentSwap
+                   ? dx9_hook_oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags)
+                   : D3DERR_INVALIDCALL;
+    }
     if (ShouldBypassDX9HooksForSwapChain(swap)) {
         return dx9_hook_oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
@@ -150,6 +164,8 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
 HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARAMETERS* pPresentationParameters) {
 
 
+    if (HookIsShuttingDown())
+        return dx9_hook_oReset ? dx9_hook_oReset(device, pPresentationParameters) : D3DERR_INVALIDCALL;
     if (ShouldBypassDX9HooksForDevice(device)) {
         return dx9_hook_oReset(device, pPresentationParameters);
     }
@@ -243,6 +259,10 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
                                                D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx9_hook_oResetEx ? dx9_hook_oResetEx(device, pPresentationParameters, pFullscreenDisplayMode)
+                                 : D3DERR_INVALIDCALL;
+    }
     if (ShouldBypassDX9HooksForDevice(device)) {
         return dx9_hook_oResetEx(device, pPresentationParameters, pFullscreenDisplayMode);
     }

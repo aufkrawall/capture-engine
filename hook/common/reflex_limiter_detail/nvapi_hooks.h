@@ -93,11 +93,23 @@ inline void ReflexLimiter::EnsureNvAPIHooksInstalled() {
 
     if (origSetSleepMode_ && !directSetSleepModeHooked_) {
         void* trampoline = nullptr;
-        if (InlineHook::Install(reinterpret_cast<void*>(origSetSleepMode_),
-                                reinterpret_cast<void*>(&ReflexDetour_SetSleepMode), &trampoline)) {
-            directSetSleepModeHooked_ = true;
-            directSetSleepModeTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(trampoline);
-            realSetSleepModeForHook_ = directSetSleepModeTrampoline_;
+        struct SetSleepModePublication {
+            ReflexLimiter* limiter;
+            PFN_NvAPI_D3D_SetSleepMode fallback;
+        } publication{this, realSetSleepModeForHook_};
+        auto publishSetSleepMode = [](void* published, void* context) {
+            if (!context)
+                return;
+            auto* state = static_cast<SetSleepModePublication*>(context);
+            auto* limiter = state->limiter;
+            limiter->directSetSleepModeTrampoline_ =
+                reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(published);
+            limiter->realSetSleepModeForHook_ = published ? limiter->directSetSleepModeTrampoline_ : state->fallback;
+            limiter->directSetSleepModeHooked_ = published != nullptr;
+        };
+        if (InlineHook::InstallPublished(reinterpret_cast<void*>(origSetSleepMode_),
+                                         reinterpret_cast<void*>(&ReflexDetour_SetSleepMode), &trampoline,
+                                         publishSetSleepMode, &publication)) {
             HookLogImportant(
                 "ReflexLimiter: Inline hook installed on NvAPI_D3D_SetSleepMode (target=%p, detour=%p, "
                 "trampoline=%p)",
@@ -109,11 +121,22 @@ inline void ReflexLimiter::EnsureNvAPIHooksInstalled() {
 
     if (origSleep_ && !directSleepHooked_) {
         void* trampoline = nullptr;
-        if (InlineHook::Install(reinterpret_cast<void*>(origSleep_), reinterpret_cast<void*>(&ReflexDetour_Sleep),
-                                &trampoline)) {
-            directSleepHooked_ = true;
-            directSleepTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_Sleep>(trampoline);
-            realSleepForHook_ = directSleepTrampoline_;
+        struct SleepPublication {
+            ReflexLimiter* limiter;
+            PFN_NvAPI_D3D_Sleep fallback;
+        } publication{this, realSleepForHook_};
+        auto publishSleep = [](void* published, void* context) {
+            if (!context)
+                return;
+            auto* state = static_cast<SleepPublication*>(context);
+            auto* limiter = state->limiter;
+            limiter->directSleepTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_Sleep>(published);
+            limiter->realSleepForHook_ = published ? limiter->directSleepTrampoline_ : state->fallback;
+            limiter->directSleepHooked_ = published != nullptr;
+        };
+        if (InlineHook::InstallPublished(reinterpret_cast<void*>(origSleep_),
+                                         reinterpret_cast<void*>(&ReflexDetour_Sleep), &trampoline,
+                                         publishSleep, &publication)) {
             HookLogImportant(
                 "ReflexLimiter: Inline hook installed on NvAPI_D3D_Sleep (target=%p, detour=%p, trampoline=%p)",
                 (void*)origSleep_, (void*)&ReflexDetour_Sleep, trampoline);

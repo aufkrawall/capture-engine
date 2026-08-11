@@ -14,6 +14,14 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             real(pThis, NumCommandLists, ppCommandLists);
         return;
     }
+    if (HookIsShuttingDown()) {
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (!original)
+            original = oExecuteCommandLists;
+        if (original)
+            original(pThis, NumCommandLists, ppCommandLists);
+        return;
+    }
 
     // Safety: once the D3D12 device is removed/hung, the NV UMD context behind this
     // queue is torn down and forwarding the app's command lists into it dereferences
@@ -667,4 +675,3 @@ skip_command_queue_registration:
         }
     }
 }
-

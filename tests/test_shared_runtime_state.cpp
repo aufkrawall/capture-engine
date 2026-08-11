@@ -193,15 +193,30 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     wchar_t sharedMemName[64]{};
     wchar_t shutdownEventName[64]{};
     wchar_t shmemName[64]{};
+    wchar_t hostStoppingEventName[64]{};
+    wchar_t injectReactivateEventName[64]{};
+    wchar_t vulkanReactivateEventName[64]{};
+    wchar_t injectDormantEventName[64]{};
+    wchar_t vulkanDormantEventName[64]{};
 
     GenerateSharedMemName(sharedMemName, std::size(sharedMemName), 0x1234ABCDu);
     GenerateShutdownEventName(shutdownEventName, std::size(shutdownEventName), 0x89ABCDEFu);
     GenerateShmemName(shmemName, std::size(shmemName), 0x00ABCDEFu);
+    GenerateInjectHostStoppingEventName(hostStoppingEventName, std::size(hostStoppingEventName));
+    GenerateInjectReactivateEventName(injectReactivateEventName, std::size(injectReactivateEventName), 0x1234ABCDu);
+    GenerateVulkanReactivateEventName(vulkanReactivateEventName, std::size(vulkanReactivateEventName), 0x1234ABCDu);
+    GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
+    GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
     EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_38_1234ABCD"), 0);
     EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_38"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_38"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_38_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_38_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_38_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_38_1234ABCD"), 0);
 }
 
 TEST(SharedDefsTest, DiscoveryRequiresExactPublishedBuildIdentity) {

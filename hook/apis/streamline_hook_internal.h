@@ -636,6 +636,19 @@ struct ReflexSignalLogState {
                                 bool clearAllViewportStatesForDisable = false);
 
 template <typename T>
+struct StreamlineInlineHookPublication {
+    T* destination = nullptr;
+    T fallback = nullptr;
+};
+
+template <typename T>
+void PublishStreamlineInlineHookTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<StreamlineInlineHookPublication<T>*>(context);
+    *publication->destination =
+        trampoline ? reinterpret_cast<T>(trampoline) : publication->fallback;
+}
+
+template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
                            std::atomic<void*>& targetSlot, const char* hookName) {
     if (!target) {
@@ -654,13 +667,14 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
         return false;
     }
 
+    StreamlineInlineHookPublication<T> publication{&original, original};
     void* trampoline = nullptr;
-    if (!InlineHook::Install(target, detour, &trampoline)) {
+    if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishStreamlineInlineHookTrampoline<T>,
+                                      &publication)) {
         HookLogImportant("Streamline Hook: Failed to inline hook %s at %p", hookName, target);
         return false;
     }
 
-    original = reinterpret_cast<T>(trampoline);
     targetSlot.store(target, std::memory_order_release);
     installedFlag.store(true, std::memory_order_release);
     HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target,

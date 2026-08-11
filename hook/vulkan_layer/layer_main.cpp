@@ -143,25 +143,18 @@ static bool g_LogFileInitialized = false;
 
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hInst);
+        HMODULE pinnedLayer = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                reinterpret_cast<LPCWSTR>(hInst), &pinnedLayer)) {
+            return FALSE;
+        }
         EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
     } else if (reason == DLL_PROCESS_DETACH) {
-        EarlyLog("DLL_PROCESS_DETACH - Layer DLL unloading, clearing vulkanLayerActive flag");
-        // Close log file to prevent handle leak
-        if (g_LogFile) {
-            fprintf(g_LogFile, "\n=== Layer DLL Unloading ===\n");
-            fclose(g_LogFile);
-            g_LogFile = nullptr;
-        }
-        // CRITICAL: Clear the vulkanLayerActive flag so other APIs (OpenGL, DX) know
-        // Vulkan is no longer active. Without this, the flag persists in shared memory
-        // and causes OpenGL/DX overlays to skip rendering because they think Vulkan is primary.
-        extern IPCClient g_IPCClient;
-        auto* sharedMem = g_IPCClient.GetSharedMem();
-        if (sharedMem) {
-            sharedMem->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
-            sharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
-            EarlyLog("Cleared vulkanLayerActive flag in shared memory");
-        }
+        // Never call IPC, logging, Vulkan, or C++ cleanup while the loader lock is
+        // held. Cooperative host deactivation is performed by the lifecycle
+        // watcher; process termination leaves remaining resources to the OS.
+        g_LayerState.whitelisted.store(false, std::memory_order_release);
     }
     return TRUE;
 }
@@ -297,6 +290,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr;
 
     g_LayerState.initialized = true;
+    LayerIPC_StartHostLifecycleWatcher();
     LayerLog(
         "Vulkan Layer: Negotiation SUCCESS - version set to 2, "
         "pfnGetInstanceProcAddr=%p, pfnGetDeviceProcAddr=%p",
@@ -343,7 +337,11 @@ static bool PerformEarlyWhitelistCheck() {
                 g_LayerState.whitelisted = true;
                 break;
             }
-            pw += strlen(pw) + 1;
+            const size_t remaining = static_cast<size_t>(end - pw);
+            const size_t length = strnlen(pw, remaining);
+            if (length == remaining)
+                break;
+            pw += length + 1;
         }
     }
 
@@ -365,8 +363,6 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
                                                                                                 const char* pName) {
     if (!pName)
         return nullptr;
-
-    bool whitelisted = g_LayerState.whitelisted;
 
     // Layer-level functions (no instance needed)
     if (strcmp(pName, "vkNegotiateLoaderLayerInterfaceVersion") == 0) {
@@ -403,33 +399,32 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
         return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
 
-    // Conditional Hooks (Only if whitelisted)
-    if (whitelisted) {
-        if (strcmp(pName, "vkCreateWin32SurfaceKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkCreateWin32SurfaceKHR;
-        if (strcmp(pName, "vkGetDeviceQueue") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
-        if (strcmp(pName, "vkGetDeviceQueue2") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
-        if (strcmp(pName, "vkQueueSubmit") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
-        if (strcmp(pName, "vkQueueSubmit2") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
-        if (strcmp(pName, "vkQueueSubmit2KHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
-        if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
-        if (strcmp(pName, "vkDestroySwapchainKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
-        if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
-        if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
-        if (strcmp(pName, "vkQueuePresentKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
-        if (strcmp(pName, "vkCreateSampler") == 0)
-            return (PFN_vkVoidFunction)Capture_vkCreateSampler;
-    }
+    // Always expose forwarding hooks. Each hook performs only the minimal chain
+    // bookkeeping while dormant; the stable address can be cached before CE starts.
+    if (strcmp(pName, "vkCreateWin32SurfaceKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkCreateWin32SurfaceKHR;
+    if (strcmp(pName, "vkGetDeviceQueue") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    if (strcmp(pName, "vkGetDeviceQueue2") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
+    if (strcmp(pName, "vkQueueSubmit") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
+    if (strcmp(pName, "vkQueueSubmit2") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
+    if (strcmp(pName, "vkQueueSubmit2KHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
+    if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
+    if (strcmp(pName, "vkDestroySwapchainKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
+    if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
+    if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkQueuePresentKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
+    if (strcmp(pName, "vkCreateSampler") == 0)
+        return (PFN_vkVoidFunction)Capture_vkCreateSampler;
 
     // Default: chain to next layer
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
@@ -445,37 +440,33 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
     if (!pName || !device)
         return nullptr;
 
-    bool whitelisted = g_LayerState.whitelisted;
-
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
         return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
     if (strcmp(pName, "vkDestroyDevice") == 0)
         return (PFN_vkVoidFunction)Capture_vkDestroyDevice;
 
-    if (whitelisted) {
-        if (strcmp(pName, "vkGetDeviceQueue") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
-        if (strcmp(pName, "vkGetDeviceQueue2") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
-        if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
-        if (strcmp(pName, "vkDestroySwapchainKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
-        if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
-        if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
-        if (strcmp(pName, "vkQueuePresentKHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
-        if (strcmp(pName, "vkQueueSubmit") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
-        if (strcmp(pName, "vkQueueSubmit2") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
-        if (strcmp(pName, "vkQueueSubmit2KHR") == 0)
-            return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
-        if (strcmp(pName, "vkCreateSampler") == 0)
-            return (PFN_vkVoidFunction)Capture_vkCreateSampler;
-    }
+    if (strcmp(pName, "vkGetDeviceQueue") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    if (strcmp(pName, "vkGetDeviceQueue2") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
+    if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
+    if (strcmp(pName, "vkDestroySwapchainKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
+    if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
+    if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkQueuePresentKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
+    if (strcmp(pName, "vkQueueSubmit") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
+    if (strcmp(pName, "vkQueueSubmit2") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
+    if (strcmp(pName, "vkQueueSubmit2KHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
+    if (strcmp(pName, "vkCreateSampler") == 0)
+        return (PFN_vkVoidFunction)Capture_vkCreateSampler;
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkGetDeviceProcAddr) {

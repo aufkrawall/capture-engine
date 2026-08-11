@@ -9,6 +9,8 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
             droppedFrames.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+        if (HookIsShuttingDown())
+            return;
         if (!initialized || !backBuffer)
             return;
 
@@ -491,6 +493,8 @@ void DX9Capture::PostPresentReadback(IDirect3DDevice9* device) {
         std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
         if (!captureLock.owns_lock())
             return;
+        if (HookIsShuttingDown())
+            return;
         if (!initialized)
             return;
 
@@ -633,4 +637,3 @@ void DX9Capture::WaitPrerender(IDirect3DDevice9* device,  float limit) {
         }
 
 }
-

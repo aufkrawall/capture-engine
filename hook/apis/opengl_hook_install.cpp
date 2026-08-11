@@ -4,8 +4,14 @@
 // point that already routes through an inline trampoline.
 static LPVOID opengl_hook_g_DiscardedSwapOriginal = nullptr;
 
+struct OpenGLTrampolinePublication {
+    void** destination = nullptr;
+    void* fallback = nullptr;
+};
+
 static void PublishOpenGLSwapTrampoline(void* trampoline, void* context) {
-    *static_cast<void**>(context) = trampoline;
+    auto* publication = static_cast<OpenGLTrampolinePublication*>(context);
+    *publication->destination = trampoline ? trampoline : publication->fallback;
 }
 
 // Patch the exported swap function itself so callers that cached the import
@@ -21,9 +27,10 @@ static bool InstallOpenGLSwapInlineHook(const char* moduleName, const char* func
     if (!target || target == detour)
         return false;
 
+    OpenGLTrampolinePublication publication{original, *original};
     void* trampoline = nullptr;
     if (!InlineHook::InstallPublished(target, detour, &trampoline, &PublishOpenGLSwapTrampoline,
-                                      static_cast<void*>(original))) {
+                                      &publication)) {
         HookLogImportant("OpenGL: Inline hook failed for %s!%s at %p; only IAT-routed callers are covered", moduleName,
                          functionName, target);
         return false;
@@ -147,5 +154,8 @@ void OpenGLHook::Shutdown() {
 
 void OpenGLHook::OnHostDisconnect() {
     HookLog("OpenGLHook::OnHostDisconnect()");
-    ResetTrackedOpenGLState(NULL);
+    // GL objects must be destroyed with their owner context current. Defer the
+    // generation reset to the first Swap on the next host rather than trying to
+    // move a game-owned context onto HookThread.
+    opengl_hook_g_HostGenerationResetPending.store(true, std::memory_order_release);
 }

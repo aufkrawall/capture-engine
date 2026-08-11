@@ -25,7 +25,8 @@
 bool LayerIPC_Init();
 void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
-void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
+void LayerIPC_StartHostLifecycleWatcher();
+void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
 void LayerIPC_SetFence(HANDLE fenceHandle);
 void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_t timestampQpc = 0);
 uint32_t VkFormatToDXGI(uint32_t vkFormat);
@@ -135,9 +136,10 @@ extern IPCClient g_IPCClient;
 // For now, let's keep a simplified version info here if needed
 struct CELayerState {
     bool initialized = false;
-    bool whitelisted = false;
+    std::atomic<bool> whitelisted{false};
     bool overlayEnabled = true;
     bool captureEnabled = false;
     std::string processName;
 };
 extern CELayerState g_LayerState;
+inline std::atomic<uint64_t> g_LayerHostGeneration{0};

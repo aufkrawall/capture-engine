@@ -1,7 +1,16 @@
 #include "main_internal.h"
 
+namespace {
+
+void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
+  OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
+}
+
+}  // namespace
+
 DWORD WINAPI HookThread(LPVOID lpParam) {
   g_HookThreadRunning = true;
+  InitializeHookLifecycleControl();
 
   // HookThread continues normally for all games (injection delay prevents D3D12
   // init crashes)
@@ -102,14 +111,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // --- BLACKLISTED PROCESSES ---
   if (main_g_ProcessCategory == ProcessCategory::Blacklisted) {
     CloseCheckHooksEvent();
-    FreeLibraryAndExitThread(g_hModule, 0);
     return 0;
   }
 
   // --- LAUNCHERS ---
   if (main_g_ProcessCategory == ProcessCategory::Launcher) {
-    // launchers only need CreateProcess hooks. No IPC, no graphics.
-    // Use IAT patching
+    // Launchers only need CreateProcess hooks. They still participate in the
+    // host-generation lifecycle so closing CE makes those hooks exact
+    // pass-through and a replacement CE can reactivate them without unloading
+    // code that an IAT or foreign hook chain may retain.
     OriginalCreateProcessA.store((CreateProcessA_t)GetProcAddress(
         GetModuleHandleA("kernel32.dll"), "CreateProcessA"), std::memory_order_release);
     OriginalCreateProcessW.store((CreateProcessW_t)GetProcAddress(
@@ -121,15 +131,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     IATHook::PatchIATAllModules("kernel32.dll", "CreateProcessW",
                                 (void *)&HookedCreateProcessW, &dummy);
 
-    // launchers don't have an IPC loop, they just stay alive to hook child
-    // processes We still need to unload eventually if we want perfect cleanup,
-    // but for launchers it's safer to just stay loaded until process exit
-    // to avoid missing a CreateProcess call during transition.
-    // However, we need to check for shutdown signal to allow DLL unload.
-    // Use 100ms instead of 1000ms to respond quickly to shutdown.
-    while (!HookIsShuttingDown()) {
-      Sleep(100);
-    }
+    RunLauncherHookLifecycle();
+    CloseCheckHooksEvent();
+    g_HookThreadRunning = false;
     return 0;
   }
 
@@ -162,10 +166,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       if (g_IPC->Connect()) {
         Sleep(1000); // 1s is aggressive enough without being a CPU hog/bomb
       } else {
-        // Engine not found or closed - time to exit
-        CloseCheckHooksEvent();
-        FreeLibraryAndExitThread(g_hModule, 0);
-        return 0;
+        if (!DeactivateHookRuntimeAndWaitForHost("initial host unavailable", true)) {
+          CloseCheckHooksEvent();
+          return 0;
+        }
       }
       Sleep(1000);
     }
@@ -173,7 +177,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   EarlyLog("HookThread: [%s] IPCClient created, attempting connect...",
            g_ProcessName);
-  if (g_IPC->Connect()) {
+  bool ipcConnected = g_IPC->Connect();
+  if (!ipcConnected) {
+    EarlyLog("HookThread: Initial IPC connection unavailable; entering dormant wait");
+    ipcConnected = DeactivateHookRuntimeAndWaitForHost("initial IPC connection unavailable", true);
+  }
+  if (ipcConnected) {
     EarlyLog("HookThread: IPC Connected successfully!");
     HookLog("IPC Connected successfully!");
 
@@ -199,6 +208,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   } else {
     EarlyLog("HookThread: IPC Connection FAILED!");
     HookLog("IPC Connection FAILED!");
+    CloseCheckHooksEvent();
+    g_HookThreadRunning = false;
+    return 0;
   }
 
   // Use IAT patching for kernel32/advapi32 hooks
@@ -270,9 +282,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
         if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
           void *trampoline = nullptr;
-          if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
-                                  &trampoline)) {
-            OriginalLdrLoadDll.store((LdrLoadDll_t)trampoline, std::memory_order_release);
+          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
+                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
             HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
           } else {
             HookLog("Failed to install LdrLoadDll hook");
@@ -292,6 +303,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // DXGI queue-capture hooks exist and strands the PostSL overlay without an
   // authoritative queue.
   CheckAndInstallHooks();
+  MarkHookLifecycleBootstrapComplete();
 
   const GraphicsConfig initialGraphicsConfig = GetActiveGraphicsConfig();
   UE5::RefreshRayReconstructionOverride(initialGraphicsConfig.forceRayReconstruction);
@@ -327,6 +339,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         lastPeriodicHookCheck = now;
       }
       // Event signaled or periodic tick - run detection
+      RefreshThirdPartyOverlayIdentityCache();
       CheckAndInstallHooks();
     }
 
@@ -360,7 +373,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     if (shouldExit) {
       EarlyLog("HookThread: Exit requested by host");
       HookLog("Exit requested by host");
-      break;
+      if (!DeactivateHookRuntimeAndWaitForHost("host requested shutdown", false)) {
+        break;
+      }
+      s_WasRecording = false;
+      lastPeriodicHookCheck = GetTickCount();
+      continue;
     }
 
     if (hostPID != 0) {
@@ -371,32 +389,32 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         if (waitResultHost == WAIT_OBJECT_0) {
           EarlyLog("HookThread: Host process died");
           HookLog("Host process died. Cleaning up...");
-          break;
+          if (!DeactivateHookRuntimeAndWaitForHost("host process exited", true)) {
+            break;
+          }
+          s_WasRecording = false;
+          lastPeriodicHookCheck = GetTickCount();
+          continue;
         }
       } else {
         if (g_IPC->GetSharedMem()) {
           EarlyLog("HookThread: Can't open host process, assuming dead");
           HookLog("Host process inaccessible. Exiting...");
-          break;
+          if (!DeactivateHookRuntimeAndWaitForHost("host process inaccessible", true)) {
+            break;
+          }
+          s_WasRecording = false;
+          lastPeriodicHookCheck = GetTickCount();
+          continue;
         }
       }
     } else {
-      // Reconnect logic
-      if (g_IPC) {
-        if (g_IPC->Connect()) {
-          EarlyLog("HookThread: Reconnected to new host");
-          HookLog("IPC Reconnected to new captureengine instance!");
-          CheckAndInstallHooks();
-        } else {
-          // Host not found, maybe it closed?
-          // Target games get a longer grace period (30s) before self-unloading
-          static int missedHeartbeats = 0;
-          if (++missedHeartbeats > 300) { // 30s at 100ms per loop
-            HookLog("HookThread: Host lost for 30s. Self-unloading...");
-            break;
-          }
-        }
+      if (!DeactivateHookRuntimeAndWaitForHost("host identity unavailable", true)) {
+        break;
       }
+      s_WasRecording = false;
+      lastPeriodicHookCheck = GetTickCount();
+      continue;
     }
   }
 
@@ -405,10 +423,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // Cleanup Event
   CloseCheckHooksEvent();
 
-  // Self-unload to release file lock when host requests exit or dies
-  // This is crucial for the CBT global hook to not pin the DLL forever
+  // Only lifecycle-event failure reaches here. Normal host shutdown leaves the
+  // thread resident and dormant so game-held wrappers and foreign saved hook
+  // targets remain callable.
   g_HookThreadRunning = false;
-  FreeLibraryAndExitThread(g_hModule, 0);
   return 0;
 }
 
@@ -436,11 +454,15 @@ bool isProcessWhitelistedFast(const char *name) {
             pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
 
         while (p < end && *p != '\0') {
+          const size_t remaining = static_cast<size_t>(end - p);
+          const size_t length = strnlen(p, remaining);
+          if (length == remaining)
+            break;
           if (_stricmp(name, p) == 0) {
             found = true;
             break;
           }
-          p += strlen(p) + 1;
+          p += length + 1;
         }
       }
       UnmapViewOfFile(pDisc);

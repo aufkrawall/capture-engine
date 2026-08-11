@@ -1,4 +1,82 @@
 #include "dxgi_shared_internal.h"
+#include "../wrappers/vtable_hook_policy.h"
+
+namespace {
+enum class VTableDetachResult {
+    Detached,
+    ForeignPreserved,
+    Failed,
+};
+
+struct PresentTrampolinePublication {
+    PFN_Present fallback = nullptr;
+};
+
+struct Present1TrampolinePublication {
+    PFN_Present1 fallback = nullptr;
+};
+
+void PublishPresentTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<PresentTrampolinePublication*>(context);
+    if (trampoline) {
+        DXGIShared::dxgi_shared_oPresent = reinterpret_cast<PFN_Present>(trampoline);
+        MemoryBarrier();
+        DXGIShared::dxgi_shared_oPresentTrampoline = reinterpret_cast<PFN_Present>(trampoline);
+    } else {
+        DXGIShared::dxgi_shared_oPresentTrampoline = nullptr;
+        MemoryBarrier();
+        DXGIShared::dxgi_shared_oPresent = publication->fallback;
+    }
+}
+
+void PublishPresent1Trampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<Present1TrampolinePublication*>(context);
+    if (trampoline) {
+        DXGIShared::dxgi_shared_oPresent1 = reinterpret_cast<PFN_Present1>(trampoline);
+        MemoryBarrier();
+        DXGIShared::dxgi_shared_oPresent1Trampoline = reinterpret_cast<PFN_Present1>(trampoline);
+    } else {
+        DXGIShared::dxgi_shared_oPresent1Trampoline = nullptr;
+        MemoryBarrier();
+        DXGIShared::dxgi_shared_oPresent1 = publication->fallback;
+    }
+}
+
+VTableDetachResult DetachOwnedVTableSlot(void** entry, void* detour, void* predecessor, const char* method) {
+    void* current = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), nullptr, nullptr);
+    if (predecessor && current == predecessor)
+        return VTableDetachResult::Detached;
+    if (current != detour) {
+        if (!predecessor)
+            return VTableDetachResult::Detached;
+        HookLogImportant("DXGIShared: Preserving foreign %s vtable replacement %p during detach", method, current);
+        return VTableDetachResult::ForeignPreserved;
+    }
+    if (!predecessor) {
+        HookLogImportant("DXGIShared: Cannot detach %s vtable hook without its predecessor", method);
+        return VTableDetachResult::Failed;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect))
+        return VTableDetachResult::Failed;
+    void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), predecessor, detour);
+    DWORD ignoredProtect = 0;
+    VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &ignoredProtect);
+    if (replaced != detour) {
+        HookLogImportant("DXGIShared: Preserving concurrent foreign %s vtable replacement %p during detach", method,
+                         replaced);
+        return VTableDetachResult::ForeignPreserved;
+    }
+
+    HookLog("DXGIShared: Detached %s vtable hook", method);
+    return VTableDetachResult::Detached;
+}
+
+bool IsDetached(VTableDetachResult result) {
+    return result == VTableDetachResult::Detached;
+}
+}
 
 namespace DXGIShared {
 bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
@@ -59,54 +137,44 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // Fighting them causes a hook war that corrupts the call chain
     const uint8_t* code = (const uint8_t*)presentAddr;
     bool externalJmpDetected = false;
+    const bool entryUsesE9 = code[0] == 0xE9;
+#ifdef _WIN64
+    const bool entryUsesFF25 = code[0] == 0xFF && code[1] == 0x25;
+#else
+    const bool entryUsesFF25 = false;
+#endif
+    void* externalEntryTarget =
+        entryUsesE9 ? ResolveE9JmpTarget(presentAddr)
+                    : (entryUsesFF25 ? ResolveFF25JmpTarget(presentAddr) : nullptr);
 
-    if (code[0] == 0xE9) {
-        // JMP rel32 detected - check where it points
-        int32_t disp;
-        memcpy(&disp, code + 1, 4);
-        uintptr_t jumpTarget = (uintptr_t)(code + 5) + disp;
-
-        // Check if the jump target is outside dxgi.dll
+    if (externalEntryTarget) {
+        // Check if the jump target is outside dxgi.dll. Both the conventional
+        // relative jump and the x64 indirect jump used by Detours are preserved.
         HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
         if (hDXGI) {
             MODULEINFO dxgiInfo;
             if (GetModuleInformation(GetCurrentProcess(), hDXGI, &dxgiInfo, sizeof(dxgiInfo))) {
                 uintptr_t dxgiStart = (uintptr_t)hDXGI;
                 uintptr_t dxgiEnd = dxgiStart + dxgiInfo.SizeOfImage;
+                const uintptr_t jumpTarget = reinterpret_cast<uintptr_t>(externalEntryTarget);
 
                 if (jumpTarget < dxgiStart || jumpTarget >= dxgiEnd) {
                     externalJmpDetected = true;
-                    // JMP points outside dxgi.dll - external overlay detected
                     HookLog("InstallPresentInlineHooks: External overlay detected!");
-                    HookLog("InstallPresentInlineHooks: JMP at %p targets %p (outside dxgi.dll %p-%p)", presentAddr,
-                            (void*)jumpTarget, (void*)dxgiStart, (void*)dxgiEnd);
+                    HookLog("InstallPresentInlineHooks: %s at %p targets %p (outside dxgi.dll %p-%p)",
+                            entryUsesE9 ? "E9" : "FF25", presentAddr, externalEntryTarget, (void*)dxgiStart,
+                            (void*)dxgiEnd);
 
-                    // Check if the target module is a known overlay
                     HMODULE hTargetModule = nullptr;
                     GetModuleHandleExA(
                         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                        (LPCSTR)jumpTarget, &hTargetModule);
+                        reinterpret_cast<LPCSTR>(externalEntryTarget), &hTargetModule);
 
                     if (hTargetModule) {
                         char moduleName[MAX_PATH] = {0};
                         GetModuleFileNameA(hTargetModule, moduleName, MAX_PATH);
                         HookLog("InstallPresentInlineHooks: External overlay module: %s", moduleName);
-
-                        // Known overlay modules that we should cooperate with
-                        std::string moduleLower = moduleName;
-                        std::transform(moduleLower.begin(), moduleLower.end(), moduleLower.begin(),
-                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-                        if (moduleLower.find("nvidia") != std::string::npos ||
-                            moduleLower.find("nvngx") != std::string::npos ||
-                            moduleLower.find("steam") != std::string::npos ||
-                            moduleLower.find("gameoverlay") != std::string::npos ||
-                            moduleLower.find("discord") != std::string::npos ||
-                            moduleLower.find("overlay") != std::string::npos) {
-                            HookLog("InstallPresentInlineHooks: External hook detected - cooperating (known overlay)");
-                        }
                     } else {
-                        // Skip inline hooks to prevent prologue corruption (black screen fix)
                         HookLog("InstallPresentInlineHooks: Unknown external JMP - possibly stale hook");
                     }
                 }
@@ -130,6 +198,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     "skipping DXGI Present detour path");
                 return false;
             }
+        } else {
+            dxgi_shared_oPresentBypass = (PFN_Present)presentBypass;
         }
 
         void* present1Bypass = nullptr;
@@ -142,9 +212,10 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     "- skipping DXGI Present detour path");
                 return false;
             }
+            if (present1Bypass)
+                dxgi_shared_oPresent1Bypass = (PFN_Present1)present1Bypass;
         }
 
-        HookLogImportant("InstallPresentInlineHooks: External E9 JMP detected — using vtable hook path");
         // Save the external overlay hook target (Steam's OverlayHookD3D3) so we
         // can invoke it explicitly later when SL FG routing bypasses Steam's JMP.
         // This is done BEFORE SL overwrites the JMP with its own.
@@ -153,136 +224,44 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // be explicitly invoked on the forced-bypass path — the overlay module
         // must hook a different Present entry point (e.g. vtable[8] or Present1).
         {
-            void* hookTarget = ResolveE9JmpTarget(presentAddr);
+            void* hookTarget = externalEntryTarget;
             if (hookTarget) {
                 dxgi_shared_g_externalOverlayPresentHook = (PFN_Present)hookTarget;
-                HookLog("InstallPresentInlineHooks: External E9 JMP target = %p (saved, Steam overlay hook available)",
-                        hookTarget);
+                HookLog("InstallPresentInlineHooks: External %s target = %p (saved for guarded overlay routing)",
+                        entryUsesE9 ? "E9" : "FF25", hookTarget);
             } else {
                 HookLogImportant(
-                    "InstallPresentInlineHooks: Could not resolve E9 JMP target at %p "
+                    "InstallPresentInlineHooks: Could not resolve external JMP target at %p "
                     "(bytes: %02X %02X %02X %02X %02X) — external overlay hook not saved",
                     presentAddr, ((const uint8_t*)presentAddr)[0], ((const uint8_t*)presentAddr)[1],
                     ((const uint8_t*)presentAddr)[2], ((const uint8_t*)presentAddr)[3],
                     ((const uint8_t*)presentAddr)[4]);
             }
         }
-
-        // External overlay (e.g. Streamline) has hooked Present with an E9 JMP.
-        // DO NOT inline-hook the external detour — patching 14 bytes of the
-        // external function's prologue corrupts its internal state and crashes
-        // under Frame Generation (where more code paths are exercised).
-        //
-        // Instead, use a clean vtable hook:
-        //   Game calls Present → vtable[8] → DetourPresent (our overlay) →
-        //   CallOriginalPresent → oPresent (the SL-hooked function) →
-        //   SL E9 JMP → SL processes FG normally → real Present
-        //
-        // Also create bypass trampolines from the original disk bytes so that
-        // re-entrant Present calls (from SL's vtable callback) can call the real
-        // DXGI Present without re-entering the external E9 JMP hook chain.
-
-        void** vtable = *(void***)pSwapChain;
-        if (!vtable) {
-            HookLog("InstallPresentInlineHooks: External JMP detected but vtable is null");
-            s_inlineHooksInstalled = true;
-            return true;
-        }
-
-        DWORD oldProtect;
-        if (!VirtualProtect(reinterpret_cast<void*>(vtable), 23 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            HookLog("InstallPresentInlineHooks: VirtualProtect failed for vtable hook");
-            s_inlineHooksInstalled = true;
-            return true;
-        }
-
-        dxgi_shared_s_hookedVTable = vtable;
-
-        // === STEAM DX12 OVERLAY PRE-INITIALIZATION ===
-        //
-        // Steam's OverlayHookD3D3 lazily initializes internal Present-shaped
-        // callback slots during its first E9 JMP entry. CE's vtable hook
-        // (setting vtable[8] = DetourPresent below) prevents this natural
-        // initialization because Steam's E9 JMP never fires on the game's
-        // Present calls — they go through DetourPresent instead of dxgi!Present.
-        //
-        // Best-effort pre-init: Call Present on the temp swapchain through the
-        // REAL dxgi!Present (vtable[8] is still unhooked at this point) BEFORE
-        // installing our vtable hook.  This initializes Steam's "next" handler
-        // but does NOT initialize every real game-swapchain callback slot
-        // (the 2x2 hidden-window temp swapchain causes Steam to skip full init).
-        //
-        // The actual fix for the NULL rendering callback is the VEH-protected
-        // call in AttemptSteamDX12OverlayInit (see below), which patches the
-        // NULL pointer at crash time and lets Steam continue.
-        //
-        // Thread safety: InstallPresentInlineHooks runs once on the hook thread.
-        // The temp swapchain is valid and vtable page is already writable
-        // (from VirtualProtect at line ~2843).
-            const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
-            if (overlayModule && IsSteamOverlayModule(overlayModule)) {
-                HookLogImportant(
-                    "InstallPresentInlineHooks: Pre-initializing Steam overlay on temp swapchain %p "
-                    "(vtable[8]=%p = dxgi!Present, before CE vtable hook)",
-                    pSwapChain, (void*)vtable[8]);
-
-                PFN_Present realPresent = (PFN_Present)vtable[8];
-                HRESULT steamInitHr = realPresent(pSwapChain, 0, 0);
-
-                HookLogImportant(
-                    "InstallPresentInlineHooks: Steam overlay pre-init on temp swapchain "
-                    "returned hr=0x%08X — proceeding with vtable hook installation",
-                    (unsigned)steamInitHr);
-        }
-        // === END STEAM PRE-INIT ===
-
-        dxgi_shared_oPresent = (PFN_Present)vtable[8];
-        vtable[8] = (void*)DetourPresent;
         HookLogImportant(
-            "InstallPresentInlineHooks: VTable hook on Present (original=%p, vtable=%p) — "
-            "external E9 JMP detected, using non-invasive hook for FG compat",
-            dxgi_shared_oPresent, vtable);
-
-        if (presentBypass) {
-            dxgi_shared_oPresentBypass = (PFN_Present)presentBypass;
-            HookLog("InstallPresentInlineHooks: Present bypass trampoline created at %p", presentBypass);
-        }
-
-        if (present1Addr) {
-            dxgi_shared_oPresent1 = (PFN_Present1)vtable[22];
-            vtable[22] = (void*)DetourPresent1;
-            HookLog("InstallPresentInlineHooks: VTable hook on Present1 (original=%p)", dxgi_shared_oPresent1);
-
-            if (present1Bypass) {
-                dxgi_shared_oPresent1Bypass = (PFN_Present1)present1Bypass;
-                HookLog("InstallPresentInlineHooks: Present1 bypass trampoline created at %p", present1Bypass);
-            }
-        }
-
-        VirtualProtect(reinterpret_cast<void*>(vtable), 23 * sizeof(void*), oldProtect, &oldProtect);
-
-        s_inlineHooksInstalled = true;
-        return true;
+            "InstallPresentInlineHooks: External %s detected — prepending CE at the original entry and "
+            "forwarding through the exact foreign target",
+            entryUsesE9 ? "E9" : "FF25");
     }
 
 
+    PresentTrampolinePublication presentPublication{dxgi_shared_oPresent};
     void* presentTrampoline = nullptr;
-    if (!InlineHook::Install(presentAddr, (void*)DetourPresent, &presentTrampoline)) {
+    if (!InlineHook::InstallPublished(presentAddr, (void*)DetourPresent, &presentTrampoline,
+                                      PublishPresentTrampoline, &presentPublication)) {
         HookLog("InstallPresentInlineHooks: Failed to install Present inline hook");
         return false;
     }
-    dxgi_shared_oPresentTrampoline = (PFN_Present)presentTrampoline;
-    dxgi_shared_oPresent = dxgi_shared_oPresentTrampoline;
     HookLogImportant(
         "InstallPresentInlineHooks: Present INLINE hook installed (addr=%p, "
         "trampoline=%p) — s_hookedVTable remains %p",
         presentAddr, presentTrampoline, dxgi_shared_s_hookedVTable);
 
     if (present1Addr) {
+        Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
         void* present1Trampoline = nullptr;
-        if (InlineHook::Install(present1Addr, (void*)DetourPresent1, &present1Trampoline)) {
-            dxgi_shared_oPresent1Trampoline = (PFN_Present1)present1Trampoline;
-            dxgi_shared_oPresent1 = dxgi_shared_oPresent1Trampoline;
+        if (InlineHook::InstallPublished(present1Addr, (void*)DetourPresent1, &present1Trampoline,
+                                         PublishPresent1Trampoline, &present1Publication)) {
             HookLog(
                 "InstallPresentInlineHooks: Present1 inline hook installed "
                 "(addr=%p, trampoline=%p)",
@@ -304,33 +283,26 @@ void RemovePresentHooks() {
     dxgi_shared_oPresentBypass = nullptr;
     dxgi_shared_oPresent1Bypass = nullptr;
 
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
     if (!dxgi_shared_s_hookedVTable)
         return;
-
-    DWORD oldProtect;
-    if (dxgi_shared_oPresent && dxgi_shared_s_hookedVTable[8] == (void*)DetourPresent) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[8] = (void*)dxgi_shared_oPresent;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed Present vtable hook");
-    }
-
-    if (dxgi_shared_oPresent1 && dxgi_shared_s_hookedVTable[22] == (void*)DetourPresent1) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[22] = (void*)dxgi_shared_oPresent1;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed Present1 vtable hook");
-    }
+    if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 23 * sizeof(void*)))
+        return;
+    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent,
+                          "Present");
+    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1,
+                          "Present1");
 
 }
 }
 
 namespace DXGIShared {
 void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
     if (!dxgi_shared_s_hookedVTable) {
         return;
     }
-    if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 23 * sizeof(void*))) {
+    if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 40 * sizeof(void*))) {
         HookLogImportant(
             "DXGIShared: Cannot release Present vtable hooks for runtime handoff; vtable %p is not readable "
             "(reason=%s)",
@@ -338,24 +310,16 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(g_SharedMutex);
-    DWORD oldProtect = 0;
-    bool restoredPresent = false;
-    bool restoredPresent1 = false;
-
-    if (dxgi_shared_oPresent && dxgi_shared_s_hookedVTable[8] == (void*)DetourPresent &&
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        dxgi_shared_s_hookedVTable[8] = (void*)dxgi_shared_oPresent;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-        restoredPresent = true;
-    }
-
-    if (dxgi_shared_oPresent1 && dxgi_shared_s_hookedVTable[22] == (void*)DetourPresent1 &&
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        dxgi_shared_s_hookedVTable[22] = (void*)dxgi_shared_oPresent1;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
-        restoredPresent1 = true;
-    }
+    const VTableDetachResult presentResult = DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent, "Present");
+    const VTableDetachResult present1Result = DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1, "Present1");
+    const bool restoredPresent = IsDetached(presentResult);
+    const bool restoredPresent1 = IsDetached(present1Result);
+    const bool resizeChainRetained =
+        dxgi_shared_oResizeBuffers && dxgi_shared_s_hookedVTable[13] != (void*)dxgi_shared_oResizeBuffers;
+    const bool resize1ChainRetained =
+        dxgi_shared_oResizeBuffers1 && dxgi_shared_s_hookedVTable[39] != (void*)dxgi_shared_oResizeBuffers1;
 
     if (restoredPresent || restoredPresent1) {
         HookLogImportant(
@@ -364,10 +328,15 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
             restoredPresent ? 1 : 0, restoredPresent1 ? 1 : 0, dxgi_shared_s_hookedVTable,
             restoredPresent ? (void*)dxgi_shared_oPresent : dxgi_shared_s_hookedVTable[8],
             restoredPresent1 ? (void*)dxgi_shared_oPresent1 : dxgi_shared_s_hookedVTable[22], reason ? reason : "unknown");
-        dxgi_shared_s_hookedVTable = nullptr;
-        dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
-        dxgi_shared_oPresentBypass = nullptr;
-        dxgi_shared_oPresent1Bypass = nullptr;
+        if (restoredPresent && restoredPresent1 && !resizeChainRetained && !resize1ChainRetained) {
+            dxgi_shared_s_hookedVTable = nullptr;
+            dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
+            dxgi_shared_oPresentBypass = nullptr;
+            dxgi_shared_oPresent1Bypass = nullptr;
+        } else {
+            HookLogImportant(
+                "DXGIShared: Retaining vtable chain state because a foreign Present replacement may still call CE");
+        }
     }
 }
 }
@@ -388,6 +357,7 @@ void RepairVTableHooksIfNeeded() {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
     if (!dxgi_shared_s_hookedVTable) {
         static std::atomic<uint32_t> s_nullLogCount{0};
         if (s_nullLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
@@ -401,38 +371,54 @@ void RepairVTableHooksIfNeeded() {
     }
 
     bool repaired = false;
-    DWORD oldProtect;
-
-    // Check Present hook at vtable[8]
-    if (dxgi_shared_s_hookedVTable[8] != (void*)DetourPresent) {
-        HookLogImportant("DXGIShared: vtable[8] OVERWRITTEN! was=%p expected=%p — re-hooking", dxgi_shared_s_hookedVTable[8],
-                         (void*)DetourPresent);
-        dxgi_shared_oPresent = (PFN_Present)dxgi_shared_s_hookedVTable[8];
-        if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            dxgi_shared_s_hookedVTable[8] = (void*)DetourPresent;
-            VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-            repaired = true;
-            HookLogImportant("DXGIShared: vtable[8] re-hooked (new oPresent=%p)", dxgi_shared_oPresent);
+    bool foreignPreserved = false;
+    static std::atomic<uint32_t> s_foreignPreserveLogCount{0};
+    const auto repairRestoredSlot = [&](void** entry, void* detour, void* predecessor, const char* method) {
+        if (!predecessor)
+            return false;
+        void* current = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), nullptr, nullptr);
+        if (current == detour)
+            return false;
+        if (ce::vtable_hook_policy::ShouldPreserveForeignFollower(current, detour, predecessor)) {
+            foreignPreserved = true;
+            const uint32_t occurrence = s_foreignPreserveLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (occurrence <= 3 || occurrence % 300 == 0) {
+                HookLogImportant(
+                    "DXGIShared: Preserving foreign %s vtable replacement %p; it may retain CE as its next link "
+                    "(occurrence=%u)",
+                    method, current, occurrence);
+            }
+            return false;
         }
-    }
+        if (!ce::vtable_hook_policy::ShouldReclaimRestoredSlot(current, detour, predecessor))
+            return false;
 
-    // Check Present1 hook at vtable[22]
-    if (dxgi_shared_s_hookedVTable[22] != (void*)DetourPresent1) {
-        HookLogImportant("DXGIShared: vtable[22] OVERWRITTEN! was=%p expected=%p — re-hooking", dxgi_shared_s_hookedVTable[22],
-                         (void*)DetourPresent1);
-        dxgi_shared_oPresent1 = (PFN_Present1)dxgi_shared_s_hookedVTable[22];
-        if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            dxgi_shared_s_hookedVTable[22] = (void*)DetourPresent1;
-            VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
-            repaired = true;
-            HookLogImportant("DXGIShared: vtable[22] re-hooked (new oPresent1=%p)", dxgi_shared_oPresent1);
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect))
+            return false;
+        void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), detour,
+                                                           predecessor);
+        DWORD ignoredProtect = 0;
+        VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &ignoredProtect);
+        if (replaced != predecessor) {
+            foreignPreserved = true;
+            HookLogImportant("DXGIShared: Preserved concurrent %s replacement %p during repair", method, replaced);
+            return false;
         }
-    }
+        HookLogImportant("DXGIShared: Reclaimed %s slot after predecessor restoration (predecessor=%p)", method,
+                         predecessor);
+        return true;
+    };
+
+    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourPresent,
+                                   (void*)dxgi_shared_oPresent, "Present");
+    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1,
+                                   (void*)dxgi_shared_oPresent1, "Present1");
 
     static std::atomic<uint32_t> s_intactLogCount{0};
     if (repaired) {
         s_intactLogCount.store(0, std::memory_order_relaxed);
-    } else {
+    } else if (!foreignPreserved) {
         if (s_intactLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
             HookLogImportant("DXGIShared: RepairVTableHooksIfNeeded — hooks intact (vtable=%p, [8]=%p, [22]=%p)",
                              dxgi_shared_s_hookedVTable, dxgi_shared_s_hookedVTable[8], dxgi_shared_s_hookedVTable[22]);
@@ -450,40 +436,29 @@ void RemoveSwapchainVTableHooks() {
     dxgi_shared_oPresentBypass = nullptr;
     dxgi_shared_oPresent1Bypass = nullptr;
 
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
     if (!dxgi_shared_s_hookedVTable)
         return;
-
-    DWORD oldProtect;
-
-    if (dxgi_shared_oPresent && dxgi_shared_s_hookedVTable[8] == (void*)DetourPresent) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[8] = (void*)dxgi_shared_oPresent;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed Present vtable hook");
+    if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 40 * sizeof(void*))) {
+        HookLogImportant("DXGIShared: Cannot detach unreadable swapchain vtable %p", dxgi_shared_s_hookedVTable);
+        return;
     }
+    const bool presentDetached = IsDetached(DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent, "Present"));
+    const bool present1Detached = IsDetached(DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1, "Present1"));
+    const bool resizeDetached = IsDetached(DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[13], (void*)DetourResizeBuffers, (void*)dxgi_shared_oResizeBuffers,
+        "ResizeBuffers"));
+    const bool resize1Detached = IsDetached(DetachOwnedVTableSlot(
+        &dxgi_shared_s_hookedVTable[39], (void*)DetourResizeBuffers1, (void*)dxgi_shared_oResizeBuffers1,
+        "ResizeBuffers1"));
 
-    if (dxgi_shared_oPresent1 && dxgi_shared_s_hookedVTable[22] == (void*)DetourPresent1) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[22] = (void*)dxgi_shared_oPresent1;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[22]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed Present1 vtable hook");
+    if (presentDetached && present1Detached && resizeDetached && resize1Detached) {
+        dxgi_shared_s_hookedVTable = nullptr;
+        HookLog("DXGIShared: All swapchain vtable hooks detached");
+    } else {
+        HookLogImportant("DXGIShared: Retaining vtable chain state for foreign followers");
     }
-
-    if (dxgi_shared_oResizeBuffers && dxgi_shared_s_hookedVTable[13] == (void*)DetourResizeBuffers) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[13]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[13] = (void*)dxgi_shared_oResizeBuffers;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[13]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed ResizeBuffers vtable hook");
-    }
-
-    if (dxgi_shared_oResizeBuffers1 && dxgi_shared_s_hookedVTable[39] == (void*)DetourResizeBuffers1) {
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[39]), sizeof(void*), PAGE_READWRITE, &oldProtect);
-        dxgi_shared_s_hookedVTable[39] = (void*)dxgi_shared_oResizeBuffers1;
-        VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[39]), sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed ResizeBuffers1 vtable hook");
-    }
-
-    dxgi_shared_s_hookedVTable = nullptr;
-    HookLog("DXGIShared: All swapchain vtable hooks removed");
 }
 }

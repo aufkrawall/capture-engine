@@ -338,13 +338,11 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
     }
 
     if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        RequestHookShutdown();
         *earlyReturn = true;
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
     if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 9 * sizeof(void*)) || !vtable[8]) {
-        RequestHookShutdown();
         *earlyReturn = true;
         return DXGI_ERROR_INVALID_CALL;
     }

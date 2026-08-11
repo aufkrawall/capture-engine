@@ -51,6 +51,8 @@ extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 
 extern void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 
+extern bool DX11Hook_ShouldPassThroughCurrentPresent();
+
 extern void DX12_OnSwapchainResizeBegin();
 
 extern void DX12_OnSwapchainResizeEnd();
@@ -143,12 +145,7 @@ inline std::atomic<bool> dxgi_swapchain_wrap_g_WrapperShutdown{false};
 inline bool dxgi_swapchain_wrap_g_OverlayEnabled = true;
 
 inline bool ShouldYieldToVulkanLayer() {
-    SharedMemoryLayout* shm = nullptr;
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        shm = g_IPC->GetSharedMem();
-    } else {
-        shm = g_pSharedMem;
-    }
+    SharedMemoryLayout* shm = GetHookSharedMemory();
     if (!shm) {
         return false;
     }
@@ -277,4 +274,3 @@ inline const char* WaitResultName(DWORD waitResult) {
 extern // Thread-local flag to track when we're inside the wrapper's Present
 // This prevents vtable hooks from also processing the frame
 thread_local bool g_InWrapperPresent;
-

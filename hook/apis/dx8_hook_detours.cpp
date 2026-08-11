@@ -1,5 +1,19 @@
 #include "dx8_hook_internal.h"
 
+namespace {
+
+struct Direct3DCreate8Publication {
+    Direct3DCreate8_t fallback = nullptr;
+};
+
+void PublishDirect3DCreate8Trampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<Direct3DCreate8Publication*>(context);
+    dx8_hook_oDirect3DCreate8 =
+        trampoline ? reinterpret_cast<Direct3DCreate8_t>(trampoline) : publication->fallback;
+}
+
+}  // namespace
+
 
 D3D8SamplerVTableRecord* ResolveD3D8SamplerVTable(IDirect3DDevice8* device) {
 
@@ -165,14 +179,15 @@ void TryInstallDirect3DCreate8Hook(HMODULE d3d8Module) {
         return;
     }
 
+    Direct3DCreate8Publication publication{dx8_hook_oDirect3DCreate8};
     void* trampoline = nullptr;
-    if (!InlineHook::Install(reinterpret_cast<void*>(direct3DCreate8), reinterpret_cast<void*>(DetourDirect3DCreate8),
-                             &trampoline)) {
+    if (!InlineHook::InstallPublished(reinterpret_cast<void*>(direct3DCreate8),
+                                      reinterpret_cast<void*>(DetourDirect3DCreate8), &trampoline,
+                                      PublishDirect3DCreate8Trampoline, &publication)) {
         HookLog("DX8: Failed to install Direct3DCreate8 hook");
         return;
     }
 
-    dx8_hook_oDirect3DCreate8 = reinterpret_cast<Direct3DCreate8_t>(trampoline);
     dx8_hook_g_HooksInitialized = true;
     HookLog("DX8: Direct3DCreate8 hook installed");
 
@@ -187,7 +202,8 @@ IDirect3D8* WINAPI DetourDirect3DCreate8(UINT dx8_hook_sdkVersion) {
     }
 
     IDirect3D8* d3d8 = dx8_hook_oDirect3DCreate8(dx8_hook_sdkVersion);
-    InstallD3D8CreateDeviceHook(d3d8);
+    if (!HookIsShuttingDown())
+        InstallD3D8CreateDeviceHook(d3d8);
     return d3d8;
 
 }
@@ -199,7 +215,10 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
 
 
     if (HookIsShuttingDown())
-        return D3D_OK;
+        return dx8_hook_oD3D8Present
+                   ? dx8_hook_oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride,
+                                           dx8_hook_pDirtyRegion)
+                   : D3DERR_INVALIDCALL;
     D3D8SamplerVTableRecord* samplerRecord = ResolveD3D8SamplerVTable(device);
     const D3D8SetTextureStageState_t setState = samplerRecord
                                                    ? samplerRecord->setState.load(std::memory_order_acquire)
@@ -275,6 +294,9 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
 HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device,  void* dx8_hook_pPresentationParameters) {
 
 
+    if (HookIsShuttingDown())
+        return dx8_hook_oD3D8Reset ? dx8_hook_oD3D8Reset(device, dx8_hook_pPresentationParameters)
+                                   : D3DERR_INVALIDCALL;
     HookLog("DX8: Reset called");
 
     // Cleanup ImGui
@@ -342,7 +364,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* devic
         record ? record->setState.load(std::memory_order_acquire) : dx8_hook_oD3D8SetTextureStageState;
     const D3D8GetTextureStageState_t getState =
         record ? record->getState.load(std::memory_order_acquire) : dx8_hook_oD3D8GetTextureStageState;
-    if (dx8_hook_g_DX8StateHookBypassDepth > 0) {
+    if (HookIsShuttingDown() || dx8_hook_g_DX8StateHookBypassDepth > 0) {
         return setState(device, Stage, Type, dx8_hook_Value);
     }
     return ce::legacy_d3d_sampler_state::SetTextureStageState(
@@ -362,7 +384,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* devic
         record ? record->setState.load(std::memory_order_acquire) : dx8_hook_oD3D8SetTextureStageState;
     const D3D8GetTextureStageState_t getState =
         record ? record->getState.load(std::memory_order_acquire) : dx8_hook_oD3D8GetTextureStageState;
-    if (dx8_hook_g_DX8StateHookBypassDepth > 0) {
+    if (HookIsShuttingDown() || dx8_hook_g_DX8StateHookBypassDepth > 0) {
         return getState(device, Stage, Type, dx8_hook_pValue);
     }
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
@@ -382,7 +404,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device,  D
     if (!applyStateBlock)
         return E_FAIL;
     const HRESULT hr = applyStateBlock(device, dx8_hook_Token);
-    if (SUCCEEDED(hr) && dx8_hook_g_DX8StateHookBypassDepth == 0) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && dx8_hook_g_DX8StateHookBypassDepth == 0) {
         const D3D8SetTextureStageState_t setState =
             record ? record->setState.load(std::memory_order_acquire) : dx8_hook_oD3D8SetTextureStageState;
         const D3D8GetTextureStageState_t getState =
@@ -406,6 +428,12 @@ HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d,  UINT Adapter,
                                                         IDirect3DDevice8** dx8_hook_ppDevice) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx8_hook_oD3D8CreateDevice
+                   ? dx8_hook_oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+                                                dx8_hook_pPresentationParameters, dx8_hook_ppDevice)
+                   : D3DERR_INVALIDCALL;
+    }
     if (g_IPC && dx8_hook_pPresentationParameters) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {

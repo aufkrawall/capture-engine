@@ -48,10 +48,10 @@ InjectionManager::~InjectionManager() {
     // Launch and worker-list transfer are serialized by threadListMutex, so no
     // worker can appear after the list has been claimed for shutdown.
     try {
-    RequestShutdown();
-    ShutdownWMI();
-    WaitForInjectionThreads(5000);
-    EjectAll();
+        RequestShutdown();
+        ShutdownWMI();
+        WaitForInjectionThreads(5000);
+        EjectAll();
     } catch (...) {
         LogWarn("[Injection] Suppressed exception during manager destruction");
     }

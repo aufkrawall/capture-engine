@@ -10,6 +10,44 @@ TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
     EXPECT_FALSE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 14, false));
 }
 
+TEST(DXGISharedTest, PrependChainingAcceptsRTSSAndDetoursEntryJumpForms) {
+    EXPECT_TRUE(ce::inline_hook_policy::IsPrependChainableEntryJump(0xE9, 0x00, false));
+    EXPECT_TRUE(ce::inline_hook_policy::IsPrependChainableEntryJump(0xE9, 0x00, true));
+    EXPECT_TRUE(ce::inline_hook_policy::IsPrependChainableEntryJump(0xFF, 0x25, true));
+    EXPECT_FALSE(ce::inline_hook_policy::IsPrependChainableEntryJump(0xFF, 0x25, false));
+    EXPECT_FALSE(ce::inline_hook_policy::IsPrependChainableEntryJump(0xE8, 0x00, true));
+    EXPECT_EQ(ce::inline_hook_policy::kExternalPrependPatchSize, 5);
+}
+
+TEST(DXGISharedTest, RemovalOnlyRestoresBytesStillOwnedByCaptureEngine) {
+    EXPECT_TRUE(ce::inline_hook_policy::ShouldRestoreOwnedPatch(true));
+    EXPECT_FALSE(ce::inline_hook_policy::ShouldRestoreOwnedPatch(false));
+}
+
+TEST(DXGISharedTest, VTableRepairReclaimsOnlyAConfirmedPredecessorRestoration) {
+    int predecessorStorage = 0;
+    int detourStorage = 0;
+    int foreignStorage = 0;
+    const void* predecessor = &predecessorStorage;
+    const void* detour = &detourStorage;
+    const void* foreign = &foreignStorage;
+
+    EXPECT_TRUE(ce::vtable_hook_policy::ShouldReclaimRestoredSlot(predecessor, detour, predecessor));
+    EXPECT_FALSE(ce::vtable_hook_policy::ShouldReclaimRestoredSlot(detour, detour, predecessor));
+    EXPECT_FALSE(ce::vtable_hook_policy::ShouldReclaimRestoredSlot(foreign, detour, predecessor));
+
+    EXPECT_TRUE(ce::vtable_hook_policy::ShouldPreserveForeignFollower(foreign, detour, predecessor));
+    EXPECT_FALSE(ce::vtable_hook_policy::ShouldPreserveForeignFollower(predecessor, detour, predecessor));
+    EXPECT_FALSE(ce::vtable_hook_policy::ShouldPreserveForeignFollower(detour, detour, predecessor));
+}
+
+TEST(DXGISharedTest, PatchTransactionRejectsInstructionPointersInsideChangedBytes) {
+    EXPECT_FALSE(ce::hook_patch::IsInstructionPointerInsidePatchRange(0x0FFF, 0x1000, 14));
+    EXPECT_TRUE(ce::hook_patch::IsInstructionPointerInsidePatchRange(0x1000, 0x1000, 14));
+    EXPECT_TRUE(ce::hook_patch::IsInstructionPointerInsidePatchRange(0x100D, 0x1000, 14));
+    EXPECT_FALSE(ce::hook_patch::IsInstructionPointerInsidePatchRange(0x100E, 0x1000, 14));
+}
+
 TEST(DXGISharedTest, DredIsOffByDefaultAndOnlyExplicitAffirmativeEnablesIt) {
     // Default OFF: unset env, or empty/null value. DRED auto-breadcrumbs add a per-frame kernel
     // GPU allocation on the app's CommandList::Reset that stalls Present during the Alt+Tab mode

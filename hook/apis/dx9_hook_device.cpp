@@ -12,6 +12,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
                                                       D3DPRESENT_PARAMETERS* pPresentationParameters,
                                                       D3DDISPLAYMODEEX* pFullscreenDisplayMode,
                                                       IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
+    if (HookIsShuttingDown()) {
+        return oCreateDeviceEx
+                   ? oCreateDeviceEx(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
+                                     pFullscreenDisplayMode, ppReturnedDeviceInterface)
+                   : D3DERR_INVALIDCALL;
+    }
     EarlyLog("DX9: CreateDeviceEx called (hFocusWindow=%p)", hFocusWindow);
 
     if (IsDX9InternalHelperBypassActive()) {
@@ -96,7 +102,7 @@ static Direct3DCreate9Ex_t oDirect3DCreate9Ex = nullptr;
 static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppOut) {
     EarlyLog("DX9: Direct3DCreate9Ex called (Intercepted)");
     HRESULT hr = oDirect3DCreate9Ex(SDKVersion, ppOut);
-    if (SUCCEEDED(hr) && ppOut && *ppOut) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppOut && *ppOut) {
         uintptr_t* vtable = *(uintptr_t**)*ppOut;
 
         // Hook CreateDevice (16)
@@ -121,7 +127,7 @@ static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** pp
 void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
 
 
-    if (!device)
+    if (HookIsShuttingDown() || !device)
         return;
     if (ShouldBypassDX9HooksForDevice(device)) {
         static std::atomic<int> s_skipLogCount{0};
@@ -377,6 +383,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self,  UINT Adapter,  D
                                                     IDirect3DDevice9** ppReturnedDeviceInterface) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx9_hook_oCreateDevice
+                   ? dx9_hook_oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+                                            pPresentationParameters, ppReturnedDeviceInterface)
+                   : D3DERR_INVALIDCALL;
+    }
     EarlyLog("DX9: IDirect3D9::CreateDevice called (hFocusWindow=%p)", hFocusWindow);
 
     if (IsDX9InternalHelperBypassActive()) {
@@ -476,7 +488,7 @@ IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     // requested by the application. Sharing is introduced only through private
     // capture resources after the native device exists.
     IDirect3D9* d3d9 = dx9_hook_oDirect3DCreate9(SDKVersion);
-    if (d3d9) {
+    if (d3d9 && !HookIsShuttingDown()) {
         uintptr_t* vtable = *(uintptr_t**)d3d9;
         bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
                            (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);

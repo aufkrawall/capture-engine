@@ -7,7 +7,7 @@ HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,  const
 
 
     const HRESULT hr = dx11_hook_oCreatePixelShader11(device, shaderBytecode, bytecodeLength, classLinkage, pixelShader);
-    if (SUCCEEDED(hr) && pixelShader && *pixelShader) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && pixelShader && *pixelShader) {
         RegisterWrapperPixelShaderAFMetadata(*pixelShader, shaderBytecode, bytecodeLength);
     }
     return hr;
@@ -22,7 +22,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device,  U
         return E_FAIL;
     }
     const HRESULT hr = dx11_hook_oCreateDeferredContext11(device, contextFlags, deferredContext);
-    if (SUCCEEDED(hr) && deferredContext && *deferredContext) {
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && deferredContext && *deferredContext) {
         InstallContextVTableHooks11(*deferredContext, "CreateDeferredContext");
         int idx = dx11_hook_g_DiagCreateDeferredContext11.fetch_add(1, std::memory_order_relaxed);
         if (idx < 16) {
@@ -45,7 +45,7 @@ void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context,  ID3D11
         return;
     }
     original(context, pixelShader, classInstances, numClassInstances);
-    if (dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateTrackedPixelShader11(context, pixelShader);
@@ -62,7 +62,7 @@ void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context
         return;
     }
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Pixel, startSlot, numViews, ppShaderResourceViews);
@@ -80,7 +80,7 @@ void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context
     }
 
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Vertex, startSlot, numViews, ppShaderResourceViews);
@@ -97,7 +97,7 @@ void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context
         return;
     }
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Geometry, startSlot, numViews, ppShaderResourceViews);
@@ -114,7 +114,7 @@ void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context
         return;
     }
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Hull, startSlot, numViews, ppShaderResourceViews);
@@ -131,7 +131,7 @@ void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context
         return;
     }
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Domain, startSlot, numViews, ppShaderResourceViews);
@@ -148,7 +148,7 @@ void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context
         return;
     }
     original(context, startSlot, numViews, ppShaderResourceViews);
-    if (DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     UpdateStageShaderResources(context, D3D11ShaderStage::Compute, startSlot, numViews, ppShaderResourceViews);
@@ -218,7 +218,7 @@ void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context,  UINT
 void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
 
 
-    if (!context || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
+    if (HookIsShuttingDown() || !context || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
     if (dx11_hook_g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
@@ -353,7 +353,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, 
     if (original) {
         original(context, commandList, restoreContextState);
     }
-    if (!restoreContextState) {
+    if (!HookIsShuttingDown() && !restoreContextState) {
         ClearTrackedContextState11(context);
     }
 
@@ -393,6 +393,15 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
                                                           ID3D11DeviceContext** ppImmediateContext) {
 
 
+    PFN_D3D11CreateDeviceAndSwapChain realOriginal =
+        dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain ? dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain
+                                                       : oD3D11CreateDeviceAndSwapChain;
+    if (!realOriginal)
+        return E_FAIL;
+    if (HookIsShuttingDown()) {
+        return realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+                            pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+    }
     // Unconditional log to verify hook is being called
     HookLog("DetourD3D11CreateDeviceAndSwapChain: ENTER");
 
@@ -451,8 +460,6 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
     // (from dx11_hook.h) may have been overwritten by HookExport -> PatchIATAllModules,
     // which sets it to Wrapped_D3D11CreateDeviceAndSwapChain when a prior IAT hook exists.
     // Calling that would re-enter the wrapper -> infinite recursion -> stack overflow.
-    PFN_D3D11CreateDeviceAndSwapChain realOriginal =
-        dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain ? dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain : oD3D11CreateDeviceAndSwapChain;
     HRESULT hr = realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                               pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 
@@ -518,6 +525,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory,  IUnknow
                                                        DXGI_SWAP_CHAIN_DESC* pDesc,  IDXGISwapChain** ppSwapChain) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx11_hook_oCreateSwapChain ? dx11_hook_oCreateSwapChain(pFactory, DeWrap(pDevice), pDesc, ppSwapChain)
+                                          : DXGI_ERROR_INVALID_CALL;
+    }
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         if (pDesc) {
             EarlyLog(
@@ -621,6 +632,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, 
                                                               IDXGISwapChain1** ppSwapChain) {
 
 
+    if (HookIsShuttingDown()) {
+        return dx11_hook_oCreateSwapChainForHwnd
+                   ? dx11_hook_oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc,
+                                                       pRestrictToOutput, ppSwapChain)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         if (pDesc) {
             EarlyLog(
