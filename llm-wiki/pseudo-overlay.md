@@ -1,6 +1,6 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-08-05 (capture-dark handshake before screen-grab capture start, recording-health/recovery and truthful asynchronous-finalization feedback, application-profile settings, instant recording-start feedback, and dedicated UI thread)
+Last cross-checked: 2026-08-11 (DPI scaling follows the anchor monitor's effective DPI instead of the anchor window's awareness-dependent DPI)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
@@ -36,6 +36,34 @@ Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to p
 | `InformationIndicator` | 0 | Amber pending or red live indicator circle only |
 | `WarningAndIndicator` | 1 | Indicator plus amber startup text or `NOT RECORDING` warning |
 | `WarningOnly` | 2 | Amber startup text or `NOT RECORDING`; windowless during established recording except sanctioned notifications |
+
+## DPI Scaling
+
+The pseudo-overlay runs in `captureengine.exe`, which is PerMonitorV2-aware via its
+manifest, so its layered windows are presented in physical pixels on the anchor monitor.
+The font height (`-S(40)`), circle insets, and text padding are multiplied by
+`scale = dpi / 96`, where `dpi` is the **anchor monitor's effective DPI**
+(`GetDpiForMonitor(MDT_EFFECTIVE_DPI)`, pure fallback policy in
+`common/pseudo_overlay_dpi_policy.h`).
+
+The scale deliberately does NOT come from `GetDpiForWindow(anchorWindow)`: that API
+returns the DPI as seen through the *window owner's* DPI-awareness context (always 96
+for DPI-unaware apps, the system DPI for system-DPI-aware apps, and the monitor DPI only
+for per-monitor-aware apps). Using it made the overlay text change size on the same
+monitor whenever the foreground app switched between differently-aware processes, and a
+transient `GetDpiForWindow() == 0` fell back to the primary-monitor-oriented system DPI.
+An additional startup bug: the no-window fallback used the `stickyAnchorDpi_ = 96`
+member, which is truthy, so the first anchor resolution always yielded a hardcoded 96
+instead of `GetDpiForSystem()` until an anchor window appeared. All three paths now
+resolve to the anchor monitor's effective DPI with `GetDpiForSystem()` / 96 only as
+fallbacks (`ResolveAnchorInfo` -> `GetMonitorEffectiveDpi`).
+
+**Invariant:** on one monitor, the overlay font size is identical regardless of which
+process owns the foreground/anchor window; it changes only when the anchor monitor
+changes or its effective DPI changes.
+
+Regression coverage: `tests/test_pseudo_overlay_dpi.cpp` (monitor DPI wins, system-DPI
+fallback, never-0 contract).
 
 ## Timer
 
@@ -224,6 +252,10 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 | `foreground_acquire_grace_ms` config | `common/config.cpp` | ~1389 |
 | Grace policy header | `common/pseudo_overlay_focus_grace.h` | full |
 | Grace policy implementation | `common/pseudo_overlay_focus_grace.cpp` | full |
+| DPI resolution policy (pure) | `common/pseudo_overlay_dpi_policy.h` | full |
+| DPI policy tests | `tests/test_pseudo_overlay_dpi.cpp` | full |
+| Monitor-effective-DPI resolution | `captureengine/pseudo_overlay_internal.h` | `GetMonitorEffectiveDpi` |
+| Anchor DPI wiring | `captureengine/pseudo_overlay_state.cpp` | `ResolveAnchorInfo` |
 | Visibility policy (pure) | `common/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
 | Recording-state policy | `common/recording_indicator_policy.h` | full |

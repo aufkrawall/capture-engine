@@ -234,7 +234,6 @@ private:
     bool lastFullscreenSuppressed_ = false;
     HWND stickyAnchorWindow_ = NULL;
     HMONITOR stickyAnchorMonitor_ = NULL;
-    UINT stickyAnchorDpi_ = 96;
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;

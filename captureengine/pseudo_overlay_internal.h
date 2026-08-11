@@ -10,6 +10,8 @@
 
 #include "../common/process_identity.h"
 
+#include "../common/pseudo_overlay_dpi_policy.h"
+
 #include "../common/pseudo_overlay_profile_policy.h"
 
 #include "../common/pseudo_overlay_visibility.h"
@@ -23,6 +25,8 @@
 typedef HRESULT(WINAPI* DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
 
 typedef HRESULT(WINAPI* DwmFlushFn)(void);
+
+typedef HRESULT(WINAPI* GetDpiForMonitorFn)(HMONITOR, int, UINT*, UINT*);
 
 #include <algorithm>
 
@@ -40,6 +44,10 @@ inline DwmFlushFn pseudo_overlay_g_DwmFlush = nullptr;
 
 inline bool pseudo_overlay_g_DwmApiInitialized = false;
 
+inline GetDpiForMonitorFn pseudo_overlay_g_GetDpiForMonitor = nullptr;
+
+inline bool pseudo_overlay_g_GetDpiForMonitorInitialized = false;
+
 inline void EnsureDwmApi() {
     if (pseudo_overlay_g_DwmApiInitialized)
         return;
@@ -48,6 +56,19 @@ inline void EnsureDwmApi() {
     if (mod) {
         pseudo_overlay_g_DwmSetWindowAttribute = (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
         pseudo_overlay_g_DwmFlush = (DwmFlushFn)GetProcAddress(mod, "DwmFlush");
+    }
+}
+
+inline void EnsureGetDpiForMonitorApi() {
+    if (pseudo_overlay_g_GetDpiForMonitorInitialized)
+        return;
+    pseudo_overlay_g_GetDpiForMonitorInitialized = true;
+    HMODULE mod = GetModuleHandleW(L"shcore.dll");
+    if (!mod) {
+        mod = ce::security::LoadSystemLibrary(L"shcore.dll");
+    }
+    if (mod) {
+        pseudo_overlay_g_GetDpiForMonitor = (GetDpiForMonitorFn)GetProcAddress(mod, "GetDpiForMonitor");
     }
 }
 
@@ -116,12 +137,24 @@ inline bool GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
     return true;
 }
 
-inline UINT GetResolvedWindowDpi(HWND hwnd) {
-    UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0u;
-    if (dpi == 0) {
-        dpi = GetDpiForSystem();
+inline UINT GetMonitorEffectiveDpi(HMONITOR monitor) {
+    // The overlay is presented in physical pixels on the anchor monitor, so the scale
+    // must follow the monitor's effective DPI (see common/pseudo_overlay_dpi_policy.h).
+    // GetDpiForWindow() would leak the anchor window's DPI-awareness context into the
+    // font size (unaware apps always report 96, system-aware apps the system DPI), which
+    // made the text change size on the same monitor depending on the foreground app.
+    UINT monitorDpi = 0;
+    if (monitor) {
+        EnsureGetDpiForMonitorApi();
+        UINT dpiX = 0;
+        UINT dpiY = 0;
+        if (pseudo_overlay_g_GetDpiForMonitor &&
+            SUCCEEDED(pseudo_overlay_g_GetDpiForMonitor(monitor, 0 /* MDT_EFFECTIVE_DPI */, &dpiX, &dpiY))) {
+            monitorDpi = dpiX;
+        }
     }
-    return dpi == 0 ? 96u : dpi;
+    const UINT systemDpi = GetDpiForSystem();
+    return ce::pseudo_overlay::ResolveOverlayDpi(monitorDpi, systemDpi);
 }
 
 inline std::string FormatRecordingHealthMessage(uint32_t warningKind, uint32_t sustainFpsX100, uint32_t targetFps) {

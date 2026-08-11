@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-08-11 - Pseudo-overlay font size: anchor monitor effective DPI, not window DPI
+
+- The pseudo-overlay font/circle scale was derived from `GetDpiForWindow(anchorWindow)`,
+  which returns the anchor window's awareness-dependent DPI (always 96 for DPI-unaware
+  apps, system DPI for system-aware apps, monitor DPI only for PM-aware apps). The font
+  therefore changed size on the same monitor when the foreground app switched, jumped to
+  the primary-monitor scale on a transient `GetDpiForWindow() == 0`, and started at a
+  hardcoded 96 on high-DPI systems because `stickyAnchorDpi_ = 96` was truthy.
+- Fix: `ResolveAnchorInfo` now resolves the scale from the anchor monitor's effective
+  DPI (`GetDpiForMonitor(MDT_EFFECTIVE_DPI)` via `GetMonitorEffectiveDpi`), with
+  `GetDpiForSystem()`/96 fallbacks; `stickyAnchorDpi_` removed. Pure policy in
+  `common/pseudo_overlay_dpi_policy.h` + tests in `tests/test_pseudo_overlay_dpi.cpp`.
+- Build-tooling: `find_process_locking_file` crashed the build with an uncaught
+  PermissionError when `handle.exe` could not be spawned; it now degrades gracefully
+  (advisory-only helper).
+
 ### 2026-08-10 - Trace-level logging metering pass (session 20260810_210407)
 
 - Session `logs/20260810_210407` (build 0.1.5299, trace level) showed that even

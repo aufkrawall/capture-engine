@@ -232,7 +232,6 @@ void PseudoOverlay::ShutdownOnUiThread() {
     lastFullscreenSuppressed_ = false;
     stickyAnchorWindow_ = NULL;
     stickyAnchorMonitor_ = NULL;
-    stickyAnchorDpi_ = 96;
     lastForegroundAcquireTick_ = 0;
     lastForegroundAcquirePid_ = 0;
     hadForegroundTarget_ = false;

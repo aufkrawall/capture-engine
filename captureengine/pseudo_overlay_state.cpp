@@ -364,23 +364,19 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
         anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    anchor.dpi = anchorWindow ? GetResolvedWindowDpi(anchorWindow)
-                              : (this->stickyAnchorDpi_ ? this->stickyAnchorDpi_ : GetDpiForSystem());
+    anchor.dpi = GetMonitorEffectiveDpi(anchor.monitor);
     anchor.fullscreenLike = IsWindowFullscreenLike(anchorWindow);
 
     if (anchorWindow) {
-        if (this->stickyAnchorWindow_ != anchorWindow || this->stickyAnchorMonitor_ != anchor.monitor ||
-            this->stickyAnchorDpi_ != anchor.dpi) {
+        if (this->stickyAnchorWindow_ != anchorWindow || this->stickyAnchorMonitor_ != anchor.monitor) {
             LogInfo("[PseudoOverlay] Sticky anchor updated: window=%p monitor=%p dpi=%u fullscreenLike=%d",
                     anchorWindow, anchor.monitor, anchor.dpi, anchor.fullscreenLike ? 1 : 0);
         }
         this->stickyAnchorWindow_ = anchorWindow;
         this->stickyAnchorMonitor_ = anchor.monitor;
-        this->stickyAnchorDpi_ = anchor.dpi;
-    } else if (this->stickyAnchorMonitor_ != anchor.monitor || this->stickyAnchorDpi_ != anchor.dpi) {
+    } else if (this->stickyAnchorMonitor_ != anchor.monitor) {
         LogInfo("[PseudoOverlay] Sticky anchor monitor fallback: monitor=%p dpi=%u", anchor.monitor, anchor.dpi);
         this->stickyAnchorMonitor_ = anchor.monitor;
-        this->stickyAnchorDpi_ = anchor.dpi;
     }
 
     return anchor;

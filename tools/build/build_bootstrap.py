@@ -480,7 +480,13 @@ def find_process_locking_file(filepath: str) -> List[str]:
             for line in result.stdout.split("\n"):
                 if "pid:" in line.lower():
                     processes.append(line.strip())
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except OSError:
+        # handle.exe may be absent, require elevation, or be blocked by the
+        # environment (sandbox/AppLocker). This helper is advisory only - a lock
+        # must never turn into a build abort just because the lock cannot be
+        # attributed to a process.
+        pass
+    except subprocess.TimeoutExpired:
         pass
 
     return processes
