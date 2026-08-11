@@ -1,36 +1,40 @@
 # llm-wiki Log
 
-### 2026-08-11 - NVNGX FG multiplier: read MultiFrameCount on legacy FG IDs; late-inject FPS/latency audit
+### 2026-08-11 - Late inject must hook already-loaded Streamline feature exports (slDLSSGSetOptions) — Talos 4x still reported as 2x
 
-- Sessions `logs/20260811_222500` (0.1.5922) and `logs/20260811_225034`
-  (0.1.5923): after late inject + Alt+Tab resume the overlay reported
-  `DLSS 2x` although the game runs 4x MFG, and the user perceived reduced FPS
-  and increased input latency vs. before injection.
-- Root cause (reporting): `Hooked_CreateFeature` hardcoded the legacy FG IDs
-  (9/0xB) to multiplier 2. The `FrameGenerationMultiplier` parameter read
-  added in 0.1.5923 did not help because this game's runtime never sets that
-  name: binary inspection of the game's `nvngx_dlssg.dll` proves the FG v2+
-  parameter is `MultiFrameCount` (generated frames between real frames,
-  1=2x/2=3x/3=4x). Fix (0.1.5924): `ReadNVNGXFGMultiplierParam` reads
-  `FrameGenerationMultiplier` first, then `MultiFrameCount` (+1), via both
-  getI and getUI; both FG and MFG branches share
-  `ResolveNVNGXFrameGenerationMultiplier` (config override, then param).
-- FPS/latency audit (0.1.5924): the perf CSV shows the game genuinely running
-  4x MFG with CE: post-FG output ~130 fps, real frames 25.6/s, present ratio
-  5.05, and 287/292 slow frames followed by exactly 3 fast frames (clean 1+3
-  MFG cadence). CE's per-present overlay ECL lands on the swapchain-owning
-  queue (the only queue DXGI permits; the DLSS-G queue rejects backbuffer
-  access with 0x887A002B) and does not disturb the FG cadence. Base FPS ~26
-  means ~38 ms real-frame latency - inherent to 4x MFG at that base rate, not
-  a CE regression. Reflex: late inject installs no sl.reflex hooks (module
-  already loaded) and CE's limiter is off, so CE cannot break the game's
-  Reflex path. The perceived problems matched the broken overlay data (2x +
-  zero/incorrect FPS readouts); re-validate with 0.1.5924.
-- Regression tests: `ResolvesDLSSFrameGenerationMultiplierFromParameter` and
+- Session `logs/20260811_230524` (0.1.5924): the MultiFrameCount parameter
+  read still latched `DLSS FG multiplier 0 -> 2`. The game's own log proves
+  the 4x is conveyed by `slDLSSGSetOptions(numFramesToGenerate=3)`, NOT by any
+  CreateFeature parameter: `ParseNGXParametersCreateTime` prints only
+  `UserInterfaceRecompositionEnabled`, and `DLSS-G interpolation state changed
+  ... numFramesToGenerate=3` fires on toggle edges without a CreateFeature.
+  The game resolved slDLSSGSetOptions once at startup (before injection) and
+  never re-resolves it, so CE's slGetFeatureFunction hook can never wrap it.
+- Root cause: the startup path hooks feature exports when the app resolves
+  them through slGetFeatureFunction (or at slSetD3DDevice); under late inject
+  both already happened pre-injection, so `slDLSSGSetOptions`/Reflex exports
+  stay unhooked and the whole Streamline FG state machine (multiplier,
+  `g_StreamlineFGRunning`, Reflex signals) is dead.
+- Fix (0.1.5925): `ScanLoadedStreamlineModules()` now proactively calls
+  `TryResolveDLSSGFeatureHooks()` + `TryResolveReflexFeatureHooks()` after the
+  loaded-module scan (runtime stable, no loader lock - the same safe point the
+  startup path uses for its deferred lookup). The game's cached
+  slDLSSGSetOptions pointer is then inline-hooked, so the next FG resume
+  flows through `Hooked_slDLSSGSetOptions` -> `ApplyCombinedDLSSFGState` ->
+  `SetDLSSFGMultiplier(4)` and `g_StreamlineFGRunning=true`. The NVNGX
+  parameter reads from 0.1.5924 stay as secondary coverage for games that do
+  set the param.
+- FPS/latency audit (unchanged from 0.1.5924): perf CSV shows the game
+  genuinely runs 4x MFG under CE (~130 fps output, clean 1+3 cadence); base
+  ~26 fps means ~38 ms real-frame latency inherent to 4x MFG. Reflex is now
+  also observable under late inject (0.1.5925 hooks sl.reflex exports).
+- Regression tests: `LoadedModuleScanResolvesFeatureHooksAfterHookingModules`
+  in `tests/test_streamline_runtime_policy_part2.cpp`;
+  `ResolvesDLSSFrameGenerationMultiplierFromParameter` /
   `CreateFeatureFGBranchesResolveTheMultiplierParameter` in
   `tests/test_ngx_feature_lifecycle.cpp`.
-- Source anchors: `hook/apis/nvngx_hook_feature.cpp`,
-  `hook/apis/nvngx_hook_internal.h`, `hook/common/ngx_feature_lifecycle.h`.
+- Source anchors: `hook/apis/streamline_hook_install.cpp`,
+  `hook/apis/streamline_hook_resolve.cpp`, `hook/apis/nvngx_hook_feature.cpp`.
 
 ### 2026-08-11 - Late-inject DLSS FG resume crash: route overlay to the swapchain-owning queue (20260811_221202)
 

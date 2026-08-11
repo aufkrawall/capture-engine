@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "../common/config.h"
 #include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/streamline_runtime_policy.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -18,6 +21,39 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleUnloadDispatchesHookInvalidati
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("common.dll"));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("dxgi.dll"));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(nullptr));
+}
+
+// Regression (session 20260811_230524): late injection into an already-running
+// DLSS-FG game never hooks slDLSSGSetOptions because the game resolved the
+// feature function before injection and never re-resolves it. The loaded-module
+// scan must proactively resolve the DLSS-G/Reflex feature functions through
+// the interposer after hooking the loaded modules, so the game's cached
+// slDLSSGSetOptions pointer flows through CE (and the FG multiplier / Reflex
+// state signals become observable). Without this, Talos's 4x MFG
+// (slDLSSGSetOptions numFramesToGenerate=3) stays invisible and the overlay
+// reports DLSS 2x.
+TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHookingModules) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t scanStart = text.find("bool ScanLoadedStreamlineModules()");
+    ASSERT_NE(scanStart, std::string::npos);
+    const size_t snapshotClose = text.find("CloseHandle(snapshot);", scanStart);
+    ASSERT_NE(snapshotClose, std::string::npos);
+    const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks()", snapshotClose);
+    const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks()", snapshotClose);
+    ASSERT_NE(dlssgResolve, std::string::npos);
+    ASSERT_NE(reflexResolve, std::string::npos);
+    // Resolution must run after the module snapshot is released (runtime
+    // stable, no loader lock) and inside the scan so late inject and the
+    // runtime retry path both benefit.
+    EXPECT_LT(snapshotClose, dlssgResolve);
+    EXPECT_LT(snapshotClose, reflexResolve);
+    EXPECT_NE(text.find("Resolved feature hooks after loaded-module scan", scanStart), std::string::npos);
 }
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {

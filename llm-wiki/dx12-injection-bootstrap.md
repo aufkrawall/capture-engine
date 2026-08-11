@@ -73,13 +73,17 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
      `DecideSwapchainOverlayRouting` treats planner-classified DLSS FG
      (`IsDLSSFrameGenerationActive()`) exactly like the Streamline latch and
      routes pure DLSS to `kUseStreamlineOriginalQueue`.
-  3. The FG multiplier report must read the NVNGX parameter object on the
-     legacy FG feature IDs (9/0xB), not hardcode 2x. The FG v2+ runtime
-     parameter is `MultiFrameCount` (generated frames between real frames,
-     1=2x/2=3x/3=4x; verified in the game's `nvngx_dlssg.dll`), with
-     `FrameGenerationMultiplier` as the legacy spelling; both are read via
-     getI/getUI (build 0.1.5924). Without this, the overlay reports DLSS 2x
-     although the game runs 4x MFG (session `logs/20260811_225034`).
+  3. The FG multiplier report needs the Streamline feature exports hooked.
+     Talos conveys 4x MFG exclusively via `slDLSSGSetOptions(numFramesToGenerate=3)`
+     (no CreateFeature parameter carries it; `MultiFrameCount`/
+     `FrameGenerationMultiplier` reads on the NVNGX params cover only games
+     that set them). Under late inject the game resolved the feature function
+     before injection and never re-resolves, so
+     `ScanLoadedStreamlineModules()` must proactively run
+     `TryResolveDLSSGFeatureHooks()`/`TryResolveReflexFeatureHooks()` after the
+     loaded-module scan (build 0.1.5925) to inline-hook the cached
+     slDLSSGSetOptions pointer; the next FG resume then flows through CE and
+     the overlay reports the real multiplier (session `logs/20260811_230524`).
   At FG resume the warm overlay therefore keeps drawing on `origGame` with no
   reinit and no blank, matching the healthy startup sessions.
 - Resident-hook reactivation re-binds all session-scoped diagnostics to the

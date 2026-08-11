@@ -401,6 +401,32 @@ bool ScanLoadedStreamlineModules() {
     const DWORD iterationError = GetLastError();
     CloseHandle(snapshot);
 
+    // Late-inject / runtime retry: proactively resolve the DLSS-G and Reflex
+    // feature functions through the interposer now that every Streamline
+    // module is loaded and the runtime is stable (no loader lock). The startup
+    // path defers this to the app's own slGetFeatureFunction / slSetD3DDevice
+    // calls; under late injection those already happened before hook
+    // installation, so the game's cached feature pointers (e.g.
+    // slDLSSGSetOptions, resolved at startup) would never become observable
+    // and the FG multiplier / Reflex state signals would stay dead. Hooking
+    // them here makes the game's next slDLSSGSetOptions call flow through CE
+    // (session 20260811_230524: Talos runs 4x MFG via
+    // slDLSSGSetOptions(numFramesToGenerate=3) but the overlay reported DLSS
+    // 2x because the CreateFeature parameter object carries no multiplier).
+    const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks();
+    const bool resolvedReflex = TryResolveReflexFeatureHooks();
+    if (resolvedDLSSG || resolvedReflex) {
+        HookLogImportant(
+            "Streamline Hook: Resolved feature hooks after loaded-module scan "
+            "(dlssgSetOptionsHooked=%d dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d "
+            "reflexSetConstantsHooked=%d)",
+            streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
+    }
+
     if (attempts > 1 && !streamline_hook_g_ModuleSnapshotRetrySuccessLogged.exchange(true, std::memory_order_acq_rel)) {
         HookLogImportant(
             "Streamline Hook: Loaded-module snapshot recovered after transient retry (attempts=%d modules=%zu "
