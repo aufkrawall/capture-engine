@@ -338,6 +338,48 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
   fallback with a rate-limited `Dedicated overlay queue bypassed for
   backbuffer-touching ... submit` log.
 
+### Build 0.1.5922 — route late-inject DLSS-FG overlay submits to the swapchain-owning queue (20260811_221202)
+
+- **Problem**: session `logs/20260811_221202` (build 0.1.5921) still crashed
+  with the identical UE fatal (`Streamline/DLSSG present failed ... Reason:
+  887A002B`) although the 0.1.5921 dedicated-queue guard was active and logged
+  `Dedicated overlay queue disabled for NVIDIA DLSS FG`. The `FG overlay
+  SUBMIT #1` went to `gameQ=1` (the game queue) on `000001958621A0C0` and
+  still removed the device - the dedicated queue was NOT the trigger.
+- **Corrected root cause**: `0x887A002B` is `DXGI_ERROR_ACCESS_DENIED`
+  (verified against the Windows SDK `winerror.h`): the swapchain backbuffer
+  may only be drawn from the queue the swapchain was created with. Talos uses
+  separate render/present DIRECT queues; at DLSS-FG resume the game's ECL
+  traffic moves to the DLSS-G render queue (`g_CommandQueue` flips away from
+  `origGame`, the swapchain owner). With the Streamline latch missing under
+  late injection, `DecideSwapchainOverlayRouting` fell through all FG branches
+  to the generic fallback (`scQueue ?: last ECL queue`) and submitted the
+  overlay's backbuffer-drawing list on the render queue. The SL-latched
+  healthy path routes pure DLSS to `origGame` (`kUseStreamlineOriginalQueue`),
+  which is why startup injection and the retained healthy sessions never hit
+  this.
+- **Fix**: `DecideSwapchainOverlayRouting` gained `plannerDLSSFGActive`;
+  `IsDLSSFrameGenerationActive()` (planner `kDLSSFG`) is passed by both call
+  sites (`dx12_hook_process_session_phase2.cpp` ProcessFrame queue resolution
+  and `dx12_hook_overlay.cpp` InitOverlaySync backend selection), and the two
+  Streamline branches (`hadFSRFGPhase` and pure-DLSS) treat planner-classified
+  DLSS exactly like the SL latch. The late-inject FG-resume draw therefore
+  lands on `origGame` (the swapchain owner) instead of the DLSS-G render
+  queue. Non-FG, FSR, and SL-latched routing is unchanged (parameter defaults
+  to false; all other branches untouched).
+- **Non-regression**: games without FG never enter the new branches
+  (`plannerDLSSFGActive=false`); the dedicated-queue guards from 0.1.5921
+  remain as defense-in-depth; Steam transport rules are untouched.
+- **Regression tests**: `DX12SwapchainOverlayRoutingTreatsPlannerDLSSLikeStreamlineLatch`
+  in `tests/test_dxgi_shared_part3.cpp` (planner-DLSS-without-latch routes to
+  `kUseStreamlineOriginalQueue`; non-DLSS state still falls through to normal
+  routing; the SL latch still dominates).
+- **Stale-risk**: Low-Medium. The routing decision is covered by unit tests,
+  but queue-ownership shape can differ per engine; the `ProcessFrame queue=`
+  diagnostic with `path=origGame` during DLSS FG plus a healthy
+  `devRemoved=0x00000000` on `FG overlay SUBMIT` is the runtime proof to watch
+  in Talos late-inject validation.
+
 ### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
 - **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:

@@ -64,7 +64,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, postFSRInactiveRecoveryPending,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
-            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
+            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+            IsDLSSFrameGenerationActive());
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)

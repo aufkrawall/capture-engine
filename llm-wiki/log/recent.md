@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-11 - Late-inject DLSS FG resume crash: route overlay to the swapchain-owning queue (20260811_221202)
+
+- Session `installed/captureengine/logs/20260811_221202` (build 0.1.5921)
+  still crashed with the identical UE fatal (`Streamline/DLSSG present failed
+  ... Reason: 887A002B`) although the 0.1.5921 dedicated-queue guard was in
+  effect and logged `Dedicated overlay queue disabled for NVIDIA DLSS FG`.
+  That proved the dedicated queue was NOT the (only) trigger: the submit
+  went to `gameQ=1` on queue `000001958621A0C0` and still removed the device.
+- Corrected root cause: `0x887A002B` is `DXGI_ERROR_ACCESS_DENIED` (verified
+  against the Windows SDK `winerror.h`) - the backbuffer may only be drawn
+  from the swapchain-owning queue. Talos uses separate render/present queues;
+  at DLSS-FG resume the game's ECL traffic moves to the DLSS-G render queue
+  (`g_CommandQueue` flips away from `origGame`), and with the Streamline latch
+  missing under late injection, `DecideSwapchainOverlayRouting` fell through
+  to the generic fallback (`scQueue ?: last ECL queue`) and submitted the
+  overlay's backbuffer-drawing list on the render queue. The SL-latched
+  healthy path routes pure DLSS to `origGame` (`kUseStreamlineOriginalQueue`).
+- Fix (build 0.1.5922): `DecideSwapchainOverlayRouting` gained
+  `plannerDLSSFGActive`; `IsDLSSFrameGenerationActive()` (planner
+  `kDLSSFG`) is passed by both call sites (`dx12_hook_process_session_phase2.cpp`,
+  `dx12_hook_overlay.cpp`) and the two Streamline branches treat it exactly
+  like the SL latch, so the late-inject resume draws the overlay on
+  `origGame` (swapchain owner) instead of the DLSS-G render queue. Non-FG,
+  FSR, and SL-latched DLSS routing is unchanged (the parameter defaults to
+  false and all other branches are untouched).
+- Regression tests: `DX12SwapchainOverlayRoutingTreatsPlannerDLSSLikeStreamlineLatch`
+  in `tests/test_dxgi_shared_part3.cpp`; the 0.1.5921 dedicated-queue tests
+  (`tests/test_dxgi_shared_part14.cpp`) remain as defense-in-depth.
+- Source anchors: `hook/common/dx12_overlay_policy/ffx_routing.h`,
+  `hook/apis/dx12_hook_fg_heuristics.cpp`, `hook/apis/dx12_hook_process_session_phase2.cpp`,
+  `hook/apis/dx12_hook_overlay.cpp`.
+
 ### 2026-08-11 - Fix late-inject DLSS FG resume device removal (Talos Alt+Tab crash 20260811_214252)
 
 - Session `installed/captureengine/logs/20260811_214252` (build 0.1.5919):
@@ -37,6 +69,10 @@
   `hook/apis/dx12_hook_process_session_draw_tail.cpp`,
   `hook/apis/dx12_hook_overlay_render.cpp`,
   `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`.
+- **SUPERSEDED as the crash fix by 0.1.5922** (see the next entry): the
+  dedicated-queue guard was necessary but not sufficient - session
+  `20260811_221202` still crashed via the game-queue submit on the DLSS-G
+  render queue. The guard stays in place as defense-in-depth.
 
 ### 2026-08-11 - Rebind session diagnostics when a resident hook is reactivated (missing perf_metrics CSV)
 

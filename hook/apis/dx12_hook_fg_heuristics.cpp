@@ -289,6 +289,15 @@ return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kFSRFG;
 }
 
 
+bool IsDLSSFrameGenerationActive() {
+// Planner-classified NVIDIA DLSS FG. This is the only DLSS evidence late
+// injection can have: sl.dlssg / sl.interposer were already loaded before hook
+// installation, so the Streamline FG signal and the runtime-ownership latch
+// are never published (session 20260811_221202).
+return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kDLSSFG;
+}
+
+
 bool IsNvidiaSmoothMotionActiveRuntime() {
 return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
 }

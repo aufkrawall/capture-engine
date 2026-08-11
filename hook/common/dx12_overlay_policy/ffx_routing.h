@@ -190,13 +190,24 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool postFSRInactiveRecoveryPending,
     bool commandQueueMatchesPrimaryGameQueue, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
-    bool nativeFSRInternalNoCallbackCompositionLive = false) {
-    if (streamlineFGActive && hadFSRFGPhase) {
+    bool nativeFSRInternalNoCallbackCompositionLive = false, bool plannerDLSSFGActive = false) {
+    // Late injection into an already-running DLSS-FG game can miss the
+    // Streamline FG signal (sl.dlssg / sl.interposer were loaded before hook
+    // installation) and the runtime-ownership latch; the planner's DLSS
+    // runtime mode is then the only FG evidence. Queue routing must treat that
+    // state exactly like the Streamline latch: the swapchain backbuffer
+    // belongs to the original game/present queue, while the generic fallback
+    // (scQueue ?: last ECL queue) picks the DLSS-G render queue, which is
+    // exactly the cross-queue backbuffer access that removes the device with
+    // DXGI_ERROR_ACCESS_DENIED (0x887A002B) on the first draw (session
+    // 20260811_221202, late-inject Talos DLSS FG resume after Alt+Tab).
+    const bool dlssFGRoutingActive = streamlineFGActive || plannerDLSSFGActive;
+    if (dlssFGRoutingActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
     }
 
-    if (streamlineFGActive && hasOriginalGameQueue) {
+    if (dlssFGRoutingActive && hasOriginalGameQueue) {
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
     }
 

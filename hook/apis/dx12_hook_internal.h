@@ -533,6 +533,7 @@ const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProb
 void ResetStartupOverlayBackendActivationStage();
 bool IsActualFrameGenerationActive();
 bool IsFSRFrameGenerationActive();
+bool IsDLSSFrameGenerationActive();
 bool IsNvidiaSmoothMotionActiveRuntime();
 
 ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);;

@@ -57,16 +57,24 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   loaded misses the Streamline FG signal and the runtime-ownership latch, so
   `g_StreamlineFGRunning` and `dx12_hook_g_FGRuntimeOwnsSwapchain` stay false
   even when the FG planner correctly classifies `DLSS_FG` (via the NVNGX
-  `CreateFeature` hook). The dedicated overlay queue must stay disabled for
-  NVIDIA DLSS FG in that planner-only state too: the first backbuffer-drawing
-  overlay submit on the dedicated queue returns `DXGI_ERROR_ACCESS_DENIED
-  (0x887A002B)` and removes the device (session `logs/20260811_214252`, Talos
-  DLSS FG resume after Alt+Tab). Fix (build 0.1.5921):
-  `ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration` covers both
-  detection states, and the submit sites reserve the dedicated queue for
-  pure-offscreen lists (`ShouldUseDedicatedQueueForOverlaySubmit`). At FG
-  resume the warm overlay therefore keeps drawing on the live present queue
-  with no reinit and no blank, matching the healthy startup sessions.
+  `CreateFeature` hook). Two hazards follow, both fixed (builds 0.1.5921 +
+  0.1.5922):
+  1. The dedicated overlay queue must stay disabled for NVIDIA DLSS FG in the
+     planner-only state: a backbuffer-drawing submit on it returns
+     `DXGI_ERROR_ACCESS_DENIED (0x887A002B)` and removes the device (session
+     `logs/20260811_214252`). `ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration`
+     covers both detection states and the submit sites reserve the dedicated
+     queue for pure-offscreen lists (`ShouldUseDedicatedQueueForOverlaySubmit`).
+  2. Queue routing must send the overlay's backbuffer draws to the
+     swapchain-owning queue (`origGame`), not to the DLSS-G render queue that
+     `g_CommandQueue` flips to at FG resume. Session `logs/20260811_221202`
+     (build 0.1.5921) still crashed because the generic routing fallback
+     (`scQueue ?: last ECL queue`) picked the render queue. Fix:
+     `DecideSwapchainOverlayRouting` treats planner-classified DLSS FG
+     (`IsDLSSFrameGenerationActive()`) exactly like the Streamline latch and
+     routes pure DLSS to `kUseStreamlineOriginalQueue`.
+  At FG resume the warm overlay therefore keeps drawing on `origGame` with no
+  reinit and no blank, matching the healthy startup sessions.
 - Resident-hook reactivation re-binds all session-scoped diagnostics to the
   replacement host's log directory: the crash dump directory, the perf_metrics
   CSV (`PerfLogger::Init(..., true)` finalizes the old file and restarts frame

@@ -482,7 +482,8 @@ gameQueue = nullptr;
             dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, postFSRInactiveRecoveryPending,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
-            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
+            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+            IsDLSSFrameGenerationActive());
 
         if (routingDecision ==
             ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {

@@ -642,6 +642,46 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingCoversEveryOffFSRAndDLSSDirectio
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
+// Regression (session 20260811_221202): late injection into a running Talos
+// with DLSS FG misses the Streamline FG signal and the runtime-ownership
+// latch (sl.dlssg / sl.interposer loaded before hook installation), so the
+// planner's DLSS runtime mode is the only FG evidence. Routing must treat
+// planner-classified DLSS FG like the Streamline latch: the overlay backbuffer
+// draw goes to the original game/present queue. The generic fallback
+// (scQueue ?: last ECL queue) picked the DLSS-G render queue and removed the
+// device with DXGI_ERROR_ACCESS_DENIED (0x887A002B) on the first draw.
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingTreatsPlannerDLSSLikeStreamlineLatch) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    // THE late-inject regression: planner DLSS FG, no Streamline latch, no FSR
+    // history, no swapchain queue -> route to the original game queue.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true, false, false, false,
+                                            false, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+    // Same state with a captured swapchain queue still prefers origGame for
+    // pure DLSS (identical to the Streamline-latched decision).
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, true, true, false, false, false,
+                                            false, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+    // Planner DLSS with FSR history mirrors the Streamline-latched branch.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false, false,
+                                            false, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, false, false, false,
+                                            false, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+    // Without planner DLSS the state falls through to normal routing (no
+    // regression for non-FG games).
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true, false, false, false,
+                                            false, false, false),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+    // The Streamline latch continues to dominate when the planner disagrees.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, false, true, true, false, false, false,
+                                            false, false, false),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+}
+
 TEST(DXGISharedTest, ExplicitNativeFSROffRecoveryUsesOriginalQueueDespiteStaleSwapchainQueue) {
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
