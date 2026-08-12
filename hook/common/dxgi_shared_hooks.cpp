@@ -355,14 +355,30 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
 }
 
 namespace DXGIShared {
+// A deep body hook below a foreign Present chain is a full-strength CE Present view: every
+// present reaches DetourPresent through it, exactly as with an entry prepend. It must
+// therefore count here, or DX12Hook keeps reporting "no Present hooks" and the swapchain
+// wrapper keeps running its own second Present path against the same frames.
 bool HasPresentInlineHooks() {
-    return dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr;
+    return dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr ||
+           dxgi_shared_oPresentDeepBody != nullptr || dxgi_shared_oPresent1DeepBody != nullptr;
 }
 }
 
 namespace DXGIShared {
 bool HasPresentDetourHooks() {
-    return dxgi_shared_s_hookedVTable != nullptr || dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr;
+    return dxgi_shared_s_hookedVTable != nullptr || dxgi_shared_oPresentTrampoline != nullptr ||
+           dxgi_shared_oPresent1Trampoline != nullptr || dxgi_shared_oPresentDeepBody != nullptr ||
+           dxgi_shared_oPresent1DeepBody != nullptr;
+}
+}
+
+namespace DXGIShared {
+bool HasPrependedPresentEntryHook() {
+    if (IsPresentEntryLeftToForeignChain()) {
+        return false;
+    }
+    return dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr;
 }
 }
 

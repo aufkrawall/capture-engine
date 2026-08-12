@@ -265,3 +265,175 @@ TEST(DXGISharedForeignHandlerValidityTest, RejectsNullAndNonExecutableHandlers) 
     VirtualFree(freed, 0, MEM_RELEASE);
     EXPECT_FALSE(DXGIShared::IsCallableForeignPresentHandler(freed));
 }
+
+// Session 20260812_140930 (dx12_fg_switch_test via Steam, all FG off, Steam overlay + RTSS
+// both loaded): CE injected after the game had already created its D3D12 device and
+// swapchain, so no CWrapDXGISwapChain could ever exist for it; the two foreign overlays then
+// put CE into the leave-the-entry mode, whose entire premise is "intercept through the
+// swapchain wrapper". The result was zero Present interception for the whole session
+// (`Postponed temp swapchain also failed`, game submitting ~720 ECL/s, no overlay).
+//
+// The fix is a deep hook in the dxgi!Present BODY, past the five entry bytes Steam and RTSS
+// keep restoring and re-patching around each other: CE runs below the whole foreign chain,
+// owns no entry bytes, and sees presents on swapchains it never created.
+TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapchainsAreCovered) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string install = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(install.empty());
+
+    const size_t leaveEntry = install.find("ShouldLeavePresentEntryToForeignOverlayChain(");
+    ASSERT_NE(leaveEntry, std::string::npos);
+    // The body view is taken inside the leave-entry branch, and only a view that was actually
+    // obtained may latch the install — otherwise a refused body patch blinds the session with
+    // no retry, because InstallPresentInlineHooks early-returns on the latch.
+    const size_t deepInstall = install.find(
+        "s_inlineHooksInstalled = InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr);", leaveEntry);
+    ASSERT_NE(deepInstall, std::string::npos);
+    const size_t firstLatchAfterDecision = install.find("s_inlineHooksInstalled =", leaveEntry);
+    ASSERT_NE(firstLatchAfterDecision, std::string::npos);
+    EXPECT_EQ(firstLatchAfterDecision, deepInstall);
+
+    // The Present view below the chain is a deep body hook, never an entry patch.
+    const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
+    ASSERT_NE(helper, std::string::npos);
+    EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent", helper),
+              std::string::npos);
+    // A Present1 entry a foreign overlay owns gets the same deep treatment; an unclaimed one
+    // has no chain to damage, so the ordinary prepend is correct there.
+    EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),
+              std::string::npos);
+    EXPECT_NE(install.find("present1EntryIsForeign", helper), std::string::npos);
+    // Losing the body view leaves the overlay invisible — that must be an important log line,
+    // not a silent fallback.
+    EXPECT_NE(install.find("Present view at all unless it wraps the presenting swapchain", helper),
+              std::string::npos);
+
+    // The DXGI bypass built moments earlier resumes at exactly the offset the deep hook takes
+    // over, so leaving it in place would route every "skip the foreign entry" consumer back
+    // into CE's own detour. It must be republished as the deep trampoline.
+    const size_t bypassRepublish = install.find("dxgi_shared_oPresentBypass = dxgi_shared_oPresentDeepBody", helper);
+    ASSERT_NE(bypassRepublish, std::string::npos);
+    EXPECT_NE(install.find("dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody", helper), std::string::npos);
+}
+
+// The deep hook is entered BELOW the foreign chain, so CE's own forward must run the
+// remaining real body. Forwarding through the live entry there re-runs Steam and RTSS and
+// re-enters the deep hook without end.
+TEST(DXGISharedSourceTest, DeepBodyForwardIsCheckedBeforeEveryForeignChainEntryForward) {
+    namespace fs = std::filesystem;
+    const fs::path presentSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    ASSERT_TRUE(fs::exists(presentSource));
+    ASSERT_TRUE(fs::exists(present1Source));
+    const std::string present = ce::test_source::ReadFile(presentSource);
+    const std::string present1 = ce::test_source::ReadFile(present1Source);
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(present1.empty());
+
+    // Shutdown path and steady-state path, both in Present and Present1.
+    for (const std::string* source : {&present, &present1}) {
+        const bool isPresent1 = source == &present1;
+        const char* deepGlobal = isPresent1 ? "dxgi_shared_oPresent1DeepBody" : "dxgi_shared_oPresentDeepBody";
+
+        size_t searchFrom = 0;
+        int deepChecksBeforeEntryForwards = 0;
+        for (int i = 0; i < 2; ++i) {
+            const size_t deep = source->find(std::string("if (") + deepGlobal + ")", searchFrom);
+            ASSERT_NE(deep, std::string::npos);
+            const size_t entryForward = source->find("IsPresentEntryLeftToForeignChain()", deep);
+            ASSERT_NE(entryForward, std::string::npos);
+            EXPECT_LT(deep, entryForward);
+            ++deepChecksBeforeEntryForwards;
+            searchFrom = deep + 1;
+        }
+        EXPECT_EQ(deepChecksBeforeEntryForwards, 2);
+    }
+
+    // Both forwards are logged rate-limited so a live session shows which view CE is on.
+    EXPECT_NE(present.find("foreign-chain deep body forward"), std::string::npos);
+    EXPECT_NE(present1.find("foreign-chain deep body forward"), std::string::npos);
+}
+
+// A deep body hook is a full CE Present view: DX12Hook must stop reporting "no Present
+// hooks" (which is what drove FindAndWrapPreExistingSwapchains to give up), and the
+// swapchain wrapper must delegate instead of running a second Present path over the same
+// frames. Both decisions read these two predicates.
+TEST(DXGISharedSourceTest, DeepBodyHookCountsAsAPresentViewButNotAsAnOwnedEntryPatch) {
+    namespace fs = std::filesystem;
+    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp";
+    ASSERT_TRUE(fs::exists(hooksSource));
+    const std::string hooks = ce::test_source::ReadFile(hooksSource);
+    ASSERT_FALSE(hooks.empty());
+
+    const size_t inlineHooks = hooks.find("bool HasPresentInlineHooks()");
+    const size_t detourHooks = hooks.find("bool HasPresentDetourHooks()");
+    const size_t prepended = hooks.find("bool HasPrependedPresentEntryHook()");
+    ASSERT_NE(inlineHooks, std::string::npos);
+    ASSERT_NE(detourHooks, std::string::npos);
+    ASSERT_NE(prepended, std::string::npos);
+    EXPECT_NE(hooks.find("dxgi_shared_oPresentDeepBody", inlineHooks), std::string::npos);
+    EXPECT_NE(hooks.find("dxgi_shared_oPresentDeepBody", detourHooks), std::string::npos);
+    // The owned-entry predicate must be false in leave-entry mode: CE holds no entry bytes
+    // there, so the "second overlay joined an entry CE prepended over" warning does not apply.
+    EXPECT_NE(hooks.find("IsPresentEntryLeftToForeignChain()", prepended), std::string::npos);
+
+    const fs::path detectSource = fs::current_path() / "hook" / "main_overlay_detect.cpp";
+    ASSERT_TRUE(fs::exists(detectSource));
+    const std::string detect = ce::test_source::ReadFile(detectSource);
+    ASSERT_FALSE(detect.empty());
+    EXPECT_NE(detect.find("DXGIShared::HasPrependedPresentEntryHook()"), std::string::npos);
+    EXPECT_EQ(detect.find("DXGIShared::HasPresentInlineHooks()"), std::string::npos);
+}
+
+// Session 20260812_144425 (build 0.1.5953, the deep body view's first real run): CE's overlay
+// rendered until the deep hook took over, then vanished. Every present logged
+// `Bypassing DX12 ProcessFrame for third-party overlay swapchain <game swapchain>
+// (caller=RTSSHooks64.dll)` — one per frame, for the game's own swapchain.
+//
+// Cause: "a third-party overlay made this call" is an inference from the IMMEDIATE caller,
+// which only holds while CE sits at the top of the Present chain. Below the chain the caller
+// of dxgi!Present is always the last foreign overlay in it, for every swapchain. Present
+// provenance must therefore be resolved from the stack in that mode — negatively for the
+// overlay classification (swapchain identity stays authoritative), positively for the FG
+// interposers, whose frames are simply further out.
+TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelowAForeignChain) {
+    namespace fs = std::filesystem;
+    const fs::path presentSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp";
+    ASSERT_TRUE(fs::exists(presentSource));
+    ASSERT_TRUE(fs::exists(present1Source));
+    const std::string present = ce::test_source::ReadFile(presentSource);
+    const std::string present1 = ce::test_source::ReadFile(present1Source);
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(present1.empty());
+
+    for (const std::string* source : {&present, &present1}) {
+        // The third-party-overlay classification is suppressed below the chain.
+        const size_t overlayClassification = source->find("callerFromThirdPartyOverlay =");
+        ASSERT_NE(overlayClassification, std::string::npos);
+        const size_t overlaySuppression =
+            source->find("!IsPresentInterceptedBelowForeignChain()", overlayClassification);
+        ASSERT_NE(overlaySuppression, std::string::npos);
+
+        // FG provenance is recovered from the stack instead of dropped.
+        const size_t streamline = source->find("callerFromStreamlineModule =");
+        ASSERT_NE(streamline, std::string::npos);
+        EXPECT_NE(source->find("HasStreamlineModuleInCurrentStack()", streamline), std::string::npos);
+        const size_t ffx = source->find("callerFromFFXFrameGenerationModule =");
+        ASSERT_NE(ffx, std::string::npos);
+        EXPECT_NE(source->find("HasFFXFrameGenerationModuleInStack()", ffx), std::string::npos);
+    }
+
+    // The predicate itself is derived from the deep-body trampolines, not from a separate flag
+    // that could drift out of sync with them.
+    const fs::path sharedSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    ASSERT_TRUE(fs::exists(sharedSource));
+    const std::string shared = ce::test_source::ReadFile(sharedSource);
+    ASSERT_FALSE(shared.empty());
+    const size_t predicate = shared.find("bool IsPresentInterceptedBelowForeignChain()");
+    ASSERT_NE(predicate, std::string::npos);
+    EXPECT_NE(shared.find("dxgi_shared_oPresentDeepBody != nullptr", predicate), std::string::npos);
+    EXPECT_NE(shared.find("dxgi_shared_oPresent1DeepBody != nullptr", predicate), std::string::npos);
+}

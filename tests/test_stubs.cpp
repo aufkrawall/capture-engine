@@ -58,6 +58,9 @@ bool InlineHook::Remove(void*) {
 void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;
 }
+void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, void*) {
+    return nullptr;
+}
 bool InlineHook::IsInstalledEntryPatchIntact(void*, void** currentJumpTargetOut) {
     if (currentJumpTargetOut) {
         *currentJumpTargetOut = nullptr;

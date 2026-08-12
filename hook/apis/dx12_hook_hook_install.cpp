@@ -14,6 +14,15 @@ void PublishDeepCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
 
 
 void InstallGlobalVTableHooks() {
+    // Fast-app coverage: the HookThread installs these hooks as its FIRST action (before any
+    // module scans / IPC waits), so a game that creates its swapchain within the first second
+    // (dx12_fg_switch_test via Steam + RTSS, session 20260812_044326) cannot slip past them.
+    // DX12Hook::Init retries here when dxgi.dll was not loaded yet; only a completed install
+    // latches the flag.
+    static std::atomic<bool> s_installed{false};
+    if (s_installed.load(std::memory_order_acquire)) {
+        return;
+    }
 HookLog("DX12: InstallGlobalVTableHooks called");
 
 // CRITICAL: Install global factory vtable hooks to catch swapchain creation
@@ -132,6 +141,7 @@ if (realCreateSCForHwndAddr) {
 }
 
 HookLog("DX12: Global factory vtable hooks installed");
+s_installed.store(true, std::memory_order_release);
 }
 
 

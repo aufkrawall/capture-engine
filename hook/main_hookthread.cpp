@@ -12,6 +12,14 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   g_HookThreadRunning = true;
   InitializeHookLifecycleControl();
 
+  // Fast-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
+  // hook-thread work (module scans, IPC waits, periodic passes). A game that initializes D3D12
+  // within the first second (e.g. dx12_fg_switch_test via Steam + RTSS, session 20260812_044326)
+  // otherwise creates its swapchain before these hooks exist; in the leave-the-entry mode (two
+  // or more foreign overlays) an unwrapped pre-existing swapchain means CE never sees a Present
+  // and the overlay never appears. DX12Hook::Init retries this when dxgi.dll was not loaded yet.
+  InstallGlobalVTableHooks();
+
   // HookThread continues normally for all games (injection delay prevents D3D12
   // init crashes)
 

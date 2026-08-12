@@ -247,37 +247,23 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     HookLog("DeepHook: Resume offset = %d (past %d-byte external JMP, firstCandidate=%d)", resumeOffset,
             existingJmpSize, verifiedResume.firstCandidateOffset);
 
-    // Step 4: Count push instructions in [0, resumeOffset) to determine stack undo
-    // These pushes are executed by the external hook's trampoline before reaching
-    // our patch point. We undo them so the wrapper sees the original call state.
-    int numPushes = 0;
-    {
-        int pos = 0;
-        while (pos < resumeOffset) {
-            uint8_t b = origDiskBytes[pos];
-            if (b >= 0x50 && b <= 0x57) {
-                // push rax-rdi (1 byte, no REX)
-                numPushes++;
-                pos++;
-            } else if (b >= 0x40 && b <= 0x4F && pos + 1 < resumeOffset && origDiskBytes[pos + 1] >= 0x50 &&
-                       origDiskBytes[pos + 1] <= 0x57) {
-                // REX prefix (0x40-0x4F) + push (0x50-0x57)
-                numPushes++;
-                pos += 2;
-            } else {
-                HookLog("DeepHook: Non-push instruction at prolog offset %d (byte=0x%02X) - cannot undo", pos, b);
-                return nullptr;
-            }
-        }
+    // Step 4: Determine how much stack the prolog in [0, resumeOffset) consumed, so the patch
+    // can undo it and hand the wrapper the original call state. Those instructions have always
+    // already run by then — either in the function itself or in the external hook's trampoline.
+    int stackUndo = 0;
+    if (!ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(origDiskBytes, resumeOffset, &stackUndo)) {
+        HookLog("DeepHook: Prolog at %p is not a recognized stack shape - cannot undo (resumeOffset=%d)", target,
+                resumeOffset);
+        return nullptr;
     }
-    int stackUndo = numPushes * 8;
-    HookLog("DeepHook: Prolog has %d pushes (%d bytes of stack to undo)", numPushes, stackUndo);
+    HookLog("DeepHook: Prolog consumes %d bytes of stack to undo (resumeOffset=%d)", stackUndo, resumeOffset);
 
     // Step 5: Determine how many bytes to displace at resume offset (need >= patch size)
     const uint8_t* resumeCode = code + resumeOffset;
     int displaceSize = 0;
-    // The in-place patch is: add rsp,N (4 or 7 bytes) + jmp [rip+0] addr (14 bytes)
-    int undoEncodingSize = (stackUndo <= 127) ? 4 : 7;
+    // The in-place patch is: [add rsp,N (4 or 7 bytes, omitted when nothing to undo)]
+    // + jmp [rip+0] addr (14 bytes)
+    int undoEncodingSize = (stackUndo == 0) ? 0 : ((stackUndo <= 127) ? 4 : 7);
     int neededPatchSize = undoEncodingSize + PATCH_SIZE;
     while (displaceSize < neededPatchSize) {
         int len = GetInstructionLength(resumeCode + displaceSize, true);
@@ -443,11 +429,14 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
             PATCH_SIZE);
 
     // Step 8: Build the in-place patch at resumeOffset
-    // Format: add rsp, <stackUndo> ; jmp [rip+0] <wrapperFn>
+    // Format: [add rsp, <stackUndo>] ; jmp [rip+0] <wrapperFn>
     uint8_t patchBuf[64];
     int pOff = 0;
 
-    if (stackUndo <= 127) {
+    if (stackUndo == 0) {
+        // Nothing to undo (e.g. a shadow-space save prolog): the wrapper is entered on the
+        // caller's own stack frame, so emitting `add rsp, 0` would only waste patch bytes.
+    } else if (stackUndo <= 127) {
         patchBuf[pOff++] = 0x48;                // REX.W
         patchBuf[pOff++] = 0x83;                // ADD r/m64, imm8
         patchBuf[pOff++] = 0xC4;                // ModRM: RSP

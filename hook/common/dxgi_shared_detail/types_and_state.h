@@ -222,6 +222,10 @@ void RemoveSwapchainVTableHooks();
 bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
+// True only when CE's Present view is an entry patch CE itself owns. False in the
+// left-to-foreign-chain mode, where the view is a deep hook in the function body and the
+// entry bytes belong entirely to the foreign overlays.
+bool HasPrependedPresentEntryHook();
 void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
 
 // Returns true when DXGI swapchain hooks should be installed despite a

@@ -14,6 +14,11 @@ struct Resource;
 using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*);
 }  // namespace ce::ffx_api
 
+// Installs the global DXGI factory vtable hooks (CreateSwapChain / CreateSwapChainForHwnd) plus
+// the inline/deep hooks on dxgi!CreateSwapChainForHwnd. Called as the HookThread's first action
+// (fast-app coverage) and retried from DX12Hook::Init when dxgi.dll was not loaded yet.
+void InstallGlobalVTableHooks();
+
 // =============================================================================
 // DX12 Debug Logging Infrastructure
 // =============================================================================

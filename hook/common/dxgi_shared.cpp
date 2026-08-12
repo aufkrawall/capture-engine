@@ -336,6 +336,16 @@ bool IsPresentEntryLeftToForeignChain() {
 }
 
 namespace DXGIShared {
+// Deep-body trampolines for the left-to-foreign-chain mode (see present_state_globals.h).
+PFN_Present dxgi_shared_oPresentDeepBody = nullptr;
+PFN_Present1 dxgi_shared_oPresent1DeepBody = nullptr;
+
+bool IsPresentInterceptedBelowForeignChain() {
+    return dxgi_shared_oPresentDeepBody != nullptr || dxgi_shared_oPresent1DeepBody != nullptr;
+}
+}
+
+namespace DXGIShared {
 // Function-entry addresses CE prepended over at InstallPresentInlineHooks time (the real
 // dxgi!Present / dxgi!Present1 entries, not the foreign E9 targets). Consumed only by the
 // ownership-checked un-prepend when a wrapped FG runtime swapchain establishes a non-entry

@@ -6,6 +6,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        // A deep body hook means this call already came DOWN the foreign chain, so the only
+        // remaining work is the real body. Checked before the entry forward below, which
+        // would re-run Steam/RTSS and re-enter this same hook forever.
+        if (dxgi_shared_oPresentDeepBody) {
+            return dxgi_shared_oPresentDeepBody(pSwapChain, SyncInterval, Flags);
+        }
         // CE owns no entry bytes in the left-to-foreign-chain mode; the live entry IS the
         // foreign chain, exactly as it would be without CE.
         if (IsPresentEntryLeftToForeignChain() && dxgi_shared_s_originalVtable8Present &&
@@ -44,11 +50,26 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
     }
 
-    // Multi-overlay foreign chain: CE deliberately owns no bytes at the Present entry, so the
-    // only correct forward is the live entry itself. It runs whatever Steam/RTSS have chained
-    // there right now, identical to a process without CE. Every other transport below
-    // (trampoline, saved foreign target, DXGI bypass) is a snapshot or a shortcut and would
-    // drop one of the overlays out of the chain.
+    // Multi-overlay foreign chain, CE intercepting BELOW it: control reached DetourPresent
+    // through the deep body hook, so Steam and RTSS have already drawn above us and the frame
+    // still needs the real dxgi!Present body. The deep trampoline is that body. Forwarding
+    // through the live entry here instead would re-run the whole foreign chain and re-enter
+    // this hook without end.
+    if (dxgi_shared_oPresentDeepBody) {
+        static std::atomic<int> s_deepBodyForwardCount{0};
+        const int forwardNum = s_deepBodyForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (forwardNum <= 5 || (forwardNum % 5000) == 0) {
+            HookLogImportant("CallOriginalPresent: foreign-chain deep body forward #%d (trampoline=%p)", forwardNum,
+                             (void*)dxgi_shared_oPresentDeepBody);
+        }
+        return dxgi_shared_oPresentDeepBody(pSwapChain, SyncInterval, Flags);
+    }
+
+    // Multi-overlay foreign chain without a deep body hook: CE deliberately owns no bytes at
+    // the Present entry, so the only correct forward is the live entry itself. It runs
+    // whatever Steam/RTSS have chained there right now, identical to a process without CE.
+    // Every other transport below (trampoline, saved foreign target, DXGI bypass) is a
+    // snapshot or a shortcut and would drop one of the overlays out of the chain.
     if (IsPresentEntryLeftToForeignChain()) {
         const PFN_Present liveEntry =
             dxgi_shared_s_originalVtable8Present ? dxgi_shared_s_originalVtable8Present : dxgi_shared_oPresent;

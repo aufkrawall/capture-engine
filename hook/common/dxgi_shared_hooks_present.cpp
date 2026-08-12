@@ -42,6 +42,88 @@ void PublishPresent1Trampoline(void* trampoline, void* context) {
     }
 }
 
+void PublishDeepPresentBody(void* trampoline, void*) {
+    DXGIShared::dxgi_shared_oPresentDeepBody = reinterpret_cast<PFN_Present>(trampoline);
+}
+
+void PublishDeepPresent1Body(void* trampoline, void*) {
+    DXGIShared::dxgi_shared_oPresent1DeepBody = reinterpret_cast<PFN_Present1>(trampoline);
+}
+
+// CE left the Present entry to a chain two or more foreign overlays share, so it owns no
+// entry bytes there. Without a second view CE sees nothing at all whenever the presenting
+// swapchain was created before injection (WMI process-start latency alone is enough), and
+// no wrapper can be attached to it retroactively — the exact state session
+// 20260812_140930 recorded: game presenting at ~720 ECL/s, zero CE presents, no overlay.
+//
+// The view CE takes instead is a deep hook in the function body, past the five entry bytes
+// Steam and RTSS keep restoring/re-patching around each other. They never read or write
+// those body bytes, and their trampolines resume exactly at the offset CE patches, so the
+// foreign chain composes as if CE were absent and CE runs last, below all of them.
+//
+// Returns true when CE ended up with a Present view. A false return must NOT latch the
+// install: thread quiescence can legitimately refuse a body patch once (a peer thread sitting
+// inside the displaced range), and a later real swapchain event is a free, timer-free retry —
+// far better than running the whole session blind.
+bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1Addr) {
+    using namespace DXGIShared;
+
+    bool haveBodyView = false;
+    if (InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr)) {
+        // The DXGI bypass built above resumes at exactly the offset the deep hook now owns, so
+        // every "skip the foreign entry hook" consumer would land back in CE's own detour. The
+        // deep trampoline is the correct clean path: it skips the foreign entry AND CE's patch
+        // and continues in the real body.
+        dxgi_shared_oPresentBypass = dxgi_shared_oPresentDeepBody;
+        haveBodyView = true;
+        HookLogImportant(
+            "InstallPresentInlineHooks: CE intercepts BELOW the foreign Present chain via a deep body hook "
+            "(entry=%p trampoline=%p) — pre-existing swapchains are covered without touching the shared entry",
+            presentAddr, (void*)dxgi_shared_oPresentDeepBody);
+    } else {
+        HookLogImportant(
+            "InstallPresentInlineHooks: deep body hook on the foreign-owned Present entry %p FAILED — CE has no "
+            "Present view at all unless it wraps the presenting swapchain (a swapchain created before injection "
+            "cannot be wrapped retroactively, so the overlay would stay invisible); a later swapchain event retries",
+            presentAddr);
+    }
+
+    if (!present1Addr) {
+        return haveBodyView;
+    }
+
+    const uint8_t* present1Code = static_cast<const uint8_t*>(present1Addr);
+    const bool present1EntryIsForeign =
+        present1Code[0] == 0xE9 || (present1Code[0] == 0xFF && present1Code[1] == 0x25);
+    if (present1EntryIsForeign) {
+        if (InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1, PublishDeepPresent1Body,
+                                                 nullptr)) {
+            dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody;
+            HookLogImportant(
+                "InstallPresentInlineHooks: Present1 deep body hook installed below the foreign chain "
+                "(entry=%p trampoline=%p)",
+                present1Addr, (void*)dxgi_shared_oPresent1DeepBody);
+        } else {
+            HookLogImportant("InstallPresentInlineHooks: Present1 deep body hook on foreign-owned entry %p failed",
+                             present1Addr);
+        }
+        return haveBodyView;
+    }
+
+    // No foreign overlay owns the Present1 entry, so an ordinary prepend there cannot
+    // re-link anyone's saved chain — there is no other participant to drop.
+    Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
+    void* present1Trampoline = nullptr;
+    if (InlineHook::InstallPublished(present1Addr, (void*)DetourPresent1, &present1Trampoline,
+                                     PublishPresent1Trampoline, &present1Publication)) {
+        HookLogImportant(
+            "InstallPresentInlineHooks: Present1 entry %p is unclaimed by any foreign overlay — installed CE's "
+            "ordinary inline hook (trampoline=%p)",
+            present1Addr, present1Trampoline);
+    }
+    return haveBodyView;
+}
+
 VTableDetachResult DetachOwnedVTableSlot(void** entry, void* detour, void* predecessor, const char* method) {
     // The hooked swapchain vtable is the class vftable inside the DXGI image,
     // whose page stays read-only between repair/detach operations. `lock
@@ -295,7 +377,12 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                 ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
                     ? ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
                     : "none");
-            s_inlineHooksInstalled = true;
+            // The swapchain wrapper alone is not a complete view: it only exists for
+            // swapchains CE itself created. Take the deep body hook below the foreign chain
+            // so a swapchain that pre-dates injection is covered too. Only a view that was
+            // actually obtained latches the install, so a refused body patch is retried by
+            // the next real swapchain event instead of blinding the whole session.
+            s_inlineHooksInstalled = InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr);
             return true;
         }
 

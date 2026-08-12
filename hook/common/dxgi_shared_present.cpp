@@ -290,8 +290,18 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.currentThreadId = GetCurrentThreadId();
     ctx.steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
     ctx.presentBypassAvailable = presentBypassAvailable;
-    ctx.callerFromThirdPartyOverlay = TryGetModulePathFromCodeAddress(detourCallerAddress, ctx.detourCallerModulePath, sizeof(ctx.detourCallerModulePath)) &&
-        ce::overlay_compat::IsThirdPartyOverlayModulePath(ctx.detourCallerModulePath);
+    // "A third-party overlay made this call" is an inference from the immediate caller, and it
+    // only holds while CE is at the TOP of the Present chain. When CE intercepts below a
+    // foreign chain (deep body hook), the caller of dxgi!Present is ALWAYS the last foreign
+    // overlay in it — including for the game's own swapchain — so the inference is
+    // structurally false and would bypass CE's overlay on every single frame (session
+    // 20260812_144425: caller=RTSSHooks64.dll on the game swapchain, CE overlay gone from the
+    // frame the deep hook took over). Swapchain identity stays authoritative there.
+    ctx.callerFromThirdPartyOverlay =
+        TryGetModulePathFromCodeAddress(detourCallerAddress, ctx.detourCallerModulePath,
+                                        sizeof(ctx.detourCallerModulePath)) &&
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(ctx.detourCallerModulePath) &&
+        !IsPresentInterceptedBelowForeignChain();
     ctx.streamlineStartupHandoffPending = (ctx.api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
     ctx.streamlineStartupTransitionWindowActive = (ctx.api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     ctx.streamlineStartupHandoffInProgress = ctx.streamlineStartupHandoffPending || ctx.streamlineStartupTransitionWindowActive;
@@ -300,8 +310,16 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.presentOwnershipActive = ctx.presentOwner != 0 || ctx.presentDepthVal > 0;
     ctx.expectedPresentThreadId = g_RenderWatchdog.GetMonitoredThreadId();
     ctx.matchesExpectedPresentThread = ctx.expectedPresentThreadId == 0 || ctx.expectedPresentThreadId == ctx.currentThreadId;
-    ctx.callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
-    ctx.callerFromFFXFrameGenerationModule = ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
+    // FG provenance has the same problem as the overlay classification above, with the
+    // opposite sign: below the chain the immediate caller is a foreign overlay, so an
+    // interposer-originated present would read as NOT interposer-originated. The originator is
+    // still on the stack, just a few frames further out, so resolve it there in that mode.
+    const bool interceptedBelowForeignChain = IsPresentInterceptedBelowForeignChain();
+    ctx.callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress) ||
+                                     (interceptedBelowForeignChain && HasStreamlineModuleInCurrentStack());
+    ctx.callerFromFFXFrameGenerationModule =
+        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress) ||
+        (interceptedBelowForeignChain && ce::overlay_compat::HasFFXFrameGenerationModuleInStack());
     ctx.recentLargePresentGap = HasRecentLargePresentGap(500);
     ctx.startupTopLevelPresentAlreadyConsumed = g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     ctx.postSLStartupActivationPending = g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);

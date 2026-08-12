@@ -120,6 +120,26 @@ bool IsPresentEntryLeftToForeignChain();
 }
 
 namespace DXGIShared {
+// CE's interception BELOW a multi-overlay foreign Present chain: a deep hook in the
+// dxgi!Present / dxgi!Present1 body, past the five entry bytes the foreign overlays keep
+// restoring and re-patching. It is invisible to every byte patcher on the entry, so the
+// foreign chain stays byte-identical to a process without CE, while CE still sees every
+// present — including presents on a swapchain created before injection, which can never be
+// wrapped retroactively.
+//
+// These hold the deep trampolines (real function body, foreign chain already run above CE).
+// While set, CE's own forward MUST use them: re-entering the live entry from a detour the
+// deep hook invoked would re-run the whole foreign chain and recurse forever.
+extern PFN_Present dxgi_shared_oPresentDeepBody;
+extern PFN_Present1 dxgi_shared_oPresent1DeepBody;
+
+// True while CE's Present view is that deep body hook. Callers that reason about WHO made a
+// Present call must consult this: below the chain the immediate caller of dxgi!Present is
+// always the last foreign overlay in it, for every swapchain including the game's own.
+bool IsPresentInterceptedBelowForeignChain();
+}
+
+namespace DXGIShared {
 // dxgi!Present / dxgi!Present1 function-entry addresses CE prepended over, recorded at
 // InstallPresentInlineHooks time. Needed for the ownership-checked un-prepend when a wrapped
 // FG runtime swapchain later allows CE to leave the entry to a multi-overlay foreign chain.

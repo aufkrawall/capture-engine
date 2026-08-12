@@ -43,7 +43,10 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
       // two of them restore/re-hook those bytes around CE, and whichever re-hooks first
       // records CE as its "next", dropping the other out of the chain. Make that state
       // visible instead of leaving it to be re-diagnosed from overlay-disappearance reports.
-      if (DXGIShared::HasPresentInlineHooks() &&
+      // Only a real CE prepend has that problem. In the left-to-foreign-chain mode CE's
+      // Present view is a deep body hook that owns no entry bytes, so a late-joining
+      // overlay composes with the others exactly as it would without CE.
+      if (DXGIShared::HasPrependedPresentEntryHook() &&
           ce::overlay_compat::CountLoadedTrackedOverlayModules(
               ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2) {
         static std::atomic<bool> s_lateOverlayJoinLogged{false};

@@ -10,6 +10,11 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        // Same rule as Present: a deep body hook means the foreign chain already ran above
+        // this call, so the entry forward below must not re-enter it.
+        if (dxgi_shared_oPresent1DeepBody) {
+            return dxgi_shared_oPresent1DeepBody(pSwapChain, SyncInterval, Flags, pParams);
+        }
         if (IsPresentEntryLeftToForeignChain() && dxgi_shared_oPresent1 &&
             dxgi_shared_oPresent1 != DetourPresent1) {
             return dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pParams);
@@ -30,8 +35,20 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     WaitBackbufferFrameLatency(pSwapChain);
 
-    // Multi-overlay foreign chain: same rule as Present — CE owns no entry bytes, so run the
-    // live Present1 entry and let the foreign chain compose itself.
+    // Multi-overlay foreign chain with CE below it: the deep trampoline is the remaining real
+    // body. Re-entering the live Present1 entry would re-run the foreign chain and recurse.
+    if (dxgi_shared_oPresent1DeepBody) {
+        static std::atomic<int> s_deepBodyPresent1ForwardCount{0};
+        const int forwardNum = s_deepBodyPresent1ForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (forwardNum <= 5 || (forwardNum % 5000) == 0) {
+            HookLogImportant("CallOriginalPresent1: foreign-chain deep body forward #%d (trampoline=%p)", forwardNum,
+                             (void*)dxgi_shared_oPresent1DeepBody);
+        }
+        return dxgi_shared_oPresent1DeepBody(pSwapChain, SyncInterval, Flags, pParams);
+    }
+
+    // Multi-overlay foreign chain without a deep body hook: same rule as Present — CE owns no
+    // entry bytes, so run the live Present1 entry and let the foreign chain compose itself.
     if (IsPresentEntryLeftToForeignChain()) {
         if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1) {
             static std::atomic<int> s_foreignChainPresent1ForwardCount{0};

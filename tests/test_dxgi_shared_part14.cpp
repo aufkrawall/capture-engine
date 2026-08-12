@@ -80,3 +80,86 @@ TEST(DXGISharedSourceTest, DedicatedOverlayQueueSubmitGuardsBackbufferLists) {
     // FG in every detection state.
     EXPECT_NE(policyText.find("ShouldDisableDedicatedOverlayQueueForNvidiaFrameGeneration"), std::string::npos);
 }
+
+// The deep hook below a multi-overlay foreign Present chain is CE's only view of a swapchain
+// created before injection (session 20260812_140930). A pushes-only prolog rule refuses
+// dxgi!CDXGISwapChain::Present, whose first instruction is a shadow-space save, so that shape
+// must be accepted with a zero stack undo.
+TEST(DXGISharedTest, DeepHookPrologAcceptsTheShadowSpaceSaveThatOpensDxgiPresent) {
+    // 48 89 5C 24 10 = mov [rsp+10h], rbx (the live dxgi!Present prolog, resume offset 5)
+    const unsigned char dxgiPresentProlog[] = {0x48, 0x89, 0x5C, 0x24, 0x10};
+    int stackDelta = -1;
+    ASSERT_TRUE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(
+        dxgiPresentProlog, static_cast<int>(sizeof(dxgiPresentProlog)), &stackDelta));
+    EXPECT_EQ(stackDelta, 0);
+
+    // mod=00 (no displacement) and mod=10 (disp32) forms of the same save.
+    const unsigned char noDisp[] = {0x48, 0x89, 0x1C, 0x24};
+    stackDelta = -1;
+    ASSERT_TRUE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(noDisp, static_cast<int>(sizeof(noDisp)),
+                                                                          &stackDelta));
+    EXPECT_EQ(stackDelta, 0);
+    const unsigned char disp32[] = {0x4C, 0x89, 0xA4, 0x24, 0x10, 0x01, 0x00, 0x00};
+    stackDelta = -1;
+    ASSERT_TRUE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(disp32, static_cast<int>(sizeof(disp32)),
+                                                                          &stackDelta));
+    EXPECT_EQ(stackDelta, 0);
+}
+
+TEST(DXGISharedTest, DeepHookPrologStackDeltaCountsPushesAndStackReservation) {
+    // 40 55 53 56 57 = push rbp / push rbx / push rsi / push rdi — the
+    // CreateSwapChainForHwnd prolog CE already deep-hooks in production.
+    const unsigned char pushes[] = {0x40, 0x55, 0x53, 0x56, 0x57};
+    int stackDelta = -1;
+    ASSERT_TRUE(
+        ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(pushes, static_cast<int>(sizeof(pushes)), &stackDelta));
+    EXPECT_EQ(stackDelta, 32);
+
+    // Mixed shadow-space save + pushes + sub rsp, imm8.
+    const unsigned char mixed[] = {0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x57, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20};
+    stackDelta = -1;
+    ASSERT_TRUE(
+        ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(mixed, static_cast<int>(sizeof(mixed)), &stackDelta));
+    EXPECT_EQ(stackDelta, 8 + 8 + 8 + 0x20);
+
+    // sub rsp, imm32
+    const unsigned char subImm32[] = {0x48, 0x81, 0xEC, 0x70, 0x01, 0x00, 0x00};
+    stackDelta = -1;
+    ASSERT_TRUE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(subImm32, static_cast<int>(sizeof(subImm32)),
+                                                                          &stackDelta));
+    EXPECT_EQ(stackDelta, 0x170);
+
+    // An empty prolog (patch at the entry itself) undoes nothing.
+    stackDelta = -1;
+    ASSERT_TRUE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(pushes, 0, &stackDelta));
+    EXPECT_EQ(stackDelta, 0);
+}
+
+TEST(DXGISharedTest, DeepHookPrologRefusesShapesWithAnUnknownStackEffect) {
+    // lea rbp,[rsp-70h] — reads RSP but its effect on the frame is not one CE can undo here.
+    const unsigned char lea[] = {0x48, 0x8D, 0x6C, 0x24, 0x90};
+    int stackDelta = 0;
+    EXPECT_FALSE(
+        ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(lea, static_cast<int>(sizeof(lea)), &stackDelta));
+
+    // mov [rax+10h], rbx — a store through another base register, not a shadow-space save.
+    const unsigned char nonRspStore[] = {0x48, 0x89, 0x58, 0x10};
+    EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(
+        nonRspStore, static_cast<int>(sizeof(nonRspStore)), &stackDelta));
+
+    // mov rsp, rsp — register-to-register form (mod=11, rm=100) must not be read as a SIB
+    // store just because rm names the SIB escape.
+    const unsigned char regToReg[] = {0x48, 0x89, 0xE4, 0x90};
+    EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(
+        regToReg, static_cast<int>(sizeof(regToReg)), &stackDelta));
+
+    // add rsp, 8 — grows the frame back; not a prolog shape CE may undo blindly.
+    const unsigned char addRsp[] = {0x48, 0x83, 0xC4, 0x08};
+    EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(
+        addRsp, static_cast<int>(sizeof(addRsp)), &stackDelta));
+
+    // A shadow-space save truncated by the resume offset must be refused, never
+    // half-consumed.
+    const unsigned char truncated[] = {0x48, 0x89, 0x5C, 0x24, 0x10};
+    EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(truncated, 4, &stackDelta));
+}
