@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-08-12 - Talos: refresh CE's successor on foreign re-hook; the readiness probe was arbitrary (0.1.5942)
+
+- Session `20260812_031449` (0.1.5941): no crash, but **Steam AND RTSS both invisible** — `gameoverlayrenderer64` and `RTSSHooks64` submitted zero command lists while the game and `sl.common`/`sl.dlss_g` kept submitting. Every present logged `Skipping guarded Steam Present hook #N ... Steam callback state is not a real renderer ... callback=0000000000000000` and fell back to the DXGI bypass, which skips the entire foreign chain, not just Steam.
+- Two defects, both mine:
+  1. **The readiness probe was arbitrary.** `TryReadSteamOverlayNullCallbackSlot` returned the FIRST readable of 137 discovered `mov (e)ax,[slot] ... call (e)ax` candidates. Most are slots Steam never initializes, so it reported NULL forever. Note it never once returned a genuine Steam pointer in any Talos session — before the proactive patch was removed it was reading CE's own bypass value. Readiness is now "ANY discovered slot holds a committed-executable pointer", which is what "Steam has an initialized dispatch" actually means.
+  2. **Validating the saved successor pointer was not enough.** Both crashes (`20260812_024730`, `_030202`) landed immediately after `foreign re-hook took the Present entry from CE` (5 ms and 37 ms). The thunk stays executable and still resolves to executable code, but it is a **stale generation**: the tool rebuilt its hook state underneath it. `GetCallableExternalOverlayPresentHook` now re-derives from the live entry on the ownership change itself, not only when the pointer looks dead, and returns null (bypass) when no callable successor can be re-derived.
+- Invariant: **CE's saved chain successor is only valid while CE still owns the entry it prepended over.** Ownership change invalidates it, regardless of how healthy the pointer looks.
+- Validation pending: Talos + DLSS FG + Steam + RTSS — no crash, Steam's overlay visible again. RTSS in this configuration remains the known-open item (a foreign re-hook takes the entry from CE; CE cannot repair the other tools' saved chains from inside).
+
 ### 2026-08-12 - Talos crash, corrected root cause: never enter Steam's handler while its callback slot is NULL (0.1.5941)
 
 - Session `20260812_030202` (0.1.5940) crashed again with the identical shape — `0xC0000005` DEP execute violation at a heap address, RAX=0, `TryInvokeGuardedExternalSteamOverlayPresent+0xb45 -> <heap>` — **and none of the new stale-thunk diagnostics fired**. So `IsCallableForeignPresentHandler` passed: the thunk CE holds and the address it forwards to were both executable. The bad transfer happens deeper, inside Steam's own dispatch, which the one-level thunk validation cannot see.

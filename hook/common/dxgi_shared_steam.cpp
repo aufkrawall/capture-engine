@@ -364,14 +364,35 @@ bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut) {
         return false;
     }
 
+    // Readiness, not "the first slot CE happened to find". The discovery scan returns 137
+    // Present-shaped `mov (e)ax,[slot] ... call (e)ax` candidates in a current Steam build,
+    // most of which Steam never initializes; reporting the first readable one made an
+    // arbitrary always-NULL slot look like "Steam has no renderer" and suppressed the Steam
+    // invoke on every frame (Talos 20260812_031449 - Steam AND RTSS both went invisible
+    // because the decline falls back to the DXGI bypass, which skips the whole chain).
+    // Steam is initialized when ANY of those slots holds a real code pointer.
     uintptr_t slots[detail::kSteamNullCallbackMaxSlots] = {};
     const size_t slotCount = DiscoverSteamNullCallbackSlots(steamMod, slots, detail::kSteamNullCallbackMaxSlots);
+    bool anyReadable = false;
+    void* firstReadableValue = nullptr;
     for (size_t i = 0; i < slotCount; ++i) {
         auto* callbackSlot = reinterpret_cast<void**>(slots[i]);
-        if (IsReadableMemory(reinterpret_cast<const void*>(callbackSlot), sizeof(void*))) {
-            *callbackValueOut = *callbackSlot;
+        if (!IsReadableMemory(reinterpret_cast<const void*>(callbackSlot), sizeof(void*))) {
+            continue;
+        }
+        void* value = *callbackSlot;
+        if (!anyReadable) {
+            anyReadable = true;
+            firstReadableValue = value;
+        }
+        if (value && IsExecutableCodeAddress(value)) {
+            *callbackValueOut = value;
             return true;
         }
+    }
+    if (anyReadable) {
+        *callbackValueOut = firstReadableValue;
+        return true;
     }
     return false;
 }

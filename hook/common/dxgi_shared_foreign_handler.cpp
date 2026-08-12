@@ -126,6 +126,34 @@ namespace DXGIShared {
 // nullptr when there is none (callers must then use CE's clean DXGI bypass).
 PFN_Present GetCallableExternalOverlayPresentHook() {
     PFN_Present handler = dxgi_shared_g_externalOverlayPresentHook;
+
+    // CE's saved "next" is only valid while CE still owns the entry it prepended over. When a
+    // foreign tool re-hooks that entry it rebuilds its own hook state, and the thunk CE froze
+    // becomes a stale generation: still executable, still resolving to executable code, but
+    // leading into a dispatch the tool has since reset. Both Talos crashes landed immediately
+    // after that event (re-hook 47.300 -> crash 47.305 in 20260812_024730; 18.809 -> 18.846 in
+    // _030202), which is why validating the pointer alone was not enough. Re-derive from the
+    // live entry on the ownership change itself.
+    if (dxgi_shared_oPresentTrampoline && dxgi_shared_s_originalVtable8Present) {
+        void* currentEntryOwner = nullptr;
+        if (!InlineHook::IsInstalledEntryPatchIntact(
+                reinterpret_cast<void*>(dxgi_shared_s_originalVtable8Present), &currentEntryOwner)) {
+            const PFN_Present refreshed = RefreshExternalOverlayPresentHookFromLiveEntry();
+            if (refreshed) {
+                return refreshed;
+            }
+            static std::atomic<int> s_noOwnerLogCount{0};
+            const int n = s_noOwnerLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 10 || (n % 500) == 0) {
+                HookLogImportant(
+                    "DXGIShared: A foreign re-hook took the Present entry and no callable successor could be "
+                    "re-derived #%d (entryOwner=%p) - using the DXGI bypass",
+                    n, currentEntryOwner);
+            }
+            return nullptr;
+        }
+    }
+
     if (handler && handler != DetourPresent && IsCallableForeignPresentHandler(reinterpret_cast<void*>(handler))) {
         return handler;
     }
