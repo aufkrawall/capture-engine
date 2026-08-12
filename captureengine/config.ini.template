@@ -496,6 +496,26 @@ dlss_rr_dll_path=
 dlss_fg_dll_path=
 streamline_dll_path=
 
+[ThirdParty]
+; CaptureEngine's injected hook can load ReShade, OptiScaler, and Special K
+; directly from these paths, so their DLLs do not need to be copied into every
+; game folder. Empty disables a tool. Values are absolute file or folder paths:
+; a folder gets the per-bitness default file name appended automatically
+; (ReShade64.dll/ReShade32.dll, SpecialK64.dll/SpecialK32.dll, OptiScaler.dll),
+; a value ending in a file name (contains '.') is loaded verbatim. Prefer the
+; plain loader DLL names: a copy renamed to dxgi.dll/d3d*.dll acts as a proxy
+; and cannot intercept a game that already resolved the system module.
+; Configured tools load in the order Special K -> ReShade -> OptiScaler and any
+; copy the game already loaded is kept. These are third-party injected DLLs and
+; are not anti-cheat safe. Each tool still reads its own per-game configuration
+; next to the game executable (ReShade.ini, OptiScaler.ini, Special K profile).
+; Keep OptiScaler's LoadReshade/LoadSpecialK INI switches off so CaptureEngine
+; stays the single loader. ReShade in Vulkan games still needs ReShade's Vulkan
+; layer registered. Changing these paths requires relaunching the game.
+reshade_dll_path=
+optiscaler_dll_path=
+specialk_dll_path=
+
 [Performance]
 ; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,
 ; or realtime. Avoid realtime for normal use because it can make Windows less

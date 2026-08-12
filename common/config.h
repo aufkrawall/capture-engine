@@ -261,6 +261,18 @@ struct GraphicsConfig {
     std::string dlssDebugOverlay;  // "default", "on", "off"
 };
 
+// Third-party injectable tools (ReShade, OptiScaler, Special K) loaded by the
+// injected hook from user-supplied paths. Each value is either an absolute DLL
+// file path (loaded verbatim) or a directory whose per-bitness default file
+// name is appended at load time. Empty disables a tool. These paths are
+// consumed by the hook directly from config.ini and are deliberately NOT part
+// of the shared-memory graphics ABI (no IPC layout change for new keys).
+struct ThirdPartyConfig {
+    std::string reshadeDllPath;
+    std::string optiscalerDllPath;
+    std::string specialkDllPath;
+};
+
 // Match mode for process/window detection (OBS-style)
 enum class MatchMode : uint8_t {
     kExact = 0,            // Exact process name or window title match
@@ -450,6 +462,9 @@ struct AppConfig {
 
     // Graphics Overrides
     GraphicsConfig graphics;
+
+    // Third-party DLL injection (ReShade / OptiScaler / Special K)
+    ThirdPartyConfig thirdParty;
 
     // Overlay
     OverlayConfig overlay;

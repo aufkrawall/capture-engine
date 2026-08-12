@@ -38,6 +38,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     ArmManualReflexQueryHookIfConfigured("config.ini");
     ArmNgxFgPresetOverrideIfConfigured("config.ini");
 
+    // User-configured third-party tools (Special K / ReShade / OptiScaler) must
+    // be present before the game creates its first graphics device, so load
+    // them as early as the hook can, ahead of CE's wrapper and runtime
+    // preloads. Each tool is loaded through the original loader entry and
+    // tracked by the overlay-compatibility registry.
+    PreloadConfiguredThirdPartyDlls();
+
     // Load wrapper DLLs for all graphics APIs
     {
       // DEFERRED LOADING: Load wrapper DLLs here instead of DllMain

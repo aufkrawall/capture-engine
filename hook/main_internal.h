@@ -340,6 +340,14 @@ bool NeedsLowLevelModuleLoadObservationHook();
 // no override paths are configured.
 void PreloadConfiguredGraphicsRuntimeDlls();
 
+// Loads the user-configured third-party tool DLLs (ThirdParty.reshade_dll_path,
+// ThirdParty.optiscaler_dll_path, ThirdParty.specialk_dll_path) into the
+// process early, in the fixed order Special K -> ReShade -> OptiScaler. Skips
+// tools already loaded (by canonical base name or as a renamed graphics
+// proxy), logs every outcome, and never fails CE's own hook initialization.
+// No-op when no paths are configured.
+void PreloadConfiguredThirdPartyDlls();
+
 // Loads a runtime override DLL through the original (non-hooked) loader entry
 // and notifies CE's module hooks. Used by the runtime preload so it does not
 // re-enter the redirect hook.

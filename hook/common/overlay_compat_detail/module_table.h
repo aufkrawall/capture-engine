@@ -545,6 +545,32 @@ struct TrackedOverlayModule {
     bool startupBlocking;        // GetStartupBlockingOverlayModuleName
     bool startupBlockingRender;  // GetStartupBlockingOverlayRenderModuleName
 };
+
+// Graphics proxy base names a renamed ReShade, OptiScaler, or Special K copy
+// may occupy. Shared between the overlay identity scan (main_overlay_detect.cpp)
+// and the third-party DLL preloader (main_thirdparty_load.cpp) so the
+// "already loaded" decision uses exactly the same name set as identity
+// detection. Pure and loader-free; safe to call under the loader lock and
+// from unit tests.
+inline bool IsThirdPartyGraphicsProxyCandidateName(const char* baseName) {
+    if (!baseName || !*baseName) {
+        return false;
+    }
+    static constexpr const char* candidates[] = {
+        "dxgi.dll",      "d3d12.dll",    "d3d11.dll",    "d3d10_1.dll",
+        "d3d10.dll",     "d3d9.dll",     "d3d8.dll",     "ddraw.dll",
+        "opengl32.dll",  "dinput8.dll",  "dsound.dll",   "xinput1_3.dll",
+        "xinput9_1_0.dll", "winmm.dll",  "version.dll",  "wininet.dll",
+        "winhttp.dll",   "dbghelp.dll",  "nvngx.dll",    "OptiScaler.dll",
+    };
+    for (const char* candidate : candidates) {
+        if (detail::EqualsInsensitive(baseName, candidate)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     {"gameoverlayrenderer64.dll", true, false, false},
     {"gameoverlayrenderer.dll", true, false, false},

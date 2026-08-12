@@ -248,6 +248,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     LoadCoreSettings(reader, config, overrideSection, path);
     LoadGraphicsSettings(reader, config);
+    LoadThirdParty(reader, config);
     bool pseudoProcessListSet = false;
     LoadFpsLimiter(reader, config);
     LoadWhitelist(reader, config, path, pseudoProcessListSet);

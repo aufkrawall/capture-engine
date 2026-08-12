@@ -161,3 +161,20 @@ TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyi
     ASSERT_NE(samplerCopy, std::string::npos);
     EXPECT_LT(samplerDormant, samplerCopy);
 }
+
+TEST(InjectLifecycleSourceTest, ThirdPartyPreloadPrecedesWrapperAndRuntimePreloads) {
+    const std::string source = ReadSource("hook/main_hookthread.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t configParse = source.find("LoadConfig(configPath, *g_pLocalConfig);");
+    const size_t thirdParty = source.find("PreloadConfiguredThirdPartyDlls();");
+    const size_t wrapperLoad = source.find("Load wrapper DLLs for all graphics APIs");
+    const size_t runtimePreload = source.find("PreloadConfiguredGraphicsRuntimeDlls();");
+    ASSERT_NE(configParse, std::string::npos);
+    ASSERT_NE(thirdParty, std::string::npos);
+    ASSERT_NE(wrapperLoad, std::string::npos);
+    ASSERT_NE(runtimePreload, std::string::npos);
+    EXPECT_LT(configParse, thirdParty);
+    EXPECT_LT(thirdParty, wrapperLoad);
+    EXPECT_LT(thirdParty, runtimePreload);
+}

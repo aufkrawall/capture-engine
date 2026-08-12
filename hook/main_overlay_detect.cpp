@@ -108,20 +108,6 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     SetEvent(g_hCheckHooksEvent);
 }
 
-static bool IsThirdPartyGraphicsProxyCandidate(const char* baseName) {
-  static constexpr const char* candidates[] = {
-      "dxgi.dll",      "d3d12.dll",  "d3d11.dll",    "d3d10_1.dll", "d3d10.dll",
-      "d3d9.dll",      "d3d8.dll",   "ddraw.dll",    "opengl32.dll", "dinput8.dll",
-      "dsound.dll",    "xinput1_3.dll", "xinput9_1_0.dll", "winmm.dll", "version.dll",
-      "wininet.dll",   "winhttp.dll", "dbghelp.dll", "nvngx.dll",    "OptiScaler.dll",
-  };
-  for (const char* candidate : candidates) {
-    if (_stricmp(baseName, candidate) == 0)
-      return true;
-  }
-  return false;
-}
-
 void RefreshThirdPartyOverlayIdentityCache() {
   if (!g_OverlayIdentityRefreshNeeded.exchange(false, std::memory_order_acq_rel))
     return;
@@ -151,7 +137,7 @@ void RefreshThirdPartyOverlayIdentityCache() {
     if (GetModuleFileNameA(retained, path, MAX_PATH)) {
       const char* baseName = ce::overlay_compat::detail::ExtractBaseName(path);
       ce::overlay_compat::NoteModuleLoadedForOverlayCache(baseName);
-      const bool proxyCandidate = IsThirdPartyGraphicsProxyCandidate(baseName);
+      const bool proxyCandidate = ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName(baseName);
       const bool isReshade = GetProcAddress(retained, "ReShadeVersion") != nullptr ||
                              GetProcAddress(retained, "ReShadeRegisterAddon") != nullptr ||
                              GetProcAddress(retained, "ReShadeUnregisterAddon") != nullptr ||

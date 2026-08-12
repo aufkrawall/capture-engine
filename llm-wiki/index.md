@@ -56,7 +56,9 @@ Primary sources:
 - `dx12-injection-bootstrap.md`
   - Startup and late injection, cooperative resident deject/reactivation, generation-safe IPC ownership, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, and the evidence-based Vulkan renderer gate. Last verified 2026-08-11.
 - `dx12-overlay-third-party-coexistence.md`
-  - Cross-API foreign hook-chain ownership for ReShade, OptiScaler, Special K, RTSS/Detours and established overlays; the multi-overlay rule (CE stays out of a Present entry two or more foreign overlays share and uses its swapchain wrapper), thread-quiesced patching, proxy exclusions, resident pass-through, plus DX12/FG-specific provenance and x86 solid-text compatibility. Last verified 2026-08-12.
+  - Cross-API foreign hook-chain ownership for ReShade, OptiScaler, Special K, RTSS/Detours and established overlays; the below-the-chain rule (CE stays out of any Present entry a foreign overlay owns and deep-hooks the body below it), thread-quiesced patching, proxy exclusions, resident pass-through, plus DX12/FG-specific provenance and x86 solid-text compatibility. Last verified 2026-08-12.
+- `third-party-dll-loading.md`
+  - User-configured ReShade / OptiScaler / Special K loads by the injected hook (`[ThirdParty]` paths, file-or-folder per-bitness resolution), fixed load order, duplicate/proxy suppression, early HookThread placement, and per-tool diagnostics. Last verified 2026-08-13.
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `cross-api-forced-af.md`

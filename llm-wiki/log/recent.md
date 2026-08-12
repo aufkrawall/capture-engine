@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-13 - FEATURE: injected hook loads user-supplied ReShade / OptiScaler / Special K DLLs
+
+- New `[ThirdParty]` config section: `reshade_dll_path`, `optiscaler_dll_path`, `specialk_dll_path`. File values load
+  verbatim; folder values get the per-bitness default name appended (`ReShade64/32.dll`, `SpecialK64/32.dll`,
+  `OptiScaler.dll`). Per-profile overrides use `ThirdParty.<key>`. Fields live in `AppConfig::thirdParty`
+  (`ThirdPartyConfig`), deliberately outside `GraphicsConfig`/`SharedGraphicsConfig` so no shared-memory ABI bump.
+- Hook side: `hook/main_thirdparty_load.cpp` + `hook/common/third_party_load_policy.h`. Fixed load order
+  Special K -> ReShade -> OptiScaler; duplicate suppression by canonical base name and by renamed-proxy
+  export/version markers; loads go through `LoadRuntimeDllViaOriginal` + `NotifyHookModuleLoaded`; every outcome is
+  logged and a failure never aborts CE init. Called from `HookThread` right after the local config parse, before
+  wrapper/runtime preloads.
+- The graphics proxy-name candidate list moved into `ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName`
+  (`module_table.h`) and is now shared between the overlay identity scan and the preloader.
+- Tests: `tests/test_config_third_party.cpp`, `tests/test_third_party_load_policy.cpp`, and the
+  preload-precedes-wrapper/runtime source-order test in `tests/test_inject_capture_source_part2.cpp`. Wiki page:
+  `third-party-dll-loading.md`. Live validation against real tool builds (x64/x86, combined) is still open.
+
 ### 2026-08-12 - SETTLED: CE must not submit its own overlay GPU work while the native FSR runtime owns the swapchain (0.1.5973)
 
 Three runs, three independent failure modes, same submit:

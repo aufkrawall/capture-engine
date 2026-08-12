@@ -168,6 +168,15 @@ implemented through CaptureEngine's injected hook. Do not confuse them with NVID
 CaptureEngine's implementation does not use NVIDIA's supported override mechanism and does not inherit its anti-cheat
 safety properties.
 
+CaptureEngine can also load the ReShade, OptiScaler, and Special K DLLs from user-supplied paths, so they work without
+being copied into each game folder. Configure `reshade_dll_path`, `optiscaler_dll_path`, and `specialk_dll_path` under
+`[ThirdParty]` (per profile: `ThirdParty.reshade_dll_path=...`). Each value is an absolute DLL path or a folder; a
+folder gets `ReShade64.dll`/`ReShade32.dll`, `SpecialK64.dll`/`SpecialK32.dll`, or `OptiScaler.dll` appended for the
+game's architecture. All three can be active at once and load in the order Special K, ReShade, OptiScaler. The tools
+still read their own configuration next to the game executable, and OptiScaler's `LoadReshade`/`LoadSpecialK` options
+should stay off. Loading these third-party DLLs is injection-based and carries the same anti-cheat warnings as every
+other injected feature.
+
 For software protected by anti-cheat, start with WGC or DXGI Desktop Duplication and explicitly set
 `dll_injection=never`. This is the likely-compatible configuration, not a universal guarantee. Before configuring a
 game, read the [safe and unsafe application-profile examples near the end of

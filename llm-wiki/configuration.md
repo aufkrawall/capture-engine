@@ -64,6 +64,10 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` read without changing Engine.ini; legacy `[Graphics]` and qualified
   `DLSS.force_ray_reconstruction` profile input remain supported. It cannot add an absent RR integration or render
   inputs and does not falsify runtime capability/support results.
+- `[ThirdParty] reshade_dll_path` / `optiscaler_dll_path` / `specialk_dll_path` configure the injected hook's early
+  loads of user-supplied ReShade / OptiScaler / Special K DLLs. Each value is a file (loaded verbatim) or a folder
+  (the per-bitness default name is appended). They are consumed by the hook directly from `config.ini`, not
+  transported over the shared-memory ABI; see `third-party-dll-loading.md`.
 - `msaa_samples`, `sgssaa`, and `disable_auto_mip_bias` remain parser/runtime-compatible graphics overrides but are intentionally absent from the fresh template. They are specialized legacy controls rather than useful defaults.
 - Default-render system loopback and process loopback share one render latency domain. Per-source latency differences within that domain recreate an A/V mismatch. Microphones use the separate input latency domain. Fresh configs disable microphone capture for privacy/predictability.
 - Empty video and screenshot output directories both resolve to the `captures` directory beside the executable. The two paths are independent when customized. `crash_dump_dir` accepts only a safe relative subfolder beneath `logs`; absolute and parent-traversal paths are ignored.
