@@ -76,6 +76,8 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 
 ### The wrapper alone is not a view: CE also hooks the Present BODY below the chain (2026-08-12)
 
+**Validated** (`installed/captureengine/logs/20260812_153302`, build 0.1.5957, user-confirmed): dx12_fg_switch_test launched from Steam with RTSS active, full matrix Off -> DLSS FG -> Off -> FSR FG -> Off. CE's overlay visible throughout alongside Steam's and RTSS's, one 26.4 ms `TOTAL SLOW` in 6466 presents, no errors. Known residual: the FSR-FG -> Off edge recreates the swapchain and leaves ~484 ms / 61 presents uncovered (`gate=overlay-backend-uninitialized`); the DLSS-FG edge is clean (`uncovered=0`). See `log/recent.md`.
+
 **Symptom** (`installed/captureengine/logs/20260812_140930`, `dx12_fg_switch_test` launched from Steam, all FG off, Steam overlay + RTSS both loaded, build 0.1.5950): no CE overlay at all for the whole session. The game rendered fine (`ECL timing/1s: count=720`), CE saw zero presents.
 
 **Why the leave-entry mode was blind.** Its premise — "intercept through `CWrapDXGISwapChain`" — only holds for swapchains CE itself created. Here CE injected *after* the game already had its D3D12 device and swapchain: WMI's process-start notification arrived at `14:09:52.218`, injection completed at `52.428`, and the log shows `deviceCreated=0`, no `CreateSwapChainForHwnd` interception for any real swapchain, and `DX12: Postponed temp swapchain also failed — pre-existing swapchains will not have overlay`. A swapchain the game already holds cannot be wrapped retroactively, and reducing WMI latency can never close that race for good. So the mode has to work without a wrapper.
