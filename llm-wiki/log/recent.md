@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-12 - VALIDATED (with a crash to fix): the terminal-Present view works; the temp swapchain must enter no foreign handler (0.1.5964)
+
+- Session `installed/captureengine/logs/fixed` (0.1.5963, Talos + Steam + RTSS + the game-directory `dxgi.dll` proxy, user-confirmed): **the layering fix works.** `Created temp swapchain via the SYSTEM dxgi factory (Present=00007FFA04FC9960) — … below the swapchain-wrapping proxy …`, then `presentAddr=00007FFA04FC9960 is in module: C:\WINDOWS\system32\dxgi.dll`, `3 third-party overlay(s) own the Present entry (E9 at 00007FFA04FC9960 -> 00007FF9C4FC0000 … foreignJumpVisibleNow=1)`, deep body hook installed, `[OVERLAY LAYER] CE composites BELOW the foreign Present chain (foreignOverlays=3)`, `Declining the guarded foreign Present invoke` x5. The `E9` on the terminal entry is the direct confirmation that Steam/RTSS patch the system function, i.e. exactly the level CE previously sat above.
+- But the FIRST launch crashed twice (`20260812_201336`, same build), both inside Steam's overlay dispatch, both reached from the new code:
+  - PID 9792: `0xC0000005` DEP execute at address **0**, RAX=0. Stack: `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64+0x72151 -> gameoverlayrenderer64!OverlayHookD3D3+0x14bc4 -> 0x0`.
+  - PID 19828: `0xC00000FD` stack overflow — thousands of frames of `gameoverlayrenderer64!OverlayHookD3D3+0x14bc4` calling itself, same Steam entry, same install window (0.47 s after `system dxgi.dll resolved` for that PID).
+- Cause: `CreateTempSwapChainViaFactorySlot` called the system factory's `CreateSwapChainForHwnd` **slot as it found it**, and RTSS/Steam have hooked that function. This is the long-documented Steam hazard from a new site — Steam's overlay dispatches through callback slots that stay NULL until it has rendered on a real game swapchain, so entering its handler during hook install either calls NULL or re-enters itself. The second launch survived only because Steam had initialized by then: a race, not a fix.
+- Fix (0.1.5964): the helper now proves, before the call, that no foreign code is entered.
+  - The resolved slot must lie inside the system DXGI image (`IsAddressInsideSystemDXGI`). A slot a foreign module owns outright is refused with the owning module named, and the caller falls back to the historical temp swapchain.
+  - A foreign ENTRY patch on the real function is skipped with `InlineHook::CreateBypassTrampoline` instead of executed; an unbypassable patch refuses too. The temp swapchain is a hidden 2x2 dummy that no overlay has any business seeing, so bypassing them is also the correct behaviour, not just the safe one.
+- **Invariant restated for a third site: CE never enters a foreign overlay handler from its own install path.** The Present path already fails closed below the chain; the swapchain-create path now does too.
+- Regression test: `tests/test_dxgi_shared_part14.cpp` (`TempSwapChainCreationNeverEntersAForeignOverlayHandler`).
+- Validation pending: repeated cold launches of Talos with Steam + RTSS + the proxy — expect `Bypassing the foreign entry patch on CreateSwapChainForHwnd at … so the temp swapchain creation enters no overlay handler`, the terminal-Present install, and no crash on the first try.
+
 ### 2026-08-12 - ...and CE was hooking the PROXY's Present: resolve the terminal system DXGI factory (0.1.5962)
 
 - User retest of 0.1.5961 (session `20260812_195840`, Talos + Steam + RTSS + a game-directory `dxgi.dll`): Steam's overlay is STILL on top. CE's own new diagnostic says the previous change did exactly what it promised — `[OVERLAY LAYER] CE composites BELOW the foreign Present chain (site=deep-body-below-foreign-chain foreignOverlays=3)`, `CE intercepts BELOW the foreign Present chain via a deep body hook`, Present1 too.

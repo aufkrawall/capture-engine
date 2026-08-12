@@ -407,3 +407,45 @@ TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAP
               std::string::npos);
     EXPECT_EQ(hooks.find("GetModuleHandleA(\"dxgi.dll\")", resolver), std::string::npos);
 }
+
+// Session 20260812_201336, both crashes of the first launch: CE called the system factory's
+// CreateSwapChainForHwnd slot as it found it, which entered RTSS and then Steam.
+//   * PID 9792: `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64 ->
+//     gameoverlayrenderer64!OverlayHookD3D3 -> 0x0` — DEP execute at address 0, RAX=0. Steam's
+//     overlay dispatches through callback slots that stay NULL until it has rendered on a real
+//     game swapchain.
+//   * PID 19828: 0xC00000FD, a stack of `gameoverlayrenderer64!OverlayHookD3D3+0x14bc4` calling
+//     itself until the stack was gone — the same Steam dispatch, same entry.
+// The second launch of that same build worked only because Steam had initialized by then, which
+// is a race, not a fix. CE must enter NO foreign code from the install path: a slot owned by a
+// foreign module is refused, and a foreign entry patch on the real function is bypassed.
+TEST(DXGISharedSourceTest, TempSwapChainCreationNeverEntersAForeignOverlayHandler) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string install = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(install.empty());
+
+    const size_t helper = install.find("HRESULT CreateTempSwapChainViaFactorySlot(");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t call = install.find("return slot(factory, queue, hwnd, desc, nullptr, nullptr, out);", helper);
+    ASSERT_NE(call, std::string::npos);
+
+    // A slot that does not resolve into the system DXGI image belongs to a foreign overlay and
+    // is refused before the call.
+    const size_t ownershipGuard =
+        install.find("!DXGIShared::IsAddressInsideSystemDXGI(reinterpret_cast<const void*>(slot))", helper);
+    ASSERT_NE(ownershipGuard, std::string::npos);
+    EXPECT_LT(ownershipGuard, call);
+
+    // A foreign ENTRY patch on the real function is skipped, never executed.
+    const size_t patchProbe = install.find("entry[0] == 0xE9 || (entry[0] == 0xFF && entry[1] == 0x25)", helper);
+    ASSERT_NE(patchProbe, std::string::npos);
+    EXPECT_LT(patchProbe, call);
+    const size_t bypass = install.find("InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(slot))", patchProbe);
+    ASSERT_NE(bypass, std::string::npos);
+    EXPECT_LT(bypass, call);
+    // An unbypassable patch refuses rather than running the foreign handler.
+    EXPECT_NE(install.find("if (!bypass) {", bypass), std::string::npos);
+    EXPECT_LT(install.find("if (!bypass) {", bypass), call);
+}

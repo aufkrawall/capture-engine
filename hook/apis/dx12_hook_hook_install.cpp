@@ -10,13 +10,27 @@ void PublishDeepCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
     dx12_hook_s_deepHookTrampoline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
 }
 
-// Create a swapchain through `factory`'s OWN CreateSwapChainForHwnd slot.
+// Create a swapchain through `factory`'s OWN CreateSwapChainForHwnd, entering NO foreign code.
 //
 // `dx12_hook_oCreateSwapChainForHwndGlobal` must not be called blindly here: it is the value CE
 // saved from whichever factory vtable it hooked, and a proxy-wrapped factory is a different C++
 // class with a different vtable. Calling its method with a real factory `this` is type confusion.
 // The slot is therefore read live, and CE's saved predecessor is substituted only when the slot
 // really holds CE's own detour — i.e. when it is the same vtable CE hooked.
+//
+// CRASH BOUNDARY (session 20260812_201336, first launch): calling this slot as found reproduced
+// the documented Steam NULL-callback crash with a new stack —
+// `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64 -> gameoverlayrenderer64!
+// OverlayHookD3D3 -> 0x0`, DEP execute at address 0, RAX=0. Steam's overlay dispatches through
+// callback slots that stay NULL until Steam has rendered on a real game swapchain, so CE must
+// never enter its handler — least of all during hook install. The second launch of the same
+// build survived only because Steam happened to be initialized by then; that is a race, not a
+// fix. Two rules, both provable before the call:
+//   * the slot must resolve into the system DXGI image (a foreign module owning the slot itself
+//     is refused outright — the caller then falls back to its historical path), and
+//   * a foreign ENTRY patch on the real function is skipped with a bypass trampoline rather than
+//     executed. RTSS and Steam both hook by patching function code, and this temp swapchain is a
+//     hidden 2x2 dummy no overlay has any business seeing.
 HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queue, HWND hwnd,
                                           const DXGI_SWAP_CHAIN_DESC1* desc, IDXGISwapChain1** out) {
     if (!factory || !out) {
@@ -37,6 +51,33 @@ HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queu
     }
     if (!slot) {
         return E_FAIL;
+    }
+    if (!DXGIShared::IsAddressInsideSystemDXGI(reinterpret_cast<const void*>(slot))) {
+        char slotOwner[MAX_PATH] = {};
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(slot), slotOwner,
+                                                            sizeof(slotOwner));
+        HookLogImportant(
+            "DX12: Refusing the system-DXGI temp swapchain — CreateSwapChainForHwnd slot %p belongs to %s, not the "
+            "system image; entering a foreign overlay handler during hook install is the documented NULL-callback "
+            "crash. Falling back to the historical temp swapchain.",
+            (void*)slot, slotOwner[0] ? slotOwner : "an unresolved module");
+        return E_FAIL;
+    }
+    const uint8_t* entry = reinterpret_cast<const uint8_t*>(slot);
+    if (entry[0] == 0xE9 || (entry[0] == 0xFF && entry[1] == 0x25)) {
+        void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(slot));
+        if (!bypass) {
+            HookLogImportant(
+                "DX12: Refusing the system-DXGI temp swapchain — CreateSwapChainForHwnd at %p carries a foreign entry "
+                "patch that CE cannot bypass; running it would enter that overlay's handler",
+                (void*)slot);
+            return E_FAIL;
+        }
+        HookLogImportant(
+            "DX12: Bypassing the foreign entry patch on CreateSwapChainForHwnd at %p (trampoline=%p) so the temp "
+            "swapchain creation enters no overlay handler",
+            (void*)slot, bypass);
+        slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(bypass);
     }
     return slot(factory, queue, hwnd, desc, nullptr, nullptr, out);
 }
