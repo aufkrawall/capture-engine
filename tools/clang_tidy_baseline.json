@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 582,
+    "entries": 583,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -283,6 +283,7 @@
       "hook/common/dxgi_shared_foreign_handler.cpp",
       "hook/common/dxgi_shared_hooks.cpp",
       "hook/common/dxgi_shared_hooks_present.cpp",
+      "hook/common/dxgi_shared_hooks_present_vtable.cpp",
       "hook/common/dxgi_shared_original.cpp",
       "hook/common/dxgi_shared_original_present1.cpp",
       "hook/common/dxgi_shared_present.cpp",

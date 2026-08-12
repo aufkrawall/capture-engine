@@ -10,6 +10,37 @@ void PublishDeepCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
     dx12_hook_s_deepHookTrampoline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
 }
 
+// Create a swapchain through `factory`'s OWN CreateSwapChainForHwnd slot.
+//
+// `dx12_hook_oCreateSwapChainForHwndGlobal` must not be called blindly here: it is the value CE
+// saved from whichever factory vtable it hooked, and a proxy-wrapped factory is a different C++
+// class with a different vtable. Calling its method with a real factory `this` is type confusion.
+// The slot is therefore read live, and CE's saved predecessor is substituted only when the slot
+// really holds CE's own detour — i.e. when it is the same vtable CE hooked.
+HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queue, HWND hwnd,
+                                          const DXGI_SWAP_CHAIN_DESC1* desc, IDXGISwapChain1** out) {
+    if (!factory || !out) {
+        return E_FAIL;
+    }
+    void** vtable = *reinterpret_cast<void***>(factory);
+    if (!vtable) {
+        return E_FAIL;
+    }
+    MEMORY_BASIC_INFORMATION vtableMemory = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(&vtable[15]), &vtableMemory, sizeof(vtableMemory)) == 0 ||
+        vtableMemory.State != MEM_COMMIT) {
+        return E_FAIL;
+    }
+    auto slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(vtable[15]);
+    if (reinterpret_cast<void*>(slot) == reinterpret_cast<void*>(DetourCreateSwapChainForHwndGlobal)) {
+        slot = dx12_hook_oCreateSwapChainForHwndGlobal;
+    }
+    if (!slot) {
+        return E_FAIL;
+    }
+    return slot(factory, queue, hwnd, desc, nullptr, nullptr, out);
+}
+
 }  // namespace
 
 
@@ -215,22 +246,72 @@ dx12_hook_g_CreatingTempSwapchain.store(true, std::memory_order_release);
 
 IDXGISwapChain1* pSwapChain = nullptr;
 HRESULT hr = E_FAIL;
+IDXGIFactory2* pTerminalFactory = nullptr;
+
+// The vtable this temp swapchain carries decides WHERE every CE Present hook lands, and a proxy
+// `dxgi.dll` in the game directory (ReShade, SpecialK, OptiScaler) makes the obvious answer the
+// wrong one: it wraps the swapchain OBJECT, so slot 8 is the proxy's own Present method. A hook
+// there — entry patch or deep body patch alike — runs at the START of the proxy's Present, i.e.
+// BEFORE its post-processing pass and ABOVE every overlay that patched the real dxgi!Present the
+// proxy forwards to. Session 20260812_195840 is exactly that: CE's deep body hook installed and
+// correctly reported itself "below the foreign chain", yet Steam still drew on top, because
+// Steam's patch sits on the system function further down (`no visible jump at 00007FF95309C140`
+// — CE's own entry had no foreign patch at all, and `presentAddr … is in module:
+// …\Talos1\Binaries\Win64\dxgi.dll`).
+//
+// So the temp swapchain is created from the SYSTEM dxgi factory first, which yields the terminal
+// `dxgi!CDXGISwapChain::Present`. The result is accepted only when that Present really lands
+// inside the system image, so a proxy that also hooks real factory vtables cannot silently put
+// CE back above it — that case falls through to the historical path unchanged.
+HMODULE hSystemDXGI = DXGIShared::GetSystemDXGIModuleHandle();
+if (hSystemDXGI && hSystemDXGI != hDXGI) {
+    char proxyPath[MAX_PATH] = {};
+    GetModuleFileNameA(hDXGI, proxyPath, sizeof(proxyPath));
+    auto pSystemCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hSystemDXGI, "CreateDXGIFactory1");
+    if (pSystemCreateFactory && SUCCEEDED(pSystemCreateFactory(IID_PPV_ARGS(&pTerminalFactory))) &&
+        pTerminalFactory) {
+        hr = CreateTempSwapChainViaFactorySlot(pTerminalFactory, pQueue, hwnd, &scd, &pSwapChain);
+        if (SUCCEEDED(hr) && pSwapChain) {
+            void* terminalPresent = (*reinterpret_cast<void***>(pSwapChain))[8];
+            if (DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)) {
+                HookLogImportant(
+                    "DX12: Created temp swapchain via the SYSTEM dxgi factory (Present=%p) — Present hooks target "
+                    "the terminal dxgi!CDXGISwapChain::Present, below the swapchain-wrapping proxy %s",
+                    terminalPresent, proxyPath[0] ? proxyPath : "dxgi.dll");
+            } else {
+                HookLogImportant(
+                    "DX12: System-DXGI temp swapchain still resolves Present to %p outside the system image — the "
+                    "proxy %s wraps real factories too; keeping the proxy-level Present view (CE's overlay stays "
+                    "above that proxy)",
+                    terminalPresent, proxyPath[0] ? proxyPath : "dxgi.dll");
+                pSwapChain->Release();
+                pSwapChain = nullptr;
+                hr = E_FAIL;
+            }
+        } else {
+            HookLogImportant("DX12: System-DXGI temp swapchain creation failed (hr=0x%08X); using the live factory",
+                             hr);
+        }
+    }
+}
 
 // CRITICAL: Call the ORIGINAL CreateSwapChainForHwnd to get an unwrapped
 // swapchain We must use oCreateSwapChainForHwndGlobal directly to bypass our
 // wrapper If the original is not available, skip vtable hook installation
-if (dx12_hook_oCreateSwapChainForHwndGlobal) {
-    // Call original directly - bypasses our wrapper
-    hr = dx12_hook_oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr, nullptr, &pSwapChain);
-    if (SUCCEEDED(hr) && pSwapChain) {
+if (!pSwapChain) {
+    if (dx12_hook_oCreateSwapChainForHwndGlobal) {
+        // Call original directly - bypasses our wrapper
+        hr = dx12_hook_oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr, nullptr, &pSwapChain);
+        if (SUCCEEDED(hr) && pSwapChain) {
+            HookLog(
+                "DX12: Created temp swapchain via original "
+                "CreateSwapChainForHwnd (unwrapped)");
+        }
+    } else {
         HookLog(
-            "DX12: Created temp swapchain via original "
-            "CreateSwapChainForHwnd (unwrapped)");
+            "DX12: oCreateSwapChainForHwndGlobal not available, skipping "
+            "Present vtable hooks");
     }
-} else {
-    HookLog(
-        "DX12: oCreateSwapChainForHwndGlobal not available, skipping "
-        "Present vtable hooks");
 }
 
 dx12_hook_g_CreatingTempSwapchain.store(false, std::memory_order_release);
@@ -259,5 +340,7 @@ if (hwnd)
 UnregisterClassW(L"CE_Temp", wc.hInstance);
 pQueue->Release();
 pDevice->Release();
+if (pTerminalFactory)
+    pTerminalFactory->Release();
 pFactory->Release();
 }

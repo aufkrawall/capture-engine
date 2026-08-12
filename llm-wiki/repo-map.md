@@ -122,7 +122,9 @@ anchors that predate the split are approximate.
       textures,state,frame,capture}.cpp` + `layer_capture_internal.h`.
   - `common/` - overlay policy (`dx12_overlay_policy.h`, `streamline_runtime_policy.h`,
     `overlay_compat.h`), UE/NGX RR policies (`ue5_rr_override_policy.h`,
-    `ngx_feature_lifecycle.h`), `dxgi_shared*.cpp` (central Present routing: hooks, present,
+    `ngx_feature_lifecycle.h`), `dxgi_shared*.cpp` (central Present routing: hooks,
+    hooks_present = entry/body inline-hook install and the leave-entry decision,
+    hooks_present_vtable = swapchain vtable-slot ownership/repair/teardown, present,
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),

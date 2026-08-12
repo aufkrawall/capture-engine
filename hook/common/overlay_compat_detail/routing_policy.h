@@ -180,33 +180,52 @@ inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedO
 }
 
 // Pure decision: may CE add its own entry patch to a dxgi!Present entry that a foreign
-// overlay already owns?
+// overlay already owns? No — CE stays out of that entry entirely and intercepts BELOW it
+// with a deep hook in the function body, past the bytes those tools rewrite. Two independent
+// reasons, either of which is sufficient:
 //
-// Steam and RTSS both implement "save the current entry bytes, patch, and on every call
-// restore the saved bytes / re-install" on that SAME shared entry. Two of them compose
-// naturally. A third participant does not: whichever tool (re-)installs its hook while CE's
-// five-byte prepend is live records CE as its own "next", which silently drops the other
-// overlay out of the chain — Strange Brigade DX12 + Steam + RTSS, sessions
-// 20260812_002958 / _005530 / _010529: all three overlays drew on frame 1 and RTSS was gone
-// from frame 2 onwards. No forwarding heuristic can repair that from CE's side, because the
-// damage is inside the other tools' saved-chain state.
+//  * Chain integrity. Steam and RTSS both implement "save the current entry bytes, patch, and
+//    on every call restore the saved bytes / re-install" on that SAME shared entry. Two of them
+//    compose naturally. A third participant does not: whichever tool (re-)installs its hook
+//    while CE's five-byte prepend is live records CE as its own "next", which silently drops
+//    the other overlay out of the chain — Strange Brigade DX12 + Steam + RTSS, sessions
+//    20260812_002958 / _005530 / _010529: all three overlays drew on frame 1 and RTSS was gone
+//    from frame 2 onwards. No forwarding heuristic can repair that from CE's side, because the
+//    damage is inside the other tools' saved-chain state.
 //
-// So with more than one foreign overlay on the entry, CE stays out of it entirely and
-// intercepts through its swapchain wrapper instead, which no byte patcher can observe; the
-// foreign chain is then byte-identical to a process without CE.
+//  * Draw order. Every participant in that chain composites BEFORE it forwards, so whoever
+//    runs last ends up on top. CE's prepend made it the FIRST participant, i.e. the bottom
+//    layer: Steam's fullscreen overlay and RTSS's OSD drew over CE's overlay (user report,
+//    build 0.1.5959). Below the chain CE composites after all of them and is topmost, which is
+//    the project rule for CE's own overlay.
 //
-// Exception: a frame-generation interposer (Streamline / NvPresent) presents generated frames
-// from its own runtime-owned swapchain. While that swapchain is NOT wrapped, the entry hook is
-// CE's only view of those presents, so the prepend is kept. Once CE has wrapped the runtime
-// swapchain (`hasNonEntryRuntimePresentView`), the wrapper sees every runtime present and the
-// exception is no longer needed: the entry is left to the foreign chain in FG games too, so
-// Steam/RTSS compose exactly like a process without CE (Talos + DLSS FG + Steam + RTSS).
-inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryJumpDetected,
-                                                         size_t loadedOverlayModuleCount,
-                                                         bool frameGenerationInterposerLoaded,
-                                                         bool hasNonEntryRuntimePresentView = false) {
-    return foreignEntryJumpDetected && loadedOverlayModuleCount >= 2 &&
-           (!frameGenerationInterposerLoaded || hasNonEntryRuntimePresentView);
+// A single foreign overlay does compose with a CE prepend, so there the second reason is the
+// one that decides; `MayPrependPresentEntryWhenBelowChainViewUnavailable` allows the prepend
+// back as a fallback when the body patch cannot be placed. With two or more it is forbidden
+// outright.
+//
+// The frame-generation interposer (Streamline / NvPresent) used to keep the prepend, because
+// the alternative then was wrapper-only interception, which cannot see a runtime present on a
+// swapchain CE never created. That is no longer the alternative: the leave-entry branch takes
+// a deep body hook, and every present reaches it — including presents from swapchains that
+// pre-date injection, which the entry hook itself covers no better. The exception therefore
+// has no remaining purpose and would only keep FG games on the bottom layer.
+inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryPatchOwnedByOverlay,
+                                                         size_t loadedOverlayModuleCount) {
+    return foreignEntryPatchOwnedByOverlay && loadedOverlayModuleCount >= 1;
+}
+
+// Pure decision: the below-the-chain body patch was refused (thread quiescence, an
+// unrecognized prolog, a 32-bit target the deep-hook policy rejects). May CE fall back to the
+// entry prepend it used before the below-the-chain mode existed?
+//
+// Only against a SINGLE foreign overlay. There the prepend is the historical, validated
+// topology and costs nothing but draw order, whereas having no Present view at all costs the
+// overlay entirely. With two or more overlays on the entry the prepend is what corrupts their
+// saved chains, so that case keeps the leave-entry state and retries the body patch on the
+// next real swapchain event instead.
+inline bool MayPrependPresentEntryWhenBelowChainViewUnavailable(size_t loadedOverlayModuleCount) {
+    return loadedOverlayModuleCount < 2;
 }
 
 // Post-wrap transition decision: after CE wrapped the FG runtime's swapchain (non-entry view of
@@ -215,16 +234,14 @@ inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryJumpDe
 // already took the entry recorded CE's relay inside its own saved chain, and un-prepending then
 // cannot repair that state (CE must not touch bytes it no longer owns).
 inline bool ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(bool entryPatchStillIntact,
-                                                             bool foreignEntryJumpDetected,
+                                                             bool foreignEntryPatchOwnedByOverlay,
                                                              size_t loadedOverlayModuleCount,
-                                                             bool frameGenerationInterposerLoaded,
                                                              bool alreadyLeftToForeignChain) {
     if (alreadyLeftToForeignChain || !entryPatchStillIntact) {
         return false;
     }
-    return ShouldLeavePresentEntryToForeignOverlayChain(foreignEntryJumpDetected, loadedOverlayModuleCount,
-                                                        frameGenerationInterposerLoaded,
-                                                        /*hasNonEntryRuntimePresentView=*/true);
+    return ShouldLeavePresentEntryToForeignOverlayChain(foreignEntryPatchOwnedByOverlay,
+                                                        loadedOverlayModuleCount);
 }
 
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No

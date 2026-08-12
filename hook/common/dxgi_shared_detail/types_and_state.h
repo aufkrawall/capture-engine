@@ -226,6 +226,30 @@ bool HasPresentDetourHooks();
 // left-to-foreign-chain mode, where the view is a deep hook in the function body and the
 // entry bytes belong entirely to the foreign overlays.
 bool HasPrependedPresentEntryHook();
+
+// Handle of the SYSTEM dxgi.dll, resolved by full path under GetSystemDirectory (WOW64-aware,
+// so a 32-bit process gets the SysWOW64 image). Never by name: ReShade, SpecialK and OptiScaler
+// all ship their proxy as `dxgi.dll` in the game directory, and `GetModuleHandleA("dxgi.dll")`
+// then returns whichever of the two the loader lists first. Null when the system image is not
+// loaded (it always is once DXGI is in use — a proxy forwards to it).
+HMODULE GetSystemDXGIModuleHandle();
+
+// True when `address` lies inside that image, i.e. it is terminal DXGI runtime code rather than
+// a proxy's wrapper method. This is what decides whether a Present hook lands below or above a
+// swapchain-wrapping proxy.
+bool IsAddressInsideSystemDXGI(const void* address);
+
+// Where CE's overlay is composited relative to a foreign Present chain. Every participant in
+// such a chain draws BEFORE it forwards, so the site alone decides whether CE's overlay ends
+// up on top of Steam's/RTSS's or underneath them. Reported on change only (an atomic compare
+// per present, one log line per edge) because it is otherwise invisible in a session log and
+// was previously reconstructed by hand from install-time hook lines.
+enum class OverlayCompositeSite {
+    kPresentEntry,        // CE's own entry patch: CE draws first, foreign overlays draw on top.
+    kBelowForeignChain,   // deep body hook: CE draws after every entry patcher, so it is topmost.
+    kSwapchainWrapper,    // CWrapDXGISwapChain: above the entry, so foreign overlays draw on top.
+};
+void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source);
 void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
 
 // Returns true when DXGI swapchain hooks should be installed despite a

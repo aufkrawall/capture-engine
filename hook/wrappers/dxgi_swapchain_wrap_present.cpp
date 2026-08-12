@@ -340,6 +340,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     g_InWrapperPresent = true;
     auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
+    // The wrapper sits ABOVE the dxgi!Present entry, so anything hooking that entry composites
+    // after CE does. Record the site so a session log states the overlay layering outright
+    // instead of leaving it to be reconstructed from the install-time hook lines.
+    DXGIShared::NoteOverlayCompositeSite(DXGIShared::OverlayCompositeSite::kSwapchainWrapper,
+                                         "CWrapDXGISwapChain::Present");
+
     // In leave-entry mode the Streamline-runtime wrapper is CE's ONLY present entry point
     // (DetourPresent never runs), so feed the Streamline present-stall detector here. Without
     // this, slDLSSGSetOptions compares a frozen counter and falsely dumps "Present STALLED

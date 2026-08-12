@@ -7,6 +7,24 @@ namespace DXGIShared {
 void DetectSLPresentHook() {
     if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire))
         return;
+    // Below a foreign Present chain `oPresent` IS the live entry, and SL routing forwards
+    // through it directly (dxgi_shared_present_core.cpp) instead of through CallOriginalPresent,
+    // which is the only place that prefers the deep trampoline. Activating it there would send
+    // the call back through the whole foreign chain and straight into CE's own body hook again —
+    // unbounded recursion. Below the chain SL has already run by construction, so there is
+    // nothing to route to. This was previously unreachable only by accident (the mode leaves
+    // oPresentTrampoline null and the check below returns); with FG interposers now allowed into
+    // this mode it is stated outright.
+    if (IsPresentEntryLeftToForeignChain() || IsPresentInterceptedBelowForeignChain()) {
+        static std::atomic<uint32_t> s_belowChainLogCount{0};
+        if (s_belowChainLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant(
+                "DetectSLPresentHook: Skipping — CE intercepts below the foreign Present chain, so Streamline has "
+                "already processed this present and there is no chain above CE to route into (oPresent=%p)",
+                dxgi_shared_oPresent);
+        }
+        return;
+    }
     if (!dxgi_shared_oPresent || !dxgi_shared_oPresentTrampoline) {
         // Vtable hook path (externally hooked Present): oPresentTrampoline is
         // NULL because we use vtable hooking instead of inline hooking when an

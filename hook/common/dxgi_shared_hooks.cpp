@@ -374,6 +374,82 @@ bool HasPresentDetourHooks() {
 }
 
 namespace DXGIShared {
+HMODULE GetSystemDXGIModuleHandle() {
+    // Resolved once: the system image is never unloaded while DXGI is in use, and the lookup
+    // takes the loader lock, which must not happen per-present.
+    static std::atomic<HMODULE> s_cached{nullptr};
+    static std::atomic<bool> s_resolved{false};
+    if (s_resolved.load(std::memory_order_acquire)) {
+        return s_cached.load(std::memory_order_acquire);
+    }
+    char path[MAX_PATH] = {};
+    const UINT length = GetSystemDirectoryA(path, MAX_PATH);
+    HMODULE systemModule = nullptr;
+    if (length > 0 && length < MAX_PATH - 16) {
+        strncat(path, "\\dxgi.dll", MAX_PATH - strlen(path) - 1);
+        // A path-qualified name makes the loader compare full paths, so a same-named proxy in
+        // the game directory cannot satisfy this lookup.
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, path, &systemModule);
+    }
+    s_cached.store(systemModule, std::memory_order_release);
+    s_resolved.store(true, std::memory_order_release);
+    HookLogImportant("DXGIShared: system dxgi.dll resolved to %p (%s)", (void*)systemModule,
+                     path[0] ? path : "(system directory unavailable)");
+    return systemModule;
+}
+
+bool IsAddressInsideSystemDXGI(const void* address) {
+    if (!address) {
+        return false;
+    }
+    HMODULE systemModule = GetSystemDXGIModuleHandle();
+    if (!systemModule) {
+        return false;
+    }
+    MODULEINFO info = {};
+    if (!GetModuleInformation(GetCurrentProcess(), systemModule, &info, sizeof(info))) {
+        return false;
+    }
+    const uintptr_t base = reinterpret_cast<uintptr_t>(systemModule);
+    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+    return value >= base && value < base + info.SizeOfImage;
+}
+}
+
+namespace DXGIShared {
+void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source) {
+    static std::atomic<int> s_currentSite{-1};
+    const int siteValue = static_cast<int>(site);
+    if (s_currentSite.exchange(siteValue, std::memory_order_relaxed) == siteValue) {
+        return;
+    }
+    const size_t foreignOverlays =
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const char* siteName = site == OverlayCompositeSite::kBelowForeignChain ? "deep-body-below-foreign-chain"
+                           : site == OverlayCompositeSite::kSwapchainWrapper ? "swapchain-wrapper"
+                                                                             : "present-entry-patch";
+    // With no foreign overlay loaded there is nothing to be above or below, so say so rather
+    // than implying a layering problem that does not exist.
+    if (foreignOverlays == 0) {
+        HookLogImportant("[OVERLAY LAYER] CE composites at the %s site (source=%s); no third-party overlay is loaded",
+                         siteName, source ? source : "unknown");
+        return;
+    }
+    if (site == OverlayCompositeSite::kBelowForeignChain) {
+        HookLogImportant(
+            "[OVERLAY LAYER] CE composites BELOW the foreign Present chain (site=%s source=%s foreignOverlays=%zu) — "
+            "they have all drawn by the time CE runs, so CE's overlay is the topmost layer",
+            siteName, source ? source : "unknown", foreignOverlays);
+        return;
+    }
+    HookLogImportant(
+        "[OVERLAY LAYER] CE composites ABOVE the foreign Present chain (site=%s source=%s foreignOverlays=%zu) — "
+        "every overlay that hooks Present below CE draws after it and appears ON TOP of CE's overlay",
+        siteName, source ? source : "unknown", foreignOverlays);
+}
+}
+
+namespace DXGIShared {
 bool HasPrependedPresentEntryHook() {
     if (IsPresentEntryLeftToForeignChain()) {
         return false;

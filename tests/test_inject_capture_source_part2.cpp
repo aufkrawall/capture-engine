@@ -43,7 +43,10 @@ TEST(InjectLifecycleSourceTest, RenamedThirdPartyProxyIdentityUsesStableProjectM
 
 TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTableOwners) {
     const std::string install = ReadSource("hook/common/dxgi_shared_hooks.cpp");
-    const std::string presentHooks = ReadSource("hook/common/dxgi_shared_hooks_present.cpp");
+    // Both halves of the present-hook unit: the install/entry-ownership decision and the
+    // vtable-slot ownership functions it was split from (repair, handoff detach, teardown).
+    const std::string presentHooks = ReadSource("hook/common/dxgi_shared_hooks_present.cpp") +
+                                     ReadSource("hook/common/dxgi_shared_hooks_present_vtable.cpp");
     const std::string original = ReadSource("hook/common/dxgi_shared_original.cpp");
     const std::string steamRouting = ReadSource("hook/common/dxgi_shared_steam_routing.cpp");
     const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");

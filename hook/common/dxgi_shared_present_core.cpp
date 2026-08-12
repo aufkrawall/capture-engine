@@ -131,6 +131,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     });
 
     if (!IsShuttingDown() && (dxgi_shared_oPresentTrampoline || dxgi_shared_oPresent)) {
+        NoteOverlayCompositeSite(IsPresentInterceptedBelowForeignChain()
+                                     ? OverlayCompositeSite::kBelowForeignChain
+                                     : OverlayCompositeSite::kPresentEntry,
+                                 "DetourPresent");
         // Experimental: skip CE overlay rendering when Steam-only overlay test is active.
         // This lets us determine whether the black screen with Steam invoke is caused by
         // CE overlay + Steam overlay interaction or by Steam's handler alone.

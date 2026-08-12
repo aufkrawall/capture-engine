@@ -257,3 +257,153 @@ TEST(DXGISharedTest, FFXPresentCallbackAdvancesFrameTimingWhileTheRuntimeOwnsPre
     // The FG-state publication stays where it was — it is a different concern from the tick.
     EXPECT_NE(ffx.find("PublishOverlayFGMetrics(perf, plan", metricsTick), std::string::npos);
 }
+
+// Draw order in a dxgi!Present entry chain is the reverse of hook order: every participant
+// composites BEFORE it forwards, so the one that runs last ends up on top. CE's entry prepend
+// made it the FIRST participant and therefore the bottom layer — Steam's fullscreen overlay and
+// RTSS's OSD drew over CE's overlay (user report on build 0.1.5959, Talos/Strange Brigade with
+// Steam + RTSS). Below the chain CE composites after all of them.
+//
+// The single-overlay case is the one that changed here, so it needs the escape hatch: the body
+// patch can be refused (thread quiescence, an unrecognized prolog, a 32-bit target), and a
+// session with no Present view at all costs the overlay entirely, which is far worse than being
+// the bottom layer. The prepend is therefore taken as a fallback — but only with fewer than two
+// overlays, because with two the prepend is what corrupts their saved chains.
+TEST(DXGISharedSourceTest, BelowChainViewFallsBackToThePrependOnlyAgainstASingleOverlay) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string install = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(install.empty());
+
+    const size_t leaveEntry = install.find("ShouldLeavePresentEntryToForeignOverlayChain(");
+    ASSERT_NE(leaveEntry, std::string::npos);
+    const size_t fallbackDecision =
+        install.find("MayPrependPresentEntryWhenBelowChainViewUnavailable(loadedOverlayCount)", leaveEntry);
+    ASSERT_NE(fallbackDecision, std::string::npos);
+
+    // The published leave-entry state is reverted before falling through to the prepend;
+    // otherwise CE would own entry bytes while every forward still ran the live entry.
+    const size_t revert =
+        install.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(false", fallbackDecision);
+    ASSERT_NE(revert, std::string::npos);
+    const size_t prependInstall = install.find("InlineHook::InstallPublished(presentAddr", revert);
+    ASSERT_NE(prependInstall, std::string::npos);
+    EXPECT_NE(install.find("dxgi_shared_oPresent = previousPresent;", revert), std::string::npos);
+    EXPECT_LT(install.find("dxgi_shared_oPresent = previousPresent;", revert), prependInstall);
+
+    // Present1 must NOT be deep-hooked once Present failed and the fallback is available: a lone
+    // Present1 deep trampoline makes IsPresentInterceptedBelowForeignChain() true while CE owns
+    // the Present entry bytes, and those two modes contradict each other (below the chain CE
+    // must never invoke a foreign handler; prepended it must).
+    const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
+    ASSERT_NE(helper, std::string::npos);
+    EXPECT_NE(install.find("if (!present1Addr || (!haveBodyView && prependFallbackAvailable)) {", helper),
+              std::string::npos);
+}
+
+// Below the chain, `oPresent` IS the live foreign entry. The Streamline present route forwards
+// through it directly instead of through CallOriginalPresent (the only place that prefers the
+// deep trampoline), so activating SL routing there would send the call back through Steam/RTSS
+// and straight into CE's own body hook again — unbounded recursion. It was previously
+// unreachable only by accident (the mode leaves oPresentTrampoline null); with FG interposers
+// now allowed into this mode it must be refused outright.
+TEST(DXGISharedSourceTest, StreamlinePresentRoutingIsRefusedBelowAForeignChain) {
+    namespace fs = std::filesystem;
+    const fs::path routingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp";
+    ASSERT_TRUE(fs::exists(routingSource));
+    const std::string routing = ce::test_source::ReadFile(routingSource);
+    ASSERT_FALSE(routing.empty());
+
+    const size_t detect = routing.find("void DetectSLPresentHook() {");
+    ASSERT_NE(detect, std::string::npos);
+    const size_t guard =
+        routing.find("if (IsPresentEntryLeftToForeignChain() || IsPresentInterceptedBelowForeignChain()) {", detect);
+    ASSERT_NE(guard, std::string::npos);
+    // Before any byte inspection of the entry, and before the activation itself.
+    const size_t activation = routing.find("dxgi_shared_s_slRoutingActive.store(true", detect);
+    ASSERT_NE(activation, std::string::npos);
+    EXPECT_LT(guard, activation);
+    const size_t byteProbe = routing.find("auto* funcBytes = (const uint8_t*)dxgi_shared_oPresent;", detect);
+    ASSERT_NE(byteProbe, std::string::npos);
+    EXPECT_LT(guard, byteProbe);
+}
+
+// The module a Present implementation belongs to must be resolved FROM ITS ADDRESS, never by
+// name: ReShade, SpecialK and OptiScaler all ship their proxy as `dxgi.dll`, so
+// GetModuleHandleA("dxgi.dll") returns whichever image the loader lists first. Session
+// 20260812_155205 logged `E9 at 00007FFD5C049960 targets 00007FFD1C040000 (outside dxgi.dll
+// 00007FFCB8460000-00007FFCB9CF0000)` — presentAddr is not inside the printed range at all, so
+// the foreign-jump verdict was accidental in both directions.
+TEST(DXGISharedSourceTest, ForeignPresentJumpIsClassifiedAgainstThePresentOwningModule) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string install = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(install.empty());
+
+    const size_t classification = install.find("bool externalJmpDetected = false;");
+    ASSERT_NE(classification, std::string::npos);
+    const size_t resolve = install.find("reinterpret_cast<LPCSTR>(presentAddr), &hPresentModule);", classification);
+    ASSERT_NE(resolve, std::string::npos);
+    const size_t moduleInfo = install.find("GetModuleInformation(GetCurrentProcess(), hPresentModule", resolve);
+    ASSERT_NE(moduleInfo, std::string::npos);
+    // No by-name resolution may remain in the classification (the string still appears in the
+    // comment that explains why, so this looks for the assignment, not the mention).
+    EXPECT_EQ(install.find("hDXGI = GetModuleHandleA", classification), std::string::npos);
+    EXPECT_EQ(install.find("(uintptr_t)hDXGI", classification), std::string::npos);
+}
+
+// Session 20260812_195840 (Talos + Steam + RTSS + a game-directory `dxgi.dll` proxy, build
+// 0.1.5961): CE's deep body hook installed and reported `[OVERLAY LAYER] CE composites BELOW the
+// foreign Present chain`, and Steam STILL drew on top. The log names the reason two lines apart:
+// `presentAddr=00007FF95309C140 is in module: …\Talos1\Binaries\Win64\dxgi.dll` and `no visible
+// jump at 00007FF95309C140` — CE was hooking the PROXY's Present method, which has no foreign
+// patch on it because Steam and RTSS patched the system function the proxy forwards to. A hook
+// in the proxy's prolog is above its post-processing pass AND above everything below it.
+//
+// The temp swapchain therefore has to come from the SYSTEM dxgi factory, resolved by full path
+// (the proxy carries the same base name). The result is only accepted when its Present really
+// lands inside the system image, so a proxy that also hooks real factory vtables falls back to
+// the historical view instead of silently regressing.
+TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAProxy) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string install = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(install.empty());
+
+    const size_t systemFactory = install.find("DXGIShared::GetSystemDXGIModuleHandle();");
+    ASSERT_NE(systemFactory, std::string::npos);
+    // Only when a proxy is actually in play — no extra factory in the common case.
+    EXPECT_NE(install.find("hSystemDXGI && hSystemDXGI != hDXGI", systemFactory), std::string::npos);
+    const size_t validation = install.find("DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)", systemFactory);
+    ASSERT_NE(validation, std::string::npos);
+    // Rejection releases the swapchain and falls through to the historical path.
+    const size_t fallback = install.find("if (!pSwapChain) {", validation);
+    ASSERT_NE(fallback, std::string::npos);
+    EXPECT_NE(install.find("dx12_hook_oCreateSwapChainForHwndGlobal(pFactory", fallback), std::string::npos);
+    EXPECT_NE(install.find("pTerminalFactory->Release();"), std::string::npos);
+
+    // The saved predecessor belongs to the vtable CE hooked. Substituting it for an arbitrary
+    // factory's slot would call a proxy's method with a real factory `this` — type confusion.
+    const size_t slotHelper = install.find("HRESULT CreateTempSwapChainViaFactorySlot(");
+    ASSERT_NE(slotHelper, std::string::npos);
+    const size_t guardedSubstitution =
+        install.find("reinterpret_cast<void*>(slot) == reinterpret_cast<void*>(DetourCreateSwapChainForHwndGlobal)",
+                     slotHelper);
+    ASSERT_NE(guardedSubstitution, std::string::npos);
+    EXPECT_LT(guardedSubstitution, install.find("slot = dx12_hook_oCreateSwapChainForHwndGlobal;", slotHelper));
+
+    // The system module is resolved by FULL PATH, never by base name: the proxy shares it.
+    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp";
+    ASSERT_TRUE(fs::exists(hooksSource));
+    const std::string hooks = ce::test_source::ReadFile(hooksSource);
+    ASSERT_FALSE(hooks.empty());
+    const size_t resolver = hooks.find("HMODULE GetSystemDXGIModuleHandle() {");
+    ASSERT_NE(resolver, std::string::npos);
+    EXPECT_NE(hooks.find("GetSystemDirectoryA(path, MAX_PATH)", resolver), std::string::npos);
+    EXPECT_NE(hooks.find("GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, path, &systemModule", resolver),
+              std::string::npos);
+    EXPECT_EQ(hooks.find("GetModuleHandleA(\"dxgi.dll\")", resolver), std::string::npos);
+}

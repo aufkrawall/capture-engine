@@ -232,36 +232,36 @@ TEST_F(OverlayModuleDetectionTest, LoadedOverlayCountIgnoresNonOverlayTrackedMod
     EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
 }
 
-// Strange Brigade DX12 + Steam + RTSS: with two foreign overlays sharing dxgi!Present, CE's
-// own prepend is what breaks them — whichever tool (re-)hooks while it is live records CE as
-// its "next" and the other overlay falls out of the chain (RTSS drew frame 1 and nothing
-// after, sessions 20260812_002958 / _005530 / _010529). CE stays out of that entry. With a
-// single foreign overlay (Talos/GTA/RoboCop: Steam only) the prepend is kept, and so is the
-// whole validated FG routing that depends on it.
-TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfMultiOverlayPresentEntryChains) {
-    // Steam only -> CE keeps its prepend.
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 1, false));
-    // Steam + RTSS -> CE stays out.
-    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2, false));
-    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3, false));
+// CE never joins a foreign dxgi!Present entry chain — it intercepts below it. Two reasons:
+// chain integrity with two or more overlays (Strange Brigade DX12 + Steam + RTSS, sessions
+// 20260812_002958 / _005530 / _010529: whichever tool re-hooks while CE's prepend is live
+// records CE as its "next" and the other overlay falls out of the chain), and draw order with
+// any number of them (everyone in that chain composites before forwarding, so CE's prepend made
+// CE the bottom layer and Steam's fullscreen overlay drew over it, build 0.1.5959).
+TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfForeignPresentEntryChains) {
+    // Steam only -> CE goes below it so its own overlay composites last.
+    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 1));
+    // Steam + RTSS -> CE stays out (chain integrity as well as draw order).
+    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2));
+    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3));
 
-    // No foreign entry jump: CE owns the entry outright, nothing to stay out of.
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 2, false));
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 0, false));
+    // No foreign entry patch: CE owns the entry outright, nothing to stay out of or draw after.
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 2));
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 1));
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 0));
+    // A patched entry with no tracked overlay loaded is not attributable to an overlay chain.
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 0));
+}
 
-    // A frame-generation interposer presents generated frames from its own runtime-owned
-    // swapchain. While that swapchain is NOT wrapped, the entry hook is CE's only view of them,
-    // so the prepend is kept.
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2, true));
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3, true));
-    // Once CE wrapped the runtime swapchain, the wrapper sees every runtime present and the
-    // entry can be left to the foreign chain in FG games too (Talos + DLSS FG + Steam + RTSS).
-    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2, true, true));
-    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3, true, true));
-    // A single overlay still keeps the prepend: the chain-corruption rule only applies with
-    // two or more foreign overlays sharing the entry.
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 1, true, true));
-    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 2, true, true));
+// The below-the-chain body patch can be refused (thread quiescence, unrecognized prolog). The
+// fallback is allowed only against a single foreign overlay, which composes with a prepend;
+// with two or more the prepend is exactly what corrupts their saved chains, so that case must
+// wait for a later retry rather than fall back.
+TEST(OverlayPresentEntryChainPolicyTest, PrependFallbackOnlyAgainstASingleForeignOverlay) {
+    EXPECT_TRUE(MayPrependPresentEntryWhenBelowChainViewUnavailable(0));
+    EXPECT_TRUE(MayPrependPresentEntryWhenBelowChainViewUnavailable(1));
+    EXPECT_FALSE(MayPrependPresentEntryWhenBelowChainViewUnavailable(2));
+    EXPECT_FALSE(MayPrependPresentEntryWhenBelowChainViewUnavailable(3));
 }
 
 // After CE wraps the FG runtime's swapchain (non-entry view established), it may remove its
@@ -269,26 +269,25 @@ TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfMultiOverlayPresentEntryCha
 // the entry recorded CE's relay inside its own saved chain; un-prepending then cannot repair
 // that state and CE must not touch bytes it no longer owns.
 TEST(OverlayPresentEntryChainPolicyTest, LeaveEntryAfterRuntimeWrapRequiresOwnedEntryBytes) {
-    // 2+ overlays + FG interposer + wrapped runtime view + entry intact -> leave.
+    // Foreign overlay on the entry + entry still CE's -> leave.
     EXPECT_TRUE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-        /*entryPatchStillIntact=*/true, /*foreignEntryJumpDetected=*/true, /*loadedOverlayModuleCount=*/2,
-        /*frameGenerationInterposerLoaded=*/true, /*alreadyLeftToForeignChain=*/false));
+        /*entryPatchStillIntact=*/true, /*foreignEntryPatchOwnedByOverlay=*/true,
+        /*loadedOverlayModuleCount=*/2, /*alreadyLeftToForeignChain=*/false));
+    EXPECT_TRUE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
+        /*entryPatchStillIntact=*/true, /*foreignEntryPatchOwnedByOverlay=*/true,
+        /*loadedOverlayModuleCount=*/1, /*alreadyLeftToForeignChain=*/false));
     // Foreign re-hook already displaced CE -> never un-prepend.
     EXPECT_FALSE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-        /*entryPatchStillIntact=*/false, /*foreignEntryJumpDetected=*/true, /*loadedOverlayModuleCount=*/2,
-        /*frameGenerationInterposerLoaded=*/true, /*alreadyLeftToForeignChain=*/false));
+        /*entryPatchStillIntact=*/false, /*foreignEntryPatchOwnedByOverlay=*/true,
+        /*loadedOverlayModuleCount=*/2, /*alreadyLeftToForeignChain=*/false));
     // Already in leave-entry mode -> nothing to transition.
     EXPECT_FALSE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-        /*entryPatchStillIntact=*/true, /*foreignEntryJumpDetected=*/true, /*loadedOverlayModuleCount=*/2,
-        /*frameGenerationInterposerLoaded=*/true, /*alreadyLeftToForeignChain=*/true));
-    // Single overlay -> keep the prepend even with a wrapped runtime view.
+        /*entryPatchStillIntact=*/true, /*foreignEntryPatchOwnedByOverlay=*/true,
+        /*loadedOverlayModuleCount=*/2, /*alreadyLeftToForeignChain=*/true));
+    // No foreign entry patch -> CE owns the entry outright.
     EXPECT_FALSE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-        /*entryPatchStillIntact=*/true, /*foreignEntryJumpDetected=*/true, /*loadedOverlayModuleCount=*/1,
-        /*frameGenerationInterposerLoaded=*/true, /*alreadyLeftToForeignChain=*/false));
-    // No foreign entry jump -> CE owns the entry outright.
-    EXPECT_FALSE(ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-        /*entryPatchStillIntact=*/true, /*foreignEntryJumpDetected=*/false, /*loadedOverlayModuleCount=*/2,
-        /*frameGenerationInterposerLoaded=*/true, /*alreadyLeftToForeignChain=*/false));
+        /*entryPatchStillIntact=*/true, /*foreignEntryPatchOwnedByOverlay=*/false,
+        /*loadedOverlayModuleCount=*/2, /*alreadyLeftToForeignChain=*/false));
 }
 
 TEST_F(OverlayModuleDetectionTest, IsThirdPartyOverlayLoadedTracksOverlaySubset) {

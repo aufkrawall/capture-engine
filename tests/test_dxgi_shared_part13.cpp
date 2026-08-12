@@ -295,14 +295,14 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // The body view is taken inside the leave-entry branch, and only a view that was actually
     // obtained may latch the install — otherwise a refused body patch blinds the session with
     // no retry, because InstallPresentInlineHooks early-returns on the latch.
-    const size_t deepInstall = install.find(
-        "InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr, observedEntryPatchSize)", leaveEntry);
+    const size_t deepInstall = install.find("InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr,",
+                                            leaveEntry);
     ASSERT_NE(deepInstall, std::string::npos);
-    // The very first latch after the decision is that conditional one, never a bare `= true`.
+    // The latch is the obtained view, never a bare `= true`.
     const size_t firstLatchAfterDecision = install.find("s_inlineHooksInstalled =", leaveEntry);
     ASSERT_NE(firstLatchAfterDecision, std::string::npos);
-    EXPECT_LT(firstLatchAfterDecision, deepInstall);
-    const std::string decisionBlock = install.substr(leaveEntry, deepInstall - leaveEntry);
+    EXPECT_NE(install.find("s_inlineHooksInstalled = haveBodyView;", leaveEntry), std::string::npos);
+    const std::string decisionBlock = install.substr(leaveEntry, bypassBlock - leaveEntry);
     EXPECT_EQ(decisionBlock.find("s_inlineHooksInstalled = true;"), std::string::npos);
 
     // The Present view below the chain is a deep body hook, never an entry patch.
