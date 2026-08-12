@@ -741,6 +741,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                     ffxCallbackOutputDiffersFromCurrent ? 1 : 0, wedgeLogCount + 1);
             }
         }
+        if (DX12_ShouldFFXPresentCallbackYieldToBelowChainOverlayDraw()) {
+            return result;  // CE's deep body hook draws this frame, below Steam/RTSS
+        }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         // GPU-breadcrumb the no-app-callback self-compose path (recorded into AMD's command list, which AMD
         // executes after this callback returns). On freeze: start=reached the callback, rt=self-compose copy
@@ -778,8 +781,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         // DLSS FG -> FSR FG, session 20260812_153840). Gated on ownership because
         // PerformanceMetrics::Update is a single-writer hot path.
         if (ffxRuntimeOwnsNativeFSRPresentation) {
-            // Layering: composited into the runtime's output buffer before the runtime's own DXGI
-            // present, so overlays patching that present land on top (session 20260812_202746).
+            // Layering: composited before the runtime's own DXGI present (20260812_202746).
             DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
             perf->Update(PerfLogger::GetQpcUs());

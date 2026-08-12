@@ -409,6 +409,8 @@ const char* DX12OverlayRenderRouteName(uint32_t route);;
 void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source);
 void LogOverlayCoverageSummary(const char* edge);
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route);
+// See the definition: proof-driven yield of the overlay draw to CE's below-the-chain hook.
+bool DX12_ShouldFFXPresentCallbackYieldToBelowChainOverlayDraw();
 void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr);
 void SetPostSLLastWorkingQueue(ID3D12CommandQueue* queue);
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false);

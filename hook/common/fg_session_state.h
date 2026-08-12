@@ -109,6 +109,12 @@ struct FGTransportRisk {
     bool bypassAvailable = false;
 };
 
+// Pure policy: which channel composites CE's overlay for this snapshot. Declared here (not
+// file-local) because the runtime-owned FSR arm decides overlay LAYERING against foreign
+// overlays and must be directly testable.
+struct FGSessionSnapshot;
+FGOverlayBackendMode ResolveOverlayBackendMode(const FGSessionSnapshot& snapshot);
+
 struct FGSessionSnapshot {
     uint32_t sessionEpoch = 0;
     uint32_t runtimeEpoch = 0;
@@ -122,6 +128,11 @@ struct FGSessionSnapshot {
     bool ffxLoaded = false;
     bool nativeFSRConfiguredOn = false;
     bool runtimeOwnsSwapchain = false;
+    // CE's Present view is a deep body hook below a foreign overlay chain, i.e. CE is
+    // entered on the runtime's own DXGI present AFTER every overlay in that chain has
+    // drawn. Decides where the overlay may be composited while the runtime owns the
+    // swapchain - see ResolveOverlayBackendMode.
+    bool belowForeignOverlayChainPresentView = false;
     bool hadFSRPhase = false;
     bool safePostFSRBootstrapPath = false;
     bool explicitSetOptionsActivationForCurrentComeback = false;
