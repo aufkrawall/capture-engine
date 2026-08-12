@@ -93,7 +93,81 @@ namespace DXGIShared {
 //   Steam module: x64=gameoverlayrenderer64.dll, x86=gameoverlayrenderer.dll
 //   Legacy fallback RVA: x64=0x1621d8. Newer Steam builds can use nearby slots;
 //   the handler first resolves the slot dynamically from the faulting mov/call.
+namespace {
+// Backstop for the shape the slot-resolving recovery below cannot reach: CE calls a foreign
+// overlay handler, the handler dispatches through an uninitialized pointer several jumps
+// deep, and execution lands on non-executable memory. The faulting transfer is a chain of
+// jumps from CE's own `call`, so RSP still holds CE's return address and nothing else has
+// been pushed - resuming there with a failed HRESULT unwinds exactly one foreign call and
+// lets CE's guarded-invoke fallback present through the clean DXGI bypass.
+//
+// Scoped hard: only inside a CE guarded foreign invoke on this thread, only for an execute
+// violation on an address that is not code, and only when the pushed return address really
+// is CE code. Talos + DLSS FG + RTSS: sessions 20260812_024730 and _030202.
+bool TryRecoverForeignOverlayInvokeCrash(PEXCEPTION_POINTERS ep) {
+#ifdef _WIN64
+    const auto faultingRip = static_cast<uintptr_t>(ep->ContextRecord->Rip);
+    const auto stackPointer = static_cast<uintptr_t>(ep->ContextRecord->Rsp);
+#else
+    const auto faultingRip = static_cast<uintptr_t>(ep->ContextRecord->Eip);
+    const auto stackPointer = static_cast<uintptr_t>(ep->ContextRecord->Esp);
+#endif
+    if (dxgi_shared_s_steamNullCallbackRecoveryContext.hook == nullptr) {
+        return false;
+    }
+    if (faultingRip != 0 && IsExecutableCodeAddress(reinterpret_cast<const void*>(faultingRip))) {
+        return false;  // A fault in real code is not this failure mode; leave it alone.
+    }
+    if (!stackPointer || !IsReadableMemory(reinterpret_cast<const void*>(stackPointer), sizeof(uintptr_t))) {
+        return false;
+    }
+    uintptr_t returnAddress = 0;
+    memcpy(static_cast<void*>(&returnAddress), reinterpret_cast<const void*>(stackPointer), sizeof(returnAddress));
+    if (!IsExecutableCodeAddress(reinterpret_cast<const void*>(returnAddress))) {
+        return false;
+    }
+    char returnModulePath[MAX_PATH] = {};
+    if (!TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(returnAddress), returnModulePath,
+                                         sizeof(returnModulePath)) ||
+        !IsCaptureHookModulePath(returnModulePath)) {
+        return false;
+    }
+
+    static std::atomic<int> s_recoveryLogCount{0};
+    const int n = s_recoveryLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 20 || (n % 200) == 0) {
+        HookLogImportant(
+            "SteamOverlayInitVehHandler: foreign overlay handler dispatched to non-executable %p #%d "
+            "(context=%s reason=%s hook=%p) - returning DXGI_ERROR_INVALID_CALL to %p so the guarded invoke "
+            "falls back to the DXGI bypass",
+            (void*)faultingRip, n,
+            dxgi_shared_s_steamNullCallbackRecoveryContext.context
+                ? dxgi_shared_s_steamNullCallbackRecoveryContext.context
+                : "unknown",
+            dxgi_shared_s_steamNullCallbackRecoveryContext.reason
+                ? dxgi_shared_s_steamNullCallbackRecoveryContext.reason
+                : "Present",
+            dxgi_shared_s_steamNullCallbackRecoveryContext.hook, (void*)returnAddress);
+    }
+
+#ifdef _WIN64
+    ep->ContextRecord->Rsp = stackPointer + sizeof(uintptr_t);
+    ep->ContextRecord->Rip = returnAddress;
+    ep->ContextRecord->Rax = static_cast<DWORD64>(static_cast<ULONG>(DXGI_ERROR_INVALID_CALL));
+#else
+    ep->ContextRecord->Esp = stackPointer + sizeof(uintptr_t);
+    ep->ContextRecord->Eip = returnAddress;
+    ep->ContextRecord->Eax = static_cast<DWORD>(DXGI_ERROR_INVALID_CALL);
+#endif
+    return true;
+}
+}  // namespace
+
 LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
+    if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION &&
+        TryRecoverForeignOverlayInvokeCrash(ep)) {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (ep->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION) {
         static std::atomic<int> s_nonAvDeclineLogCount{0};
         const int n = s_nonAvDeclineLogCount.fetch_add(1, std::memory_order_relaxed);

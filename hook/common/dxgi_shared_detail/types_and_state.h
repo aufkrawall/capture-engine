@@ -481,7 +481,24 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
     }
 
     if (steamCallbackIsNull) {
-        return steamNullCallbackRecoveryAvailable;
+        // A NULL Present-shaped callback slot means Steam's own overlay hook has not
+        // finished initializing. Entering its handler in that state dispatches through an
+        // uninitialized function pointer: Talos + DLSS FG + RTSS crashed twice that way
+        // (sessions 20260812_024730 and _030202, DEP execute violation on a heap address,
+        // RAX=0, `steamCallback=0000000000000000` logged on the very invoke that faulted).
+        //
+        // The crash-time VEH is NOT a licence to enter anyway. It only recognizes the exact
+        // `call rax` / RIP=0 shape, and the dispatch that actually faults here happens
+        // several jumps deep inside Steam with a garbage pointer, so the handler declines
+        // and the process dies. Control-flow decisions must not be delegated to an
+        // exception handler.
+        //
+        // Fail closed to CE's clean DXGI bypass instead. This is self-correcting: Steam
+        // still initializes on its own natural path (the game's presents reach its handler
+        // through the entry it owns), and CE resumes servicing it as soon as the slot reads
+        // like a real renderer. CE must never write the slot itself to make this check pass
+        // - that makes Steam skip its own install and drops every overlay below it.
+        return false;
     }
 
     return true;

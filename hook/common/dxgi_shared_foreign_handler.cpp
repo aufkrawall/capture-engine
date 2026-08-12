@@ -7,6 +7,23 @@
 // -specific routing.
 
 namespace DXGIShared {
+bool IsExecutableCodeAddress(const void* address) {
+    if (!address) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION memory = {};
+    if (VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory)) {
+        return false;
+    }
+    if (memory.State != MEM_COMMIT || (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return false;
+    }
+    return (memory.Protect &
+            (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+}
+
+namespace DXGIShared {
 namespace {
 bool IsCommittedExecutableAddress(const void* address) {
     if (!address) {

@@ -225,6 +225,11 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
+// True when `address` is committed, executable memory (no loader calls).
+bool IsExecutableCodeAddress(const void* address);
+}
+
+namespace DXGIShared {
 // True when control may still be transferred to this foreign Present handler: the entry, and
 // for an E9/FF25 thunk the address it forwards to, must be committed executable memory. A
 // handler captured once at install time goes stale when the owning overlay rebuilds or frees

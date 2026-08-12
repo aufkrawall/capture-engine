@@ -7,8 +7,13 @@ TEST(DXGISharedTest, GuardedSteamOverlayCallbackStateSuppressesDisabledOrInvalid
     EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, false, false,
                                                                                            false, false));
 
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, true, false,
-                                                                                           false, true));
+    // A NULL callback slot means Steam's overlay hook is not initialized yet. Entering its
+    // handler then dispatches through an uninitialized pointer and kills the process (Talos +
+    // DLSS FG + RTSS, sessions 20260812_024730 and _030202). An armed crash-time VEH is not a
+    // licence to enter anyway: it only recognizes the `call rax` / RIP=0 shape, while the
+    // fault happens several jumps deep inside Steam on a garbage pointer.
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, true, false,
+                                                                                            false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, true, false,
                                                                                             false, false));
 
