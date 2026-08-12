@@ -195,45 +195,51 @@ TEST(DXGISharedSourceTest, SteamNullCallbackScannerDoesNotTruncateAtSmallCap) {
     EXPECT_TRUE(foundLate);
 }
 
-TEST(DXGISharedSourceTest, SteamNullCallbackProactivePatchIsWiredBeforeEverySteamInvoke) {
+// Talos + DLSS FG + RTSS (session 20260812_022607): CE must never speculatively write into
+// Steam's Present-shaped callback slots. Those slots are Steam's own hook-install outputs
+// (gameoverlayrenderer64+0x8da00 takes &slot; every call site tests `cmpq $0, slot`
+// afterwards), so pre-filling them makes Steam skip its own install and chain to a raw
+// dxgi!Present copy that skips every hook BELOW Steam. Frame 1 ran CE -> Steam -> RTSS with
+// all three overlays drawing; from frame 2 every guarded invoke reported the callback as
+// CE's own bypass value and RTSS never submitted again. Slot discovery stays - CE reads the
+// slots to decide whether invoking Steam is safe - but the write must not come back.
+TEST(DXGISharedSourceTest, CENeverWritesIntoSteamCallbackSlots) {
     namespace fs = std::filesystem;
     const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
+    ASSERT_TRUE(fs::exists(originalSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
+    const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(steam.empty());
+    ASSERT_FALSE(original.empty());
 
+    EXPECT_EQ(steam.find("EnsureSteamNullCallbacksPatched"), std::string::npos);
+    EXPECT_EQ(original.find("EnsureSteamNullCallbacksPatched"), std::string::npos);
+
+    // The read-only inspection that feeds the callback-state gate must remain, and the
+    // guarded invoke must still consult it before entering Steam.
     const size_t guardedEntry = steam.find("bool TryInvokeGuardedExternalSteamOverlayPresent(");
-    const size_t threadGate = steam.find("if (!synchronousPresentThreadAllowed)", guardedEntry);
-    const size_t proactivePatch = steam.find("EnsureSteamNullCallbacksPatched(presentBypass)", threadGate);
-    const size_t callbackRead = steam.find("TryReadSteamOverlayNullCallbackSlot(", proactivePatch);
-    const size_t invoke = steam.find("const HRESULT hr = externalPresent", callbackRead);
     ASSERT_NE(guardedEntry, std::string::npos);
+    const size_t threadGate = steam.find("if (!synchronousPresentThreadAllowed)", guardedEntry);
+    const size_t callbackRead = steam.find("TryReadSteamOverlayNullCallbackSlot(", threadGate);
+    const size_t invoke = steam.find("const HRESULT hr = externalPresent", callbackRead);
     ASSERT_NE(threadGate, std::string::npos);
-    ASSERT_NE(proactivePatch, std::string::npos);
     ASSERT_NE(callbackRead, std::string::npos);
     ASSERT_NE(invoke, std::string::npos);
-    EXPECT_LT(threadGate, proactivePatch);
-    EXPECT_LT(proactivePatch, callbackRead);
+    EXPECT_LT(threadGate, callbackRead);
     EXPECT_LT(callbackRead, invoke);
 
     const size_t dynamicRead = steam.find("DiscoverSteamNullCallbackSlots(", steam.find("bool TryReadSteamOverlayNullCallbackSlot("));
     EXPECT_NE(dynamicRead, std::string::npos);
-}
 
-TEST(DXGISharedSourceTest, SlFastPathProactivePatchPrecedesTheSteamE9Return) {
-    namespace fs = std::filesystem;
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
-    ASSERT_TRUE(fs::exists(originalSource));
-    const std::string original = ce::test_source::ReadFile(originalSource);
-    ASSERT_FALSE(original.empty());
-
-    const size_t fastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
-    ASSERT_NE(fastPath, std::string::npos);
-    const size_t proactivePatch = original.find("EnsureSteamNullCallbacksPatched(presentBypass)", fastPath);
-    const size_t fastPathReturn = original.find("return presentOriginal(pSwapChain, SyncInterval, Flags);", fastPath);
-    ASSERT_NE(proactivePatch, std::string::npos);
-    ASSERT_NE(fastPathReturn, std::string::npos);
-    EXPECT_LT(proactivePatch, fastPathReturn);
+    // The crash-time recovery stays: it resolves the EXACT faulting slot from the fault
+    // context instead of writing into slots Steam has not dispatched through.
+    const fs::path vehSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_veh.cpp";
+    ASSERT_TRUE(fs::exists(vehSource));
+    const std::string veh = ce::test_source::ReadFile(vehSource);
+    ASSERT_FALSE(veh.empty());
+    EXPECT_NE(veh.find("ResolveSteamNullCallbackSlotFromFault(returnAddress"), std::string::npos);
 }
 
 // RoboCop session 20260809_143910: the Streamline runtime created the real

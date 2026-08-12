@@ -55,6 +55,12 @@ void InlineHook::RemoveAll() {}
 void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;
 }
+bool InlineHook::IsInstalledEntryPatchIntact(void*, void** currentJumpTargetOut) {
+    if (currentJumpTargetOut) {
+        *currentJumpTargetOut = nullptr;
+    }
+    return true;
+}
 
 // Stubs for DX12 - C++ linkage (matching header declarations in dx12_hook.h)
 // Note: These are regular C++ functions, not extern "C"

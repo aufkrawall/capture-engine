@@ -375,10 +375,11 @@ bool TryReadSteamOverlayNullCallbackSlot(void** callbackValueOut);
 }
 
 namespace DXGIShared {
-// Discover Steam's Present-shaped NULL callback slot(s) in the loaded overlay
-// module and preemptively patch NULL ones to CE's DXGI bypass trampoline.
+// Discover Steam's Present-shaped callback slot(s) in the loaded overlay module.
+// Read-only: CE inspects them to decide whether invoking Steam is safe, and never
+// writes into them (a speculative write makes Steam skip its own hook install and
+// chain to a raw Present, dropping every overlay below Steam).
 size_t DiscoverSteamNullCallbackSlots(HMODULE steamModule, uintptr_t* slotsOut, size_t maxSlots);
-size_t EnsureSteamNullCallbacksPatched(PFN_Present presentBypass);
 }
 
 namespace DXGIShared {

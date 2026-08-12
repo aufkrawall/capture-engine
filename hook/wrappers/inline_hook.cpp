@@ -573,6 +573,35 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
     return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
 }
 
+bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut) {
+    if (currentJumpTargetOut) {
+        *currentJumpTargetOut = nullptr;
+    }
+    if (!target) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+    for (const auto& h : g_hooks) {
+        if (h.target != target || !h.installed) {
+            continue;
+        }
+        if (memcmp(h.target, h.installedBytes, h.patchSize) == 0) {
+            return true;
+        }
+#ifdef _WIN64
+        constexpr bool is64bit = true;
+#else
+        constexpr bool is64bit = false;
+#endif
+        if (currentJumpTargetOut) {
+            *currentJumpTargetOut = ResolveExternalEntryJump(static_cast<const uint8_t*>(target), is64bit);
+        }
+        return false;
+    }
+    return false;
+}
+
 static bool OwnsInstalledEntryBytes(const HookEntry& hook) {
     MEMORY_BASIC_INFORMATION memory = {};
     return hook.target && hook.patchSize > 0 &&

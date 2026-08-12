@@ -324,11 +324,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // return address, so it chains to the original dxgi!Present
                     // after rendering Steam overlay.
                     if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
-                        // Preemptively patch Steam's Present-shaped NULL
-                        // callback slot(s) to the bypass (same recovery the VEH
-                        // below would apply at crash time, applied up front so a
-                        // shadowed VEH dispatch cannot leave a fault behind).
-                        DXGIShared::EnsureSteamNullCallbacksPatched(presentBypass);
+                        // No speculative writes into Steam's callback slots: pre-filling a slot
+                        // Steam has not initialized makes it skip its own install and chain to a
+                        // raw Present, dropping every overlay below Steam. The VEH below recovers
+                        // the exact faulting slot if a NULL dispatch still happens.
                         ScopedSteamNullCallbackRecoveryGuard steamInvokeGuard(
                             presentBypass != nullptr, "non-SL Steam Present", "E9 JMP steady Present",
                             reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass), false,
@@ -547,12 +546,9 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
 
-            // Preemptively patch Steam's Present-shaped NULL callback slot(s)
-            // to the bypass so the E9 transport below cannot fault through
-            // NULL even if the crash-time VEH recovery is shadowed by other
-            // exception handlers.
-            DXGIShared::EnsureSteamNullCallbacksPatched(presentBypass);
-
+            // No speculative writes into Steam's callback slots here either - see
+            // dxgi_shared_steam.cpp. The VEH recovery below resolves the exact faulting slot
+            // if Steam still dispatches through NULL.
             ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
                 presentBypass != nullptr, "SL fast-path Steam Present", "SL fast-path E9 transport",
                 reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass), false, false);

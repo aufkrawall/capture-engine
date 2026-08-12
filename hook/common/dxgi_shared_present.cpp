@@ -462,6 +462,35 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             entryNum, pSwapChain, IsInWrapperPresent() ? 1 : 0, dxgi_shared_oPresentTrampoline);
     }
 
+    // Foreign Present-entry ownership watch. Steam and RTSS both restore and
+    // re-install the shared dxgi!Present entry bytes on their own schedule; a
+    // re-hook that lands while CE's prepend is live records CE as that tool's
+    // chain successor and silently drops whatever was below it. CE cannot undo
+    // that from its side, so make the transition observable instead of leaving
+    // an overlay disappearance to be re-diagnosed from scratch. Metered: a
+    // short memcmp on the first presents and then rarely.
+    if (dxgi_shared_oPresentTrampoline && dxgi_shared_s_originalVtable8Present &&
+        (entryNum <= 3 || (entryNum % 512) == 0)) {
+        void* currentEntryOwner = nullptr;
+        if (!InlineHook::IsInstalledEntryPatchIntact(
+                reinterpret_cast<void*>(dxgi_shared_s_originalVtable8Present), &currentEntryOwner)) {
+            static std::atomic<int> s_entryOwnershipLostLogCount{0};
+            const int n = s_entryOwnershipLostLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 5 || (n % 200) == 0) {
+                char ownerPath[MAX_PATH] = {};
+                const bool resolvedOwner =
+                    currentEntryOwner && ResolveExternalPresentHookOwnerPath(currentEntryOwner, ownerPath,
+                                                                             sizeof(ownerPath));
+                HookLogImportant(
+                    "DetourPresent: foreign re-hook took the Present entry from CE #%d (entry=%p newTarget=%p "
+                    "owner=%s) - CE remains reachable through that tool's saved chain, but an overlay below it "
+                    "may have been dropped",
+                    n, (void*)dxgi_shared_s_originalVtable8Present, currentEntryOwner,
+                    resolvedOwner ? ownerPath : "<unresolved thunk>");
+            }
+        }
+    }
+
     const APIType api = DetectAPIType(pSwapChain);
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent")) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);

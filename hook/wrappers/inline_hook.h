@@ -85,6 +85,15 @@ bool RemoveDeepHook(void* target);
 // Returns callable trampoline pointer, or nullptr on failure.
 void* CreateBypassTrampoline(void* target);
 
+// Report whether CE's installed entry patch at `target` is still the live one.
+// Returns false when CE never hooked the target, or when another component has
+// re-patched those bytes over CE (the foreign tools that share dxgi!Present all
+// restore/re-install those same bytes, and whichever re-hooks while CE's patch
+// is live records CE as its own chain successor). `currentJumpTargetOut`
+// receives the live entry jump's target when the replacement is a chainable
+// E9/FF25 jump, so callers can attribute the new owner. Read-only.
+bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut);
+
 // Check if an address falls within any sealed trampoline pool.
 bool IsInTrampolinePool(void* address);
 
