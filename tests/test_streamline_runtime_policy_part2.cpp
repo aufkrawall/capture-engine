@@ -44,12 +44,12 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     ASSERT_FALSE(text.empty());
     ASSERT_FALSE(headerText.empty());
 
-    const size_t scanStart = text.find("bool ScanLoadedStreamlineModules()");
+    const size_t scanStart = text.find("bool ScanLoadedStreamlineModules(bool pinFeatureResolution)");
     ASSERT_NE(scanStart, std::string::npos);
     const size_t snapshotClose = text.find("CloseHandle(snapshot);", scanStart);
     ASSERT_NE(snapshotClose, std::string::npos);
-    const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks()", snapshotClose);
-    const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks()", snapshotClose);
+    const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks(pinFeatureResolution)", snapshotClose);
+    const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks(pinFeatureResolution)", snapshotClose);
     ASSERT_NE(dlssgResolve, std::string::npos);
     ASSERT_NE(reflexResolve, std::string::npos);
     // Resolution must run after the module snapshot is released (runtime
@@ -63,6 +63,59 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     // (session 20260811_231851 logged endless 2.5s rescans).
     EXPECT_NE(headerText.find("kReflexSetConstantsUnavailableQueryLimit"), std::string::npos);
     EXPECT_NE(headerText.find("streamline_hook_g_ReflexSetConstantsUnavailableQueries"), std::string::npos);
+}
+
+// Crash 20260812_042259 (dx12_fg_switch_test via Steam + RTSS): switching DLSS FG -> FSR FG
+// unloads sl.dlss_g / sl.reflex BEFORE sl.interposer, and the HookThread's proactive feature
+// resolution called sl.interposer!slGetFeatureFunction which dispatched into the already-unmapped
+// sl.dlss_g -> DEP execute violation. The proactive scan must pin the queried modules and fail
+// closed when a tracked sl.* unload is in flight; runtime-internal callers (which may run under
+// the loader lock during SL DllMain) must not load libraries and only skip when the feature
+// module is already gone.
+TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    const fs::path hookSource = fs::current_path() / "hook" / "apis" / "streamline_hook.cpp";
+    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
+    ASSERT_TRUE(fs::exists(installSource));
+    ASSERT_TRUE(fs::exists(hookSource));
+    ASSERT_TRUE(fs::exists(resolveSource));
+    ASSERT_TRUE(fs::exists(headerSource));
+
+    const std::string install = ce::test_source::ReadLogicalSource(installSource);
+    const std::string hook = ce::test_source::ReadLogicalSource(hookSource);
+    const std::string resolve = ce::test_source::ReadLogicalSource(resolveSource);
+    const std::string header = ce::test_source::ReadLogicalSource(headerSource);
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(hook.empty());
+    ASSERT_FALSE(resolve.empty());
+    ASSERT_FALSE(header.empty());
+
+    // Every tracked sl.* unload bumps a teardown generation that the resolve path snapshots.
+    EXPECT_NE(header.find("streamline_hook_g_StreamlineModuleUnloadGeneration"), std::string::npos);
+    EXPECT_NE(hook.find("streamline_hook_g_StreamlineModuleUnloadGeneration.fetch_add(1"), std::string::npos);
+
+    // The HookThread's Init scan pins the queried modules; the runtime-activity retry path must
+    // not (it can run under the loader lock where LoadLibrary is forbidden).
+    EXPECT_NE(hook.find("ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true)"), std::string::npos);
+    EXPECT_NE(install.find("const bool foundModule = ScanLoadedStreamlineModules();"), std::string::npos);
+
+    // The query guard pins both the feature plugin and the interposer via their full paths and
+    // rejects the query when the generation changed between the liveness check and the pins.
+    EXPECT_NE(resolve.find("class ScopedStreamlineFeatureQueryGuard"), std::string::npos);
+    EXPECT_NE(resolve.find("PinLoadedStreamlineModule"), std::string::npos);
+    EXPECT_NE(resolve.find("LoadLibraryA(modulePath)"), std::string::npos);
+    EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.interposer.dll\")"), std::string::npos);
+    EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.dlss_g.dll\")"), std::string::npos);
+    EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.reflex.dll\")"), std::string::npos);
+    EXPECT_NE(resolve.find("streamline_hook_g_StreamlineModuleUnloadGeneration.load("), std::string::npos);
+
+    // Non-proactive callers (runtime-internal, DllMain-safe) only check module presence.
+    EXPECT_NE(resolve.find("bool TryResolveDLSSGFeatureHooks(bool proactiveScan)"), std::string::npos);
+    EXPECT_NE(resolve.find("bool TryResolveReflexFeatureHooks(bool proactiveScan)"), std::string::npos);
+    EXPECT_NE(resolve.find("} else if (!GetModuleHandleA(\"sl.dlss_g.dll\"))"), std::string::npos);
+    EXPECT_NE(resolve.find("} else if (!GetModuleHandleA(\"sl.reflex.dll\"))"), std::string::npos);
 }
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {

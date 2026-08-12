@@ -1,5 +1,102 @@
 #include "streamline_hook_internal.h"
 
+namespace {
+// Pins an already-loaded module (refcount++) so it cannot be unmapped while CE calls into the
+// Streamline runtime. Returns the same HMODULE on success, null when the module is gone or a
+// fresh instance had to be loaded (a fresh instance would leave the interposer's plugin table
+// stale, so it must never be used for the query).
+HMODULE PinLoadedStreamlineModule(HMODULE module) {
+    if (!module) {
+        return nullptr;
+    }
+    char modulePath[MAX_PATH] = {};
+    const DWORD pathLength = GetModuleFileNameA(module, modulePath, sizeof(modulePath));
+    if (pathLength == 0 || pathLength >= sizeof(modulePath)) {
+        return nullptr;
+    }
+    HMODULE pinned = LoadLibraryA(modulePath);
+    if (pinned != module) {
+        if (pinned) {
+            FreeLibrary(pinned);
+        }
+        return nullptr;
+    }
+    return pinned;
+}
+
+// Guards a proactive feature-function query against the Streamline runtime being torn down.
+// dx12_fg_switch_test unloads sl.dlss_g / sl.reflex BEFORE sl.interposer when switching
+// DLSS -> FSR (session 20260812_042259), so sl.interposer's slGetFeatureFunction can dispatch
+// into an already-unmapped plugin -> DEP execute violation. The guard pins the interposer AND
+// the feature plugin for the duration of the query, and rejects the query when a tracked sl.*
+// unload started between the liveness check and the pins (generation counter).
+class ScopedStreamlineFeatureQueryGuard {
+public:
+    explicit ScopedStreamlineFeatureQueryGuard(const char* featureModuleName) {
+        if (!featureModuleName || !featureModuleName[0]) {
+            return;
+        }
+        const uint64_t generationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
+        HMODULE featureModule = GetModuleHandleA(featureModuleName);
+        HMODULE interposerModule = GetModuleHandleA("sl.interposer.dll");
+        if (!featureModule || !interposerModule) {
+            return;  // no plugin / no interposer: nothing to resolve through
+        }
+        featurePin_ = PinLoadedStreamlineModule(featureModule);
+        interposerPin_ = PinLoadedStreamlineModule(interposerModule);
+        if (!featurePin_ || !interposerPin_) {
+            ReleasePins();
+            return;
+        }
+        if (streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) !=
+            generationBefore) {
+            // A teardown began between the liveness check and the pins; the pinned instances may
+            // already be stale. Fail closed and let the next module-load retry re-attempt.
+            ReleasePins();
+            return;
+        }
+        valid_ = true;
+    }
+
+    ~ScopedStreamlineFeatureQueryGuard() {
+        ReleasePins();
+    }
+
+    bool IsValid() const {
+        return valid_;
+    }
+
+private:
+    void ReleasePins() {
+        if (featurePin_) {
+            FreeLibrary(featurePin_);
+            featurePin_ = nullptr;
+        }
+        if (interposerPin_) {
+            FreeLibrary(interposerPin_);
+            interposerPin_ = nullptr;
+        }
+        valid_ = false;
+    }
+
+    HMODULE featurePin_ = nullptr;
+    HMODULE interposerPin_ = nullptr;
+    bool valid_ = false;
+};
+
+void LogSkippedFeatureResolutionForTeardownOnce(const char* featureModuleName, const char* source) {
+    static std::atomic<int> s_teardownSkipLogCount{0};
+    const int logCount = s_teardownSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 100) == 0) {
+        HookLogImportant(
+            "Streamline Hook: Skipping %s feature resolution — Streamline runtime is unloading or "
+            "already unloaded (featureModule=%s log=%d); the next module load re-attempts",
+            source ? source : "proactive", featureModuleName ? featureModuleName : "unknown", logCount + 1);
+    }
+}
+}  // namespace
+
 
 bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function,  bool fallbackToReturnedWrapper) {
 
@@ -226,11 +323,28 @@ bool MaybeHookReflexSetConstants(void*& streamline_hook_function,  bool fallback
 }
 
 
-bool TryResolveDLSSGFeatureHooks() {
+bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
 
 
     auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
     if (!originalGetFeatureFunction) {
+        return false;
+    }
+    if (proactiveScan) {
+        // The HookThread's loaded-module scan can race with the app tearing the Streamline
+        // runtime down (DLSS -> FSR switch): the interposer's slGetFeatureFunction dispatches
+        // into sl.dlss_g, which the runtime unloads BEFORE the interposer (crash 20260812_042259:
+        // DEP at a freed sl.dlss_g address from sl_interposer!slGetFeatureFunction+0x162). Pin
+        // both modules for the queries and fail closed when a teardown is in flight.
+        ScopedStreamlineFeatureQueryGuard teardownGuard("sl.dlss_g.dll");
+        if (!teardownGuard.IsValid()) {
+            LogSkippedFeatureResolutionForTeardownOnce("sl.dlss_g.dll", "DLSS-G");
+            return false;
+        }
+    } else if (!GetModuleHandleA("sl.dlss_g.dll")) {
+        // Runtime-internal callers (no loader calls allowed): if the DLSS-G plugin is not
+        // loaded there is nothing to resolve and the interposer query would be pointless (and,
+        // with a stale plugin table, unsafe). GetModuleHandle is DllMain-safe.
         return false;
     }
 
@@ -266,11 +380,20 @@ bool TryResolveDLSSGFeatureHooks() {
 }
 
 
-bool TryResolveReflexFeatureHooks() {
+bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 
 
     auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
     if (!originalGetFeatureFunction) {
+        return false;
+    }
+    if (proactiveScan) {
+        ScopedStreamlineFeatureQueryGuard teardownGuard("sl.reflex.dll");
+        if (!teardownGuard.IsValid()) {
+            LogSkippedFeatureResolutionForTeardownOnce("sl.reflex.dll", "Reflex");
+            return false;
+        }
+    } else if (!GetModuleHandleA("sl.reflex.dll")) {
         return false;
     }
 

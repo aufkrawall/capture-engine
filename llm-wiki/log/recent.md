@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-08-12 - DLSS->FSR switch crash: Streamline feature resolution raced the runtime teardown (0.1.5948)
+
+- Crash `20260812_042259` (dx12_fg_switch_test via Steam + RTSS, build 0.1.5947): switching DLSS FG -> FSR FG killed the process with `0xC0000005` DEP on the HookThread, 39 ms after the Streamline modules started unloading. Stack: `sl_interposer!slGetFeatureFunction+0x162` called from `capture_hook_x64!TryResolveDLSSGFeatureHooks` (`StreamlineHook::Init` -> `ScanLoadedStreamlineModules`). The runtime unloads the feature plugins BEFORE the core: `sl.dlss_g.dll` unloaded at 04:23:21.731, `sl.reflex.dll` at .733, `sl.common.dll`/`sl.interposer.dll` at .806-.807 — so `slGetFeatureFunction` (still mapped) dispatched into the already-unmapped `sl.dlss_g` plugin function at `0x7FF858A04A90` (DEP execute violation). The proactive resolution had no liveness guard against the plugin module being gone; `IsSavedStreamlineOriginalCallable` only validates the CALLED interposer export, never the plugin the dispatch lands in.
+- Fix 0.1.5948, generic (no tool-specific state):
+  - Every tracked sl.* unload now bumps `streamline_hook_g_StreamlineModuleUnloadGeneration` in `OnModuleUnloaded`.
+  - The HookThread's proactive scan (`StreamlineHook::Init` -> `ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true)`) runs the feature queries under `ScopedStreamlineFeatureQueryGuard`: it pins both the feature plugin (`sl.dlss_g.dll` / `sl.reflex.dll`) and `sl.interposer.dll` via `LoadLibraryA` on the modules' full paths (refcount++, same-instance check), and rejects the query when the generation changed between the liveness check and the pins (teardown in flight -> fail closed, next module load retries).
+  - Runtime-internal callers (`Hooked_slSetD3DDevice`, `QueryCapabilityMax`, the Reflex runtime-activity retry) keep pinning OFF — they can run under the loader lock during SL DllMain where LoadLibrary is forbidden — and only skip when the feature module is already gone (`GetModuleHandleA`, DllMain-safe).
+  - `ScanLoadedStreamlineModules(bool pinFeatureResolution = false)`; `TryResolveDLSSGFeatureHooks(bool proactiveScan = false)` / `TryResolveReflexFeatureHooks(bool proactiveScan = false)`.
+- Regression tests: `tests/test_streamline_runtime_policy_part2.cpp` (`FeatureResolutionSkipsStreamlineTeardownRace` source-policy; the existing scan test updated for the parameterized signatures).
+- Validation pending: re-run dx12_fg_switch_test via Steam + RTSS through the DLSS<->FSR switch matrix; expect `Skipping ... feature resolution — Streamline runtime is unloading` logs instead of a crash, then clean re-resolution on the next module load.
+
 ### 2026-08-12 - Talos DLSS FG + Steam + RTSS: wrap the Streamline runtime swapchain and leave the Present entry (0.1.5946)
 
 - Goal from the overlay-coexistence hand-off: CE + RTSS + Steam must all render together with DLSS FG. CE's entry prepend was the poison - whichever foreign tool (re-)hooks while it is live records CE as its "next" and the other overlay drops out of the chain. The FG-interposer exception kept the prepend because runtime presents previously reached CE only through the entry (`DetourCreateSwapChainGlobal: Streamline present, skipping wrap`).

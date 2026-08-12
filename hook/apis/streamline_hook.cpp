@@ -67,7 +67,9 @@ void Init() {
     std::lock_guard<std::mutex> lock(streamline_hook_g_InitMutex);
     RegisterDynamicHooksOnce();
 
-    const bool foundModule = ScanLoadedStreamlineModules();
+    // HookThread context (no loader lock): feature resolution may pin the queried modules to
+    // close the DLSS->FSR teardown race (crash 20260812_042259).
+    const bool foundModule = ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true);
 
     if (!foundModule) {
         if (!streamline_hook_g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
@@ -85,6 +87,10 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
         !ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(moduleBaseName)) {
         return;
     }
+    // Tear-down generation: any in-flight feature-hook resolution must notice this unload even
+    // when the departing module is not the one whose export it is calling (sl.interposer's
+    // slGetFeatureFunction can dispatch into a plugin that unloaded first).
+    streamline_hook_g_StreamlineModuleUnloadGeneration.fetch_add(1, std::memory_order_acq_rel);
 
     // Runs under the loader lock: interlocked/atomic writes and lightweight
     // logging only. Do NOT take g_ModuleHookMutex here (InstallHooksForModule

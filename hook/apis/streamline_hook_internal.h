@@ -551,6 +551,14 @@ inline PFN_slSetTagForFrame streamline_hook_g_Original_slSetTagForFrame = nullpt
 
 inline PFN_slEvaluateFeature streamline_hook_g_Original_slEvaluateFeature = nullptr;
 
+// Bumped by every tracked sl.* module unload (OnModuleUnloaded). The proactive feature-hook
+// resolution calls into sl.interposer's slGetFeatureFunction, whose internal dispatch can point
+// into a feature plugin (sl.dlss_g / sl.reflex) that the runtime already unmapped — the
+// DLSS->FSR switch test crashed exactly there (20260812_042259: DEP at a freed sl.dlss_g
+// address from sl_interposer!slGetFeatureFunction+0x162). Resolution snapshots this generation
+// before pinning the modules and rejects the query when a teardown started in between.
+inline std::atomic<uint64_t> streamline_hook_g_StreamlineModuleUnloadGeneration{0};
+
 inline PFN_slDLSSGSetOptions streamline_hook_g_Original_slDLSSGSetOptions = nullptr;
 
 inline PFN_slDLSSGGetState streamline_hook_g_Original_slDLSSGGetState = nullptr;
@@ -694,8 +702,8 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
                                                     void** originalSlot, std::atomic<void*>& attemptedTarget,
                                                     const char* hookName);void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper,
                                     bool hookReady);void LogProactiveFeatureHookGapOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target);void LogFeatureLookupOutcomeOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* originalTarget,
-                                 void* returnedTarget, bool hookReady);bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookDLSSGGetState(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSleep(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetConstants(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool TryResolveDLSSGFeatureHooks();bool TryResolveReflexFeatureHooks();uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* streamline_hook_options);void RegisterDynamicHooksOnce();bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath);bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot, MODULEENTRY32& firstEntry, DWORD& error, int& attempts,
-                                       bool& failedOnFirstEntry);bool ScanLoadedStreamlineModules();bool AreReflexFeatureHooksComplete();void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source);slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* streamline_hook_options);slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& streamline_hook_options);
+                                  void* returnedTarget, bool hookReady);bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookDLSSGGetState(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSleep(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetConstants(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool TryResolveDLSSGFeatureHooks(bool proactiveScan = false);bool TryResolveReflexFeatureHooks(bool proactiveScan = false);uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* streamline_hook_options);void RegisterDynamicHooksOnce();bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath);bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot, MODULEENTRY32& firstEntry, DWORD& error, int& attempts,
+                                       bool& failedOnFirstEntry);bool ScanLoadedStreamlineModules(bool pinFeatureResolution = false);bool AreReflexFeatureHooksComplete();void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source);slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* streamline_hook_options);slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& streamline_hook_options);
 
 // Safe no-op stub for SL function pointers that SL returned as NULL during
 // re-entrant calls.  Steam's OverlayHookD3D3 may call slGetFeatureFunction

@@ -356,7 +356,7 @@ bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot,  MODULEENTRY32& firstEn
 }
 
 
-bool ScanLoadedStreamlineModules() {
+bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
 
 
     HANDLE snapshot = INVALID_HANDLE_VALUE;
@@ -413,8 +413,13 @@ bool ScanLoadedStreamlineModules() {
     // (session 20260811_230524: Talos runs 4x MFG via
     // slDLSSGSetOptions(numFramesToGenerate=3) but the overlay reported DLSS
     // 2x because the CreateFeature parameter object carries no multiplier).
-    const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks();
-    const bool resolvedReflex = TryResolveReflexFeatureHooks();
+    // Proactive scan: the HookThread can race the app tearing the Streamline runtime down
+    // (DLSS -> FSR switch unloads sl.dlss_g/sl.reflex before sl.interposer; crash
+    // 20260812_042259). When pinning is enabled the query path pins the queried modules and
+    // fails closed on teardown. Runtime-activity callers (RetryResolve*) keep pinning off —
+    // they can run under the loader lock (SL DllMain), where LoadLibrary is not allowed.
+    const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks(pinFeatureResolution);
+    const bool resolvedReflex = TryResolveReflexFeatureHooks(pinFeatureResolution);
     if (resolvedDLSSG || resolvedReflex) {
         // The runtime retry path re-scans while FG is active; only log the
         // resolution summary until it is fully complete and then sparsely.
