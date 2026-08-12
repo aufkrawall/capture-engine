@@ -685,6 +685,17 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     });
     StreamlineHook::ExternalOverlayPresentGuard slGuard;
 
+    // Own a reference across the foreign call. A foreign overlay chain can release the
+    // swapchain during Present - Streamline recreates its runtime-owned swapchain on an FG
+    // transition - and the post-invoke back-buffer measurement then dereferences freed
+    // memory. Talos 20260812_032301 crashed exactly there, four milliseconds after
+    // `foreign re-hook took the Present entry from CE`:
+    // TryGetSwapChainBackBufferIndex+0x11 `mov rax,[rax]`, AV READ, RAX holding code bytes.
+    // CE's swapchain wrapper already keeps this reference across its own Present; the
+    // guarded foreign transport must do the same.
+    pSwapChain->AddRef();
+    auto swapChainLifetimeGuard = ce::make_scope_guard([pSwapChain]() { pSwapChain->Release(); });
+
     UINT bbIdxBefore = UINT_MAX;
     UINT bbIdxAfter = UINT_MAX;
     const bool bbIdxBeforeMeasured = TryGetSwapChainBackBufferIndex(pSwapChain, &bbIdxBefore);

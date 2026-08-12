@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-08-12 - Talos: hold a swapchain reference across the foreign Present call (0.1.5943)
+
+- Session `20260812_032301` (0.1.5942): the readiness probe now reports a real pointer (`steamCallback=00007FF882D30380`), Steam and RTSS each drew, and then the game crashed 4 ms after `foreign re-hook took the Present entry from CE`. Stack: `capture_hook_x64!TryGetSwapChainBackBufferIndex+0x11` (`mov rax,[rax]`), AV READ from `0xFFFFFFFFFFFFFFFF`, RAX holding code bytes - i.e. `pSwapChain` was already freed.
+- Root cause: CE measured the back-buffer index **after** the foreign Present returned, on a raw pointer. A foreign overlay chain can release the swapchain inside Present - Streamline recreates its runtime-owned swapchain on an FG transition - so the post-invoke measurement dereferenced freed memory.
+- Fix 0.1.5943: `AddRef` before the guarded foreign invoke and `Release` after the post-measurement and the bypass fallback, in both the guarded transport and the non-SL E9 diagnostics block. CE's swapchain wrapper already keeps exactly this reference across its own Present; the foreign transports now match.
+- Invariant: **any pointer CE passes into a foreign overlay chain must be reference-held for as long as CE still touches it afterwards.**
+
 ### 2026-08-12 - Talos: refresh CE's successor on foreign re-hook; the readiness probe was arbitrary (0.1.5942)
 
 - Session `20260812_031449` (0.1.5941): no crash, but **Steam AND RTSS both invisible** — `gameoverlayrenderer64` and `RTSSHooks64` submitted zero command lists while the game and `sl.common`/`sl.dlss_g` kept submitting. Every present logged `Skipping guarded Steam Present hook #N ... Steam callback state is not a real renderer ... callback=0000000000000000` and fell back to the DXGI bypass, which skips the entire foreign chain, not just Steam.

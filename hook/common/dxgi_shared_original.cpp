@@ -343,6 +343,13 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             (void*)presentOriginal, (void*)dxgi_shared_g_externalOverlayPresentHook, vtableRestored ? 1 : 0);
                     }
 
+                    // Own a reference across the foreign call and its post-invoke diagnostics:
+                    // an overlay chain can release/recreate the swapchain inside Present (see
+                    // the guarded transport in dxgi_shared_steam.cpp, Talos 20260812_032301).
+                    pSwapChain->AddRef();
+                    auto swapChainLifetimeGuard =
+                        ce::make_scope_guard([pSwapChain]() { pSwapChain->Release(); });
+
                     // Phase C: Invoke Steam's overlay handler through the E9 JMP
                     // at presentOriginal (dxgi!Present).  This ensures Steam's
                     // handler fires through the natural hook chain with the correct
