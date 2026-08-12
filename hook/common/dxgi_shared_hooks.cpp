@@ -46,11 +46,15 @@ void* ResolveFF25JmpTarget(void* funcAddress) {
 
     int32_t dispOffset = 0;
     memcpy(&dispOffset, code + 2, sizeof(dispOffset));
-    const auto* targetSlot = reinterpret_cast<void* const*>(code + 6 + dispOffset);
-    if (!IsReadableMemory(reinterpret_cast<const void*>(targetSlot), sizeof(void*))) {
+    const void* targetSlot = code + 6 + dispOffset;
+    if (!IsReadableMemory(targetSlot, sizeof(void*))) {
         return nullptr;
     }
-    return *targetSlot;
+    // Foreign hook thunks are byte-packed, so the pointer slot is not guaranteed to be
+    // 8-byte aligned; a direct pointer load there is UB (UBSan misaligned-load report).
+    void* target = nullptr;
+    memcpy(static_cast<void*>(&target), targetSlot, sizeof(target));
+    return target;
 }
 }
 
@@ -258,8 +262,11 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     // Present chains with vtable patching. In that case the wrapper-based path
     // remains active and avoids hook wars.
     if (!DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(IsThirdPartyOverlayLoaded(),
-                                                                      HasPresentDetourHooks())) {
-        HookLog("DXGIShared::InstallHooks: External overlay detected, skipping DXGI swapchain hooks");
+                                                                      HasPresentDetourHooks(),
+                                                                      IsPresentEntryLeftToForeignChain())) {
+        HookLogImportant(
+            "DXGIShared::InstallHooks: Multi-overlay foreign Present chain owns the entry, keeping the swapchain "
+            "vtable pristine (wrapper-only interception)");
         return true;
     }
 

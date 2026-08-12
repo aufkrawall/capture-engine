@@ -49,11 +49,16 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     EXPECT_LT(naturalGuard, forcedBypassRoute);
     EXPECT_LT(naturalGuard, slFastPath);
 
-    const size_t present1Entry = original.find("HRESULT CallOriginalPresent1(");
+    // CallOriginalPresent1 lives in its own translation unit (source-size split).
+    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    ASSERT_TRUE(fs::exists(present1Source));
+    const std::string present1 = ce::test_source::ReadFile(present1Source);
+    ASSERT_FALSE(present1.empty());
+    const size_t present1Entry = present1.find("HRESULT CallOriginalPresent1(");
     const size_t present1WorkerGuard =
-        original.find("refusing Steam Present1 transport on runtime worker", present1Entry);
-    const size_t present1InlineTrampoline = original.find("if (present1Trampoline)", present1Entry);
-    const size_t present1ForcedBypass = original.find("if (forceSteamDX12Bypass)", present1Entry);
+        present1.find("refusing Steam Present1 transport on runtime worker", present1Entry);
+    const size_t present1InlineTrampoline = present1.find("if (present1Trampoline)", present1Entry);
+    const size_t present1ForcedBypass = present1.find("if (forceSteamDX12Bypass)", present1Entry);
     ASSERT_NE(present1Entry, std::string::npos);
     ASSERT_NE(present1WorkerGuard, std::string::npos);
     ASSERT_NE(present1InlineTrampoline, std::string::npos);
@@ -397,13 +402,18 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
 
     // Present1 fast path: same hazard; the clean Present1 bypass (or the
     // guarded Present transport) must precede the bare Present1 trampoline call.
-    const size_t present1Entry = original.find("HRESULT CallOriginalPresent1(");
+    // It lives in its own translation unit (source-size split).
+    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    ASSERT_TRUE(fs::exists(present1Source));
+    const std::string present1 = ce::test_source::ReadFile(present1Source);
+    ASSERT_FALSE(present1.empty());
+    const size_t present1Entry = present1.find("HRESULT CallOriginalPresent1(");
     ASSERT_NE(present1Entry, std::string::npos);
-    const size_t present1TrampolinePath = original.find("if (present1Trampoline) {", present1Entry);
+    const size_t present1TrampolinePath = present1.find("if (present1Trampoline) {", present1Entry);
     ASSERT_NE(present1TrampolinePath, std::string::npos);
-    const size_t present1ChainCheck = original.find("IsSteamExternalChainTrampoline((void*)present1Trampoline", present1TrampolinePath);
-    const size_t present1Bypass = original.find("return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
-    const size_t barePresent1Call = original.find("return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
+    const size_t present1ChainCheck = present1.find("IsSteamExternalChainTrampoline((void*)present1Trampoline", present1TrampolinePath);
+    const size_t present1Bypass = present1.find("return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
+    const size_t barePresent1Call = present1.find("return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);", present1TrampolinePath);
     ASSERT_NE(present1ChainCheck, std::string::npos);
     ASSERT_NE(present1Bypass, std::string::npos);
     ASSERT_NE(barePresent1Call, std::string::npos);
@@ -429,13 +439,11 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
     EXPECT_NE(steam.find("!isD3D12SwapChain", steamGate), std::string::npos);
 }
 
-// RTSS + Steam coexistence (session 20260811_233748): when Steam AND RTSS are
-// both loaded, the external Present chain belongs to RTSS (loaded later, it
-// displaced Steam's entry jump). The Steam guarded machinery must not run on
-// RTSS's chain, and the preserved-owner diagnostics must be emitted at install.
-// RTSS's restore/rehook cycle still re-enters Steam's handler inside the
-// forward, so Steam's NULL-callback patches must stay armed around the bare
-// trampoline call whenever Steam is loaded.
+// RTSS + Steam coexistence (sessions 20260811_233748 .. 20260812_013241): the Steam guarded
+// machinery must be gated on owner-based chain classification rather than the priority-ordered
+// loaded-module name, and — the actual fix — CE must keep its bytes out of a Present entry that
+// two or more foreign overlays already share, because whichever of them (re-)hooks while CE's
+// prepend is live records CE as its own "next" and drops the other overlay out of the chain.
 TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority) {
     namespace fs = std::filesystem;
     const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
@@ -477,42 +485,39 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     EXPECT_NE(hooks.find("ResolveExternalPresentHookOwnerPath(hookTarget", saveHook), std::string::npos);
     EXPECT_NE(hooks.find("External hook owner:", saveHook), std::string::npos);
 
-    // The non-Steam branch keeps Steam's NULL-callback patches + passive VEH
-    // backstop armed around the forward (crash 20260812_004407: without the
-    // patches Steam's lazy init faults through a NULL Present-shaped callback,
-    // RIP=0/RAX=0) and follows the LIVE entry once CE's prepend is gone, so the
-    // natural chain (which keeps RTSS's OSD alive without CE) drives the frame
-    // instead of the frozen install-time relay target.
+    // A multi-overlay foreign chain is left alone entirely: no prepend, and the wrapper is
+    // CE's interception. Anything else re-links the other tools' saved chains through CE.
+    EXPECT_NE(hooks.find("ShouldLeavePresentEntryToForeignOverlayChain("), std::string::npos);
+    const size_t leaveEntry = hooks.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(true");
+    ASSERT_NE(leaveEntry, std::string::npos);
+    const size_t prependInstall = hooks.find("InlineHook::InstallPublished(presentAddr");
+    ASSERT_NE(prependInstall, std::string::npos);
+    EXPECT_LT(leaveEntry, prependInstall);
+    EXPECT_NE(hooks.find("return true;", leaveEntry), std::string::npos);
+    EXPECT_LT(hooks.find("return true;", leaveEntry), prependInstall);
+
+    // In that mode every forward runs the live entry — never a trampoline, a saved foreign
+    // target, or the DXGI bypass, each of which drops one overlay out of the chain.
     const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
+    const size_t foreignChainForward = original.find("if (IsPresentEntryLeftToForeignChain()) {");
+    ASSERT_NE(foreignChainForward, std::string::npos);
     const size_t trampolinePath = original.find("if (presentTrampoline) {");
     ASSERT_NE(trampolinePath, std::string::npos);
-    const size_t nestedSteamGuard = original.find("non-Steam external chain with Steam loaded", trampolinePath);
-    ASSERT_NE(nestedSteamGuard, std::string::npos);
-    EXPECT_LT(trampolinePath, nestedSteamGuard);
-    EXPECT_NE(original.find("EnsureSteamNullCallbacksPatched(presentBypass);", nestedSteamGuard), std::string::npos);
-    EXPECT_NE(original.find("ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(", nestedSteamGuard),
-              std::string::npos);
-    // RTSS + Steam: invoke RTSS's own thunk directly so RTSS's restore/rehook
-    // reclaims the entry (Steam's lazy init would otherwise drop RTSS from its
-    // saved "next" chain after one frame, 20260812_005530).
-    EXPECT_NE(original.find("GetRTSSPresentHandler()", nestedSteamGuard), std::string::npos);
-    EXPECT_NE(original.find("return reinterpret_cast<PFN_Present>(rtssHandler)(pSwapChain, SyncInterval, Flags);",
-                            nestedSteamGuard),
-              std::string::npos);
-    EXPECT_NE(original.find("ResolveE9JmpTarget(", nestedSteamGuard), std::string::npos);
-    EXPECT_NE(original.find("ResolveFF25JmpTarget(", nestedSteamGuard), std::string::npos);
-    EXPECT_NE(original.find("return livePresent(pSwapChain, SyncInterval, Flags);", nestedSteamGuard),
-              std::string::npos);
-    EXPECT_NE(steam.find("void* ResolveRTSSPresentHandlerBySignature()"), std::string::npos);
-    EXPECT_NE(steam.find("void* ResolveRTSSPresentHookThunkNear("), std::string::npos);
-    EXPECT_NE(steam.find("void* GetRTSSPresentHandler()"), std::string::npos);
+    EXPECT_LT(foreignChainForward, trampolinePath);
+    EXPECT_NE(original.find("foreign-chain entry forward", foreignChainForward), std::string::npos);
+
+    // No tool-specific handler resolution may come back: a hardcoded RTSS/Steam handler is a
+    // snapshot of one build and structurally excludes whichever overlay it does not name.
+    EXPECT_EQ(original.find("GetRTSSPresentHandler()"), std::string::npos);
+    EXPECT_EQ(steam.find("ResolveRTSSPresentHandlerBySignature"), std::string::npos);
+    EXPECT_EQ(steam.find("RTSSHooks64.dll"), std::string::npos);
+
     const size_t bareTrampolineForward =
-        original.find("return presentTrampoline(pSwapChain, SyncInterval, Flags);", nestedSteamGuard);
+        original.find("return presentTrampoline(pSwapChain, SyncInterval, Flags);", trampolinePath);
     ASSERT_NE(bareTrampolineForward, std::string::npos);
-    EXPECT_LT(nestedSteamGuard, bareTrampolineForward);
 
     // Load-order evidence is recorded only from real load notifications.
     const fs::path detectSource = fs::current_path() / "hook" / "main_overlay_detect.cpp";

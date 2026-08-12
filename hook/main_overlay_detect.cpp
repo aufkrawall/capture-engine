@@ -37,6 +37,24 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
+      // Loader-free bookkeeping only. A second overlay joining a Present entry CE has
+      // already prepended over is the one case the install-time
+      // ShouldLeavePresentEntryToForeignOverlayChain decision cannot cover: from here on the
+      // two of them restore/re-hook those bytes around CE, and whichever re-hooks first
+      // records CE as its "next", dropping the other out of the chain. Make that state
+      // visible instead of leaving it to be re-diagnosed from overlay-disappearance reports.
+      if (DXGIShared::HasPresentInlineHooks() &&
+          ce::overlay_compat::CountLoadedTrackedOverlayModules(
+              ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2) {
+        static std::atomic<bool> s_lateOverlayJoinLogged{false};
+        if (!s_lateOverlayJoinLogged.exchange(true, std::memory_order_acq_rel)) {
+          HookLogImportant(
+              "DllNotification: third-party overlay %s joined a Present entry CE already prepended over; "
+              "CE cannot leave that entry retroactively, so one of the foreign overlays may stop drawing "
+              "(start it before the game to get the wrapper-only coexistence path)",
+              matched);
+        }
+      }
     }
     // Record the resolved full path for the configurable graphics runtime
     // family on every load mechanism (LoadLibrary, LdrLoadDll, dependent

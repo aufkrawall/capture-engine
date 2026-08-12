@@ -108,6 +108,26 @@ inline const char* FirstLoadedTrackedOverlayModule(TrackedOverlaySubset subset) 
     return nullptr;
 }
 
+// Loader-free (after the one-time seed): how many tracked modules in `subset` are loaded.
+inline size_t CountLoadedTrackedOverlayModules(TrackedOverlaySubset subset) {
+    EnsureThirdPartyOverlayModuleCacheSeeded();
+    const uint32_t bits = TrackedOverlayLoadedBits().load(std::memory_order_acquire);
+    size_t count = 0;
+    for (size_t i = 0; i < kTrackedOverlayModuleCount; ++i) {
+        if (!(bits & (1u << i))) {
+            continue;
+        }
+        const TrackedOverlayModule& e = kTrackedOverlayModules[i];
+        const bool inSubset = (subset == TrackedOverlaySubset::kOverlay && e.overlay) ||
+                              (subset == TrackedOverlaySubset::kStartupBlocking && e.startupBlocking) ||
+                              (subset == TrackedOverlaySubset::kStartupBlockingRender && e.startupBlockingRender);
+        if (inSubset) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 // Present HOT PATH: loader-free. (Forward-declared earlier for IsThirdPartyOverlayLoaded.)
 inline const char* GetLoadedThirdPartyOverlayModuleName() {
     return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kOverlay);
@@ -157,6 +177,31 @@ inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedO
     }
     return loadedOverlayName != nullptr &&
            detail::ContainsInsensitive(loadedOverlayName, "gameoverlayrenderer");
+}
+
+// Pure decision: may CE add its own entry patch to a dxgi!Present entry that a foreign
+// overlay already owns?
+//
+// Steam and RTSS both implement "save the current entry bytes, patch, and on every call
+// restore the saved bytes / re-install" on that SAME shared entry. Two of them compose
+// naturally. A third participant does not: whichever tool (re-)installs its hook while CE's
+// five-byte prepend is live records CE as its own "next", which silently drops the other
+// overlay out of the chain — Strange Brigade DX12 + Steam + RTSS, sessions
+// 20260812_002958 / _005530 / _010529: all three overlays drew on frame 1 and RTSS was gone
+// from frame 2 onwards. No forwarding heuristic can repair that from CE's side, because the
+// damage is inside the other tools' saved-chain state.
+//
+// So with more than one foreign overlay on the entry, CE stays out of it entirely and
+// intercepts through its swapchain wrapper instead, which no byte patcher can observe; the
+// foreign chain is then byte-identical to a process without CE.
+//
+// Exception: a frame-generation interposer (Streamline / NvPresent) presents generated frames
+// from its own runtime-owned swapchain, which never reaches CE's wrapper. The entry hook is
+// CE's only view of those presents, so it is kept.
+inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryJumpDetected,
+                                                         size_t loadedOverlayModuleCount,
+                                                         bool frameGenerationInterposerLoaded) {
+    return foreignEntryJumpDetected && loadedOverlayModuleCount >= 2 && !frameGenerationInterposerLoaded;
 }
 
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No

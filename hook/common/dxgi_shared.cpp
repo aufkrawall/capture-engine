@@ -322,6 +322,20 @@ PFN_Present dxgi_shared_g_externalOverlayPresentHook = nullptr;
 }
 
 namespace DXGIShared {
+// Set when InstallPresentInlineHooks deliberately left the dxgi!Present entry to a
+// multi-overlay foreign chain (see ShouldLeavePresentEntryToForeignOverlayChain). CE then
+// owns no entry bytes, so every forward must run the live entry instead of a trampoline or
+// a bypass, and CE's own interception happens through CWrapDXGISwapChain.
+std::atomic<bool> dxgi_shared_s_presentEntryLeftToForeignChain{false};
+}
+
+namespace DXGIShared {
+bool IsPresentEntryLeftToForeignChain() {
+    return dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire);
+}
+}
+
+namespace DXGIShared {
 thread_local int dxgi_shared_s_externalOverlayPresentInvokeDepth = 0;
 }
 

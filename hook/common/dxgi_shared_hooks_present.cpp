@@ -257,10 +257,41 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     ((const uint8_t*)presentAddr)[4]);
             }
         }
+        // Two or more foreign overlays sharing this entry cannot survive a third
+        // participant: each of them restores/re-installs those same bytes, and whichever one
+        // (re-)hooks while CE's prepend is live records CE as its "next" and drops the other
+        // overlay out of the chain. Leave the entry alone and intercept through
+        // CWrapDXGISwapChain, which no byte patcher can observe.
+        const size_t loadedOverlayCount =
+            ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+        const bool frameGenerationInterposerLoaded =
+            ce::overlay_compat::IsStreamlineInterposerModuleLoaded() || g_FGCompat.IsNvPresentLoaded();
+        if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(true, loadedOverlayCount,
+                                                                            frameGenerationInterposerLoaded)) {
+            dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
+            dxgi_shared_oPresent = (PFN_Present)presentAddr;
+            if (present1Addr) {
+                dxgi_shared_oPresent1 = (PFN_Present1)present1Addr;
+            }
+            HookLogImportant(
+                "InstallPresentInlineHooks: %zu third-party overlays already share the Present entry "
+                "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s) — CE stays out of the entry patch chain "
+                "and intercepts through its swapchain wrapper",
+                loadedOverlayCount, entryUsesE9 ? "E9" : "FF25", presentAddr, externalEntryTarget,
+                ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                    ? ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                    : "none",
+                ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                    ? ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                    : "none");
+            s_inlineHooksInstalled = true;
+            return true;
+        }
+
         HookLogImportant(
             "InstallPresentInlineHooks: External %s detected — prepending CE at the original entry and "
-            "forwarding through the exact foreign target",
-            entryUsesE9 ? "E9" : "FF25");
+            "forwarding through the exact foreign target (loadedOverlays=%zu fgInterposer=%d)",
+            entryUsesE9 ? "E9" : "FF25", loadedOverlayCount, frameGenerationInterposerLoaded ? 1 : 0);
     }
 
 

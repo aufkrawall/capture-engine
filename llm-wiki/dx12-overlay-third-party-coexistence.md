@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-08-11 (generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle audited across graphics APIs; the prior DX12/FG provenance rules remain in force.)
+Last cross-checked: 2026-08-12 (multi-overlay Present-entry rule added: CE stays out of a `dxgi!Present` entry that two or more foreign overlays already share and intercepts through its swapchain wrapper instead. Generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle remain as audited on 2026-08-11; the prior DX12/FG provenance rules remain in force.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -51,7 +51,45 @@ This page records the current repo knowledge for making our overlay and capture 
 - Every API detour must test CE runtime eligibility before overlay, capture, screenshot, limiter, override, or mutable state work. Dormant calls forward through the exact predecessor. This rule applies equally to Present/Present1, device wrappers, state/sampler detours, OpenGL swaps/context deletion, and Vulkan queue presentation.
 - Third-party overlay inclusion in a capture is **best effort and order-dependent**. If the foreign overlay draws before CE's capture point, it is included; if it draws later, forcing an extra invocation or reordering its private GPU work is unsafe. Coexistence and visibility take priority: CE must preserve the natural chain and must not hide or disable either overlay merely to force it into the recording.
 
-## IN PROGRESS: RTSS + Steam both loaded — RTSS OSD vanishes while its Present chain is serviced (2026-08-12)
+## RESOLVED: CE must stay out of a Present entry that two or more foreign overlays share (2026-08-12, build 0.1.5934)
+
+### The invariant
+
+**CE may prepend at `dxgi!Present` while ONE foreign overlay owns that entry. It must not while TWO or more do.**
+
+Steam and RTSS both implement their DXGI Present hook as *save the current entry bytes, patch, and on every call restore the saved bytes, `call [entry]`, re-patch* — all on the same shared five bytes. Two such tools compose naturally (the later hooker's "next" is the earlier one). A third participant does not: whichever tool (re-)installs its hook while CE's prepend is live records **CE's relay** as its own "next", which silently drops the other overlay out of the chain. The corruption lives in the foreign tools' saved-chain state, so **no forwarding choice on CE's side can repair it** — see the four failed attempts below.
+
+### Evidence
+
+- Ground truth is the caller-attributed ECL trail (`ce_dx12_trace`). Frame 1 of sessions `installed/captureengine/logs/20260812_002958` and `20260812_010529`: `capture_hook_x64.dll > gameoverlayrenderer64.dll > RTSSHooks64.dll` — game -> CE -> Steam -> RTSS -> real Present, **all three overlays drawing**. From frame 2 onward Steam's saved "next" no longer reaches RTSS: RTSS submits exactly 1 ECL for the whole session while Steam submits 98/269/349.
+- RTSS's handler is `RTSSHooks64+0x72F20` (7.3.6, disassembled): reentrancy `lock bts`, optional save of the live entry bytes, `rep movsb` restore of its install-time bytes into `[hookedFn]`, `call [hookedFn]`, then a `rep movsb` re-patch with either the bytes it found live or its own hook bytes.
+- Steam's hook installer is `gameoverlayrenderer64+0x8da00`; its call sites (`+0x64a92`, `+0x64ae6`, …) pass `&origSlot` in `r8` and test `cmpq $0, origSlot` immediately after, i.e. the slot is the saved "next" that CE's prepend poisons.
+- With one foreign overlay this never bites: Talos/GTA/RoboCop show seed bits `0x1000001` (`20260811_214252`) = Steam + `sl.interposer` only, and `sl.interposer` is not in the overlay subset.
+
+### Current fix
+
+- `ce::overlay_compat::CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay)` counts the loaded overlay subset (loader-free, off the seed/notification cache). `ShouldLeavePresentEntryToForeignOverlayChain(foreignEntryJumpDetected, loadedOverlayCount, frameGenerationInterposerLoaded)` is the decision.
+- When it holds, `InstallPresentInlineHooks` creates the bypass trampolines and records `g_externalOverlayPresentHook` for diagnostics, then installs **no entry patch at all**, publishes `oPresent`/`oPresent1` as the live entry addresses, and sets `dxgi_shared_s_presentEntryLeftToForeignChain`.
+- `ShouldInstallSwapchainHooksWithThirdPartyOverlay(..., presentEntryLeftToForeignChain)` then also keeps the swapchain class vftable pristine — Steam resolves its own "next Present" from `vtable[8]`, so claiming that slot would put CE straight back into the chain the mode exists to leave.
+- `HasPresentDetourHooks()` consequently returns false, `ShouldDelegateDX12PresentToDetourHook` stops delegating, and `CWrapDXGISwapChain::Present` does the overlay/capture work itself and forwards through `m_pReal->Present`. The foreign chain is then byte-identical to a process without CE.
+- `CallOriginalPresent` / `CallOriginalPresent1` forward through the live entry in that mode — never a trampoline, a saved foreign target, or the DXGI bypass, each of which drops one overlay. Log markers: `InstallPresentInlineHooks: N third-party overlays already share the Present entry ... CE stays out of the entry patch chain`, `CallOriginalPresent: foreign-chain entry forward #N`.
+- Deliberately unchanged: a single foreign overlay keeps the prepend and all validated Steam/FG routing. A loaded FG interposer (Streamline / NvPresent) also keeps it — runtime-generated presents come from the runtime-owned swapchain and never reach CE's wrapper, so the entry hook is CE's only view of them.
+- Regression tests: `tests/test_overlay_compat.cpp` (overlay-subset counting excludes `sl.interposer`/render-only modules; the entry-chain policy matrix), `tests/test_dxgi_shared.cpp` (`SwapchainVTableStaysPristineWhileTheForeignPresentChainOwnsTheEntry`), `tests/test_dxgi_shared_part11.cpp` (install skips the prepend before `InstallPublished`, forwards run the live entry first, and **no tool-specific handler resolution may return**).
+
+### Known limitation
+
+A second overlay that loads *after* CE has already prepended cannot be un-prepended retroactively. That state is named once in the log: `DllNotification: third-party overlay <name> joined a Present entry CE already prepended over ...`. Starting the second overlay before the game takes the wrapper-only path.
+
+### Rejected approaches (do NOT re-pursue)
+
+All four were implemented, shipped, and measured; each excluded a different overlay:
+
+1. **Owner-based chain classification alone** (0.1.5927, `9c023489`) — correct classification, RTSS still vanished (`20260812_001959`).
+2. **Frozen install-time relay target** — RTSS drew frame 1 only (`20260812_002958`).
+3. **Follow the live entry** (0.1.5931, `5aca4a2e`) — identical outcome (`20260812_005530`, `_010529`); the live entry is Steam's, whose chain has already lost RTSS.
+4. **Invoke RTSS's own handler directly** (0.1.5932/0.1.5933, `e3085d89`/`52e93bd2`) — a hardcoded `RTSSHooks64+0x72F20` RVA plus a ±1 MB thunk scan. RTSS drew every frame and **Steam's overlay never drew at all** (`20260812_013241`). Also a build-specific hardcode, which the project rules forbid.
+
+### Historical symptom record
 
 - Symptom (session `installed/captureengine/logs/20260811_233748`, Strange Brigade DX12, build 0.1.5927): with Steam overlay (`gameoverlayrenderer64.dll`) AND RTSS (`RTSSHooks64.dll`) both loaded, RTSS's on-screen display disappeared after a brief moment while CE's overlay stayed. Reproduced with both RTSS inject modes.
 - Why the chain was misclassified: the tracked-overlay cache reports the **first loaded entry by list priority**, so with Steam + RTSS loaded it returns `gameoverlayrenderer64.dll` even though RTSS loaded later and displaced Steam's entry jump. CE therefore treated the preserved foreign `E9` at `dxgi!Present` (RTSS's runtime-allocated thunk) as a "Steam trampoline chain" and ran the guarded Steam invoke machinery on it. RTSS's handler is also entered via RTSS's restore/rehook cycle, which re-enters Steam's handler nested inside the call (RTSS saved Steam's `E9` bytes as its "original" prologue).
@@ -65,7 +103,7 @@ This page records the current repo knowledge for making our overlay and capture 
 - Regression tests: `tests/test_overlay_compat.cpp` (last-loaded tracking, load-order owner decision), `tests/test_dxgi_shared_part11.cpp` (source-policy: owner-based classification in all Steam routing decisions, install-time owner log, nested-Steam guard in the trampoline branch, notification-only last-loaded recording).
 - **Validation result (session `20260812_001959`, build 0.1.5928): NOT FIXED.** The classification fix worked (log shows `External hook owner: <unresolved thunk> (lastLoadedOverlay=RTSSHooks64.dll ...)`, the chain takes the non-Steam trampoline forward, no guarded Steam invoke lines) — **but RTSS's OSD still disappears.** So the Steam guarded-invoke machinery was NOT the cause.
 - Current evidence: the game runs ~1200 fps steady; ECL-timing counts start at ~3.0 ECLs/frame (game 1 + RTSS 2, same as the working dx12_test baseline) and drop to ~2.0 then ~0.9 over ~10 s — i.e., RTSS's per-frame submissions stop while the game keeps presenting. In the working dx12_test session (RTSS only, 144 fps) the composition stays 3.0/frame for 6+ minutes. The remaining differences: Steam's overlay is loaded and runs NESTED inside RTSS's handler (RTSS saved Steam's `E9` as its "original" bytes and restores it before calling its "next"), the game uses SyncInterval=0/ALLOW_TEARING at very high FPS, and the scene changes (menu -> gameplay).
-- Open questions: does RTSS stop because Steam's nested handler breaks its D3D11On12 state, because of the ~1200 fps / SyncInterval=0 present pattern, or something else? A finer ECL trace sample (every 64th call, commit `f8f3ecd2`, trace flag `ce_dx12_trace`) plus a Steam-overlay-disabled run are the next data points.
+- Those open questions are answered: the high frame rate / `SyncInterval=0` present pattern, RTSS's D3D11On12 state, and the menu -> gameplay scene change are all **not** the cause. The finer ECL trace sample (every 64th call, commit `f8f3ecd2`, trace flag `ce_dx12_trace`) is what produced the call trails in the resolved section above.
 
 ## RESOLVED: x86 DX12 overlay DEVICE_HUNG (dx12_test) — fixed 2026-06-09
 Single hand-off reference: `handoff-dx12-32bit-crash.md`. Chronology: `log/recent.md` (2026-06-08..09).

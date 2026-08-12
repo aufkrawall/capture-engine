@@ -47,9 +47,10 @@ const void* ResolveExternalPresentHookThunkTarget(const void* externalHook) {
         return externalHook;
     }
     const void* target = nullptr;
+    void* targetStorage = static_cast<void*>(&target);
     if (code[2] == 0 && code[3] == 0 && code[4] == 0 && code[5] == 0) {
         // FF 25 00 00 00 00 : JMP qword ptr [rip+0] -> pointer at +6.
-        memcpy(&target, code + 6, sizeof(target));
+        memcpy(targetStorage, code + 6, sizeof(target));
     } else {
         // FF 25 disp32 : JMP qword ptr [rip+disp32].
         int32_t disp = 0;
@@ -59,7 +60,7 @@ const void* ResolveExternalPresentHookThunkTarget(const void* externalHook) {
         if (!IsReadableMemory(reinterpret_cast<const void*>(pointerAddress), sizeof(target))) {
             return externalHook;
         }
-        memcpy(&target, reinterpret_cast<const void*>(pointerAddress), sizeof(target));
+        memcpy(targetStorage, reinterpret_cast<const void*>(pointerAddress), sizeof(target));
     }
     if (!target || !IsReadableMemory(target, 1)) {
         return externalHook;
@@ -79,110 +80,6 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
     }
     const void* handler = ResolveExternalPresentHookThunkTarget(externalHook);
     return TryGetModulePathFromCodeAddress(handler, modulePathOut, modulePathOutCount);
-}
-}
-
-namespace DXGIShared {
-// Resolve RTSS's Present handler directly by module offset + prolog signature.
-// RTSS 7.3.6 (the version used in all 2026-08 sessions) implements the DXGI
-// Present hook as RTSSHooks64+0x72F20 with a fixed prolog; in Strange Brigade
-// the entry jump belongs to Steam (it hooked last) and RTSS is only reachable
-// through Steam's saved "next" chain, which Steam's lazy init drops after one
-// frame (20260812_005530: RTSS drew exactly once, then only Steam's overlay
-// submitted). Invoking RTSS's handler directly lets RTSS's restore/rehook
-// reclaim the entry, exactly like the natural no-CE chain.
-void* ResolveRTSSPresentHandlerBySignature() {
-    HMODULE rtssMod = GetModuleHandleA("RTSSHooks64.dll");
-    if (!rtssMod) {
-        return nullptr;
-    }
-    constexpr uintptr_t kRTSSPresentHandlerRva = 0x72F20;
-    const auto* handler = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(rtssMod) +
-                                                          kRTSSPresentHandlerRva);
-    static const uint8_t kPrologSignature[8] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C};
-    if (!IsReadableMemory(handler, 30)) {
-        return nullptr;
-    }
-    if (memcmp(handler, kPrologSignature, sizeof(kPrologSignature)) != 0) {
-        return nullptr;
-    }
-    // The reentrancy spin starts at +0x1A: `lock bts dword ptr [...], 0` (F0 0F BA 2D).
-    if (handler[0x1A] != 0xF0 || handler[0x1B] != 0x0F || handler[0x1C] != 0xBA || handler[0x1D] != 0x2D) {
-        return nullptr;
-    }
-    return const_cast<void*>(reinterpret_cast<const void*>(handler));
-}
-}
-
-namespace DXGIShared {
-// Fallback: scan the executable region around a foreign Present hook thunk for
-// a hook thunk whose payload pointer lands inside RTSSHooks64.dll. RTSS and
-// Steam both allocate their runtime thunks (`FF 25 00 00 00 00` + absolute
-// handler pointer) near the hooked function.
-void* ResolveRTSSPresentHookThunkNear(const void* anchorThunk) {
-    if (!anchorThunk) {
-        return nullptr;
-    }
-    HMODULE rtssMod = GetModuleHandleA("RTSSHooks64.dll");
-    if (!rtssMod) {
-        return nullptr;
-    }
-    MODULEINFO rtssInfo = {};
-    if (!GetModuleInformation(GetCurrentProcess(), rtssMod, &rtssInfo, sizeof(rtssInfo))) {
-        return nullptr;
-    }
-    const uintptr_t rtssStart = reinterpret_cast<uintptr_t>(rtssMod);
-    const uintptr_t rtssEnd = rtssStart + rtssInfo.SizeOfImage;
-    const uintptr_t anchor = reinterpret_cast<uintptr_t>(anchorThunk);
-    constexpr uintptr_t kScanSpan = 0x100000;
-    const uintptr_t scanStart = anchor > kScanSpan ? (anchor - kScanSpan) & ~static_cast<uintptr_t>(0xFFF) : 0;
-    const uintptr_t scanEnd = anchor + kScanSpan;
-    for (uintptr_t page = scanStart; page <= scanEnd; page += 0x1000) {
-        if (!IsReadableMemory(reinterpret_cast<const void*>(page), 0x1000)) {
-            continue;
-        }
-        const auto* bytes = reinterpret_cast<const uint8_t*>(page);
-        for (size_t off = 0; off + 14 <= 0x1000; ++off) {
-            if (bytes[off] != 0xFF || bytes[off + 1] != 0x25 || bytes[off + 2] != 0 || bytes[off + 3] != 0 ||
-                bytes[off + 4] != 0 || bytes[off + 5] != 0) {
-                continue;
-            }
-            void* target = nullptr;
-            memcpy(&target, bytes + off + 6, sizeof(target));
-            const uintptr_t targetAddr = reinterpret_cast<uintptr_t>(target);
-            if (targetAddr >= rtssStart && targetAddr < rtssEnd) {
-                return reinterpret_cast<void*>(page + off);
-            }
-        }
-    }
-    return nullptr;
-}
-}
-
-namespace DXGIShared {
-// Cached RTSS Present handler. Resolved once off the hot path; null when RTSS
-// is not loaded or neither the signature path nor the thunk scan resolves it
-// (Steam-only games keep their existing routing).
-void* GetRTSSPresentHandler() {
-    static void* s_cached = []() -> void* {
-        void* handler = ResolveRTSSPresentHandlerBySignature();
-        if (handler) {
-            HookLogImportant("DXGIShared: Resolved RTSS Present handler %p (RTSSHooks64+0x72F20 signature match)",
-                             handler);
-            return handler;
-        }
-        HookLogImportant(
-            "DXGIShared: RTSS Present handler signature mismatch (RTSSHooks64=%p) - falling back to thunk scan",
-            (void*)GetModuleHandleA("RTSSHooks64.dll"));
-        const void* anchor = reinterpret_cast<const void*>(dxgi_shared_g_externalOverlayPresentHook);
-        void* thunk = ResolveRTSSPresentHookThunkNear(anchor);
-        if (thunk) {
-            HookLogImportant("DXGIShared: Resolved RTSS Present thunk %p (scan near saved external hook %p)", thunk,
-                             anchor);
-        }
-        return thunk;
-    }();
-    return s_cached;
 }
 }
 

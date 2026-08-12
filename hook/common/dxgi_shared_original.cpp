@@ -6,6 +6,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        // CE owns no entry bytes in the left-to-foreign-chain mode; the live entry IS the
+        // foreign chain, exactly as it would be without CE.
+        if (IsPresentEntryLeftToForeignChain() && dxgi_shared_s_originalVtable8Present &&
+            dxgi_shared_s_originalVtable8Present != DetourPresent) {
+            return dxgi_shared_s_originalVtable8Present(pSwapChain, SyncInterval, Flags);
+        }
         // The trampoline can re-enter Steam's chain when CE prepended over its
         // entry jump; during shutdown no VEH recovery is active, so prefer the
         // clean bypass for that transport.
@@ -35,6 +41,25 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 }
                 pSC2->Release();
             }
+        }
+    }
+
+    // Multi-overlay foreign chain: CE deliberately owns no bytes at the Present entry, so the
+    // only correct forward is the live entry itself. It runs whatever Steam/RTSS have chained
+    // there right now, identical to a process without CE. Every other transport below
+    // (trampoline, saved foreign target, DXGI bypass) is a snapshot or a shortcut and would
+    // drop one of the overlays out of the chain.
+    if (IsPresentEntryLeftToForeignChain()) {
+        const PFN_Present liveEntry =
+            dxgi_shared_s_originalVtable8Present ? dxgi_shared_s_originalVtable8Present : dxgi_shared_oPresent;
+        if (liveEntry && liveEntry != DetourPresent) {
+            static std::atomic<int> s_foreignChainEntryForwardCount{0};
+            const int forwardNum = s_foreignChainEntryForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (forwardNum <= 5 || (forwardNum % 5000) == 0) {
+                HookLogImportant("CallOriginalPresent: foreign-chain entry forward #%d (entry=%p)", forwardNum,
+                                 (void*)liveEntry);
+            }
+            return liveEntry(pSwapChain, SyncInterval, Flags);
         }
     }
 
@@ -94,73 +119,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
-        // Non-Steam external chain (e.g. RTSS's thunk). When Steam's overlay is
-        // ALSO loaded, the chain can re-enter Steam's handler (RTSS's saved
-        // "original" bytes are Steam's E9, restored before RTSS calls its
-        // "next"). Steam's lazy init faults through a NULL Present-shaped
-        // callback without pre-patching (crash 20260812_004407, RIP=0/RAX=0),
-        // so Steam's NULL-callback slots stay patched and the crash-time VEH
-        // stays armed for the duration of the forward.
-        const bool steamAlsoLoaded =
-            IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
-        if (steamAlsoLoaded && presentBypass) {
-            EnsureSteamNullCallbacksPatched(presentBypass);
-            ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
-                presentBypass != nullptr, "non-Steam external chain with Steam loaded",
-                "foreign trampoline chain", reinterpret_cast<void*>(presentTrampoline),
-                reinterpret_cast<void*>(presentBypass), false, false);
-        }
-        // RTSS + Steam coexistence: when Steam's overlay is ALSO loaded, the
-        // entry jump belongs to Steam (it hooked last) and RTSS is only
-        // reachable through Steam's saved "next" chain, which Steam's lazy init
-        // drops after one frame (20260812_005530: RTSS drew exactly once, then
-        // only Steam's overlay submitted). Invoke RTSS's own thunk directly —
-        // resolved next to Steam's thunk — so RTSS's restore/rehook reclaims the
-        // entry exactly like the natural no-CE chain (which keeps RTSS's OSD
-        // alive). Steam's handler is then never entered, so its lazy NULL
-        // callback cannot crash and its init cannot starve RTSS.
-        void* rtssHandler = steamAlsoLoaded ? GetRTSSPresentHandler() : nullptr;
-        if (rtssHandler && rtssHandler != reinterpret_cast<void*>(dxgi_shared_g_externalOverlayPresentHook)) {
-            static std::atomic<int> s_rtssDirectForwardCount{0};
-            const int rtssNum = s_rtssDirectForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (rtssNum <= 10 || (rtssNum % 1000) == 0) {
-                HookLogImportant("CallOriginalPresent: direct RTSS Present handler forward #%d (handler=%p)", rtssNum,
-                                 rtssHandler);
-            }
-            return reinterpret_cast<PFN_Present>(rtssHandler)(pSwapChain, SyncInterval, Flags);
-        }
-        // Follow the LIVE entry (dxgi!Present) instead of the frozen
-        // install-time relay target once the entry is no longer CE's own prepend
-        // (RTSS's restore/rehook wipes CE's prepend on its first frame). The
-        // natural chain that keeps RTSS's OSD alive without CE is driven by
-        // whoever owns the entry right now; the frozen relay keeps invoking the
-        // hook owner captured at install time forever (20260812_002958: RTSS
-        // drew exactly one frame, then only Steam's overlay submitted while the
-        // entry's current owner was no longer the saved target).
-        bool useLiveEntry = false;
-        void* entryJumpTarget = nullptr;
-        const PFN_Present livePresent = dxgi_shared_s_originalVtable8Present;
-        const auto* entryCode =
-            livePresent ? reinterpret_cast<const uint8_t*>(livePresent) : nullptr;
-        if (livePresent && livePresent != DetourPresent && livePresent != presentTrampoline &&
-            IsReadableMemory(entryCode, 6)) {
-            if (entryCode[0] == 0xE9) {
-                entryJumpTarget = ResolveE9JmpTarget(const_cast<void*>(reinterpret_cast<const void*>(livePresent)));
-            } else if (entryCode[0] == 0xFF && entryCode[1] == 0x25) {
-                entryJumpTarget = ResolveFF25JmpTarget(const_cast<void*>(reinterpret_cast<const void*>(livePresent)));
-            }
-            const void* relayTail = reinterpret_cast<const uint8_t*>(presentTrampoline) + 16;
-            useLiveEntry = entryJumpTarget != relayTail;
-        }
-        if (useLiveEntry) {
-            static std::atomic<int> s_liveEntryForwardCount{0};
-            const int liveNum = s_liveEntryForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (liveNum <= 10 || (liveNum % 1000) == 0) {
-                HookLogImportant("CallOriginalPresent: live foreign entry forward #%d (entry=%p target=%p)",
-                                 liveNum, (void*)livePresent, (void*)entryJumpTarget);
-            }
-            return livePresent(pSwapChain, SyncInterval, Flags);
-        }
+        // Non-Steam external chain (e.g. RTSS's thunk) with a single foreign overlay: the
+        // preserved trampoline re-issues exactly the entry jump CE prepended over, which is
+        // what the game itself would have executed. A multi-overlay chain never reaches this
+        // branch — InstallPresentInlineHooks leaves that entry unpatched entirely, because no
+        // forwarding choice from CE's side can repair a chain the other tools have already
+        // re-linked through CE.
         static int s_copLogCount = 0;
         if (s_copLogCount++ < 5) {
             HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
@@ -676,172 +640,5 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)", presentOriginal,
             presentTrampoline, slLoaded);
     return DXGI_ERROR_INVALID_CALL;
-}
-}
-
-namespace DXGIShared {
-HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                             const DXGI_PRESENT_PARAMETERS* pParams) {
-    if (!pSwapChain) {
-        return DXGI_ERROR_INVALID_CALL;
-    }
-    if (HookIsShuttingDown()) {
-        // Same Steam external-chain hazard as Present - use the clean Present1
-        // bypass instead of re-entering Steam without VEH recovery.
-        if (IsSteamExternalChainTrampoline((void*)dxgi_shared_oPresent1Trampoline, nullptr,
-                                           DetectAPIType(pSwapChain) == APIType::D3D12) &&
-            dxgi_shared_oPresent1Bypass) {
-            return dxgi_shared_oPresent1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-        }
-        if (dxgi_shared_oPresent1Trampoline)
-            return dxgi_shared_oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
-        if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1)
-            return dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pParams);
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-    }
-
-    WaitBackbufferFrameLatency(pSwapChain);
-    const PFN_Present1 present1Trampoline = dxgi_shared_oPresent1Trampoline;
-    const PFN_Present1 present1Original = dxgi_shared_oPresent1;
-    const PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
-    bool slLoaded = IsSLInterposerLoaded();
-
-    const char* forcedBypassOverlay = nullptr;
-    bool isD3D12SteamSwapChain = false;
-    const bool forceSteamDX12Bypass = ShouldForceSteamDX12Bypass(
-        pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay, &isD3D12SteamSwapChain);
-
-    // A preserved foreign Present1 trampoline is still a synchronous call into
-    // that overlay. Apply the same provenance boundary as Present before the
-    // natural inline chain can be entered from an FG runtime worker.
-    if (present1Bypass && IsSteamOverlayModule(forcedBypassOverlay)) {
-        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
-        const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
-        const bool runtimeCanPresentFromWorker = DXGIShared::CanRuntimePresentFromWorkerForExternalOverlay(
-            isD3D12SteamSwapChain, false, streamlineFGRunning, postSLConfirmedRendering,
-            ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode), g_FGCompat.IsFSRFGApiActive(),
-            HookHasRuntimeOwnedNativeFGPresentPath(), DoesFGRuntimeOwnSwapchain());
-        const uint32_t currentThreadId = GetCurrentThreadId();
-        const uint32_t trackedSourcePresentThreadId = DX12_GetGamePresentThreadId();
-        if (runtimeCanPresentFromWorker &&
-            !DXGIShared::ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
-                true, trackedSourcePresentThreadId, currentThreadId)) {
-            static std::atomic<int> s_steamPresent1RuntimeWorkerBypassLogCount{0};
-            const int bypassNum =
-                s_steamPresent1RuntimeWorkerBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (bypassNum <= 20 || bypassNum == 50 || (bypassNum % 500) == 0) {
-                HookLogImportant(
-                    "CallOriginalPresent1: refusing Steam Present1 transport on runtime worker #%d; using DXGI "
-                    "bypass (runtime=%s slFG=%d confirmed=%d sourceTid=0x%04X currentTid=0x%04X)",
-                    bypassNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), streamlineFGRunning ? 1 : 0,
-                    postSLConfirmedRendering ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
-            }
-            return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-        }
-    }
-
-    // Inline-hook path: a trampoline prepended over Steam's Present1 entry
-    // re-enters Steam's chain; there is no Present1 NULL-callback guard, so
-    // the clean Present1 bypass (or the guarded Present transport) replaces
-    // the bare trampoline call for that transport.
-    if (present1Trampoline) {
-        if (IsSteamExternalChainTrampoline((void*)present1Trampoline, nullptr,
-                                           DetectAPIType(pSwapChain) == APIType::D3D12)) {
-            if (present1Bypass) {
-                return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-            }
-            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        }
-        return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
-    if (forceSteamDX12Bypass) {
-        if (slLoaded) {
-            // SL case: use bypass trampoline (same as before, no Present1 guard available).
-            static int s_forcedBypass1LogCount = 0;
-            if (s_forcedBypass1LogCount++ < 10) {
-                HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for %s (slLoaded=%d)",
-                                 forcedBypassOverlay ? forcedBypassOverlay : "overlay", slLoaded ? 1 : 0);
-            }
-        } else {
-            // Non-Streamline case (e.g. Strange Brigade DX12 with only Steam overlay):
-            // Same root cause as CallOriginalPresent: Steam's OverlayHookD3D3
-            // needs vtable[8] = dxgi!Present to initialize.  The init is handled
-            // by CallOriginalPresent on the first Present call.  For Present1,
-            // only route through oPresent1 if Steam init has been completed;
-            // otherwise use the bypass trampoline (safe fallback).
-            //
-            // Steam does NOT hook Present1 with an E9 JMP, so calling
-            // present1Original directly on an already-initialized Steam is safe.
-            if (!dxgi_shared_s_steamInitCrashed && dxgi_shared_s_steamDX12InitAttempted.load(std::memory_order_acquire) && present1Original &&
-                present1Original != DetourPresent1 && IsReadableMemory(pSwapChain, sizeof(void*))) {
-                static std::atomic<int> s_steamNonSLPresent1ViaE9JmpCount{0};
-                if (s_steamNonSLPresent1ViaE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                    HookLogImportant(
-                        "CallOriginalPresent1: routing non-SL Steam overlay through "
-                        "present1Original at %p (Steam init done)",
-                        (void*)present1Original);
-                }
-                return present1Original(pSwapChain, SyncInterval, Flags, pParams);
-            }
-
-            static std::atomic<int> s_steamNonSLPresent1FallbackCount{0};
-            if (s_steamNonSLPresent1FallbackCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                HookLogImportant(
-                    "CallOriginalPresent1: non-SL Steam overlay — Present1 bypass "
-                    "(initAttempted=%d initCrashed=%d)",
-                    dxgi_shared_s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0, dxgi_shared_s_steamInitCrashed ? 1 : 0);
-            }
-        }
-        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
-    const char* thirdPartyBypassOverlay = nullptr;
-    if (ShouldForceThirdPartyOverlayBypass(pSwapChain, present1Bypass != nullptr, &thirdPartyBypassOverlay)) {
-        static int s_wrapperBypassLogCount = 0;
-        if (s_wrapperBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent1: forcing bypass for wrapped present under overlay %s",
-                             thirdPartyBypassOverlay);
-        }
-        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
-    // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
-    // When SL is loaded, call oPresent1 directly (same reason as Present).
-    if (slLoaded && present1Original && present1Original != DetourPresent1) {
-        return present1Original(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
-    // Prefer the current object's Present1 slot when it is not detoured.
-    if (IsReadableMemory(pSwapChain, sizeof(void*))) {
-        void** vtable = *(void***)pSwapChain;
-        if (vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) && vtable[22]) {
-            auto currentPresent1 = reinterpret_cast<PFN_Present1>(vtable[22]);
-            if (currentPresent1 != DetourPresent1) {
-                return currentPresent1(pSwapChain, SyncInterval, Flags, pParams);
-            }
-        }
-    }
-
-    // Vtable-hook path fallback: use saved original only if it is not detoured.
-    if (present1Original && present1Original != DetourPresent1) {
-        return present1Original(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
-    // Last resort: fall back to Present.
-    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-}
-}
-
-namespace DXGIShared {
-void DisableSLPresentRouting() {
-    bool wasActive = dxgi_shared_s_slRoutingActive.exchange(false, std::memory_order_acq_rel);
-    if (wasActive) {
-        HookLogImportant(
-            "SL routing DISABLED: Present calls will bypass SL hook chain and "
-            "go through trampoline=%p directly (FSR FG or runtime-owned FG takeover)",
-            dxgi_shared_oPresentTrampoline);
-    }
 }
 }

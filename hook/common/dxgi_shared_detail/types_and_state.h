@@ -228,11 +228,17 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
 // third-party overlay being loaded.  Third-party overlays (e.g. Steam) may
 // install inline hooks on the Present function code in dxgi.dll.  Our vtable
 // hooks on the swapchain object bypass those inline hooks entirely, so there
-// is no recursion risk.  Always install — the vtable path is safe regardless
-// of overlay presence.
+// is no recursion risk — the vtable path is safe regardless of overlay presence.
+//
+// The one exception is the left-to-foreign-chain mode: once CE has deliberately
+// kept its bytes out of a Present entry that two or more foreign overlays share,
+// the swapchain vtable must stay pristine too.  Steam resolves its own "next
+// Present" from that slot, so a CE detour there re-inserts CE into exactly the
+// chain the mode exists to stay out of.
 inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool /*thirdPartyOverlayLoaded*/,
-                                                             bool /*hasPresentDetourHooks*/) {
-    return true;
+                                                             bool /*hasPresentDetourHooks*/,
+                                                             bool presentEntryLeftToForeignChain) {
+    return !presentEntryLeftToForeignChain;
 }
 
 inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,

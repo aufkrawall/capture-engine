@@ -211,6 +211,50 @@ TEST_F(OverlayModuleDetectionTest, SocialClubRendererIsRenderOnlyNotOverlay) {
     EXPECT_EQ(GetStartupBlockingOverlayModuleName(), nullptr);
 }
 
+// Counting the overlay subset decides whether CE may patch the shared dxgi!Present entry.
+// Render-only and non-overlay tracked modules (SocialClubD3D12Renderer, sl.interposer) must
+// not inflate that count, or CE would drop its entry hook in single-overlay games.
+TEST_F(OverlayModuleDetectionTest, LoadedOverlayCountIgnoresNonOverlayTrackedModules) {
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 0u);
+
+    NoteModuleLoadedForOverlayCache("gameoverlayrenderer64.dll");
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
+
+    // Neither the Streamline interposer nor the render-only Social Club module is an overlay.
+    NoteModuleLoadedForOverlayCache("sl.interposer.dll");
+    NoteModuleLoadedForOverlayCache("SocialClubD3D12Renderer.dll");
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
+
+    NoteModuleLoadedForOverlayCache("RTSSHooks64.dll");
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 2u);
+
+    NoteModuleUnloadedForOverlayCache("RTSSHooks64.dll");
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
+}
+
+// Strange Brigade DX12 + Steam + RTSS: with two foreign overlays sharing dxgi!Present, CE's
+// own prepend is what breaks them — whichever tool (re-)hooks while it is live records CE as
+// its "next" and the other overlay falls out of the chain (RTSS drew frame 1 and nothing
+// after, sessions 20260812_002958 / _005530 / _010529). CE stays out of that entry. With a
+// single foreign overlay (Talos/GTA/RoboCop: Steam only) the prepend is kept, and so is the
+// whole validated FG routing that depends on it.
+TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfMultiOverlayPresentEntryChains) {
+    // Steam only -> CE keeps its prepend.
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 1, false));
+    // Steam + RTSS -> CE stays out.
+    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2, false));
+    EXPECT_TRUE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3, false));
+
+    // No foreign entry jump: CE owns the entry outright, nothing to stay out of.
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 2, false));
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(false, 0, false));
+
+    // A frame-generation interposer presents generated frames from its own runtime-owned
+    // swapchain, which never reaches CE's wrapper; the entry hook is CE's only view of them.
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 2, true));
+    EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 3, true));
+}
+
 TEST_F(OverlayModuleDetectionTest, IsThirdPartyOverlayLoadedTracksOverlaySubset) {
     EXPECT_FALSE(IsThirdPartyOverlayLoaded());
     NoteModuleLoadedForOverlayCache("RTSSHooks64.dll");

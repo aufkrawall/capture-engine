@@ -618,10 +618,18 @@ TEST(DXGISharedTest, DXGIFactoryEnumerationLoggingTreatsNotFoundAsBenign) {
 }
 
 TEST(DXGISharedTest, RecreatedSwapchainsStayHookableWhenExternalOverlayPathIsAlreadyActive) {
-    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(false, false));
-    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, true));
+    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, true, false));
     // Vtable hooks bypass third-party overlay inline hooks, so always install.
-    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, false));
+    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, false, false));
+}
+
+TEST(DXGISharedTest, SwapchainVTableStaysPristineWhileTheForeignPresentChainOwnsTheEntry) {
+    // Steam resolves its own "next Present" from the swapchain vtable slot. Once CE has kept
+    // its bytes out of a multi-overlay Present entry, claiming that slot would put CE right
+    // back into the chain (and drop RTSS out of Steam's saved chain again).
+    EXPECT_FALSE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, true, true));
 }
 
 TEST(DXGISharedTest, SteamDX12BypassStaysEnabledUntilStreamlineFGActuallyRuns) {
