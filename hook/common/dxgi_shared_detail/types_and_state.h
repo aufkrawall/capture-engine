@@ -248,8 +248,19 @@ enum class OverlayCompositeSite {
     kPresentEntry,        // CE's own entry patch: CE draws first, foreign overlays draw on top.
     kBelowForeignChain,   // deep body hook: CE draws after every entry patcher, so it is topmost.
     kSwapchainWrapper,    // CWrapDXGISwapChain: above the entry, so foreign overlays draw on top.
+    // Inside the FG runtime's own UI composition (AMD's present callback, or the registered UI
+    // resource). Both composite into the runtime's output buffer BEFORE the runtime presents it
+    // through DXGI, which is the present a foreign overlay patches — so those overlays draw on
+    // top of CE there. It is also the only AMD-safe channel while the runtime owns presentation
+    // (submitting onto AMD's backbuffer/present queue is the documented AV and freeze boundary),
+    // so this is a structural ordering, not a bug in the interception.
+    kFrameGenerationRuntimeUiComposition,
 };
 void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source);
+// Short alias for the call sites inside the FG-runtime composite units, whose lines are
+// already deeply nested.
+constexpr OverlayCompositeSite kFGRuntimeUiCompositeSite =
+    OverlayCompositeSite::kFrameGenerationRuntimeUiComposition;
 void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
 
 // Returns true when DXGI swapchain hooks should be installed despite a

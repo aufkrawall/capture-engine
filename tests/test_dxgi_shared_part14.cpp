@@ -252,7 +252,10 @@ TEST(DXGISharedTest, FFXPresentCallbackAdvancesFrameTimingWhileTheRuntimeOwnsPre
     const size_t gate = ffx.rfind("if (ffxRuntimeOwnsNativeFSRPresentation) {", metricsTick);
     ASSERT_NE(gate, std::string::npos);
     EXPECT_LT(gate, metricsTick);
-    EXPECT_LT(metricsTick - gate, 200u);
+    // Inside that gate's body: no closing brace between the gate and the tick. (A character
+    // distance was the original test; the [OVERLAY LAYER] site record now shares the block, so
+    // the structural check is the one that carries the meaning.)
+    EXPECT_EQ(ffx.find('}', gate + 1) > metricsTick, true);
 
     // The FG-state publication stays where it was — it is a different concern from the tick.
     EXPECT_NE(ffx.find("PublishOverlayFGMetrics(perf, plan", metricsTick), std::string::npos);

@@ -778,6 +778,10 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         // DLSS FG -> FSR FG, session 20260812_153840). Gated on ownership because
         // PerformanceMetrics::Update is a single-writer hot path.
         if (ffxRuntimeOwnsNativeFSRPresentation) {
+            // Layering: composited into the runtime's output buffer before the runtime's own DXGI
+            // present, so overlays patching that present land on top (session 20260812_202746).
+            DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
+                                                 "DX12_RenderOverlayViaFFXPresentCallback");
             perf->Update(PerfLogger::GetQpcUs());
         }
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();

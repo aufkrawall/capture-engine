@@ -425,9 +425,12 @@ void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source) {
     }
     const size_t foreignOverlays =
         ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
-    const char* siteName = site == OverlayCompositeSite::kBelowForeignChain ? "deep-body-below-foreign-chain"
-                           : site == OverlayCompositeSite::kSwapchainWrapper ? "swapchain-wrapper"
-                                                                             : "present-entry-patch";
+    const char* siteName =
+        site == OverlayCompositeSite::kBelowForeignChain          ? "deep-body-below-foreign-chain"
+        : site == OverlayCompositeSite::kSwapchainWrapper         ? "swapchain-wrapper"
+        : site == OverlayCompositeSite::kFrameGenerationRuntimeUiComposition
+            ? "fg-runtime-ui-composition"
+                                                                  : "present-entry-patch";
     // With no foreign overlay loaded there is nothing to be above or below, so say so rather
     // than implying a layering problem that does not exist.
     if (foreignOverlays == 0) {
@@ -439,6 +442,15 @@ void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source) {
         HookLogImportant(
             "[OVERLAY LAYER] CE composites BELOW the foreign Present chain (site=%s source=%s foreignOverlays=%zu) — "
             "they have all drawn by the time CE runs, so CE's overlay is the topmost layer",
+            siteName, source ? source : "unknown", foreignOverlays);
+        return;
+    }
+    if (site == OverlayCompositeSite::kFrameGenerationRuntimeUiComposition) {
+        HookLogImportant(
+            "[OVERLAY LAYER] CE composites inside the FG runtime's UI composition (site=%s source=%s "
+            "foreignOverlays=%zu) — the runtime presents that buffer through DXGI afterwards, so overlays hooking "
+            "that present draw ON TOP of CE's overlay. This is the only runtime-safe channel while the runtime owns "
+            "presentation; submitting onto its backbuffer/present queue is the documented AV and freeze boundary",
             siteName, source ? source : "unknown", foreignOverlays);
         return;
     }

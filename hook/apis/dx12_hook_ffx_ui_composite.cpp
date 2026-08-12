@@ -648,6 +648,11 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
                 const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
                 composited = DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
                 if (composited) {
+                    // Same layering story as the present-callback route: the runtime composites
+                    // this UI texture into its frame and presents afterwards, so an overlay that
+                    // patched that present draws on top of CE.
+                    DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
+                                                         "DX12_CompositeOverlayOntoCachedFFXUiResource");
                     g_FFXUiPresenterFallbackLastSequence = targetSequence;
                 }
             }
