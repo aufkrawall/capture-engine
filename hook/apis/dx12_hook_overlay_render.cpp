@@ -24,26 +24,6 @@ if (dx12_hook_g_State.overlayQueue && policyAllowsDedicatedQueue && !useDedicate
     }
 }
 ID3D12CommandQueue* submitQueue = useDedicated ? dx12_hook_g_State.overlayQueue : gameQueue;
-// While an FG runtime owns the swapchain, the game's own queue is not the queue that gets
-// flushed — the runtime presents from the swapchain-owning queue and drains that one. Session
-// 20260812_211148 shows the consequence directly: during a save load the game queue was idle
-// (`origGame=…3CD0`, `scQueue=…A6F0`), CE's overlay list went to the game queue, the GPU never
-// executed it (`[overlay-gpu-breadcrumb] lastCompletedOp=0`), and the below-the-chain draw never
-// landed once — the FFX callback never logged a single YIELD all session. Submit where the
-// runtime actually flushes, which is also the queue its own present callback records into and
-// the queue the FG action plan already selects (FGQueueRole::kFFXCallbackQueue).
-if (!useDedicated && dx12_hook_g_FGRuntimeOwnsSwapchain && dx12_hook_g_SwapchainQueue &&
-    dx12_hook_g_SwapchainQueue != submitQueue) {
-    static std::atomic<int> s_runtimeOwnedQueueRouteLogCount{0};
-    const int logCount = s_runtimeOwnedQueueRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 20 || (logCount % 600) == 0) {
-        HookLogImportant(
-            "DX12: Routing %s to the swapchain-owning queue while the FG runtime owns presentation "
-            "(scQueue=%p gameQueue=%p log=%d) — the game queue is not flushed in this state",
-            phase ? phase : "overlay command list", dx12_hook_g_SwapchainQueue, gameQueue, logCount + 1);
-    }
-    submitQueue = dx12_hook_g_SwapchainQueue;
-}
 if (!submitQueue || !list) {
     HookLogImportant("DX12: Cannot submit %s (submitQueue=%p, list=%p)", phase ? phase : "overlay command list",
                      submitQueue, list);

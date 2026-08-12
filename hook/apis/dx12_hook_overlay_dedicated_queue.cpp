@@ -151,22 +151,7 @@ if (skip && explicitNativeFSROffPending && runtimeOwnedNativeFGPresentPath) {
         const bool timeoutOverrideAllowed =
             ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
                 runtimeOwnedNativeFGPresentPath, nativeFSRActive, ffxStalled, ffxStallAllowsNormalOverlay);
-        // Layering exception: below a foreign Present chain, handing the overlay to the FFX
-        // present callback makes CE the BOTTOM layer. The callback composites into the runtime's
-        // output buffer and the runtime presents that buffer through DXGI afterwards — which is
-        // the present Steam and RTSS patch, so they draw over CE (session 20260812_210109: this
-        // exact skip fired every frame while the only overlay route recorded was
-        // kFFXPresentCallback and no [OVERLAY DOUBLE-DRAW] was ever detected). CE's deep body
-        // hook runs on that same present, after all of them, and this state already runs the full
-        // ProcessFrame and the overlay-completion wait there every frame — only the draw was
-        // routed away. Keeping the draw is what puts CE back on top. The callback yields in
-        // return (DX12_ShouldFFXPresentCallbackYieldToBelowChainOverlayDraw), and it resumes on
-        // the very next frame if this draw ever stops landing, so the overlay cannot vanish.
-        const bool belowForeignChainOverlayDraw =
-            DXGIShared::IsPresentInterceptedBelowForeignChain() &&
-            ce::overlay_compat::CountLoadedTrackedOverlayModules(
-                ce::overlay_compat::TrackedOverlaySubset::kOverlay) > 0;
-        if (!timeoutOverrideAllowed && !belowForeignChainOverlayDraw) {
+        if (!timeoutOverrideAllowed) {
             static std::atomic<int> s_timeoutBlockedByNativeFSRLogCount{0};
             const int logCount = s_timeoutBlockedByNativeFSRLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 600) == 0) {

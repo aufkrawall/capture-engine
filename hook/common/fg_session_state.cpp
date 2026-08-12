@@ -115,6 +115,31 @@ FGAuthorityKind ResolveAuthorityKind(const FGSessionSnapshot& snapshot) {
     return FGAuthorityKind::kNone;
 }
 
+FGOverlayBackendMode ResolveOverlayBackendMode(const FGSessionSnapshot& snapshot) {
+    if (snapshot.observerOnly) {
+        return FGOverlayBackendMode::kSuppressed;
+    }
+
+    if (snapshot.nativeFSRConfiguredOn && snapshot.runtimeOwnsSwapchain) {
+        return FGOverlayBackendMode::kRuntimeOwnedFSRCallback;
+    }
+
+    if (snapshot.runtimeOwnsSwapchain && snapshot.hadFSRPhase &&
+        snapshot.effectiveRuntimeMode == fg_runtime::RuntimeMode::kOff) {
+        return FGOverlayBackendMode::kPostFSRRecovery;
+    }
+
+    if (snapshot.effectiveRuntimeMode == fg_runtime::RuntimeMode::kDLSSFG &&
+        (snapshot.postSLCallbackInstalled || snapshot.postSLActive || snapshot.postSLConfirmedRendering)) {
+        return FGOverlayBackendMode::kPostSL;
+    }
+
+    if (snapshot.startupWindowActive || snapshot.streamlineStartupHandoffPending) {
+        return FGOverlayBackendMode::kStartupBypass;
+    }
+
+    return FGOverlayBackendMode::kNormalPreSL;
+}
 
 FGStartupPhase ResolveStartupPhase(const FGSessionSnapshot& snapshot) {
     if (snapshot.streamlineStartupHandoffPending && !snapshot.startupTopLevelPresentConsumed) {
@@ -262,10 +287,6 @@ SnapshotBuildResult BuildSnapshotNoLock(SessionState& state) {
     snapshot.streamlineFGSignal = g_FGCompat.IsStreamlineFGSignaled();
     snapshot.ffxLoaded = g_FGCompat.HasFSRFGSupport();
     snapshot.nativeFSRConfiguredOn = g_FGCompat.IsFSRFGApiActive();
-    snapshot.belowForeignOverlayChainPresentView =
-        DXGIShared::IsPresentInterceptedBelowForeignChain() &&
-        ce::overlay_compat::CountLoadedTrackedOverlayModules(
-            ce::overlay_compat::TrackedOverlaySubset::kOverlay) > 0;
 
     DX12LegacyStateView dx12View;
     if (state.dx12Provider) {
@@ -632,48 +653,6 @@ void RefreshStateLocked(SessionState& state, const char* trigger, bool emitLogs)
 }
 
 }  // namespace
-
-FGOverlayBackendMode ResolveOverlayBackendMode(const FGSessionSnapshot& snapshot) {
-    if (snapshot.observerOnly) {
-        return FGOverlayBackendMode::kSuppressed;
-    }
-
-    // While the FSR runtime owns the swapchain, its present callback is normally the overlay's
-    // only channel: it composites into the runtime's output buffer, and CE stays off the
-    // runtime's queue and backbuffer entirely (the documented AV/freeze boundary).
-    //
-    // The exception is a foreign overlay chain CE sits BELOW. The runtime presents that output
-    // buffer through DXGI afterwards, and that present is exactly what Steam and RTSS patch — so
-    // an overlay delivered through the callback is composited BEFORE them and ends up as the
-    // bottom layer (user report, session 20260812_204602). CE's deep body hook runs on that same
-    // present, after all of them, and CE ALREADY runs its full ProcessFrame + overlay-completion
-    // wait there every frame in this state; only the overlay draw itself is currently routed
-    // away. Keeping it there is what puts CE's overlay back on top, and it adds no new work on
-    // the runtime's thread that this state was not already doing.
-    //
-    // The no-callback route is deliberately untouched: there the runtime composites a registered
-    // UI resource and CE never reaches a safe backbuffer at all.
-    if (snapshot.nativeFSRConfiguredOn && snapshot.runtimeOwnsSwapchain &&
-        !snapshot.belowForeignOverlayChainPresentView) {
-        return FGOverlayBackendMode::kRuntimeOwnedFSRCallback;
-    }
-
-    if (snapshot.runtimeOwnsSwapchain && snapshot.hadFSRPhase &&
-        snapshot.effectiveRuntimeMode == fg_runtime::RuntimeMode::kOff) {
-        return FGOverlayBackendMode::kPostFSRRecovery;
-    }
-
-    if (snapshot.effectiveRuntimeMode == fg_runtime::RuntimeMode::kDLSSFG &&
-        (snapshot.postSLCallbackInstalled || snapshot.postSLActive || snapshot.postSLConfirmedRendering)) {
-        return FGOverlayBackendMode::kPostSL;
-    }
-
-    if (snapshot.startupWindowActive || snapshot.streamlineStartupHandoffPending) {
-        return FGOverlayBackendMode::kStartupBypass;
-    }
-
-    return FGOverlayBackendMode::kNormalPreSL;
-}
 
 void RegisterDX12LegacyStateProvider(DX12LegacyStateProvider provider) {
     SessionState& state = GetState();
