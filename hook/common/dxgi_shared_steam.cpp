@@ -540,6 +540,27 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         return false;
     }
 
+    // Below a foreign Present chain, every overlay in it has ALREADY drawn on the way down to
+    // CE's deep body hook. Inviting one of them again duplicates the whole chain: CE -> Steam
+    // -> RTSS, where RTSS hits its own reentrancy guard and spins in GetTickCount. Session
+    // 20260812_145524 measured exactly that after switching to DLSS FG — `DetourPresent TOTAL
+    // SLOW 5014.9ms` per present, ~0.2 fps, with the dump showing
+    // sl_dlss_g -> CWrapDXGISwapChain::Present -> Steam -> RTSS -> DetourPresent ->
+    // TryInvokeGuardedExternalSteamOverlayPresent -> Steam -> RTSS -> GetTickCount.
+    // There is nothing to service here and never will be: fail closed to the caller's own
+    // forward, which in this mode is the deep trampoline (the real body).
+    if (IsPresentInterceptedBelowForeignChain()) {
+        static std::atomic<int> s_belowChainSkipLogCount{0};
+        const int skipNum = s_belowChainSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (skipNum <= 5 || (skipNum % 5000) == 0) {
+            HookLogImportant(
+                "DXGIShared: Declining the guarded foreign Present invoke #%d for %s — CE intercepts BELOW the "
+                "foreign chain, so those overlays already drew above this call",
+                skipNum, reason ? reason : "Present");
+        }
+        return false;
+    }
+
     // Never transfer control to a saved foreign handler without proving it is still callable:
     // the overlays that share this entry rebuild their thunks, and a frozen pointer into a
     // freed one executes heap data (Talos 20260812_024730, DEP violation at 0x295C8999101).

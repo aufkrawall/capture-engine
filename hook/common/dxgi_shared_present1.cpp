@@ -47,12 +47,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     // Same below-the-chain provenance rule as DetourPresent: the originator is a few frames
     // further out once foreign overlays sit above CE.
-    const bool interceptedBelowForeignChain = IsPresentInterceptedBelowForeignChain();
-    const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress) ||
-                                            (interceptedBelowForeignChain && HasStreamlineModuleInCurrentStack());
+    bool originatorFromStreamline = false;
+    bool originatorFromFFXFrameGeneration = false;
+    if (IsPresentInterceptedBelowForeignChain()) {
+        ResolvePresentOriginatorBelowForeignChain(&originatorFromStreamline, &originatorFromFFXFrameGeneration);
+    }
+    const bool callerFromStreamlineModule =
+        originatorFromStreamline || IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool callerFromFFXFrameGenerationModule =
-        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress) ||
-        (interceptedBelowForeignChain && ce::overlay_compat::HasFFXFrameGenerationModuleInStack());
+        originatorFromFFXFrameGeneration ||
+        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);

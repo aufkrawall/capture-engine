@@ -417,14 +417,30 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
             source->find("!IsPresentInterceptedBelowForeignChain()", overlayClassification);
         ASSERT_NE(overlaySuppression, std::string::npos);
 
-        // FG provenance is recovered from the stack instead of dropped.
-        const size_t streamline = source->find("callerFromStreamlineModule =");
+        // FG provenance is recovered from the originating frame instead of dropped, through
+        // the single bounded walk (not one full-stack scan per module).
+        const size_t resolve = source->find("ResolvePresentOriginatorBelowForeignChain(");
+        ASSERT_NE(resolve, std::string::npos);
+        EXPECT_NE(source->find("IsPresentInterceptedBelowForeignChain()", resolve - 200), std::string::npos);
+        const size_t streamline = source->find("callerFromStreamlineModule =", resolve);
         ASSERT_NE(streamline, std::string::npos);
-        EXPECT_NE(source->find("HasStreamlineModuleInCurrentStack()", streamline), std::string::npos);
-        const size_t ffx = source->find("callerFromFFXFrameGenerationModule =");
+        EXPECT_NE(source->find("originatorFromStreamline", streamline), std::string::npos);
+        const size_t ffx = source->find("callerFromFFXFrameGenerationModule =", resolve);
         ASSERT_NE(ffx, std::string::npos);
-        EXPECT_NE(source->find("HasFFXFrameGenerationModuleInStack()", ffx), std::string::npos);
+        EXPECT_NE(source->find("originatorFromFFXFrameGeneration", ffx), std::string::npos);
     }
+
+    // The originator walk must stop at the first real originator instead of scanning every
+    // frame for every module: address->module resolution takes the loader lock and this runs
+    // on the Present hot path.
+    const fs::path presentImpl = fs::current_path() / "hook" / "common" / "dxgi_shared_present.cpp";
+    const std::string presentImplText = ce::test_source::ReadFile(presentImpl);
+    ASSERT_FALSE(presentImplText.empty());
+    const size_t resolver = presentImplText.find("void ResolvePresentOriginatorBelowForeignChain(");
+    ASSERT_NE(resolver, std::string::npos);
+    EXPECT_NE(presentImplText.find("IsThirdPartyOverlayModulePath(framePath)", resolver), std::string::npos);
+    EXPECT_NE(presentImplText.find("IsGraphicsDispatchModulePath(framePath)", resolver), std::string::npos);
+    EXPECT_NE(presentImplText.find("frameModule == CaptureEngineModuleHandle()", resolver), std::string::npos);
 
     // The predicate itself is derived from the deep-body trampolines, not from a separate flag
     // that could drift out of sync with them.
@@ -436,4 +452,36 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
     ASSERT_NE(predicate, std::string::npos);
     EXPECT_NE(shared.find("dxgi_shared_oPresentDeepBody != nullptr", predicate), std::string::npos);
     EXPECT_NE(shared.find("dxgi_shared_oPresent1DeepBody != nullptr", predicate), std::string::npos);
+}
+
+// Session 20260812_145524 (build 0.1.5954, DLSS FG on): presents took ~5 s each
+// (`DetourPresent TOTAL SLOW 5014.9ms`, ~0.2 fps). The dump caught the exact loop —
+// sl_dlss_g -> CWrapDXGISwapChain::Present -> Steam -> RTSS -> DetourPresent (CE's deep body
+// hook) -> TryInvokeGuardedExternalSteamOverlayPresent -> Steam -> RTSS -> GetTickCount, i.e.
+// CE re-invited a chain that had already run above it, and RTSS's reentrancy guard spun.
+//
+// Below the chain every foreign overlay has drawn before CE is entered, so there is never
+// anything to service by invoking one of them.
+TEST(DXGISharedSourceTest, NoForeignOverlayHandlerIsInvokedWhileCEInterceptsBelowTheChain) {
+    namespace fs = std::filesystem;
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    const std::string steam = ce::test_source::ReadFile(steamSource);
+    ASSERT_FALSE(steam.empty());
+
+    const size_t entry = steam.find("bool TryInvokeGuardedExternalSteamOverlayPresent(");
+    ASSERT_NE(entry, std::string::npos);
+    const size_t belowChainGuard = steam.find("if (IsPresentInterceptedBelowForeignChain())", entry);
+    ASSERT_NE(belowChainGuard, std::string::npos);
+
+    // It must fail closed BEFORE the handler is resolved, not merely before the call: resolving
+    // and validating a foreign thunk is itself work CE has no reason to do in this mode.
+    const size_t handlerResolution = steam.find("GetCallableExternalOverlayPresentHook()", entry);
+    ASSERT_NE(handlerResolution, std::string::npos);
+    EXPECT_LT(belowChainGuard, handlerResolution);
+
+    const size_t declineReturn = steam.find("return false;", belowChainGuard);
+    ASSERT_NE(declineReturn, std::string::npos);
+    EXPECT_LT(declineReturn, handlerResolution);
+    EXPECT_NE(steam.find("already drew above this call", belowChainGuard), std::string::npos);
 }

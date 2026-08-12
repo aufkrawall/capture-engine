@@ -278,6 +278,89 @@ namespace DXGIShared {
 std::mutex dxgi_shared_s_setColorSpace1HookMutex;
 }
 
+namespace {
+// The DXGI/D3D dispatch modules that can sit between two overlays in a Present chain. They are
+// never the originator of a present, so the originator walk steps over them.
+bool IsGraphicsDispatchModulePath(const char* modulePath) {
+    if (!modulePath || !modulePath[0]) {
+        return false;
+    }
+    const char* baseName = modulePath;
+    for (const char* cursor = modulePath; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            baseName = cursor + 1;
+        }
+    }
+    static const char* const kDispatchModules[] = {"dxgi.dll",   "d3d12.dll",     "d3d12core.dll",
+                                                   "d3d11.dll",  "d3d11on12.dll", "d3d10.dll",
+                                                   "d3d9.dll",   "dcomp.dll",     "dwmapi.dll"};
+    for (const char* candidate : kDispatchModules) {
+        if (_stricmp(baseName, candidate) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// CE's own module, resolved from a CE code address so this unit carries no link dependency on
+// the injected DLL's entry point.
+HMODULE CaptureEngineModuleHandle() {
+    static HMODULE s_module = [] {
+        HMODULE module = nullptr;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(&IsGraphicsDispatchModulePath), &module);
+        return module;
+    }();
+    return s_module;
+}
+}  // namespace
+
+namespace DXGIShared {
+// Below a foreign Present chain, the immediate caller is always the last foreign overlay in
+// it, so FG provenance has to come from the frames above them. Walking out past CE's own
+// frames, DXGI, and the tracked foreign overlays lands on the ORIGINATOR — typically three to
+// five frames — and one pass answers both FG questions. Deliberately not a full-stack scan
+// per module: address->module resolution takes the loader lock, and this runs on the Present
+// hot path.
+void ResolvePresentOriginatorBelowForeignChain(bool* fromStreamlineOut, bool* fromFFXFrameGenerationOut) {
+    if (fromStreamlineOut) {
+        *fromStreamlineOut = false;
+    }
+    if (fromFFXFrameGenerationOut) {
+        *fromFFXFrameGenerationOut = false;
+    }
+
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(1, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        HMODULE frameModule = nullptr;
+        char framePath[MAX_PATH] = {};
+        if (!TryGetModulePathFromCodeAddress(stackFrames[i], framePath, sizeof(framePath), &frameModule) ||
+            !frameModule) {
+            continue;  // Trampoline / JIT-style thunk: not a module frame, keep walking out.
+        }
+        if (frameModule == CaptureEngineModuleHandle()) {
+            continue;  // CE's own wrapper/detour frames.
+        }
+        if (ce::overlay_compat::IsThirdPartyOverlayModulePath(framePath)) {
+            continue;  // Steam / RTSS: the chain CE deliberately sits below.
+        }
+        if (IsGraphicsDispatchModulePath(framePath)) {
+            continue;  // DXGI/D3D dispatch frames between the overlays.
+        }
+
+        if (fromStreamlineOut && IsStreamlineModuleHandle(frameModule)) {
+            *fromStreamlineOut = true;
+        }
+        if (fromFFXFrameGenerationOut && ce::overlay_compat::IsFFXFrameGenerationModulePath(framePath)) {
+            *fromFFXFrameGenerationOut = true;
+        }
+        return;  // First real originator decides; frames above it are its own callers.
+    }
+}
+}
+
 namespace DXGIShared {
 PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
                                                     const void* detourCallerAddress, APIType api,
@@ -314,12 +397,15 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     // opposite sign: below the chain the immediate caller is a foreign overlay, so an
     // interposer-originated present would read as NOT interposer-originated. The originator is
     // still on the stack, just a few frames further out, so resolve it there in that mode.
-    const bool interceptedBelowForeignChain = IsPresentInterceptedBelowForeignChain();
-    ctx.callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress) ||
-                                     (interceptedBelowForeignChain && HasStreamlineModuleInCurrentStack());
+    bool originatorFromStreamline = false;
+    bool originatorFromFFXFrameGeneration = false;
+    if (IsPresentInterceptedBelowForeignChain()) {
+        ResolvePresentOriginatorBelowForeignChain(&originatorFromStreamline, &originatorFromFFXFrameGeneration);
+    }
+    ctx.callerFromStreamlineModule = originatorFromStreamline || IsCodeAddressFromStreamlineModule(detourCallerAddress);
     ctx.callerFromFFXFrameGenerationModule =
-        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress) ||
-        (interceptedBelowForeignChain && ce::overlay_compat::HasFFXFrameGenerationModuleInStack());
+        originatorFromFFXFrameGeneration ||
+        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
     ctx.recentLargePresentGap = HasRecentLargePresentGap(500);
     ctx.startupTopLevelPresentAlreadyConsumed = g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     ctx.postSLStartupActivationPending = g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);

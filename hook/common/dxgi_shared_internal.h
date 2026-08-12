@@ -279,6 +279,12 @@ bool HasStartupBlockingOverlayModuleInCurrentStack();
 
 namespace DXGIShared {
 bool HasStreamlineModuleInCurrentStack();
+
+// Present provenance for the left-to-foreign-chain mode: below that chain the immediate caller
+// is always the last foreign overlay in it, so the originator has to be resolved from the
+// frames above them. Bounded walk, one pass for both frame-generation questions — it runs on
+// the Present hot path and address->module resolution takes the loader lock.
+void ResolvePresentOriginatorBelowForeignChain(bool* fromStreamlineOut, bool* fromFFXFrameGenerationOut);
 }
 
 namespace DXGIShared {
