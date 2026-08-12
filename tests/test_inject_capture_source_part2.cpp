@@ -178,3 +178,15 @@ TEST(InjectLifecycleSourceTest, ThirdPartyPreloadPrecedesWrapperAndRuntimePreloa
     EXPECT_LT(thirdParty, wrapperLoad);
     EXPECT_LT(thirdParty, runtimePreload);
 }
+
+TEST(InjectLifecycleSourceTest, SwapchainWrapperDestructorGuardsTheFinalRealRelease) {
+    const std::string source = ReadSource("hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t guard =
+        source.find("ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(");
+    const size_t release = source.find("pRealToFree->Release();");
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(release, std::string::npos);
+    EXPECT_LT(guard, release);
+}

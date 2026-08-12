@@ -207,9 +207,18 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
                 "(wrapper=%p real=%p)",
                 this, pRealToFree);
         }
-        WrapperLog("SwapChain: Releasing real swapchain final %s reference (wrapper=%p real=%p)",
-                   m_StreamlineRuntimeNonRetaining ? "borrowed" : "wrapper", this, pRealToFree);
-        pRealToFree->Release();
+        if (ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(
+                wrapperReleasing, pRealToFree != nullptr, m_StreamlineRuntimeNonRetaining)) {
+            WrapperLog("SwapChain: Releasing real swapchain final %s reference (wrapper=%p real=%p)",
+                       m_StreamlineRuntimeNonRetaining ? "borrowed" : "wrapper", this, pRealToFree);
+            pRealToFree->Release();
+        } else {
+            WrapperLog(
+                "SwapChain: Skipping real swapchain final wrapper release (wrapper=%p real=%p) - the mirrored "
+                "release path already consumed the base reference; releasing it again would over-release a "
+                "factory-proxy swapchain",
+                this, pRealToFree);
+        }
     }
     // CRITICAL FIX: Always release device reference, even if swapchain was
     // destroyed

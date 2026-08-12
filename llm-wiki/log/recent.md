@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED: game-close UAF when ReShade proxies the swapchain (0.1.5982 -> next)
+
+- Session `20260813_012516` (Strange Brigade DX12 + ReShade 6.8): gameplay/overlay fine, crash on close —
+  DEP at `0x10000000000` from `reshade!Release` while `CWrapDXGISwapChain::~CWrapDXGISwapChain` ran.
+- Root cause: CE's wrapper `Release()` mirrors one `m_pReal->Release()` per external wrapper ref, so the final
+  external release already consumed the wrapper's base reference. The destructor then released the four promoted
+  interface refs (the proxy's exact remaining refcount -> ReShade destroyed proxy and genuine swapchain) and
+  released the base reference once more: use-after-free on the freed proxy, `_orig` dangling.
+- Fix: `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor` in
+  `hook/common/dx12_overlay_policy/streamline_ownership.h` — skip the base release on the releasing path
+  (`wrapperReleasing=true`); the Streamline non-retaining wrapper keeps returning its borrowed reference.
+  Guard added in `hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp`. Tests:
+  `tests/test_dxgi_shared_part6.cpp` (policy values) + source-order pin in
+  `tests/test_inject_capture_source_part2.cpp`.
+
 ### 2026-08-13 - FIXED: ReShade factory proxy crashed CE's temp-swapchain install (0.1.5978 -> next)
 
 - Sessions `20260813_004853` / `20260813_004923` (Strange Brigade DX12, ReShade 6.8 loaded via `[ThirdParty]`):

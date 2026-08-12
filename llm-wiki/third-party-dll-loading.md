@@ -108,6 +108,18 @@ once those tools are loaded.
   (`hook/common/dx12_factory_slot_policy.h`). A factory object whose vtable is
   not the vtable the saved slot was captured from is refused; the
   real-swapchain retry paths then install the Present hooks.
+- On game close with a ReShade swapchain proxy, CE's swapchain wrapper
+  destructor over-released the "final wrapper reference": `Release()` mirrors
+  one real `Release()` per external wrapper reference, so the final external
+  release already consumed the base reference before the destructor ran. The
+  destructor then released the four promoted interface refs (destroying the
+  proxy, whose refcount was exactly those four) and released the base once
+  more — a use-after-free that surfaced as DEP at `0x10000000000` inside
+  `reshade!Release` (`_orig`'s vtable from the freed genuine swapchain).
+  Session `20260813_012613`. Fixed with
+  `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor`: the
+  base release is skipped on the releasing path (the Streamline non-retaining
+  wrapper keeps returning its borrowed reference).
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

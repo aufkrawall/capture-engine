@@ -227,6 +227,24 @@ inline bool ShouldClearSwapchainWrapperPrivateDataDuringWrapperDestructor(bool w
     return !wrapperReleasing && realSwapchainAvailable;
 }
 
+// May the destructor release the wrapper's base ("final wrapper") reference on
+// the real swapchain? Release() mirrors one m_pReal->Release() per external
+// wrapper reference, so the final external release already consumes the base
+// reference before the destructor runs. Releasing it again over-releases the
+// real object; with a ReShade-style factory proxy whose refcount then equals
+// exactly the wrapper's promoted-interface references, the promoted releases
+// destroy the proxy and the extra release is a use-after-free on game close
+// (session 20260813_012613: reshade!Release -> freed _orig vtable -> DEP at
+// 0x10000000000). The Streamline-runtime non-retaining wrapper borrows the
+// runtime's creation reference and returns it in the destructor instead.
+inline bool ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(
+    bool wrapperReleasing, bool realSwapchainAvailable, bool streamlineRuntimeNonRetaining) {
+    if (streamlineRuntimeNonRetaining) {
+        return realSwapchainAvailable;
+    }
+    return !wrapperReleasing && realSwapchainAvailable;
+}
+
 inline bool ShouldStartDX12FocusLossOverlayCooldown(bool previousGameForeground, bool currentGameForeground) {
     (void)previousGameForeground;
     (void)currentGameForeground;

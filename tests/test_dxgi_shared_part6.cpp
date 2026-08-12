@@ -210,6 +210,28 @@ TEST(DXGISharedTest, ReleasingSwapchainWrapperSkipsOptionalDXGIDestructorMutatio
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearSwapchainWrapperPrivateDataDuringWrapperDestructor(false, false));
 }
 
+TEST(DXGISharedTest, ReleasingSwapchainWrapperSkipsTheConsumedBaseReferenceRelease) {
+    // The releasing path mirrored one m_pReal->Release() per external wrapper reference, so the
+    // final external release already consumed the wrapper's base reference before the destructor
+    // ran. Releasing it again over-releases a ReShade-style factory proxy and crashes on game
+    // close (session 20260813_012613).
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(true, true, false));
+    // A non-releasing destruction still owns the base reference and must return it.
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(true, false, false));
+    // The Streamline-runtime non-retaining wrapper borrows the runtime's creation reference and
+    // returns it in the destructor in both paths.
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(true, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(true, false, true));
+}
+
 TEST(DXGISharedTest, DX12FocusLossDoesNotStartRenderBlankingCooldown) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(false, true));
