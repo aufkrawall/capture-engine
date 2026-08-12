@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-08-12 - FSR FG layering, the actual gate: the deep-site overlay draw was skipped, not just routed (0.1.5970)
+
+- 0.1.5969 changed `ResolveOverlayBackendMode` and did NOT fix it (session `20260812_210109`, 0.1.5969 confirmed in the manifest): the `fg-runtime-ui-composition` edges kept firing.
+- Two log facts pinned the real gate: **zero** `[OVERLAY DOUBLE-DRAW]` lines in the whole session (so exactly ONE route ever drew), and 23 rate-limited occurrences of `DX12: Skipping separate overlay GPU draw because native FSR present-callback path owns overlay after 2s suppression timeout is active (runtime=FSR_FG ...)`. That skip is `ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain` (`hook/apis/dx12_hook_overlay_dedicated_queue.cpp`) returning true, which makes `FrameProcessSession::DrawMain` return `kSkipOverlayDraw` at the deep site. The backend mode never got a say — the draw was skipped before it mattered.
+- Fix, both halves, so exactly one route draws and it is the lower one:
+  - That skip now has a layering exception: it does not fire while `IsPresentInterceptedBelowForeignChain()` and a tracked overlay is loaded. CE already runs the full ProcessFrame and the overlay-completion wait on that present every frame in this state, so keeping the draw adds no new work on the runtime's thread.
+  - `DX12_ShouldFFXPresentCallbackYieldToBelowChainOverlayDraw()` (`dx12_hook_overlay_coverage.cpp`) makes the FFX present callback yield — **proof-driven, never optimistic**: it requires an overlay draw from a route other than the callback to have been recorded since the previous callback invocation (`dx12_hook_g_OverlayCoverageDrawCount`, which the callback itself advances, so a change between two callbacks can only be another route). If the deep-site draw ever stops landing, the count stops advancing and the callback resumes on the very next frame. No timers, no thresholds, and the overlay cannot go missing for more than the frame that proved it.
+  - The yield/resume edge logs `[OVERLAY LAYER] FFX present callback YIELDS/RESUMES the overlay draw to CE's below-the-chain hook (draws=… previousCallback=… lastRoute=…)`.
+- Validation pending: Talos + Steam + RTSS with FSR FG on — expect one `YIELDS` edge shortly after FSR FG comes on, `[OVERLAY DOUBLE-DRAW]` to stay absent (one route at a time), CE's overlay over Steam's, and no stall. If the overlay flickers between routes, the `YIELDS`/`RESUMES` pairs in the log show it directly.
+
 ### 2026-08-12 - FSR FG layering: the overlay leaves the runtime present callback when CE is below a foreign chain (0.1.5969)
 
 - Root cause, one line of policy: `ResolveOverlayBackendMode` (`hook/common/fg_session_state.cpp`) returned `kRuntimeOwnedFSRCallback` for `nativeFSRConfiguredOn && runtimeOwnsSwapchain`. That mode delivers the overlay through AMD's present callback, which composites into `desc->outputSwapChainBuffer` with AMD's command list — and AMD presents that buffer through DXGI *afterwards*, which is the present Steam and RTSS patch. CE was therefore composited BEFORE them and was the bottom layer, in every native-FSR-FG frame.

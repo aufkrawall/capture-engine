@@ -147,6 +147,45 @@ HookLogImportant(
 }
 
 
+// Should the FFX present callback leave the overlay draw to CE's deep body hook this frame?
+//
+// Only while CE actually intercepts below a foreign Present chain — that is the whole point: the
+// callback composites into the runtime's output buffer BEFORE the runtime presents it through
+// DXGI, and that present is what Steam and RTSS patch, so a callback-drawn overlay is the bottom
+// layer. The deep hook runs on the same present, after all of them.
+//
+// The yield is proof-driven, never optimistic: it requires an overlay draw from a route OTHER
+// than this callback to have been recorded since the previous callback invocation. If the
+// deep-site draw ever stops landing (a gate further in, a swapchain change, a device loss), the
+// draw count stops advancing and this returns false on the very next frame, so the overlay is
+// never missing for more than the frame that proved it. No timers, no thresholds.
+bool DX12_ShouldFFXPresentCallbackYieldToBelowChainOverlayDraw() {
+    static std::atomic<uint64_t> s_drawCountAtPreviousCallback{0};
+    static std::atomic<bool> s_seenCallback{false};
+
+    const uint64_t draws = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
+    const uint64_t previous = s_drawCountAtPreviousCallback.exchange(draws, std::memory_order_acq_rel);
+    const bool firstCallback = !s_seenCallback.exchange(true, std::memory_order_acq_rel);
+    if (!DXGIShared::IsPresentInterceptedBelowForeignChain() ||
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay) == 0) {
+        return false;
+    }
+    // A count that advanced between two callbacks can only have come from another route: this
+    // callback records its own draw before returning, and that value is what `previous` holds.
+    const bool anotherRouteDrewSinceLastCallback = !firstCallback && draws != previous;
+    static std::atomic<bool> s_yielding{false};
+    if (s_yielding.exchange(anotherRouteDrewSinceLastCallback, std::memory_order_acq_rel) !=
+        anotherRouteDrewSinceLastCallback) {
+        HookLogImportant(
+            "[OVERLAY LAYER] FFX present callback %s the overlay draw to CE's below-the-chain hook "
+            "(draws=%llu previousCallback=%llu lastRoute=%s)",
+            anotherRouteDrewSinceLastCallback ? "YIELDS" : "RESUMES",
+            static_cast<unsigned long long>(draws), static_cast<unsigned long long>(previous),
+            DX12OverlayRenderRouteName(dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire)));
+    }
+    return anotherRouteDrewSinceLastCallback;
+}
+
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route) {
 const uint64_t drawsBefore = dx12_hook_g_OverlayCoverageDrawCount.fetch_add(1, std::memory_order_acq_rel);
 const uint32_t previousRoute =
