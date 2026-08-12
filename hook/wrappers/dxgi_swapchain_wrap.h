@@ -38,11 +38,23 @@ public:
     // Constructors for different swapchain versions
     CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice);
     CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice);
+    // Streamline-runtime variant: the real swapchain is caller-owned (Streamline manages its
+    // lifecycle and recreates it on FG transitions). The wrapper borrows the CreateSwapChain
+    // reference instead of AddRef'ing, mirrors no refs, and must never pin the HWND past
+    // Streamline's release — otherwise the runtime's recreate on the same HWND fails with
+    // E_ACCESSDENIED and DLSS FG activation breaks.
+    CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice, bool streamlineRuntimeNonRetaining);
+    CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice, bool streamlineRuntimeNonRetaining);
     virtual ~CWrapDXGISwapChain();
 
     // Get the real (unwrapped) swapchain - for internal use only
     IDXGISwapChain* GetReal() const {
         return m_pReal;
+    }
+    // True for the Streamline-runtime (non-retaining) wrapper mode: the wrapper adds no
+    // reference to the real swapchain and forwards presents as its only interception.
+    bool IsStreamlineRuntimeNonRetaining() const {
+        return m_StreamlineRuntimeNonRetaining;
     }
     // Check if the wrapper is in a zombie state (destroying or shutdown).
     // Called by forwarding methods to safely reject calls during destruction.
@@ -145,6 +157,9 @@ private:
 
     // Atomic reference count for real swapchain lifetime tracking
     std::atomic<int> m_RealSwapchainRefs{0};
+
+    // Streamline-runtime non-retaining mode (see constructor overloads).
+    bool m_StreamlineRuntimeNonRetaining = false;
 
     // Window handle
     HWND m_hWnd;

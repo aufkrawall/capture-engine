@@ -17,3 +17,22 @@ namespace DXGIShared {
 void SetVulkanActiveForDXGIPresentPath(bool active);
 bool IsVulkanActive();
 }
+
+namespace DXGIShared {
+// Wrapper-mode PostSL service: invoked from CWrapDXGISwapChain::Present when the wrapper is
+// the Streamline-runtime (non-retaining) one and CE left the Present entry to the foreign
+// chain. Mirrors the entry-hook routing's confirmed-standalone Streamline Present invocation
+// so the overlay is drawn after SL's FG processing (ProcessFrame suppresses its own pre-SL
+// draw exactly while PostSL is expected to draw).
+void MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(IDXGISwapChain* pSwapChain, const char* source);
+}
+
+namespace DXGIShared {
+// Called after CE wrapped the FG runtime's own swapchain (Streamline runtime create). When two
+// or more foreign overlays share the Present entry, this removes CE's entry prepend
+// (ownership-checked) and publishes the leave-entry state, so the foreign chain is byte-identical
+// to a process without CE and the wrapper is CE's interception for runtime presents too.
+// `pRealSwapChain` is the unwrapped real swapchain the wrapper now forwards for.
+void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISwapChain* pRealSwapChain,
+                                                                         const char* source);
+}

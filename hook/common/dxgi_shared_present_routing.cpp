@@ -571,3 +571,72 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
     return S_OK;
 }
 }
+
+namespace DXGIShared {
+void MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(IDXGISwapChain* pSwapChain, const char* source) {
+    if (!pSwapChain) {
+        return;
+    }
+    auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+    if (!postSLCallback) {
+        return;  // no PostSL epoch installed — ProcessFrame draws pre-SL
+    }
+    const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+    const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
+    const bool presentOwnershipActive = DXGIShared::HasPresentDetourHooks();
+    // The wrapper sees every Streamline runtime present as a top-level call, so the
+    // confirmed-standalone gate applies with wrapper semantics: Streamline is the caller,
+    // CE owns no Present entry in this mode (presentOwnershipActive == HasPresentDetourHooks),
+    // and the call is never synthetic re-entrant.
+    const bool confirmedStandaloneRoute =
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            observerOnlyMode, /*isD3D12SwapChain=*/true, streamlineFGRunning,
+            /*callerFromStreamlineModule=*/true, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+            presentOwnershipActive, /*streamlineSyntheticReentrant=*/false);
+    // Startup-equivalent wrapper arm: the entry-hook routing services the unconfirmed
+    // startup family through its synthetic/re-entrant branches, which cannot exist here.
+    // The wrapper's own presents ARE the startup family, so once Streamline FG is running
+    // and the PostSL epoch is pending/active-but-unconfirmed, invoke the gated callback
+    // directly — its first healthy submit confirms rendering
+    // (dx12_hook_postsl_render_submit.cpp) and ProcessFrame suppresses its own pre-SL draw
+    // exactly while this callback is expected to draw ("Suppressing pre-SL draw during SL
+    // FG startup — waiting for PostSL"). Without this arm, PostSL never confirms and the
+    // overlay vanishes for the whole DLSS FG session (session 20260812_040330).
+    const bool startupFamilyActive =
+        !observerOnlyMode && streamlineFGRunning && !presentOwnershipActive &&
+        (postSLConfirmedButStartupSettling ||
+         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ||
+         HookIsPostSLOverlayActiveButUnconfirmed() || HookHasPostSLSyntheticStartupActivationEntered());
+    if (!confirmedStandaloneRoute && !startupFamilyActive) {
+        static std::atomic<int> s_wrappedRuntimePostSLSkipLogCount{0};
+        const int skipNum = s_wrappedRuntimePostSLSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (skipNum < 10 || (skipNum % 500) == 0) {
+            HookLogImportant(
+                "DetourPresent(wrapper): PostSL callback skipped on wrapped Streamline runtime Present "
+                "(slFG=%d confirmed=%d settling=%d startupPending=%d unconfirmed=%d entered=%d "
+                "observerOnly=%d detourHooks=%d source=%s log=%d)",
+                streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                postSLConfirmedButStartupSettling ? 1 : 0,
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed)
+                    ? 1
+                    : 0,
+                HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+                HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0, observerOnlyMode ? 1 : 0,
+                presentOwnershipActive ? 1 : 0, source ? source : "wrapped runtime Present", skipNum + 1);
+        }
+        return;
+    }
+    static std::atomic<int> s_wrappedRuntimePostSLInvokeLogCount{0};
+    const int invokeNum = s_wrappedRuntimePostSLInvokeLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (invokeNum < 10 || (invokeNum % 500) == 0) {
+        HookLogImportant(
+            "DetourPresent(wrapper): Invoking PostSL on wrapped Streamline runtime Present "
+            "(slFG=%d confirmed=%d startup=%d source=%s log=%d)",
+            streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0, startupFamilyActive ? 1 : 0,
+            source ? source : "wrapped runtime Present", invokeNum + 1);
+    }
+    postSLCallback(pSwapChain);
+}
+}

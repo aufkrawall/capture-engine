@@ -1,6 +1,10 @@
 #include "dxgi_swapchain_wrap_internal.h"
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
+    : CWrapDXGISwapChain(pReal, pDevice, /*streamlineRuntimeNonRetaining=*/false) {
+}
+
+CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice, bool streamlineRuntimeNonRetaining)
     : m_pReal(pReal),
       m_pReal1(nullptr),
       m_pReal2(nullptr),
@@ -9,6 +13,7 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
       m_pDevice(pDevice),
       m_pD3D12Queue(nullptr),
       m_RefCount(1),
+      m_StreamlineRuntimeNonRetaining(streamlineRuntimeNonRetaining),
       m_hWnd(nullptr),
       m_Version(0),
       m_OverlayResourcesValid(false),
@@ -17,7 +22,14 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
       m_DestructionCookie(0) {
     WrapperLog("SwapChain: CWrapDXGISwapChain CONSTRUCTOR called (real=%p, device=%p)", pReal, pDevice);
     if (pReal) {
-        pReal->AddRef();
+        if (!m_StreamlineRuntimeNonRetaining) {
+            // Retaining mode owns a real-swapchain reference for the wrapper lifetime.
+            // Streamline-runtime mode borrows the CreateSwapChain reference instead: the
+            // runtime releases/recreates its swapchain on FG transitions, and any extra ref
+            // would pin the old swapchain so the recreate on the same HWND fails with
+            // E_ACCESSDENIED (the historical DLSS-G handoff break).
+            pReal->AddRef();
+        }
 
         // FIX B: AddRef the device/queue if we store it
         if (m_pDevice) {
@@ -38,7 +50,9 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
         }
 
         // Register for destruction notification (DXGI 1.4+)
-        RegisterDestructionCallback();
+        if (!m_StreamlineRuntimeNonRetaining) {
+            RegisterDestructionCallback();
+        }
 
         // Store wrapper pointer on real swapchain for retrieval
         void* pThis = this;
@@ -50,10 +64,16 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
 }
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice)
-    : CWrapDXGISwapChain(static_cast<IDXGISwapChain*>(pReal), pDevice) {
+    : CWrapDXGISwapChain(pReal, pDevice, /*streamlineRuntimeNonRetaining=*/false) {
+}
+
+CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice, bool streamlineRuntimeNonRetaining)
+    : CWrapDXGISwapChain(static_cast<IDXGISwapChain*>(pReal), pDevice, streamlineRuntimeNonRetaining) {
     if (!m_pReal1 && pReal) {
         m_pReal1 = pReal;
-        m_pReal1->AddRef();
+        if (!m_StreamlineRuntimeNonRetaining) {
+            m_pReal1->AddRef();
+        }
         m_Version = 1;
     }
 }
@@ -62,14 +82,32 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
     if (!m_pReal)
         return;
     try {
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))))
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
+            if (m_StreamlineRuntimeNonRetaining && m_pReal1) {
+                // Borrowed interface: the transferred CreateSwapChain reference keeps the
+                // object alive for the wrapper lifetime; never pin it with extra refs.
+                m_pReal1->Release();
+            }
             m_Version = 1;
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2))))
+        }
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
+            if (m_StreamlineRuntimeNonRetaining && m_pReal2) {
+                m_pReal2->Release();
+            }
             m_Version = 2;
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3))))
+        }
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
+            if (m_StreamlineRuntimeNonRetaining && m_pReal3) {
+                m_pReal3->Release();
+            }
             m_Version = 3;
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))
+        }
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
+            if (m_StreamlineRuntimeNonRetaining && m_pReal4) {
+                m_pReal4->Release();
+            }
             m_Version = 4;
+        }
     } catch (...) {
         // A foreign swapchain (Streamline/FFX proxies in particular) can throw out
         // of QueryInterface. Keeping the version reached so far is the right
@@ -282,11 +320,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     const char* delegationOverlayModule = nullptr;
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule)) {
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining)) {
         static std::atomic<int> s_inlineRouteLogCount{0};
         if (s_inlineRouteLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-            WrapperLog("Present: Delegating DX12 Present to detour hook for external overlay %s",
-                       delegationOverlayModule ? delegationOverlayModule : "module");
+            WrapperLog("Present: Delegating DX12 Present to detour hook for external overlay %s%s",
+                       delegationOverlayModule ? delegationOverlayModule : "module",
+                       m_StreamlineRuntimeNonRetaining ? " (Streamline-runtime wrapper passthrough)" : "");
         }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
@@ -300,6 +339,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // bounces back into the original chain immediately.
     g_InWrapperPresent = true;
     auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
+
+    // In leave-entry mode the Streamline-runtime wrapper is CE's ONLY present entry point
+    // (DetourPresent never runs), so feed the Streamline present-stall detector here. Without
+    // this, slDLSSGSetOptions compares a frozen counter and falsely dumps "Present STALLED
+    // for 30 frames — vtable hook bypassed?" (session 20260812_040330).
+    if (m_StreamlineRuntimeNonRetaining) {
+        DXGIShared::g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // DEBUG: Log first few Present calls to verify wrapper is being invoked
     if (callCount < 10) {
@@ -376,6 +423,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(pRealCached);
+        if (m_StreamlineRuntimeNonRetaining) {
+            DXGIShared::MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(
+                pRealCached, "Wrapped Streamline runtime Present");
+        }
     } else {
         // DX11/DX10: DX11_ProcessFrameExternal handles both capture AND overlay
         DX11_ProcessFrameExternal(pRealCached);
@@ -545,11 +596,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
 
     const char* delegationOverlayModule = nullptr;
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule)) {
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining)) {
         static std::atomic<int> s_inlineRouteLogCount1{0};
         if (s_inlineRouteLogCount1.fetch_add(1, std::memory_order_relaxed) < 20) {
-            WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s",
-                       delegationOverlayModule ? delegationOverlayModule : "module");
+            WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s%s",
+                       delegationOverlayModule ? delegationOverlayModule : "module",
+                       m_StreamlineRuntimeNonRetaining ? " (Streamline-runtime wrapper passthrough)" : "");
         }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
@@ -560,6 +612,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     g_InWrapperPresent = true;
     auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
+
+    if (m_StreamlineRuntimeNonRetaining) {
+        DXGIShared::g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_present1ThreadId{0};
@@ -612,6 +668,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     if (m_IsD3D12) {
         // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
         DX12_ProcessFrameExternal(pReal1Cached);
+        if (m_StreamlineRuntimeNonRetaining) {
+            DXGIShared::MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(
+                pReal1Cached, "Wrapped Streamline runtime Present1");
+        }
         // DX12: Overlay rendering is handled by DX12_ProcessFrameExternal above
         // No additional overlay drawing needed here
     } else {

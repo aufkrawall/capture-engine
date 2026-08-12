@@ -394,6 +394,32 @@ return false;
 }
 
 
+// Streamline runtime swapchains are DX12-capable when the create's device argument is an
+// ID3D12CommandQueue (the DXGI DX12 contract). The non-DX12 dummy swapchains Streamline also
+// creates internally (e.g. for DLSS-G evaluation) keep the historical skip-wrap behavior.
+bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice) {
+    if (!pDevice) {
+        return false;
+    }
+    ID3D12CommandQueue* queue = nullptr;
+    const bool isCommandQueue = SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))) && queue != nullptr;
+    if (queue) {
+        queue->Release();
+    }
+    return isCommandQueue;
+}
+
+
+// The non-retaining wrap exists to give CE a non-entry view of the FG runtime's presents so the
+// Present entry can be left to a multi-overlay foreign chain. With fewer than two foreign
+// overlays the entry hook is CE's only needed view and stays as-is (validated GTA/Talos single
+// overlay paths), so the runtime swapchain keeps the historical skip-wrap behavior there.
+bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() {
+    return ce::overlay_compat::CountLoadedTrackedOverlayModules(
+               ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2;
+}
+
+
 // Detour for global CreateSwapChain hook
 
 
@@ -487,13 +513,41 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
 
     RefreshPresentHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain");
 
-    // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
-    // lifecycle management.  Inline Present hooks provide the same interception.
+    // Streamline runtime-owned swapchains are wrapped with the non-retaining wrapper so CE sees
+    // every runtime Present (game frames AND generated frames) without patching the shared
+    // dxgi!Present entry — the precondition for leaving that entry to a multi-overlay foreign
+    // chain in FG games. The wrapper borrows the runtime's CreateSwapChain reference and adds no
+    // refs of its own, so Streamline's release/recreate on an FG transition stays byte-identical
+    // to a process without CE; a retaining wrapper would pin the old swapchain and break the
+    // DLSS-G handoff with E_ACCESSDENIED on the same HWND.
     if (IsStreamlineLoaded()) {
-        HookLog("DetourCreateSwapChainGlobal: Streamline present, skipping wrap (sc=%p)", *ppSwapChain);
         if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
             CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain,
                                                   "CreateSwapChain Global Streamline fallback", captureEvidence);
+        }
+        if (ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() && IsStreamlineRuntimeSwapchainWrappable(pDevice)) {
+            void* pExistingWrapper = nullptr;
+            if (SUCCEEDED((*ppSwapChain)->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
+                ((IUnknown*)pExistingWrapper)->Release();
+                HookLog("DetourCreateSwapChainGlobal: Streamline swapchain already wrapped, skipping double-wrap");
+                return hr;
+            }
+            IDXGISwapChain* pRealSwapChain = *ppSwapChain;
+            auto* wrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice,
+                                                   /*streamlineRuntimeNonRetaining=*/true);
+            *ppSwapChain = wrapper;
+            HookLogImportant(
+                "DetourCreateSwapChainGlobal: Wrapped Streamline runtime swapchain (real=%p wrapper=%p)",
+                pRealSwapChain, wrapper);
+            DXGIShared::MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(
+                pRealSwapChain, "CreateSwapChain Global Streamline wrap");
+        } else {
+            HookLog(
+                "DetourCreateSwapChainGlobal: Streamline present, skipping wrap "
+                "(sc=%p loadedOverlays=%zu)",
+                *ppSwapChain,
+                ce::overlay_compat::CountLoadedTrackedOverlayModules(
+                    ce::overlay_compat::TrackedOverlaySubset::kOverlay));
         }
         return hr;
     }
@@ -649,13 +703,42 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
 
     RefreshPresentHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd");
 
-    // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
-    // lifecycle management.  Inline Present hooks provide the same interception.
+    // Streamline runtime-owned swapchains are wrapped with the non-retaining wrapper so CE sees
+    // every runtime Present (game frames AND generated frames) without patching the shared
+    // dxgi!Present entry — the precondition for leaving that entry to a multi-overlay foreign
+    // chain in FG games. The wrapper borrows the runtime's CreateSwapChain reference and adds no
+    // refs of its own, so Streamline's release/recreate on an FG transition stays byte-identical
+    // to a process without CE; a retaining wrapper would pin the old swapchain and break the
+    // DLSS-G handoff with E_ACCESSDENIED on the same HWND.
     if (IsStreamlineLoaded()) {
-        HookLog("DetourCreateSwapChainForHwndGlobal: Streamline present, skipping wrap (sc=%p)", *ppSC);
         if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
             CaptureSwapchainQueueFromCreateDevice(
                 pDevice, *ppSC, "CreateSwapChainForHwnd Global Streamline fallback", captureEvidence);
+        }
+        if (ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() && IsStreamlineRuntimeSwapchainWrappable(pDevice)) {
+            void* pExistingWrapper = nullptr;
+            if (SUCCEEDED((*ppSC)->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
+                ((IUnknown*)pExistingWrapper)->Release();
+                HookLog("DetourCreateSwapChainForHwndGlobal: Streamline swapchain already wrapped, skipping "
+                        "double-wrap");
+                return hr;
+            }
+            IDXGISwapChain* pRealSwapChain = static_cast<IDXGISwapChain*>(*ppSC);
+            auto* wrapper = new CWrapDXGISwapChain(*ppSC, pDevice, /*streamlineRuntimeNonRetaining=*/true);
+            *ppSC = static_cast<IDXGISwapChain1*>(wrapper);
+            HookLogImportant(
+                "DetourCreateSwapChainForHwndGlobal: Wrapped Streamline runtime swapchain "
+                "(real=%p wrapper=%p hwnd=%p)",
+                pRealSwapChain, wrapper, hWnd);
+            DXGIShared::MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(
+                pRealSwapChain, "CreateSwapChainForHwnd Global Streamline wrap");
+        } else {
+            HookLog(
+                "DetourCreateSwapChainForHwndGlobal: Streamline present, skipping wrap "
+                "(sc=%p loadedOverlays=%zu)",
+                *ppSC,
+                ce::overlay_compat::CountLoadedTrackedOverlayModules(
+                    ce::overlay_compat::TrackedOverlaySubset::kOverlay));
         }
         return hr;
     }

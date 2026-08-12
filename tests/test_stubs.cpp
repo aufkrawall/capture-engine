@@ -52,6 +52,9 @@ bool InlineHook::InstallPublished(void*, void*, void**, TrampolinePublisher, voi
     return false;
 }
 void InlineHook::RemoveAll() {}
+bool InlineHook::Remove(void*) {
+    return true;
+}
 void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;
 }

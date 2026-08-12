@@ -98,6 +98,17 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         return false;
     }
 
+    // Record the real function-entry addresses CE may prepend over. They are stable per
+    // process (dxgi!Present / dxgi!Present1), so the first call wins. Consumed only by
+    // MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain for the
+    // ownership-checked un-prepend.
+    if (!dxgi_shared_s_presentEntryAddress) {
+        dxgi_shared_s_presentEntryAddress = presentAddr;
+    }
+    if (!dxgi_shared_s_present1EntryAddress && present1Addr) {
+        dxgi_shared_s_present1EntryAddress = present1Addr;
+    }
+
     // Save original vtable[8] before any modifications. This captures the real
     // COM method (dxgi!CDXGISwapChain::Present or equivalent) from the temp
     // swapchain, before CE patches it to DetourPresent. Used later in
@@ -477,6 +488,157 @@ void RepairVTableHooksIfNeeded() {
                              dxgi_shared_s_hookedVTable, dxgi_shared_s_hookedVTable[8], dxgi_shared_s_hookedVTable[22]);
         }
     }
+}
+}
+
+namespace {
+// Restore CE's own Present/Present1 claim on `vtable` back to the slot's original value.
+// Used only when leaving the entry to a multi-overlay foreign chain after the FG runtime
+// swapchain got wrapped: the leave-entry invariant requires the swapchain class vftable to
+// stay pristine (Steam resolves its own "next Present" from vtable[8], so a CE detour there
+// re-inserts CE into exactly the chain the mode exists to stay out of). Foreign replacements
+// are preserved untouched — CE never overwrites bytes it does not own.
+bool DetachPresentVTableSlotsForForeignChain(void** vtable, void* originalPresent, void* originalPresent1,
+                                             const char* source) {
+    if (!vtable || !originalPresent) {
+        return false;
+    }
+    const auto detachSlot = [source](void** entry, void* detour, void* original, const char* method) {
+        void* current = *reinterpret_cast<void* volatile*>(entry);
+        if (current == original) {
+            return true;  // already pristine
+        }
+        if (current != detour) {
+            HookLogImportant(
+                "DXGIShared: Preserving foreign %s vtable replacement %p during leave-entry detach "
+                "(source=%s)",
+                method, current, source ? source : "runtime wrap");
+            return true;
+        }
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            return false;
+        }
+        void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), original,
+                                                           detour);
+        DWORD ignoredProtect = 0;
+        VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &ignoredProtect);
+        if (replaced != detour) {
+            HookLogImportant(
+                "DXGIShared: Preserving concurrent foreign %s vtable replacement %p during leave-entry detach "
+                "(source=%s)",
+                method, replaced, source ? source : "runtime wrap");
+            return false;
+        }
+        HookLog("DXGIShared: Restored pristine %s vtable slot %p (source=%s)", method, original,
+                source ? source : "runtime wrap");
+        return true;
+    };
+    const bool presentRestored =
+        detachSlot(&vtable[8], (void*)DXGIShared::DetourPresent, originalPresent, "Present");
+    const bool present1Restored = originalPresent1
+                                      ? detachSlot(&vtable[22], (void*)DXGIShared::DetourPresent1, originalPresent1,
+                                                   "Present1")
+                                      : true;
+    return presentRestored && present1Restored;
+}
+}  // namespace
+
+namespace DXGIShared {
+void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISwapChain* pRealSwapChain,
+                                                                         const char* source) {
+    if (dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire)) {
+        return;  // already left (install-time leave-entry mode)
+    }
+    const size_t loadedOverlayCount =
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const bool frameGenerationInterposerLoaded =
+        ce::overlay_compat::IsStreamlineInterposerModuleLoaded() || g_FGCompat.IsNvPresentLoaded();
+    if (!ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(
+            /*foreignEntryJumpDetected=*/true, loadedOverlayCount, frameGenerationInterposerLoaded,
+            /*hasNonEntryRuntimePresentView=*/true)) {
+        static std::atomic<int> s_keepEntryAfterWrapLogCount{0};
+        const int logCount = s_keepEntryAfterWrapLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 500) == 0) {
+            HookLogImportant(
+                "DXGIShared: Keeping CE Present entry hook after wrapped FG runtime swapchain "
+                "(loadedOverlays=%zu fgInterposer=%d source=%s) — wrapper delegates to the detour hook "
+                "when present routing needs the entry",
+                loadedOverlayCount, frameGenerationInterposerLoaded ? 1 : 0, source ? source : "runtime wrap");
+        }
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
+    if (dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!dxgi_shared_s_presentEntryAddress) {
+        return;
+    }
+    const bool entryPatchIntact =
+        InlineHook::IsInstalledEntryPatchIntact(dxgi_shared_s_presentEntryAddress, nullptr);
+    if (!ce::overlay_compat::ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
+            entryPatchIntact, /*foreignEntryJumpDetected=*/true, loadedOverlayCount,
+            frameGenerationInterposerLoaded, /*alreadyLeftToForeignChain=*/false)) {
+        if (!entryPatchIntact) {
+            HookLogImportant(
+                "DXGIShared: Cannot leave the Present entry after wrapped FG runtime swapchain — a foreign "
+                "re-hook already took the entry from CE (source=%s); CE cannot repair the foreign saved chains",
+                source ? source : "runtime wrap");
+        }
+        return;
+    }
+
+    // Restore the runtime swapchain's own vtable slot(s) when CE claimed them. The original slot
+    // value is what InstallHooks saved as the predecessor (`dxgi_shared_oPresent` at claim time).
+    void** claimedVTable = pRealSwapChain ? *reinterpret_cast<void***>(pRealSwapChain) : nullptr;
+    const bool claimedThisVTable = claimedVTable && claimedVTable == dxgi_shared_s_hookedVTable;
+    void* pristinePresent = nullptr;
+    void* pristinePresent1 = nullptr;
+    if (claimedThisVTable) {
+        pristinePresent = reinterpret_cast<void*>(dxgi_shared_oPresent);
+        pristinePresent1 = reinterpret_cast<void*>(dxgi_shared_oPresent1);
+        if (!DetachPresentVTableSlotsForForeignChain(claimedVTable, pristinePresent, pristinePresent1, source)) {
+            HookLogImportant(
+                "DXGIShared: Aborting leave-entry transition — runtime swapchain vtable slot detach did not "
+                "fully restore the pristine chain (source=%s)",
+                source ? source : "runtime wrap");
+            return;
+        }
+        dxgi_shared_s_hookedVTable = nullptr;
+    }
+
+    const bool presentRemoved = InlineHook::Remove(dxgi_shared_s_presentEntryAddress);
+    bool present1Removed = true;
+    if (dxgi_shared_s_present1EntryAddress) {
+        present1Removed = InlineHook::Remove(dxgi_shared_s_present1EntryAddress);
+    }
+    if (!presentRemoved || !present1Removed) {
+        HookLogImportant(
+            "DXGIShared: Leave-entry transition aborted — CE no longer owns all Present entry bytes "
+            "(present=%d present1=%d source=%s); retaining current chain state",
+            presentRemoved ? 1 : 0, present1Removed ? 1 : 0, source ? source : "runtime wrap");
+        return;
+    }
+
+    // Publish the leave-entry state: forwards must run the live entry (never a trampoline, a
+    // saved foreign target, or the DXGI bypass), and the wrapper becomes CE's interception.
+    dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
+    dxgi_shared_oPresent = reinterpret_cast<PFN_Present>(dxgi_shared_s_presentEntryAddress);
+    dxgi_shared_oPresentTrampoline = nullptr;
+    if (dxgi_shared_s_present1EntryAddress) {
+        dxgi_shared_oPresent1 = reinterpret_cast<PFN_Present1>(dxgi_shared_s_present1EntryAddress);
+        dxgi_shared_oPresent1Trampoline = nullptr;
+    }
+    dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
+
+    HookLogImportant(
+        "DXGIShared: Wrapped FG runtime swapchain %p — CE left the Present entry to the foreign "
+        "overlay chain (loadedOverlays=%zu entry=%p present1=%p vtableRestored=%d source=%s); "
+        "wrapper-only interception active",
+        pRealSwapChain, loadedOverlayCount, dxgi_shared_s_presentEntryAddress,
+        dxgi_shared_s_present1EntryAddress, claimedThisVTable ? 1 : 0, source ? source : "runtime wrap");
 }
 }
 

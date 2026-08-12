@@ -81,8 +81,11 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef() {
     }
 
     ULONG refs = InterlockedIncrement(&m_RefCount);
-    // Also AddRef the real swapchain to track total references
-    if (m_pReal) {
+    // Also AddRef the real swapchain to track total references. The Streamline-runtime
+    // (non-retaining) wrapper must never mirror refs: it borrows the caller's CreateSwapChain
+    // reference, and any extra real ref would pin the old swapchain across Streamline's FG
+    // recreation (E_ACCESSDENIED on the same HWND).
+    if (m_pReal && !m_StreamlineRuntimeNonRetaining) {
         m_pReal->AddRef();
         m_RealSwapchainRefs.fetch_add(1);
     }
@@ -119,9 +122,11 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release() {
         CleanupOverlayResources();
     }
 
-    // Release the real swapchain (if not already nulled by DestructionCallback)
+    // Release the real swapchain (if not already nulled by DestructionCallback). The
+    // non-retaining Streamline-runtime wrapper only returns the borrowed reference in its
+    // destructor and must not mirror per-wrapper-ref releases.
     ULONG refs = 0;
-    if (m_pReal) {
+    if (m_pReal && !m_StreamlineRuntimeNonRetaining) {
         refs = m_pReal->Release();
         m_RealSwapchainRefs.fetch_sub(1);
     }

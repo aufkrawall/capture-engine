@@ -192,12 +192,27 @@ inline const char* GetDX12PresentDelegationOverlayModuleName() {
 // When a third-party overlay already owns the DXGI Present chain, route the
 // wrapper through our detour path instead of running a second wrapper-managed
 // Present path. This avoids wrapper -> detour -> external overlay re-entry.
-inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut = nullptr) {
+// The Streamline-runtime (non-retaining) wrapper is a pure passthrough while
+// CE owns the Present entry: delegating reproduces the exact non-wrapped flow
+// (sl.dlss_g -> entry hook -> DetourPresent) instead of double-processing each
+// runtime present through both the wrapper and the detour.
+inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut = nullptr,
+                                                  bool streamlineRuntimeNonRetainingWrapper = false) {
     const char* overlayModule = GetDX12PresentDelegationOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
-    if (!overlayModule || !DXGIShared::HasPresentDetourHooks()) {
+    if (!DXGIShared::HasPresentDetourHooks()) {
+        return false;
+    }
+    if (streamlineRuntimeNonRetainingWrapper) {
+        // The Streamline-runtime wrapper exists only as CE's non-entry view for a multi-overlay
+        // foreign chain. While CE still owns the Present entry (transition aborted, or entry not
+        // yet left), it must stay a pure passthrough so presents are processed exactly once via
+        // the detour hook, never twice (wrapper + detour).
+        return true;
+    }
+    if (!overlayModule) {
         return false;
     }
     return !g_FGCompat.IsDLSSFGApiActive() && !g_FGCompat.IsFSRFGApiActive();

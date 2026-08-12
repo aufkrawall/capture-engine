@@ -126,26 +126,32 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     WrapperLog("SwapChain: Destroying wrapper %p (real=%p releasing=%d cookie=%u)", this, m_pReal,
                wrapperReleasing ? 1 : 0, m_DestructionCookie);
 
-    // Unregister destruction callback if registered
-    if (ce::dx12_overlay_policy::ShouldUnregisterSwapchainDestructionCallbackDuringWrapperDestructor(
-            wrapperReleasing, m_pReal != nullptr, m_DestructionCookie != 0)) {
-        WrapperLog("SwapChain: Unregistering destruction callback (wrapper=%p cookie=%u)", this, m_DestructionCookie);
-        static const GUID IID_ID3DDestructionNotifier = {
-            0xa05c8c18, 0x92db, 0x4b35, {0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0}};
-        struct ID3DDestructionNotifier : public IUnknown {
-            virtual HRESULT RegisterDestructionCallback(void* pCallbackFn, void* pData, UINT* pCookie) = 0;
-            virtual HRESULT UnregisterDestructionCallback(UINT Cookie) = 0;
-        };
-        ID3DDestructionNotifier* pNotifier = nullptr;
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_ID3DDestructionNotifier, (void**)&pNotifier))) {
-            pNotifier->UnregisterDestructionCallback(m_DestructionCookie);
-            pNotifier->Release();
+    // Unregister destruction callback if registered. The Streamline-runtime (non-retaining)
+    // wrapper never registers one: it borrows the runtime's CreateSwapChain reference, so the
+    // real swapchain cannot be destroyed while the wrapper is alive and the callback could
+    // never fire.
+    if (!m_StreamlineRuntimeNonRetaining) {
+        if (ce::dx12_overlay_policy::ShouldUnregisterSwapchainDestructionCallbackDuringWrapperDestructor(
+                wrapperReleasing, m_pReal != nullptr, m_DestructionCookie != 0)) {
+            WrapperLog("SwapChain: Unregistering destruction callback (wrapper=%p cookie=%u)", this,
+                       m_DestructionCookie);
+            static const GUID IID_ID3DDestructionNotifier = {
+                0xa05c8c18, 0x92db, 0x4b35, {0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0}};
+            struct ID3DDestructionNotifier : public IUnknown {
+                virtual HRESULT RegisterDestructionCallback(void* pCallbackFn, void* pData, UINT* pCookie) = 0;
+                virtual HRESULT UnregisterDestructionCallback(UINT Cookie) = 0;
+            };
+            ID3DDestructionNotifier* pNotifier = nullptr;
+            if (SUCCEEDED(m_pReal->QueryInterface(IID_ID3DDestructionNotifier, (void**)&pNotifier))) {
+                pNotifier->UnregisterDestructionCallback(m_DestructionCookie);
+                pNotifier->Release();
+            }
+        } else if (m_DestructionCookie != 0 && m_pReal) {
+            WrapperLog(
+                "SwapChain: Skipping destruction callback unregister during releasing destruction "
+                "(wrapper=%p real=%p cookie=%u)",
+                this, m_pReal, m_DestructionCookie);
         }
-    } else if (m_DestructionCookie != 0 && m_pReal) {
-        WrapperLog(
-            "SwapChain: Skipping destruction callback unregister during releasing destruction "
-            "(wrapper=%p real=%p cookie=%u)",
-            this, m_pReal, m_DestructionCookie);
     }
 
     WrapperLog("SwapChain: Unregistering wrapper state (wrapper=%p)", this);
@@ -172,19 +178,19 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     m_pReal3 = nullptr;
     m_pReal4 = nullptr;
     // Release interface references (nulled above, so no thread can see them)
-    if (pReal4ToFree) {
+    if (pReal4ToFree && !m_StreamlineRuntimeNonRetaining) {
         WrapperLog("SwapChain: Releasing promoted IDXGISwapChain4 (wrapper=%p real4=%p)", this, pReal4ToFree);
         pReal4ToFree->Release();
     }
-    if (pReal3ToFree) {
+    if (pReal3ToFree && !m_StreamlineRuntimeNonRetaining) {
         WrapperLog("SwapChain: Releasing promoted IDXGISwapChain3 (wrapper=%p real3=%p)", this, pReal3ToFree);
         pReal3ToFree->Release();
     }
-    if (pReal2ToFree) {
+    if (pReal2ToFree && !m_StreamlineRuntimeNonRetaining) {
         WrapperLog("SwapChain: Releasing promoted IDXGISwapChain2 (wrapper=%p real2=%p)", this, pReal2ToFree);
         pReal2ToFree->Release();
     }
-    if (pReal1ToFree) {
+    if (pReal1ToFree && !m_StreamlineRuntimeNonRetaining) {
         WrapperLog("SwapChain: Releasing promoted IDXGISwapChain1 (wrapper=%p real1=%p)", this, pReal1ToFree);
         pReal1ToFree->Release();
     }
@@ -201,8 +207,8 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
                 "(wrapper=%p real=%p)",
                 this, pRealToFree);
         }
-        WrapperLog("SwapChain: Releasing real swapchain final wrapper reference (wrapper=%p real=%p)", this,
-                   pRealToFree);
+        WrapperLog("SwapChain: Releasing real swapchain final %s reference (wrapper=%p real=%p)",
+                   m_StreamlineRuntimeNonRetaining ? "borrowed" : "wrapper", this, pRealToFree);
         pRealToFree->Release();
     }
     // CRITICAL FIX: Always release device reference, even if swapchain was

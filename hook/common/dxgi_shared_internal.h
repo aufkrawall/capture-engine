@@ -411,6 +411,23 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
 }
 
 namespace DXGIShared {
+// Called after CE wrapped the FG runtime's own swapchain (Streamline runtime create). When two
+// or more foreign overlays share the Present entry, this removes CE's entry prepend
+// (ownership-checked) and publishes the leave-entry state, so the foreign chain is byte-identical
+// to a process without CE and the wrapper is CE's interception for runtime presents too.
+// `pRealSwapChain` is the unwrapped real swapchain the wrapper now forwards for.
+void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISwapChain* pRealSwapChain,
+                                                                         const char* source);
+}
+
+namespace DXGIShared {
+// Wrapper-mode PostSL service: invoke the gated PostSL overlay callback from a wrapped
+// Streamline runtime Present (leave-entry mode), mirroring the entry-hook routing's
+// "confirmed standalone Streamline Present on the normal route" invocation.
+void MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(IDXGISwapChain* pSwapChain, const char* source);
+}
+
+namespace DXGIShared {
 bool IsSLInterposerLoaded();
 }
 

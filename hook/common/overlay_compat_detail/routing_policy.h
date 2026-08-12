@@ -196,12 +196,35 @@ inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedO
 // foreign chain is then byte-identical to a process without CE.
 //
 // Exception: a frame-generation interposer (Streamline / NvPresent) presents generated frames
-// from its own runtime-owned swapchain, which never reaches CE's wrapper. The entry hook is
-// CE's only view of those presents, so it is kept.
+// from its own runtime-owned swapchain. While that swapchain is NOT wrapped, the entry hook is
+// CE's only view of those presents, so the prepend is kept. Once CE has wrapped the runtime
+// swapchain (`hasNonEntryRuntimePresentView`), the wrapper sees every runtime present and the
+// exception is no longer needed: the entry is left to the foreign chain in FG games too, so
+// Steam/RTSS compose exactly like a process without CE (Talos + DLSS FG + Steam + RTSS).
 inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryJumpDetected,
                                                          size_t loadedOverlayModuleCount,
-                                                         bool frameGenerationInterposerLoaded) {
-    return foreignEntryJumpDetected && loadedOverlayModuleCount >= 2 && !frameGenerationInterposerLoaded;
+                                                         bool frameGenerationInterposerLoaded,
+                                                         bool hasNonEntryRuntimePresentView = false) {
+    return foreignEntryJumpDetected && loadedOverlayModuleCount >= 2 &&
+           (!frameGenerationInterposerLoaded || hasNonEntryRuntimePresentView);
+}
+
+// Post-wrap transition decision: after CE wrapped the FG runtime's swapchain (non-entry view of
+// runtime presents established), may CE now remove its own Present-entry prepend and switch to
+// wrapper-only interception? Only when CE still owns the entry bytes — a foreign re-hook that
+// already took the entry recorded CE's relay inside its own saved chain, and un-prepending then
+// cannot repair that state (CE must not touch bytes it no longer owns).
+inline bool ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(bool entryPatchStillIntact,
+                                                             bool foreignEntryJumpDetected,
+                                                             size_t loadedOverlayModuleCount,
+                                                             bool frameGenerationInterposerLoaded,
+                                                             bool alreadyLeftToForeignChain) {
+    if (alreadyLeftToForeignChain || !entryPatchStillIntact) {
+        return false;
+    }
+    return ShouldLeavePresentEntryToForeignOverlayChain(foreignEntryJumpDetected, loadedOverlayModuleCount,
+                                                        frameGenerationInterposerLoaded,
+                                                        /*hasNonEntryRuntimePresentView=*/true);
 }
 
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No

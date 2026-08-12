@@ -120,6 +120,14 @@ bool IsPresentEntryLeftToForeignChain();
 }
 
 namespace DXGIShared {
+// dxgi!Present / dxgi!Present1 function-entry addresses CE prepended over, recorded at
+// InstallPresentInlineHooks time. Needed for the ownership-checked un-prepend when a wrapped
+// FG runtime swapchain later allows CE to leave the entry to a multi-overlay foreign chain.
+extern void* dxgi_shared_s_presentEntryAddress;
+extern void* dxgi_shared_s_present1EntryAddress;
+}
+
+namespace DXGIShared {
 extern thread_local int dxgi_shared_s_externalOverlayPresentInvokeDepth;
 }
 

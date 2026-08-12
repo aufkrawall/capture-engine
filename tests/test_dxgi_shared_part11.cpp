@@ -527,3 +527,98 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     EXPECT_NE(detect.find("NoteModuleLoadedForOverlayCacheFromNotification(base);"), std::string::npos);
     EXPECT_NE(detect.find("NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);"), std::string::npos);
 }
+
+// The FG-interposer exception to the leave-entry rule is closed by wrapping the Streamline
+// runtime swapchain with the non-retaining wrapper (non-entry view of runtime presents), then
+// removing CE's Present-entry prepend ownership-checked and publishing the leave-entry state.
+// The wrapper must add no real-swapchain refs (pinning the old swapchain across Streamline's
+// FG recreation breaks the DLSS-G handoff with E_ACCESSDENIED) and must stay a transparent
+// passthrough while CE still owns the entry.
+TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterposerEntryException) {
+    namespace fs = std::filesystem;
+    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    ASSERT_TRUE(fs::exists(hooksSource));
+    const std::string hooks = ce::test_source::ReadFile(hooksSource);
+    ASSERT_FALSE(hooks.empty());
+
+    // Install records the real function-entry addresses so the leave-entry transition can
+    // un-prepend exactly the bytes CE owns.
+    EXPECT_NE(hooks.find("dxgi_shared_s_presentEntryAddress = presentAddr"), std::string::npos);
+
+    // The post-wrap transition is gated on CE still owning the entry bytes (never un-prepend a
+    // foreign re-hook's entry), restores the runtime swapchain's own pristine vtable slot, and
+    // publishes the leave-entry state with live-entry forwarding.
+    const size_t transition = hooks.find("void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(");
+    ASSERT_NE(transition, std::string::npos);
+    EXPECT_NE(hooks.find("ShouldLeavePresentEntryAfterRuntimeSwapchainWrap", transition), std::string::npos);
+    EXPECT_NE(hooks.find("InlineHook::IsInstalledEntryPatchIntact", transition), std::string::npos);
+    EXPECT_NE(hooks.find("DetachPresentVTableSlotsForForeignChain", transition), std::string::npos);
+    EXPECT_NE(hooks.find("InlineHook::Remove(dxgi_shared_s_presentEntryAddress)", transition), std::string::npos);
+    EXPECT_NE(hooks.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(true", transition), std::string::npos);
+    EXPECT_NE(hooks.find("dxgi_shared_oPresentTrampoline = nullptr", transition), std::string::npos);
+
+    // The runtime swapchain create wraps instead of always skipping when Streamline is loaded.
+    const fs::path createSource = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp";
+    ASSERT_TRUE(fs::exists(createSource));
+    const std::string create = ce::test_source::ReadFile(createSource);
+    ASSERT_FALSE(create.empty());
+    EXPECT_NE(create.find("IsStreamlineRuntimeSwapchainWrappable(pDevice)"), std::string::npos);
+    EXPECT_NE(create.find("/*streamlineRuntimeNonRetaining=*/true"), std::string::npos);
+    EXPECT_NE(create.find("MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain"),
+              std::string::npos);
+
+    // The Streamline-runtime wrapper mode: no real-swapchain ref mirroring, no destruction
+    // callback (the borrowed CreateSwapChain reference ties wrapper lifetime to the runtime),
+    // transparent delegation while the detour hooks exist, and the gated PostSL service so the
+    // overlay still draws after SL's FG processing in leave-entry mode.
+    const fs::path wrapHeader = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.h";
+    ASSERT_TRUE(fs::exists(wrapHeader));
+    const std::string wrapH = ce::test_source::ReadFile(wrapHeader);
+    ASSERT_FALSE(wrapH.empty());
+    EXPECT_NE(wrapH.find("streamlineRuntimeNonRetaining"), std::string::npos);
+    EXPECT_NE(wrapH.find("bool IsStreamlineRuntimeNonRetaining()"), std::string::npos);
+
+    const fs::path wrapCom = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_com.cpp";
+    ASSERT_TRUE(fs::exists(wrapCom));
+    const std::string com = ce::test_source::ReadFile(wrapCom);
+    ASSERT_FALSE(com.empty());
+    EXPECT_NE(com.find("m_pReal && !m_StreamlineRuntimeNonRetaining"), std::string::npos);
+
+    const fs::path wrapLife = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_lifetime.cpp";
+    ASSERT_TRUE(fs::exists(wrapLife));
+    const std::string life = ce::test_source::ReadFile(wrapLife);
+    ASSERT_FALSE(life.empty());
+    EXPECT_NE(life.find("!m_StreamlineRuntimeNonRetaining"), std::string::npos);
+
+    const fs::path wrapPresent = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_present.cpp";
+    ASSERT_TRUE(fs::exists(wrapPresent));
+    const std::string present = ce::test_source::ReadFile(wrapPresent);
+    ASSERT_FALSE(present.empty());
+    EXPECT_NE(present.find("ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, "
+                           "m_StreamlineRuntimeNonRetaining)"),
+              std::string::npos);
+    EXPECT_NE(present.find("MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent"), std::string::npos);
+    // The wrapper feeds the Streamline present-stall detector in leave-entry mode (DetourPresent
+    // never runs there), otherwise slDLSSGSetOptions falsely dumps "Present STALLED".
+    EXPECT_NE(present.find("g_PresentCallCounter.fetch_add(1"), std::string::npos);
+
+    const fs::path wrapInternal = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_internal.h";
+    ASSERT_TRUE(fs::exists(wrapInternal));
+    const std::string wrapInternalText = ce::test_source::ReadFile(wrapInternal);
+    ASSERT_FALSE(wrapInternalText.empty());
+    EXPECT_NE(wrapInternalText.find("streamlineRuntimeNonRetainingWrapper"), std::string::npos);
+
+    const fs::path routingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp";
+    ASSERT_TRUE(fs::exists(routingSource));
+    const std::string routing = ce::test_source::ReadFile(routingSource);
+    ASSERT_FALSE(routing.empty());
+    EXPECT_NE(routing.find("void MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent"), std::string::npos);
+    EXPECT_NE(routing.find("ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute"),
+              std::string::npos);
+    // The unconfirmed startup family must also fire the callback in wrapper mode: ProcessFrame
+    // suppresses its own pre-SL draw while PostSL is pending/active-but-unconfirmed, so without
+    // this arm the first healthy submit never happens and PostSL can never confirm (session
+    // 20260812_040330: CE overlay vanished for the whole DLSS FG session).
+    EXPECT_NE(routing.find("postSLSyntheticStartupActivationPending"), std::string::npos);
+    EXPECT_NE(routing.find("HookIsPostSLOverlayActiveButUnconfirmed()"), std::string::npos);
+}

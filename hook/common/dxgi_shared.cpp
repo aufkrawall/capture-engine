@@ -336,6 +336,15 @@ bool IsPresentEntryLeftToForeignChain() {
 }
 
 namespace DXGIShared {
+// Function-entry addresses CE prepended over at InstallPresentInlineHooks time (the real
+// dxgi!Present / dxgi!Present1 entries, not the foreign E9 targets). Consumed only by the
+// ownership-checked un-prepend when a wrapped FG runtime swapchain establishes a non-entry
+// view of runtime presents (see MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain).
+void* dxgi_shared_s_presentEntryAddress = nullptr;
+void* dxgi_shared_s_present1EntryAddress = nullptr;
+}
+
+namespace DXGIShared {
 thread_local int dxgi_shared_s_externalOverlayPresentInvokeDepth = 0;
 }
 
