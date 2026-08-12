@@ -187,10 +187,11 @@ static bool TryFindVerifiedExternalHookResumeOffset(const char* context, const u
 }
 
 static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublisher publisher,
-                                 void* publisherContext) {
+                                 void* publisherContext, int minimumExternalPatchSize) {
 #ifndef _WIN64
     (void)publisher;
     (void)publisherContext;
+    (void)minimumExternalPatchSize;
     HookLog("DeepHook: Only supported on x64");
     return nullptr;
 #else
@@ -209,15 +210,34 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 
     const uint8_t* code = (const uint8_t*)target;
 
-    // Step 1: Detect existing hook at byte 0
+    // Step 1: Determine how many entry bytes the external hook owns.
+    //
+    // Byte 0 is only a sample. RTSS-style engines restore the original bytes, call through and
+    // re-patch on every call, so a target that IS hooked reads clean much of the time. When the
+    // caller has already observed the patch it passes its size, and the body patch goes past
+    // that span regardless of what the sample shows now.
     int existingJmpSize = 0;
     if (code[0] == 0xE9) {
         existingJmpSize = 5;
     } else if (code[0] == 0xFF && code[1] == 0x25) {
         existingJmpSize = 14;
+    } else if (minimumExternalPatchSize > 0) {
+        existingJmpSize = minimumExternalPatchSize;
+        HookLog(
+            "DeepHook: No external jump visible at byte 0 of %p right now (byte=0x%02X); using the caller's observed "
+            "%d-byte external patch span",
+            target, code[0], existingJmpSize);
     } else {
         HookLog("DeepHook: No external hook at byte 0 of %p (byte=0x%02X)", target, code[0]);
         return nullptr;
+    }
+
+    if (minimumExternalPatchSize > existingJmpSize) {
+        // A larger span was observed earlier than the one visible now — honour the larger one,
+        // because CE must never land inside bytes a foreign tool rewrites.
+        HookLog("DeepHook: Widening external patch span at %p from %d to the caller-observed %d bytes", target,
+                existingJmpSize, minimumExternalPatchSize);
+        existingJmpSize = minimumExternalPatchSize;
     }
 
     HookLog("DeepHook: External %d-byte JMP detected at %p", existingJmpSize, target);
@@ -532,15 +552,15 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 #endif
 }
 
-void* InstallDeepHook(void* target, void* wrapperFn) {
-    return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr);
+void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSize) {
+    return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr, minimumExternalPatchSize);
 }
 
-void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
-                               void* publisherContext) {
+void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
+                               int minimumExternalPatchSize) {
     if (!publisher)
         return nullptr;
-    return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext);
+    return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize);
 }
 
 // ============================================================================

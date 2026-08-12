@@ -377,7 +377,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         CreateDirectoryA(logsRootDir.c_str(), NULL);
         CreateDirectoryA(earlyLogsDir.c_str(), NULL);
-        SetCrashDumpDirectory(earlyLogsDir);
+        // Without a session directory name yet, `earlyLogsDir` IS the logs root — a fallback
+        // for an early dump, not a session artifact directory. Archiving the installed symbols
+        // there leaves a stray `logs\symbols` full of PDBs next to the per-session folders.
+        SetCrashDumpDirectory(earlyLogsDir, /*archiveInstalledSymbols=*/!g_SessionDirName.empty());
         InstallCrashHandler();
     } else {
         OutputDebugStringA(

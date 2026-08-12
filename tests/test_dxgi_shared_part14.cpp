@@ -163,3 +163,67 @@ TEST(DXGISharedTest, DeepHookPrologRefusesShapesWithAnUnknownStackEffect) {
     const unsigned char truncated[] = {0x48, 0x89, 0x5C, 0x24, 0x10};
     EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(truncated, 4, &stackDelta));
 }
+
+// Session 20260812_150918: the caller logged the foreign `E9 at 00007FFD5C049960` and the deep
+// install, milliseconds later, read `byte=0x48` — the ORIGINAL first byte — and refused.
+// RTSS restores the entry bytes, calls through, and re-patches on every present, so byte 0 is
+// a coin flip on a target that is very much hooked. Present1 happened to install and Present
+// did not, and Present is the entry the game uses, so the overlay never appeared.
+//
+// The caller therefore passes the span it observed, and the deep hook honours it whatever the
+// live sample shows. A larger span than the real one is safe (the foreign trampoline resumes
+// below CE's patch and still reaches it); a smaller one would land inside bytes the foreign
+// tool rewrites, so an unobservable patch must use the widest recognized form.
+TEST(DXGISharedTest, DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleReadsClean) {
+    namespace fs = std::filesystem;
+    const fs::path deepSource = fs::current_path() / "hook" / "wrappers" / "inline_hook_deep.cpp";
+    ASSERT_TRUE(fs::exists(deepSource));
+    const std::string deep = ce::test_source::ReadFile(deepSource);
+    ASSERT_FALSE(deep.empty());
+
+    const size_t detection = deep.find("int existingJmpSize = 0;");
+    ASSERT_NE(detection, std::string::npos);
+    // A clean sample plus a caller-observed span is accepted instead of refused...
+    const size_t hintBranch = deep.find("} else if (minimumExternalPatchSize > 0) {", detection);
+    ASSERT_NE(hintBranch, std::string::npos);
+    // ...and a visible span narrower than the observed one is widened, never narrowed.
+    const size_t widen = deep.find("if (minimumExternalPatchSize > existingJmpSize) {", hintBranch);
+    ASSERT_NE(widen, std::string::npos);
+    EXPECT_NE(deep.find("existingJmpSize = minimumExternalPatchSize;", widen), std::string::npos);
+    // With no observation at all the strict refusal stays.
+    EXPECT_NE(deep.find("No external hook at byte 0 of %p", detection), std::string::npos);
+
+    const fs::path header = fs::current_path() / "hook" / "wrappers" / "inline_hook.h";
+    const std::string headerText = ce::test_source::ReadFile(header);
+    ASSERT_FALSE(headerText.empty());
+    EXPECT_NE(headerText.find("int minimumExternalPatchSize = 0"), std::string::npos);
+}
+
+// The logs root is a fallback for an early crash dump, not a session artifact directory.
+// Archiving the installed symbols there left a stray `installed\captureengine\logs\symbols`
+// full of PDBs beside the per-session folders (reported 2026-08-12), which nothing consumes:
+// the real session directory stages its own copy moments later.
+TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
+    namespace fs = std::filesystem;
+    const fs::path entrySource = fs::current_path() / "captureengine" / "main_entry.cpp";
+    const fs::path handlerSource = fs::current_path() / "common" / "crash_handler.cpp";
+    ASSERT_TRUE(fs::exists(entrySource));
+    ASSERT_TRUE(fs::exists(handlerSource));
+    const std::string entry = ce::test_source::ReadFile(entrySource);
+    const std::string handler = ce::test_source::ReadFile(handlerSource);
+    ASSERT_FALSE(entry.empty());
+    ASSERT_FALSE(handler.empty());
+
+    // The early call opts out of archiving exactly when there is no session directory name.
+    EXPECT_NE(entry.find("SetCrashDumpDirectory(earlyLogsDir, /*archiveInstalledSymbols=*/!g_SessionDirName.empty())"),
+              std::string::npos);
+
+    // The dump directory itself is still set in that state - an early crash must land somewhere.
+    const size_t setter = handler.find("void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols)");
+    ASSERT_NE(setter, std::string::npos);
+    const size_t storage = handler.find("CrashDumpDirectoryStorage() = dir;", setter);
+    const size_t guard = handler.find("if (archiveInstalledSymbols) {", setter);
+    ASSERT_NE(storage, std::string::npos);
+    ASSERT_NE(guard, std::string::npos);
+    EXPECT_LT(storage, guard);
+}

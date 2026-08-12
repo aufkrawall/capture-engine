@@ -9,8 +9,15 @@
 // Installs the unhandled exception filter to generate Minidumps
 void InstallCrashHandler();
 
-// Sets the directory where crash dumps will be written
-void SetCrashDumpDirectory(const std::string& dir);
+// Sets the directory where crash dumps will be written.
+//
+// `archiveInstalledSymbols` also stages the installed PDBs/manifest into `dir\symbols` so a
+// dump written there is analyzable later. Pass false while `dir` is only a provisional
+// fallback — notably the logs ROOT, used before the session directory name exists. Archiving
+// there drops a full symbol copy beside the per-session directories that nothing ever consumes
+// (observed as a stray `installed\captureengine\logs\symbols`); the real session directory
+// archives its own copy moments later.
+void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols = true);
 
 // Returns the current directory where crash dumps should be written.
 std::string GetCrashDumpDirectory();

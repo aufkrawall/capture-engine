@@ -285,15 +285,25 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
 
     const size_t leaveEntry = install.find("ShouldLeavePresentEntryToForeignOverlayChain(");
     ASSERT_NE(leaveEntry, std::string::npos);
+    // The entry bytes are volatile (RTSS restores/re-patches them around every call), so the
+    // decision must rest on the loaded-overlay count, not on this instant's sample, and it must
+    // run before the bypass machinery that does need a visible foreign jump.
+    EXPECT_NE(install.find("externalJmpDetected || loadedOverlayCount >= 2", leaveEntry), std::string::npos);
+    const size_t bypassBlock = install.find("if (externalJmpDetected) {");
+    ASSERT_NE(bypassBlock, std::string::npos);
+    EXPECT_LT(leaveEntry, bypassBlock);
     // The body view is taken inside the leave-entry branch, and only a view that was actually
     // obtained may latch the install — otherwise a refused body patch blinds the session with
     // no retry, because InstallPresentInlineHooks early-returns on the latch.
     const size_t deepInstall = install.find(
-        "s_inlineHooksInstalled = InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr);", leaveEntry);
+        "InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr, observedEntryPatchSize)", leaveEntry);
     ASSERT_NE(deepInstall, std::string::npos);
+    // The very first latch after the decision is that conditional one, never a bare `= true`.
     const size_t firstLatchAfterDecision = install.find("s_inlineHooksInstalled =", leaveEntry);
     ASSERT_NE(firstLatchAfterDecision, std::string::npos);
-    EXPECT_EQ(firstLatchAfterDecision, deepInstall);
+    EXPECT_LT(firstLatchAfterDecision, deepInstall);
+    const std::string decisionBlock = install.substr(leaveEntry, deepInstall - leaveEntry);
+    EXPECT_EQ(decisionBlock.find("s_inlineHooksInstalled = true;"), std::string::npos);
 
     // The Present view below the chain is a deep body hook, never an entry patch.
     const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
@@ -304,7 +314,11 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // has no chain to damage, so the ordinary prepend is correct there.
     EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),
               std::string::npos);
-    EXPECT_NE(install.find("present1EntryIsForeign", helper), std::string::npos);
+    // Both entries carry the observed patch span, so a momentarily restored entry cannot make
+    // the body hook refuse (session 20260812_150918: Present refused on byte=0x48 milliseconds
+    // after the caller logged the E9, and Present is the entry the game actually uses).
+    EXPECT_NE(install.find("observedPresentEntryPatchSize", helper), std::string::npos);
+    EXPECT_EQ(install.find("present1EntryIsForeign", helper), std::string::npos);
     // Losing the body view leaves the overlay invisible — that must be an important log line,
     // not a silent fallback.
     EXPECT_NE(install.find("Present view at all unless it wraps the presenting swapchain", helper),
@@ -421,6 +435,7 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
         // the single bounded walk (not one full-stack scan per module).
         const size_t resolve = source->find("ResolvePresentOriginatorBelowForeignChain(");
         ASSERT_NE(resolve, std::string::npos);
+        ASSERT_GE(resolve, 200u);
         EXPECT_NE(source->find("IsPresentInterceptedBelowForeignChain()", resolve - 200), std::string::npos);
         const size_t streamline = source->find("callerFromStreamlineModule =", resolve);
         ASSERT_NE(streamline, std::string::npos);

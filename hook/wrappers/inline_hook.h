@@ -60,13 +60,22 @@ void RemoveAll();
 // - target: address of the function (must have a JMP at byte 0)
 // - wrapperFn: replacement function with same signature as target
 // Returns trampoline to call original function, or nullptr on failure.
-void* InstallDeepHook(void* target, void* wrapperFn);
+// `minimumExternalPatchSize` covers targets whose entry patch is not observable at this
+// instant: tools like RTSS restore the original bytes, call through, and re-patch on every
+// call, so byte 0 reads clean roughly half the time (session 20260812_150918: the caller had
+// just seen the E9, the deep install a moment later read 0x48 and refused). Pass the size the
+// caller observed - or the largest form CE recognizes when it saw none - and the body patch is
+// placed past it regardless of what byte 0 reads right now. A too-large value is safe (the
+// foreign trampoline resumes below CE's patch and still reaches it); a too-small one is not,
+// so an unknown patch must use the conservative maximum. 0 keeps the strict behavior of
+// refusing a target with no observable foreign jump.
+void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSize = 0);
 
 // Deep-hook variant that publishes its callable trampoline before the live
 // body patch becomes observable. The publisher receives nullptr if the patch
 // fails after publication.
 void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
-                               void* publisherContext);
+                               void* publisherContext, int minimumExternalPatchSize = 0);
 
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);

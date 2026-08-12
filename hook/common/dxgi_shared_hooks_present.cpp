@@ -65,11 +65,20 @@ void PublishDeepPresent1Body(void* trampoline, void*) {
 // install: thread quiescence can legitimately refuse a body patch once (a peer thread sitting
 // inside the displaced range), and a later real swapchain event is a free, timer-free retry —
 // far better than running the whole session blind.
-bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1Addr) {
+//
+// `observedPresentEntryPatchSize` is the foreign patch span the caller saw when it decided to
+// leave the entry. It has to be passed in: RTSS restores the original entry bytes, calls
+// through, and re-patches on every present, so by the time the deep install samples byte 0 it
+// can read clean — session 20260812_150918 refused the Present body hook on `byte=0x48`
+// milliseconds after the caller had logged the E9 there, and the overlay never appeared
+// because Present is the entry the game actually uses.
+bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1Addr,
+                                              int observedPresentEntryPatchSize) {
     using namespace DXGIShared;
 
     bool haveBodyView = false;
-    if (InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr)) {
+    if (InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr,
+                                             observedPresentEntryPatchSize)) {
         // The DXGI bypass built above resumes at exactly the offset the deep hook now owns, so
         // every "skip the foreign entry hook" consumer would land back in CE's own detour. The
         // deep trampoline is the correct clean path: it skips the foreign entry AND CE's patch
@@ -92,34 +101,20 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
         return haveBodyView;
     }
 
-    const uint8_t* present1Code = static_cast<const uint8_t*>(present1Addr);
-    const bool present1EntryIsForeign =
-        present1Code[0] == 0xE9 || (present1Code[0] == 0xFF && present1Code[1] == 0x25);
-    if (present1EntryIsForeign) {
-        if (InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1, PublishDeepPresent1Body,
-                                                 nullptr)) {
-            dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody;
-            HookLogImportant(
-                "InstallPresentInlineHooks: Present1 deep body hook installed below the foreign chain "
-                "(entry=%p trampoline=%p)",
-                present1Addr, (void*)dxgi_shared_oPresent1DeepBody);
-        } else {
-            HookLogImportant("InstallPresentInlineHooks: Present1 deep body hook on foreign-owned entry %p failed",
-                             present1Addr);
-        }
-        return haveBodyView;
-    }
-
-    // No foreign overlay owns the Present1 entry, so an ordinary prepend there cannot
-    // re-link anyone's saved chain — there is no other participant to drop.
-    Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
-    void* present1Trampoline = nullptr;
-    if (InlineHook::InstallPublished(present1Addr, (void*)DetourPresent1, &present1Trampoline,
-                                     PublishPresent1Trampoline, &present1Publication)) {
+    // Present1 gets the same treatment, and the same sampling caveat applies to its entry: a
+    // clean read is not proof that no foreign overlay owns it. Once CE knows the chain is
+    // there, the deep body hook is the safe choice for both entries — it works whether or not
+    // a foreign patch is present, whereas an ordinary prepend on an entry that turns out to be
+    // shared is exactly what this mode exists to avoid.
+    if (InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1, PublishDeepPresent1Body, nullptr,
+                                             observedPresentEntryPatchSize)) {
+        dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody;
         HookLogImportant(
-            "InstallPresentInlineHooks: Present1 entry %p is unclaimed by any foreign overlay — installed CE's "
-            "ordinary inline hook (trampoline=%p)",
-            present1Addr, present1Trampoline);
+            "InstallPresentInlineHooks: Present1 deep body hook installed below the foreign chain "
+            "(entry=%p trampoline=%p)",
+            present1Addr, (void*)dxgi_shared_oPresent1DeepBody);
+    } else {
+        HookLogImportant("InstallPresentInlineHooks: Present1 deep body hook at %p failed", present1Addr);
     }
     return haveBodyView;
 }
@@ -230,6 +225,18 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         return true;
     }
 
+    // Two or more loaded overlay modules is CE's decisive evidence that the Present entry
+    // belongs to a foreign chain — not the entry bytes, which are volatile: RTSS restores the
+    // original bytes, calls through and re-patches on every present, so a sample taken inside
+    // that window reads clean on an entry that is very much hooked (session 20260812_150918
+    // caught exactly that gap between the detection and the deep install, milliseconds apart).
+    // The module count does not flicker. When CE cannot see the patch it must still assume the
+    // widest form it recognizes, so the body hook lands past whatever those tools rewrite.
+    const size_t loadedOverlayCount =
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const bool frameGenerationInterposerLoaded =
+        ce::overlay_compat::IsStreamlineInterposerModuleLoaded() || g_FGCompat.IsNvPresentLoaded();
+
     // CRITICAL: Check if an external overlay has already hooked Present
     // External overlays (NVIDIA, Steam, Discord, etc.) actively re-hook Present
     // Fighting them causes a hook war that corrupts the call chain
@@ -278,6 +285,45 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                 }
             }
         }
+    }
+
+    // Decided before the bypass machinery below, because that machinery needs a foreign jump to
+    // be visible right now and this decision must not. Two loaded overlays own the entry
+    // whether or not this instant's sample shows it.
+    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(
+            externalJmpDetected || loadedOverlayCount >= 2, loadedOverlayCount, frameGenerationInterposerLoaded)) {
+        dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
+        dxgi_shared_oPresent = (PFN_Present)presentAddr;
+        if (present1Addr) {
+            dxgi_shared_oPresent1 = (PFN_Present1)present1Addr;
+        }
+        if (externalEntryTarget) {
+            dxgi_shared_g_externalOverlayPresentHook = (PFN_Present)externalEntryTarget;
+        }
+        // The widest entry-patch form CE recognizes when it cannot see one: placing the body
+        // hook deeper than the foreign patch is always safe, placing it inside one never is.
+        const int observedEntryPatchSize = entryUsesFF25 ? 14 : (entryUsesE9 ? 5 : 14);
+        HookLogImportant(
+            "InstallPresentInlineHooks: %zu third-party overlays already share the Present entry "
+            "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s foreignJumpVisibleNow=%d) — CE stays out of the "
+            "entry patch chain and intercepts below it",
+            loadedOverlayCount, entryUsesE9 ? "E9" : (entryUsesFF25 ? "FF25" : "no visible jump"), presentAddr,
+            externalEntryTarget,
+            ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                ? ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
+                : "none",
+            ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                ? ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
+                : "none",
+            externalJmpDetected ? 1 : 0);
+        // The swapchain wrapper alone is not a complete view: it only exists for swapchains CE
+        // itself created. Take the deep body hook below the foreign chain so a swapchain that
+        // pre-dates injection is covered too. Only a view that was actually obtained latches
+        // the install, so a refused body patch is retried by the next real swapchain event
+        // instead of blinding the whole session.
+        s_inlineHooksInstalled =
+            InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr, observedEntryPatchSize);
+        return true;
     }
 
     if (externalJmpDetected) {
@@ -350,42 +396,10 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     ((const uint8_t*)presentAddr)[4]);
             }
         }
-        // Two or more foreign overlays sharing this entry cannot survive a third
-        // participant: each of them restores/re-installs those same bytes, and whichever one
-        // (re-)hooks while CE's prepend is live records CE as its "next" and drops the other
-        // overlay out of the chain. Leave the entry alone and intercept through
-        // CWrapDXGISwapChain, which no byte patcher can observe.
-        const size_t loadedOverlayCount =
-            ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
-        const bool frameGenerationInterposerLoaded =
-            ce::overlay_compat::IsStreamlineInterposerModuleLoaded() || g_FGCompat.IsNvPresentLoaded();
-        if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(true, loadedOverlayCount,
-                                                                            frameGenerationInterposerLoaded)) {
-            dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
-            dxgi_shared_oPresent = (PFN_Present)presentAddr;
-            if (present1Addr) {
-                dxgi_shared_oPresent1 = (PFN_Present1)present1Addr;
-            }
-            HookLogImportant(
-                "InstallPresentInlineHooks: %zu third-party overlays already share the Present entry "
-                "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s) — CE stays out of the entry patch chain "
-                "and intercepts through its swapchain wrapper",
-                loadedOverlayCount, entryUsesE9 ? "E9" : "FF25", presentAddr, externalEntryTarget,
-                ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
-                    ? ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName()
-                    : "none",
-                ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
-                    ? ce::overlay_compat::GetLastLoadedTrackedOverlayModuleName()
-                    : "none");
-            // The swapchain wrapper alone is not a complete view: it only exists for
-            // swapchains CE itself created. Take the deep body hook below the foreign chain
-            // so a swapchain that pre-dates injection is covered too. Only a view that was
-            // actually obtained latches the install, so a refused body patch is retried by
-            // the next real swapchain event instead of blinding the whole session.
-            s_inlineHooksInstalled = InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr);
-            return true;
-        }
-
+        // The leave-the-entry decision already ran above, before this block, because it must
+        // not depend on a foreign jump being visible at this instant. Reaching here means CE
+        // may prepend: at most one foreign overlay owns the entry, so the chain survives a
+        // second participant.
         HookLogImportant(
             "InstallPresentInlineHooks: External %s detected — prepending CE at the original entry and "
             "forwarding through the exact foreign target (loadedOverlays=%zu fgInterposer=%d)",

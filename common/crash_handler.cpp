@@ -446,13 +446,15 @@ void RegisterWithWER() {
     }
 }
 
-void SetCrashDumpDirectory(const std::string& dir) {
+void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols) {
     {
         std::lock_guard<std::mutex> lock(g_DumpDirMutex);
         CrashDumpDirectoryStorage() = dir;
     }
     DeleteStaleEmptyInProgressDumpArtifactsForDirectory(dir);
-    ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
+    if (archiveInstalledSymbols) {
+        ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
+    }
 }
 
 std::string GetCrashDumpDirectory() {

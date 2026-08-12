@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-08-12 - The Present entry bytes are volatile: one sample is not evidence
+
+- Session `20260812_150918` (build 0.1.5955, dx12_fg_switch_test via Steam + RTSS, all FG off): no overlay at all again. The log holds the contradiction three lines apart: `InstallPresentInlineHooks: 2 third-party overlays already share the Present entry (E9 at 00007FFD5C049960 ...)` and then `DeepHook: No external hook at byte 0 of 00007FFD5C049960 (byte=0x48)` -> `deep body hook ... FAILED`. 0x48 is the ORIGINAL first byte of dxgi!Present.
+- Cause: RTSS restores the original entry bytes, calls through, and re-patches on every present, so byte 0 reads clean roughly half the time on an entry that is very much hooked. `InstallDeepHook` derived the foreign patch span from its own sample of byte 0 and refused when it read clean. Present1 happened to install (S:769) and Present did not — and Present is the entry the game uses, so CE had no view.
+- Fix, two parts, both "stop treating one sample of volatile bytes as evidence":
+  - `InstallDeepHook`/`InstallDeepHookPublished` take `minimumExternalPatchSize`. The caller passes the span it observed; the body patch is placed past it whatever byte 0 reads now, and a visible span narrower than the observed one is widened, never narrowed. A too-large span is safe (the foreign trampoline resumes below CE's patch and still reaches it), a too-small one is not, so an unobservable patch uses the widest form CE recognizes (14, the FF25 shape). With no observation at all the strict refusal stays.
+  - The leave-the-entry decision moved ahead of the bypass machinery in `InstallPresentInlineHooks` and now rests on `externalJmpDetected || loadedOverlayCount >= 2`. The module count does not flicker; the entry bytes do. This also closes the mirror race, where a sample taken inside RTSS's restore window would have made CE prepend into a chain two overlays share — the exact state the mode exists to avoid, and previously a coin flip.
+  - Present1 no longer needs its entry to look foreign either: once CE knows the chain is there, the deep body hook is correct for both entries.
+- Regression tests: `tests/test_dxgi_shared_part14.cpp` (`DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleReadsClean`), `tests/test_dxgi_shared_part13.cpp` (decision rests on the overlay count and precedes the bypass block; both entries carry the observed span).
+- Validation pending: re-run dx12_fg_switch_test from Steam with RTSS, FG off at start, then the full switch matrix.
+
 ### 2026-08-12 - DLSS FG below the foreign chain: CE re-invited Steam and presents took 5 s each
 
 - Session `20260812_145524` (build 0.1.5954, dx12_fg_switch_test via Steam + RTSS, switched to DLSS FG): performance collapsed to ~0.2 fps. Log: `DX12 DIAG: DetourPresent TOTAL SLOW 5014.9ms`, `heartbeat gap=5017ms slFG=1`, ECL 5-21/s, one `Guarded Steam Present hook installed ... reason=SL external-overlay vtable transport` per stalled present.
