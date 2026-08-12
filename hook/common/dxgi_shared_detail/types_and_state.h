@@ -227,6 +227,12 @@ bool HasPresentDetourHooks();
 // entry bytes belong entirely to the foreign overlays.
 bool HasPrependedPresentEntryHook();
 
+// True when CE's Present view is a deep body hook BELOW a foreign overlay chain, i.e. CE is
+// entered after every overlay in that chain has drawn. Defined in dxgi_shared.cpp and also
+// declared in the internal present-state header; repeated here because the FG session
+// policy (fg_session_state.cpp) consults it and must not pull in dxgi_shared_internal.h.
+bool IsPresentInterceptedBelowForeignChain();
+
 // Handle of the SYSTEM dxgi.dll, resolved by full path under GetSystemDirectory (WOW64-aware,
 // so a 32-bit process gets the SysWOW64 image). Never by name: ReShade, SpecialK and OptiScaler
 // all ship their proxy as `dxgi.dll` in the game directory, and `GetModuleHandleA("dxgi.dll")`

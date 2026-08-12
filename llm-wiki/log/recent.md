@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-08-12 - FSR FG layering: the overlay leaves the runtime present callback when CE is below a foreign chain (0.1.5969)
+
+- Root cause, one line of policy: `ResolveOverlayBackendMode` (`hook/common/fg_session_state.cpp`) returned `kRuntimeOwnedFSRCallback` for `nativeFSRConfiguredOn && runtimeOwnsSwapchain`. That mode delivers the overlay through AMD's present callback, which composites into `desc->outputSwapChainBuffer` with AMD's command list — and AMD presents that buffer through DXGI *afterwards*, which is the present Steam and RTSS patch. CE was therefore composited BEFORE them and was the bottom layer, in every native-FSR-FG frame.
+- Session `20260812_204602` (0.1.5968) shows it directly: `[OVERLAY LAYER]` alternates per frame between `fg-runtime-ui-composition (DX12_RenderOverlayViaFFXPresentCallback)` and `deep-body-below-foreign-chain (DetourPresent)`, with three foreign overlays loaded and no `Deferring overlay init` anywhere — so CE reaches the deep site below Steam/RTSS every frame, and only the overlay DRAW was routed away from it.
+- Fix: the runtime-owned-callback arm now also requires `!belowForeignOverlayChainPresentView` (new `FGSessionSnapshot` field, set from `DXGIShared::IsPresentInterceptedBelowForeignChain()` plus a loaded tracked overlay). Below a foreign chain the overlay is drawn where CE is entered after those overlays instead.
+- Why this is not a step over the AMD crash boundary: in this exact state CE already runs its full `HandleDX12ProcessFrame` and `InvokeDX12WaitForOverlayCompletion` on that present every frame (`noCallbackFSRFG` is false while the callback exists, so `ExecutePresentCore` takes the normal ProcessFrame path). The change adds no new work and no new wait on the runtime's thread — it only stops routing the draw itself away. The **no-callback** route, where the runtime composites a registered UI resource and CE never reaches a safe backbuffer, is deliberately untouched.
+- `ResolveOverlayBackendMode` moved out of the anonymous namespace and is declared in `fg_session_state.h`, because this arm now decides overlay layering against foreign overlays and must be directly testable.
+- Regression test: `tests/test_fg_session_state.cpp` (`RuntimeOwnedFSROverlayLeavesTheCallbackWhenCEIsBelowAForeignChain`), incl. observer-only still winning over both.
+- Validation pending: Talos + Steam + RTSS, FSR FG on — expect `[OVERLAY LAYER] … BELOW the foreign Present chain` to be the LAST edge in the FSR window with no `fg-runtime-ui-composition` edge following it, CE's overlay over Steam's, and no freeze/stall. **If it freezes or the overlay vanishes in FSR FG, this commit is the revert** — the callback route is the known-safe fallback.
+
 ### 2026-08-12 - OPEN/STRUCTURAL: under native FSR FG, Steam draws on top of CE and CE cannot follow it there
 
 - User report on 0.1.5964 (session `20260812_202746`, Talos + Steam + RTSS): after DLSS FG -> all FG off -> FSR FG, CE's overlay was under Steam's again. The Off and DLSS-FG states are correct.
