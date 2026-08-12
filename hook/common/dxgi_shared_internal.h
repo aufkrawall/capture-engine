@@ -225,6 +225,21 @@ bool ResolveExternalPresentHookOwnerPath(const void* externalHook, char* moduleP
 }
 
 namespace DXGIShared {
+// True when control may still be transferred to this foreign Present handler: the entry, and
+// for an E9/FF25 thunk the address it forwards to, must be committed executable memory. A
+// handler captured once at install time goes stale when the owning overlay rebuilds or frees
+// its runtime-allocated thunk.
+bool IsCallableForeignPresentHandler(const void* handler);
+
+// Re-derive the saved foreign Present hook from whoever owns the live dxgi!Present entry now.
+PFN_Present RefreshExternalOverlayPresentHookFromLiveEntry();
+
+// Saved foreign Present handler, validated (and refreshed when stale). nullptr means there is
+// no safe foreign transport and the caller must use CE's clean DXGI bypass.
+PFN_Present GetCallableExternalOverlayPresentHook();
+}
+
+namespace DXGIShared {
 // Authoritative "does this foreign Present chain belong to Steam" classification.
 // Resolves the thunk target into a module when possible; for unresolvable thunks
 // falls back to load-order evidence (the most recently loaded overlay owns the

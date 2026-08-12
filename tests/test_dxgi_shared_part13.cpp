@@ -217,3 +217,51 @@ TEST(DXGISharedSteamTrampolineChainTest, RejectsCleanTrampolineAndNullArguments)
     EXPECT_FALSE(DXGIShared::TrampolineChainsToExternalOverlay(nullptr, nullptr));
     VirtualFree(page, 0, MEM_RELEASE);
 }
+
+// Talos + DLSS FG + Steam + RTSS crash (session 20260812_024730): five milliseconds after a
+// foreign re-hook took the Present entry from CE, CE jumped through its saved hook thunk whose
+// FF25 payload now read 0x295C8999101 - a heap address - and died with a DEP execute violation
+// inside TryInvokeGuardedExternalSteamOverlayPresent. A saved foreign handler is only valid
+// while the overlay that owns it keeps its runtime-allocated thunk alive, so every transfer
+// must first prove the entry AND the address it forwards to are still executable.
+TEST(DXGISharedForeignHandlerValidityTest, RejectsThunksForwardingToNonExecutableMemory) {
+    void* thunk = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(thunk, nullptr);
+    void* dataTarget = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(dataTarget, nullptr);
+
+    DWORD executableProtect = 0;
+    ASSERT_NE(VirtualProtect(thunk, sizeof(void*) * 2, PAGE_EXECUTE_READWRITE, &executableProtect), 0);
+
+    // The exact crash shape: an executable thunk whose payload points at plain data.
+    WriteFF25Jump(thunk, dataTarget);
+    EXPECT_FALSE(DXGIShared::IsCallableForeignPresentHandler(thunk));
+
+    // Same thunk, now forwarding to real executable code, stays callable.
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    ASSERT_NE(hDXGI, nullptr);
+    void* codeTarget = reinterpret_cast<void*>(GetProcAddress(hDXGI, "CreateDXGIFactory"));
+    ASSERT_NE(codeTarget, nullptr);
+    WriteFF25Jump(thunk, codeTarget);
+    EXPECT_TRUE(DXGIShared::IsCallableForeignPresentHandler(thunk));
+
+    VirtualFree(thunk, 0, MEM_RELEASE);
+    VirtualFree(dataTarget, 0, MEM_RELEASE);
+}
+
+TEST(DXGISharedForeignHandlerValidityTest, RejectsNullAndNonExecutableHandlers) {
+    EXPECT_FALSE(DXGIShared::IsCallableForeignPresentHandler(nullptr));
+
+    void* dataPage = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(dataPage, nullptr);
+    EXPECT_FALSE(DXGIShared::IsCallableForeignPresentHandler(dataPage));
+    VirtualFree(dataPage, 0, MEM_RELEASE);
+
+    // A freed thunk address is not callable either.
+    void* freed = static_cast<void*>(AllocateWritableVTablePage());
+    ASSERT_NE(freed, nullptr);
+    DWORD executableProtect = 0;
+    ASSERT_NE(VirtualProtect(freed, sizeof(void*) * 2, PAGE_EXECUTE_READWRITE, &executableProtect), 0);
+    VirtualFree(freed, 0, MEM_RELEASE);
+    EXPECT_FALSE(DXGIShared::IsCallableForeignPresentHandler(freed));
+}

@@ -61,6 +61,9 @@ bool InlineHook::IsInstalledEntryPatchIntact(void*, void** currentJumpTargetOut)
     }
     return true;
 }
+bool InlineHook::IsInTrampolinePool(void*) {
+    return false;
+}
 
 // Stubs for DX12 - C++ linkage (matching header declarations in dx12_hook.h)
 // Note: These are regular C++ functions, not extern "C"

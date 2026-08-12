@@ -109,6 +109,31 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // NULL-callback VEH recovery as the other Steam invokes; the clean DXGI
     // bypass is the fail-closed fallback.
     if (presentTrampoline) {
+        // When CE prepended over a foreign entry jump, the trampoline does not hold original
+        // code bytes: it re-issues that exact jump. So it inherits the staleness of the target
+        // captured at install time, and the owning overlay rebuilds or frees its thunk on its
+        // own schedule. Prove the destination is still executable before jumping there, and
+        // fall back to the clean DXGI bypass when it is not.
+        const bool trampolineChainsToForeignEntry =
+            TrampolineChainsToExternalOverlay((void*)presentTrampoline,
+                                              (void*)dxgi_shared_g_externalOverlayPresentHook);
+        if (trampolineChainsToForeignEntry && presentBypass &&
+            !IsCallableForeignPresentHandler((void*)dxgi_shared_g_externalOverlayPresentHook)) {
+            const PFN_Present refreshed = RefreshExternalOverlayPresentHookFromLiveEntry();
+            static std::atomic<int> s_staleTrampolineLogCount{0};
+            const int staleNum = s_staleTrampolineLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (staleNum <= 10 || (staleNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: preserved foreign entry jump is no longer callable #%d "
+                    "(trampoline=%p refreshed=%p) - %s",
+                    staleNum, (void*)presentTrampoline, (void*)refreshed,
+                    refreshed ? "forwarding through the refreshed handler" : "using the DXGI bypass");
+            }
+            if (refreshed) {
+                return refreshed(pSwapChain, SyncInterval, Flags);
+            }
+            return presentBypass(pSwapChain, SyncInterval, Flags);
+        }
         if (IsSteamExternalChainTrampoline((void*)presentTrampoline,
                                            (void*)dxgi_shared_g_externalOverlayPresentHook,
                                            DetectAPIType(pSwapChain) == APIType::D3D12)) {
@@ -542,6 +567,20 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         "using DXGI bypass (runtime=%s slFG=%d confirmed=%d sourceTid=0x%04X currentTid=0x%04X)",
                         bypassNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), streamlineFGRunning ? 1 : 0,
                         postSLConfirmedRendering ? 1 : 0, trackedSourcePresentThreadId, currentThreadId);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
+
+            // The entry bytes of presentOriginal carry the foreign overlay's live jump, whose
+            // target can already be a freed thunk. Prove it is callable before entering it.
+            if (!IsCallableForeignPresentHandler(reinterpret_cast<void*>(presentOriginal))) {
+                static std::atomic<int> s_slFastPathStaleLogCount{0};
+                const int staleNum = s_slFastPathStaleLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (staleNum <= 10 || (staleNum % 500) == 0) {
+                    HookLogImportant(
+                        "CallOriginalPresent: SL fast-path entry %p forwards to a freed foreign thunk #%d; using the "
+                        "DXGI bypass",
+                        (void*)presentOriginal, staleNum);
                 }
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }

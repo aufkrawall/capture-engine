@@ -519,7 +519,10 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         return false;
     }
 
-    PFN_Present externalPresent = dxgi_shared_g_externalOverlayPresentHook;
+    // Never transfer control to a saved foreign handler without proving it is still callable:
+    // the overlays that share this entry rebuild their thunks, and a frozen pointer into a
+    // freed one executes heap data (Talos 20260812_024730, DEP violation at 0x295C8999101).
+    PFN_Present externalPresent = GetCallableExternalOverlayPresentHook();
     PFN_Present presentBypass = EnsurePresentBypassTrampoline();
     const bool isSteamOverlay = IsCurrentExternalPresentHookSteamChain();
     const bool isD3D12SwapChain = DetectAPIType(pSwapChain) == APIType::D3D12;

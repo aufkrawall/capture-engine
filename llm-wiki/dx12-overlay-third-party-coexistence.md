@@ -76,9 +76,16 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 - Deliberately unchanged: a single foreign overlay keeps the prepend and all validated Steam/FG routing. A loaded FG interposer (Streamline / NvPresent) also keeps it — runtime-generated presents come from the runtime-owned swapchain and never reach CE's wrapper, so the entry hook is CE's only view of them.
 - Regression tests: `tests/test_overlay_compat.cpp` (overlay-subset counting excludes `sl.interposer`/render-only modules; the entry-chain policy matrix), `tests/test_dxgi_shared.cpp` (`SwapchainVTableStaysPristineWhileTheForeignPresentChainOwnsTheEntry`), `tests/test_dxgi_shared_part11.cpp` (install skips the prepend before `InstallPublished`, forwards run the live entry first, and **no tool-specific handler resolution may return**).
 
-### Known limitation
+### A saved foreign Present handler is never valid forever
 
-A second overlay that loads *after* CE has already prepended cannot be un-prepended retroactively. That state is named once in the log: `DllNotification: third-party overlay <name> joined a Present entry CE already prepended over ...`. Starting the second overlay before the game takes the wrapper-only path.
+`dxgi_shared_g_externalOverlayPresentHook` is captured once, at install. The overlays that share the entry rebuild their hooks on their own schedule (RTSS restores and re-patches on every call; Steam re-hooks on new swapchains), which frees or rewrites the runtime-allocated thunk CE recorded. Talos `installed/captureengine/logs/20260812_024730` crashed exactly there: five milliseconds after `foreign re-hook took the Present entry from CE`, CE jumped through that thunk whose `FF 25` payload now read `0x295C8999101` — a heap address — and died with a DEP execute violation (`0xC0000005`, RAX=0) inside `TryInvokeGuardedExternalSteamOverlayPresent`.
+
+**Invariant: never transfer control to a saved foreign handler without proving it still points at code.** `IsCallableForeignPresentHandler` requires the entry, and for an `E9`/`FF25` thunk the address it forwards to, to be committed executable memory. `GetCallableExternalOverlayPresentHook` validates and, when stale, `RefreshExternalOverlayPresentHookFromLiveEntry` re-derives the handler from whoever owns the live entry now (refusing CE's own relay via `InlineHook::IsInTrampolinePool`). This covers the guarded Steam invoke, the preserved-trampoline forward — which re-issues that same frozen jump rather than original code bytes — and the SL fast-path; all fail closed to the clean DXGI bypass. Coverage: `tests/test_dxgi_shared_part13.cpp` (`DXGISharedForeignHandlerValidityTest`).
+
+### Known limitations
+
+- A second overlay that loads *after* CE has already prepended cannot be un-prepended retroactively. That state is named once in the log: `DllNotification: third-party overlay <name> joined a Present entry CE already prepended over ...`. Starting the second overlay before the game takes the wrapper-only path.
+- **Where an FG interposer keeps CE at the entry (Talos + DLSS FG), a foreign re-hook can still take that entry from CE and drop another overlay out of the chain.** `DetourPresent: foreign re-hook took the Present entry from CE #N (entry=... newTarget=... owner=...)` reports it; `installed/captureengine/logs/20260812_024730` confirmed it happens. CE cannot repair it from its side, because the damage is in the other tools' saved-chain state. Closing this requires CE to observe Streamline's generated presents without patching the shared entry — today they reach CE only through it (`DetourCreateSwapChainGlobal: Streamline present, skipping wrap`, and PostSL rendering is driven from `DetourPresent`).
 
 ### Rejected approaches (do NOT re-pursue)
 
