@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-08-12 - Talos DLSS FG -> FSR FG: FPS and frametime graph froze while the overlay kept drawing
+
+- Session `20260812_153840` (Talos + Steam + RTSS, build 0.1.5957, user-reported): the DLSS FG -> FSR FG switch no longer crashes and CE's overlay stays visible and keeps updating GPU load — but the FPS readout and the frametime graph stop advancing at the switch.
+- Cause: `PerformanceMetrics::Update()` is what advances the frame-time history, and it is called from exactly two places — `UpdateDXGIPresentMetricsAndPublish` (i.e. `DetourPresent`/`DetourPresent1`) and `CWrapDXGISwapChain::Present`/`Present1`. Once the native FSR runtime owns presentation it presents from its own swapchain, so **neither** runs: the log has ZERO `DetourPresent` lines after 15:39:29.889 while the game keeps submitting (`ECL heartbeat` every ~2.7 s). GPU load kept moving because `SystemMetricsCollector` is an independent background thread, which is exactly why the symptom looked selective.
+- Fix: `DX12_RenderOverlayViaFFXPresentCallback` (`hook/apis/dx12_hook_ffx.cpp`) now calls `perf->Update(PerfLogger::GetQpcUs())` — it is CE's only per-frame present observation in that state. Gated on `ffxRuntimeOwnsNativeFSRPresentation` because `PerformanceMetrics::Update` is a documented single-writer hot path: when the runtime does not own presentation the Present detour is already the writer and must stay the only one. The callback fires for generated frames too, so the sampled rate is the OUTPUT rate — the same thing `DetourPresent` measures under DLSS FG, where Streamline presents both real and generated frames through DXGI.
+- `PublishOverlayFGMetrics` was already called from the callback and is unchanged; it publishes FG state (`base_fps`/`output_fps` from `g_FGCompat`), not the frame-time history, which is why the FG numbers looked alive while the graph did not.
+- Regression test: `tests/test_dxgi_shared_part14.cpp` (`FFXPresentCallbackAdvancesFrameTimingWhileTheRuntimeOwnsPresentation`).
+- Validation pending: re-run Talos DLSS FG -> FSR FG with Steam + RTSS and confirm the FPS number and frametime graph keep moving after the switch.
+
 ### 2026-08-12 - OPEN: ~0.5 s overlay gap on the FSR-FG -> Off swapchain recreation
 
 - Session `20260812_153302` (0.1.5957) is otherwise clean, but CE's own coverage tracker recorded one uncovered streak at the FSR-FG -> Off edge: `[OVERLAY VISIBILITY] INTERRUPTED/UNPROVEN ... gate=overlay-backend-uninitialized route=ffx-present-callback` at 15:33:41.070, then `RESTORED after uncovered route: missed=61 durationMs=484 confirmedDuringStreak=0 longestStreak=61`. Totals for the session: `presents=6466 uncovered=61` (0.94 %, single streak).

@@ -772,6 +772,14 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        // While the runtime owns presentation, neither DetourPresent nor CWrapDXGISwapChain is
+        // entered, and those are the only other places that advance the frame-time history —
+        // so this callback must, or the overlay draws a frozen FPS and a static graph (Talos
+        // DLSS FG -> FSR FG, session 20260812_153840). Gated on ownership because
+        // PerformanceMetrics::Update is a single-writer hot path.
+        if (ffxRuntimeOwnsNativeFSRPresentation) {
+            perf->Update(PerfLogger::GetQpcUs());
+        }
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
         ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
                                                      g_FGCompat.GetFGMultiplier(),

@@ -227,3 +227,33 @@ TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
     ASSERT_NE(guard, std::string::npos);
     EXPECT_LT(storage, guard);
 }
+
+// Session 20260812_153840 (Talos, DLSS FG -> FSR FG, Steam + RTSS active, build 0.1.5957):
+// the overlay stayed visible and GPU load kept updating, but the FPS readout and the frametime
+// graph froze at the switch. The log has ZERO DetourPresent lines after 15:39:29.889 while the
+// game keeps submitting (ECL heartbeats every ~2.7 s): once the native FSR runtime owns
+// presentation it presents from its own swapchain, so neither CE's Present detour nor its
+// swapchain wrapper is entered — and those are the only two places that advance the frame-time
+// history. The FFX present callback is CE's only per-frame present observation there.
+TEST(DXGISharedTest, FFXPresentCallbackAdvancesFrameTimingWhileTheRuntimeOwnsPresentation) {
+    namespace fs = std::filesystem;
+    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx.cpp";
+    ASSERT_TRUE(fs::exists(ffxSource));
+    const std::string ffx = ce::test_source::ReadFile(ffxSource);
+    ASSERT_FALSE(ffx.empty());
+
+    const size_t callback = ffx.find("uint32_t DX12_RenderOverlayViaFFXPresentCallback(");
+    ASSERT_NE(callback, std::string::npos);
+    const size_t metricsTick = ffx.find("perf->Update(PerfLogger::GetQpcUs());", callback);
+    ASSERT_NE(metricsTick, std::string::npos);
+
+    // Gated on runtime ownership: PerformanceMetrics::Update is a single-writer hot path, so
+    // when the runtime does NOT own presentation the Present detour must stay the only writer.
+    const size_t gate = ffx.rfind("if (ffxRuntimeOwnsNativeFSRPresentation) {", metricsTick);
+    ASSERT_NE(gate, std::string::npos);
+    EXPECT_LT(gate, metricsTick);
+    EXPECT_LT(metricsTick - gate, 200u);
+
+    // The FG-state publication stays where it was — it is a different concern from the tick.
+    EXPECT_NE(ffx.find("PublishOverlayFGMetrics(perf, plan", metricsTick), std::string::npos);
+}
