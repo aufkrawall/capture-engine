@@ -413,6 +413,14 @@ PFN_CreateSwapChain dx12_hook_oCreateSwapChainGlobal = nullptr;
 
 PFN_CreateSwapChainForHwnd dx12_hook_oCreateSwapChainForHwndGlobal = nullptr;
 
+// The factory vtable dx12_hook_oCreateSwapChainForHwndGlobal was saved from.
+// That slot function may only be invoked with objects carrying this exact
+// vtable (see hook/common/dx12_factory_slot_policy.h); a factory proxy from a
+// hooked CreateDXGIFactory1 is a different class and type-punning it as
+// CDXGIFactory corrupts the dxgi adapter table (sessions 20260813_004853 /
+// 20260813_004923).
+void** dx12_hook_s_savedCreateSwapChainForHwndVtable = nullptr;
+
 PFN_CreateSwapChainForHwnd dx12_hook_s_oCreateSCForHwndInline = nullptr;
 
 void* dx12_hook_s_realCreateSCForHwndAddr = nullptr;

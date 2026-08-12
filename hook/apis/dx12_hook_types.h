@@ -396,6 +396,7 @@ extern std::atomic<ID3D12Fence*> dx12_hook_g_OverlayCompletionFence;
 extern std::atomic<bool> dx12_hook_g_ProbeRealD3D12ECLDeferred;
 extern PFN_CreateSwapChain dx12_hook_oCreateSwapChain;
 extern PFN_CreateSwapChainForHwnd dx12_hook_oCreateSwapChainForHwnd;
+extern void** dx12_hook_s_savedCreateSwapChainForHwndVtable;
 extern ID3D12GraphicsCommandList* dx12_hook_s_descFreeCmdList;
 extern D3D12_CPU_DESCRIPTOR_HANDLE dx12_hook_s_descFreeRtv;
 extern ID3D12Fence* dx12_hook_s_descFreeSlotFence;

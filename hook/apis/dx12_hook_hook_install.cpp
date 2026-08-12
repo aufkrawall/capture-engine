@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include "../common/dx12_factory_slot_policy.h"
+
 namespace {
 
 void PublishCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
@@ -63,8 +65,7 @@ HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queu
             (void*)slot, slotOwner[0] ? slotOwner : "an unresolved module");
         return E_FAIL;
     }
-    const uint8_t* entry = reinterpret_cast<const uint8_t*>(slot);
-    if (entry[0] == 0xE9 || (entry[0] == 0xFF && entry[1] == 0x25)) {
+    if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(slot))) {
         void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(slot));
         if (!bypass) {
             HookLogImportant(
@@ -130,6 +131,10 @@ HookLog("DX12: Factory vtable at %p", vtable);
 // Save the real CreateSwapChainForHwnd address BEFORE vtable patching
 void* realCreateSCForHwndAddr = vtable[15];
 dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
+// The saved slot value belongs to this exact vtable. The temp-swapchain
+// installer may only invoke it with factory objects that carry this vtable
+// (see dx12_factory_slot_policy.h); a proxied factory is a different class.
+dx12_hook_s_savedCreateSwapChainForHwndVtable = vtable;
 
 // Hook CreateSwapChain (vtable[10] for IDXGIFactory)
 // Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
@@ -238,6 +243,29 @@ PFN_D3D12CreateDevice pD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress
 if (!pCreateFactory || !pD3D12CreateDevice)
     return;
 
+// A loader-injected factory-proxying tool (ReShade 6.8, Special K) hooks the
+// CreateDXGIFactory1 export and hands callers a proxy object. The temp
+// swapchain must come from the genuine dxgi factory: the historical fallback
+// below invokes the raw saved slot function, which interprets its first
+// argument as a CDXGIFactory. Skip the foreign entry patch so the real export
+// runs; the vtable guard below still refuses any object that is not the
+// factory class the saved slot was captured from.
+if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pCreateFactory))) {
+    void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pCreateFactory));
+    if (bypass) {
+        HookLogImportant(
+            "DX12: Bypassing foreign entry patch on CreateDXGIFactory1 at %p (trampoline=%p) so the temp "
+            "swapchain factory is the genuine dxgi object",
+            reinterpret_cast<void*>(pCreateFactory), bypass);
+        pCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(bypass);
+    } else {
+        HookLogImportant(
+            "DX12: Could not bypass foreign entry patch on CreateDXGIFactory1 at %p - the temp factory may be "
+            "a third-party proxy",
+            reinterpret_cast<void*>(pCreateFactory));
+    }
+}
+
 IDXGIFactory2* pFactory = nullptr;
 if (FAILED(pCreateFactory(IID_PPV_ARGS(&pFactory))) || !pFactory)
     return;
@@ -340,13 +368,26 @@ if (hSystemDXGI && hSystemDXGI != hDXGI) {
 // swapchain We must use oCreateSwapChainForHwndGlobal directly to bypass our
 // wrapper If the original is not available, skip vtable hook installation
 if (!pSwapChain) {
-    if (dx12_hook_oCreateSwapChainForHwndGlobal) {
+    const bool factoryMatchesSavedSlotVtable =
+        ce::dx12_factory_slot::ShouldInvokeSavedCreateSwapChainForHwndSlot(
+            static_cast<const void*>(dx12_hook_s_savedCreateSwapChainForHwndVtable), pFactory);
+    if (factoryMatchesSavedSlotVtable && dx12_hook_oCreateSwapChainForHwndGlobal) {
         // Call original directly - bypasses our wrapper
         hr = dx12_hook_oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr, nullptr, &pSwapChain);
         if (SUCCEEDED(hr) && pSwapChain) {
             HookLog(
                 "DX12: Created temp swapchain via original "
                 "CreateSwapChainForHwnd (unwrapped)");
+        }
+    } else if (dx12_hook_oCreateSwapChainForHwndGlobal) {
+        static std::atomic<bool> s_proxyFactorySkipLogged{false};
+        if (!s_proxyFactorySkipLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Skipping the raw CreateSwapChainForHwnd temp-swapchain call - factory %p is a "
+                "third-party proxy (vtable=%p, saved-slot vtable=%p). Passing it to the saved slot function "
+                "would corrupt dxgi factory state; the real-swapchain retry paths take over.",
+                (void*)pFactory, pFactory ? (void*)*reinterpret_cast<void***>(pFactory) : nullptr,
+                (void*)dx12_hook_s_savedCreateSwapChainForHwndVtable);
         }
     } else {
         HookLog(

@@ -94,6 +94,21 @@ once those tools are loaded.
   load failure; `error=193` means the DLL architecture does not match the
   game process.
 
+## Known failure modes
+- ReShade 6.8 (and other factory-proxying tools) hook `CreateDXGIFactory1` and
+  return a proxy factory object. CE's temp-swapchain installer used to pass
+  that proxy straight into the raw saved `IDXGIFactory2::CreateSwapChainForHwnd`
+  slot function, which interprets its first argument as a genuine
+  `CDXGIFactory` and reads the adapter table at `+0xE8`. The proxy's layout is
+  unrelated, so dxgi crashed in `EnumAdapterByLuid` (sessions
+  `20260813_004853` / `20260813_004923`, Strange Brigade DX12 + ReShade,
+  AV inside `dxgi!FindIndex<SAdapterDesc,...>`). Fixed by bypassing the foreign
+  entry patch on `CreateDXGIFactory1` for the temp factory and by guarding the
+  raw slot call with the saved-slot vtable match
+  (`hook/common/dx12_factory_slot_policy.h`). A factory object whose vtable is
+  not the vtable the saved slot was captured from is refused; the
+  real-swapchain retry paths then install the Present hooks.
+
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated
   DLSS/Streamline preload, but live validation against real ReShade /

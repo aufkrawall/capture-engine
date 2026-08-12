@@ -441,8 +441,11 @@ TEST(DXGISharedSourceTest, TempSwapChainCreationNeverEntersAForeignOverlayHandle
     ASSERT_NE(ownershipGuard, std::string::npos);
     EXPECT_LT(ownershipGuard, call);
 
-    // A foreign ENTRY patch on the real function is skipped, never executed.
-    const size_t patchProbe = install.find("entry[0] == 0xE9 || (entry[0] == 0xFF && entry[1] == 0x25)", helper);
+    // A foreign ENTRY patch on the real function is skipped, never executed. The entry-shape
+    // probe moved into the shared factory-slot policy header so the CreateDXGIFactory1 export
+    // bypass and this slot use the same predicate.
+    const size_t patchProbe =
+        install.find("ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(slot))", helper);
     ASSERT_NE(patchProbe, std::string::npos);
     EXPECT_LT(patchProbe, call);
     const size_t bypass = install.find("InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(slot))", patchProbe);
