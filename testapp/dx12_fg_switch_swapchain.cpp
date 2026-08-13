@@ -196,8 +196,21 @@ bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reaso
     }
 
     bool usingFfxSwapChain = false;
-    if (useFfxSwapChain && dx12_fg_switch_test_g_FfxCreateContext) {
+    if (useFfxSwapChain) {
+        if (!dx12_fg_switch_test_g_FfxCreateContext) {
+            testapp::Log(
+                "[FG-DIAG] Requested FSR proxy creation without an available ffxCreateContext entry point (%s)\n",
+                reason ? reason : "swapchain");
+            return false;
+        }
         usingFfxSwapChain = CreateFSRSwapChainForHwndContext(factory.Get(), hwnd, swapChainDesc);
+        if (!usingFfxSwapChain) {
+            testapp::Log(
+                "[FG-DIAG] Refusing native fallback after requested FSR proxy creation failed (%s); "
+                "a later same-HWND replacement is unsafe once foreign overlays retain the native chain\n",
+                reason ? reason : "swapchain");
+            return false;
+        }
     }
     if (!usingFfxSwapChain) {
         ComPtr<IDXGISwapChain1> swapChain1;

@@ -101,5 +101,27 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
         << "OFF-after-FSR must keep the FFX chain alive instead of recreating a foreign-pinned native chain";
     const std::string appMain = readFile(fs::current_path() / "testapp" / "dx12_fg_switch_test.cpp");
     ASSERT_FALSE(appMain.empty());
+    const size_t initialFsrLoad = appMain.find("LoadFSRRuntimeSerialized(\"initial OFF persistent proxy\")");
+    const size_t finalRendererInit = appMain.find("InitDX12(dx12_fg_switch_test_g_Hwnd, fsrRuntimeLoaded");
+    ASSERT_NE(initialFsrLoad, std::string::npos);
+    ASSERT_NE(finalRendererInit, std::string::npos);
+    EXPECT_LT(initialFsrLoad, finalRendererInit)
+        << "the FFX proxy must be the first final swapchain for this HWND, before Steam/RTSS can pin a native chain";
+    EXPECT_NE(appMain.find("keeping it disabled through initial OFF"), std::string::npos)
+        << "startup diagnostics must identify the persistent disabled-proxy lifecycle";
+    const std::string appSwapchain =
+        readFile(fs::current_path() / "testapp" / "dx12_fg_switch_swapchain.cpp");
+    ASSERT_FALSE(appSwapchain.empty());
+    EXPECT_NE(appSwapchain.find("Refusing native fallback after requested FSR proxy creation failed"),
+              std::string::npos)
+        << "silently creating a native chain would only defer the same-HWND replacement failure until the switch";
+    const std::string appFsr = readFile(fs::current_path() / "testapp" / "dx12_fg_switch_fsr.cpp");
+    ASSERT_FALSE(appFsr.empty());
+    EXPECT_EQ(appFsr.find("FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WRAP_DX12"),
+              std::string::npos)
+        << "FFX Wrap internally releases the supplied interface and creates a replacement HWND chain; it cannot "
+           "convert a chain pinned by foreign overlays in place";
+    EXPECT_NE(appFsr.find("CloseHandle(g_FrameLatencyWaitHandle)"), std::string::npos)
+        << "the FFX proxy returns a duplicated frame-latency handle that the application must close";
     EXPECT_NE(appMain.find("return dx12_fg_switch_test_g_ProcessExitCode;"), std::string::npos);
 }

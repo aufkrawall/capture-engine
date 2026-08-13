@@ -263,25 +263,21 @@ int main(int argc, char* argv[]) {
     } else {
         testapp::Log("[FG-DIAG] Streamline initial OFF preload disabled; DLSS mode will load it on demand\n");
     }
-    if (dx12_fg_switch_test_g_FsrKeepRuntimeLoadedInitialOff || dx12_fg_switch_test_g_FsrStartupDisabledContextStress) {
-        testapp::Log("Loading FSR runtime during initial OFF preload...\n");
-        bool fsrRuntimeLoaded = LoadFSRRuntimeSerialized("initial OFF preload");
-        if (!fsrRuntimeLoaded) {
-            testapp::Log("[FG-DIAG] FSR runtime unavailable; FSR mode will retry on demand\n");
-        } else if (dx12_fg_switch_test_g_FsrReloadRuntimeOnSwitch && !dx12_fg_switch_test_g_FsrKeepRuntimeLoadedInitialOff &&
-                   !dx12_fg_switch_test_g_FsrStartupDisabledContextStress) {
-            UnloadFSRRuntimeSerialized("startup stress before first FSR enable");
-        } else if (dx12_fg_switch_test_g_FsrReloadRuntimeOnSwitch) {
-            testapp::Log(
-                "[FG-DIAG] Keeping FSR runtime loaded during initial OFF to mimic games that preload FFX "
-                "beside Streamline before FG is enabled\n");
-        }
+    testapp::Log(
+        "Loading FSR runtime before final DXGI/D3D12 so initial OFF can use the persistent FFX proxy...\n");
+    const bool fsrRuntimeLoaded = LoadFSRRuntimeSerialized("initial OFF persistent proxy");
+    if (!fsrRuntimeLoaded) {
+        testapp::Log(
+            "[FG-DIAG] FSR runtime unavailable; using a native initial chain and FSR mode will retry on demand\n");
     } else {
-        testapp::Log("[FG-DIAG] FSR initial OFF preload disabled; FSR mode will load it on demand\n");
+        testapp::Log(
+            "[FG-DIAG] FSR runtime loaded before first final swapchain; creating the FFX proxy while no "
+            "same-HWND chain exists, then keeping it disabled through initial OFF\n");
     }
     testapp::LogFlush();
 
-    if (!InitDX12(dx12_fg_switch_test_g_Hwnd)) {
+    if (!InitDX12(dx12_fg_switch_test_g_Hwnd, fsrRuntimeLoaded,
+                  fsrRuntimeLoaded ? "initial OFF persistent FSR proxy" : "initial native fallback")) {
         testapp::Log("Failed to initialize final DX12 renderer after FG runtime preload\n");
         Cleanup();
         testapp::CloseLogFile();
@@ -294,7 +290,7 @@ int main(int argc, char* argv[]) {
         testapp::CloseLogFile();
         return 0;
     }
-    if (!dx12_fg_switch_test_g_FsrRuntimeLoaded && !dx12_fg_switch_test_g_FsrStartupDisabledContextStress) {
+    if (!fsrRuntimeLoaded && !dx12_fg_switch_test_g_FsrStartupDisabledContextStress) {
         StartAsyncFSRRuntimePreload("initial visible OFF phase");
     }
 
@@ -302,7 +298,7 @@ int main(int argc, char* argv[]) {
                  dx12_fg_switch_test_g_FsrRuntimeLoaded ? 1 : 0);
     if (dx12_fg_switch_test_g_FsrStartupDisabledContextStress && dx12_fg_switch_test_g_FsrRuntimeLoaded && dx12_fg_switch_test_g_FfxCreateContext && !dx12_fg_switch_test_g_FfxCtx) {
         testapp::Log(
-            "[FG-DIAG] Creating startup disabled FSR context on native swapchain while app mode remains OFF\n");
+            "[FG-DIAG] Creating startup disabled FSR context while the persistent FSR proxy remains OFF\n");
         dx12_fg_switch_test_g_FsrInitialized = TryInitFSR();
         testapp::Log("[FG-DIAG] Startup disabled FSR context state=%d ctx=%p owner=%s\n", dx12_fg_switch_test_g_FsrInitialized ? 1 : 0,
                      (void*)dx12_fg_switch_test_g_FfxCtx, SwapChainOwnerName(dx12_fg_switch_test_g_SwapChainOwner));
