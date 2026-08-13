@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-13 - DIAGNOSED (open): SpecialK-involved combinations crash the Streamline stack in Talos
+
+- Session `20260813_051600` (build 0.1.5995): ReShade-only (2 runs) and ReShade+OptiScaler (1 run) worked;
+  every SpecialK-involved run crashed, and none of the failing stacks contains a CE frame.
+- `SK+R+O` (2 runs, deterministic, ~5s in): `STATUS_HEAP_CORRUPTION` in `RtlFreeHeap` from
+  `sl.interposer.dll` during `slInit` called by OptiScaler. The freed pointer is inside `SpecialK64.dll`'s
+  `.data` (unique UTF-16 string `XYZ:\123\456\!#$%^@?|` at SK+0xC86FA0) — a cross-tool pointer-ownership
+  conflict; WER bucket `HEAP_CORRUPTION_ACTIONABLE_BlockNotBusy_DOUBLE_FREE_sl.interposer.dll`.
+  SK's own `slInit_Detour` only rewrites flags/log callback, so the SK-owned pointer enters via another of
+  SK's hooks or the interposer's enumeration path; exact in-tool mechanism not yet pinpointed.
+- `SK-only` (1 run, ~22s in): AV writing 0x8 in `RtlEnterCriticalSection(NULL)` — game code called from an
+  sl.interposer worker thread while the game loaded its SL plugins (dlss_g/reflex), then the render thread
+  froze for 60s (FreezeWatchdog).
+- Suspicion: the user's global `sl.*` DLL override forces interposer 2.12.0.0 over the game's 2.11.1; R/O
+  tolerate that skew, SpecialK does not. Pending bisection: (1) SK-only and SK+R+O in Talos with the sl.*
+  overrides disabled, (2) SK's Streamline integration disabled in its per-game config. If the overrides are
+  the trigger, consider a CE policy for the third-party + SL-override combination.
+
 ### 2026-08-13 - FIXED: ReShade proxy queue re-entry in the ECL/Signal trace hooks (Talos crash)
 
 - Talos (DX12) + ReShade-only crashed on start twice, on both sides of the same layered chain

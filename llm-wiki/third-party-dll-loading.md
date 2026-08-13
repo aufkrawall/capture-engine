@@ -183,6 +183,22 @@ once those tools are loaded.
   `dx12-overlay-third-party-coexistence.md` ("Third-party proxy queue
   re-entry in the ECL/Signal trace hooks") and
   `tests/test_dx12_ecl_recursion_break_policy.cpp`.
+- Talos (Streamline game) + SpecialK-involved combinations crash inside the
+  NVIDIA Streamline stack, with **no CE frames in any failing stack** (session
+  `20260813_051600`, build 0.1.5995). ReShade-only and ReShade+OptiScaler ran
+  clean. `SpecialK + ReShade + OptiScaler` failed twice, deterministically
+  ~5s after injection, with `STATUS_HEAP_CORRUPTION` raised in `RtlFreeHeap`
+  from `sl.interposer.dll` during `slInit` called by OptiScaler; the pointer
+  being freed lives inside `SpecialK64.dll`'s `.data` (a unique UTF-16 string
+  at SK+0xC86FA0) — a cross-tool pointer-ownership conflict (WER bucket
+  `HEAP_CORRUPTION_ACTIONABLE_BlockNotBusy_DOUBLE_FREE_sl.interposer.dll`).
+  `SpecialK`-only failed once, ~22s in, with an access violation writing 0x8
+  in `RtlEnterCriticalSection(NULL)` — game code invoked from an
+  sl.interposer worker thread during SL plugin loading, followed by a
+  60-second render-thread freeze. Both signatures involve the user's
+  redirected `sl.interposer.dll` 2.12.0.0 (the game ships 2.11.1) plus
+  SpecialK's hooks; bisection (SL overrides disabled / SK Streamline
+  integration off) was not yet performed. See `log/recent.md`.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated
