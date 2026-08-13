@@ -505,13 +505,17 @@ streamline_dll_path=
 ; a value ending in a file name (contains '.') is loaded verbatim. Prefer the
 ; plain loader DLL names: a copy renamed to dxgi.dll/d3d*.dll acts as a proxy
 ; and cannot intercept a game that already resolved the system module.
-; Configured tools load in the order Special K -> ReShade -> OptiScaler and any
-; copy the game already loaded is kept. These are third-party injected DLLs and
-; are not anti-cheat safe. Each tool still reads its own per-game configuration
-; next to the game executable (ReShade.ini, OptiScaler.ini, Special K profile).
-; Keep OptiScaler's LoadReshade/LoadSpecialK INI switches off so CaptureEngine
-; stays the single loader. ReShade in Vulkan games still needs ReShade's Vulkan
-; layer registered. Changing these paths requires relaunching the game.
+; Configured tools load in the order ReShade -> OptiScaler -> Special K and any
+; copy the game already loaded is kept. Special K loads last: its early
+; thread-creation hook deadlocks the loader if OptiScaler's DllMain creates
+; threads while Special K is still initializing (this is also why OptiScaler's
+; own LoadSpecialK option loads Special K after OptiScaler). These are
+; third-party injected DLLs and are not anti-cheat safe. Each tool still reads
+; its own per-game configuration next to the game executable (ReShade.ini,
+; OptiScaler.ini, Special K profile). Keep OptiScaler's LoadReshade/LoadSpecialK
+; INI switches off so CaptureEngine stays the single loader. ReShade in Vulkan
+; games still needs ReShade's Vulkan layer registered. Changing these paths
+; requires relaunching the game.
 reshade_dll_path=
 optiscaler_dll_path=
 specialk_dll_path=

@@ -12,11 +12,18 @@
 // executor (main_thirdparty_load.cpp) owns every Windows loader interaction.
 namespace ce::third_party_load {
 
-// Fixed load order: Special K first (it wants to be present before other
-// hookers), then ReShade, then OptiScaler (a ReShade-based runtime that layers
-// its own device/upscaler hooks on top). Do not reorder without a documented
-// reason; the executor iterates this enum in declaration order.
-enum class Tool : int { kSpecialK = 0, kReShade = 1, kOptiScaler = 2, kCount = 3 };
+// Fixed load order: ReShade first, then OptiScaler (a ReShade-based runtime
+// that layers its own device/upscaler hooks on top), then Special K LAST.
+// Special K must load last because its early thread-creation hook waits on an
+// internal critical section while its init threads drain the loader work
+// queue. Loading OptiScaler (whose DllMain creates a thread) after Special K
+// deadlocks the loader: CE's hook thread holds the loader lock, OptiScaler's
+// DllMain blocks on Special K's critical section, and Special K's init thread
+// blocks on the loader lock (session 20260813_020236). The projects' own
+// supported combination (OptiScaler's LoadSpecialK option) loads Special K
+// after OptiScaler for the same reason. Do not reorder without re-checking
+// this; the executor iterates this enum in declaration order.
+enum class Tool : int { kReShade = 0, kOptiScaler = 1, kSpecialK = 2, kCount = 3 };
 
 inline constexpr size_t kToolCount = static_cast<size_t>(Tool::kCount);
 

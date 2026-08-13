@@ -36,11 +36,18 @@ once those tools are loaded.
   `GraphicsConfig`/`SharedGraphicsConfig`: the hook reads them directly from
   `config.ini` (same file the host writes), so no shared-memory layout change,
   no `SHARED_MEMORY_VERSION` bump, and no IPC transport exists for them.
-- The hook loads the configured tools in the fixed order Special K -> ReShade ->
-  OptiScaler (the `Tool` enum declaration order in
-  `third_party_load_policy.h`). Special K wants to be present before other
-  hookers; OptiScaler is a ReShade-based runtime that layers its own hooks on
-  top. Do not reorder without a documented reason.
+- The hook loads the configured tools in the fixed order ReShade -> OptiScaler
+  -> Special K (the `Tool` enum declaration order in
+  `third_party_load_policy.h`). Special K must load LAST: its early
+  thread-creation hook waits on an internal critical section while its init
+  threads drain the loader work queue, so loading OptiScaler (whose DllMain
+  creates a thread) after Special K deadlocks the loader — session
+  `20260813_020236` (CE's hook thread holds the loader lock, OptiScaler's
+  DllMain blocks on Special K's critical section, Special K's init thread
+  blocks on the loader lock, and the game's main thread blocks on the same
+  critical section). The projects' own supported combination (OptiScaler's
+  `LoadSpecialK` option) loads Special K after OptiScaler for the same reason.
+  Do not reorder without re-checking this.
 - `PreloadConfiguredThirdPartyDlls()` runs in `HookThread` immediately after
   the local `config.ini` parse, before CE's wrapper DLL load,
   `PreloadConfiguredGraphicsRuntimeDlls()`, and per-API hook installation.
@@ -120,6 +127,13 @@ once those tools are loaded.
   `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor`: the
   base release is skipped on the releasing path (the Streamline non-retaining
   wrapper keeps returning its borrowed reference).
+- Loading ReShade + OptiScaler + Special K in the original Special-K-first
+  order deadlocked startup (session `20260813_020236`, manual dump: hook thread
+  in `LdrpLoadDllInternal` -> OptiScaler DllMain -> Special K thread-creation
+  hook -> critical-section wait; Special K's init thread in
+  `FreeLibraryAndExitThread` -> loader work-queue drain). Fixed by making
+  Special K load LAST. The game process exited with code 1 about 30 seconds
+  later without CE's crash path, so CE's VEH handler never saw the hang.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

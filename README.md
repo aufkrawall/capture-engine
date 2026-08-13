@@ -172,10 +172,12 @@ CaptureEngine can also load the ReShade, OptiScaler, and Special K DLLs from use
 being copied into each game folder. Configure `reshade_dll_path`, `optiscaler_dll_path`, and `specialk_dll_path` under
 `[ThirdParty]` (per profile: `ThirdParty.reshade_dll_path=...`). Each value is an absolute DLL path or a folder; a
 folder gets `ReShade64.dll`/`ReShade32.dll`, `SpecialK64.dll`/`SpecialK32.dll`, or `OptiScaler.dll` appended for the
-game's architecture. All three can be active at once and load in the order Special K, ReShade, OptiScaler. The tools
-still read their own configuration next to the game executable, and OptiScaler's `LoadReshade`/`LoadSpecialK` options
-should stay off. Loading these third-party DLLs is injection-based and carries the same anti-cheat warnings as every
-other injected feature.
+game's architecture. All three can be active at once and load in the order ReShade, OptiScaler, Special K (Special K
+loads last because its early thread-creation hook deadlocks the loader while OptiScaler's DllMain creates threads —
+the same reason OptiScaler's own `LoadSpecialK` option loads Special K after OptiScaler). The tools still read their
+own configuration next to the game executable, and OptiScaler's `LoadReshade`/`LoadSpecialK` options should stay off.
+Loading these third-party DLLs is injection-based and carries the same anti-cheat warnings as every other injected
+feature.
 
 For software protected by anti-cheat, start with WGC or DXGI Desktop Duplication and explicitly set
 `dll_injection=never`. This is the likely-compatible configuration, not a universal guarantee. Before configuring a

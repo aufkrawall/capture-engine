@@ -44,10 +44,13 @@ TEST(ThirdPartyLoadPolicyTest, EmptyPathsResolveEmptyAndAreNotConfigured) {
     EXPECT_TRUE(HasAnyThirdPartyLoadConfigured("", R"(C:\reshade)", ""));
 }
 
-TEST(ThirdPartyLoadPolicyTest, LoadOrderConstantIsSpecialKThenReShadeThenOptiScaler) {
-    EXPECT_EQ(static_cast<int>(Tool::kSpecialK), 0);
-    EXPECT_EQ(static_cast<int>(Tool::kReShade), 1);
-    EXPECT_EQ(static_cast<int>(Tool::kOptiScaler), 2);
+TEST(ThirdPartyLoadPolicyTest, LoadOrderConstantIsReShadeThenOptiScalerThenSpecialK) {
+    // Special K must load LAST: its early thread-creation hook deadlocks the
+    // loader when OptiScaler's DllMain creates a thread while Special K
+    // initializes (session 20260813_020236).
+    EXPECT_EQ(static_cast<int>(Tool::kReShade), 0);
+    EXPECT_EQ(static_cast<int>(Tool::kOptiScaler), 1);
+    EXPECT_EQ(static_cast<int>(Tool::kSpecialK), 2);
     EXPECT_EQ(static_cast<int>(Tool::kCount), 3);
     EXPECT_STREQ(ce::third_party_load::ToolName(Tool::kSpecialK), "SpecialK");
     EXPECT_STREQ(ce::third_party_load::ToolName(Tool::kReShade), "ReShade");

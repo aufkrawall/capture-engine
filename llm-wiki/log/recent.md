@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED: ReShade + OptiScaler + Special K startup deadlock (0.1.5983 -> next)
+
+- Session `20260813_020236` (manual 21MB dump): with all three tools configured, the game never fully started.
+  CE's hook thread was inside `LdrpLoadDllInternal` loading OptiScaler; OptiScaler's DllMain created a thread and
+  hit Special K's CreateRemoteThread hook, which waited on a Special K critical section; Special K's init threads
+  were in `FreeLibraryAndExitThread` draining the loader work queue (loader lock held by CE's hook thread), and the
+  game's main thread waited on the same Special K critical section. Classic 3-way deadlock.
+- Fix: Special K now loads LAST. ReShade and OptiScaler load before Special K's early thread hooks exist (their
+  DllMains are then clean, as the working ReShade+OptiScaler combo proves), and Special K's own DllMain is already
+  proven safe standalone. This also matches the projects' own supported combination (OptiScaler's `LoadSpecialK`
+  option loads Special K after OptiScaler). Order constant updated in `hook/common/third_party_load_policy.h`,
+  executor array in `hook/main_thirdparty_load.cpp`, tests in `tests/test_third_party_load_policy.cpp`, and the
+  template/README/wiki order text.
+
 ### 2026-08-13 - FIXED: game-close UAF when ReShade proxies the swapchain (0.1.5982 -> next)
 
 - Session `20260813_012516` (Strange Brigade DX12 + ReShade 6.8): gameplay/overlay fine, crash on close —
