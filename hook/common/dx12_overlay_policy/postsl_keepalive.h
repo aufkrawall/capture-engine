@@ -685,4 +685,12 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
 }
 
+inline bool ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(
+    bool protectedOfficialFFXStartupPending, bool streamlineEnableSucceeded, bool authoritativeFSRActive) {
+    // An official FFX swapchain create is only provisional pre-configure evidence. A later successful,
+    // explicit DLSS-G enable is authoritative evidence that the app selected Streamline instead. The
+    // abandoned FFX startup must no longer quiesce queue capture and overlay GPU work indefinitely.
+    return protectedOfficialFFXStartupPending && streamlineEnableSucceeded && !authoritativeFSRActive;
+}
+
 }  // namespace ce::dx12_overlay_policy

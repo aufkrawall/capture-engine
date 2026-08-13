@@ -115,6 +115,28 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
     EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.reflex.dll\")"), std::string::npos);
     EXPECT_NE(resolve.find("streamline_hook_g_StreamlineModuleUnloadGeneration.load("), std::string::npos);
 
+    // The pins must remain alive across every slGetFeatureFunction call. Crash 20260814_012246
+    // exposed a lexical-lifetime bug where a correctly populated guard lived only inside the
+    // proactiveScan conditional and released its pins before the first query.
+    const size_t dlssgResolver = resolve.find("bool TryResolveDLSSGFeatureHooks(bool proactiveScan)");
+    const size_t reflexResolver = resolve.find("bool TryResolveReflexFeatureHooks(bool proactiveScan)");
+    ASSERT_NE(dlssgResolver, std::string::npos);
+    ASSERT_NE(reflexResolver, std::string::npos);
+    EXPECT_NE(resolve.find(
+                  "ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? \"sl.dlss_g.dll\" : nullptr);",
+                  dlssgResolver),
+              std::string::npos);
+    EXPECT_NE(resolve.find(
+                  "ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? \"sl.reflex.dll\" : nullptr);",
+                  reflexResolver),
+              std::string::npos);
+    const size_t dlssgQuery = resolve.find("originalGetFeatureFunction(streamline_hook_kSLFeatureDLSSG", dlssgResolver);
+    const size_t reflexQuery = resolve.find("originalGetFeatureFunction(streamline_hook_kSLFeatureReflex", reflexResolver);
+    ASSERT_NE(dlssgQuery, std::string::npos);
+    ASSERT_NE(reflexQuery, std::string::npos);
+    EXPECT_LT(dlssgQuery, reflexResolver);
+    EXPECT_LT(reflexQuery, resolve.find("uint32_t QueryCapabilityMax", reflexResolver));
+
     // Non-proactive callers (runtime-internal, DllMain-safe) only check module presence.
     EXPECT_NE(resolve.find("bool TryResolveDLSSGFeatureHooks(bool proactiveScan)"), std::string::npos);
     EXPECT_NE(resolve.find("bool TryResolveReflexFeatureHooks(bool proactiveScan)"), std::string::npos);
@@ -167,6 +189,30 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionLatchesTeardownInFlightUntilN
     // and the pointer still belongs to a loaded module (stale cached pointers must never be patched).
     EXPECT_NE(resolve.find("teardownObservedDuringQuery"), std::string::npos);
     EXPECT_NE(resolve.find("DoesAddressBelongToLoadedModule("), std::string::npos);
+}
+
+TEST(StreamlineRuntimePolicyTest, SuccessfulExplicitStreamlineEnableRetiresAbandonedFFXStartup) {
+    namespace fs = std::filesystem;
+    const std::string dlssg = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "streamline_hook_dlssg.cpp");
+    const std::string startup = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp");
+    ASSERT_FALSE(dlssg.empty());
+    ASSERT_FALSE(startup.empty());
+
+    const size_t successfulResult = dlssg.find("if (result == streamline_hook_kSlResultOk)");
+    ASSERT_NE(successfulResult, std::string::npos);
+    const size_t successfulEnable = dlssg.find("if (!pureObserverOnly && requestedEnabled)", successfulResult);
+    ASSERT_NE(successfulEnable, std::string::npos);
+    EXPECT_NE(dlssg.find("DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();", successfulEnable),
+              std::string::npos);
+
+    const size_t retireHelper =
+        startup.find("void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable()");
+    ASSERT_NE(retireHelper, std::string::npos);
+    EXPECT_NE(startup.find("ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(", retireHelper),
+              std::string::npos);
+    EXPECT_NE(startup.find("DX12_ClearNativeFSRStartupConfigureArming(", retireHelper), std::string::npos);
 }
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {

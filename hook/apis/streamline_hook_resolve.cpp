@@ -376,13 +376,16 @@ bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
     if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
         return false;
     }
+    // Function scope is intentional: every sl.* module must remain pinned until all
+    // slGetFeatureFunction dispatches and returned-target validation below have finished.
+    // Keeping this guard inside the conditional would destroy it before the first query.
+    ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? "sl.dlss_g.dll" : nullptr);
     if (proactiveScan) {
         // The HookThread's loaded-module scan can race with the app tearing the Streamline
         // runtime down (DLSS -> FSR switch): the interposer's slGetFeatureFunction dispatches
         // into sl.dlss_g, which the runtime unloads BEFORE the interposer (crash 20260812_042259:
         // DEP at a freed sl.dlss_g address from sl_interposer!slGetFeatureFunction+0x162). Pin
-        // both modules for the queries and fail closed when a teardown is in flight.
-        ScopedStreamlineFeatureQueryGuard teardownGuard("sl.dlss_g.dll");
+        // every Streamline module for the queries and fail closed when a teardown is in flight.
         if (!teardownGuard.IsValid()) {
             LogSkippedFeatureResolutionForTeardownOnce("sl.dlss_g.dll", "DLSS-G");
             return false;
@@ -446,8 +449,9 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
     if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
         return false;
     }
+    // See the DLSS-G resolver: this guard must outlive every feature query in this function.
+    ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? "sl.reflex.dll" : nullptr);
     if (proactiveScan) {
-        ScopedStreamlineFeatureQueryGuard teardownGuard("sl.reflex.dll");
         if (!teardownGuard.IsValid()) {
             LogSkippedFeatureResolutionForTeardownOnce("sl.reflex.dll", "Reflex");
             return false;

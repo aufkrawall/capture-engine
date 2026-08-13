@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-08-14 - FIXED locally: early Steam + RTSS FG switch crashed in proactive Streamline lookup and stranded overlay startup
+
+- Session `20260814_012102` (0.1.6045, Steam overlay + RTSS, FG switched before CE overlay initialization) has a
+  genuine CE crash dump: the HookThread executed an unmapped address inside the just-unloaded `sl.reflex.dll` via
+  `sl_interposer!slGetFeatureFunction -> TryResolveReflexFeatureHooks`, while the app thread was in `slShutdown`.
+- Root cause: `ScopedStreamlineFeatureQueryGuard` correctly pinned every loaded `sl.*` module, but its lexical scope
+  ended at the proactive-scan `if` block. Its destructor released every pin before the first feature query. Both
+  DLSS-G and Reflex guards now live for the complete resolver function, covering every query and pointer validation.
+- Independent visibility root cause in the same session: an early official FFX startup swapchain armed the protected
+  pre-configure quiesce latch; the app then successfully enabled DLSS-G without ever issuing enabled `ffxConfigure`.
+  The abandoned provisional FFX latch kept overlay sync idle forever. A successful explicit Streamline enable now
+  retires the staged FFX queue/startup state only when authoritative FSR is not active, before DLSS ON publication.
+- Regression coverage pins the guard scope, successful-result wiring, FSR-active exclusion, and full FFX-startup
+  cleanup. Focused Streamline/DXGI policy tests pass; full `--verify` passed on 0.1.6046 (native tests, Python tool
+  self-tests, clang-tidy/file-size ratchets, x64 ASan/UBSan, product binary verification, and packaging).
+
 ### 2026-08-14 - FIXED locally in CaptureEngine: preserve DX12 COM identity below Steam + RTSS; isolate D3D11 probes
 
 - Scope correction: the earlier switch-app persistent-initial-FFX-proxy change was a workaround in the test client,

@@ -176,6 +176,7 @@ void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 bool DX12_IsNativeFSRStartupConfigureArmingPending();
 
 void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
+void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();
 
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source);
 

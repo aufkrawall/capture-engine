@@ -657,6 +657,16 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirect
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(true, true));
 }
 
+TEST(DXGISharedTest, SuccessfulStreamlineEnableRetiresOnlyProvisionalOfficialFFXStartup) {
+    using ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable;
+
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(true, true, false));
+
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(false, true, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(true, false, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(true, true, true));
+}
+
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupDoesNotAllowSeparateOverlayOnlyBeforeProof) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, true, true));

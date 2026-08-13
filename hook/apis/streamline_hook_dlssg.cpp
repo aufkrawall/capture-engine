@@ -563,6 +563,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
 
     if (result == streamline_hook_kSlResultOk) {
         if (!pureObserverOnly && requestedEnabled) {
+            // The official FFX runtime can create a provisional startup swapchain before CE hooks its
+            // configure call. If the app selects DLSS-G instead, this successful explicit enable is the
+            // authoritative runtime choice; retire that abandoned FFX startup before publishing DLSS ON,
+            // otherwise its quiesce latch suppresses overlay sync forever.
+            DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();
             streamline_hook_g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
             const ULONGLONG previousSuppressUntilMs =
                 streamline_hook_g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);

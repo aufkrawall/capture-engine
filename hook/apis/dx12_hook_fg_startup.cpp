@@ -97,6 +97,21 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason) {
     ClearProtectedOfficialFFXStartupSwapchainPending(reason);
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption(reason);
 }
+void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable() {
+    const bool protectedFFXStartupPending =
+        dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire);
+    const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(
+            protectedFFXStartupPending, true, authoritativeFSRActive)) {
+        return;
+    }
+
+    HookLogImportant(
+        "DX12: Successful explicit Streamline enable superseded provisional official FFX startup — "
+        "retiring staged FFX queue and restoring CE overlay/queue side effects (apiFSR=%d)",
+        authoritativeFSRActive ? 1 : 0);
+    DX12_ClearNativeFSRStartupConfigureArming("successful explicit Streamline enable superseded FFX startup");
+}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
     if (!swapchain || !IsUsableStartupActivationSwapchainPointer(swapchain)) {
         return;
