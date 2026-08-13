@@ -373,55 +373,6 @@ return hr;
 }
 
 
-// Check if Streamline (DLSS FG interposer) is loaded.
-// When present, we MUST NOT wrap swapchains with CWrapDXGISwapChain because:
-// - Streamline manages the real swapchain lifecycle internally
-// - Our wrapper adds an extra COM ref layer that prevents Streamline from
-//   destroying the old SC before creating the FG SC on the same HWND
-// - This causes E_ACCESSDENIED when DLSS FG tries to activate
-// The inline Present hooks (installed on the real DXGI function) provide the
-// same interception without interfering with Streamline's lifecycle management.
-
-
-bool IsStreamlineLoaded() {
-static bool detected = false;
-if (detected)
-    return true;
-if (GetModuleHandleA("sl.interposer.dll") != nullptr) {
-    detected = true;
-    HookLogImportant("DX12: Streamline interposer detected — skipping swapchain wrapping for FG compat");
-    return true;
-}
-return false;
-}
-
-
-// Streamline runtime swapchains are DX12-capable when the create's device argument is an
-// ID3D12CommandQueue (the DXGI DX12 contract). The non-DX12 dummy swapchains Streamline also
-// creates internally (e.g. for DLSS-G evaluation) keep the historical skip-wrap behavior.
-bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice) {
-    if (!pDevice) {
-        return false;
-    }
-    ID3D12CommandQueue* queue = nullptr;
-    const bool isCommandQueue = SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))) && queue != nullptr;
-    if (queue) {
-        queue->Release();
-    }
-    return isCommandQueue;
-}
-
-
-// The non-retaining wrap exists to give CE a non-entry view of the FG runtime's presents so the
-// Present entry can be left to a multi-overlay foreign chain. With fewer than two foreign
-// overlays the entry hook is CE's only needed view and stays as-is (validated GTA/Talos single
-// overlay paths), so the runtime swapchain keeps the historical skip-wrap behavior there.
-bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() {
-    return ce::overlay_compat::CountLoadedTrackedOverlayModules(
-               ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2;
-}
-
-
 // Detour for global CreateSwapChain hook
 
 
@@ -431,6 +382,11 @@ if (HookIsShuttingDown()) {
     if (dx12_hook_oCreateSwapChainGlobal)
         return dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
     return E_FAIL;
+}
+
+if (DX12_IsInternalDXGISwapchainProbe()) {
+    HookLog("DetourCreateSwapChainGlobal: Internal D3D10/11 probe — passthrough without DX12 side-effects");
+    return dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
 }
 
 HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)", pThis, pDevice,
@@ -567,10 +523,16 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         return hr;
     }
 
-    // NOTE: We don't install global Present vtable hooks for DX12.
-    // The wrapper (CWrapDXGISwapChain) handles all Present interception.
-    // This avoids conflicts between vtable hooks and wrapper interception
-    // that caused stack overflow crashes.
+    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
+        HookLogImportant(
+            "DetourCreateSwapChainGlobal: Preserving real DX12 swapchain identity below the multi-overlay "
+            "foreign Present chain (sc=%p) — deep Present interception already covers CE",
+            *ppSwapChain);
+        return hr;
+    }
+
+    // The wrapper remains the fallback when CE has no deep Present view below a multi-overlay
+    // foreign chain. Do not use it merely as a second view when the deep hook already covers CE.
 
     // CRITICAL: Check if this swapchain is already wrapped
     // This prevents double-wrapping which causes infinite Present recursion
@@ -758,10 +720,16 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
         return hr;
     }
 
-    // NOTE: We don't install global Present vtable hooks for DX12.
-    // The wrapper (CWrapDXGISwapChain) handles all Present interception.
-    // This avoids conflicts between vtable hooks and wrapper interception
-    // that caused stack overflow crashes.
+    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
+        HookLogImportant(
+            "DetourCreateSwapChainForHwndGlobal: Preserving real DX12 swapchain identity below the "
+            "multi-overlay foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",
+            *ppSC, hWnd);
+        return hr;
+    }
+
+    // The wrapper remains the fallback when CE has no deep Present view below a multi-overlay
+    // foreign chain. Do not use it merely as a second view when the deep hook already covers CE.
 
     // CRITICAL: Check if this swapchain is already wrapped
     // This prevents double-wrapping which causes infinite Present recursion

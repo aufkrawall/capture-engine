@@ -26,6 +26,9 @@ namespace DXGIShared {
 // dxgi!Present proves nothing about who originated the present. Declared here for the api-layer
 // overlay routes; the definition lives with the shared Present state (dxgi_shared.cpp).
 bool IsPresentInterceptedBelowForeignChain();
+// Stronger creation-time proof: both Present and Present1 have deep-body interception, so
+// returning the real swapchain loses no wrapper-provided Present coverage.
+bool ArePresentMethodsInterceptedBelowForeignChain();
 }
 
 namespace DXGIShared {

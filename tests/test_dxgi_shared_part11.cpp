@@ -622,3 +622,52 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     EXPECT_NE(routing.find("postSLSyntheticStartupActivationPending"), std::string::npos);
     EXPECT_NE(routing.find("HookIsPostSLOverlayActiveButUnconfirmed()"), std::string::npos);
 }
+
+TEST(DXGISharedSourceTest, DeepMultiOverlayPresentViewPreservesRealDX12SwapchainIdentity) {
+    namespace fs = std::filesystem;
+    const std::string create = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+    ASSERT_FALSE(create.empty());
+    const size_t policyCall = create.find("ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)");
+    ASSERT_NE(policyCall, std::string::npos);
+    EXPECT_NE(create.find("Preserving real DX12 swapchain identity", policyCall), std::string::npos);
+
+    const std::string factory = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    ASSERT_FALSE(factory.empty());
+    const size_t assign = factory.find("void AssignCreatedSwapchain(");
+    ASSERT_NE(assign, std::string::npos);
+    const size_t preserve = factory.find(
+        "ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(", assign);
+    const size_t retainingWrap = factory.find("new CWrapDXGISwapChain(pReal, pDevice)", assign);
+    ASSERT_NE(preserve, std::string::npos);
+    ASSERT_NE(retainingWrap, std::string::npos);
+    EXPECT_LT(preserve, retainingWrap)
+        << "the factory wrapper must return the real object before any retaining wrapper is constructed";
+}
+
+TEST(DXGISharedSourceTest, InternalD3D11ProbeCannotEnterDX12SwapchainWrapping) {
+    namespace fs = std::filesystem;
+    const std::string dx11 =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook.cpp");
+    ASSERT_FALSE(dx11.empty());
+    EXPECT_NE(dx11.find("ScopedInternalDXGISwapchainProbe probeScope"), std::string::npos);
+
+    const std::string create = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+    ASSERT_FALSE(create.empty());
+    const size_t bypass = create.find("if (DX12_IsInternalDXGISwapchainProbe())");
+    const size_t wrapper = create.find("new CWrapDXGISwapChain(*ppSwapChain, pDevice)");
+    ASSERT_NE(bypass, std::string::npos);
+    ASSERT_NE(wrapper, std::string::npos);
+    EXPECT_LT(bypass, wrapper);
+    EXPECT_NE(create.find("return dx12_hook_oCreateSwapChainGlobal", bypass), std::string::npos);
+
+    const std::string process = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_process.cpp");
+    ASSERT_FALSE(process.empty());
+    EXPECT_NE(process.find("PublishD3D12UseFromPresentedSwapchain(pSwapChain)"), std::string::npos);
+    EXPECT_NE(process.find("MarkD3D12DeviceCreated()"), std::string::npos)
+        << "a confirmed D3D12 Present must suppress HookThread's DLL-only D3D11 fallback before RTSS can "
+           "trigger a cross-API probe";
+}

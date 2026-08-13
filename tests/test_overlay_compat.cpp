@@ -253,6 +253,15 @@ TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfForeignPresentEntryChains) 
     EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 0));
 }
 
+TEST(OverlayPresentEntryChainPolicyTest, DeepMultiOverlayViewPreservesDX12SwapchainIdentity) {
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 2));
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3));
+
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(false, true, 2));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, false, 2));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1));
+}
+
 // The below-the-chain body patch can be refused (thread quiescence, unrecognized prolog). The
 // fallback is allowed only against a single foreign overlay, which composes with a prepend;
 // with two or more the prepend is exactly what corrupts their saved chains, so that case must

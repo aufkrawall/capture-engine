@@ -19,6 +19,13 @@ using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*)
 // (fast-app coverage) and retried from DX12Hook::Init when dxgi.dll was not loaded yet.
 void InstallGlobalVTableHooks();
 
+// Internal D3D10/11 hook-discovery swapchains must pass through the shared DXGI factory
+// without entering DX12 tracking/wrapping. This scope is thread-local so a concurrent game
+// swapchain creation remains fully intercepted.
+void DX12_BeginInternalDXGISwapchainProbe();
+void DX12_EndInternalDXGISwapchainProbe();
+bool DX12_IsInternalDXGISwapchainProbe();
+
 // =============================================================================
 // DX12 Debug Logging Infrastructure
 // =============================================================================

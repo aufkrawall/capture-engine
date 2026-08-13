@@ -266,7 +266,7 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
                                                                       IsPresentEntryLeftToForeignChain())) {
         HookLogImportant(
             "DXGIShared::InstallHooks: Multi-overlay foreign Present chain owns the entry, keeping the swapchain "
-            "vtable pristine (wrapper-only interception)");
+            "vtable pristine (deep-body interception)");
         return true;
     }
 

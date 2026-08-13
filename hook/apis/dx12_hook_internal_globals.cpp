@@ -295,6 +295,22 @@ ULONGLONG dx12_hook_g_FGRuntimeOwnsSwapchainSince = 0;
 
 std::atomic<bool> dx12_hook_g_CreatingTempSwapchain{false};
 
+thread_local unsigned dx12_hook_s_InternalDXGISwapchainProbeDepth = 0;
+
+void DX12_BeginInternalDXGISwapchainProbe() {
+    ++dx12_hook_s_InternalDXGISwapchainProbeDepth;
+}
+
+void DX12_EndInternalDXGISwapchainProbe() {
+    if (dx12_hook_s_InternalDXGISwapchainProbeDepth != 0) {
+        --dx12_hook_s_InternalDXGISwapchainProbeDepth;
+    }
+}
+
+bool DX12_IsInternalDXGISwapchainProbe() {
+    return dx12_hook_s_InternalDXGISwapchainProbeDepth != 0;
+}
+
 thread_local ForwardedCreateSwapchainForHwndCallerContext dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext;
 
 thread_local int dx12_hook_s_forwardedCreateSwapchainForHwndInlineDepth = 0;

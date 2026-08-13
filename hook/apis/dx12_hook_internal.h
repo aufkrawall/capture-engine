@@ -593,8 +593,10 @@ void MarkThirdPartyOverlaySwapchain(IDXGISwapChain1* pSwapChain, const char* cre
 void ForgetSwapchainFromTracking(IDXGISwapChain* pSwapChain);
 void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd);
 
-// Forward declaration — defined below near DetourCreateSwapChainGlobal
-bool IsStreamlineLoaded();;
+bool IsStreamlineLoaded();
+bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice);
+bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView();
+bool ShouldPreserveDX12SwapchainIdentityForForeignChain(IUnknown* pDevice);
 HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 bool IsStreamlineLoaded();

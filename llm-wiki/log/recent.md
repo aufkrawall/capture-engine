@@ -1,21 +1,29 @@
 # llm-wiki Log
 
-### 2026-08-14 - FIXED locally: initial OFF->FSR replacement collided with Steam + RTSS retained chains; create the disabled FFX proxy first
+### 2026-08-14 - FIXED locally in CaptureEngine: preserve DX12 COM identity below Steam + RTSS; isolate D3D11 probes
 
-- Session `20260814_001406` (0.1.6039, dx12_fg_switch_test via Steam + RTSS) was a controlled fatal switch,
-  not an AV. The exhaustion dump stack traverses FFX -> CE -> Steam -> RTSS -> CE deep create -> DXGI; the fatal
-  dump is the app's deliberate `ExitProcess(0xE000EACC)`. After wrapper destruction the native chain still had two
-  references, while CE had released its base and promoted-interface references; both survivors are foreign.
-- FFX Wrap is not an in-place conversion. AMD's SDK implementation releases the passed interface and invokes
-  ForHwnd creation, so the attempted live-wrap fix reproduced the same collision and also exposed that the input is
-  consumed on failure. No CE retry or safe foreign `Release` can repair this ownership state.
-- Fix: the switch app loads FSR synchronously and creates the disabled FFX proxy as the first final swapchain for
-  the HWND. Initial OFF presents through that proxy; OFF->FSR now creates/configures FG context without replacing
-  the chain. Requested proxy creation fails closed instead of silently falling back to a future-unsafe native chain,
-  and the duplicated FFX frame-latency handle is closed after context destruction.
-- Regression: `DXGISharedSourceTest.AccessDeniedExhaustionWritesDiagnosticDumpAndBracketedPinProbes` pins startup
-  ordering, no Wrap route, and fail-closed behavior. Local 5-second OFF->FSR smoke passed (`owner=fsr-wrapper`,
-  `Mode now FSR FG (ok=1)`, exit 0). Steam+RTSS field validation is still required.
+- Scope correction: the earlier switch-app persistent-initial-FFX-proxy change was a workaround in the test client,
+  not a CaptureEngine compatibility fix. It has been fully reverted. Session `20260814_004913` proved it also did
+  not survive an OFF teardown followed by FSR re-entry.
+- Both session dumps are controlled diagnostics, not memory AVs. The exhaustion dump is official FFX -> CE global
+  factory hook -> Steam -> RTSS -> CE deep create -> DXGI returning `E_ACCESSDENIED`; the second dump is the app's
+  deliberate `ExitProcess(0xE000EACC)` after that failed switch.
+- Joint engine root cause: CE had already installed complete Present/Present1 deep hooks below the two-overlay entry
+  chain, but still returned a retaining `CWrapDXGISwapChain`. That redundant proxy changed COM identity and mirrored
+  release traffic above Steam/RTSS. Its teardown left four foreign refs on the real FFX chain. During the same run,
+  RTSS command submissions stopped while Steam submissions continued, consistent with the extra wrapper transport
+  perturbing the foreign chain it was meant to preserve.
+- Fix: with two or more loaded overlays and complete deep-body interception, both DX12 creation paths and the wrapped
+  factory return the original DX12 swapchain unchanged. CE still renders/captures through the deep hooks after every
+  foreign overlay. Incomplete deep coverage, D3D11/10, single-overlay, and special Streamline runtime paths keep their
+  established fallback behavior.
+- A second engine bug amplified the collision: RTSS loaded D3D11On12, HookThread ran CE's D3D11 temp-swapchain probe,
+  and the globally hooked factory wrapped/tracked that internal probe as a DX12 game swapchain. Internal discovery is
+  now thread-locally marked and bypasses DX12 side effects; successful D3D12 Present-device evidence is published
+  immediately so transitive `d3d11.dll` loading cannot start the DLL-only fallback in an active DX12 process.
+- Regression tests: pure topology policy plus source invariants for both global/wrapped factory return paths, the
+  thread-local probe bypass, and early actual-D3D12 publication. Focused tests passed; full `--verify` passed on
+  0.1.6045 (2,183 native tests, Python tool self-tests, clang-tidy/file-size ratchets, and ASan/UBSan).
 
 ### 2026-08-14 - FIXED: dump-path freeze + FSR re-entry pin — helper-first dumps, FSR swapchain keep-alive, lifetime attribution
 

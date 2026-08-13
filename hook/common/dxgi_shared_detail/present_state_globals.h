@@ -114,7 +114,7 @@ extern PFN_Present dxgi_shared_g_externalOverlayPresentHook;
 namespace DXGIShared {
 // True when CE deliberately left the dxgi!Present entry to a foreign chain that already has
 // more than one overlay in it. CE owns no entry bytes in that mode: forwards must run the
-// live entry (never a trampoline or bypass), and CWrapDXGISwapChain is CE's interception.
+// live entry (never a trampoline or bypass), and CE normally intercepts in the deep body.
 extern std::atomic<bool> dxgi_shared_s_presentEntryLeftToForeignChain;
 bool IsPresentEntryLeftToForeignChain();
 }

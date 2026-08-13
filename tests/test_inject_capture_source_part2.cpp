@@ -217,8 +217,11 @@ TEST(InjectLifecycleSourceTest, Dx11TempDeviceCreationBypassesEntryPatches) {
     ASSERT_FALSE(source.empty());
 
     const size_t bypass = source.find("Bypassing entry patch on D3D11CreateDeviceAndSwapChain at %p");
-    const size_t tempCreate = source.find("HRESULT hr = pTempCreate(");
+    const size_t probeScope = source.find("ScopedInternalDXGISwapchainProbe probeScope", bypass);
+    const size_t tempCreate = source.find("hr = pTempCreate(", probeScope);
     ASSERT_NE(bypass, std::string::npos);
+    ASSERT_NE(probeScope, std::string::npos);
     ASSERT_NE(tempCreate, std::string::npos);
-    EXPECT_LT(bypass, tempCreate);
+    EXPECT_LT(bypass, probeScope);
+    EXPECT_LT(probeScope, tempCreate);
 }

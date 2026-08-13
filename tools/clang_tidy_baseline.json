@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 595,
+    "entries": 596,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -200,6 +200,7 @@
       "hook/apis/dx12_hook_swapchain.cpp",
       "hook/apis/dx12_hook_swapchain_create.cpp",
       "hook/apis/dx12_hook_swapchain_tracking.cpp",
+      "hook/apis/dx12_hook_swapchain_wrap_policy.cpp",
       "hook/apis/dx12_hook_types_impl.cpp",
       "hook/apis/dx12_sampler_hooks.cpp",
       "hook/apis/dx12_streamline_ui_overlay.cpp",

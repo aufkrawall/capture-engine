@@ -215,6 +215,17 @@ inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryPatchO
     return foreignEntryPatchOwnedByOverlay && loadedOverlayModuleCount >= 1;
 }
 
+// Once CE has a deep Present hook below a chain shared by multiple foreign overlays, wrapping
+// the DX12 swapchain adds no coverage: every Present already reaches CE after the foreign chain.
+// Returning a proxy object would nevertheless change COM identity and Release traffic above that
+// chain. Steam/RTSS maintain per-swapchain state there, so preserve the real object just as CE
+// preserves the entry bytes. Non-DX12 swapchains and the wrapper-only fallback remain unchanged.
+inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(bool d3d12CommandQueueSwapchain,
+                                                                        bool interceptedBelowForeignChain,
+                                                                        size_t loadedOverlayModuleCount) {
+    return d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 2;
+}
+
 // Pure decision: the below-the-chain body patch was refused (thread quiescence, an
 // unrecognized prolog, a 32-bit target the deep-hook policy rejects). May CE fall back to the
 // entry prepend it used before the below-the-chain mode existed?

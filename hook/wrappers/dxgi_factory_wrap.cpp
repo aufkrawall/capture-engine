@@ -7,6 +7,7 @@
 #include <objbase.h>
 #include "../apis/dx12_hook.h"
 #include "../common/dx12_overlay_policy.h"
+#include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
 #include "../common/overlay_compat.h"
 #include "dxgi_adapter_wrap.h"
@@ -89,6 +90,19 @@ template <typename TSwapChain>
 void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12CommandQueueSwapchain, const char* callName,
                             TSwapChain** ppSwapChain) {
     if (!pReal || !ppSwapChain) {
+        return;
+    }
+
+    const size_t loadedOverlayCount = ce::overlay_compat::CountLoadedTrackedOverlayModules(
+        ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    if (ce::overlay_compat::ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
+            d3d12CommandQueueSwapchain, DXGIShared::ArePresentMethodsInterceptedBelowForeignChain(),
+            loadedOverlayCount)) {
+        WrapperLog(
+            "%s: Preserving real DX12 swapchain identity below the multi-overlay foreign Present chain "
+            "(sc=%p overlays=%zu)",
+            callName ? callName : "CreateSwapChain", pReal, loadedOverlayCount);
+        *ppSwapChain = pReal;
         return;
     }
 

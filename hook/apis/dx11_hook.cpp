@@ -12,6 +12,18 @@ static IDXGISwapChain* g_pSwapChain = NULL;
 
 static bool g_IsDX10Device = false;
 
+namespace {
+class ScopedInternalDXGISwapchainProbe {
+public:
+    ScopedInternalDXGISwapchainProbe() {
+        DX12_BeginInternalDXGISwapchainProbe();
+    }
+    ~ScopedInternalDXGISwapchainProbe() {
+        DX12_EndInternalDXGISwapchainProbe();
+    }
+};
+}  // namespace
+
 thread_local unsigned g_D3D11InternalIdentityProbeDepth = 0;
 
 void DX11Hook_BeginInternalIdentityProbe() {
@@ -366,8 +378,7 @@ void DX11Hook::Init() {
                                 scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
                                 IDXGISwapChain* tempSC = nullptr;
-                                // This call goes through our detour and will install vtable
-                                // hooks!
+                                ScopedInternalDXGISwapchainProbe probeScope;
                                 hr = factory->CreateSwapChain(tempDevice, &scd, &tempSC);
                                 if (SUCCEEDED(hr) && tempSC) {
                                     HookLog(
@@ -441,9 +452,12 @@ void DX11Hook::Init() {
                 }
             }
 
-            HRESULT hr = pTempCreate(
-                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, flReq, 1,
-                D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
+            HRESULT hr = E_FAIL;
+            {
+                ScopedInternalDXGISwapchainProbe probeScope;
+                hr = pTempCreate(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                 flReq, 1, D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
+            }
             if (SUCCEEDED(hr) && sc) {
                 InstallVTableHooks(dev, ctx, sc);
                 CWrapDXGISwapChain* wrappedSc = nullptr;

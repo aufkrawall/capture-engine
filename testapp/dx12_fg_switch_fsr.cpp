@@ -449,12 +449,6 @@ void DestroyFSRContexts() {
         dx12_fg_switch_test_g_FfxDestroyContext(&dx12_fg_switch_test_g_FfxSwapChainCtx, nullptr);
         dx12_fg_switch_test_g_FfxSwapChainCtx = nullptr;
     }
-    if (dx12_fg_switch_test_g_SwapChainOwner == SwapChainOwner::FSR && g_FrameLatencyWaitHandle) {
-        // The FFX proxy returns a duplicated waitable handle. AMD's contract requires the
-        // application to close it after destroying the swapchain context.
-        CloseHandle(g_FrameLatencyWaitHandle);
-        g_FrameLatencyWaitHandle = nullptr;
-    }
     dx12_fg_switch_test_g_FsrEnabled = false;
     dx12_fg_switch_test_g_FsrSuspended = false;
     dx12_fg_switch_test_g_FsrInitialized = false;

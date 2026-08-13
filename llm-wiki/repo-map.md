@@ -92,7 +92,7 @@ anchors that predate the split are approximate.
       (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp`,
       `dx12_hook_queue_method_resolution.cpp` +
       themed helper units (overlay_coverage, overlay_breadcrumbs, ffx_startup,
-      fg_heuristics, postsl_queue, swapchain_create, observer, overlay_render,
+      fg_heuristics, postsl_queue, swapchain_create, swapchain_wrap_policy, observer, overlay_render,
       prerender, hook_install, screenshot, overlay_dedicated_queue,
       overlay_startup_compat, postsl_route, swapchain_tracking, swapchain_detours),
       `dx12_hook_types*.h/cpp`, `dx12_hook_internal_globals.cpp`, `dx12_hook_swapchain.cpp`.

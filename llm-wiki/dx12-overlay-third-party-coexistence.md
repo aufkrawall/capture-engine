@@ -104,6 +104,18 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 - The deep trampolines are published as `dxgi_shared_oPresentDeepBody` / `dxgi_shared_oPresent1DeepBody`. `CallOriginalPresent`/`CallOriginalPresent1` check them **before** every foreign-chain entry forward: control arrived from below the chain, so forwarding through the live entry would re-run Steam/RTSS and re-enter the deep hook without end. Marker: `CallOriginalPresent: foreign-chain deep body forward #N`.
 - They also replace `dxgi_shared_oPresentBypass` / `oPresent1Bypass`. The DXGI bypass resumes at exactly the offset the deep hook now owns, so every "skip the foreign entry hook" consumer would otherwise land back in CE's own detour; the deep trampoline skips the foreign entry *and* CE's patch.
 - `HasPresentInlineHooks()` / `HasPresentDetourHooks()` count the deep bodies — otherwise `FindAndWrapPreExistingSwapchains` keeps reporting failure and the wrapper keeps running a second Present path over the same frames. `HasPrependedPresentEntryHook()` is the new predicate for "CE owns entry bytes"; the late-overlay-join warning in `main_overlay_detect.cpp` uses it, because in this mode CE owns none.
+- **Complete deep coverage also preserves swapchain COM identity (2026-08-14).** Leaving the shared entry and class
+  vtable pristine is insufficient if CE then hands the game/runtime a `CWrapDXGISwapChain`: that proxy changes the
+  object and mirrored AddRef/Release traffic observed by Steam/RTSS, while its Present delegation creates a redundant
+  second CE transport. Session `20260814_004913` ended with four foreign refs after wrapper teardown, then official
+  FFX replacement creation failed `E_ACCESSDENIED`; RTSS submissions also stopped while Steam continued. When at
+  least two tracked overlays are loaded and both Present methods have deep hooks, all ordinary DX12 factory paths now
+  return the real swapchain. The wrapper remains only where it supplies missing coverage (incomplete deep view,
+  non-DX12/single-overlay fallback, or the dedicated non-retaining Streamline runtime route).
+- Internal D3D10/11 hook-discovery swapchains are thread-locally excluded from the DX12 global factory detour. RTSS's
+  D3D11On12 startup had caused CE's temp D3D11 chain to enter DX12 wrapping/tracking and retain a foreign reference.
+  The thread-local scope preserves concurrent real game creates, while first proven D3D12 Present publishes API-use
+  evidence before HookThread can start the DLL-only D3D11 fallback.
 - Only an obtained view latches `s_inlineHooksInstalled`. Thread quiescence may legitimately refuse a body patch once (a peer thread inside the displaced range); the next real swapchain event then retries through `EnsurePresentInlineHooksForRealSwapchain`. No timer, no sleep.
 - `InlineHook::InstallDeepHook` previously required an all-`PUSH` prolog, which rules out `dxgi!CDXGISwapChain::Present` — it opens with `48 89 5C 24 10` (`mov [rsp+10h], rbx`), a shadow-space save. `ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta` now accepts `PUSH r64`, `sub rsp, imm8/imm32`, and shadow-space saves (RSP delta 0), and refuses everything else; the patch omits the `add rsp` entirely when the delta is 0. Present resolves to resume offset 5, 0 bytes of undo, 14 displaced bytes.
 - Deliberately unchanged: with an FG interposer loaded, `ShouldLeavePresentEntryToForeignOverlayChain` is still false at install time, so the Talos DLSS-FG prepend-then-un-prepend path takes no deep hook and is byte-identical to 0.1.5946.

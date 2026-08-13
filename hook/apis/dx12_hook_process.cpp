@@ -1,6 +1,22 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
 
+namespace {
+void PublishD3D12UseFromPresentedSwapchain(IDXGISwapChain* swapChain) {
+    if (!swapChain || WasD3D12DeviceCreated()) {
+        return;
+    }
+    ID3D12Device* device = nullptr;
+    if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&device))) && device) {
+        MarkD3D12DeviceCreated();
+        HookLogImportant(
+            "DX12: Presented swapchain %p confirmed actual D3D12 use — suppressing transitive D3D11 hook probes",
+            swapChain);
+        device->Release();
+    }
+}
+}  // namespace
+
 void DX12_ResetImGuiFrameCounter() {
     dx12_hook_s_framesBeforeInit = 0;
     // Also reset the post-init frame counter
@@ -25,6 +41,7 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     if (!dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire)) {
         g_RenderWatchdog.HeartbeatFromHelperThread();
     }
+    PublishD3D12UseFromPresentedSwapchain(pSwapChain);
     IDXGISwapChain3* sc3 = nullptr;
     if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
         return;
@@ -170,6 +187,8 @@ auto diagnosticGuard = ce::make_scope_guard([&]() {
 if (HookIsShuttingDown()) {
     return;
 }
+
+PublishD3D12UseFromPresentedSwapchain(pSwapChain);
 
 // Heartbeat for freeze watchdog — skip when device is removed so the
 // watchdog can detect the stuck state and create a diagnostic dump.
