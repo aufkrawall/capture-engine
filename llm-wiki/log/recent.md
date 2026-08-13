@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED: all-three-tools crash in the DX11 temp-device probe (0.1.5985 -> next)
+
+- Session `20260813_024327` (ReShade + OptiScaler + Special K): AV in
+  `d3d11!CLayeredObject<CDevice>::CContainedObject::Release` with a garbage `this` (UTF-16 string fragment),
+  called from CE's `DetectSwapChainAPITypeForDX11Hook` while releasing the device returned by
+  `IDXGISwapChain::GetDevice`. CE's temp D3D11 device/swapchain were third-party proxy objects because the
+  "saved original" `D3D11CreateDeviceAndSwapChain` entry had been patched by the tools; releasing through the
+  mixed ReShade/OptiScaler/Steam wrapper chain forwarded a corrupted pointer.
+- Fix: `hook/apis/dx11_hook.cpp` now bypasses the entry patch on `D3D11CreateDeviceAndSwapChain` (and the D3D10
+  temp route's `D3D10CreateDevice`) with `InlineHook::CreateBypassTrampoline` before creating the temp device, so
+  the probe operates on genuine d3d11 objects — same rule as the temp-DXGI-factory fix. Source-order test added
+  to `tests/test_inject_capture_source_part2.cpp`.
+
 ### 2026-08-13 - FIXED (supersedes the order-only fix): Special K + OptiScaler loader deadlocks in BOTH orders
 
 - Session `20260813_021731` (SK + OptiScaler, Special-K-last order from the previous fix): CE's hook thread held the

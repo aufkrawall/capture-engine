@@ -148,6 +148,18 @@ once those tools are loaded.
   adds `WaitForLoaderQuiescence` (a LoadLibrary probe thread joined before
   every tool load after the first) so the tools' background loader work
   cannot overlap the next tool's DllMain.
+- With all three tools loaded, CE's DX11 temp-device probe crashed inside
+  `d3d11!CLayeredObject<CDevice>::CContainedObject::Release` with a garbage
+  `this` (a UTF-16 string fragment) while
+  `DetectSwapChainAPITypeForDX11Hook` released the device it got from
+  `IDXGISwapChain::GetDevice` (session `20260813_024327`). CE's "saved
+  original" `D3D11CreateDeviceAndSwapChain` was the entry address, which the
+  foreign tools had patched, so the temp device/swapchain were proxy objects;
+  releasing through the mixed ReShade/OptiScaler/Steam wrapper chain forwarded
+  a corrupted pointer. Fixed by bypassing the entry patch (CE's own or a
+  foreign prepend) with `InlineHook::CreateBypassTrampoline` before creating
+  the temp D3D11 (and D3D10) device, so the probe operates on genuine d3d11
+  objects — the same genuine-object rule as the temp-DXGI-factory fix.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

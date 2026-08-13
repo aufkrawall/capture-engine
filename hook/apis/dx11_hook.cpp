@@ -1,5 +1,7 @@
 #include "dx11_hook_internal.h"
 
+#include "../wrappers/inline_hook_policy.h"
+
 // Global Deferred Release Queue for D3D11 resources
 // Prevents render thread stalls during resource destruction
 ce::DeferredReleaseQueue g_DeferredRelease;
@@ -323,6 +325,20 @@ void DX11Hook::Init() {
                                                         ID3D10Device**);
         PFN_D3D10CreateDevice pD3D10CD = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
         if (pD3D10CD) {
+            // Same genuine-object rule as the D3D11 temp path below: foreign
+            // hooks wrap device creation, and the temp probe must operate on
+            // the real d3d10 object.
+            const uint8_t* d3d10Entry = reinterpret_cast<const uint8_t*>(pD3D10CD);
+            if (ce::inline_hook_policy::IsPrependChainableEntryJump(d3d10Entry[0], d3d10Entry[1], true)) {
+                void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pD3D10CD));
+                if (bypass) {
+                    HookLogImportant(
+                        "DX11: Bypassing entry patch on D3D10CreateDevice at %p (trampoline=%p) so the temp device "
+                        "is the genuine d3d10 object",
+                        reinterpret_cast<void*>(pD3D10CD), bypass);
+                    pD3D10CD = reinterpret_cast<PFN_D3D10CreateDevice>(bypass);
+                }
+            }
             ID3D10Device* tempDevice = nullptr;
             // Use the REAL function, not our detour, to create a temp device
             HRESULT hr = pD3D10CD(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &tempDevice);
@@ -396,8 +412,36 @@ void DX11Hook::Init() {
             ID3D11DeviceContext* ctx = nullptr;
             IDXGISwapChain* sc = nullptr;
 
-            HRESULT hr = (dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain ? dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain
-                                                               : oD3D11CreateDeviceAndSwapChain)(
+            PFN_D3D11CreateDeviceAndSwapChain pTempCreate =
+                dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain ? dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain
+                                                               : oD3D11CreateDeviceAndSwapChain;
+            // The temp device/context/swapchain must be the GENUINE d3d11
+            // objects. Foreign loader hooks (ReShade, OptiScaler, Special K,
+            // Steam) wrap D3D11CreateDeviceAndSwapChain and return proxy
+            // objects; DetectSwapChainAPITypeForDX11Hook then calls
+            // GetDevice/Release through a mixed wrapper chain, and one wrapper
+            // forwarded a garbage `this` into d3d11!Release (session
+            // 20260813_024327). The entry may hold CE's own detour or a
+            // foreign prepend; either way a bypass trampoline resumes in the
+            // real function body, exactly like the temp-DXGI-factory path.
+            const uint8_t* tempCreateEntry = reinterpret_cast<const uint8_t*>(pTempCreate);
+            if (ce::inline_hook_policy::IsPrependChainableEntryJump(tempCreateEntry[0], tempCreateEntry[1], true)) {
+                void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pTempCreate));
+                if (bypass) {
+                    HookLogImportant(
+                        "DX11: Bypassing entry patch on D3D11CreateDeviceAndSwapChain at %p (trampoline=%p) so the "
+                        "temp device/swapchain are the genuine d3d11 objects",
+                        reinterpret_cast<void*>(pTempCreate), bypass);
+                    pTempCreate = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(bypass);
+                } else {
+                    HookLogImportant(
+                        "DX11: Could not bypass entry patch on D3D11CreateDeviceAndSwapChain at %p - the temp "
+                        "device/swapchain may be third-party proxies",
+                        reinterpret_cast<void*>(pTempCreate));
+                }
+            }
+
+            HRESULT hr = pTempCreate(
                 nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, flReq, 1,
                 D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
             if (SUCCEEDED(hr) && sc) {

@@ -208,3 +208,14 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     EXPECT_LT(specialKEntry, optiScalerEntry);
     EXPECT_LT(quiescenceGate, loadCall);
 }
+
+TEST(InjectLifecycleSourceTest, Dx11TempDeviceCreationBypassesEntryPatches) {
+    const std::string source = ReadSource("hook/apis/dx11_hook.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t bypass = source.find("Bypassing entry patch on D3D11CreateDeviceAndSwapChain at %p");
+    const size_t tempCreate = source.find("HRESULT hr = pTempCreate(");
+    ASSERT_NE(bypass, std::string::npos);
+    ASSERT_NE(tempCreate, std::string::npos);
+    EXPECT_LT(bypass, tempCreate);
+}
