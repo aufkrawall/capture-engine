@@ -36,18 +36,22 @@ once those tools are loaded.
   `GraphicsConfig`/`SharedGraphicsConfig`: the hook reads them directly from
   `config.ini` (same file the host writes), so no shared-memory layout change,
   no `SHARED_MEMORY_VERSION` bump, and no IPC transport exists for them.
-- The hook loads the configured tools in the fixed order ReShade -> OptiScaler
-  -> Special K (the `Tool` enum declaration order in
-  `third_party_load_policy.h`). Special K must load LAST: its early
-  thread-creation hook waits on an internal critical section while its init
-  threads drain the loader work queue, so loading OptiScaler (whose DllMain
-  creates a thread) after Special K deadlocks the loader — session
-  `20260813_020236` (CE's hook thread holds the loader lock, OptiScaler's
-  DllMain blocks on Special K's critical section, Special K's init thread
-  blocks on the loader lock, and the game's main thread blocks on the same
-  critical section). The projects' own supported combination (OptiScaler's
-  `LoadSpecialK` option) loads Special K after OptiScaler for the same reason.
-  Do not reorder without re-checking this.
+- The hook loads the configured tools in the fixed order Special K -> ReShade
+  -> OptiScaler (the `Tool` enum declaration order in
+  `third_party_load_policy.h`). Before every tool load after the first, the
+  executor waits for the Windows loader work queue to drain by joining a
+  trivial `LoadLibrary` probe thread. This is the synchronization that makes
+  the order safe: Special K's init threads only need the loader transiently
+  (its DLL enumerator frees a probe library), and OptiScaler's DllMain
+  creates threads that go through Special K's thread-creation hook. Without
+  the wait, Special-K-first deadlocks (session `20260813_020236`: CE's hook
+  thread holds the loader lock, OptiScaler's DllMain blocks on Special K's
+  critical section, Special K's init thread blocks on the loader lock), and
+  Special-K-last deadlocks the other way (session `20260813_021731`: Special
+  K's DllMain calls LoadLibrary, which re-enters OptiScaler's mutex-guarded
+  loader hook while an OptiScaler background thread holds that mutex and waits
+  for the loader lock). Do not reorder or remove the quiescence wait without
+  re-checking both cycles.
 - `PreloadConfiguredThirdPartyDlls()` runs in `HookThread` immediately after
   the local `config.ini` parse, before CE's wrapper DLL load,
   `PreloadConfiguredGraphicsRuntimeDlls()`, and per-API hook installation.
@@ -131,9 +135,19 @@ once those tools are loaded.
   order deadlocked startup (session `20260813_020236`, manual dump: hook thread
   in `LdrpLoadDllInternal` -> OptiScaler DllMain -> Special K thread-creation
   hook -> critical-section wait; Special K's init thread in
-  `FreeLibraryAndExitThread` -> loader work-queue drain). Fixed by making
-  Special K load LAST. The game process exited with code 1 about 30 seconds
-  later without CE's crash path, so CE's VEH handler never saw the hang.
+  `FreeLibraryAndExitThread` -> loader work-queue drain). The game process
+  exited with code 1 about 30 seconds later without CE's crash path, so CE's
+  VEH handler never saw the hang. The fix is the loader-quiescence wait
+  described above (Special-K-first order retained); a Special-K-last order
+  deadlocks the mirror way (next bullet).
+- Special-K-last (the first fix attempt) still deadlocked for Special K +
+  OptiScaler (session `20260813_021731`): Special K's DllMain called
+  LoadLibrary, re-entered OptiScaler's mutex-guarded loader hook, and that
+  mutex was held by OptiScaler's nvapi-init thread while it waited for the
+  loader lock CE's hook thread held. The final fix keeps Special K FIRST and
+  adds `WaitForLoaderQuiescence` (a LoadLibrary probe thread joined before
+  every tool load after the first) so the tools' background loader work
+  cannot overlap the next tool's DllMain.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

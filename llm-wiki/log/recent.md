@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED (supersedes the order-only fix): Special K + OptiScaler loader deadlocks in BOTH orders
+
+- Session `20260813_021731` (SK + OptiScaler, Special-K-last order from the previous fix): CE's hook thread held the
+  loader lock loading Special K; Special K's DllMain called LoadLibrary, which re-entered OptiScaler's mutex-guarded
+  loader hook; that mutex was held by OptiScaler's nvapi-init thread while it blocked in `LdrpDrainWorkQueue` on the
+  loader lock. Same deadlock shape as `20260813_020236`, mirrored.
+- Conclusion: load order alone cannot fix this — both orders create a loader-lock/tool-mutex cycle. The fix keeps
+  Special K FIRST and synchronizes the loads on the real Windows synchronization primitive: before every tool load
+  after the first, CE joins a trivial `LoadLibrary` probe thread (`WaitForLoaderQuiescence` in
+  `hook/main_thirdparty_load.cpp`). The probe blocks in the loader work-queue drain until every in-flight loader
+  call finished, so the next tool's DllMain never overlaps the previous tool's init loader work. No fixed sleeps.
+- Order constant back to Special K -> ReShade -> OptiScaler; `ShouldWaitForLoaderQuiescenceBeforeToolLoad` added to
+  `hook/common/third_party_load_policy.h` with tests in `tests/test_third_party_load_policy.cpp` and a source-order
+  pin in `tests/test_inject_capture_source_part2.cpp`. Template/README/wiki order and rationale updated.
+
 ### 2026-08-13 - FIXED: ReShade + OptiScaler + Special K startup deadlock (0.1.5983 -> next)
 
 - Session `20260813_020236` (manual 21MB dump): with all three tools configured, the game never fully started.

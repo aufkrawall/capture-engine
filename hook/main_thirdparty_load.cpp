@@ -6,6 +6,42 @@
 
 namespace {
 
+// Trivial load the probe performs. Any LoadLibrary call blocks in the loader
+// work-queue drain while another thread holds the loader lock, so the probe
+// thread completing means every in-flight loader call has finished.
+DWORD WINAPI LoaderQuiescenceProbe(LPVOID) {
+    const HMODULE module = LoadLibraryW(L"version.dll");
+    if (module) {
+        FreeLibrary(module);
+    }
+    return 0;
+}
+
+// Tool DllMains spawn background threads that perform their own loader work
+// (Special K's DLL enumerator frees a probe library, OptiScaler's nvapi and
+// update threads delay-load webio/nvapi). Starting the next tool load while
+// such a thread is mid-loader-call deadlocks: our load holds the loader lock,
+// the next tool's DllMain re-enters the previous tool's loader hook, and that
+// hook waits on a mutex the background thread holds while it waits for the
+// loader lock (sessions 20260813_020236 / 20260813_021731). Waiting for a
+// trivial LoadLibrary probe to finish is waiting for exactly that queue to
+// drain, not a fixed delay.
+bool WaitForLoaderQuiescence() {
+    const HANDLE thread = CreateThread(nullptr, 0, LoaderQuiescenceProbe, nullptr, 0, nullptr);
+    if (!thread) {
+        HookLog("ThirdParty preload: loader quiescence probe thread creation failed (error=%lu)",
+                static_cast<unsigned long>(GetLastError()));
+        return false;
+    }
+    const DWORD waitResult = WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    if (waitResult != WAIT_OBJECT_0) {
+        HookLog("ThirdParty preload: loader quiescence wait failed (result=%lu)", waitResult);
+        return false;
+    }
+    return true;
+}
+
 // True when a renamed copy of `tool` (a graphics proxy base name from the
 // shared candidate list) is already mapped. One bounded module walk plus
 // export/version probes, mirroring the identity scan in
@@ -93,15 +129,16 @@ void PreloadConfiguredThirdPartyDlls() {
         ce::third_party_load::Tool tool;
         const std::string* configuredPath;
     } tools[] = {
+        {ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},
         {ce::third_party_load::Tool::kReShade, &thirdParty.reshadeDllPath},
         {ce::third_party_load::Tool::kOptiScaler, &thirdParty.optiscalerDllPath},
-        // Special K loads LAST: its early thread-creation hook deadlocks the
-        // loader when another tool's DllMain creates threads while Special K
-        // initializes (see third_party_load_policy.h, session 20260813_020236).
-        {ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},
     };
 
-    for (const auto& entry : tools) {
+    for (size_t toolIndex = 0; toolIndex < sizeof(tools) / sizeof(tools[0]); ++toolIndex) {
+        const auto& entry = tools[toolIndex];
+        if (ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)) {
+            WaitForLoaderQuiescence();
+        }
         const std::string resolved =
             ce::third_party_load::ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath, kIs64BitProcess);
         if (resolved.empty()) {
