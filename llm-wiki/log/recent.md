@@ -1,4 +1,27 @@
 # llm-wiki Log
+### 2026-08-13 - FIXED (targeted): CE's overlay composites on top of Steam/RTSS under native FSR FG (build 0.1.5999)
+
+- Session `20260813_061015` (build 0.1.5995, Talos + Steam overlay + official FFX FSR FG) is the repro: the FFX
+  present callback drew CE's overlay into the runtime output buffer, the runtime presented it through DXGI, and
+  Steam's entry hook composited afterwards — Steam on top of CE. The deep body hook already ran below the foreign
+  chain every present, but the runtime-owned guard skipped CE's separate draw there.
+- Working theory (field validation still open): the 0.1.5970-0.1.5972 deep-site attempts "never landed" while the
+  game queue was idle (save-load), and the 0.1.5972 device removal at the FSR-FG-off edge is consistent with the
+  normal overlay backend's preserved/stale RTV target. The exact-target, in-flight-retaining FSR-suspend renderer
+  (`dx12_ffx_suspend_overlay`) is the transport for this fix.
+- Fix: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR`
+  (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`). When CE is below
+  a foreign Present chain with a live, un-stalled FFX present callback (not no-callback composition, not the
+  explicit FSR-off teardown window, not protected startup), `DrawSkipAndCounters` draws a second topmost overlay
+  onto the presented swapchain's exact current backbuffer on the swapchain-owning queue — the queue Steam's own
+  ECL went through in the repro (`scQueue=000001A1FA0B1440`), so queue order is foreign overlay -> CE. The FFX
+  callback draw stays as the guaranteed baseline (no yield, so the route can never hide the overlay); refusals
+  (in-flight slot, bad buffer, gate) fall back to it. Diagnostic:
+  `[OVERLAY LAYER] ... site=deep-body-below-foreign-chain-runtime-owned-fsr ...`.
+- Tests: `tests/test_ffx_below_foreign_chain_policy.cpp` (all gate halves). Verify gate passed on 0.1.5999
+  (full native suite, Python self-tests, lint/tidy, ASan/UBSan). OPEN: needs the user's Talos FSR-FG + Steam run
+  to confirm topmost layering and no device removal across the full FG switch matrix; GTA's historical
+  0x887A002B app-callback boundary must be re-checked there too.
 
 ### 2026-08-13 - ROOT CAUSE FOUND (SpecialK upstream bug): fake SHGetKnownFolderPath buffer freed by sl.interposer
 

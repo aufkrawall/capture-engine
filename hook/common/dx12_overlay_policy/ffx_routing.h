@@ -645,4 +645,36 @@ inline bool ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(bool slTurned
            overlayInit && syncInit && !deviceRemoved;
 }
 
+enum class BelowForeignChainFSRDeepDrawDecision {
+    kUnavailable,
+    kDrawOnSwapchainQueue,
+};
+
+// Native FSR FG + foreign overlay chain layering: the FFX present callback composites CE's overlay
+// into the runtime's output buffer BEFORE the runtime presents it through DXGI, and that DXGI present
+// is exactly what Steam/RTSS patch, so they draw on top of CE (Talos session 20260813_061015). CE's
+// deep body hook runs on the same present after all of them, so the topmost-safe channel is a second,
+// teardown-safe backbuffer composite submitted on the swapchain-owning queue — the queue the foreign
+// overlay's own command list was observed on and the queue DXGI syncs the backbuffers with.
+//
+// Strictly the active app-callback state. The no-callback internal-composition route must never take
+// this path (a separate submit on that runtime queue is the documented ffxQuery wedge and 0x887A002B
+// boundary), and the explicit OFF teardown window, a stalled callback, or a protected startup
+// quiescence keeps the existing guarded behavior. The FFX callback draw stays as the guaranteed
+// baseline in every refusal case, so this route can only add a topmost draw, never hide the overlay.
+inline BelowForeignChainFSRDeepDrawDecision DecideBelowForeignChainFSRDeepDraw(
+    bool presentInterceptedBelowForeignChain, bool foreignOverlayLoaded, bool nativeFSRActive,
+    bool runtimeOwnedNativeFGPresentPath, bool nativeFSRInternalNoCallbackComposition,
+    bool ffxPresentCallbackActive, bool ffxPresentCallbackStalled, bool explicitNativeFSROffPending,
+    bool protectedOfficialFFXStartupQuiesced, bool hasSwapchainQueue, bool submitQueueIsSwapchainQueue,
+    bool deviceRemoved, bool shuttingDown) {
+    if (!presentInterceptedBelowForeignChain || !foreignOverlayLoaded || !nativeFSRActive ||
+        !runtimeOwnedNativeFGPresentPath || nativeFSRInternalNoCallbackComposition || !ffxPresentCallbackActive ||
+        ffxPresentCallbackStalled || explicitNativeFSROffPending || protectedOfficialFFXStartupQuiesced ||
+        !hasSwapchainQueue || !submitQueueIsSwapchainQueue || deviceRemoved || shuttingDown) {
+        return BelowForeignChainFSRDeepDrawDecision::kUnavailable;
+    }
+    return BelowForeignChainFSRDeepDrawDecision::kDrawOnSwapchainQueue;
+}
+
 }  // namespace ce::dx12_overlay_policy

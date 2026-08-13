@@ -19,6 +19,16 @@ bool IsVulkanActive();
 }
 
 namespace DXGIShared {
+// True while CE's Present view is the deep body hook installed below a foreign overlay chain
+// (dxgi!Present / dxgi!Present1, past the five entry bytes the foreign overlays keep restoring
+// and re-patching). In that state CE runs after every foreign overlay that patches the entry,
+// so its overlay composite is the topmost layer — and below the chain the immediate caller of
+// dxgi!Present proves nothing about who originated the present. Declared here for the api-layer
+// overlay routes; the definition lives with the shared Present state (dxgi_shared.cpp).
+bool IsPresentInterceptedBelowForeignChain();
+}
+
+namespace DXGIShared {
 // Wrapper-mode PostSL service: invoked from CWrapDXGISwapChain::Present when the wrapper is
 // the Streamline-runtime (non-retaining) one and CE left the Present entry to the foreign
 // chain. Mirrors the entry-hook routing's confirmed-standalone Streamline Present invocation

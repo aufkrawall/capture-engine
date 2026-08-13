@@ -58,6 +58,7 @@ enum class DX12OverlayRenderRoute : uint32_t {
     kPostSL = 2,
     kFFXPresentCallback = 3,
     kStreamlineUI = 4,
+    kBelowForeignChainRuntimeOwnedFSR = 5,
 };
 
 enum OverlayGpuBreadcrumbOp : uint32_t {

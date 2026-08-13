@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 589,
+    "entries": 590,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -532,6 +532,7 @@
       "tests/test_dxgi_shared_part9.cpp",
       "tests/test_dxgi_video_memory_log_policy.cpp",
       "tests/test_ffx_api_parsing.cpp",
+      "tests/test_ffx_below_foreign_chain_policy.cpp",
       "tests/test_ffx_ui_composite_driver_policy.cpp",
       "tests/test_fg_present_policy.cpp",
       "tests/test_fg_runtime_state.cpp",

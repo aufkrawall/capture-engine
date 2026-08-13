@@ -449,8 +449,10 @@ void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source) {
         HookLogImportant(
             "[OVERLAY LAYER] CE composites inside the FG runtime's UI composition (site=%s source=%s "
             "foreignOverlays=%zu) — the runtime presents that buffer through DXGI afterwards, so overlays hooking "
-            "that present draw ON TOP of CE's overlay. This is the only runtime-safe channel while the runtime owns "
-            "presentation; submitting onto its backbuffer/present queue is the documented AV and freeze boundary",
+            "that present draw ON TOP of CE's overlay. On the app-callback route CE's deep body hook below the "
+            "foreign chain adds the topmost composite when it is eligible; otherwise this is the only runtime-safe "
+            "channel while the runtime owns presentation (a separate backbuffer submit is the documented AV and "
+            "freeze boundary there)",
             siteName, source ? source : "unknown", foreignOverlays);
         return;
     }

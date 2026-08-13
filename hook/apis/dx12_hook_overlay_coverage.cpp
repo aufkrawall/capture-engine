@@ -11,6 +11,8 @@ switch (static_cast<DX12OverlayRenderRoute>(route)) {
         return "ffx-present-callback";
     case DX12OverlayRenderRoute::kStreamlineUI:
         return "streamline-ui";
+    case DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR:
+        return "below-foreign-chain-runtime-owned-fsr";
     default:
         return "none";
 }

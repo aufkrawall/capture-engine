@@ -330,3 +330,78 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
     }
     return rendered;
 }
+
+bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* presentedSwapChain,
+                                                              ID3D12CommandQueue* submitQueue) {
+    if (!presentedSwapChain || !submitQueue) {
+        return false;
+    }
+
+    // The presented swapchain at CE's deep body hook is the swapchain whose backbuffer the foreign
+    // overlay just composited into. Resolve its exact current buffer per present instead of relying
+    // on the normal overlay backend's cached RTV heap: during active FSR FG that heap is preserved
+    // across the FFX swapchain change and can still reference the pre-FG buffers, which is exactly
+    // the stale-target shape the 0.1.5972 device removal was traced to.
+    IDXGISwapChain3* swapChain3 = nullptr;
+    ID3D12Resource* backBuffer = nullptr;
+    if (FAILED(presentedSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) || !swapChain3) {
+        return false;
+    }
+    swapChain3->GetBuffer(swapChain3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer));
+    swapChain3->Release();
+    if (!backBuffer) {
+        static std::atomic<int> s_getBufferRefusedLog{0};
+        const int logCount = s_getBufferRefusedLog.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Below-foreign-chain FSR deep draw REFUSED — GetBuffer failed (sc=%p queue=%p log=%d)",
+                (void*)presentedSwapChain, (void*)submitQueue, logCount + 1);
+        }
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    bool hdr = false;
+    if (SUCCEEDED(presentedSwapChain->GetDesc(&desc))) {
+        // No log prefix: this runs on the steady-state present path and the renderer itself logs
+        // the HDR contract on change.
+        hdr = ResolveSwapchainOutputHDRState(presentedSwapChain, desc.BufferDesc.Format, nullptr);
+    }
+
+    ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
+    request.proxySwapChain = presentedSwapChain;
+    request.presentationQueue = submitQueue;
+    request.targetResource = backBuffer;
+    request.targetState = D3D12_RESOURCE_STATE_PRESENT;
+    request.clearTransparent = false;
+    request.routeName = "below-foreign-chain-fsr";
+    request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
+    request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
+    request.hdr = hdr;
+    const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
+    backBuffer->Release();
+
+    static std::atomic<int> s_renderedLog{0};
+    static std::atomic<int> s_refusedLog{0};
+    if (rendered) {
+        const int logCount = s_renderedLog.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 5 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "[OVERLAY LAYER] CE composites BELOW the foreign Present chain on the runtime-owned FSR "
+                "swapchain (site=deep-body-below-foreign-chain-runtime-owned-fsr "
+                "source=DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR sc=%p queue=%p log=%d) — "
+                "the foreign overlays drew on this queue before CE, so CE's overlay is the topmost layer",
+                (void*)presentedSwapChain, (void*)submitQueue, logCount + 1);
+        }
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
+    } else {
+        const int logCount = s_refusedLog.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Below-foreign-chain FSR deep draw REFUSED by the owner-queue renderer (sc=%p queue=%p "
+                "log=%d) — the FFX present-callback draw remains the overlay transport",
+                (void*)presentedSwapChain, (void*)submitQueue, logCount + 1);
+        }
+    }
+    return rendered;
+}

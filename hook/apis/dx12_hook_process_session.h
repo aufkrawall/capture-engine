@@ -151,6 +151,7 @@ public:
     ProcessFrameFlow DrawCooldownAndRoute();
     ProcessFrameFlow DrawMain();
     ProcessFrameFlow DrawSkipAndCounters();
+    bool TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR();
     ProcessFrameFlow DrawDeviceScope();
     ProcessFrameFlow DrawAllocSetup();
     ProcessFrameFlow DrawListAndAlloc();
