@@ -159,6 +159,11 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
         HookLogImportant("DX12: Released %zu native-FSR proxy queue binding(s) (%s)", releasedBindings.size(),
                          reason ? reason : "unregistered");
     }
+    // The below-foreign-chain deep draw keys its renderer state by the presented FFX swapchain, not by the
+    // registered game-facing proxy above. Retire every remaining suspend-overlay state at this teardown
+    // boundary so no CE command lists/backbuffer references outlive the FFX swapchain teardown (the
+    // documented E_ACCESSDENIED boundary for the game's resize/present).
+    ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown(reason);
 }
 
 static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target, ID3D12Device** queueDeviceOut) {

@@ -677,4 +677,14 @@ inline BelowForeignChainFSRDeepDrawDecision DecideBelowForeignChainFSRDeepDraw(
     return BelowForeignChainFSRDeepDrawDecision::kDrawOnSwapchainQueue;
 }
 
+// The below-foreign-chain deep draw renders into the presented FFX swapchain's exact backbuffer, so its
+// renderer state is keyed by that presented swapchain rather than the FFX context's registered game-facing
+// proxy. That state must be retired before an explicit Streamline enable tears the FFX swapchain down:
+// command lists/backbuffer references kept alive across the teardown are the documented E_ACCESSDENIED
+// boundary for the game's swapchain resize/present. Never retire during ordinary FSR/DLSS steady state.
+inline bool ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(fg_runtime::RuntimeMode runtimeMode,
+                                                                            bool fgRuntimeOwnsSwapchain) {
+    return runtimeMode == fg_runtime::RuntimeMode::kFSRFG && fgRuntimeOwnsSwapchain;
+}
+
 }  // namespace ce::dx12_overlay_policy

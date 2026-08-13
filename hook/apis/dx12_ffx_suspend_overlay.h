@@ -33,6 +33,12 @@ bool Render(const RenderRequest& request);
 // proxy avoids tearing down a new context that legitimately shares the same game queue with an older context.
 void RetireProxy(void* proxySwapChain, const char* reason);
 
+// Retires every live renderer state. Used at native-FSR teardown boundaries (explicit Streamline enable prep
+// and FFX context destruction) so the below-foreign-chain state — keyed by the presented FFX swapchain rather
+// than the registered game-facing proxy — cannot keep command lists/backbuffer references alive across the FFX
+// swapchain teardown (the documented E_ACCESSDENIED boundary for the game's resize/present).
+void RetireAllForNativeFSRTeardown(const char* reason);
+
 // Called during DX12 hook teardown. Incomplete healthy-queue state is intentionally abandoned rather than
 // blocking or releasing objects still referenced by the GPU.
 void Shutdown(const char* reason);

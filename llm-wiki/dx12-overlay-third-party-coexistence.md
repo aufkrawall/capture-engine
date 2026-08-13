@@ -676,7 +676,16 @@ The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the na
 - **Why it is safe where 0.1.5970-0.1.5972 were not**: the draw uses `dx12_ffx_suspend_overlay` — the exact-current-buffer RTV per frame (the normal backend's preserved RTV heap can still reference the pre-FG buffers, the stale-target shape of the 0.1.5972 FG-off device removal), per-slot in-flight refusal without waiting/overwriting, and retained target resources until completion proof. It is the swapchain-owning queue (not the idle game queue of the 0.1.5970 save-load "never landed" case). The FFX callback draw stays as the guaranteed baseline (no yield), so a refusal can only leave today's behavior, never hide the overlay.
 - **Route value**: `DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR` (`below-foreign-chain-runtime-owned-fsr`); the layering diagnostic is `[OVERLAY LAYER] ... site=deep-body-below-foreign-chain-runtime-owned-fsr ...`. The FG-UI-composition `[OVERLAY LAYER]` note no longer claims the callback is the only runtime-safe channel unconditionally.
 - **Explicitly excluded**: no-callback internal composition (the documented ffxQuery wedge / 0x887A002B boundary), explicit FSR-off teardown, stalled callbacks (the existing stall fallback rules own that state), protected startup quiescence, DLSS/Streamline, and any frame where the routed queue is not the swapchain queue.
-- **Tests**: `tests/test_ffx_below_foreign_chain_policy.cpp`. Verify gate passed on 0.1.5999. **Open**: needs the user's Talos FSR-FG + Steam run to confirm topmost layering and no device removal across the FG switch matrix; GTA's historical app-callback ACCESS_DENIED boundary must be re-checked there too.## Open Questions / Stale-Risk
+- **Tests**: `tests/test_ffx_below_foreign_chain_policy.cpp`. Verify gate passed on 0.1.5999. **Open**: needs the user's Talos FSR-FG + Steam run to confirm topmost layering and no device removal across the FG switch matrix; GTA's historical app-callback ACCESS_DENIED boundary must be re-checked there too.
+- **Follow-up (2026-08-13, build 0.1.6000)**: the Talos FSR-FG + Steam validation run crashed on the FSR->DLSS
+  menu switch with the game's own `WindowsD3D12Viewport.cpp:267` `80070005` fatal ensure, because the deep draw's
+  renderer state is keyed by the PRESENTED FFX swapchain while the FFX teardown only retired the registered
+  game-facing proxy states — the deep-draw command lists/backbuffer refs survived the FFX swapchain teardown.
+  `RetireAllForNativeFSRTeardown` now retires every live suspend-overlay state at both the Streamline-enable prep
+  and FFX context-destroy boundaries (`hook/apis/dx12_ffx_suspend_overlay.cpp`,
+  `hook/apis/dx12_hook_fg_state.cpp`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`); in-flight states stay retained
+  until their own fence completes. See the guardrails invariant and `log/recent.md` for the dump evidence.
+## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
 - Module-token detection is heuristic. Re-check it whenever new overlay modules appear in traces or bug reports.
 - Re-check SL routing suppression whenever FSR FG classification or FFX hook timing changes, because the effective runtime mode is now the authoritative guard.

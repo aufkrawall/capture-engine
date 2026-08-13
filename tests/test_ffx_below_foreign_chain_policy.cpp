@@ -6,6 +6,7 @@ namespace {
 
 using ce::dx12_overlay_policy::BelowForeignChainFSRDeepDrawDecision;
 using ce::dx12_overlay_policy::DecideBelowForeignChainFSRDeepDraw;
+using ce::fg_runtime::RuntimeMode;
 
 // The steady-state Talos FSR-FG + Steam shape (session 20260813_061015): CE intercepts below the
 // foreign Present chain, the FFX present callback is the live overlay transport, and the routed
@@ -91,6 +92,22 @@ TEST(BelowForeignChainFSRDeepDrawPolicyTest, IsNativeFSRSpecific) {
     EXPECT_EQ(DecideBelowForeignChainFSRDeepDraw(true, true, true, false, false, true, false, false, false, true,
                                                  true, false, false),
               BelowForeignChainFSRDeepDrawDecision::kUnavailable);
+}
+
+// The deep draw's renderer state is keyed by the presented FFX swapchain, so an explicit Streamline enable
+// while the live FSR runtime owns that swapchain must retire all suspend-overlay states before the FFX
+// teardown begins. Any other runtime/ownership combination is ordinary steady state and must stay untouched.
+TEST(BelowForeignChainFSRDeepDrawPolicyTest, RetiresSuspendOverlayStatesOnlyForLiveFSROwnedStreamlineEnable) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+        RuntimeMode::kFSRFG, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+        RuntimeMode::kFSRFG, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+        RuntimeMode::kDLSSFG, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+        RuntimeMode::kStreamlineNoFG, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+        RuntimeMode::kOff, true));
 }
 
 }  // namespace

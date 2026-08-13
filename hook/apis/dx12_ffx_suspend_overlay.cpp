@@ -455,6 +455,44 @@ void RetireProxy(void* proxySwapChain, const char* reason) {
     PruneRetiredStates();
 }
 
+void RetireAllForNativeFSRTeardown(const char* reason) {
+    if (g_ShuttingDown.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const char* const retireReason = reason && reason[0] ? reason : "native FSR teardown";
+    std::vector<void*> keys;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+        PruneRetiredStates();
+        keys.reserve(g_ProxyStates.size());
+        // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - teardown retires every state independently
+        for (const auto& entry : g_ProxyStates) {
+            if (entry.second) {
+                keys.push_back(entry.first);
+            }
+        }
+    }
+
+    size_t retired = 0;
+    for (void* key : keys) {
+        std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+        const auto it = g_ProxyStates.find(key);
+        if (it == g_ProxyStates.end() || !it->second) {
+            continue;
+        }
+        RetireState(it->second, retireReason);
+        g_ProxyStates.erase(it);
+        ++retired;
+    }
+    if (retired != 0) {
+        HookLogImportant(
+            "DX12: Retired %zu FSR-suspend overlay renderer state(s) at the native-FSR teardown boundary (%s) — "
+            "no command-list/backbuffer references survive the FFX swapchain teardown",
+            retired, retireReason);
+    }
+}
+
 void Shutdown(const char* reason) {
     g_ShuttingDown.store(true, std::memory_order_release);
     std::lock_guard<std::recursive_mutex> lock(g_StateMutex);

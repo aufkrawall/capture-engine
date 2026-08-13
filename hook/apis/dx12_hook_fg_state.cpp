@@ -171,6 +171,15 @@ void DX12_PrepareForStreamlineEnableTransition() {
     DXGIShared::ArmStreamlineStartupTransitionWindow();
     StartTransitionCooldown();
     WaitForOverlayGpuIdle("DX12: Streamline enable prep");
+    // The below-foreign-chain deep draw keys its renderer state by the presented FFX swapchain, not by the
+    // FFX context's registered game-facing proxy. Retire every suspend-overlay state here, before the game
+    // tears the FFX swapchain down: surviving command lists/backbuffer references into that teardown are the
+    // documented E_ACCESSDENIED boundary for the game's swapchain resize/present.
+    if (ce::dx12_overlay_policy::ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable(
+            runtimeMode, dx12_hook_g_FGRuntimeOwnsSwapchain)) {
+        ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown(
+            "Streamline FG enable while live FSR runtime owns the swapchain");
+    }
     InvalidateAllOverlayCachedFrames();
     HookLogImportant(
         "DX12: Preparing for Streamline FG enable while live FSR runtime owns the swapchain "

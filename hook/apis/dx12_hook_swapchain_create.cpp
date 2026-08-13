@@ -488,6 +488,19 @@ if (pDesc && applyDescriptorOverrides) {
 // Call original with (possibly) modified descriptor
 HRESULT hr = dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDescToUse, ppSwapChain);
 
+if (FAILED(hr)) {
+    static std::atomic<int> s_createFailureLogCount{0};
+    const int failureNum = s_createFailureLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (failureNum < 20 || (failureNum % 100) == 0) {
+        HookLogImportant(
+            "DetourCreateSwapChainGlobal: original CreateSwapChain failed hr=0x%08X "
+            "(factory=%p device=%p caller=%s failure #%d) — a failed FG-runtime swapchain create can be "
+            "fatal to the game",
+            static_cast<unsigned>(hr), pThis, pDevice, callerModulePath[0] ? callerModulePath : "stack",
+            failureNum + 1);
+    }
+}
+
 if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSwapChain, callerModulePath);
