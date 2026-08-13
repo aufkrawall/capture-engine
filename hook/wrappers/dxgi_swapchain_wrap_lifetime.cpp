@@ -226,6 +226,37 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
         WrapperLog("SwapChain: Releasing stored device (wrapper=%p device=%p)", this, m_pDevice);
         m_pDevice->Release();
     }
+
+    // Diagnostic: report how many references still pin the real chain after this destructor released
+    // everything CE owns. A foreign overlay tracking the swapchain (RTSS/Steam per-swapchain Present
+    // bookkeeping) keeps refs CE cannot release; DXGI's per-HWND flip-model rule then fails the
+    // replacement create with E_ACCESSDENIED (session 20260813_211734: 3 foreign refs remained after the
+    // game and CE released everything). The guarded probe is net-zero and diagnostic-only.
+    if (pRealToFree && !m_StreamlineRuntimeNonRetaining) {
+        static std::atomic<int> s_postDestructionProbeLogCount{0};
+        const int probeLogCount = s_postDestructionProbeLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (probeLogCount < 12 || (probeLogCount % 256) == 0) {
+            ULONG liveRefs = 0;
+            MEMORY_BASIC_INFORMATION probeInfo = {};
+            const bool objectCommitted =
+                VirtualQuery(reinterpret_cast<const void*>(pRealToFree), &probeInfo, sizeof(probeInfo)) != 0 &&
+                probeInfo.State == MEM_COMMIT &&
+                (probeInfo.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) !=
+                    0;
+            if (objectCommitted) {
+                ScopedAvGuard guard;
+                liveRefs = pRealToFree->AddRef();
+                if (liveRefs > 0) {
+                    pRealToFree->Release();
+                    --liveRefs;  // Remove the probe's own temporary reference from the reported count.
+                }
+            }
+            WrapperLog(
+                "SwapChain: post-destruction real refcount=%u committed=%d (CE tracked=%d) wrapper=%p real=%p — "
+                "nonzero means foreign refs still pin this chain",
+                liveRefs, objectCommitted ? 1 : 0, m_RealSwapchainRefs.load(), this, pRealToFree);
+        }
+    }
 }
 
 void CWrapDXGISwapChain::CleanupOverlayResources() {

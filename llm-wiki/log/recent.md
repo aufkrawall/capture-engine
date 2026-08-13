@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-13 - ROOT-CAUSE REFINEMENT + DUMP COVERAGE: FSR re-entry after FSR->OFF still failed E_ACCESSDENIED; fatal switch failures now always produce dumps
+
+- Session `20260813_211734` (build 0.1.6023, dx12_fg_switch_test via Steam overlay + RTSS): the first OFF->FSR
+  switch now succeeds (the live-entry-chain retry fixed that seam), but after FSR->OFF the SECOND OFF->FSR
+  switch failed identically and the app exited cleanly — still no .dmp.
+- New pin diagnostics at the failure: `E_ACCESSDENIED pin diagnostics ... chain=00000194A4DEFF00 committed=1
+  refs=3` — the old OFF-phase native swapchain still had 3 live references after the game AND CE released
+  everything (wrapper destructor "real refs=8" = CE base + 4 promoted + 3 foreign). The route diagnostics show
+  the CreateSwapChainForHwnd entry holding ORIGINAL bytes with RTSS's vtable-slot handler as the immediate
+  caller, so the remaining refs are foreign (RTSS/Steam per-swapchain bookkeeping), not CE's.
+- Why the .dmp was missing: the failure path is a CLEAN exit (exit code 0, no exception), and
+  `ShouldCapturePreTerminationDump` deliberately skips exit code 0 — the pre-termination dump hooks never fire.
+- Fixes: (1) every exhausted CreateSwapChainForHwnd E_ACCESSDENIED recovery arm (deep + inline) now writes a
+  session-local diagnostic minidump via `WriteSupplementalCrashDump`
+  (`CaptureCreateSwapchainAccessDeniedExhaustedDump`, once per process, hint
+  `swapchain_access_denied_exhausted.dmp`, synthetic exception code 0xE000EACC); (2) the test app writes its own
+  fatal minidump (`WriteFatalSwitchDump` in testapp_common.h) and exits with 0xE000EACC instead of 0 on
+  "Fatal switch failure"; (3) added bracketed pin probes (pre-cleanup / post-cleanup / post-entry-retry) plus a
+  post-destruction wrapper refcount probe so the next failing run attributes the residual refs exactly.
+- Tests: `AccessDeniedExhaustionWritesDiagnosticDumpAndBracketedPinProbes`
+  (`tests/test_dxgi_shared_access_denied_dump.cpp`). `--verify` gate passed on 0.1.6027. OPEN: user re-run — if
+  the second OFF->FSR still fails, the new dump plus probes will name the remaining pin holder.
+
 ### 2026-08-13 - FIXED: OFF->FSR FG switch in dx12_fg_switch_test via Steam overlay + RTSS failed E_ACCESSDENIED and exited (no dump)
 
 - Session `20260813_200741` (build 0.1.6018, dx12_fg_switch_test started via Steam with Steam overlay and RTSS
@@ -201,27 +224,3 @@
   and the outer-off guard-chain source pin updated. `--verify` gate passed on 0.1.6005 (full native suite, Python
   self-tests, lint/tidy, ASan/UBSan). OPEN: needs the user's re-run of the FSR FG -> all-off switch; the full
   four-direction FG matrix still gates F2/F4.
-
-### 2026-08-13 - FIXED: orphaned below-foreign-chain FSR deep-draw state froze Talos on the FSR->DLSS menu switch
-
-- Session `20260813_142910` (build 0.1.5999, Talos + Steam overlay + official FFX FSR FG): the game raised a
-  fatal D3D12RHI ensure right after switching FSR FG -> DLSS FG in the menu and then froze for 50+ s
-  (FreezeWatchdog `Render thread frozen`, game dumps plus the assert dumps all decode to
-  `WindowsD3D12Viewport.cpp:267` `.hr failed ... with error 80070005`, i.e. E_ACCESSDENIED).
-- Root cause: the 0.1.5999 below-foreign-chain deep draw stores its `dx12_ffx_suspend_overlay` renderer state
-  under the PRESENTED FFX swapchain (`sc=00000249E8878BC0`), but the FFX teardown path only retired states keyed
-  by the registered game-facing proxy (`proxy=0000024A2F68FAB0` from the queue bindings). The deep-draw state —
-  recorded command lists plus per-slot backbuffer refs — therefore survived the FFX swapchain teardown, the
-  documented outstanding-reference boundary that makes the game's swapchain resize/present fail E_ACCESSDENIED.
-  The freeze dump confirms the orphan: `dx12_hook_g_LastSwapChain` still equals the dead FFX swapchain while the
-  queue bindings were already released.
-- Fix: `ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown` retires every live suspend-overlay state at
-  both native-FSR teardown boundaries — `DX12_PrepareForStreamlineEnableTransition` (gated by the new
-  `ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable` policy) and
-  `DX12_UnregisterNativeFSRSwapchainPresentationQueue` (FFX context destruction). In-flight states are retained
-  until their own GPU fence completes; there is no wait, reinit on the Present path, title branch, or FG change.
-  Also added rate-limited failure logging to `DetourCreateSwapChainGlobal` for FG-runtime swapchain creates.
-- Tests: policy halves in `tests/test_ffx_below_foreign_chain_policy.cpp` and the source-invariant
-  `DXGISharedSourceTest.NativeFSRTeardownRetiresEverySuspendOverlayState` in `tests/test_dxgi_shared_part8.cpp`.
-  Focused tests + full native suite pass on 0.1.6000. OPEN: needs the user's Talos FSR<->DLSS menu-switch
-  re-validation with Steam overlay; the full four-direction matrix still gates F2/F4.

@@ -3,6 +3,30 @@
 Entries are newest-first. Rotated out of `recent.md` on 2026-08-13 to keep it near
 the 230-line rolling-memory ceiling.
 
+### 2026-08-13 - FIXED: orphaned below-foreign-chain FSR deep-draw state froze Talos on the FSR->DLSS menu switch
+
+- Session `20260813_142910` (build 0.1.5999, Talos + Steam overlay + official FFX FSR FG): the game raised a
+  fatal D3D12RHI ensure right after switching FSR FG -> DLSS FG in the menu and then froze for 50+ s
+  (FreezeWatchdog `Render thread frozen`, game dumps plus the assert dumps all decode to
+  `WindowsD3D12Viewport.cpp:267` `.hr failed ... with error 80070005`, i.e. E_ACCESSDENIED).
+- Root cause: the 0.1.5999 below-foreign-chain deep draw stores its `dx12_ffx_suspend_overlay` renderer state
+  under the PRESENTED FFX swapchain (`sc=00000249E8878BC0`), but the FFX teardown path only retired states keyed
+  by the registered game-facing proxy (`proxy=0000024A2F68FAB0` from the queue bindings). The deep-draw state —
+  recorded command lists plus per-slot backbuffer refs — therefore survived the FFX swapchain teardown, the
+  documented outstanding-reference boundary that makes the game's swapchain resize/present fail E_ACCESSDENIED.
+  The freeze dump confirms the orphan: `dx12_hook_g_LastSwapChain` still equals the dead FFX swapchain while the
+  queue bindings were already released.
+- Fix: `ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown` retires every live suspend-overlay state at
+  both native-FSR teardown boundaries — `DX12_PrepareForStreamlineEnableTransition` (gated by the new
+  `ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable` policy) and
+  `DX12_UnregisterNativeFSRSwapchainPresentationQueue` (FFX context destruction). In-flight states are retained
+  until their own GPU fence completes; there is no wait, reinit on the Present path, title branch, or FG change.
+  Also added rate-limited failure logging to `DetourCreateSwapChainGlobal` for FG-runtime swapchain creates.
+- Tests: policy halves in `tests/test_ffx_below_foreign_chain_policy.cpp` and the source-invariant
+  `DXGISharedSourceTest.NativeFSRTeardownRetiresEverySuspendOverlayState` in `tests/test_dxgi_shared_part8.cpp`.
+  Focused tests + full native suite pass on 0.1.6000. OPEN: needs the user's Talos FSR<->DLSS menu-switch
+  re-validation with Steam overlay; the full four-direction matrix still gates F2/F4.
+
 ### 2026-08-13 - FIXED (targeted): CE's overlay composites on top of Steam/RTSS under native FSR FG (build 0.1.5999)
 
 - Session `20260813_061015` (build 0.1.5995, Talos + Steam overlay + official FFX FSR FG) is the repro: the FFX

@@ -344,5 +344,5 @@ int main(int argc, char* argv[]) {
                  static_cast<unsigned long long>(dx12_fg_switch_test_g_FramePacingSpikeCount));
     testapp::Log("Exiting (total frames rendered: %llu)\n", static_cast<unsigned long long>(dx12_fg_switch_test_g_FrameIdCounter));
     testapp::CloseLogFile();
-    return 0;
+    return dx12_fg_switch_test_g_ProcessExitCode;
 }

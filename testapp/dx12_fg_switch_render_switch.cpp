@@ -307,6 +307,13 @@ bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         if (!g_SwapChain) {
             testapp::Log("[FG-DIAG] Fatal switch failure: no swapchain after %s request; stopping main loop\n",
                          ModeName(target));
+            const std::wstring dumpPath =
+                testapp::WriteFatalSwitchDump(L"dx12_fg_switch_test_fatal_switch", 0xE000EACC);
+            testapp::Log("[FG-DIAG] Fatal switch failure minidump: %S\n",
+                         dumpPath.empty() ? L"<failed>" : dumpPath.c_str());
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional: the DWORD exit code is
+            // returned through int main(); the process exits with 0xE000EACC either way.
+            dx12_fg_switch_test_g_ProcessExitCode = static_cast<int>(0xE000EACC);
             dx12_fg_switch_test_g_Running = false;
         }
     }

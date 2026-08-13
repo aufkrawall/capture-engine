@@ -681,6 +681,10 @@ inline double dx12_fg_switch_test_g_MaxFrameDeltaMs = 0.0;
 inline uint64_t dx12_fg_switch_test_g_FramePacingSpikeCount = 0;
 
 inline bool dx12_fg_switch_test_g_Running = true;
+// Nonzero when the main loop stopped because of an unrecoverable FG switch failure. Returned as the
+// process exit code so the failure is observable (and dumpable through CE's pre-termination hooks)
+// instead of masquerading as a clean exit.
+inline int dx12_fg_switch_test_g_ProcessExitCode = 0;
 
 inline bool IsModeSuspended(FGMode mode) {
     if (mode == FGMode::FSR) {

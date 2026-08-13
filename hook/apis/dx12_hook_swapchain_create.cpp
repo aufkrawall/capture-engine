@@ -278,6 +278,7 @@ if (hr == E_ACCESSDENIED && hWnd) {
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED persists after CE unpin + full cleanup — "
                 "returning the error to the caller (HWND=%p)",
                 hWnd);
+            CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd, "CreateSwapChainForHwnd INLINE minimal recovery");
         }
     } else {
         HookLogImportant(
@@ -324,6 +325,7 @@ if (hr == E_ACCESSDENIED && hWnd) {
                 "CreateSwapChainForHwnd INLINE: All retries exhausted — returning E_ACCESSDENIED to caller "
                 "(HWND=%p)",
                 hWnd);
+            CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd, "CreateSwapChainForHwnd INLINE full recovery");
         }
     }
 }

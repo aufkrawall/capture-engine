@@ -15,7 +15,7 @@ thread_local bool s_forwardingAccessDeniedCreateThroughEntryChain = false;
 // answering E_ACCESSDENIED. The tracked pointers are raw and may be stale; the AV guard keeps the probe
 // from faulting on a freed object. The AddRef/Release pair is net-zero for a live object and reveals how
 // many references (foreign or CE) still pin the old chain.
-void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd) {
+void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
     static std::atomic<int> s_pinDiagnosticsLogCount{0};
     const int logCount = s_pinDiagnosticsLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount >= 8 && (logCount % 64) != 0) {
@@ -36,8 +36,8 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd) {
     }
 
     if (chains.empty()) {
-        HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d hwnd=%p no tracked chains", logCount + 1,
-                         hWnd);
+        HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p no tracked chains",
+                         logCount + 1, stage ? stage : "pre-cleanup", hWnd);
         return;
     }
     for (IDXGISwapChain* chain : chains) {
@@ -57,13 +57,48 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd) {
             }
         }
         HookLogImportant(
-            "DeepHook: E_ACCESSDENIED pin diagnostics #%d hwnd=%p chain=%p committed=%d refs=%u retained=%d",
-            logCount + 1, hWnd, (void*)chain, objectCommitted ? 1 : 0, refs,
+            "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p committed=%d refs=%u retained=%d",
+            logCount + 1, stage ? stage : "pre-cleanup", hWnd, (void*)chain, objectCommitted ? 1 : 0, refs,
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
     }
 }
 
 }  // namespace
+
+
+void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context) {
+    static std::atomic<bool> s_dumpAttempted{false};
+    bool expected = false;
+    if (!s_dumpAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                                 std::memory_order_acquire)) {
+        return;
+    }
+
+    CONTEXT capturedContext = {};
+    RtlCaptureContext(&capturedContext);
+    EXCEPTION_RECORD synthesizedRecord = {};
+    synthesizedRecord.ExceptionCode = 0xE000EACC;  // "EACC" - the E_ACCESSDENIED exhaustion sentinel
+    synthesizedRecord.ExceptionAddress = CE_RETURN_ADDRESS();
+    EXCEPTION_POINTERS pointers = {};
+    pointers.ExceptionRecord = &synthesizedRecord;
+    pointers.ContextRecord = &capturedContext;
+    MINIDUMP_EXCEPTION_INFORMATION exceptionInfo = {};
+    exceptionInfo.ThreadId = GetCurrentThreadId();
+    exceptionInfo.ExceptionPointers = &pointers;
+    exceptionInfo.ClientPointers = FALSE;
+
+    HookLogImportant(
+        "CreateSwapChainForHwnd: E_ACCESSDENIED recovery exhausted (hwnd=%p context=%s) — writing a diagnostic "
+        "minidump so the fatal FG-switch failure keeps a dump even though the process exits cleanly",
+        hWnd, context && context[0] ? context : "unknown");
+    const bool wroteDump =
+        WriteSupplementalCrashDump("swapchain_access_denied_exhausted.dmp", GetCurrentProcess(),
+                                   GetCurrentProcessId(), ce::crash_dump_policy::kQuickAssertDumpType, &exceptionInfo);
+    HookLogImportant(
+        "CreateSwapChainForHwnd: E_ACCESSDENIED exhaustion diagnostic dump %s (dir=%s context=%s)",
+        wroteDump ? "captured" : "failed", GetCrashDumpDirectory().c_str(),
+        context && context[0] ? context : "unknown");
+}
 
 
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
@@ -514,7 +549,7 @@ if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay && !protected
 // authoritative FFX takeover paths, return the error untouched so the
 // runtime can manage its own swapchain state machine.
 if (hr == E_ACCESSDENIED && hWnd) {
-    LogAccessDeniedSwapchainPinDiagnostics(hWnd);
+    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "pre-cleanup");
 
     const bool streamlineModuleLoaded = IsStreamlineLoaded();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -603,9 +638,13 @@ if (hr == E_ACCESSDENIED && hWnd) {
             if (ppSC && *ppSC) {
                 ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
             }
+            LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-cleanup");
             HRESULT entryChainRetryHr = E_FAIL;
             if (retryThroughLiveEntryChain(entryChainRetryHr) && SUCCEEDED(entryChainRetryHr)) {
                 hr = entryChainRetryHr;
+            }
+            if (hr == E_ACCESSDENIED) {
+                LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-entry-retry");
             }
             for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
                 Sleep(20);
@@ -620,6 +659,7 @@ if (hr == E_ACCESSDENIED && hWnd) {
                 "DeepHook: E_ACCESSDENIED persists after CE unpin + full cleanup — returning the error to the "
                 "caller (HWND=%p)",
                 hWnd);
+            CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd, "DeepHook minimal-recovery escalation");
         }
     } else {
         HookLogImportant(
@@ -657,9 +697,13 @@ if (hr == E_ACCESSDENIED && hWnd) {
             ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
         }
 
+        LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-cleanup");
         HRESULT entryChainRetryHr = E_FAIL;
         if (retryThroughLiveEntryChain(entryChainRetryHr) && SUCCEEDED(entryChainRetryHr)) {
             hr = entryChainRetryHr;
+        }
+        if (hr == E_ACCESSDENIED) {
+            LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-entry-retry");
         }
 
         // Retry: 10 attempts × 20ms = 200ms max.  FSR FG activation may
@@ -677,6 +721,7 @@ if (hr == E_ACCESSDENIED && hWnd) {
         if (FAILED(hr)) {
             HookLogImportant("DeepHook: All retries exhausted — returning E_ACCESSDENIED to caller (HWND=%p)",
                              hWnd);
+            CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd, "DeepHook full-cleanup recovery");
         }
     }
 }

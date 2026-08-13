@@ -62,6 +62,8 @@ namespace {
 #include "../common/streamline_compat.h"
 #include "../common/streamline_runtime_policy.h"
 #include "../../common/secure_dll_loading.h"
+#include "../../common/crash_handler.h"
+#include "../../common/crash_dump_policy.h"
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"
@@ -611,6 +613,11 @@ void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const char* callerContext);
 bool IsSteamOverlayModulePath(const char* modulePath);
 bool IsD3D12ModuleAddress(void* address);
+// Writes one session-local diagnostic minidump when a CreateSwapChainForHwnd E_ACCESSDENIED recovery
+// exhausts every retry. That state is documented-fatal to the game (GTA null-derefed the missing
+// swapchain, session 20260702_092933), yet it exits through a CLEAN process path — no exception, no
+// dump — so the normal crash-dump pipeline never fires. Rate-limited to one dump per process.
+void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context);
 void ClearFocusLossPendingOverlayFence(const char* reason, UINT64 fenceValue, UINT64 completedValue);
 bool ShouldHoldOverlayDrawForPendingFocusLossFence();
 const char* DescribeFocusLossImmediateFenceSkip(bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize, bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,  bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue, UINT64 fenceValue);

@@ -2,6 +2,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <avrt.h>
+#include <dbghelp.h>
 #include <windows.h>
 
 #include <cstdarg>
@@ -12,6 +13,76 @@
 #include <string>
 
 namespace testapp {
+
+// Fatal-FG-failure diagnostics: write a local minidump for failure paths that exit CLEANLY (no exception),
+// so the switch-failure state remains dumpable. dbghelp is resolved on demand and every failure is
+// non-fatal. Returns the dump path, or an empty string when the dump could not be written.
+inline std::wstring WriteFatalSwitchDump(const wchar_t* nameHint, unsigned long exceptionCode) {
+    static HMODULE dbghelpModule = LoadLibraryW(L"dbghelp.dll");
+    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+                                              PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION,
+                                              PMINIDUMP_CALLBACK_INFORMATION);
+    static MiniDumpWriteDumpFn miniDumpWriteDump =
+        dbghelpModule
+            ? reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelpModule, "MiniDumpWriteDump"))
+            : nullptr;
+    if (!miniDumpWriteDump) {
+        return std::wstring();
+    }
+
+    wchar_t modulePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    std::wstring dumpDir(modulePath);
+    const size_t lastSlash = dumpDir.find_last_of(L'\\');
+    if (lastSlash == std::wstring::npos) {
+        dumpDir.clear();
+    } else {
+        dumpDir.resize(lastSlash + 1);
+    }
+
+    SYSTEMTIME localTime = {};
+    GetLocalTime(&localTime);
+    wchar_t timeStamp[32] = {};
+    swprintf_s(timeStamp, sizeof(timeStamp) / sizeof(timeStamp[0]),
+               L"%04u%02u%02u_%02u%02u%02u", localTime.wYear, localTime.wMonth, localTime.wDay, localTime.wHour,
+               localTime.wMinute, localTime.wSecond);
+    std::wstring dumpPath = dumpDir + nameHint + L"_" + timeStamp + L".dmp";
+
+    HANDLE dumpFile =
+        CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (dumpFile == INVALID_HANDLE_VALUE) {
+        return std::wstring();
+    }
+
+    CONTEXT capturedContext = {};
+    RtlCaptureContext(&capturedContext);
+    EXCEPTION_RECORD synthesizedRecord = {};
+    synthesizedRecord.ExceptionCode = exceptionCode;
+#if defined(_MSC_VER)
+    synthesizedRecord.ExceptionAddress = _ReturnAddress();
+#else
+    synthesizedRecord.ExceptionAddress = __builtin_extract_return_addr(__builtin_return_address(0));
+#endif
+    EXCEPTION_POINTERS exceptionPointers = {};
+    exceptionPointers.ExceptionRecord = &synthesizedRecord;
+    exceptionPointers.ContextRecord = &capturedContext;
+    MINIDUMP_EXCEPTION_INFORMATION exceptionInfo = {};
+    exceptionInfo.ThreadId = GetCurrentThreadId();
+    exceptionInfo.ExceptionPointers = &exceptionPointers;
+    exceptionInfo.ClientPointers = FALSE;
+
+    const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
+        MiniDumpWithIndirectlyReferencedMemory | MiniDumpIgnoreInaccessibleMemory);
+    const BOOL wroteDump = miniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dumpFile, dumpType,
+                                             &exceptionInfo, nullptr, nullptr);
+    CloseHandle(dumpFile);
+    if (!wroteDump) {
+        DeleteFileW(dumpPath.c_str());
+        return std::wstring();
+    }
+    return dumpPath;
+}
 
 inline int ParseIntOrZero(const char* text) {
     if (!text || !*text) {
