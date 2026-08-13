@@ -131,6 +131,48 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             HookLogImportant(
                 "DX12: Streamline FG ON — warm PostSL resume from make-before-break keep-alive "
                 "(confirmed rendering preserved, no countdown/warm-up re-arm)");
+
+            // Session 20260813_192326: the explicit-OFF post-FSR teardown
+            // released g_SwapchainQueue ("releasing stale swapchain queue")
+            // although the make-before-break keep-alive had proved that exact
+            // queue to be the LIVE DLSS-G proxy of the just-ended DLSS epoch
+            // (the keep-alive kept submitting on it through the whole
+            // suspend). The warm resume must restore that preserved proxy so
+            // the resumed PostSL submit takes the proven selected-scQueue
+            // original-ECL path; with scQueue=null and FSR history the submit
+            // is refused as a wrapper-only bootstrap and the overlay
+            // disappears forever. The OFF-side release still runs (it keeps
+            // the non-FG recovery classification correct while FG is off);
+            // this is the symmetric ON-side repair of the
+            // warm-resume/stale-FSR-clear contradiction.
+            {
+                std::lock_guard<std::recursive_mutex> qLock(g_CommandQueueMutex);
+                if (ce::dx12_overlay_policy::ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+                        dx12_hook_g_HadFSRFGPhase, true, dx12_hook_g_SwapchainQueue != nullptr,
+                        dx12_hook_g_PostSLLastWorkingQueue != nullptr,
+                        dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+                            dx12_hook_g_PostSLLastWorkingQueue != dx12_hook_g_OriginalGameQueue,
+                        dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire) != nullptr,
+                        dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire))) {
+                    dx12_hook_g_SwapchainQueue = dx12_hook_g_PostSLLastWorkingQueue;
+                    dx12_hook_g_SwapchainQueue->AddRef();
+                    dx12_hook_g_SwapchainQueueCaptureTime = GetTickCount64();
+                    dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(
+                        dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire),
+                        std::memory_order_release);
+                    if (!dx12_hook_g_FGRuntimeOwnsSwapchain) {
+                        dx12_hook_g_FGRuntimeOwnsSwapchain = true;
+                        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
+                        dx12_hook_g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
+                    }
+                    HookLogImportant(
+                        "DX12: Streamline FG ON — warm resume restored preserved confirmed-PostSL proxy queue %p "
+                        "(swapchain=%p origGame=%p) so the resumed submit keeps the proven selected-scQueue path",
+                        dx12_hook_g_SwapchainQueue,
+                        dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_relaxed),
+                        dx12_hook_g_OriginalGameQueue);
+                }
+            }
         } else if (callbackAlreadyInstalled) {
             dx12_hook_g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
             dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);

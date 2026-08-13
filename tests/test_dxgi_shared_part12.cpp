@@ -573,4 +573,53 @@ TEST(DXGISharedSourceTest, LateHandoffFallbackConsumesTopLevelBootstrap) {
     EXPECT_LT(consume, reacquire);
 }
 
+// ---------------------------------------------------------------------------
+// Warm-resume proxy restoration (session 20260813_192326: overlay disappeared
+// FOREVER after the second DLSS-FG re-enable). The explicit-OFF post-FSR
+// teardown releases the live DLSS-G proxy as a "stale FSR queue"; the warm
+// resume must restore that preserved queue before the ON-side stale-FSR-clear
+// logic runs, or PostSL refuses the wrapper-only bootstrap and drops every
+// frame.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRClear) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t warmResume =
+        text.find("DX12: Streamline FG ON — warm PostSL resume from make-before-break keep-alive");
+    ASSERT_NE(warmResume, std::string::npos);
+    const size_t restorePolicy =
+        text.find("ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(", warmResume);
+    ASSERT_NE(restorePolicy, std::string::npos);
+
+    // The restore must republish the preserved proxy queue with its reference,
+    // capture identity, and runtime ownership before any resumed submit runs.
+    const size_t restoreRegionEnd = text.find("HookLogImportant(", restorePolicy);
+    ASSERT_NE(restoreRegionEnd, std::string::npos);
+    const size_t queueStore =
+        text.find("dx12_hook_g_SwapchainQueue = dx12_hook_g_PostSLLastWorkingQueue;", restorePolicy);
+    const size_t queueAddRef = text.find("dx12_hook_g_SwapchainQueue->AddRef();", restorePolicy);
+    const size_t captureStore = text.find("dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(", restorePolicy);
+    const size_t ownershipStore = text.find("dx12_hook_g_FGRuntimeOwnsSwapchain = true;", restorePolicy);
+    ASSERT_NE(queueStore, std::string::npos);
+    ASSERT_NE(queueAddRef, std::string::npos);
+    ASSERT_NE(captureStore, std::string::npos);
+    ASSERT_NE(ownershipStore, std::string::npos);
+    EXPECT_LT(queueStore, restoreRegionEnd);
+    EXPECT_LT(queueAddRef, restoreRegionEnd);
+    EXPECT_LT(captureStore, restoreRegionEnd);
+    EXPECT_LT(ownershipStore, restoreRegionEnd);
+
+    // The warm-resume restoration must happen before the hadFSR ON-side
+    // stale-FSR-queue clear logic so the restored queue is what that logic
+    // evaluates (and preserves via the warm-resume flag).
+    const size_t clearCall = text.find("ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(", restorePolicy);
+    ASSERT_NE(clearCall, std::string::npos);
+    EXPECT_LT(restorePolicy, clearCall);
+}
+
 } // namespace

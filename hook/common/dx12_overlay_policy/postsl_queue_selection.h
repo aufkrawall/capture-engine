@@ -43,6 +43,29 @@ inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadF
            !streamlineStartupHandoffPending && !warmPostSLResumeFromKeepAlive;
 }
 
+inline bool ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+    bool hadFSRFGPhase, bool warmPostSLResumeFromKeepAlive, bool hasSwapchainQueue, bool hasPostSLLastWorkingQueue,
+    bool postSLLastWorkingQueueDiffersFromOriginalGameQueue, bool hasLastSuccessfulPostSLSwapchain,
+    bool deviceRemoved) {
+    // Session 20260813_192326: the explicit-OFF post-FSR teardown releases
+    // g_SwapchainQueue ("releasing stale swapchain queue") even when the
+    // make-before-break keep-alive has proven that exact queue to be the LIVE
+    // DLSS-G proxy of the just-ended DLSS epoch (the keep-alive keeps
+    // submitting on it through the whole suspend). The warm resume therefore
+    // finds scQueue=null; with FSR history PostSL refuses the wrapper-only
+    // bootstrap ("refusing SL wrapper bootstrap without direct path") and the
+    // overlay disappears forever after the resume. The preserved PostSL
+    // last-working queue is the strongest evidence for that exact live proxy
+    // topology, so a warm resume with a missing swapchain queue must restore
+    // it. Cold FSR->DLSS transitions never carry the warm-resume latch and
+    // keep the documented DEVICE_REMOVED-protecting release semantics
+    // unchanged; a removed device or a consumed swapchain proof must not
+    // revive a historical queue.
+    return hadFSRFGPhase && warmPostSLResumeFromKeepAlive && !hasSwapchainQueue && hasPostSLLastWorkingQueue &&
+           postSLLastWorkingQueueDiffersFromOriginalGameQueue && hasLastSuccessfulPostSLSwapchain &&
+           !deviceRemoved;
+}
+
 inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue, bool queueMatchesDedicatedQueue,
                                                     bool queueMatchesSwapchainQueue,
                                                     bool selectedQueueOrigECLMatchesRealECL) {

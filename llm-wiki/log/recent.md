@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED: DLSS-FG re-enable after a mixed FSR/DLSS switch session hid the overlay forever (warm-resume proxy restoration)
+
+- Session `20260813_192326` (build 0.1.6016, Talos1): after FSR FG -> DLSS FG -> menu OFF -> DLSS FG again, the
+  inject overlay disappeared during 3D rendering and never came back. Log signature: the second DLSS epoch confirmed
+  ~15k PostSL submits on the live DLSS-G proxy queue `00000237F829ABE0`; at the menu OFF edge the post-FSR teardown
+  logged `Streamline FG OFF after FSR history — releasing stale swapchain queue …` and nulled `g_SwapchainQueue`
+  although the make-before-break keep-alive kept rendering through the whole suspend on that exact queue. On re-ON
+  the warm resume preserved confirmed rendering but had no queue left: `SelectPostSLBootstrapSubmitPath` returned
+  `kReject` and every resumed frame logged `refusing SL wrapper bootstrap without direct path` (×1977) until exit.
+- Root cause: `g_HadFSRFGPhase` is a session-lifetime latch, so the OFF-side "stale FSR queue" release ran for a
+  queue that was actually the live DLSS-G proxy of the just-ended epoch. The existing ON-side warm-resume guard only
+  prevents a fresh clear; it cannot resurrect a queue the OFF side already released.
+- Fix: `ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume` restores `g_SwapchainQueue` from
+  the preserved PostSL last-working queue (AddRef + capture time + exact last-successful swapchain identity +
+  runtime ownership) at the top of the warm-resume branch in `dx12_hook_streamline_fg_transition.cpp`, before the
+  ON-side stale-FSR-clear evaluation. The OFF-side release and non-FG recovery classification are unchanged, so the
+  suspend interval keeps its proven keep-alive behavior; the resumed submit takes the proven selected-scQueue
+  original-ECL path again.
+- Tests: `WarmResumeRestoresPreservedConfirmedPostSLProxyQueue` (`tests/test_dxgi_shared_part7.cpp`) +
+  `WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRClear` (`tests/test_dxgi_shared_part12.cpp`). `--verify` gate
+  passed on 0.1.6018 (full native suite, Python self-tests, lint/tidy, ASan/UBSan). OPEN: user re-run of the exact
+  FSR -> DLSS -> menu OFF -> DLSS sequence and the full four-direction switching matrix.
+
 ### 2026-08-13 - BUILD SPEED: packaging overlaps lint, sanitizer/vulkan object isolation, faster gate stages
 
 - Retrospective over the 2026-08-13 gates: warm `--verify` ~175-240 s, force-rebuild ~627 s; two runs failed

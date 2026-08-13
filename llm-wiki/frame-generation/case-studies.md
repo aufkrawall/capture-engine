@@ -1,5 +1,16 @@
 # Frame Generation Switching — Case Studies
 
+- Talos `installed/captureengine/logs/20260813_192326` (build 0.1.6016) closed the mixed-history warm-resume seam: FSR FG
+  -> DLSS FG (epoch confirms ~15k submits on the live DLSS-G proxy queue `00000237F829ABE0`) -> menu OFF -> DLSS FG
+  again hid the overlay FOREVER. At the menu OFF edge the post-FSR teardown (`Streamline FG OFF after FSR history —
+  releasing stale swapchain queue …`) nulled `g_SwapchainQueue` although the make-before-break keep-alive kept
+  submitting through the suspend on that exact queue. On re-ON the warm resume preserved confirmed rendering but had
+  no queue left: `SelectPostSLBootstrapSubmitPath` returned `kReject` and every resumed frame logged `refusing SL
+  wrapper bootstrap without direct path` (×1977) until game exit. The fix restores the preserved proxy queue at the
+  top of the warm-resume branch (`ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume`), before
+  the ON-side stale-FSR-clear evaluation, so the resumed submit returns to the proven selected-scQueue original-ECL
+  path. The OFF-side release and non-FG recovery classification stay unchanged. See guardrails.md (warm-resume proxy
+  restoration invariant) and recent.md for units/validation status.
 - Talos rapid-intro-skip sessions `installed/captureengine/logs/20260809_030710`, `20260809_035333`, and
   `20260809_042528` identify a timing-sensitive CE-owned hang at deferred D3D12 queue-method discovery. All stop after
   exactly three PostSL callbacks following real-ECL publication. The third session uses the passive-only resolver, so

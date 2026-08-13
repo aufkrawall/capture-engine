@@ -494,6 +494,37 @@ TEST(DXGISharedTest, StaleFSRQueueClearSkippedForWarmPostSLResume) {
         /*streamlineStartupHandoffPending=*/false, /*warmPostSLResumeFromKeepAlive=*/true));
 }
 
+TEST(DXGISharedTest, WarmResumeRestoresPreservedConfirmedPostSLProxyQueue) {
+    using ce::dx12_overlay_policy::ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume;
+
+    // Session 20260813_192326: the explicit-OFF post-FSR teardown released the
+    // live DLSS-G proxy as a "stale FSR queue". A warm resume restores it from
+    // the preserved PostSL last-working queue so the resumed submit keeps the
+    // proven selected-scQueue path instead of being refused forever.
+    EXPECT_TRUE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        /*hadFSRFGPhase=*/true, /*warmPostSLResumeFromKeepAlive=*/true, /*hasSwapchainQueue=*/false,
+        /*hasPostSLLastWorkingQueue=*/true, /*postSLLastWorkingQueueDiffersFromOriginalGameQueue=*/true,
+        /*hasLastSuccessfulPostSLSwapchain=*/true, /*deviceRemoved=*/false));
+
+    // Cold starts, a queue that already exists, a missing preserved-proxy
+    // proof, an origGame last-working queue, or a removed device must not
+    // revive a historical queue.
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        false, true, false, true, true, true, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, false, false, true, true, true, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, true, true, true, true, true, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, true, false, false, true, true, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, true, false, true, false, true, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, true, false, true, true, false, false));
+    EXPECT_FALSE(ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
+        true, true, false, true, true, true, true));
+}
+
 TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingProtectsThroughFirstEightFrames) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 0));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 1));
