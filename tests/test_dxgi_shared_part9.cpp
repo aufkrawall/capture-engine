@@ -396,20 +396,20 @@ TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTrans
         text.find("if (dx12_hook_g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&",
                   outerOff);
     const size_t drainNativeReturnGuard =
-        text.find("!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn)", drainGuard);
+        text.find("!keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery)", drainGuard);
     const size_t reinitBranch =
         text.find("if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover",
                   drainGuard);
     const size_t reinitGuard = text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", reinitBranch);
     const size_t reinitNativeReturnGuard =
-        text.find("!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn) {", reinitGuard);
+        text.find("!keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery) {", reinitGuard);
     ASSERT_NE(drainGuard, std::string::npos);
     ASSERT_NE(drainNativeReturnGuard, std::string::npos);
     ASSERT_NE(reinitBranch, std::string::npos);
     ASSERT_NE(reinitGuard, std::string::npos);
     ASSERT_NE(reinitNativeReturnGuard, std::string::npos);
-    EXPECT_LT(drainNativeReturnGuard - drainGuard, static_cast<size_t>(240));
-    EXPECT_LT(reinitNativeReturnGuard - reinitBranch, static_cast<size_t>(320));
+    EXPECT_LT(drainNativeReturnGuard - drainGuard, static_cast<size_t>(300));
+    EXPECT_LT(reinitNativeReturnGuard - reinitBranch, static_cast<size_t>(420));
     EXPECT_LT(drainGuard, coverageGate);
     EXPECT_LT(reinitGuard, coverageGate);
 }
@@ -580,6 +580,30 @@ TEST(DXGISharedTest, KeepsOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, true, true, false, false));
     // Device removed -> don't keep rendering into a removed device.
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, true, true, true, true));
+}
+
+TEST(DXGISharedTest, KeepsOverlayLiveAcrossNativeFSRGameSwapchainRecovery) {
+    using ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery;
+
+    // Session 20260813_153118 (FSR FG -> all FG off): the game-created recovery swapchain ended the
+    // runtime-owned native-FSR teardown and the first Present on it warm-reinited the overlay; the late
+    // [outer] SL-FG-OFF teardown then force-cleared it + armed a 60-frame cooldown (missed=60 / 453 ms,
+    // gate=overlay-backend-uninitialized). With the reinit proof this Present and FSR inactive, keep it live.
+    EXPECT_TRUE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(
+        /*streamlineTurnedOff=*/true, /*fsrRecoveryReinitializedThisPresent=*/true,
+        /*fsrFGApiActive=*/false, /*overlayInit=*/true, /*syncInit=*/true, /*deviceRemoved=*/false));
+
+    // Not an OFF edge -> not this path.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(false, true, false, true, true, false));
+    // No recovery-reinit proof this Present -> the generic teardown owns it.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(true, false, false, true, true, false));
+    // FSR still API-active -> a live runtime takeover keeps the protective teardown.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(true, true, true, true, true, false));
+    // Backend not init/sync -> nothing live to keep (let the reinit run).
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(true, true, false, false, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(true, true, false, true, false, false));
+    // Device removed -> don't keep rendering into a removed device.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(true, true, false, true, true, true));
 }
 
 TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {

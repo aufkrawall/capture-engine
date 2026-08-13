@@ -1,4 +1,24 @@
 # llm-wiki Log
+### 2026-08-13 - FIXED: FSR FG -> all-FG-off switch blanked the overlay for 60 presents (453 ms) at the end of the sequence
+
+- Session `20260813_153118` (build 0.1.6003, dx12_fg_switch_test): the overlay briefly disappeared at the END of the
+  FSR FG -> all-FG-off switching sequence. `[OVERLAY COVERAGE]` shows `INTERRUPTED/UNPROVEN` at present 1745 and
+  `RESTORED ... missed=60 durationMs=453 gate=overlay-backend-uninitialized` at present 1805.
+- Root cause: the game-created recovery swapchain correctly ended the runtime-owned native-FSR teardown and the first
+  Present on it warm-reinited the overlay on the captured game queue, but on the SAME Present the late outer
+  `g_StreamlineFGRunning` OFF edge (latched true across the whole FSR session) force-cleared `overlayInit` +
+  `CleanupRTVs` ("stale SL backbuffers") and armed the generic 60-frame reinit cooldown, tearing down the just-built
+  backend. The RTVs were NOT stale: they were rebuilt on the game's own native swapchain.
+- Fix: `FrameProcessSession::nativeFSRGameSwapchainRecoveryReinitializedThisPresent` latches the phase2
+  `ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff` decision, and the new
+  `ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery` policy makes the phase5 outer OFF teardown keep the
+  freshly rebuilt backend live and bypass the cooldown (mirrors the DLSS-off normal-return keep-live). A real runtime
+  takeover, missing reinit proof, or removed device keeps the protective teardown.
+- Tests: policy halves in `tests/test_dxgi_shared_part9.cpp`, source invariant in `tests/test_dxgi_shared_part12.cpp`,
+  and the outer-off guard-chain source pin updated. `--verify` gate passed on 0.1.6005 (full native suite, Python
+  self-tests, lint/tidy, ASan/UBSan). OPEN: needs the user's re-run of the FSR FG -> all-off switch; the full
+  four-direction FG matrix still gates F2/F4.
+
 ### 2026-08-13 - FIXED: orphaned below-foreign-chain FSR deep-draw state froze Talos on the FSR->DLSS menu switch
 
 - Session `20260813_142910` (build 0.1.5999, Talos + Steam overlay + official FFX FSR FG): the game raised a
@@ -190,35 +210,3 @@
   Guard added in `hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp`. Tests:
   `tests/test_dxgi_shared_part6.cpp` (policy values) + source-order pin in
   `tests/test_inject_capture_source_part2.cpp`.
-
-### 2026-08-13 - FIXED: ReShade factory proxy crashed CE's temp-swapchain install (0.1.5978 -> next)
-
-- Sessions `20260813_004853` / `20260813_004923` (Strange Brigade DX12, ReShade 6.8 loaded via `[ThirdParty]`):
-  AV in `dxgi!FindIndex<SAdapterDesc,...>` right after `Temp swapchain creation — passthrough`. ReShade hooks
-  `CreateDXGIFactory1` and returns a proxy factory; CE passed that proxy as `this` into the raw saved
-  `IDXGIFactory2::CreateSwapChainForHwnd` slot function, so dxgi read the adapter table from the proxy's
-  unrelated `+0xE8` layout (garbage: freed heap / ASCII) and crashed.
-- Root-cause fix in `hook/apis/dx12_hook_hook_install.cpp`: the temp factory creation bypasses the foreign
-  entry patch on `CreateDXGIFactory1`, and the historical raw-slot call is guarded by the saved-slot vtable
-  match (`hook/common/dx12_factory_slot_policy.h`, new global
-  `dx12_hook_s_savedCreateSwapChainForHwndVtable` captured together with the slot value). Mismatched/proxied
-  factories are refused with a one-shot log; the real-swapchain retry paths install the Present hooks instead.
-- Tests: `tests/test_dx12_factory_slot_policy.cpp` (policy + source-order pinning). OptiScaler-only runs were
-  unaffected because OptiScaler hooks the factory vtable slot instead of returning a proxy object.
-
-### 2026-08-13 - FEATURE: injected hook loads user-supplied ReShade / OptiScaler / Special K DLLs
-
-- New `[ThirdParty]` config section: `reshade_dll_path`, `optiscaler_dll_path`, `specialk_dll_path`. File values load
-  verbatim; folder values get the per-bitness default name appended (`ReShade64/32.dll`, `SpecialK64/32.dll`,
-  `OptiScaler.dll`). Per-profile overrides use `ThirdParty.<key>`. Fields live in `AppConfig::thirdParty`
-  (`ThirdPartyConfig`), deliberately outside `GraphicsConfig`/`SharedGraphicsConfig` so no shared-memory ABI bump.
-- Hook side: `hook/main_thirdparty_load.cpp` + `hook/common/third_party_load_policy.h`. Fixed load order
-  Special K -> ReShade -> OptiScaler; duplicate suppression by canonical base name and by renamed-proxy
-  export/version markers; loads go through `LoadRuntimeDllViaOriginal` + `NotifyHookModuleLoaded`; every outcome is
-  logged and a failure never aborts CE init. Called from `HookThread` right after the local config parse, before
-  wrapper/runtime preloads.
-- The graphics proxy-name candidate list moved into `ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName`
-  (`module_table.h`) and is now shared between the overlay identity scan and the preloader.
-- Tests: `tests/test_config_third_party.cpp`, `tests/test_third_party_load_policy.cpp`, and the
-  preload-precedes-wrapper/runtime source-order test in `tests/test_inject_capture_source_part2.cpp`. Wiki page:
-  `third-party-dll-loading.md`. Live validation against real tool builds (x64/x86, combined) is still open.

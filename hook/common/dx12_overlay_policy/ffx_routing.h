@@ -645,6 +645,29 @@ inline bool ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(bool slTurned
            overlayInit && syncInit && !deviceRemoved;
 }
 
+// FSR-FG -> all-FG-off with a game-created recovery swapchain (synthetic
+// dx12_fg_switch_test session 20260813_153118: missed=60 / 453 ms). The
+// game-created swapchain creation already ended the runtime-owned native-FSR
+// teardown, and the FIRST Present on that exact swapchain warm-reinited the
+// overlay on its captured game queue via
+// ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff.
+// On the SAME Present the late [outer] SL-FG-OFF observer then force-clears
+// overlayInit + CleanupRTVs ("stale SL backbuffers") and arms the generic
+// 60-frame reinit cooldown, blanking the just-reinited overlay. The backbuffers
+// are NOT stale here: the backend was rebuilt on the game's own native
+// swapchain (the FSR runtime no longer owns anything), so keep it live (skip
+// the teardown + cooldown). The reinit-proof flag is only set when the
+// recovery queue matches the live swapchain queue, FSR is inactive, and no
+// Streamline FG is running, so a real runtime-owned takeover keeps the
+// protective teardown.
+inline bool ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(bool streamlineTurnedOff,
+                                                                      bool fsrRecoveryReinitializedThisPresent,
+                                                                      bool fsrFGApiActive, bool overlayInit,
+                                                                      bool syncInit, bool deviceRemoved) {
+    return streamlineTurnedOff && fsrRecoveryReinitializedThisPresent && !fsrFGApiActive && overlayInit && syncInit &&
+           !deviceRemoved;
+}
+
 enum class BelowForeignChainFSRDeepDrawDecision {
     kUnavailable,
     kDrawOnSwapchainQueue,

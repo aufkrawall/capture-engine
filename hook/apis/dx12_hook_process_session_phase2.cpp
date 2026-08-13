@@ -216,6 +216,8 @@ if (processLogicalSwapchainReplacement) {
                     dx12_hook_g_FGRuntimeOwnsSwapchain, swapchainChangeDeviceRemoved);
             authoritativeDLSSOffNormalReturnReinitializedThisPresent =
                 immediateReinitAfterAuthoritativeDLSSOffNormalReturn;
+            nativeFSRGameSwapchainRecoveryReinitializedThisPresent =
+                immediateReinitAfterGameSwapchainRecovery;
             // DLSS-FG SUSPEND (slDLSSGSetOptions(off), proxy stays live): the active-FG
             // preserve path can't fire (streamlineFGRunning already false), so a fresh
             // proxy swapchain pointer on the same live queue used to blank the live overlay

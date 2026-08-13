@@ -11,6 +11,36 @@ namespace {
 using DXGIShared::detail::kSteamNullCallbackMaxSlots;
 using DXGIShared::detail::FindSteamNullCallbackSlotCandidates;
 
+// FSR-FG -> all-FG-off (session 20260813_153118): the game-created recovery swapchain ended the
+// runtime-owned native-FSR teardown and the first Present on it warm-reinited the overlay, then the
+// late [outer] SL-FG-OFF observer force-cleared it + armed a 60-frame cooldown (missed=60 / 453 ms).
+// Pin that the recovery-reinit proof feeds the keep-live decision and vetoes that teardown.
+TEST(DXGISharedSourceTest, NativeFSRGameSwapchainRecoveryReinitKeepsOverlayLiveAcrossLateOuterOff) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    const size_t recoveryDecision =
+        text.find("ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(", processFrame);
+    const size_t proofLatch =
+        text.find("nativeFSRGameSwapchainRecoveryReinitializedThisPresent", recoveryDecision);
+    const size_t keepLiveDecision =
+        text.find("ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(", processFrame);
+    const size_t forceReinitGuard =
+        text.find("!keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery", processFrame);
+    ASSERT_NE(recoveryDecision, std::string::npos);
+    ASSERT_NE(proofLatch, std::string::npos);
+    ASSERT_NE(keepLiveDecision, std::string::npos);
+    ASSERT_NE(forceReinitGuard, std::string::npos);
+    EXPECT_LT(recoveryDecision, keepLiveDecision);
+    EXPECT_LT(keepLiveDecision, forceReinitGuard)
+        << "the FSR->off game-swapchain recovery reinit must veto the late [outer] SL-FG-OFF teardown";
+}
+
 // RoboCop: Rogue City session 20260809_141705 crashed in
 // gameoverlayrenderer64!OverlayHookD3D3: the handler loads its Present-shaped
 // rendering callback with `mov rax,[rip+disp]` and calls it with `call rax`;
