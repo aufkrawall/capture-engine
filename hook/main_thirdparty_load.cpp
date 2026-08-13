@@ -129,9 +129,15 @@ void PreloadConfiguredThirdPartyDlls() {
         ce::third_party_load::Tool tool;
         const std::string* configuredPath;
     } tools[] = {
-        {ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},
         {ce::third_party_load::Tool::kReShade, &thirdParty.reshadeDllPath},
         {ce::third_party_load::Tool::kOptiScaler, &thirdParty.optiscalerDllPath},
+        // Special K loads LAST: its thread-creation hook deadlocks the loader
+        // if a tool whose DllMain creates threads (OptiScaler) loads while
+        // Special K's enumerator threads are mid-loader-call, and the
+        // quiescence wait cannot exclude Special K's recurring enumerator
+        // cycles. Loading Special K after the wait drains the other tools'
+        // startup loader work instead (see third_party_load_policy.h).
+        {ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},
     };
 
     for (size_t toolIndex = 0; toolIndex < sizeof(tools) / sizeof(tools[0]); ++toolIndex) {

@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED (order finalized): Special K now loads LAST; quiescence wait alone was not enough
+
+- Session `20260813_025615` (all three tools, Special-K-first + quiescence wait): CE's hook thread held the loader
+  lock in OptiScaler's DllMain; OptiScaler's thread creation waited on Special K's critical section; Special K's
+  enumerator thread held that section while blocked in `FreeLibraryAndExitThread`'s loader drain. The wait cannot
+  fix Special-K-first because the enumerator starts NEW loader cycles at any time, so the overlap is a race, not a
+  one-shot init transient.
+- Final order: ReShade -> OptiScaler -> Special K. OptiScaler's DllMain thread creation runs before Special K's
+  thread hook exists, and the existing loader-quiescence wait before Special K drains OptiScaler's startup loader
+  work (nvapi init, update check), which is startup-only. Order constant, executor array, tests, and template/README/
+  wiki text updated accordingly.
+
 ### 2026-08-13 - FIXED: all-three-tools crash in the DX11 temp-device probe (0.1.5985 -> next)
 
 - Session `20260813_024327` (ReShade + OptiScaler + Special K): AV in

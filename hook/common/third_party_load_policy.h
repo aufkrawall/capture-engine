@@ -12,25 +12,27 @@
 // executor (main_thirdparty_load.cpp) owns every Windows loader interaction.
 namespace ce::third_party_load {
 
-// Fixed load order: Special K first, then ReShade, then OptiScaler.
+// Fixed load order: ReShade first, then OptiScaler, then Special K LAST.
 //
-// Why Special K first: its DllMain spawns background init threads that perform
-// loader work (the DLL enumerator frees a probe library via
-// FreeLibraryAndExitThread). Loading OptiScaler — whose DllMain creates a
-// thread that goes through Special K's thread-creation hook — while that init
-// is still draining the loader work queue deadlocks: CE's hook thread holds
-// the loader lock, OptiScaler's DllMain blocks on Special K's init critical
-// section, and Special K's init thread blocks on the loader lock (session
-// 20260813_020236). Loading Special K LAST deadlocks the other way around:
-// Special K's DllMain calls LoadLibrary, which re-enters OptiScaler's
-// mutex-guarded loader hook while an OptiScaler background thread holds that
-// mutex and waits for the loader lock CE's thread holds (session
-// 20260813_021731). Special-K-first wins because its init only needs the
-// loader transiently and CE waits for loader quiescence before every
-// subsequent tool load (see ShouldWaitForLoaderQuiescenceBeforeToolLoad and
-// main_thirdparty_load.cpp). Do not reorder without re-checking this; the
-// executor iterates this enum in declaration order.
-enum class Tool : int { kSpecialK = 0, kReShade = 1, kOptiScaler = 2, kCount = 3 };
+// Both orderings deadlock unless the thread-creating tool loads before Special
+// K's hooks exist AND Special K's own load waits for the other tools' startup
+// loader work to finish:
+//  - Special-K-first: OptiScaler's DllMain creates a thread through Special
+//    K's thread-creation hook, which waits on a Special K critical section
+//    held by its enumerator thread while it blocks on the loader lock CE
+//    holds (sessions 20260813_020236 and 20260813_025615 — the quiescence
+//    wait cannot fix this because the enumerator starts new loader cycles at
+//    any time).
+//  - Special-K-last: Special K's DllMain calls LoadLibrary, which re-enters
+//    OptiScaler's mutex-guarded loader hook; without a quiescence wait an
+//    OptiScaler background thread can hold that mutex while waiting for the
+//    loader lock (session 20260813_021731). With
+//    ShouldWaitForLoaderQuiescenceBeforeToolLoad draining OptiScaler's
+//    startup loader work first, and its later loader activity being
+//    startup-only, this order is the safe one.
+// Do not reorder without re-checking both cycles; the executor iterates this
+// enum in declaration order.
+enum class Tool : int { kReShade = 0, kOptiScaler = 1, kSpecialK = 2, kCount = 3 };
 
 inline constexpr size_t kToolCount = static_cast<size_t>(Tool::kCount);
 

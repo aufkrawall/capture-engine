@@ -36,22 +36,18 @@ once those tools are loaded.
   `GraphicsConfig`/`SharedGraphicsConfig`: the hook reads them directly from
   `config.ini` (same file the host writes), so no shared-memory layout change,
   no `SHARED_MEMORY_VERSION` bump, and no IPC transport exists for them.
-- The hook loads the configured tools in the fixed order Special K -> ReShade
-  -> OptiScaler (the `Tool` enum declaration order in
-  `third_party_load_policy.h`). Before every tool load after the first, the
-  executor waits for the Windows loader work queue to drain by joining a
-  trivial `LoadLibrary` probe thread. This is the synchronization that makes
-  the order safe: Special K's init threads only need the loader transiently
-  (its DLL enumerator frees a probe library), and OptiScaler's DllMain
-  creates threads that go through Special K's thread-creation hook. Without
-  the wait, Special-K-first deadlocks (session `20260813_020236`: CE's hook
-  thread holds the loader lock, OptiScaler's DllMain blocks on Special K's
-  critical section, Special K's init thread blocks on the loader lock), and
-  Special-K-last deadlocks the other way (session `20260813_021731`: Special
-  K's DllMain calls LoadLibrary, which re-enters OptiScaler's mutex-guarded
-  loader hook while an OptiScaler background thread holds that mutex and waits
-  for the loader lock). Do not reorder or remove the quiescence wait without
-  re-checking both cycles.
+- The hook loads the configured tools in the fixed order ReShade -> OptiScaler
+  -> Special K (the `Tool` enum declaration order in
+  `third_party_load_policy.h`). OptiScaler (whose DllMain creates a thread)
+  must load before Special K's thread-creation hook exists; Special K's own
+  load follows. Before every tool load after the first, the executor waits
+  for the Windows loader work queue to drain by joining a trivial
+  `LoadLibrary` probe thread. Both orderings deadlock without this
+  combination: Special-K-first collides with Special K's recurring enumerator
+  cycles (sessions `20260813_020236` and `20260813_025615`), and
+  Special-K-last without the wait collides with OptiScaler's startup loader
+  work (session `20260813_021731`). Do not reorder or remove the quiescence
+  wait without re-checking all three sessions.
 - `PreloadConfiguredThirdPartyDlls()` runs in `HookThread` immediately after
   the local `config.ini` parse, before CE's wrapper DLL load,
   `PreloadConfiguredGraphicsRuntimeDlls()`, and per-API hook installation.
@@ -148,6 +144,15 @@ once those tools are loaded.
   adds `WaitForLoaderQuiescence` (a LoadLibrary probe thread joined before
   every tool load after the first) so the tools' background loader work
   cannot overlap the next tool's DllMain.
+- Special-K-first WITH the quiescence wait still deadlocked for all three
+  tools (session `20260813_025615`): Special K's enumerator thread starts new
+  `FreeLibraryAndExitThread` loader cycles at any time, so the wait only
+  excluded the cycle in flight at that instant. CE's hook thread then held
+  the loader lock in OptiScaler's DllMain, whose thread creation waited on
+  Special K's critical section while the enumerator held it inside the loader
+  drain. The final order therefore loads Special K LAST: ReShade and
+  OptiScaler initialize before Special K's thread hook exists, and the
+  quiescence wait before Special K drains OptiScaler's startup loader work.
 - With all three tools loaded, CE's DX11 temp-device probe crashed inside
   `d3d11!CLayeredObject<CDevice>::CContainedObject::Release` with a garbage
   `this` (a UTF-16 string fragment) while

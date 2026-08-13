@@ -195,17 +195,17 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     const std::string source = ReadSource("hook/main_thirdparty_load.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t specialKEntry =
-        source.find("{ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},");
     const size_t optiScalerEntry =
         source.find("{ce::third_party_load::Tool::kOptiScaler, &thirdParty.optiscalerDllPath},");
+    const size_t specialKEntry =
+        source.find("{ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},");
     const size_t quiescenceGate = source.find("ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)");
     const size_t loadCall = source.find("LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str())");
     ASSERT_NE(specialKEntry, std::string::npos);
     ASSERT_NE(optiScalerEntry, std::string::npos);
     ASSERT_NE(quiescenceGate, std::string::npos);
     ASSERT_NE(loadCall, std::string::npos);
-    EXPECT_LT(specialKEntry, optiScalerEntry);
+    EXPECT_LT(optiScalerEntry, specialKEntry);
     EXPECT_LT(quiescenceGate, loadCall);
 }
 
