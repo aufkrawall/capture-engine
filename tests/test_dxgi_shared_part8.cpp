@@ -256,6 +256,24 @@ TEST(DXGISharedTest, CreateSwapchainAccessDeniedRuntimeManagedGetsMinimalRelease
 }
 
 // ---------------------------------------------------------------------------
+// The deep CreateSwapChainForHwnd hook's E_ACCESSDENIED retries normally run the below-the-chain
+// trampoline, which performs the genuine DXGI create WITHOUT entering the foreign overlay entry chain.
+// A foreign overlay whose CreateSwapChainForHwnd entry handler releases its old-swapchain reference only
+// when a replacement create arrives through that handler then keeps the old chain (and the HWND
+// association DXGI checks) alive, so every retry stays E_ACCESSDENIED (dx12_fg_switch_test OFF->FSR with
+// Steam overlay and RTSS injected, session 20260813_200741). After CE's own cleanup the recovery must
+// retry once through the live entry chain — but never for third-party-overlay callers (an overlay's own
+// internal create must not re-enter its own entry handler) and never during shutdown.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, AccessDeniedRetryThroughLiveEntryChainRequiresForeignChainAndSafeCaller) {
+    using ce::dx12_overlay_policy::ShouldRetryAccessDeniedCreateThroughLiveEntryChain;
+    EXPECT_TRUE(ShouldRetryAccessDeniedCreateThroughLiveEntryChain(true, false, false));
+    EXPECT_FALSE(ShouldRetryAccessDeniedCreateThroughLiveEntryChain(false, false, false));
+    EXPECT_FALSE(ShouldRetryAccessDeniedCreateThroughLiveEntryChain(true, true, false));
+    EXPECT_FALSE(ShouldRetryAccessDeniedCreateThroughLiveEntryChain(true, false, true));
+}
+
+// ---------------------------------------------------------------------------
 // perf_metrics CSV present-row dedup (sessions 20260702_094955/140811: ~50% zero-delta qpc row pairs —
 // the outer DetourPresent catch-all row AND the inner per-API ProcessFrame row were both written for the
 // same present, so present-rate analysis from the CSV counted frames twice). The outer present hooks must

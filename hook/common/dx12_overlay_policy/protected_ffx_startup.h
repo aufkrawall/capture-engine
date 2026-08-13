@@ -186,6 +186,23 @@ inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool strea
     return streamlineFGRunning || streamlineStartupHandoffPending;
 }
 
+// The deep CreateSwapChainForHwnd hook forwards through its below-the-chain trampoline, which performs
+// the genuine DXGI create WITHOUT entering the foreign overlay entry chain. A foreign overlay that
+// tracks swapchain creates through its own CreateSwapChainForHwnd entry handler — and holds a reference
+// to the old swapchain (and with it the HWND association DXGI checks) until a replacement create arrives
+// through that handler — then never gets to release it, and every retry stays E_ACCESSDENIED
+// (dx12_fg_switch_test OFF->FSR with Steam overlay and RTSS injected, session 20260813_200741: the
+// replacement create fails through the full CE cleanup, the game's own fallback create fails the same
+// way, and the app exits cleanly — no dump, because nothing faults). Retrying once through the live
+// entry chain runs those foreign handlers before the genuine create so they can release the old
+// swapchain. Foreign-overlay callers are excluded so an overlay's own internal create cannot re-enter
+// its own entry handler, and shutdown stays below any foreign code.
+inline bool ShouldRetryAccessDeniedCreateThroughLiveEntryChain(bool foreignEntryChainExists,
+                                                               bool callerFromThirdPartyOverlay,
+                                                               bool hookShuttingDown) {
+    return foreignEntryChainExists && !callerFromThirdPartyOverlay && !hookShuttingDown;
+}
+
 // DRED arming level for CE_DX12_DRED.
 //
 // Full DRED auto-breadcrumbs force the application's command-list Reset() to do a

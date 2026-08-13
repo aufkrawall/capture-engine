@@ -1,5 +1,70 @@
 #include "dx12_hook_internal.h"
 
+#include "../common/dx12_factory_slot_policy.h"
+#include "../wrappers/dxgi_swapchain_wrap_internal.h"
+
+namespace {
+
+// Set while the E_ACCESSDENIED recovery forwards a create through the live entry chain. The foreign
+// entry handler's own trampoline lands back in this deep hook at +5; that nested call must run the
+// genuine function below the chain exactly once without recovery so the outer recovery observes the
+// foreign chain's result and can continue.
+thread_local bool s_forwardingAccessDeniedCreateThroughEntryChain = false;
+
+// Diagnostic-only: report the live state of the swapchains CE still tracks for a HWND when DXGI keeps
+// answering E_ACCESSDENIED. The tracked pointers are raw and may be stale; the AV guard keeps the probe
+// from faulting on a freed object. The AddRef/Release pair is net-zero for a live object and reveals how
+// many references (foreign or CE) still pin the old chain.
+void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd) {
+    static std::atomic<int> s_pinDiagnosticsLogCount{0};
+    const int logCount = s_pinDiagnosticsLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount >= 8 && (logCount % 64) != 0) {
+        return;
+    }
+
+    std::vector<IDXGISwapChain*> chains;
+    {
+        std::lock_guard<std::mutex> lock(dx12_hook_s_hwndSwapchainMutex);
+        const auto it = dx12_hook_s_hwndSwapchainMap.find(hWnd);
+        if (it != dx12_hook_s_hwndSwapchainMap.end()) {
+            chains = it->second;
+        }
+    }
+    if (dx12_hook_g_LastSwapChain &&
+        std::find(chains.begin(), chains.end(), dx12_hook_g_LastSwapChain) == chains.end()) {
+        chains.push_back(dx12_hook_g_LastSwapChain);
+    }
+
+    if (chains.empty()) {
+        HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d hwnd=%p no tracked chains", logCount + 1,
+                         hWnd);
+        return;
+    }
+    for (IDXGISwapChain* chain : chains) {
+        MEMORY_BASIC_INFORMATION info = {};
+        const bool objectCommitted =
+            VirtualQuery(reinterpret_cast<const void*>(chain), &info, sizeof(info)) != 0 &&
+            info.State == MEM_COMMIT && (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                                                         PAGE_EXECUTE_READWRITE)) != 0;
+        ULONG refs = 0;
+        if (objectCommitted) {
+            // Guarded AddRef/Release probe: net-zero for a live object, reveals how many references
+            // (foreign or CE) still pin the old chain, and cannot fault on a stale tracked pointer.
+            ScopedAvGuard guard;
+            refs = chain->AddRef();
+            if (refs > 0) {
+                chain->Release();
+            }
+        }
+        HookLogImportant(
+            "DeepHook: E_ACCESSDENIED pin diagnostics #%d hwnd=%p chain=%p committed=%d refs=%u retained=%d",
+            logCount + 1, hWnd, (void*)chain, objectCommitted ? 1 : 0, refs,
+            HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
+    }
+}
+
+}  // namespace
+
 
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
 if (!pDevice || !pSwapChain)
@@ -345,6 +410,16 @@ if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
     return dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 }
 
+// Nested below-the-chain call from the foreign entry chain CE entered for an access-denied retry:
+// run the genuine function exactly once without recovery so the outer recovery observes the foreign
+// chain's result and can continue its own escalation.
+if (s_forwardingAccessDeniedCreateThroughEntryChain) {
+    if (dx12_hook_s_deepHookTrampoline) {
+        return dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    }
+    return E_FAIL;
+}
+
 const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
 const void* callerAddress = callerContext.callerAddress;
 const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
@@ -365,6 +440,28 @@ const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
 
 HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                  pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
+
+// Rate-limited route diagnostics: which module reached the below-the-chain hook directly, and what
+// currently lives at the CreateSwapChainForHwnd entry. A foreign overlay re-patching the entry over
+// CE's prepended inline hook is visible here as a foreign caller module plus a non-CE entry jump.
+{
+    static std::atomic<int> s_deepEnterRouteDiagnosticsLogCount{0};
+    const int routeCount = s_deepEnterRouteDiagnosticsLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (routeCount < 12 || (routeCount % 256) == 0) {
+        char immediateModulePath[MAX_PATH] = {};
+        TryGetModulePathFromCodeAddress(CE_RETURN_ADDRESS(), immediateModulePath, sizeof(immediateModulePath));
+        unsigned char entryBytes[8] = {};
+        if (dx12_hook_s_realCreateSCForHwndAddr) {
+            memcpy(entryBytes, dx12_hook_s_realCreateSCForHwndAddr, sizeof(entryBytes));
+        }
+        HookLogImportant(
+            "DeepHook: route diagnostics enter#%d immediateCaller=%s entry=%p bytes=%02X %02X %02X %02X %02X %02X "
+            "%02X %02X",
+            routeCount + 1, immediateModulePath[0] ? immediateModulePath : "unknown",
+            (void*)dx12_hook_s_realCreateSCForHwndAddr, entryBytes[0], entryBytes[1], entryBytes[2], entryBytes[3],
+            entryBytes[4], entryBytes[5], entryBytes[6], entryBytes[7]);
+    }
+}
 
 // Apply backbuffer count override from config
 DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -417,6 +514,8 @@ if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay && !protected
 // authoritative FFX takeover paths, return the error untouched so the
 // runtime can manage its own swapchain state machine.
 if (hr == E_ACCESSDENIED && hWnd) {
+    LogAccessDeniedSwapchainPinDiagnostics(hWnd);
+
     const bool streamlineModuleLoaded = IsStreamlineLoaded();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
@@ -429,6 +528,40 @@ if (hr == E_ACCESSDENIED && hWnd) {
             ? "third-party overlay caller"
             : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
                                                                     : "Streamline active");
+    // The below-the-chain trampoline performs the genuine DXGI create without entering the foreign
+    // overlay entry chain. A foreign overlay whose CreateSwapChainForHwnd entry handler holds the old
+    // swapchain until a replacement create arrives through that handler then keeps the old chain (and
+    // the HWND association DXGI checks) alive, so every trampoline retry stays E_ACCESSDENIED. Retry
+    // once through the live entry chain so the foreign handlers can release the old swapchain before
+    // the genuine create runs; the nested below-the-chain call is guarded above and forwards straight
+    // through. Only legal when the factory still carries the system DXGI vtable the saved entry slot
+    // belongs to — a ReShade-style proxy factory would crash inside dxgi (sessions 20260813_004853 /
+    // 20260813_004923), so that case keeps the trampoline-only retries.
+    const auto retryThroughLiveEntryChain = [&](HRESULT& retryHr) -> bool {
+        const bool factoryMatchesSavedSlotVtable =
+            ce::dx12_factory_slot::ShouldInvokeSavedCreateSwapChainForHwndSlot(
+                reinterpret_cast<const void*>(dx12_hook_s_savedCreateSwapChainForHwndVtable), pThis);
+        if (!ce::dx12_overlay_policy::ShouldRetryAccessDeniedCreateThroughLiveEntryChain(
+                dx12_hook_s_realCreateSCForHwndAddr != nullptr, callerFromThirdPartyOverlay,
+                HookIsShuttingDown()) ||
+            !factoryMatchesSavedSlotVtable || !dx12_hook_oCreateSwapChainForHwndGlobal) {
+            return false;
+        }
+        HookLogImportant(
+            "DeepHook: retrying E_ACCESSDENIED create through the live entry chain so foreign overlay swapchain "
+            "handlers can release the old HWND association (hwnd=%p factory=%p caller=%s)",
+            hWnd, pThis, callerModulePath[0] ? callerModulePath : "unknown");
+        ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard inlineSideEffectGuard;
+        ScopedForwardedCreateSwapchainForHwndCallerContext forwardedCallerContext(callerAddress, callerModulePath);
+        s_forwardingAccessDeniedCreateThroughEntryChain = true;
+        auto forwardingFlagReset =
+            ce::make_scope_guard([]() { s_forwardingAccessDeniedCreateThroughEntryChain = false; });
+        retryHr = dx12_hook_oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+        HookLogImportant("DeepHook: live-entry-chain retry returned hr=0x%08X sc=%p inlineHandled=%d", retryHr,
+                         (ppSC && *ppSC) ? (void*)*ppSC : nullptr,
+                         inlineSideEffectGuard.InlineHandledForwardedCall() ? 1 : 0);
+        return true;
+    };
     if (ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery(passThroughForRuntimeManagedFG,
                                                                            callerFromThirdPartyOverlay) ==
         ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate) {
@@ -469,6 +602,10 @@ if (hr == E_ACCESSDENIED && hWnd) {
             }
             if (ppSC && *ppSC) {
                 ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+            }
+            HRESULT entryChainRetryHr = E_FAIL;
+            if (retryThroughLiveEntryChain(entryChainRetryHr) && SUCCEEDED(entryChainRetryHr)) {
+                hr = entryChainRetryHr;
             }
             for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
                 Sleep(20);
@@ -518,6 +655,11 @@ if (hr == E_ACCESSDENIED && hWnd) {
         }
         if (ppSC && *ppSC) {
             ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+        }
+
+        HRESULT entryChainRetryHr = E_FAIL;
+        if (retryThroughLiveEntryChain(entryChainRetryHr) && SUCCEEDED(entryChainRetryHr)) {
+            hr = entryChainRetryHr;
         }
 
         // Retry: 10 attempts × 20ms = 200ms max.  FSR FG activation may

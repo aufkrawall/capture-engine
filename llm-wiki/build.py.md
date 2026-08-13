@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-08-08 (stable releases now build the exact dispatched commit through the strict-clean verify gate, emit and attest FFmpeg/libiconv corresponding source, scope GitHub tokens to network steps, pin official Actions by commit, and immediately delete every self-hosted run log; previously 2026-08-07)
+Last cross-checked: 2026-08-13 (stable releases now build the exact dispatched commit through the strict-clean verify gate, emit and attest FFmpeg/libiconv corresponding source, scope GitHub tokens to network steps, pin official Actions by commit, and immediately delete every self-hosted run log; tests-only builds warn about modified product sources outside their compile set; previously 2026-08-08)
 
 Primary sources:
 - `AGENTS.md`
@@ -202,7 +202,7 @@ Default quality mode currently:
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build so compile failures and `compile_commands.json` stay current. The non-LTO validation link is content-cached; this flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
-| `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Reuses the current product identity because it emits no product binary. Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. |
+| `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Reuses the current product identity because it emits no product binary. Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. The tests-only compile set covers `tests/`, top-level `common/`, `mediaengine/`, `hook/common`, `hook/wrappers/hook_system.cpp`, and a small captureengine subset; modified product sources outside that set (hook DLL, remaining captureengine sources) are NOT compiled, and the stage now warns when such sources are newer than their product objects (`WARN: tests-only build does not compile ...`). |
 | `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; refuses a missing, stale, corrupted, or pre-manifest unit-test executable. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |

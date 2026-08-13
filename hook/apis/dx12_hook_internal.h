@@ -611,7 +611,6 @@ void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const char* callerContext);
 bool IsSteamOverlayModulePath(const char* modulePath);
 bool IsD3D12ModuleAddress(void* address);
-bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr);
 void ClearFocusLossPendingOverlayFence(const char* reason, UINT64 fenceValue, UINT64 completedValue);
 bool ShouldHoldOverlayDrawForPendingFocusLossFence();
 const char* DescribeFocusLossImmediateFenceSkip(bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize, bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,  bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue, UINT64 fenceValue);

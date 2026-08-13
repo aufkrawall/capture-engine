@@ -26,9 +26,10 @@ struct ScopedResizeGuard;
 
 #include "../apis/graphics_hook.h"
 
-// Declared here for the DXGI wrapper TU (defined in dx12_hook_internal_helpers10.cpp);
-// the dx12 hook internal header carries the same declaration for the hook TUs.
-bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr);
+// ResolveCurrentProcessForeground is declared once, with default arguments, in
+// common/hook_common.h (defined in hook/apis/dx12_hook_helpers.cpp) so a translation unit that
+// includes both this wrapper-internal header and the dx12 hook internal header no longer trips
+// over duplicate default arguments.
 
 
 

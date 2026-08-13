@@ -370,6 +370,15 @@ def get_unit_test_object_dir(env: Dict[str, str]) -> str:
     return os.path.join(OBJ_DIR, variant)
 
 
+TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
+    "pseudo_overlay.cpp",
+    "pseudo_overlay_state.cpp",
+    "pseudo_overlay_render.cpp",
+    "pseudo_overlay_thread.cpp",
+    "pseudo_overlay_sync.cpp",
+)
+
+
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
     strict_fp_flags = get_strict_fp_flags(clang_exe)
@@ -531,14 +540,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
 
     captureengine_test_objs = []
-    pseudo_overlay_sources = [
-        "pseudo_overlay.cpp",
-        "pseudo_overlay_state.cpp",
-        "pseudo_overlay_render.cpp",
-        "pseudo_overlay_thread.cpp",
-        "pseudo_overlay_sync.cpp",
-    ]
-    for name in sorted(STRICT_FP_SCREENSHOT_SOURCES) + pseudo_overlay_sources:
+    for name in sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES):
         extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
         obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
         compile_tasks.append((test_cflags + extra, os.path.join(PROJECT_ROOT, "captureengine", name), obj))

@@ -57,6 +57,11 @@ void EarlyLog(const char* fmt, ...);
 // Logs to hook_debug.log (respects the debugLogging flag, same as HookLog)
 void HookLogImportant(const char* fmt, ...);
 void NVNGXLog(const char* fmt, ...);
+// Canonical cross-layer declaration (defined in hook/apis/dx12_hook_helpers.cpp). The dx12 hook
+// internal header and the DXGI swapchain-wrapper internal header used to each declare this with
+// default arguments, which breaks any translation unit that includes both of them ("redefinition
+// of default argument"); keep the single declaration with defaults here.
+bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr);
 // Build a session-aware log file path using DiscoveryInfo.logsPath with fallback
 // to {moduleDir}\logs. Returns false if the path could not be constructed.
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);

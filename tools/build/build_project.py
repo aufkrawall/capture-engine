@@ -3,6 +3,62 @@
 # licenses, PE hardening, packaging). See build_project_finalize.py for the tail.
 
 
+# Project-relative hook sources the product hook DLL must NOT compile: the D3D12 device/commandqueue
+# wrappers (MinGW ABI incompatibility — MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS
+# with a different vtable layout) and the WIP stable-hook unit. Single source of truth for both the
+# hook compile set and the tests-only coverage warning.
+HOOK_DLL_EXCLUDED_SOURCES = (
+    "hook/wrappers/d3d12_device_wrap.cpp",
+    "hook/wrappers/d3d12_commandqueue_wrap.cpp",
+    "hook/apis/dx12_hook_stable.cpp",
+)
+
+
+def should_warn_tests_only_uncovered_source(src_path: str, product_obj_path: str) -> bool:
+    """True when a tests-only build will not recompile a modified product source.
+
+    The tests-only compile set covers tests/, common/, mediaengine/, hook/common,
+    hook/wrappers/hook_system.cpp, and a small captureengine subset. Every other product source is
+    compiled only by the product build; when such a source is newer than its product object (or has
+    no product object yet), the focused tests can pass while the product source no longer compiles.
+    """
+    if not os.path.exists(src_path):
+        return False
+    if not os.path.exists(product_obj_path):
+        return True
+    return os.path.getmtime(src_path) > os.path.getmtime(product_obj_path)
+
+
+def log_tests_only_uncompiled_product_sources() -> None:
+    """Warn once per run when modified product sources are outside the tests-only compile set."""
+    product_obj_dir = os.path.join(OBJ_DIR, "x64")
+    uncovered = []
+    covered_captureengine = set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
+    for root_rel in ("hook/apis", "hook/wrappers", "hook/capture", "captureengine"):
+        root = os.path.join(PROJECT_ROOT, root_rel)
+        if not os.path.isdir(root):
+            continue
+        for src in glob.glob(os.path.join(root, "*.cpp")):
+            rel_path = os.path.relpath(src, PROJECT_ROOT).replace("\\", "/")
+            if rel_path == "hook/wrappers/hook_system.cpp":
+                continue
+            if rel_path in HOOK_DLL_EXCLUDED_SOURCES:
+                continue
+            if root_rel == "captureengine" and os.path.basename(src) in covered_captureengine:
+                continue
+            obj = os.path.join(product_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
+            if should_warn_tests_only_uncovered_source(src, obj):
+                uncovered.append(rel_path)
+    if not uncovered:
+        return
+    shown = ", ".join(uncovered[:3])
+    more = f" and {len(uncovered) - 3} more" if len(uncovered) > 3 else ""
+    log(
+        f"WARN: tests-only build does not compile {len(uncovered)} modified product source(s) "
+        f"({shown}{more}); run the incremental/clean build or --verify gate to compile them"
+    )
+
+
 def compile_project(
     env,
     clang_bin,
@@ -54,6 +110,7 @@ def compile_project(
             pkg_config,
             get_unit_test_object_dir(env),
         )
+        log_tests_only_uncompiled_product_sources()
         if should_run_tests and test_exe:
             if not run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools):
                 sys.exit(1)
@@ -164,13 +221,7 @@ def compile_project(
             # safe_hook.cpp REMOVED: Using custom_hook instead
         )
 
-        # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
-        # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
-        excluded_files = [
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
-            os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
-        ]
+        excluded_files = [os.path.join(PROJECT_ROOT, rel.replace("/", os.sep)) for rel in HOOK_DLL_EXCLUDED_SOURCES]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
         # Custom hook system (VTable + IAT patching, replaces MinHook)
