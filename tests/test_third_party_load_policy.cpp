@@ -44,15 +44,15 @@ TEST(ThirdPartyLoadPolicyTest, EmptyPathsResolveEmptyAndAreNotConfigured) {
     EXPECT_TRUE(HasAnyThirdPartyLoadConfigured("", R"(C:\reshade)", ""));
 }
 
-TEST(ThirdPartyLoadPolicyTest, LoadOrderConstantIsReShadeThenOptiScalerThenSpecialK) {
-    // Special K loads LAST: the thread-creating tool (OptiScaler) must load
-    // before Special K's thread-creation hook exists, and Special K's own load
-    // then follows the loader-quiescence wait that drains the other tools'
-    // startup loader work (sessions 20260813_020236 / 20260813_021731 /
-    // 20260813_025615).
-    EXPECT_EQ(static_cast<int>(Tool::kReShade), 0);
-    EXPECT_EQ(static_cast<int>(Tool::kOptiScaler), 1);
-    EXPECT_EQ(static_cast<int>(Tool::kSpecialK), 2);
+TEST(ThirdPartyLoadPolicyTest, LoadOrderConstantIsSpecialKThenReShadeThenOptiScaler) {
+    // Special K loads FIRST. Later tools' DllMains pass through Special K's
+    // thread-creation hook, so the executor suspends all peer threads around
+    // every load after the first — Special K's enumerator then cannot hold its
+    // critical section across a loader call (sessions 20260813_020236 /
+    // 20260813_021731 / 20260813_025615 / 20260813_031321).
+    EXPECT_EQ(static_cast<int>(Tool::kSpecialK), 0);
+    EXPECT_EQ(static_cast<int>(Tool::kReShade), 1);
+    EXPECT_EQ(static_cast<int>(Tool::kOptiScaler), 2);
     EXPECT_EQ(static_cast<int>(Tool::kCount), 3);
     EXPECT_STREQ(ce::third_party_load::ToolName(Tool::kSpecialK), "SpecialK");
     EXPECT_STREQ(ce::third_party_load::ToolName(Tool::kReShade), "ReShade");
@@ -63,6 +63,12 @@ TEST(ThirdPartyLoadPolicyTest, LoaderQuiescenceWaitPrecedesEveryToolAfterTheFirs
     EXPECT_FALSE(ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(0));
     EXPECT_TRUE(ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(1));
     EXPECT_TRUE(ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(2));
+}
+
+TEST(ThirdPartyLoadPolicyTest, PeerThreadSuspensionGuardsEveryToolAfterTheFirst) {
+    EXPECT_FALSE(ce::third_party_load::ShouldSuspendPeerThreadsForToolLoad(0));
+    EXPECT_TRUE(ce::third_party_load::ShouldSuspendPeerThreadsForToolLoad(1));
+    EXPECT_TRUE(ce::third_party_load::ShouldSuspendPeerThreadsForToolLoad(2));
 }
 
 TEST(ThirdPartyLoadPolicyTest, KnownBaseNamesMatchTheirToolOnly) {

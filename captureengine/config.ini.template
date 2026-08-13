@@ -505,10 +505,10 @@ streamline_dll_path=
 ; a value ending in a file name (contains '.') is loaded verbatim. Prefer the
 ; plain loader DLL names: a copy renamed to dxgi.dll/d3d*.dll acts as a proxy
 ; and cannot intercept a game that already resolved the system module.
-; Configured tools load in the order ReShade -> OptiScaler -> Special K and any
-; copy the game already loaded is kept. OptiScaler must load before Special K's
-; thread-creation hook exists, and CaptureEngine waits for the Windows loader
-; work queue to drain before each later load, because the tools' initialization
+; Configured tools load in the order Special K -> ReShade -> OptiScaler and any
+; copy the game already loaded is kept. Before each tool after the first,
+; CaptureEngine waits for the Windows loader work queue to drain and suspends
+; the other process threads during the load, because the tools' initialization
 ; threads perform their own DLL loads and back-to-back LoadLibrary calls
 ; deadlock the loader otherwise. These are third-party injected DLLs and are
 ; not anti-cheat safe. Each tool still reads its own per-game configuration

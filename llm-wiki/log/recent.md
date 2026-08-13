@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED (structural): peer-thread suspension around every tool load after the first
+
+- Session `20260813_031321` proved Special-K-last + quiescence wait is still insufficient: CE's hook thread held the
+  loader lock in Special K's DllMain, whose inner LoadLibrary re-entered ReShade/Steam/OptiScaler loader hooks and
+  blocked on OptiScaler's mutex, held by an OptiScaler background thread doing NEW loader work. Order and wait alone
+  cannot win — both tools have recurring background loader activity.
+- Structural fix in `hook/main_thirdparty_load.cpp`: before every tool load after the first, CE waits for loader
+  quiescence and then SUSPENDS all other process threads (stable TH32CS_SNAPTHREAD enumeration + bounded
+  post-suspension probe with resume-and-retry if a peer was caught inside the loader). Peers are resumed immediately
+  after the LoadLibrary returns. Order back to Special K -> ReShade -> OptiScaler: with peers suspended, Special K's
+  enumerator cannot hold its thread-hook critical section across a loader call, so OptiScaler's DllMain thread
+  creation proceeds. `ShouldSuspendPeerThreadsForToolLoad` added to `hook/common/third_party_load_policy.h`;
+  template/README/wiki updated.
+
 ### 2026-08-13 - FIXED (order finalized): Special K now loads LAST; quiescence wait alone was not enough
 
 - Session `20260813_025615` (all three tools, Special-K-first + quiescence wait): CE's hook thread held the loader

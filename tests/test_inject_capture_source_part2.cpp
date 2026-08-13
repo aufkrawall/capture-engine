@@ -200,13 +200,16 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     const size_t specialKEntry =
         source.find("{ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},");
     const size_t quiescenceGate = source.find("ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)");
+    const size_t suspensionGate = source.find("ShouldSuspendPeerThreadsForToolLoad(toolIndex)");
     const size_t loadCall = source.find("LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str())");
     ASSERT_NE(specialKEntry, std::string::npos);
     ASSERT_NE(optiScalerEntry, std::string::npos);
     ASSERT_NE(quiescenceGate, std::string::npos);
+    ASSERT_NE(suspensionGate, std::string::npos);
     ASSERT_NE(loadCall, std::string::npos);
-    EXPECT_LT(optiScalerEntry, specialKEntry);
+    EXPECT_LT(specialKEntry, optiScalerEntry);
     EXPECT_LT(quiescenceGate, loadCall);
+    EXPECT_LT(suspensionGate, loadCall);
 }
 
 TEST(InjectLifecycleSourceTest, Dx11TempDeviceCreationBypassesEntryPatches) {
