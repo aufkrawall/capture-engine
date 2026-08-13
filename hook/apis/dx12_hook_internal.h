@@ -62,8 +62,6 @@ namespace {
 #include "../common/streamline_compat.h"
 #include "../common/streamline_runtime_policy.h"
 #include "../../common/secure_dll_loading.h"
-#include "../../common/crash_handler.h"
-#include "../../common/crash_dump_policy.h"
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"

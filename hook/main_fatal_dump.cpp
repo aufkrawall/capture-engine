@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include "apis/dx12_hook_internal.h"
+
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 
 std::atomic<bool> g_MiniDumpWriteDumpHookInstalled{false};
@@ -330,4 +332,48 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   t_InFatalTerminationDumpHook = false;
   return wroteDump;
+}
+
+void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context) {
+  static std::atomic<bool> s_attempted{false};
+  bool expected = false;
+  if (!s_attempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
+    return;
+  }
+
+  const char* dumpHint = "swapchain_access_denied_exhausted.dmp";
+  HookLogImportant(
+      "CreateSwapChainForHwnd: E_ACCESSDENIED recovery exhausted (hwnd=%p context=%s) — capturing a diagnostic "
+      "dump for the fatal FG-switch failure (external helper first, so the game thread is not suspended)",
+      hWnd, context && context[0] ? context : "unknown");
+
+  // Prefer the EXTERNAL dump helper: it captures from a separate process, so the game's threads are
+  // never suspended for the duration of a large dump write. An in-process MiniDumpWriteDump on the
+  // render thread froze dx12_fg_switch_test for ~36 s (session 20260813_220022, 114 MB dump) and
+  // tripped the FreezeWatchdog — the external helper finished the same capture without freezing.
+  const ExternalPreTerminationDumpResult externalResult =
+      TryCapturePreTerminationDumpWithExternalHelper(context && context[0] ? context : "CreateSwapChainForHwnd",
+                                                     dumpHint);
+  bool wroteDump = externalResult == ExternalPreTerminationDumpResult::kCaptured;
+  if (!wroteDump && externalResult != ExternalPreTerminationDumpResult::kTimedOut) {
+    // Minimal in-process fallback (stacks + module list only) so a missing helper still yields a
+    // small, fast dump instead of a long full-memory capture.
+    CONTEXT capturedContext = {};
+    RtlCaptureContext(&capturedContext);
+    EXCEPTION_RECORD synthesizedRecord = {};
+    synthesizedRecord.ExceptionCode = 0xE000EACC;  // "EACC" - the E_ACCESSDENIED exhaustion sentinel
+    synthesizedRecord.ExceptionAddress = __builtin_return_address(0);
+    EXCEPTION_POINTERS pointers = {};
+    pointers.ExceptionRecord = &synthesizedRecord;
+    pointers.ContextRecord = &capturedContext;
+    MINIDUMP_EXCEPTION_INFORMATION exceptionInfo = {};
+    exceptionInfo.ThreadId = GetCurrentThreadId();
+    exceptionInfo.ExceptionPointers = &pointers;
+    exceptionInfo.ClientPointers = FALSE;
+    wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
+                                           ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
+  }
+  HookLogImportant("CreateSwapChainForHwnd: E_ACCESSDENIED exhaustion diagnostic dump %s (context=%s)",
+                   wroteDump ? "captured" : "failed", context && context[0] ? context : "unknown");
 }

@@ -66,41 +66,6 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
 }  // namespace
 
 
-void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context) {
-    static std::atomic<bool> s_dumpAttempted{false};
-    bool expected = false;
-    if (!s_dumpAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
-                                                 std::memory_order_acquire)) {
-        return;
-    }
-
-    CONTEXT capturedContext = {};
-    RtlCaptureContext(&capturedContext);
-    EXCEPTION_RECORD synthesizedRecord = {};
-    synthesizedRecord.ExceptionCode = 0xE000EACC;  // "EACC" - the E_ACCESSDENIED exhaustion sentinel
-    synthesizedRecord.ExceptionAddress = CE_RETURN_ADDRESS();
-    EXCEPTION_POINTERS pointers = {};
-    pointers.ExceptionRecord = &synthesizedRecord;
-    pointers.ContextRecord = &capturedContext;
-    MINIDUMP_EXCEPTION_INFORMATION exceptionInfo = {};
-    exceptionInfo.ThreadId = GetCurrentThreadId();
-    exceptionInfo.ExceptionPointers = &pointers;
-    exceptionInfo.ClientPointers = FALSE;
-
-    HookLogImportant(
-        "CreateSwapChainForHwnd: E_ACCESSDENIED recovery exhausted (hwnd=%p context=%s) — writing a diagnostic "
-        "minidump so the fatal FG-switch failure keeps a dump even though the process exits cleanly",
-        hWnd, context && context[0] ? context : "unknown");
-    const bool wroteDump =
-        WriteSupplementalCrashDump("swapchain_access_denied_exhausted.dmp", GetCurrentProcess(),
-                                   GetCurrentProcessId(), ce::crash_dump_policy::kQuickAssertDumpType, &exceptionInfo);
-    HookLogImportant(
-        "CreateSwapChainForHwnd: E_ACCESSDENIED exhaustion diagnostic dump %s (dir=%s context=%s)",
-        wroteDump ? "captured" : "failed", GetCrashDumpDirectory().c_str(),
-        context && context[0] ? context : "unknown");
-}
-
-
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
 if (!pDevice || !pSwapChain)
     return;

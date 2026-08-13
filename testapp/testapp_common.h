@@ -71,9 +71,11 @@ inline std::wstring WriteFatalSwitchDump(const wchar_t* nameHint, unsigned long 
     exceptionInfo.ExceptionPointers = &exceptionPointers;
     exceptionInfo.ClientPointers = FALSE;
 
-    const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
-        MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
-        MiniDumpWithIndirectlyReferencedMemory | MiniDumpIgnoreInaccessibleMemory);
+    // Keep the capture light: this runs on the render thread of a live game. Data-segment /
+    // indirectly-referenced-memory scans make the dump large and slow and visibly freeze the app
+    // (session 20260813_220022); stacks plus the module list are enough to attribute the failure.
+    const MINIDUMP_TYPE dumpType =
+        static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
     const BOOL wroteDump = miniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dumpFile, dumpType,
                                              &exceptionInfo, nullptr, nullptr);
     CloseHandle(dumpFile);

@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED (freeze): the new exhaustion minidump ran in-process and froze the app ~36 s; dumps now go through the external helper (DLSS switch also proved the 1-foreign-ref pin)
+
+- Session `20260813_220022` (build 0.1.6027, dx12_fg_switch_test via Steam overlay + RTSS, switch to DLSS FG):
+  Streamline's `linkSwapchainToCmdQueue` failed E_ACCESSDENIED ("Zugriff verweigert"), the app's native fallback
+  failed identically, and the process appeared to FREEZE for ~36 s before the user killed it. This time the session
+  kept dumps: `dx12_fg_switch_test.exe_2026-08-13_22-00-56.dmp` (FreezeWatchdog) and
+  `crash_external_swapchain_access_denied_exhausted_f3172865.dmp` (the new exhaustion dump).
+- Freeze root cause (cdb-confirmed): the exhaustion dump ran MiniDumpWriteDump IN-PROCESS on the render thread with
+  the quick-assert flags (DataSegs/IndirectlyReferencedMemory/FullMemoryInfo) - a 114 MB capture took ~36 s and
+  tripped the FreezeWatchdog. Render-thread stack: `DeepHookCreateSwapChainForHwnd ->
+  CaptureCreateSwapchainAccessDeniedExhaustedDump -> WriteSupplementalCrashDump -> HookedMiniDumpWriteDump ->
+  dbgcore!MiniDumpWriteDump`; the create chain below proves Steam AND RTSS both processed this create
+  (`DetourCreateSwapChainForHwndGlobal -> gameoverlayrenderer64!OverlayHookD3D3 -> RTSSHooks64 -> DeepHook`).
+- Pin evidence (same family as FSR): `SwapChain: post-destruction real refcount=1` - exactly ONE foreign reference
+  pins the old chain after the game and CE released everything; pre-cleanup probe refs=2 (incl. probe), post-cleanup
+  and post-entry-retry probes show no tracked chains. The live-entry retry ran RTSS's handler again without
+  releasing it.
+- Fix: `CaptureCreateSwapchainAccessDeniedExhaustedDump` moved to the main dump layer (`hook/main_fatal_dump.cpp`)
+  and now prefers the EXTERNAL dump helper (`captureengine.exe --dump-helper` - the game's threads are never
+  suspended for a large capture), falling back to a minimal in-process MiniDumpNormal-class dump when the helper is
+  unavailable. The test app's own fatal dump is now MiniDumpNormal+ThreadInfo+UnloadedModules instead of the heavy
+  data-segment scan.
+- Tests: `AccessDeniedExhaustionWritesDiagnosticDumpAndBracketedPinProbes` pins the external-helper-first order and
+  the light fallback (`tests/test_dxgi_shared_access_denied_dump.cpp`). `--verify` gate passed on 0.1.6029.
+  OPEN: user re-run - no freeze expected on the failure path; the dump plus probes should finally attribute the
+  single remaining foreign reference.
 ### 2026-08-13 - ROOT-CAUSE REFINEMENT + DUMP COVERAGE: FSR re-entry after FSR->OFF still failed E_ACCESSDENIED; fatal switch failures now always produce dumps
 
 - Session `20260813_211734` (build 0.1.6023, dx12_fg_switch_test via Steam overlay + RTSS): the first OFF->FSR
@@ -187,40 +213,3 @@
   `FeatureResolutionSkipsStreamlineTeardownRace` (`tests/test_streamline_runtime_policy_part2.cpp`). `--verify` gate
   passed on 0.1.6007 (full native suite, Python self-tests, lint/tidy, ASan/UBSan). OPEN: user re-run of the FSR ->
   DLSS -> FSR -> all-off sequence must keep the overlay visible AND crash-free.
-
-### 2026-08-13 - FIXED (follow-up): FSR FG -> all-off still blanked the overlay when DLSS FG ran in between
-
-- Session `20260813_155313` (build 0.1.6005): with DLSS FG used between FSR sessions, the final FSR -> all-off switch
-  blanked the overlay again for 60 presents / 484 ms (`INTERRUPTED/UNPROVEN` present 728 -> `RESTORED` present 788).
-  The keep-live never armed because the game-created recovery swapchain REUSED the previous swapchain's COM pointer
-  address, so phase2 never processed the replacement and no recovery reinit ran before the outer SL-FG-OFF teardown
-  force-cleared the overlay.
-- Fix: the teardown end arms a one-shot exact lifetime proof (`dx12_hook_g_ExactGameSwapchainRecoverySwapchain`,
-  armed with the game-created swapchain next to `PostNativeFSROffGameSwapchainRecoveryQueue`); phase1 feeds it into
-  `ShouldProcessLogicalSwapchainReplacement` so an ABA-equal pointer is processed as a new lifetime, and phase2
-  consumes the proof once. The existing recovery reinit + keep-live then rebuild the overlay in the same Present and
-  veto the outer teardown (zero uncovered presents).
-- Tests: `ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIsConsumedOnce` +
-  `ExactGameSwapchainRecoveryLifetimeProofClearedAtRecoveryQueueResetSites` (`tests/test_dxgi_shared_part12.cpp`),
-  plus the outer-off guard-chain pin update. OPEN: user re-run confirmed the overlay stays visible on the final
-  FSR -> all-off switch (no `INTERRUPTED/UNPROVEN` markers).
-
-### 2026-08-13 - FIXED: FSR FG -> all-FG-off switch blanked the overlay for 60 presents (453 ms) at the end of the sequence
-
-- Session `20260813_153118` (build 0.1.6003, dx12_fg_switch_test): the overlay briefly disappeared at the END of the
-  FSR FG -> all-FG-off switching sequence. `[OVERLAY COVERAGE]` shows `INTERRUPTED/UNPROVEN` at present 1745 and
-  `RESTORED ... missed=60 durationMs=453 gate=overlay-backend-uninitialized` at present 1805.
-- Root cause: the game-created recovery swapchain correctly ended the runtime-owned native-FSR teardown and the first
-  Present on it warm-reinited the overlay on the captured game queue, but on the SAME Present the late outer
-  `g_StreamlineFGRunning` OFF edge (latched true across the whole FSR session) force-cleared `overlayInit` +
-  `CleanupRTVs` ("stale SL backbuffers") and armed the generic 60-frame reinit cooldown, tearing down the just-built
-  backend. The RTVs were NOT stale: they were rebuilt on the game's own native swapchain.
-- Fix: `FrameProcessSession::nativeFSRGameSwapchainRecoveryReinitializedThisPresent` latches the phase2
-  `ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff` decision, and the new
-  `ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery` policy makes the phase5 outer OFF teardown keep the
-  freshly rebuilt backend live and bypass the cooldown (mirrors the DLSS-off normal-return keep-live). A real runtime
-  takeover, missing reinit proof, or removed device keeps the protective teardown.
-- Tests: policy halves in `tests/test_dxgi_shared_part9.cpp`, source invariant in `tests/test_dxgi_shared_part12.cpp`,
-  and the outer-off guard-chain source pin updated. `--verify` gate passed on 0.1.6005 (full native suite, Python
-  self-tests, lint/tidy, ASan/UBSan). OPEN: needs the user's re-run of the FSR FG -> all-off switch; the full
-  four-direction FG matrix still gates F2/F4.

@@ -3,6 +3,43 @@
 Entries are newest-first. Rotated out of `recent.md` on 2026-08-13 to keep it near
 the 230-line rolling-memory ceiling.
 
+### 2026-08-13 - FIXED (follow-up): FSR FG -> all-off still blanked the overlay when DLSS FG ran in between
+
+- Session `20260813_155313` (build 0.1.6005): with DLSS FG used between FSR sessions, the final FSR -> all-off switch
+  blanked the overlay again for 60 presents / 484 ms (`INTERRUPTED/UNPROVEN` present 728 -> `RESTORED` present 788).
+  The keep-live never armed because the game-created recovery swapchain REUSED the previous swapchain's COM pointer
+  address, so phase2 never processed the replacement and no recovery reinit ran before the outer SL-FG-OFF teardown
+  force-cleared the overlay.
+- Fix: the teardown end arms a one-shot exact lifetime proof (`dx12_hook_g_ExactGameSwapchainRecoverySwapchain`,
+  armed with the game-created swapchain next to `PostNativeFSROffGameSwapchainRecoveryQueue`); phase1 feeds it into
+  `ShouldProcessLogicalSwapchainReplacement` so an ABA-equal pointer is processed as a new lifetime, and phase2
+  consumes the proof once. The existing recovery reinit + keep-live then rebuild the overlay in the same Present and
+  veto the outer teardown (zero uncovered presents).
+- Tests: `ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIsConsumedOnce` +
+  `ExactGameSwapchainRecoveryLifetimeProofClearedAtRecoveryQueueResetSites` (`tests/test_dxgi_shared_part12.cpp`),
+  plus the outer-off guard-chain pin update. OPEN: user re-run confirmed the overlay stays visible on the final
+  FSR -> all-off switch (no `INTERRUPTED/UNPROVEN` markers).
+
+### 2026-08-13 - FIXED: FSR FG -> all-FG-off switch blanked the overlay for 60 presents (453 ms) at the end of the sequence
+
+- Session `20260813_153118` (build 0.1.6003, dx12_fg_switch_test): the overlay briefly disappeared at the END of the
+  FSR FG -> all-FG-off switching sequence. `[OVERLAY COVERAGE]` shows `INTERRUPTED/UNPROVEN` at present 1745 and
+  `RESTORED ... missed=60 durationMs=453 gate=overlay-backend-uninitialized` at present 1805.
+- Root cause: the game-created recovery swapchain correctly ended the runtime-owned native-FSR teardown and the first
+  Present on it warm-reinited the overlay on the captured game queue, but on the SAME Present the late outer
+  `g_StreamlineFGRunning` OFF edge (latched true across the whole FSR session) force-cleared `overlayInit` +
+  `CleanupRTVs` ("stale SL backbuffers") and armed the generic 60-frame reinit cooldown, tearing down the just-built
+  backend. The RTVs were NOT stale: they were rebuilt on the game's own native swapchain.
+- Fix: `FrameProcessSession::nativeFSRGameSwapchainRecoveryReinitializedThisPresent` latches the phase2
+  `ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff` decision, and the new
+  `ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery` policy makes the phase5 outer OFF teardown keep the
+  freshly rebuilt backend live and bypass the cooldown (mirrors the DLSS-off normal-return keep-live). A real runtime
+  takeover, missing reinit proof, or removed device keeps the protective teardown.
+- Tests: policy halves in `tests/test_dxgi_shared_part9.cpp`, source invariant in `tests/test_dxgi_shared_part12.cpp`,
+  and the outer-off guard-chain source pin updated. `--verify` gate passed on 0.1.6005 (full native suite, Python
+  self-tests, lint/tidy, ASan/UBSan). OPEN: needs the user's re-run of the FSR FG -> all-off switch; the full
+  four-direction FG matrix still gates F2/F4.
+
 ### 2026-08-13 - FIXED: orphaned below-foreign-chain FSR deep-draw state froze Talos on the FSR->DLSS menu switch
 
 - Session `20260813_142910` (build 0.1.5999, Talos + Steam overlay + official FFX FSR FG): the game raised a
