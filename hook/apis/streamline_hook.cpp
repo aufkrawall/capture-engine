@@ -87,6 +87,11 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
         !ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(moduleBaseName)) {
         return;
     }
+    // The interposer's plugin dispatch table can still reference any departing sl.* module (even
+    // one with no CE hook slots in it, whose unload is otherwise silent). Block feature-function
+    // resolution until the next sl.* load proves the teardown finished and a fresh generation is
+    // usable.
+    streamline_hook_g_StreamlineTeardownInFlight.store(true, std::memory_order_release);
     // Tear-down generation: any in-flight feature-hook resolution must notice this unload even
     // when the departing module is not the one whose export it is calling (sl.interposer's
     // slGetFeatureFunction can dispatch into a plugin that unloaded first).
@@ -179,6 +184,8 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         return;
     }
 
+    // A fresh sl.* instance proves the previous teardown completed; re-arm feature resolution.
+    streamline_hook_g_StreamlineTeardownInFlight.store(false, std::memory_order_release);
     streamline_hook_g_NoModulesLogged.store(false, std::memory_order_release);
     const bool inspectedModule = InstallHooksForModule(module, moduleNameOrPath);
     bool resolvedDLSSG = false;

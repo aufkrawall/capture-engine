@@ -101,11 +101,15 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
     EXPECT_NE(hook.find("ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true)"), std::string::npos);
     EXPECT_NE(install.find("const bool foundModule = ScanLoadedStreamlineModules();"), std::string::npos);
 
-    // The query guard pins both the feature plugin and the interposer via their full paths and
-    // rejects the query when the generation changed between the liveness check and the pins.
+    // The query guard pins EVERY loaded sl.* module (not only the feature plugin and the
+    // interposer), fails closed while a teardown is in flight, and rejects the query when the
+    // generation changed between the liveness check and the pins.
     EXPECT_NE(resolve.find("class ScopedStreamlineFeatureQueryGuard"), std::string::npos);
     EXPECT_NE(resolve.find("PinLoadedStreamlineModule"), std::string::npos);
     EXPECT_NE(resolve.find("LoadLibraryA(modulePath)"), std::string::npos);
+    EXPECT_NE(resolve.find("OpenLoadedModuleSnapshotWithRetry"), std::string::npos);
+    EXPECT_NE(resolve.find("IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath)"), std::string::npos);
+    EXPECT_NE(resolve.find("kMaxPinnedStreamlineFeatureQueryModules"), std::string::npos);
     EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.interposer.dll\")"), std::string::npos);
     EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.dlss_g.dll\")"), std::string::npos);
     EXPECT_NE(resolve.find("GetModuleHandleA(\"sl.reflex.dll\")"), std::string::npos);
@@ -116,6 +120,53 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
     EXPECT_NE(resolve.find("bool TryResolveReflexFeatureHooks(bool proactiveScan)"), std::string::npos);
     EXPECT_NE(resolve.find("} else if (!GetModuleHandleA(\"sl.dlss_g.dll\"))"), std::string::npos);
     EXPECT_NE(resolve.find("} else if (!GetModuleHandleA(\"sl.reflex.dll\"))"), std::string::npos);
+}
+
+// Crash 20260813_160845 (dx12_fg_switch_test, DLSS FG used between FSR sessions): the HookThread's
+// proactive Reflex resolution held pins on sl.reflex + sl.interposer, but the interposer's
+// slGetFeatureFunction dispatched into sl.dlss_d.dll, whose earlier unload had been silent (no CE
+// hook slots in its range, so nothing logged) and could not be detected by the generation snapshot
+// (the bump had already happened). Pin that every sl.* unload latches teardown-in-flight, every
+// sl.* load clears it, both resolution paths fail closed while it is set, and returned function
+// pointers are only hooked when no teardown was observed during the query and the pointer still
+// belongs to a loaded module.
+TEST(StreamlineRuntimePolicyTest, FeatureResolutionLatchesTeardownInFlightUntilNextStreamlineLoad) {
+    namespace fs = std::filesystem;
+    const fs::path hookSource = fs::current_path() / "hook" / "apis" / "streamline_hook.cpp";
+    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
+    ASSERT_TRUE(fs::exists(hookSource));
+    ASSERT_TRUE(fs::exists(resolveSource));
+    ASSERT_TRUE(fs::exists(headerSource));
+
+    const std::string hook = ce::test_source::ReadLogicalSource(hookSource);
+    const std::string resolve = ce::test_source::ReadLogicalSource(resolveSource);
+    const std::string header = ce::test_source::ReadLogicalSource(headerSource);
+    ASSERT_FALSE(hook.empty());
+    ASSERT_FALSE(resolve.empty());
+    ASSERT_FALSE(header.empty());
+
+    // The latch lives next to the unload-generation counter and is set by every tracked unload...
+    EXPECT_NE(header.find("streamline_hook_g_StreamlineTeardownInFlight"), std::string::npos);
+    EXPECT_NE(hook.find("streamline_hook_g_StreamlineTeardownInFlight.store(true"), std::string::npos);
+    // ...and cleared by the next sl.* module load.
+    EXPECT_NE(hook.find("streamline_hook_g_StreamlineTeardownInFlight.store(false"), std::string::npos);
+
+    // Both resolution paths and the query guard fail closed while the teardown latch is set.
+    const size_t resolveDLSSG = resolve.find("bool TryResolveDLSSGFeatureHooks(bool proactiveScan)");
+    const size_t resolveReflex = resolve.find("bool TryResolveReflexFeatureHooks(bool proactiveScan)");
+    ASSERT_NE(resolveDLSSG, std::string::npos);
+    ASSERT_NE(resolveReflex, std::string::npos);
+    EXPECT_NE(resolve.find("streamline_hook_g_StreamlineTeardownInFlight.load(", resolveDLSSG), std::string::npos);
+    EXPECT_NE(resolve.find("streamline_hook_g_StreamlineTeardownInFlight.load(", resolveReflex), std::string::npos);
+    const size_t guardClass = resolve.find("class ScopedStreamlineFeatureQueryGuard");
+    ASSERT_NE(guardClass, std::string::npos);
+    EXPECT_LT(guardClass, resolveDLSSG);
+
+    // A returned function pointer is hooked only when no teardown was observed during the query
+    // and the pointer still belongs to a loaded module (stale cached pointers must never be patched).
+    EXPECT_NE(resolve.find("teardownObservedDuringQuery"), std::string::npos);
+    EXPECT_NE(resolve.find("DoesAddressBelongToLoadedModule("), std::string::npos);
 }
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {

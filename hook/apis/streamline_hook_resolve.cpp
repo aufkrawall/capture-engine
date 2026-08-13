@@ -1,6 +1,8 @@
 #include "streamline_hook_internal.h"
 
 namespace {
+constexpr size_t kMaxPinnedStreamlineFeatureQueryModules = 16;
+
 // Pins an already-loaded module (refcount++) so it cannot be unmapped while CE calls into the
 // Streamline runtime. Returns the same HMODULE on success, null when the module is gone or a
 // fresh instance had to be loaded (a fresh instance would leave the interposer's plugin table
@@ -25,15 +27,19 @@ HMODULE PinLoadedStreamlineModule(HMODULE module) {
 }
 
 // Guards a proactive feature-function query against the Streamline runtime being torn down.
-// dx12_fg_switch_test unloads sl.dlss_g / sl.reflex BEFORE sl.interposer when switching
-// DLSS -> FSR (session 20260812_042259), so sl.interposer's slGetFeatureFunction can dispatch
-// into an already-unmapped plugin -> DEP execute violation. The guard pins the interposer AND
-// the feature plugin for the duration of the query, and rejects the query when a tracked sl.*
-// unload started between the liveness check and the pins (generation counter).
+// dx12_fg_switch_test unloads Streamline plugins around sl.interposer when switching FG modes
+// (sessions 20260812_042259 and 20260813_160845), so sl.interposer's slGetFeatureFunction can
+// dispatch into an already-unmapped plugin -> DEP execute violation. The guard pins EVERY loaded
+// sl.* module for the duration of the query, fails closed while a teardown is in flight, and
+// rejects the query when a tracked sl.* unload started between the liveness check and the pins
+// (generation counter).
 class ScopedStreamlineFeatureQueryGuard {
 public:
     explicit ScopedStreamlineFeatureQueryGuard(const char* featureModuleName) {
         if (!featureModuleName || !featureModuleName[0]) {
+            return;
+        }
+        if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
             return;
         }
         const uint64_t generationBefore =
@@ -43,9 +49,49 @@ public:
         if (!featureModule || !interposerModule) {
             return;  // no plugin / no interposer: nothing to resolve through
         }
-        featurePin_ = PinLoadedStreamlineModule(featureModule);
-        interposerPin_ = PinLoadedStreamlineModule(interposerModule);
-        if (!featurePin_ || !interposerPin_) {
+        // Pin EVERY loaded Streamline runtime module, not only the interposer and the queried
+        // feature plugin: sl.interposer's slGetFeatureFunction walks its registered plugin table,
+        // and any unpinned sl.* plugin can be unmapped mid-query (session 20260813_160845
+        // dispatched into unmapped memory while a Reflex query held only sl.reflex + interposer
+        // pins). Pinning the full loaded set makes any dispatch target unable to unmap for the
+        // duration of the query.
+        HANDLE snapshot = INVALID_HANDLE_VALUE;
+        MODULEENTRY32 entry = {};
+        DWORD snapshotError = ERROR_SUCCESS;
+        int snapshotAttempts = 0;
+        bool failedOnFirstEntry = false;
+        if (!OpenLoadedModuleSnapshotWithRetry(snapshot, entry, snapshotError, snapshotAttempts,
+                                               failedOnFirstEntry)) {
+            return;
+        }
+        bool interposerPinned = false;
+        bool featureModulePinned = false;
+        do {
+            const char* moduleNameOrPath = entry.szExePath[0] != '\0' ? entry.szExePath : entry.szModule;
+            if (!ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath)) {
+                continue;
+            }
+            if (pinCount_ >= kMaxPinnedStreamlineFeatureQueryModules) {
+                ReleasePins();
+                CloseHandle(snapshot);
+                return;
+            }
+            HMODULE pinned = PinLoadedStreamlineModule(entry.hModule);
+            if (!pinned) {
+                ReleasePins();
+                CloseHandle(snapshot);
+                return;
+            }
+            pins_[pinCount_++] = pinned;
+            if (pinned == interposerModule) {
+                interposerPinned = true;
+            }
+            if (pinned == featureModule) {
+                featureModulePinned = true;
+            }
+        } while (Module32Next(snapshot, &entry));
+        CloseHandle(snapshot);
+        if (!interposerPinned || !featureModulePinned) {
             ReleasePins();
             return;
         }
@@ -69,19 +115,16 @@ public:
 
 private:
     void ReleasePins() {
-        if (featurePin_) {
-            FreeLibrary(featurePin_);
-            featurePin_ = nullptr;
+        for (size_t i = 0; i < pinCount_; ++i) {
+            FreeLibrary(pins_[i]);
+            pins_[i] = nullptr;
         }
-        if (interposerPin_) {
-            FreeLibrary(interposerPin_);
-            interposerPin_ = nullptr;
-        }
+        pinCount_ = 0;
         valid_ = false;
     }
 
-    HMODULE featurePin_ = nullptr;
-    HMODULE interposerPin_ = nullptr;
+    HMODULE pins_[kMaxPinnedStreamlineFeatureQueryModules] = {};
+    size_t pinCount_ = 0;
     bool valid_ = false;
 };
 
@@ -330,6 +373,9 @@ bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
     if (!originalGetFeatureFunction) {
         return false;
     }
+    if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
+        return false;
+    }
     if (proactiveScan) {
         // The HookThread's loaded-module scan can race with the app tearing the Streamline
         // runtime down (DLSS -> FSR switch): the interposer's slGetFeatureFunction dispatches
@@ -352,8 +398,13 @@ bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
 
     if (!streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
         void* streamline_hook_function = nullptr;
+        const uint64_t queryGenerationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         const slResult result = originalGetFeatureFunction(streamline_hook_kSLFeatureDLSSG, "slDLSSGSetOptions", streamline_hook_function);
-        if (result == streamline_hook_kSlResultOk && streamline_hook_function) {
+        const bool teardownObservedDuringQuery =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+        if (result == streamline_hook_kSlResultOk && streamline_hook_function && !teardownObservedDuringQuery &&
+            DoesAddressBelongToLoadedModule(streamline_hook_function, nullptr, nullptr, 0, nullptr)) {
             const bool hooked = MaybeHookDLSSGSetOptions(streamline_hook_function, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
@@ -364,8 +415,13 @@ bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
 
     if (!streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
         void* streamline_hook_function = nullptr;
+        const uint64_t queryGenerationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         const slResult result = originalGetFeatureFunction(streamline_hook_kSLFeatureDLSSG, "slDLSSGGetState", streamline_hook_function);
-        if (result == streamline_hook_kSlResultOk && streamline_hook_function) {
+        const bool teardownObservedDuringQuery =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+        if (result == streamline_hook_kSlResultOk && streamline_hook_function && !teardownObservedDuringQuery &&
+            DoesAddressBelongToLoadedModule(streamline_hook_function, nullptr, nullptr, 0, nullptr)) {
             const bool hooked = MaybeHookDLSSGGetState(streamline_hook_function, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
@@ -385,6 +441,9 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 
     auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
     if (!originalGetFeatureFunction) {
+        return false;
+    }
+    if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
         return false;
     }
     if (proactiveScan) {
@@ -411,8 +470,13 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 
     if (!streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire)) {
         queriedSleep = true;
+        const uint64_t queryGenerationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         sleepResult = originalGetFeatureFunction(streamline_hook_kSLFeatureReflex, "slReflexSleep", sleepFunction);
-        if (sleepResult == streamline_hook_kSlResultOk && sleepFunction) {
+        const bool teardownObservedDuringQuery =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+        if (sleepResult == streamline_hook_kSlResultOk && sleepFunction && !teardownObservedDuringQuery &&
+            DoesAddressBelongToLoadedModule(sleepFunction, nullptr, nullptr, 0, nullptr)) {
             const bool hooked = MaybeHookReflexSleep(sleepFunction, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire)) {
@@ -423,8 +487,13 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 
     if (!streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
         queriedSetOptions = true;
+        const uint64_t queryGenerationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         setOptionsResult = originalGetFeatureFunction(streamline_hook_kSLFeatureReflex, "slReflexSetOptions", setOptionsFunction);
-        if (setOptionsResult == streamline_hook_kSlResultOk && setOptionsFunction) {
+        const bool teardownObservedDuringQuery =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+        if (setOptionsResult == streamline_hook_kSlResultOk && setOptionsFunction && !teardownObservedDuringQuery &&
+            DoesAddressBelongToLoadedModule(setOptionsFunction, nullptr, nullptr, 0, nullptr)) {
             const bool hooked = MaybeHookReflexSetOptions(setOptionsFunction, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
@@ -438,8 +507,13 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
         streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire) <
             kReflexSetConstantsUnavailableQueryLimit) {
         queriedSetConstants = true;
+        const uint64_t queryGenerationBefore =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         setConstantsResult = originalGetFeatureFunction(streamline_hook_kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
-        if (setConstantsResult == streamline_hook_kSlResultOk && setConstantsFunction) {
+        const bool teardownObservedDuringQuery =
+            streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+        if (setConstantsResult == streamline_hook_kSlResultOk && setConstantsFunction && !teardownObservedDuringQuery &&
+            DoesAddressBelongToLoadedModule(setConstantsFunction, nullptr, nullptr, 0, nullptr)) {
             streamline_hook_g_ReflexSetConstantsUnavailableQueries.store(0, std::memory_order_release);
             const bool hooked = MaybeHookReflexSetConstants(setConstantsFunction, false);
             hookedAnything |= hooked;

@@ -4,11 +4,30 @@
 ProcessFrameFlow FrameProcessSession::Phase2() {
 if (processLogicalSwapchainReplacement) {
     if (pSwapChain == dx12_hook_g_LastSwapChain &&
-        (exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof)) {
+        (exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||
+         exactGameSwapchainRecoverySwapchainProof)) {
         HookLogImportant(
             "[OVERLAY VISIBILITY] Authoritative %s swapchain creation reused the previous COM pointer "
             "address; processing it as a new lifetime (swapchain=%p)",
-            exactPostDLSSOffNormalReturnSwapchainProof ? "native-return" : "prewarmed-PostSL", pSwapChain);
+            exactGameSwapchainRecoverySwapchainProof
+                ? "game-created FSR-off recovery"
+            : exactPostDLSSOffNormalReturnSwapchainProof ? "native-return" : "prewarmed-PostSL",
+            pSwapChain);
+    }
+    if (exactGameSwapchainRecoverySwapchainProof) {
+        IDXGISwapChain* expectedSwapchain = pSwapChain;
+        dx12_hook_g_ExactGameSwapchainRecoverySwapchain.compare_exchange_strong(
+            expectedSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+    if (exactPostDLSSOffNormalReturnSwapchainProof) {
+        // One-shot consume at the TOP of the replacement handler: an ABA-equal pointer plus a
+        // still-armed proof used to reprocess the replacement on EVERY present (the old consume
+        // only ran inside the immediate-reinit branch, so the "no FG active" normal-reinit path
+        // re-armed a per-present teardown/rebuild storm — sessions 20260813_162959 and
+        // 20260813_164314: up to 191 consecutive "processing it as a new lifetime" rounds).
+        IDXGISwapChain* expectedSwapchain = pSwapChain;
+        dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(
+            expectedSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
     }
     bool deferredFreshStreamlineNoFGSwapchainCleanup = false;
     bool preserveConfirmedPostSLSwapchainChange = false;
@@ -72,6 +91,7 @@ if (processLogicalSwapchainReplacement) {
                 expectedSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
         }
         if (preserveExactPrewarmedPostSLHandoffBackend) {
+            exactPrewarmedPostSLHandoffBackendPreservedThisPresent = true;
             HookLogImportant(
                 "[OVERLAY VISIBILITY] First exact prewarmed PostSL handoff Present preserved its ready "
                 "overlay backend (oldSC=%p newSC=%p scQueue=%p origGame=%p cmdQ=%p)",
@@ -280,11 +300,6 @@ if (processLogicalSwapchainReplacement) {
                 // Force sync re-init: old allocators/fence were on the old queue.
                 if (dx12_hook_g_State.syncInit) {
                     dx12_hook_g_State.syncInit = false;
-                }
-                if (immediateReinitAfterAuthoritativeDLSSOffNormalReturn) {
-                    IDXGISwapChain* expectedSwapchain = pSwapChain;
-                    dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(
-                        expectedSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
                 }
                 HookLogImportant(
                     "DX12: Swapchain change is %s — immediate overlay "

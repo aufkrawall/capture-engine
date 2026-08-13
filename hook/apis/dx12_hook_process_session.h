@@ -61,6 +61,8 @@ public:
     bool postFSRNormalRouteOwnershipProven;
     bool authoritativeDLSSOffNormalReturnReinitializedThisPresent = false;
     bool nativeFSRGameSwapchainRecoveryReinitializedThisPresent = false;
+    bool exactGameSwapchainRecoverySwapchainProof = false;
+    bool exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
     std::unique_lock<std::recursive_mutex> lock;
     bool allowOverlayRender;
     SharedMemoryLayout* observerModeShm;

@@ -252,6 +252,9 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
         runtimeOwns = false;
         dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
         dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(pQueue, std::memory_order_release);
+        if (associatedSwapchain) {
+            dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(associatedSwapchain, std::memory_order_release);
+        }
         // The game retired its previous present queue and created this
         // swapchain on a fresh one with game provenance. Re-baseline the
         // original-game-queue anchor so frame classification counts the

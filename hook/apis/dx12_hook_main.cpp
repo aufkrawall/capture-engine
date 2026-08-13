@@ -276,6 +276,7 @@ void DX12Hook::Shutdown() {
     dx12_hook_g_NativeFSRInternalNoCallbackComposition.store(false, std::memory_order_release);
     dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
     dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
+    dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(nullptr, std::memory_order_release);
     dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(nullptr, std::memory_order_release);
     dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
     g_RenderWatchdog.SetRuntimePresentationMonitor(false);

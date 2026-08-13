@@ -549,6 +549,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
         // off/destroy recovery evidence must not leak into it.
         dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
         dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
+        dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(nullptr, std::memory_order_release);
         dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(nullptr, std::memory_order_release);
         dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
         char deferredModulePath[MAX_PATH] = {};

@@ -41,6 +41,131 @@ TEST(DXGISharedSourceTest, NativeFSRGameSwapchainRecoveryReinitKeepsOverlayLiveA
         << "the FSR->off game-swapchain recovery reinit must veto the late [outer] SL-FG-OFF teardown";
 }
 
+// FSR FG -> all-FG-off with DLSS FG in between (session 20260813_155313): the game-created recovery
+// swapchain REUSED the previous swapchain's COM pointer address, so the plain pointer-change detection
+// never processed the replacement, the recovery reinit never ran, and the outer SL-FG-OFF teardown
+// blanked the overlay for 60 presents / 484 ms again. Pin the exact one-shot lifetime proof that makes
+// the ABA-reused game-created recovery swapchain detectable as a new lifetime.
+TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIsConsumedOnce) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    // The teardown-end arms the exact one-shot lifetime proof together with the recovery queue.
+    const size_t recoveryQueueArm =
+        text.find("dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(pQueue");
+    ASSERT_NE(recoveryQueueArm, std::string::npos);
+    const size_t proofArm = text.find("dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(associatedSwapchain",
+                                      recoveryQueueArm);
+    ASSERT_NE(proofArm, std::string::npos);
+    EXPECT_LT(proofArm - recoveryQueueArm, static_cast<size_t>(400));
+
+    // Phase1 feeds the proof into the logical-replacement decision so an ABA-equal pointer still counts
+    // as a new swapchain lifetime.
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    const size_t proofLeg = text.find("exactGameSwapchainRecoverySwapchainProof", processFrame);
+    const size_t replacementDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", processFrame);
+    ASSERT_NE(proofLeg, std::string::npos);
+    ASSERT_NE(replacementDecision, std::string::npos);
+    EXPECT_LT(proofLeg, replacementDecision);
+
+    // Phase2 consumes the proof exactly once at the top of the replacement handler, before any
+    // preserve-path evaluation can return without touching the proof (a stale armed proof would
+    // otherwise reprocess the replacement on every subsequent ABA-equal Present).
+    const size_t phase2 = text.find("FrameProcessSession::Phase2()");
+    ASSERT_NE(phase2, std::string::npos);
+    const size_t consume = text.find("dx12_hook_g_ExactGameSwapchainRecoverySwapchain.compare_exchange_strong(",
+                                     phase2);
+    const size_t preserveEval =
+        text.find("ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(", phase2);
+    ASSERT_NE(consume, std::string::npos);
+    ASSERT_NE(preserveEval, std::string::npos);
+    EXPECT_LT(consume, preserveEval);
+}
+
+// Every recovery-queue reset site must also clear the one-shot lifetime proof, so evidence armed by a
+// teardown end that never reaches a Present cannot later turn a live swapchain into a spurious
+// replacement.
+TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofClearedAtRecoveryQueueResetSites) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    size_t cursor = 0;
+    int sites = 0;
+    while ((cursor = text.find("dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr", cursor)) !=
+           std::string::npos) {
+        const size_t proofClear =
+            text.find("dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(nullptr", cursor);
+        ASSERT_NE(proofClear, std::string::npos) << "recovery-queue reset site without lifetime-proof clear";
+        EXPECT_LT(proofClear - cursor, static_cast<size_t>(200));
+        cursor = proofClear + 1;
+        ++sites;
+    }
+    EXPECT_GE(sites, 3);
+}
+
+TEST(DXGISharedTest, KeepsOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+    using ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve;
+
+    // Session 20260813_162959 (FSR FG -> DLSS FG after prior switch sequences): the first Present on
+    // the fresh Streamline proxy preserved the exact prewarmed PostSL backend (RTVs already rebuilt
+    // for the new swapchain lifetime), then the stale [outer] SL-FG-OFF observer force-cleared it +
+    // armed a 60-frame cooldown; PostSL had to rebuild after a 203 ms dormancy -> visible blank.
+    // The preserved backend is current by construction, so the outer teardown must keep it live.
+    EXPECT_TRUE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(
+        /*streamlineTurnedOff=*/true, /*exactPrewarmedBackendPreservedThisPresent=*/true,
+        /*fsrFGApiActive=*/false, /*overlayInit=*/true, /*syncInit=*/true, /*deviceRemoved=*/false));
+
+    // Not an OFF edge -> not this path.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(false, true, false, true, true, false));
+    // No prewarmed-handoff preservation proof this Present -> the generic teardown owns it.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(true, false, false, true, true, false));
+    // FSR still API-active -> a live FSR takeover keeps the protective teardown.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(true, true, true, true, true, false));
+    // Backend not init/sync -> nothing live to keep (let the reinit run).
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(true, true, false, false, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(true, true, false, true, false, false));
+    // Device removed -> don't keep rendering into a removed device.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(true, true, false, true, true, true));
+}
+
+// The phase2 prewarmed-handoff preserve must latch a per-Present proof that the outer teardown
+// consults, so the freshly preserved backend can never be torn down by the late outer SL-FG-OFF
+// observer (session 20260813_162959: 203 ms PostSL dormancy after the outer teardown).
+TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffPreserveKeepsOverlayLiveAcrossLateOuterOff) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    const size_t preserveDecision =
+        text.find("ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(", processFrame);
+    const size_t proofLatch =
+        text.find("exactPrewarmedPostSLHandoffBackendPreservedThisPresent = true", preserveDecision);
+    const size_t keepLiveDecision =
+        text.find("ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(", processFrame);
+    const size_t drainSkipGuard = text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve", processFrame);
+    const size_t forceReinitGuard =
+        text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve", drainSkipGuard + 1);
+    ASSERT_NE(preserveDecision, std::string::npos);
+    ASSERT_NE(proofLatch, std::string::npos);
+    ASSERT_NE(keepLiveDecision, std::string::npos);
+    ASSERT_NE(drainSkipGuard, std::string::npos);
+    ASSERT_NE(forceReinitGuard, std::string::npos);
+    EXPECT_LT(preserveDecision, keepLiveDecision);
+    EXPECT_LT(keepLiveDecision, forceReinitGuard)
+        << "the FSR->DLSS prewarmed-handoff preserve must veto the late [outer] SL-FG-OFF teardown";
+}
+
 // RoboCop: Rogue City session 20260809_141705 crashed in
 // gameoverlayrenderer64!OverlayHookD3D3: the handler loads its Present-shaped
 // rendering callback with `mov rax,[rip+disp]` and calls it with `call rax`;

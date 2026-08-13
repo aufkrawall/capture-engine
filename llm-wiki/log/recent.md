@@ -1,4 +1,62 @@
 # llm-wiki Log
+### 2026-08-13 - FIXED: FSR FG -> DLSS FG handoff keep-live + DLSS-off native-return one-shot proof consume
+
+- Session `20260813_162959` (build 0.1.6007): the FSR->DLSS handoff preserved the exact prewarmed PostSL
+  backend on its first Present, but the late [outer] SL-FG-OFF observer force-cleared it ("stale SL backbuffers")
+  + armed a 60-frame cooldown; PostSL had to rebuild after a 203 ms dormancy -> visible blank. The preserved
+  backend already has fresh RTVs for the new swapchain lifetime, so the outer teardown now keeps it live
+  (`ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve`; phase2 latches
+  `exactPrewarmedPostSLHandoffBackendPreservedThisPresent`).
+- Session `20260813_164314` (build 0.1.6008, user-validated): ZERO `INTERRUPTED/UNPROVEN` markers across the
+  whole FSR/DLSS switch sequence, no crash, and every prewarmed handoff preserve kept the overlay visible.
+  The same log exposed a pre-existing per-present reinit storm on the DLSS->OFF native return: the exact
+  native-return proof was only consumed inside the immediate-reinit branch, so an ABA-equal pointer + the
+  still-armed proof reprocessed the replacement on EVERY present (191 consecutive "processing it as a new
+  lifetime" rounds, ~6.4 ms per present). The proof is now consumed once at the TOP of the replacement handler.
+- Tests: `KeepsOverlayLiveAcrossPrewarmedPostSLHandoffPreserve` +
+  `PrewarmedPostSLHandoffPreserveKeepsOverlayLiveAcrossLateOuterOff` (`tests/test_dxgi_shared_part12.cpp`),
+  updated `AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchingPresent` (single one-shot consume,
+  `tests/test_dxgi_shared_part3.cpp`), and the outer-off guard-chain pin update. `--verify --force-rebuild`
+  passed on 0.1.6009 (clean full rebuild after a stale ASan-instrumented vulkan-layer cache entry poisoned the
+  link; full native suite, Python self-tests, lint/tidy, ASan/UBSan). OPEN: full four-direction matrix.
+
+### 2026-08-13 - FIXED: HookThread crashed in slGetFeatureFunction while the game unloaded the Streamline stack
+
+- Session `20260813_160845` (build 0.1.6006, dx12_fg_switch_test): with the overlay-visibility fixes in place, the
+  FG switch sequence crashed. Dump: DEP 0xC0000005 at `TryResolveReflexFeatureHooks`
+  (streamline_hook_resolve.cpp:414) -> `sl_interposer!slGetFeatureFunction+0x162` -> unmapped memory; cdb resolves
+  the crash address into `<Unloaded_sl.dlss_d.dll>+0x4d7e0`.
+- Root cause: the proactive feature-resolution guard pinned only sl.interposer + the queried feature plugin, but the
+  interposer's slGetFeatureFunction walks its registered plugin table, which still referenced a plugin that had already
+  been unmapped. That unload had NO CE hook slots in its range, so it logged nothing and the generation snapshot
+  (taken after the unload) could not detect it. A follow-up exception then hit sl.interposer itself after it unloaded.
+- Fix (event-driven, no timers): every tracked sl.* unload sets `streamline_hook_g_StreamlineTeardownInFlight`; the
+  next sl.* load clears it. Both feature-resolution paths and the query guard fail closed while it is set. The guard
+  additionally pins EVERY loaded sl.* module (snapshot + LoadLibrary refcount) so no dispatch target can unmap
+  mid-query, and returned function pointers are only hooked when no teardown was observed during the query and the
+  pointer still belongs to a loaded module.
+- Tests: `FeatureResolutionLatchesTeardownInFlightUntilNextStreamlineLoad` + updated
+  `FeatureResolutionSkipsStreamlineTeardownRace` (`tests/test_streamline_runtime_policy_part2.cpp`). `--verify` gate
+  passed on 0.1.6007 (full native suite, Python self-tests, lint/tidy, ASan/UBSan). OPEN: user re-run of the FSR ->
+  DLSS -> FSR -> all-off sequence must keep the overlay visible AND crash-free.
+
+### 2026-08-13 - FIXED (follow-up): FSR FG -> all-off still blanked the overlay when DLSS FG ran in between
+
+- Session `20260813_155313` (build 0.1.6005): with DLSS FG used between FSR sessions, the final FSR -> all-off switch
+  blanked the overlay again for 60 presents / 484 ms (`INTERRUPTED/UNPROVEN` present 728 -> `RESTORED` present 788).
+  The keep-live never armed because the game-created recovery swapchain REUSED the previous swapchain's COM pointer
+  address, so phase2 never processed the replacement and no recovery reinit ran before the outer SL-FG-OFF teardown
+  force-cleared the overlay.
+- Fix: the teardown end arms a one-shot exact lifetime proof (`dx12_hook_g_ExactGameSwapchainRecoverySwapchain`,
+  armed with the game-created swapchain next to `PostNativeFSROffGameSwapchainRecoveryQueue`); phase1 feeds it into
+  `ShouldProcessLogicalSwapchainReplacement` so an ABA-equal pointer is processed as a new lifetime, and phase2
+  consumes the proof once. The existing recovery reinit + keep-live then rebuild the overlay in the same Present and
+  veto the outer teardown (zero uncovered presents).
+- Tests: `ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIsConsumedOnce` +
+  `ExactGameSwapchainRecoveryLifetimeProofClearedAtRecoveryQueueResetSites` (`tests/test_dxgi_shared_part12.cpp`),
+  plus the outer-off guard-chain pin update. OPEN: user re-run confirmed the overlay stays visible on the final
+  FSR -> all-off switch (no `INTERRUPTED/UNPROVEN` markers).
+
 ### 2026-08-13 - FIXED: FSR FG -> all-FG-off switch blanked the overlay for 60 presents (453 ms) at the end of the sequence
 
 - Session `20260813_153118` (build 0.1.6003, dx12_fg_switch_test): the overlay briefly disappeared at the END of the
@@ -166,47 +224,3 @@
   temp route's `D3D10CreateDevice`) with `InlineHook::CreateBypassTrampoline` before creating the temp device, so
   the probe operates on genuine d3d11 objects — same rule as the temp-DXGI-factory fix. Source-order test added
   to `tests/test_inject_capture_source_part2.cpp`.
-
-### 2026-08-13 - FIXED (supersedes the order-only fix): Special K + OptiScaler loader deadlocks in BOTH orders
-
-- Session `20260813_021731` (SK + OptiScaler, Special-K-last order from the previous fix): CE's hook thread held the
-  loader lock loading Special K; Special K's DllMain called LoadLibrary, which re-entered OptiScaler's mutex-guarded
-  loader hook; that mutex was held by OptiScaler's nvapi-init thread while it blocked in `LdrpDrainWorkQueue` on the
-  loader lock. Same deadlock shape as `20260813_020236`, mirrored.
-- Conclusion: load order alone cannot fix this — both orders create a loader-lock/tool-mutex cycle. The fix keeps
-  Special K FIRST and synchronizes the loads on the real Windows synchronization primitive: before every tool load
-  after the first, CE joins a trivial `LoadLibrary` probe thread (`WaitForLoaderQuiescence` in
-  `hook/main_thirdparty_load.cpp`). The probe blocks in the loader work-queue drain until every in-flight loader
-  call finished, so the next tool's DllMain never overlaps the previous tool's init loader work. No fixed sleeps.
-- Order constant back to Special K -> ReShade -> OptiScaler; `ShouldWaitForLoaderQuiescenceBeforeToolLoad` added to
-  `hook/common/third_party_load_policy.h` with tests in `tests/test_third_party_load_policy.cpp` and a source-order
-  pin in `tests/test_inject_capture_source_part2.cpp`. Template/README/wiki order and rationale updated.
-
-### 2026-08-13 - FIXED: ReShade + OptiScaler + Special K startup deadlock (0.1.5983 -> next)
-
-- Session `20260813_020236` (manual 21MB dump): with all three tools configured, the game never fully started.
-  CE's hook thread was inside `LdrpLoadDllInternal` loading OptiScaler; OptiScaler's DllMain created a thread and
-  hit Special K's CreateRemoteThread hook, which waited on a Special K critical section; Special K's init threads
-  were in `FreeLibraryAndExitThread` draining the loader work queue (loader lock held by CE's hook thread), and the
-  game's main thread waited on the same Special K critical section. Classic 3-way deadlock.
-- Fix: Special K now loads LAST. ReShade and OptiScaler load before Special K's early thread hooks exist (their
-  DllMains are then clean, as the working ReShade+OptiScaler combo proves), and Special K's own DllMain is already
-  proven safe standalone. This also matches the projects' own supported combination (OptiScaler's `LoadSpecialK`
-  option loads Special K after OptiScaler). Order constant updated in `hook/common/third_party_load_policy.h`,
-  executor array in `hook/main_thirdparty_load.cpp`, tests in `tests/test_third_party_load_policy.cpp`, and the
-  template/README/wiki order text.
-
-### 2026-08-13 - FIXED: game-close UAF when ReShade proxies the swapchain (0.1.5982 -> next)
-
-- Session `20260813_012516` (Strange Brigade DX12 + ReShade 6.8): gameplay/overlay fine, crash on close —
-  DEP at `0x10000000000` from `reshade!Release` while `CWrapDXGISwapChain::~CWrapDXGISwapChain` ran.
-- Root cause: CE's wrapper `Release()` mirrors one `m_pReal->Release()` per external wrapper ref, so the final
-  external release already consumed the wrapper's base reference. The destructor then released the four promoted
-  interface refs (the proxy's exact remaining refcount -> ReShade destroyed proxy and genuine swapchain) and
-  released the base reference once more: use-after-free on the freed proxy, `_orig` dangling.
-- Fix: `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor` in
-  `hook/common/dx12_overlay_policy/streamline_ownership.h` — skip the base release on the releasing path
-  (`wrapperReleasing=true`); the Streamline non-retaining wrapper keeps returning its borrowed reference.
-  Guard added in `hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp`. Tests:
-  `tests/test_dxgi_shared_part6.cpp` (policy values) + source-order pin in
-  `tests/test_inject_capture_source_part2.cpp`.

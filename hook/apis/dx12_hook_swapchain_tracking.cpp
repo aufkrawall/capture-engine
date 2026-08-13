@@ -264,6 +264,7 @@ ForceClearNativeFSRInternalNoCallbackComposition(
     "proven Streamline takeover cleared stale native-FG Present ownership");
 dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
 dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
+dx12_hook_g_ExactGameSwapchainRecoverySwapchain.store(nullptr, std::memory_order_release);
 HookLogImportant(
     "DX12: Proven Streamline takeover after FSR — cleared stale native-FG Present ownership "
     "(source=%s proof=%s explicit=%d authoritativeHandoff=%d fsrApi=%d handoffPending=%d "

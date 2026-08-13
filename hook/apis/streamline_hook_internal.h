@@ -559,6 +559,16 @@ inline PFN_slEvaluateFeature streamline_hook_g_Original_slEvaluateFeature = null
 // before pinning the modules and rejects the query when a teardown started in between.
 inline std::atomic<uint64_t> streamline_hook_g_StreamlineModuleUnloadGeneration{0};
 
+// Set by every tracked sl.* module unload (OnModuleUnloaded) and cleared by the next sl.* module
+// load (OnModuleLoaded). While set, the Streamline runtime is being torn down or its plugin table
+// is stale, so feature-function resolution must not call sl.interposer's slGetFeatureFunction: its
+// internal dispatch can walk into a plugin that was already unmapped (session 20260813_160845:
+// DEP at a freed sl.dlss_d address from sl_interposer!slGetFeatureFunction+0x162 while only
+// sl.reflex + sl.interposer were pinned; that plugin had no hook slots, so its unload logged
+// nothing but still bumped the unload generation — the generation snapshot cannot detect a
+// teardown that already completed). Event-driven: no sleeps, timers, or polling.
+inline std::atomic<bool> streamline_hook_g_StreamlineTeardownInFlight{false};
+
 inline PFN_slDLSSGSetOptions streamline_hook_g_Original_slDLSSGSetOptions = nullptr;
 
 inline PFN_slDLSSGGetState streamline_hook_g_Original_slDLSSGGetState = nullptr;

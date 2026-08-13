@@ -136,8 +136,23 @@ TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchi
     ASSERT_NE(consume, std::string::npos);
     ASSERT_NE(preserve, std::string::npos);
     EXPECT_LT(lifetimeDecision, decision);
-    EXPECT_LT(decision, consume);
+    // The one-shot proof consume sits at the TOP of the replacement handler, before the reinit
+    // decision and any preserve-path evaluation: an ABA-equal pointer with a still-armed proof
+    // must never reprocess the replacement on a later Present (per-present reinit storm,
+    // sessions 20260813_162959 / 20260813_164314).
+    EXPECT_LT(consume, decision);
     EXPECT_LT(consume, preserve);
+
+    // Exactly one consume exists: the old branch-scoped consume (immediate-reinit only) is gone.
+    size_t consumeCount = 0;
+    for (size_t cursor = text.find(
+             "dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(");
+         cursor != std::string::npos;
+         cursor = text.find("dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(",
+                            cursor + 1)) {
+        ++consumeCount;
+    }
+    EXPECT_EQ(consumeCount, 1u);
 }
 
 TEST(DXGISharedTest, ExactCreationProofDefeatsSwapchainPointerABAReuse) {
@@ -772,4 +787,3 @@ TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleRequiresExactShape) 
     EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true, true,
                                                            true, true, true));
 }
-

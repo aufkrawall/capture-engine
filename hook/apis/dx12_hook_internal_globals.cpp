@@ -213,6 +213,8 @@ std::atomic<bool> dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain{fa
 
 std::atomic<ID3D12CommandQueue*> dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue{nullptr};
 
+std::atomic<IDXGISwapChain*> dx12_hook_g_ExactGameSwapchainRecoverySwapchain{nullptr};
+
 std::atomic<IDXGISwapChain*> dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain{nullptr};
 
 std::atomic<IDXGISwapChain*> dx12_hook_g_PrewarmedPostSLHandoffSwapchain{nullptr};

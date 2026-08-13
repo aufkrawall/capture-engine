@@ -56,6 +56,22 @@ inline bool ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(bool postSLConfirm
            !protectedOfficialFFXStartupPending;
 }
 
+// FSR-FG -> DLSS-FG handoff whose first Present preserved the exact prewarmed PostSL backend: the
+// prewarm already rebuilt the RTV/sync state for the fresh Streamline swapchain lifetime, so the
+// backend is NOT bound to stale SL backbuffers. The late [outer] SL-FG-OFF observer (whose tracking
+// can still latch the previous DLSS epoch) must not force-clear that freshly preserved backend and
+// arm the 60-frame reinit cooldown — PostSL would then have to rebuild after a dormant window and
+// the overlay blinks out (session 20260813_162959: outer teardown at the FSR->DLSS handoff, PostSL
+// synthetic takeover 203 ms later, visible blank in between). Keep the preserved backend live and
+// skip the teardown + cooldown; the preserved state is proven current by the prewarm.
+inline bool ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(bool streamlineTurnedOff,
+                                                                      bool exactPrewarmedBackendPreservedThisPresent,
+                                                                      bool fsrFGApiActive, bool overlayInit,
+                                                                      bool syncInit, bool deviceRemoved) {
+    return streamlineTurnedOff && exactPrewarmedBackendPreservedThisPresent && !fsrFGApiActive && overlayInit &&
+           syncInit && !deviceRemoved;
+}
+
 // Streamline FG ON while the keep-alive latch is set and PostSL is still
 // confirmed is a RESUME of a continuously-live path (suspend -> resume cycle),
 // not a cold start: skip the synthetic-startup pending dance, countdown

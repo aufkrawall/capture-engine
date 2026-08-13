@@ -493,6 +493,7 @@ extern std::atomic<bool> dx12_hook_g_ClearedStaleRuntimeOwnedStreamlineNoFGAfter
 extern std::atomic<bool> dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown;
 extern std::atomic<bool> dx12_hook_g_NativeFSRContextsDestroyedAwaitingGameSwapchain;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_PostNativeFSROffGameSwapchainRecoveryQueue;
+extern std::atomic<IDXGISwapChain*> dx12_hook_g_ExactGameSwapchainRecoverySwapchain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_PrewarmedPostSLHandoffSwapchain;
 extern std::atomic<bool> dx12_hook_g_NativeFSRStartupConfigureArmingPending;

@@ -71,6 +71,15 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 slTurnedOff, nativeFSRGameSwapchainRecoveryReinitializedThisPresent,
                 g_FGCompat.IsFSRFGApiActive(), dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
                 FAILED(transitionDeviceHr));
+        // FSR-FG -> DLSS-FG handoff: the first Present preserved the exact prewarmed PostSL backend
+        // (fresh RTVs for the new swapchain lifetime), but the stale outer SL-FG-OFF observer then
+        // force-cleared it + armed a 60-frame cooldown; PostSL had to rebuild after a dormant window
+        // and the overlay blinked out (session 20260813_162959: 203 ms PostSL dormancy).
+        const bool keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve =
+            ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(
+                slTurnedOff, exactPrewarmedPostSLHandoffBackendPreservedThisPresent,
+                g_FGCompat.IsFSRFGApiActive(), dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
+                FAILED(transitionDeviceHr));
         HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                          allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
 
@@ -82,7 +91,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
                    keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
                    keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn ||
-                   keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery) {
+                   keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery ||
+                   keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
             dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
             dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
             HookLogImportant(
@@ -92,6 +102,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                     ? "DLSS->FSR no-callback takeover (overlay already reinited on FSR queue)"
                 : keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery
                     ? "FSR->off game-swapchain recovery (overlay already reinited on captured game queue)"
+                : keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve
+                    ? "FSR->DLSS prewarmed handoff (overlay backend already rebuilt for the fresh proxy)"
                 : keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn
                     ? "authoritative DLSS-off native return (overlay already reinited on exact game swapchain)"
                     : (bypassPureStreamlineOffCooldown ? "pure Streamline FG OFF"
@@ -189,7 +201,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             // Drain in-flight GPU work
             if (dx12_hook_g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&
                 !keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn &&
-                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery) {
+                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery &&
+                !keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
                 UINT64 lastVal = dx12_hook_g_State.currentFenceValue;
                 HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                 if (drainEvent) {
@@ -218,6 +231,11 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                     "[OVERLAY VISIBILITY] First game-created post-FSR recovery Present keeps its newly rebuilt "
                     "overlay state (swapchain=%p queue=%p; no second drain/reinit)",
                     pSwapChain, dx12_hook_g_SwapchainQueue);
+            } else if (keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+                HookLogImportant(
+                    "[OVERLAY VISIBILITY] First prewarmed FSR->DLSS handoff Present keeps its preserved overlay "
+                    "backend (swapchain=%p queue=%p; no second drain/reinit)",
+                    pSwapChain, dx12_hook_g_SwapchainQueue);
             }
 
             // Force overlay reinit — PostSL's RTVs reference SL's swapchain
@@ -232,7 +250,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover &&
                 !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&
                 !keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn &&
-                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery) {
+                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery &&
+                !keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
                 HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                 dx12_hook_g_State.overlayInit = false;
                 CleanupRTVs();
@@ -252,6 +271,10 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 HookLogImportant(
                     "DX12: [outer] FG→off — game-swapchain recovery after native FSR OFF already rebuilt the "
                     "overlay on the captured game queue; keeping it live (no teardown, no cooldown blank)");
+            } else if (dx12_hook_g_State.overlayInit && keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+                HookLogImportant(
+                    "DX12: [outer] FG→off — exact prewarmed FSR->DLSS handoff backend already rebuilt the "
+                    "overlay for the fresh proxy; keeping it live (no teardown, no cooldown blank)");
             }
             dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
 

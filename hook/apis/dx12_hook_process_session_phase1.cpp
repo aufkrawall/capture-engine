@@ -320,6 +320,8 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
     postFSRNormalRouteRememberedSwapchainProof = false;
     postFSRNormalRouteOwnershipProven = false;
     authoritativeDLSSOffNormalReturnReinitializedThisPresent = false;
+    nativeFSRGameSwapchainRecoveryReinitializedThisPresent = false;
+    exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
     auto routeInactiveDLSSPresentBeforeBackbufferAccess = [&]() -> bool {
         const bool postFSRRecoveryPending = dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
         const bool explicitOffKeepAlivePending = dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
@@ -547,8 +549,11 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
         dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.load(std::memory_order_acquire) == pSwapChain;
     exactPrewarmedPostSLHandoffSwapchainProof =
         dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain;
+    exactGameSwapchainRecoverySwapchainProof =
+        dx12_hook_g_ExactGameSwapchainRecoverySwapchain.load(std::memory_order_acquire) == pSwapChain;
     processLogicalSwapchainReplacement = ce::dx12_overlay_policy::ShouldProcessLogicalSwapchainReplacement(
         pSwapChain != dx12_hook_g_LastSwapChain,
-        exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof);
+        exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||
+            exactGameSwapchainRecoverySwapchainProof);
     return ProcessFrameFlow::kContinue;
 }
