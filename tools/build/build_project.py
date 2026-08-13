@@ -12,6 +12,7 @@ def compile_project(
     tests_only=False,
     externals_prepared=False,
     run_python_tools=True,
+    release_jobs_callback=None,
 ):
     ensure_dirs()
     remove_obsolete_process_loopback_helper_artifacts()
@@ -502,6 +503,11 @@ def compile_project(
     # Always compile unit-test sources so compile_commands.json contains
     # authoritative entries for tests even on non-test builds. Execute the test
     # binary only when explicitly requested.
+    # The concurrent sanitizer cadence child reserves a share of the worker
+    # budget; once it has finished, the remaining stages (tests, captureengine,
+    # test apps, vulkan layer) may use the full worker count again.
+    if release_jobs_callback is not None:
+        release_jobs_callback()
     test_exe = compile_tests(
         env,
         clang_exe,

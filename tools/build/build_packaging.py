@@ -327,6 +327,25 @@ def verification_parallel_job_counts(total_jobs: int) -> Tuple[int, int]:
     return total_jobs - sanitizer_jobs, sanitizer_jobs
 
 
+def should_package_outputs(
+    *,
+    tests_only: bool,
+    no_build: bool,
+    sanitize: bool,
+    isolated_root: bool,
+    skip_package: bool,
+) -> bool:
+    """Decide whether this top-level run produces the release archives.
+
+    The finalize phase intentionally never packages: build_cli schedules the
+    archive creation concurrently with the advisory lint pass so the fixed
+    per-gate packaging cost overlaps lint instead of adding to it. Isolated
+    sanitizer children, sanitizer-mode builds, tests-only runs, and
+    `--no-build` runs produce no shippable closure and stay unpackaged.
+    """
+    return not tests_only and not no_build and not sanitize and not isolated_root and not skip_package
+
+
 def sanitizer_stage_outputs() -> List[str]:
     capture_dir = os.path.join(SANITIZER_STAGE_ROOT, "installed", "captureengine")
     return [

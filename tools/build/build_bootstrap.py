@@ -474,7 +474,12 @@ def find_process_locking_file(filepath: str) -> List[str]:
         import subprocess
 
         # Use handle.exe from Sysinternals if available
-        result = subprocess.run(["handle.exe", filepath], capture_output=True, text=True, timeout=5)
+        handle_exe = shutil.which("handle.exe")
+        if not handle_exe:
+            return processes
+        # Keep the attribution probe short: it is advisory only, and a long
+        # timeout would stall the build next to every locked file.
+        result = subprocess.run([handle_exe, filepath], capture_output=True, text=True, timeout=1)
         if result.returncode == 0:
             # Parse handle.exe output
             for line in result.stdout.split("\n"):

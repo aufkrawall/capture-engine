@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-08-13 - BUILD SPEED: packaging overlaps lint, sanitizer/vulkan object isolation, faster gate stages
+
+- Retrospective over the 2026-08-13 gates: warm `--verify` ~175-240 s, force-rebuild ~627 s; two runs failed
+  at the Vulkan layer link and forced `--verify --force-rebuild` reruns, and one failed verify flaked on the
+  wall-clock-sensitive `FpsLimiterTest` timing tests (all five passed 4/4 standalone runs). The locked-file
+  rename path (`.old.<ts>.<rand>` + reboot-delete scheduling) never caused duplicate builds; the ~5 s stall
+  per locked file came from the handle.exe attribution probe (5 s timeout), now skipped when absent and capped
+  at 1 s.
+- Fixes: (1) `build_vulkan_layer.py` objects now live under `OBJ_DIR`, isolating the sanitizer child's
+  ASan-instrumented layer objects from the product cache (the root cause of the failed-verify -> force-rebuild
+  duplication); (2) `build_cli` schedules `package_build_outputs()` concurrently with the advisory lint pass
+  (`should_package_outputs` policy, lock-guarded verification recording); (3) the product build releases the
+  sanitizer child's reserved worker budget for tests/captureengine/testapps/vulkan once the child finishes;
+  (4) the privacy scan is a single read/scrub/verify pass instead of two full passes; (5) clang-format checks
+  only worktree-changed C++ sources (`collect_changed_lintable_cpp_sources`, git-diff + untracked, full-set
+  fallback).
+- Tests: `test_packaging` (deferred-packaging source pin + `should_package_outputs` policy),
+  `test_verification_parallelism` (vulkan `OBJ_DIR` pin + budget-release pin), `test_build_lint_policy`
+  (changed-source filter). Gate: the strict `--verify --verify-clean` failed once on the flaky timing tests
+  (unrelated), then completed green as warm `--verify` on 0.1.6016 in 138 s; sanitizer cadence, 2175 native
+  tests, Python self-tests, clang-tidy ratchet, and concurrent packaging all passed.
+- Noted for later: `--resume` after a failed `--verify` needs `--verify` passed again or it only finishes the
+  build/packaging without tests/lint/sanitizer (documented in build.py.md); the force-rebuild preflight still
+  re-analyzes all 591 TUs (~147 s) because the version bump invalidates every preflight cache entry.
+# llm-wiki Log
+
 ### 2026-08-13 - FIXED: DLSS-FG switch after FG-spam wedged the app at ~1 FPS + hidden overlay (stale upload-slot guards)
 
 - Session `20260813_173453` (build 0.1.6011, dx12_fg_switch_test, manual dump): after FG-mode switching spam, the
@@ -196,25 +222,3 @@
   Until SpecialK ships the fix, the user's custom SpecialK64.dll must be rebuilt with the patch, or CE would
   need an opt-in compatibility shim on `SHGetKnownFolderPath` for sl.interposer callers (tool-specific
   workaround, not yet implemented).
-
-### 2026-08-13 - FIXED: ReShade proxy queue re-entry in the ECL/Signal trace hooks (Talos crash)
-
-- Talos (DX12) + ReShade-only crashed on start twice, on both sides of the same layered chain
-  `game -> CE -> ReShade proxy thunk -> CE (real queue) -> global original(real queue)`.
-- Session `20260813_041416` (build 0.1.5990): the ECL recursion-break path called the global
-  `oExecuteCommandLists` (= ReShade's proxy hook, the first queue vtable CE hooked) with the real queue
-  behind the proxy; ReShade's non-recursive queue mutex threw `std::system_error(EDEADLK)` (verified via
-  the throw-info/catchable-type decode in cdb).
-- Session `20260813_050515` (build 0.1.5993): ECL was fixed but the same blind-global pattern remained in
-  `DetourTraceCommandQueueSignal` (`oTraceCommandQueueSignal` = ReShade's Signal thunk); calling it with the
-  real queue read `_orig` at `queue+0x10` and jumped through garbage vtable slot `-1` (AV at
-  `reshade+0x112467`).
-- Fix (builds 0.1.5991/0.1.5995): type-safe per-vtable original resolution — policy
-  `hook/common/dx12_overlay_policy/ecl_recursion_break.h` classifies candidates by owning module, native
-  D3D12 runtime ECL is only used for native-vtable queues, proxy queues only forward through their exact
-  vtable original, and foreign/self hooks are never re-entered (recursion-depth bound drops instead of
-  looping). Native originals are published eagerly (`TryPublishRealD3D12ECLCandidate` /
-  `TryPublishRealD3D12SignalCandidate` from `DX12_HookQueueVTable`); Signal forwards per-vtable
-  (`dx12_hook_g_CommandQueueSignalOriginalByVTable`) with live-slot/native/legacy fallbacks.
-- Tests: `tests/test_dx12_ecl_recursion_break_policy.cpp` (policy + source pins). Verify gate passed on
-  0.1.5995. Needs the user's Talos re-test with all tool combinations.

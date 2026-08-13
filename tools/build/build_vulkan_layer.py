@@ -13,7 +13,14 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     layer_dir = os.path.join(PROJECT_ROOT, "hook", "vulkan_layer")
     bin_dir = CAPTURE_BIN_DIR
-    obj_dir = os.path.join(PROJECT_ROOT, "build", "obj", arch, "vulkan_layer")
+    # Vulkan-layer objects must live under OBJ_DIR (which follows the isolated
+    # sanitizer root) instead of PROJECT_ROOT/build/obj. The sanitizer cadence
+    # child compiles the SAME layer sources with -fsanitize flags while the
+    # product build runs; sharing one object directory let the product build
+    # reuse ASan-instrumented objects, failing the layer link with undefined
+    # __asan*/__ubsan* symbols and forcing a full --verify --force-rebuild
+    # rerun (sessions 20260813_180126 and 20260813_180535).
+    obj_dir = os.path.join(OBJ_DIR, arch, "vulkan_layer")
     os.makedirs(obj_dir, exist_ok=True)
 
     # Layer source files - split into layer/support and hook/common sources

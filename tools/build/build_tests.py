@@ -499,6 +499,47 @@ def collect_lintable_cpp_sources(suffixes: Tuple[str, ...] = LINTABLE_SOURCE_SUF
     return files
 
 
+def filter_sources_by_relative_paths(
+    sources: Iterable[str], relative_paths: Set[str], project_root: str
+) -> List[str]:
+    """Keep only sources whose project-relative path is in the changed set.
+
+    Pure and testable: git reports forward slashes while os.path.relpath
+    returns native separators, so both sides are normalized to os.sep.
+    """
+    normalized = {path.replace("/", os.sep) for path in relative_paths}
+    return [
+        path
+        for path in sources
+        if os.path.relpath(path, project_root).replace("\\", os.sep) in normalized
+    ]
+
+
+def collect_changed_lintable_cpp_sources() -> List[str]:
+    """Lintable C++ sources that differ from git HEAD, plus untracked files.
+
+    clang-format is advisory and the tree already carries accepted
+    deviations, so re-checking unchanged files on every gate only burns time
+    (575 files / ~17 s per verify). Falls back to the full lintable set when
+    git metadata is unavailable so the check never silently narrows.
+    """
+    try:
+        changed: Set[str] = set()
+        for command in (
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", "HEAD"],
+            ["git", "ls-files", "--others", "--exclude-standard"],
+        ):
+            output = subprocess.check_output(
+                command, cwd=PROJECT_ROOT, text=True, stderr=subprocess.DEVNULL
+            )
+            changed.update(line.strip() for line in output.splitlines() if line.strip())
+        return filter_sources_by_relative_paths(
+            collect_lintable_cpp_sources(), changed, PROJECT_ROOT
+        )
+    except (OSError, subprocess.SubprocessError):
+        return collect_lintable_cpp_sources()
+
+
 def collect_file_size_python_sources() -> List[str]:
     """First-party Python sources: the root build/test scripts plus `tools/`."""
     files: List[str] = []

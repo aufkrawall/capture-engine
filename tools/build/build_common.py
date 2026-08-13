@@ -27,6 +27,7 @@ import shutil
 import tarfile
 import subprocess
 import atexit
+import threading
 import urllib.error
 import urllib.request
 import time
@@ -44,7 +45,7 @@ from multiprocessing import cpu_count
 import re
 import json
 
-from typing import List, Dict, Mapping, Optional, Tuple, Union, Any
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 from tools.ffmpeg_dependencies import (
     SourceDependencyBuilder,
@@ -328,6 +329,7 @@ CONCISE_OUTPUT = False
 LOG_LOCK = threading.Lock()
 FAILURE_OUTPUT_TAIL_LINES = 80
 VERIFICATION_CONTEXT: Optional[Dict[str, Any]] = None
+_VERIFICATION_RECORD_LOCK = threading.Lock()
 VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
 VERIFICATION_FINALIZED = False
@@ -661,7 +663,8 @@ def verification_artifact_path(filename: str) -> Optional[str]:
 def record_verification_artifact(name: str, path: Optional[str]) -> None:
     if not VERIFICATION_CONTEXT or not path:
         return
-    VERIFICATION_CONTEXT.setdefault("artifacts", {})[name] = os.path.abspath(path)
+    with _VERIFICATION_RECORD_LOCK:
+        VERIFICATION_CONTEXT.setdefault("artifacts", {})[name] = os.path.abspath(path)
 
 
 def write_verification_artifact(name: str, filename: str, text: str) -> Optional[str]:
@@ -676,7 +679,8 @@ def write_verification_artifact(name: str, filename: str, text: str) -> Optional
 def record_verification_coverage(name: str, value: Any) -> None:
     if not VERIFICATION_CONTEXT:
         return
-    VERIFICATION_CONTEXT.setdefault("coverage", {})[name] = value
+    with _VERIFICATION_RECORD_LOCK:
+        VERIFICATION_CONTEXT.setdefault("coverage", {})[name] = value
 
 
 def record_verification_step(
@@ -693,4 +697,5 @@ def record_verification_step(
         step["duration_seconds"] = round(duration_seconds, 3)
     if details:
         step["details"] = details
-    VERIFICATION_CONTEXT.setdefault("steps", {})[name] = step
+    with _VERIFICATION_RECORD_LOCK:
+        VERIFICATION_CONTEXT.setdefault("steps", {})[name] = step

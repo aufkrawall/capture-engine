@@ -58,6 +58,27 @@ class VerificationParallelismTest(unittest.TestCase):
         self.assertIn(str(object_file.resolve()), inputs)
         self.assertIn(str(linker.resolve()), inputs)
 
+    def test_vulkan_layer_objects_follow_the_isolated_object_root(self) -> None:
+        """The vulkan layer must not share an object directory with the product
+        build while the sanitizer child runs. Sharing PROJECT_ROOT/build/obj
+        let the product build reuse ASan-instrumented layer objects and fail
+        the link with undefined __asan*/__ubsan* symbols, forcing a full
+        --verify --force-rebuild rerun."""
+        source = (
+            Path(build.__file__).parent / "tools" / "build" / "build_vulkan_layer.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('obj_dir = os.path.join(OBJ_DIR, arch, "vulkan_layer")', source)
+        self.assertNotIn('os.path.join(PROJECT_ROOT, "build", "obj"', source)
+
+    def test_product_stages_release_the_sanitizer_budget_after_the_child_finishes(self) -> None:
+        source = build.read_source_text()
+        release = source.index(
+            'env["CE_BUILD_JOBS"] = str(total_jobs)', source.index("release_sanitizer_reserved_jobs")
+        )
+        compile_call = source.index("release_jobs_callback=release_sanitizer_reserved_jobs,", release)
+        self.assertLess(release, compile_call)
+        self.assertIn("if sanitizer_future is not None and sanitizer_future.done():", source)
+
     def test_link_inputs_fingerprint_the_linker_the_driver_actually_runs(self) -> None:
         """A cross driver's linker usually lives outside its own bin directory.
 

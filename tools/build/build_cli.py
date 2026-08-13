@@ -376,6 +376,17 @@ def main():
     parallel_product_jobs = 0
     parallel_sanitizer_jobs = 0
     original_job_setting = env.get("CE_BUILD_JOBS")
+    total_jobs = get_parallel_job_count(env, cpu_count())
+
+    def release_sanitizer_reserved_jobs() -> None:
+        # The concurrent sanitizer cadence child reserves part of the worker
+        # budget while the product build compiles. Once that child has
+        # finished, later product stages (unit tests, captureengine, test
+        # apps, vulkan layer) may use the full worker count again. The split
+        # stays in force while the child is still running.
+        if sanitizer_future is not None and sanitizer_future.done():
+            env["CE_BUILD_JOBS"] = str(total_jobs)
+
     if sanitize_regression_flag and not sanitize_regression_child:
         if sanitize_flag:
             log("Sanitizer regression cadence requested in sanitizer mode; skipping nested pass")
@@ -390,7 +401,6 @@ def main():
             # Populate the shared download cache before isolated parent/child
             # staging begins, avoiding concurrent archive creation.
             setup_fg_sdk_for_host(skip_updates=True)
-            total_jobs = get_parallel_job_count(env, cpu_count())
             product_jobs, sanitizer_jobs = verification_parallel_job_counts(total_jobs)
             if sanitizer_jobs and not no_build_flag:
                 parallel_product_jobs = product_jobs
@@ -448,6 +458,7 @@ def main():
             tests_only=tests_only_flag,
             externals_prepared=externals_prepared,
             run_python_tools=not sanitize_regression_child,
+            release_jobs_callback=release_sanitizer_reserved_jobs,
         )
     record_verification_step(
         "build",
@@ -505,12 +516,39 @@ def main():
         except Exception:
             record_verification_step("compile_commands", "passed")
 
+    # Release archives are independent of the advisory lint pass; run them
+    # concurrently so the fixed per-gate packaging cost overlaps clang-tidy,
+    # clang-format, flake8, and pyright instead of adding to them. The privacy
+    # scrub and PE verification already completed inside the finalize phase,
+    # so the packaged binaries are final.
+    package_executor = None
+    package_future = None
+    if should_package_outputs(
+        tests_only=tests_only_flag,
+        no_build=no_build_flag,
+        sanitize=sanitize_flag,
+        isolated_root=bool(ISOLATED_BUILD_ROOT),
+        skip_package=env.get("CE_SKIP_PACKAGE") == "1",
+    ):
+        package_executor = ThreadPoolExecutor(max_workers=1)
+        package_future = package_executor.submit(package_build_outputs)
+
     if lint_flag:
         lint_ok = run_lint(env, advisory=True)
         if not lint_ok:
             log("Lint/LSP checks reported advisory issues; complete diagnostics were retained as artifacts.")
         if not tests_only_flag and not no_build_flag and not sanitize_flag and not sanitize_regression_child:
             refresh_full_compile_database_snapshot()
+
+    if package_future is not None:
+        try:
+            package_future.result()
+        except Exception as error:
+            log(f"ERROR: Automatic package creation failed: {error}")
+            sys.exit(1)
+        finally:
+            assert package_executor is not None
+            package_executor.shutdown()
 
     if run_fuzz_flag:
         run_fuzz_targets(env, fuzz_seconds)

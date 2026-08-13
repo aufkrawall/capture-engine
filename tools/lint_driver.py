@@ -84,7 +84,10 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
 
     if clang_format:
         b.log("Running clang-format...")
-        files = b.collect_lintable_cpp_sources()
+        # clang-format is advisory and the tree already carries accepted
+        # deviations, so only files changed in this worktree need re-checking
+        # (falls back to the full set without git metadata).
+        files = b.collect_changed_lintable_cpp_sources()
         if files:
             chunk_size = 50
             issues_found = 0
@@ -126,6 +129,10 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
                 b.log("C++ Style: OK")
                 lint_details["clang_format_batches_with_issues"] = 0
                 lint_details["clang_format_files_with_issues"] = 0
+        else:
+            b.log("clang-format: no changed C++ sources to check")
+            lint_details["clang_format_batches_with_issues"] = 0
+            lint_details["clang_format_files_with_issues"] = 0
     else:
         b.log("Error: clang-format not found.")
         checks_ok = False

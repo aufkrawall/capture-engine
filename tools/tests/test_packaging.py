@@ -173,11 +173,49 @@ class PackagingTests(unittest.TestCase):
         verify_index = source.index(
             'log("Verified PE mitigations, architecture, section permissions, effective CFG, imports, and PDBs")'
         )
-        package_index = source.index("package_build_outputs()", verify_index)
-        complete_index = source.index('log("Build Complete.")', package_index)
-        self.assertLess(verify_index, package_index)
-        self.assertLess(package_index, complete_index)
-        self.assertIn('env.get("CE_SANITIZE") == "1" or ISOLATED_BUILD_ROOT', source[verify_index:package_index])
+        complete_index = source.index('log("Build Complete.")', verify_index)
+        # The finalize tail no longer serializes packaging: privacy scrub and
+        # PE verification stay in the finalize phase, while build_cli schedules
+        # the archives only after the build step recorded and runs them
+        # concurrently with the advisory lint pass.
+        self.assertNotIn("package_build_outputs()", source[verify_index:complete_index])
+        self.assertIn(
+            'env.get("CE_SANITIZE") == "1" or ISOLATED_BUILD_ROOT', source[verify_index:complete_index]
+        )
+        build_step = source.index('record_verification_step(\n        "build",')
+        submit_index = source.index(
+            "package_future = package_executor.submit(package_build_outputs)", build_step
+        )
+        lint_call = source.index("run_lint(env, advisory=True)", submit_index)
+        self.assertLess(submit_index, lint_call)
+        self.assertIn("should_package_outputs(", source)
+
+    def test_output_packaging_policy_excludes_non_shippable_runs(self) -> None:
+        self.assertTrue(
+            build.should_package_outputs(
+                tests_only=False,
+                no_build=False,
+                sanitize=False,
+                isolated_root=False,
+                skip_package=False,
+            )
+        )
+        for excluded in (
+            {"tests_only": True},
+            {"no_build": True},
+            {"sanitize": True},
+            {"isolated_root": True},
+            {"skip_package": True},
+        ):
+            kwargs = {
+                "tests_only": False,
+                "no_build": False,
+                "sanitize": False,
+                "isolated_root": False,
+                "skip_package": False,
+            }
+            kwargs.update(excluded)
+            self.assertFalse(build.should_package_outputs(**kwargs))
 
     def test_package_cleanup_is_scoped_to_workspace_temp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

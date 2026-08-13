@@ -142,8 +142,9 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
     elif env.get("CE_SKIP_PACKAGE") == "1":
         log("Skipping release archives (--skip-package)")
         record_verification_step("package_archives", "skipped", details={"reason": "--skip-package"})
-    else:
-        package_build_outputs()
+    # Release archives are created by build_cli concurrently with the advisory
+    # lint pass (see should_package_outputs); the finalize phase must not
+    # serialize them in front of lint.
 
     log("Build Complete.")
 
@@ -203,31 +204,28 @@ def scrub_and_verify_privacy_paths() -> None:
         with open(target, "rb") as handle:
             data = handle.read()
         hits = count_profile_path_hits(data)
-        if not hits:
-            continue
-        relative = (
-            os.path.relpath(target, BIN_DIR) if target.startswith(BIN_DIR + os.sep) else target
-        )
-        is_scrubbable = target.lower().endswith(".pdb") or relative.lower().startswith(
-            "ffmpeg" + os.sep
-        )
-        if not is_scrubbable:
-            raise RuntimeError(
-                f"privacy scan found developer profile path in {target}; "
-                "PE PDB references must embed a bare filename (/pdbaltpath)"
+        if hits:
+            relative = (
+                os.path.relpath(target, BIN_DIR) if target.startswith(BIN_DIR + os.sep) else target
             )
-        scrubbed_data = scrub_profile_path_bytes(data)
-        if len(scrubbed_data) != len(data):
-            raise RuntimeError(f"privacy scrub changed byte length of {target}")
-        with open(target, "wb") as handle:
-            handle.write(scrubbed_data)
-        scrubbed += 1
-        log(f"Scrubbed {hits} profile-path occurrence(s) from {target}")
-    for target in targets:
-        with open(target, "rb") as handle:
-            data = handle.read()
-        if count_profile_path_hits(data):
-            raise RuntimeError(f"privacy scan still finds developer profile path in {target}")
+            is_scrubbable = target.lower().endswith(".pdb") or relative.lower().startswith(
+                "ffmpeg" + os.sep
+            )
+            if not is_scrubbable:
+                raise RuntimeError(
+                    f"privacy scan found developer profile path in {target}; "
+                    "PE PDB references must embed a bare filename (/pdbaltpath)"
+                )
+            scrubbed_data = scrub_profile_path_bytes(data)
+            if len(scrubbed_data) != len(data):
+                raise RuntimeError(f"privacy scrub changed byte length of {target}")
+            with open(target, "wb") as handle:
+                handle.write(scrubbed_data)
+            scrubbed += 1
+            log(f"Scrubbed {hits} profile-path occurrence(s) from {target}")
+            if count_profile_path_hits(scrubbed_data):
+                raise RuntimeError(f"privacy scan still finds developer profile path in {target}")
+            data = scrubbed_data
         # The machine name is verified, never scrubbed: nothing in the toolchain
         # should embed host state, so a hit is a new leak source to identify
         # rather than a known spelling to rewrite.
