@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
+#include "../../common/log_meter.h"
 
 
 static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
@@ -314,8 +315,33 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
     DXGI_SWAP_CHAIN_DESC desc = {};
     bool hdr = false;
     if (SUCCEEDED(proxy->GetDesc(&desc))) {
-        hdr =
-            ResolveSwapchainOutputHDRState(proxy, desc.BufferDesc.Format, "DX12: FSR proxy-backbuffer owner-queue HDR");
+        int colorSpace = -1;
+        bool supported = false;
+        hdr = ResolveSwapchainOutputHDRState(proxy, desc.BufferDesc.Format, nullptr, &colorSpace, &supported);
+
+        static std::atomic<int> s_lastOwnerQueueFormat{-1};
+        static std::atomic<int> s_lastOwnerQueueColorSpace{-2};
+        static std::atomic<int> s_lastOwnerQueueHdr{-1};
+        static std::atomic<int> s_lastOwnerQueueSupported{-1};
+        static std::atomic<uint32_t> s_ownerQueueHdrProbeCount{0};
+        const int formatValue = static_cast<int>(desc.BufferDesc.Format);
+        const int hdrValue = hdr ? 1 : 0;
+        const int supportedValue = supported ? 1 : 0;
+        const bool formatChanged =
+            s_lastOwnerQueueFormat.exchange(formatValue, std::memory_order_acq_rel) != formatValue;
+        const bool colorSpaceChanged =
+            s_lastOwnerQueueColorSpace.exchange(colorSpace, std::memory_order_acq_rel) != colorSpace;
+        const bool hdrChanged = s_lastOwnerQueueHdr.exchange(hdrValue, std::memory_order_acq_rel) != hdrValue;
+        const bool supportedChanged =
+            s_lastOwnerQueueSupported.exchange(supportedValue, std::memory_order_acq_rel) != supportedValue;
+        const bool changed = formatChanged || colorSpaceChanged || hdrChanged || supportedChanged;
+        const uint32_t probeCount = s_ownerQueueHdrProbeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (changed || ce::log_meter::ShouldLogCadence(probeCount, 3, 600)) {
+            HookLogImportant(
+                "DX12: FSR proxy-backbuffer owner-queue HDR - format=%d colorSpace=%d supported=%d isHDR=%d "
+                "sample=%u%s",
+                formatValue, colorSpace, supportedValue, hdrValue, probeCount, changed ? " changed" : "");
+        }
     }
 
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};

@@ -48,6 +48,8 @@ struct ReflexSignalLogState;
 
 #include <unordered_map>
 
+#include "../../common/log_meter.h"
+
 #include "../common/dx12_overlay_policy.h"
 
 #include "../common/dxgi_shared.h"
@@ -693,11 +695,27 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
         return false;
     }
 
+    void* retainedTrampoline = nullptr;
+    if (InlineHook::TryGetInstalledTrampoline(target, detour, &retainedTrampoline)) {
+        original = reinterpret_cast<T>(retainedTrampoline);
+        targetSlot.store(target, std::memory_order_release);
+        installedFlag.store(true, std::memory_order_release);
+        HookLogImportant(
+            "Streamline Hook: Reconciled rediscovered %s at %p with CE's retained live hook (trampoline=%p)",
+            hookName, target, retainedTrampoline);
+        return true;
+    }
+
     StreamlineInlineHookPublication<T> publication{&original, original};
     void* trampoline = nullptr;
     if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishStreamlineInlineHookTrampoline<T>,
                                       &publication)) {
-        HookLogImportant("Streamline Hook: Failed to inline hook %s at %p", hookName, target);
+        static std::atomic<uint32_t> s_installFailureCount{0};
+        const uint32_t failureCount = s_installFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(failureCount, 10, 300)) {
+            HookLogImportant("Streamline Hook: Failed to inline hook %s at %p (attempt=%u)", hookName, target,
+                             failureCount);
+        }
         return false;
     }
 

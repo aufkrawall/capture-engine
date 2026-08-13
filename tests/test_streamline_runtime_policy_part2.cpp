@@ -65,6 +65,38 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     EXPECT_NE(headerText.find("streamline_hook_g_ReflexSetConstantsUnavailableQueries"), std::string::npos);
 }
 
+// Session 20260814_014012: Streamline unload notifications cleared the feature-level
+// hook slots while CE's identical low-level detours were still live. Every loaded-module
+// scan then retried all exports and emitted thousands of paired "already hooked" / "failed"
+// lines. Rediscovery must recover the retained trampoline and restore the feature-level
+// state; genuine install failures remain visible with an initial burst and sparse heartbeat.
+TEST(StreamlineRuntimePolicyTest, RediscoveredLiveInlineHooksReconcileWithoutFailureSpam) {
+    namespace fs = std::filesystem;
+    const std::string header = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h");
+    const std::string inlineHook = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "wrappers" / "inline_hook.cpp");
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(inlineHook.empty());
+
+    const size_t installer = header.find("bool InstallInlineHookOnce(");
+    ASSERT_NE(installer, std::string::npos);
+    const size_t reconcile = header.find("InlineHook::TryGetInstalledTrampoline", installer);
+    const size_t install = header.find("InlineHook::InstallPublished", installer);
+    ASSERT_NE(reconcile, std::string::npos);
+    ASSERT_NE(install, std::string::npos);
+    EXPECT_LT(reconcile, install);
+    EXPECT_NE(header.find("original = reinterpret_cast<T>(retainedTrampoline)", reconcile), std::string::npos);
+    EXPECT_NE(header.find("installedFlag.store(true", reconcile), std::string::npos);
+    EXPECT_NE(header.find("ShouldLogCadence(failureCount, 10, 300)", install), std::string::npos);
+
+    EXPECT_NE(inlineHook.find("ReadProcessMemory(GetCurrentProcess()"), std::string::npos);
+    EXPECT_NE(inlineHook.find("h.detour == detour && h.installed && InstalledEntryBytesMatch(h)"),
+              std::string::npos);
+    EXPECT_NE(inlineHook.find("ShouldLogCadence(duplicateCount, 4, 300)"), std::string::npos);
+    EXPECT_EQ(inlineHook.find("FAILED: Target %p already hooked by us"), std::string::npos);
+}
+
 // Crash 20260812_042259 (dx12_fg_switch_test via Steam + RTSS): switching DLSS FG -> FSR FG
 // unloads sl.dlss_g / sl.reflex BEFORE sl.interposer, and the HookThread's proactive feature
 // resolution called sl.interposer!slGetFeatureFunction which dispatched into the already-unmapped

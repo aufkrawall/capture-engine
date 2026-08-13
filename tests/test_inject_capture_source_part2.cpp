@@ -102,6 +102,20 @@ TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoi
     EXPECT_NE(installers.find("InlineHook::InstallDeepHookPublished("), std::string::npos);
 }
 
+TEST(InjectLifecycleSourceTest, StableDX12OverlayDiagnosticsAvoidPerFrameNoOpSpam) {
+    const std::string overlay = ReadSource("hook/common/custom_overlay_dx12.cpp");
+    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    ASSERT_FALSE(overlay.empty());
+    ASSERT_FALSE(ownerQueue.empty());
+
+    EXPECT_EQ(overlay.find("No deferred upload needed"), std::string::npos);
+    EXPECT_NE(ownerQueue.find("ResolveSwapchainOutputHDRState(proxy, desc.BufferDesc.Format, nullptr"),
+              std::string::npos);
+    EXPECT_NE(ownerQueue.find("formatChanged || colorSpaceChanged || hdrChanged || supportedChanged"),
+              std::string::npos);
+    EXPECT_NE(ownerQueue.find("ShouldLogCadence(probeCount, 3, 600)"), std::string::npos);
+}
+
 TEST(InjectLifecycleSourceTest, GraphicsConfigCachesTreatReplacementSharedMemoryAsANewHostGeneration) {
     const std::string source = ReadSource("hook/common/hook_common.cpp");
     ASSERT_FALSE(source.empty());

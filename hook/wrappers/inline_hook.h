@@ -34,6 +34,13 @@ bool Install(void* target, void* detour, void** outTrampoline);
 bool InstallPublished(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
                       void* publisherContext);
 
+// Recover the callable predecessor for an identical hook that is still live.
+// Streamline can report a DLL unload while the image remains mapped, clear its
+// feature-level slots, and then immediately rediscover the same exports. This
+// read-only query lets that layer reconcile with CE's retained low-level hook
+// instead of repeatedly treating the idempotent install as a failure.
+bool TryGetInstalledTrampoline(void* target, void* detour, void** outTrampoline);
+
 // Remove a previously installed inline hook, restoring the original bytes.
 // - target: the same target address passed to Install()
 // Returns true on success.

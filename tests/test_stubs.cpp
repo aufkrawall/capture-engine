@@ -54,6 +54,9 @@ bool InlineHook::Install(void*, void*, void**) {
 bool InlineHook::InstallPublished(void*, void*, void**, TrampolinePublisher, void*) {
     return false;
 }
+bool InlineHook::TryGetInstalledTrampoline(void*, void*, void**) {
+    return false;
+}
 void InlineHook::RemoveAll() {}
 bool InlineHook::Remove(void*) {
     return true;

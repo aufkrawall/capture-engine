@@ -518,7 +518,6 @@ bool DX12Backend::PrimeResources(ID3D12GraphicsCommandList* cmdList) {
 
 bool DX12Backend::UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList) {
     if (fontUploaded.load(std::memory_order_acquire) || !uploadBuffer || !fontTexture) {
-        DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "No deferred upload needed");
         return true;
     }
     if (!cmdList) {

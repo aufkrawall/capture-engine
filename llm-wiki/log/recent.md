@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-14 - FIXED locally: retained Streamline-hook reconciliation and stateful DX12 hot-path diagnostics
+
+- Clean validation session `20260814_014012` exposed diagnostic volume rather than a functional failure: 1,826
+  low-level `already hooked by us` lines were paired with 1,827 Streamline `Failed to inline hook` lines after
+  Streamline unload notifications cleared feature-level slots while the identical CE entry detours remained live.
+- `InlineHook::TryGetInstalledTrampoline(...)` now validates CE's exact installed bytes with `ReadProcessMemory()`
+  and returns the retained callable predecessor only for the same target/detour. Streamline rediscovery uses it to
+  restore the original pointer, target slot, and installed flag once. Conflicting detours remain immediate failures;
+  identical redundant low-level requests log the first four plus every 300th, and genuine repeated Streamline
+  install failures log the first ten plus every 300th.
+- Two independent per-frame no-op diagnostics were also reduced without hiding transitions: completed DX12 font
+  uploads no longer log `No deferred upload needed`, while FSR proxy owner-queue HDR logs the initial samples, every
+  format/color-space/support/HDR change, and a 600-call heartbeat. In the source session these paths produced 1,678
+  and 1,197 stable-state lines respectively.
+- Regression coverage pins retained-hook reconciliation, safe live-byte validation, failure cadence, removal of the
+  font-upload no-op line, and state-change/heartbeat HDR diagnostics.
+
 ### 2026-08-14 - FIXED locally: early Steam + RTSS FG switch crashed in proactive Streamline lookup and stranded overlay startup
 
 - Session `20260814_012102` (0.1.6045, Steam overlay + RTSS, FG switched before CE overlay initialization) has a

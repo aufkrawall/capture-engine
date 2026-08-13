@@ -133,6 +133,18 @@ static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
     return true;
 }
 
+static bool InstalledEntryBytesMatch(const HookEntry& hook) {
+    if (!hook.target || hook.patchSize <= 0 || hook.patchSize > static_cast<int>(sizeof(hook.installedBytes))) {
+        return false;
+    }
+    uint8_t liveBytes[sizeof(hook.installedBytes)] = {};
+    SIZE_T bytesRead = 0;
+    return ReadProcessMemory(GetCurrentProcess(), hook.target, liveBytes, static_cast<SIZE_T>(hook.patchSize),
+                             &bytesRead) &&
+           bytesRead == static_cast<SIZE_T>(hook.patchSize) &&
+           memcmp(liveBytes, hook.installedBytes, static_cast<size_t>(hook.patchSize)) == 0;
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -179,8 +191,6 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
                                                                    s_traceDetailHookCount.fetch_add(1, std::memory_order_relaxed) + 1),
                                                                4, 100);
 
-    LogDirect("=== Install called: target=%p, detour=%p", target, detour);
-
     if (!target || !detour || !outTrampoline) {
         LogDirect("FAILED: null parameter");
         return false;
@@ -192,11 +202,29 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     // Check if already hooked
     for (auto& h : g_hooks) {
         if (h.target == target && h.installed) {
-            LogDirect("FAILED: Target %p already hooked by us", target);
-            HookLog("InlineHook: Target %p already hooked", target);
+            if (h.detour != detour) {
+                LogDirect("FAILED: Target %p is already owned by CE with different detour %p (requested=%p)",
+                          target, h.detour, detour);
+                HookLogImportant(
+                    "InlineHook: Refused conflicting detour for CE-owned target %p (installed=%p requested=%p)",
+                    target, h.detour, detour);
+                return false;
+            }
+
+            static std::atomic<uint32_t> s_duplicateInstallCount{0};
+            const uint32_t duplicateCount =
+                s_duplicateInstallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (ce::log_meter::ShouldLogCadence(duplicateCount, 4, 300)) {
+                HookLog(
+                    "InlineHook: Identical install request already owned by CE target=%p detour=%p live=%d "
+                    "repeat=%u",
+                    target, detour, InstalledEntryBytesMatch(h) ? 1 : 0, duplicateCount);
+            }
             return false;
         }
     }
+
+    LogDirect("=== Install called: target=%p, detour=%p", target, detour);
 
 #ifdef _WIN64
     bool is64bit = true;
@@ -573,6 +601,24 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
     return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
 }
 
+bool TryGetInstalledTrampoline(void* target, void* detour, void** outTrampoline) {
+    if (outTrampoline) {
+        *outTrampoline = nullptr;
+    }
+    if (!target || !detour || !outTrampoline) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+    for (const auto& h : g_hooks) {
+        if (h.target == target && h.detour == detour && h.installed && InstalledEntryBytesMatch(h)) {
+            *outTrampoline = h.trampoline;
+            return h.trampoline != nullptr;
+        }
+    }
+    return false;
+}
+
 bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut) {
     if (currentJumpTargetOut) {
         *currentJumpTargetOut = nullptr;
@@ -586,7 +632,7 @@ bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut) {
         if (h.target != target || !h.installed) {
             continue;
         }
-        if (memcmp(h.target, h.installedBytes, h.patchSize) == 0) {
+        if (InstalledEntryBytesMatch(h)) {
             return true;
         }
 #ifdef _WIN64
@@ -603,12 +649,7 @@ bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut) {
 }
 
 static bool OwnsInstalledEntryBytes(const HookEntry& hook) {
-    MEMORY_BASIC_INFORMATION memory = {};
-    return hook.target && hook.patchSize > 0 &&
-           VirtualQuery(hook.target, &memory, sizeof(memory)) == sizeof(memory) && memory.State == MEM_COMMIT &&
-           !(memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
-           ce::inline_hook_policy::ShouldRestoreOwnedPatch(
-               memcmp(hook.target, hook.installedBytes, hook.patchSize) == 0);
+    return ce::inline_hook_policy::ShouldRestoreOwnedPatch(InstalledEntryBytesMatch(hook));
 }
 
 bool Remove(void* target) {
