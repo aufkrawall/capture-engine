@@ -116,6 +116,7 @@ void DX12Backend::Shutdown() {
         (void)srvHeap.Detach();
         (void)fontTexture.Detach();
         (void)uploadBuffer.Detach();
+        (void)slotGuardBinding.Detach();
         currentCmdList = nullptr;
         commandQueue = nullptr;
         device = nullptr;
@@ -149,6 +150,7 @@ void DX12Backend::Shutdown() {
     srvHeap.Reset();
     fontTexture.Reset();
     uploadBuffer.Reset();
+    slotGuardBinding.Reset();
     initialized = false;
     DX12_DEBUG_STEP("Shutdown", "COMPLETE");
 }
@@ -485,11 +487,15 @@ void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_
 }
 
 void DX12Backend::SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue) {
-    if (slotFence != fence) {
+    // The binding pins the fence with an owning reference so a replacement
+    // fence can never reuse the released old fence's address (ABA reuse).
+    // Without the pin, pointer comparison can miss the lifetime change and
+    // stale guards wedge every present for the full wait timeout
+    // (session 20260813_173453).
+    if (slotGuardBinding.RebindIfNeeded(fence)) {
         for (int i = 0; i < kFramePoolSize; ++i) {
             slotFenceValue[i] = 0;
         }
-        slotFence = fence;
     }
     nextSlotFenceValue = guardValue;
 }
@@ -725,4 +731,3 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
 }
 
 }  // namespace CustomOverlay
-

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <vector>
 #include "custom_overlay.h"
+#include "dx12_overlay_policy/upload_slot_guard.h"
 
 namespace CustomOverlay {
 
@@ -88,7 +89,7 @@ private:
     void* indexBufferPtr[kFramePoolSize] = {};
     size_t vertexBufferSize[kFramePoolSize] = {};
     size_t indexBufferSize[kFramePoolSize] = {};
-    ID3D12Fence* slotFence = nullptr;
+    ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding;
     uint64_t slotFenceValue[kFramePoolSize] = {};
     uint64_t nextSlotFenceValue = 0;
     std::atomic<int> frameIdx{0};

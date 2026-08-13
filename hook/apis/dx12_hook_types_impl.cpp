@@ -97,14 +97,16 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
     if (fontUploadPending_ && !fontUploadBuffer_)
         return;
 
-    // Rebind the per-slot GPU-completion fence.  If the fence object changed
+    // Rebind the per-slot GPU-completion fence. If the fence object changed
     // (overlay reinit recreates g_State.fence), the recorded guard values
-    // belong to a dead fence — discard them so we never wait on a stale or
-    // released fence.
-    if (dx12_hook_s_descFreeSlotFence != slotFence_) {
+    // belong to a previous fence lifetime — discard them so we never wait on
+    // stale guards. The binding pins the fence with an owning reference so a
+    // replacement fence can never reuse the old fence's address (ABA reuse
+    // would otherwise defeat the pointer comparison and wedge every present
+    // for the full liveness timeout; session 20260813_173453).
+    if (slotGuardBinding_.RebindIfNeeded(dx12_hook_s_descFreeSlotFence)) {
         for (int i = 0; i < kPoolSize; ++i)
             slotFenceValue_[i] = 0;
-        slotFence_ = dx12_hook_s_descFreeSlotFence;
     }
 
     // Upload vertex data
@@ -233,8 +235,10 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
 void DX12DescFreeBackend::Shutdown()  {
     // During process termination, D3D12/NVIDIA driver may be partially torn down.
     // Skip GPU resource cleanup to avoid access violations in driver code.
-    if (IsProcessTerminating())
+    if (IsProcessTerminating()) {
+        (void)slotGuardBinding_.Detach();
         return;
+    }
     for (int i = 0; i < kPoolSize; i++) {
         if (vb_[i]) {
             vb_[i]->Unmap(0, nullptr);
@@ -275,10 +279,10 @@ void DX12DescFreeBackend::Shutdown()  {
     fontBufferSize_ = 0;
     fontUploadPending_ = false;
     deviceReady_ = false;
-    // Drop the (non-owning) slot fence binding and guards; a fresh InitDevice
-    // rebinds via the published static, and the GPU work that referenced this
+    // Drop the owning slot-fence pin and guards; a fresh InitDevice rebinds
+    // via the published static, and the GPU work that referenced this
     // backend's ring is gone.
-    slotFence_ = nullptr;
+    slotGuardBinding_.Reset();
     for (int i = 0; i < kPoolSize; ++i)
         slotFenceValue_[i] = 0;
 }
@@ -446,12 +450,13 @@ bool DX12DescFreeBackend::ResizeBuffer(ID3D12Resource*& buf, void*& ptr, size_t&
 }
 
 bool DX12DescFreeBackend::WaitForSlotGpuComplete(int slot) {
-    if (!slotFence_ || slot < 0 || slot >= kPoolSize) {
+    ID3D12Fence* slotFence = slotGuardBinding_.GetFence();
+    if (!slotFence || slot < 0 || slot >= kPoolSize) {
         return true;
 
     }
     const UINT64 guardValue = slotFenceValue_[slot];
-    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, slotFence_->GetCompletedValue())) {
+    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, slotFence->GetCompletedValue())) {
         return true;
     }
     HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -459,7 +464,7 @@ bool DX12DescFreeBackend::WaitForSlotGpuComplete(int slot) {
         return false;
     }
     bool completed = false;
-    if (SUCCEEDED(slotFence_->SetEventOnCompletion(guardValue, eventHandle))) {
+    if (SUCCEEDED(slotFence->SetEventOnCompletion(guardValue, eventHandle))) {
         // The fence is the real synchronization that closes the CPU<->GPU
         // UPLOAD-buffer data race.  The bounded timeout is purely a liveness
         // safety net: a separate code path (FG transition / overlay reinit)
@@ -477,7 +482,7 @@ bool DX12DescFreeBackend::WaitForSlotGpuComplete(int slot) {
                     "DescFree: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — overlay upload ring "
                     "draw skipped to avoid reusing in-flight GPU data",
                     slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
-                    (unsigned long long)slotFence_->GetCompletedValue());
+                    (unsigned long long)slotFence->GetCompletedValue());
             }
         }
     }
@@ -632,4 +637,3 @@ ScopedCEOverlayECLSubmission::~ScopedCEOverlayECLSubmission() {
     dx12_hook_s_insideCEOverlayECLReason = previousReason_;
     --dx12_hook_s_insideCEOverlayECLDepth;
 }
-

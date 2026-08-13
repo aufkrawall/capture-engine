@@ -14,6 +14,7 @@ namespace CustomOverlay {
 
 
 bool DX12Backend::WaitForSlotGpuComplete(int slot) {
+    ID3D12Fence* slotFence = slotGuardBinding.GetFence();
     if (!slotFence || slot < 0 || slot >= kFramePoolSize) {
         return true;
     }

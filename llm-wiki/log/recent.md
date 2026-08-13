@@ -1,4 +1,26 @@
 # llm-wiki Log
+
+### 2026-08-13 - FIXED: DLSS-FG switch after FG-spam wedged the app at ~1 FPS + hidden overlay (stale upload-slot guards)
+
+- Session `20260813_173453` (build 0.1.6011, dx12_fg_switch_test, manual dump): after FG-mode switching spam, the
+  switch to DLSS FG dropped the app to ~1 FPS and hid the overlay. Dump: the present thread parked in
+  `DX12DescFreeBackend::WaitForSlotGpuComplete` (`WaitForSingleObjectEx`) inside the PostSL overlay render; log:
+  `DescFree: slot N GPU-completion wait timed out (guard=219..222 completed=0,1,2,...)` EVERY present.
+- Root cause: the per-slot upload-ring guards store ABSOLUTE overlay-fence values. Overlay reinit (`InitOverlaySync`)
+  releases the old fence and creates a new one, and the new fence object landed at the SAME virtual address as the
+  released old one (ABA reuse). Both backends detected fence replacement by raw pointer comparison, so the lifetime
+  change was missed: the stale guards (219-222) survived against the new fence (values restart at 0) and every wait
+  burned the full 1 s liveness timeout, skipping the overlay draw. The timeout path never re-records the slot, so the
+  wedge was permanent. (Not the 20260703_210021 AMD-suspend stall: there the fence NEVER advances; here it advances
+  once per present but can never reach the stale guard values.)
+- Fix: `UploadSlotGuardFenceBinding` (new `hook/common/dx12_overlay_policy/upload_slot_guard.h`) pins the bound fence
+  with an owning COM reference, so a replacement fence can never reuse its address and any pointer change provably is
+  a new lifetime; `RebindIfNeeded()` clears the per-slot guards. Wired into `DX12DescFreeBackend` and
+  `CustomOverlay::DX12Backend`, replacing the raw `slotFence` members.
+- Tests: `tests/test_dx12_upload_slot_guard.cpp` (fake-fence rebind/lifetime suite, ABA model, source pins).
+  `--verify --force-rebuild` passed on 0.1.6013 (the plain `--verify` first hit the pre-existing Vulkan-layer
+  sanitizer-object cache race, see below). OPEN: user re-run of the FG-spam -> DLSS sequence.
+
 ### 2026-08-13 - FIXED: switch-to-DLSS startup window blanks the overlay after long FG-switch spam
 
 - Session `20260813_170318` (build 0.1.6009): after extreme FG-switch spam, EVERY switch to DLSS FG (FSR->DLSS
@@ -196,29 +218,3 @@
   (`dx12_hook_g_CommandQueueSignalOriginalByVTable`) with live-slot/native/legacy fallbacks.
 - Tests: `tests/test_dx12_ecl_recursion_break_policy.cpp` (policy + source pins). Verify gate passed on
   0.1.5995. Needs the user's Talos re-test with all tool combinations.
-
-### 2026-08-13 - FIXED (refined): suspend only previously loaded tools' threads, not the whole process
-
-- Build 0.1.5988 field results: session `20260813_033707` got the game running but crashed in `nvwgf2umx` on the
-  first Present (driver read a garbage command-list state); session `20260813_033912` ran and exited cleanly, but the
-  log shows the all-threads suspension GAVE UP ("could not suspend peer threads cleanly ... degraded") — the game
-  constantly spawns threads, so the stable-snapshot requirement always fails, and the run succeeded without any
-  suspension. Suspending arbitrary game/driver threads is unsafe and unreliable.
-- Refined `ToolThreadSuspension` in `hook/main_thirdparty_load.cpp`: only threads whose start address lies inside a
-  previously loaded tool module (recorded via `GetModuleInformation` after each successful load) are suspended, and
-  enumeration uses two passes instead of a globally stable snapshot. Game and driver threads are never touched; the
-  loader-quiescence probe with resume-and-retry remains. Still needs field validation of all three tools.
-
-### 2026-08-13 - FIXED (structural): peer-thread suspension around every tool load after the first
-
-- Session `20260813_031321` proved Special-K-last + quiescence wait is still insufficient: CE's hook thread held the
-  loader lock in Special K's DllMain, whose inner LoadLibrary re-entered ReShade/Steam/OptiScaler loader hooks and
-  blocked on OptiScaler's mutex, held by an OptiScaler background thread doing NEW loader work. Order and wait alone
-  cannot win — both tools have recurring background loader activity.
-- Structural fix in `hook/main_thirdparty_load.cpp`: before every tool load after the first, CE waits for loader
-  quiescence and then SUSPENDS all other process threads (stable TH32CS_SNAPTHREAD enumeration + bounded
-  post-suspension probe with resume-and-retry if a peer was caught inside the loader). Peers are resumed immediately
-  after the LoadLibrary returns. Order back to Special K -> ReShade -> OptiScaler: with peers suspended, Special K's
-  enumerator cannot hold its thread-hook critical section across a loader call, so OptiScaler's DllMain thread
-  creation proceeds. `ShouldSuspendPeerThreadsForToolLoad` added to `hook/common/third_party_load_policy.h`;
-  template/README/wiki updated.

@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 591,
+    "entries": 592,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -516,6 +516,7 @@
       "tests/test_dx12_fg_transition_sequences.cpp",
       "tests/test_dx12_process_frame_diagnostics.cpp",
       "tests/test_dx12_sampler_policy.cpp",
+      "tests/test_dx12_upload_slot_guard.cpp",
       "tests/test_dxgi_shared.cpp",
       "tests/test_dxgi_shared_part10.cpp",
       "tests/test_dxgi_shared_part11.cpp",

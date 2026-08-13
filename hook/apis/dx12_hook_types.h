@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "../common/dx12_overlay_policy/upload_slot_guard.h"
+
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
 typedef void(STDMETHODCALLTYPE* ExecuteCommandListsPtr)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
@@ -148,7 +150,7 @@ bool WaitForSlotGpuComplete(int slot);
     void* ibPtr_[kPoolSize] = {};
     size_t vbSize_[kPoolSize] = {};
     size_t ibSize_[kPoolSize] = {};
-    ID3D12Fence* slotFence_ = nullptr;
+    ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding_;
     UINT64 slotFenceValue_[kPoolSize] = {};
     int frameIdx_ = 0;
 };
