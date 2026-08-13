@@ -47,21 +47,53 @@ bool WaitForLoaderQuiescence() {
     return RunLoaderQuiescenceProbe(INFINITE);
 }
 
-// RAII suspension of every other thread in the process. The tools' background
-// threads must not hold their loader-hook mutexes while CE's next tool
-// DllMain runs under the loader lock (see third_party_load_policy.h).
-class PeerThreadSuspension {
+// RAII suspension of the threads owned by previously loaded tools. Their
+// background threads must not hold their loader-hook mutexes/critical sections
+// while CE's next tool DllMain runs under the loader lock (see
+// third_party_load_policy.h). Threads are identified by their start address
+// falling inside a loaded tool module, so game and driver threads are never
+// suspended.
+class ToolThreadSuspension {
 public:
-    ~PeerThreadSuspension() { ResumeAll(); }
-    PeerThreadSuspension(const PeerThreadSuspension&) = delete;
-    PeerThreadSuspension& operator=(const PeerThreadSuspension&) = delete;
-    PeerThreadSuspension() = default;
+    ~ToolThreadSuspension() { ResumeAll(); }
+    ToolThreadSuspension(const ToolThreadSuspension&) = delete;
+    ToolThreadSuspension& operator=(const ToolThreadSuspension&) = delete;
+
+    explicit ToolThreadSuspension(const std::vector<std::pair<uintptr_t, uintptr_t>>& moduleRanges)
+        : moduleRanges_(moduleRanges) {}
+
+    bool HasModules() const { return !moduleRanges_.empty(); }
+
+    static bool GetThreadStartAddress(HANDLE thread, void** startAddress) {
+        static auto queryInfoThread = reinterpret_cast<NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG)>(
+            GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread"));
+        if (!queryInfoThread || !startAddress) {
+            return false;
+        }
+        *startAddress = nullptr;
+        return NT_SUCCESS(queryInfoThread(thread, 9 /* ThreadQuerySetWin32StartAddress */,
+                                          static_cast<void*>(startAddress),
+                                          sizeof(*startAddress), nullptr));
+    }
+
+    bool IsToolThread(void* startAddress) {
+        const uintptr_t address = reinterpret_cast<uintptr_t>(startAddress);
+        return std::any_of(moduleRanges_.begin(), moduleRanges_.end(), [&](const auto& range) {
+            return address >= range.first && address < range.first + range.second;
+        });
+    }
 
     bool Suspend() {
         const DWORD currentThreadId = GetCurrentThreadId();
         const DWORD processId = GetCurrentProcessId();
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            const size_t previousCount = handles_.size();
+        // Two enumeration passes: the second catches tool threads that were
+        // created while the first pass ran. A busy game keeps spawning its own
+        // threads, so requiring a globally stable snapshot here would always
+        // fail (session 20260813_033912 logged "could not suspend peer threads
+        // cleanly" for exactly that reason). Only previously loaded tools'
+        // threads are ever suspended; game and driver threads are filtered out
+        // by their start address.
+        for (int pass = 0; pass < 2; ++pass) {
             const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
             if (snapshot == INVALID_HANDLE_VALUE) {
                 ResumeAll();
@@ -79,12 +111,19 @@ public:
                         });
                     if (alreadyTracked)
                         continue;
-                    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, entry.th32ThreadID);
+                    HANDLE thread =
+                        OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
                     if (!thread) {
                         if (GetLastError() == ERROR_INVALID_PARAMETER)
                             continue;  // Thread exited after the snapshot.
                         enumerationOk = false;
                         break;
+                    }
+                    void* startAddress = nullptr;
+                    const bool hasStartAddress = GetThreadStartAddress(thread, &startAddress);
+                    if (!hasStartAddress || !IsToolThread(startAddress)) {
+                        CloseHandle(thread);
+                        continue;
                     }
                     handles_.push_back({thread, entry.th32ThreadID});
                 } while (Thread32Next(snapshot, &entry));
@@ -94,7 +133,7 @@ public:
                 ResumeAll();
                 return false;
             }
-            for (size_t i = previousCount; i < handles_.size(); ++i) {
+            for (size_t i = suspendedCount_; i < handles_.size(); ++i) {
                 if (SuspendThread(handles_[i].first) == static_cast<DWORD>(-1)) {
                     if (WaitForSingleObject(handles_[i].first, 0) == WAIT_OBJECT_0) {
                         CloseHandle(handles_[i].first);
@@ -105,12 +144,9 @@ public:
                     return false;
                 }
             }
-            if (handles_.size() == previousCount) {
-                return true;  // Stable thread set: every peer is suspended.
-            }
+            suspendedCount_ = handles_.size();
         }
-        ResumeAll();
-        return false;  // Never reached a stable enumeration.
+        return true;
     }
 
     void ResumeAll() {
@@ -124,8 +160,22 @@ public:
     }
 
 private:
+    std::vector<std::pair<uintptr_t, uintptr_t>> moduleRanges_;
     std::vector<std::pair<HANDLE, DWORD>> handles_;
+    size_t suspendedCount_ = 0;
 };
+
+bool RecordLoadedToolModuleRange(HMODULE module, std::vector<std::pair<uintptr_t, uintptr_t>>& ranges) {
+    if (!module) {
+        return false;
+    }
+    MODULEINFO info = {};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info))) {
+        return false;
+    }
+    ranges.push_back({reinterpret_cast<uintptr_t>(info.lpBaseOfDll), static_cast<uintptr_t>(info.SizeOfImage)});
+    return true;
+}
 
 // True when a renamed copy of `tool` (a graphics proxy base name from the
 // shared candidate list) is already mapped. One bounded module walk plus
@@ -219,13 +269,14 @@ void PreloadConfiguredThirdPartyDlls() {
         {ce::third_party_load::Tool::kOptiScaler, &thirdParty.optiscalerDllPath},
     };
 
+    std::vector<std::pair<uintptr_t, uintptr_t>> loadedToolRanges;
     for (size_t toolIndex = 0; toolIndex < sizeof(tools) / sizeof(tools[0]); ++toolIndex) {
         const auto& entry = tools[toolIndex];
-        PeerThreadSuspension suspension;
+        ToolThreadSuspension suspension(loadedToolRanges);
         if (ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)) {
             WaitForLoaderQuiescence();
         }
-        if (ce::third_party_load::ShouldSuspendPeerThreadsForToolLoad(toolIndex)) {
+        if (ce::third_party_load::ShouldSuspendPeerThreadsForToolLoad(toolIndex) && suspension.HasModules()) {
             bool peersSuspended = false;
             for (int attempt = 0; attempt < 4 && !peersSuspended; ++attempt) {
                 if (!suspension.Suspend()) {
@@ -245,7 +296,7 @@ void PreloadConfiguredThirdPartyDlls() {
                 static std::atomic<bool> s_suspendGiveUpLogged{false};
                 if (!s_suspendGiveUpLogged.exchange(true, std::memory_order_acq_rel)) {
                     HookLogImportant(
-                        "ThirdParty preload: could not suspend peer threads cleanly; loading the remaining tools "
+                        "ThirdParty preload: could not suspend tool threads cleanly; loading the remaining tools "
                         "without peer suspension (loader-deadlock protection degraded)");
                 }
             }
@@ -281,6 +332,7 @@ void PreloadConfiguredThirdPartyDlls() {
         if (hMod) {
             HookLogImportant("ThirdParty preload: %s loaded from %s (module=%p)", toolName,
                              resolved.c_str(), reinterpret_cast<void*>(hMod));
+            RecordLoadedToolModuleRange(hMod, loadedToolRanges);
         } else {
             const DWORD error = GetLastError();
             HookLogImportant("ThirdParty preload: %s FAILED to load from %s (error=%lu%s)", toolName,

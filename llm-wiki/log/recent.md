@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-13 - FIXED (refined): suspend only previously loaded tools' threads, not the whole process
+
+- Build 0.1.5988 field results: session `20260813_033707` got the game running but crashed in `nvwgf2umx` on the
+  first Present (driver read a garbage command-list state); session `20260813_033912` ran and exited cleanly, but the
+  log shows the all-threads suspension GAVE UP ("could not suspend peer threads cleanly ... degraded") — the game
+  constantly spawns threads, so the stable-snapshot requirement always fails, and the run succeeded without any
+  suspension. Suspending arbitrary game/driver threads is unsafe and unreliable.
+- Refined `ToolThreadSuspension` in `hook/main_thirdparty_load.cpp`: only threads whose start address lies inside a
+  previously loaded tool module (recorded via `GetModuleInformation` after each successful load) are suspended, and
+  enumeration uses two passes instead of a globally stable snapshot. Game and driver threads are never touched; the
+  loader-quiescence probe with resume-and-retry remains. Still needs field validation of all three tools.
+
 ### 2026-08-13 - FIXED (structural): peer-thread suspension around every tool load after the first
 
 - Session `20260813_031321` proved Special-K-last + quiescence wait is still insufficient: CE's hook thread held the

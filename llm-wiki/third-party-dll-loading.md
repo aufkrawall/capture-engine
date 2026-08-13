@@ -40,17 +40,22 @@ once those tools are loaded.
   -> OptiScaler (the `Tool` enum declaration order in
   `third_party_load_policy.h`). Before every tool load after the first, the
   executor (a) waits for the Windows loader work queue to drain by joining a
-  trivial `LoadLibrary` probe thread, and (b) suspends every other process
-  thread for the duration of the load (stable thread-snapshot enumeration,
-  then a bounded post-suspension probe with resume-and-retry when a peer was
-  caught inside the loader). With peers suspended, Special K's enumerator
-  cannot hold its thread-hook critical section across a loader call, so
-  OptiScaler's DllMain thread creation proceeds. Simple reordering and the
-  quiescence wait alone were proven insufficient: sessions `20260813_020236`
-  and `20260813_025615` (Special-K-first without suspension), `20260813_021731`
-  and `20260813_031321` (Special-K-last, with/without the wait). Do not
-  reorder, remove the wait, or drop the suspension without re-checking all
-  four sessions.
+  trivial `LoadLibrary` probe thread, and (b) suspends the threads owned by
+  previously loaded tools for the duration of the load (threads identified by
+  their start address inside a loaded tool module; two enumeration passes, no
+  globally stable snapshot requirement, plus a bounded post-suspension probe
+  with resume-and-retry when a tool thread was caught inside the loader).
+  Game and driver threads are never suspended — the first all-threads version
+  was unreliable in a busy game and coincided with a driver crash
+  (`nvwgf2umx`, session `20260813_033707`), while a run where suspension gave
+  up entirely (`20260813_033912`) succeeded, showing the deadlock is a race.
+  With the tool threads suspended, Special K's enumerator cannot hold its
+  thread-hook critical section across a loader call, so OptiScaler's DllMain
+  thread creation proceeds. Simple reordering and the quiescence wait alone
+  were proven insufficient: sessions `20260813_020236` and `20260813_025615`
+  (Special-K-first without suspension), `20260813_021731` and
+  `20260813_031321` (Special-K-last, with/without the wait). Do not reorder,
+  remove the wait, or drop the suspension without re-checking all sessions.
 - `PreloadConfiguredThirdPartyDlls()` runs in `HookThread` immediately after
   the local `config.ini` parse, before CE's wrapper DLL load,
   `PreloadConfiguredGraphicsRuntimeDlls()`, and per-API hook installation.
