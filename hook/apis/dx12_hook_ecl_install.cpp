@@ -134,11 +134,20 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         VTableHook::Status hookStatus =
             VTableHook::Create(reinterpret_cast<void*>(&vtbl[10]), (LPVOID)DetourExecuteCommandLists, (LPVOID*)&original);
         if (hookStatus == VTableHook::Success && original) {
-            std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-            dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
-            dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
-            if (!oExecuteCommandLists)
-                oExecuteCommandLists = original;
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
+                dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
+                dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
+                if (!oExecuteCommandLists)
+                    oExecuteCommandLists = original;
+            }
+            if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
+                // Publish the native runtime ECL eagerly whenever a queue vtable
+                // still exposes one. The ExecuteCommandLists recursion-break path
+                // needs this to skip a foreign overlay proxy hook captured as the
+                // first global original (Talos + ReShade, session 20260813_041416).
+                TryPublishRealD3D12ECLCandidate(original, "fresh queue vtable hook");
+            }
         }
     } else {
         std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
@@ -155,9 +164,16 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     if (Dx12TraceEnabled() && vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
         CommandQueueSignalPtr origSignal = nullptr;
         if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[14]), (LPVOID)DetourTraceCommandQueueSignal, (LPVOID*)&origSignal) ==
-                VTableHook::Success &&
-            origSignal && !oTraceCommandQueueSignal) {
-            oTraceCommandQueueSignal = origSignal;
+            VTableHook::Success && origSignal) {
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
+                dx12_hook_g_CommandQueueSignalOriginalByVTable[vtbl] = origSignal;
+                if (!oTraceCommandQueueSignal)
+                    oTraceCommandQueueSignal = origSignal;
+            }
+            if (!dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
+                TryPublishRealD3D12SignalCandidate(origSignal, "fresh queue vtable hook");
+            }
         }
         HookLogImportant("DX12 TRACE: hooked CommandQueue::Signal for queue %p (vtbl=%p)", (void*)queue, (void*)vtbl);
     }
@@ -398,7 +414,28 @@ HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, 
 }
 
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
-    HRESULT hr = oTraceCommandQueueSignal ? oTraceCommandQueueSignal(queue, fence, value) : E_FAIL;
+    // Resolve the type-safe next Signal for this queue object. The global
+    // oTraceCommandQueueSignal must not be called blindly: when a third-party
+    // overlay proxy queue was hooked first, that global is the proxy's own
+    // thunk, and re-entering it with the wrapped real queue dereferences a
+    // garbage vtable slot (Talos + ReShade, session 20260813_050515).
+    SignalPtr original = nullptr;
+    void** vtbl = queue ? *reinterpret_cast<void***>(queue) : nullptr;
+    if (vtbl) {
+        std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
+        const auto it = dx12_hook_g_CommandQueueSignalOriginalByVTable.find(vtbl);
+        if (it != dx12_hook_g_CommandQueueSignalOriginalByVTable.end()) {
+            original = it->second;
+        } else if (vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
+            original = reinterpret_cast<SignalPtr>(vtbl[14]);
+        }
+    }
+    if (!original) {
+        original = dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire);
+        if (!original)
+            original = oTraceCommandQueueSignal;
+    }
+    HRESULT hr = original ? original(queue, fence, value) : E_FAIL;
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_n{0};
         const int sn = s_n.fetch_add(1, std::memory_order_relaxed);

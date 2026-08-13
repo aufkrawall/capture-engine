@@ -93,6 +93,7 @@ extern CreateCommittedResourcePtr oCreateCommittedResource;
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
 extern CommandQueueSignalPtr oTraceCommandQueueSignal;
+extern std::map<void**, SignalPtr> dx12_hook_g_CommandQueueSignalOriginalByVTable;
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
 #elif defined(_MSC_VER)
@@ -542,6 +543,8 @@ bool IsStreamlineLoaded();;
 bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr);
 bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase);
 void ProbeRealD3D12ECL(ID3D12Device* device);
+bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const char* source);
+bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source);
 bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
                               const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer);
 void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress);
@@ -615,4 +618,3 @@ void DX12_DumpFocusAnalysisRing(const char* reason);
 void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm);
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent, bool frameGenerationPresentationActive, ce::dx12_process_frame_diagnostics::StageTimings* diagnostics);
 const char* DX12WaitResultName(DWORD waitResult);
-

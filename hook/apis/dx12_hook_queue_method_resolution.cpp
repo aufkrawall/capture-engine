@@ -81,7 +81,40 @@ void* FollowDirectJump(const void* address) {
     return target;
 }
 
-bool TryPublishRealECLCandidate(ExecuteCommandListsPtr candidate, const char* source) {
+void TryResolveMethodsFromVTable(void** vtable, const char* source) {
+    constexpr size_t kRequiredSlots = 15;
+    if (!IsReadableRange(static_cast<const void*>(vtable), kRequiredSlots * sizeof(void*))) {
+        return;
+    }
+
+    if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
+        TryPublishRealD3D12ECLCandidate(reinterpret_cast<ExecuteCommandListsPtr>(vtable[10]), source);
+    }
+    TryPublishRealD3D12SignalCandidate(reinterpret_cast<SignalPtr>(vtable[14]), source);
+}
+
+}  // namespace
+
+bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source) {
+    if (!candidate || dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
+        return dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire) != nullptr;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (!IsNativeD3D12CodeAddress(reinterpret_cast<void*>(candidate), modulePath)) {
+        return false;
+    }
+
+    SignalPtr expected = nullptr;
+    if (dx12_hook_g_RealD3D12Signal.compare_exchange_strong(expected, candidate, std::memory_order_acq_rel,
+                                                            std::memory_order_acquire)) {
+        HookLogImportant("DX12: Real D3D12 Signal resolved passively from %s: %p (%s)", source,
+                         reinterpret_cast<void*>(candidate), modulePath);
+    }
+    return dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire) != nullptr;
+}
+
+bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const char* source) {
     if (!candidate) {
         return false;
     }
@@ -109,38 +142,6 @@ bool TryPublishRealECLCandidate(ExecuteCommandListsPtr candidate, const char* so
     return dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr;
 }
 
-void TryPublishRealSignalCandidate(SignalPtr candidate, const char* source) {
-    if (!candidate || dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    char modulePath[MAX_PATH] = {};
-    if (!IsNativeD3D12CodeAddress(reinterpret_cast<void*>(candidate), modulePath)) {
-        return;
-    }
-
-    SignalPtr expected = nullptr;
-    if (dx12_hook_g_RealD3D12Signal.compare_exchange_strong(expected, candidate, std::memory_order_acq_rel,
-                                                            std::memory_order_acquire)) {
-        HookLogImportant("DX12: Real D3D12 Signal resolved passively from %s: %p (%s)", source,
-                         reinterpret_cast<void*>(candidate), modulePath);
-    }
-}
-
-void TryResolveMethodsFromVTable(void** vtable, const char* source) {
-    constexpr size_t kRequiredSlots = 15;
-    if (!IsReadableRange(static_cast<const void*>(vtable), kRequiredSlots * sizeof(void*))) {
-        return;
-    }
-
-    if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-        TryPublishRealECLCandidate(reinterpret_cast<ExecuteCommandListsPtr>(vtable[10]), source);
-    }
-    TryPublishRealSignalCandidate(reinterpret_cast<SignalPtr>(vtable[14]), source);
-}
-
-}  // namespace
-
 void ProbeRealD3D12ECL(ID3D12Device* device) {
     static std::atomic<uint64_t> s_lastUnresolvedCaptureGeneration{UINT64_MAX};
     const uint64_t captureGeneration =
@@ -156,19 +157,19 @@ void ProbeRealD3D12ECL(ID3D12Device* device) {
         trackedVtableCount = dx12_hook_g_ExecuteCommandListsOriginalByVTable.size();
 
         if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-            TryPublishRealECLCandidate(oExecuteCommandLists, "captured primary queue original");
-            TryPublishRealECLCandidate(
+            TryPublishRealD3D12ECLCandidate(oExecuteCommandLists, "captured primary queue original");
+            TryPublishRealD3D12ECLCandidate(
                 dx12_hook_g_LastExecuteCommandListsOriginal.load(std::memory_order_acquire),
                 "last tracked queue original");
             for (const auto& [vtable, original] : dx12_hook_g_ExecuteCommandListsOriginalByVTable) {
-                if (TryPublishRealECLCandidate(original, "tracked queue original")) {
+                if (TryPublishRealD3D12ECLCandidate(original, "tracked queue original")) {
                     break;
                 }
                 TryResolveMethodsFromVTable(vtable, "tracked queue vtable");
             }
         }
 
-        TryPublishRealSignalCandidate(oTraceCommandQueueSignal, "captured trace Signal original");
+        TryPublishRealD3D12SignalCandidate(oTraceCommandQueueSignal, "captured trace Signal original");
         TryResolveMethodsFromVTable(dx12_hook_g_LastExecuteCommandListsVTable.load(std::memory_order_acquire),
                                     "last tracked queue vtable");
         if (!dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {

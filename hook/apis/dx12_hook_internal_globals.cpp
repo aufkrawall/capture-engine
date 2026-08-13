@@ -5,6 +5,8 @@ std::recursive_mutex dx12_hook_g_ExecuteCommandListsHookStateMutex;
 
 std::map<void**, ExecuteCommandListsPtr> dx12_hook_g_ExecuteCommandListsOriginalByVTable;
 
+std::map<void**, SignalPtr> dx12_hook_g_CommandQueueSignalOriginalByVTable;
+
 std::atomic<uint64_t> dx12_hook_g_ExecuteCommandListsCaptureGeneration{0};
 
 std::atomic<void**> dx12_hook_g_LastExecuteCommandListsVTable{nullptr};

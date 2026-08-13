@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 588,
+    "entries": 589,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -510,6 +510,7 @@
       "tests/test_d3d11_context_wrapper_source.cpp",
       "tests/test_d3d9_capture_policy.cpp",
       "tests/test_dlss_indicator_spoof.cpp",
+      "tests/test_dx12_ecl_recursion_break_policy.cpp",
       "tests/test_dx12_factory_slot_policy.cpp",
       "tests/test_dx12_fg_trace_replay.cpp",
       "tests/test_dx12_fg_transition_sequences.cpp",

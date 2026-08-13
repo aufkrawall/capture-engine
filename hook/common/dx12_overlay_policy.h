@@ -13,3 +13,4 @@
 #include "dx12_overlay_policy/postsl_queue_selection.h"
 #include "dx12_overlay_policy/postsl_keepalive.h"
 #include "dx12_overlay_policy/protected_ffx_startup.h"
+#include "dx12_overlay_policy/ecl_recursion_break.h"

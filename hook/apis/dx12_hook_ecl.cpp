@@ -4,12 +4,58 @@
 
 #include "dx12_hook_internal.h"
 
+namespace {
+
+using EclBreakTargetClass = ce::dx12_overlay_policy::EclBreakTargetClass;
+
+EclBreakTargetClass ClassifyEclBreakTargetCandidate(ExecuteCommandListsPtr candidate) {
+    char modulePath[MAX_PATH] = {};
+    const bool resolved =
+        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(candidate), modulePath, sizeof(modulePath));
+    return ce::dx12_overlay_policy::ClassifyEclBreakTargetCandidate(resolved, modulePath);
+}
+
+// Chooses the deepest provably safe ExecuteCommandLists for the recursion-break
+// path. Never returns a known third-party overlay proxy hook (ReShade throws
+// std::system_error(resource_deadlock_would_occur) when re-entered with the
+// wrapped real queue — Talos + ReShade-only, session 20260813_041416) or CE's
+// own detour.
+ExecuteCommandListsPtr ResolveECLRecursionBreakTarget(ID3D12CommandQueue* pThis) {
+    void** queueVtable = pThis ? *reinterpret_cast<void***>(pThis) : nullptr;
+    char queueVtablePath[MAX_PATH] = {};
+    const bool queueVtableResolved =
+        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(queueVtable), queueVtablePath,
+                                        sizeof(queueVtablePath));
+
+    const ExecuteCommandListsPtr perQueueOriginal = GetOriginalExecuteCommandLists(pThis);
+    const ExecuteCommandListsPtr realD3D12Ecl = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+
+    switch (ce::dx12_overlay_policy::SelectEclRecursionBreakTarget(
+        ce::dx12_overlay_policy::ClassifyEclBreakTargetCandidate(queueVtableResolved, queueVtablePath),
+        ClassifyEclBreakTargetCandidate(perQueueOriginal), ClassifyEclBreakTargetCandidate(realD3D12Ecl),
+        ClassifyEclBreakTargetCandidate(oExecuteCommandLists))) {
+        case ce::dx12_overlay_policy::EclBreakSelection::kPerQueueOriginal:
+            return perQueueOriginal;
+        case ce::dx12_overlay_policy::EclBreakSelection::kRealD3D12Ecl:
+            return realD3D12Ecl;
+        case ce::dx12_overlay_policy::EclBreakSelection::kGlobalOriginal:
+            return oExecuteCommandLists;
+        case ce::dx12_overlay_policy::EclBreakSelection::kNone:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
                                                  ID3D12CommandList* const* ppCommandLists) {
     // Safety: during FG transitions, SL may call ECL on a queue that's being freed.
     // Freed COM objects have null vtable.  Forward directly to real ECL to avoid crash.
     if (!pThis || !*reinterpret_cast<void**>(pThis)) {
-        ExecuteCommandListsPtr real = oExecuteCommandLists;
+        ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+        if (!real)
+            real = oExecuteCommandLists;
         if (real)
             real(pThis, NumCommandLists, ppCommandLists);
         return;
@@ -138,16 +184,46 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         g_RenderWatchdog.HeartbeatFromHelperThread();
     }
 
-    // CRITICAL: Recursion depth guard.  If an FG engine (FSR FG, DLSS FG)
-    // hooks ECL and its "original" pointer loops back to us, we'd recurse
-    // infinitely.  Detect and break the cycle by calling the real ECL directly.
+    // CRITICAL: Recursion depth guard.  If an FG engine (FSR FG, DLSS FG) or a
+    // third-party overlay proxy (ReShade) hooks ECL and its "original" pointer
+    // loops back to us, we'd recurse infinitely. Detect and break the cycle by
+    // forwarding to the deepest known native D3D12 ECL. Never call the global
+    // oExecuteCommandLists blindly here: when a third-party overlay proxy queue
+    // was hooked first, that global is the proxy's own hook and re-entering it
+    // with the wrapped real queue throws std::system_error
+    // (resource_deadlock_would_occur) from ReShade's queue mutex (Talos +
+    // ReShade-only, session 20260813_041416).
     static thread_local int s_eclRecursionDepth = 0;
     if (s_eclRecursionDepth > 0) {
-        // We're being called recursively — an FG hook is looping back to us.
-        // Call the original (real D3D12) ECL directly to break the cycle.
-        ExecuteCommandListsPtr original = oExecuteCommandLists;
-        if (original)
-            original(pThis, NumCommandLists, ppCommandLists);
+        if (s_eclRecursionDepth >= 2) {
+            // A previously selected break target looped back into CE. Stop
+            // instead of recursing forever; the foreign hook above us is
+            // mid-flight, so dropping this submission is the only safe exit.
+            static std::atomic<int> s_eclBreakLoopBackLogCount{0};
+            const int logCount = s_eclBreakLoopBackLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5 || (logCount % 1000) == 0) {
+                HookLogImportant(
+                    "DX12: ECL recursion break target looped back - dropping submission "
+                    "(queue=%p lists=%u depth=%d log=%d)",
+                    pThis, NumCommandLists, s_eclRecursionDepth, logCount + 1);
+            }
+            return;
+        }
+        ExecuteCommandListsPtr breakTarget = ResolveECLRecursionBreakTarget(pThis);
+        if (breakTarget) {
+            ++s_eclRecursionDepth;
+            auto breakGuard = ce::make_scope_guard([&]() { --s_eclRecursionDepth; });
+            breakTarget(pThis, NumCommandLists, ppCommandLists);
+        } else {
+            static std::atomic<int> s_eclBreakUnresolvedLogCount{0};
+            const int logCount = s_eclBreakUnresolvedLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5 || (logCount % 1000) == 0) {
+                HookLogImportant(
+                    "DX12: ECL recursion with no usable native break target - skipping forward "
+                    "(queue=%p lists=%u depth=%d log=%d)",
+                    pThis, NumCommandLists, s_eclRecursionDepth, logCount + 1);
+            }
+        }
         return;
     }
     ++s_eclRecursionDepth;

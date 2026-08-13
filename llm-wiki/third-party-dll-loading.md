@@ -173,6 +173,16 @@ once those tools are loaded.
   foreign prepend) with `InlineHook::CreateBypassTrampoline` before creating
   the temp D3D11 (and D3D10) device, so the probe operates on genuine d3d11
   objects — the same genuine-object rule as the temp-DXGI-factory fix.
+- Talos (DX12) + ReShade-only crashed twice in the queue hook chain, not in
+  the loader (sessions `20260813_041416` / `20260813_050515`): CE's
+  "first captured original" globals for `ExecuteCommandLists`/`Signal` were
+  captured from ReShade's proxy queue vtable, so re-entering them with the
+  wrapped real queue threw `std::system_error(EDEADLK)` in ECL and jumped a
+  garbage vtable slot in Signal. Fixed with type-safe per-vtable original
+  resolution and eager native-original publication; see
+  `dx12-overlay-third-party-coexistence.md` ("Third-party proxy queue
+  re-entry in the ECL/Signal trace hooks") and
+  `tests/test_dx12_ecl_recursion_break_policy.cpp`.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated
