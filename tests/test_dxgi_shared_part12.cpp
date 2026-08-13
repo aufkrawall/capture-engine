@@ -166,6 +166,79 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffPreserveKeepsOverlayLiveAcrossL
         << "the FSR->DLSS prewarmed-handoff preserve must veto the late [outer] SL-FG-OFF teardown";
 }
 
+TEST(DXGISharedTest, EagerDrawCoversStreamlineStartupBypassWindow) {
+    using ce::dx12_overlay_policy::ShouldEagerDrawOverlayBeforeStreamlineStartupBypass;
+
+    // Session 20260813_170318: between the DLSS-ON edge and the first PostSL callback (150-203 ms)
+    // the startup-handoff bypass presents drew nothing and the overlay blanked on every switch-to-DLSS.
+    // With a live backend, the bypass present may draw: post-FSR needs the backend bound to the exact
+    // proxy queue; pure-DLSS needs the explicit-enable proof (or the legacy opt-in).
+    EXPECT_TRUE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(
+        /*isD3D12=*/true, /*streamlineFGRunning=*/true, /*postSLConfirmedRendering=*/false,
+        /*hadFSRFGPhase=*/true, /*configEagerEnabled=*/false, /*explicitEnablePureDLSSColdStartProof=*/false,
+        /*overlayInit=*/true, /*syncInit=*/true, /*backendQueueMatchesSwapchainQueue=*/true));
+    EXPECT_TRUE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(
+        true, true, false, false, false, true, true, true, false));
+
+    // PostSL confirmed -> PostSL re-owns the overlay; never double-draw.
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, true, true, true, false, false, true, true,
+                                                                     true));
+    // Backend not live -> nothing to draw with.
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, true, false, true, false, false, false, true,
+                                                                     true));
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, true, false, true, false, false, true, false,
+                                                                     true));
+    // Post-FSR without the exact-proxy queue proof keeps the protective no-draw.
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, true, false, true, false, false, true, true,
+                                                                     false));
+    // Pure-DLSS without the explicit-enable proof (GetState-only family) keeps the GTA protection.
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, true, false, false, false, false, true, true,
+                                                                     false));
+    // Non-D3D12 or FG not running -> not this path.
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(false, true, false, true, false, false, true, true,
+                                                                     true));
+    EXPECT_FALSE(ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(true, false, false, true, false, false, true, true,
+                                                                     true));
+}
+
+// The startup-bypass eager draw must consult the dx12 proof gate (live backend + pure-DLSS explicit
+// proof / post-FSR proxy binding) before HandleDX12ProcessFrame, and the Present-routing call sites
+// must feed the explicit-SetOptions provenance into it (session 20260813_170318).
+TEST(DXGISharedSourceTest, StartupBypassEagerDrawConsultsLiveBackendProof) {
+    namespace fs = std::filesystem;
+    const fs::path steamRoutingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp";
+    const fs::path presentRoutingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp";
+    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(steamRoutingSource));
+    ASSERT_TRUE(fs::exists(presentRoutingSource));
+    ASSERT_TRUE(fs::exists(dx12Source));
+    const std::string steamRouting = ce::test_source::ReadLogicalSource(steamRoutingSource);
+    const std::string presentRouting = ce::test_source::ReadLogicalSource(presentRoutingSource);
+    const std::string dx12 = ce::test_source::ReadLogicalSource(dx12Source);
+    ASSERT_FALSE(steamRouting.empty());
+    ASSERT_FALSE(presentRouting.empty());
+    ASSERT_FALSE(dx12.empty());
+
+    const size_t eagerDraw = steamRouting.find("void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(");
+    ASSERT_NE(eagerDraw, std::string::npos);
+    const size_t proofGate = steamRouting.find("DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(", eagerDraw);
+    const size_t processFrame = steamRouting.find("HandleDX12ProcessFrame(", eagerDraw);
+    ASSERT_NE(proofGate, std::string::npos);
+    ASSERT_NE(processFrame, std::string::npos);
+    EXPECT_LT(proofGate, processFrame) << "the eager draw must pass the live-backend proof gate first";
+
+    // The implementation aggregates the pure-DLSS explicit-enable proof and the post-FSR queue proof.
+    const size_t impl = dx12.find("bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(");
+    ASSERT_NE(impl, std::string::npos);
+    EXPECT_NE(dx12.find("HasExplicitEnablePureDLSSColdStartProof(", impl), std::string::npos);
+    EXPECT_NE(dx12.find("ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(", impl), std::string::npos);
+    EXPECT_NE(dx12.find("dx12_hook_g_OverlayAdapterBackendQueue.load(", impl), std::string::npos);
+
+    // Both Present-routing call sites feed the explicit-SetOptions provenance.
+    EXPECT_NE(presentRouting.find("MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(", 0), std::string::npos);
+    EXPECT_NE(presentRouting.find("ctx.explicitSetOptionsActivation,", 0), std::string::npos);
+}
+
 // RoboCop: Rogue City session 20260809_141705 crashed in
 // gameoverlayrenderer64!OverlayHookD3D3: the handler loads its Present-shaped
 // rendering callback with `mov rax,[rip+disp]` and calls it with `call rax`;

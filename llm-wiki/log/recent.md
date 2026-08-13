@@ -1,4 +1,27 @@
 # llm-wiki Log
+### 2026-08-13 - FIXED: switch-to-DLSS startup window blanks the overlay after long FG-switch spam
+
+- Session `20260813_170318` (build 0.1.6009): after extreme FG-switch spam, EVERY switch to DLSS FG (FSR->DLSS
+  and all-off->DLSS) briefly blanked the overlay. Between the FG-ON edge and the first PostSL callback
+  (150-203 ms, "PostSL synthetic startup takeover - ProcessFrame dormant") the startup-handoff bypass presents
+  drew nothing: the RTSS-style eager present-time draw was env-var-gated AND excluded FSR history, and PostSL
+  had not confirmed yet.
+- Fix: `ShouldEagerDrawOverlayBeforeStreamlineStartupBypass` — on those bypass presents the live overlay backend
+  now draws present-time when it is initialized/sync'd and bound to the exact proxy queue (post-FSR prewarmed
+  case) or under the explicit-enable pure-DLSS cold-start proof (GetState-only enables keep the GTA protection).
+  PostSL confirmation immediately re-owns the overlay and the gate turns off; `HandleDX12ProcessFrame` keeps its
+  internal same-queue safety check.
+- Tests: `EagerDrawCoversStreamlineStartupBypassWindow` + source pin
+  `StartupBypassEagerDrawConsultsLiveBackendProof` (`tests/test_dxgi_shared_part12.cpp`), test stub updated. Open:
+  user re-run of the spam sequence on 0.1.6011.
+
+- BUILD SYSTEM (pre-existing, needs its own fix): two consecutive `--verify` runs failed at the Vulkan layer link
+  with undefined `__asan*` symbols - the sanitizer child compiles the SAME vulkan-layer sources concurrently and
+  shares the per-object cache with the product build, and the cache key does not distinguish the sanitizer flag
+  set, so the product build reused ASan-instrumented objects. `--verify --force-rebuild` recovers (both failures
+  recovered this way; 0.1.6011 passed clean). Proper fix: include the full flag set in the vulkan-layer object
+  cache key or give the sanitizer child an isolated cache store.
+
 ### 2026-08-13 - FIXED: FSR FG -> DLSS FG handoff keep-live + DLSS-off native-return one-shot proof consume
 
 - Session `20260813_162959` (build 0.1.6007): the FSR->DLSS handoff preserved the exact prewarmed PostSL
@@ -199,28 +222,3 @@
   enumerator cannot hold its thread-hook critical section across a loader call, so OptiScaler's DllMain thread
   creation proceeds. `ShouldSuspendPeerThreadsForToolLoad` added to `hook/common/third_party_load_policy.h`;
   template/README/wiki updated.
-
-### 2026-08-13 - FIXED (order finalized): Special K now loads LAST; quiescence wait alone was not enough
-
-- Session `20260813_025615` (all three tools, Special-K-first + quiescence wait): CE's hook thread held the loader
-  lock in OptiScaler's DllMain; OptiScaler's thread creation waited on Special K's critical section; Special K's
-  enumerator thread held that section while blocked in `FreeLibraryAndExitThread`'s loader drain. The wait cannot
-  fix Special-K-first because the enumerator starts NEW loader cycles at any time, so the overlap is a race, not a
-  one-shot init transient.
-- Final order: ReShade -> OptiScaler -> Special K. OptiScaler's DllMain thread creation runs before Special K's
-  thread hook exists, and the existing loader-quiescence wait before Special K drains OptiScaler's startup loader
-  work (nvapi init, update check), which is startup-only. Order constant, executor array, tests, and template/README/
-  wiki text updated accordingly.
-
-### 2026-08-13 - FIXED: all-three-tools crash in the DX11 temp-device probe (0.1.5985 -> next)
-
-- Session `20260813_024327` (ReShade + OptiScaler + Special K): AV in
-  `d3d11!CLayeredObject<CDevice>::CContainedObject::Release` with a garbage `this` (UTF-16 string fragment),
-  called from CE's `DetectSwapChainAPITypeForDX11Hook` while releasing the device returned by
-  `IDXGISwapChain::GetDevice`. CE's temp D3D11 device/swapchain were third-party proxy objects because the
-  "saved original" `D3D11CreateDeviceAndSwapChain` entry had been patched by the tools; releasing through the
-  mixed ReShade/OptiScaler/Steam wrapper chain forwarded a corrupted pointer.
-- Fix: `hook/apis/dx11_hook.cpp` now bypasses the entry patch on `D3D11CreateDeviceAndSwapChain` (and the D3D10
-  temp route's `D3D10CreateDevice`) with `InlineHook::CreateBypassTrampoline` before creating the temp device, so
-  the probe operates on genuine d3d11 objects — same rule as the temp-DXGI-factory fix. Source-order test added
-  to `tests/test_inject_capture_source_part2.cpp`.

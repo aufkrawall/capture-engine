@@ -368,6 +368,33 @@ std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchai
 return dx12_hook_g_StreamlineStartupActivationSwapchain != nullptr;
 }
 
+namespace DXGIShared {
+bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
+                                                              bool streamlineFGRunning,
+                                                              bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                              bool explicitSetOptionsActivation) {
+    (void)pSwapChain;
+    const bool configEagerEnabled = DXGIShared::IsDlssToggleEagerOverlayEnabled();
+    const bool postSLCallbackInstalled =
+        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+    const bool explicitEnablePureDLSSColdStartProof =
+        ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof(
+            hadFSRFGPhase, explicitSetOptionsActivation, HasRetainedStreamlineStartupActivationSwapchain(),
+            postSLCallbackInstalled);
+    bool backendQueueMatchesSwapchainQueue = false;
+    {
+        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        backendQueueMatchesSwapchainQueue = dx12_hook_g_SwapchainQueue != nullptr &&
+                                            dx12_hook_g_OverlayAdapterBackendQueue.load(std::memory_order_acquire) ==
+                                                dx12_hook_g_SwapchainQueue;
+    }
+    return ce::dx12_overlay_policy::ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(
+        isD3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase, configEagerEnabled,
+        explicitEnablePureDLSSColdStartProof, dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
+        backendQueueMatchesSwapchainQueue);
+}
+}
+
 
 bool HasUsableRetainedStreamlineStartupActivationSwapchainCandidate() {
 std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);

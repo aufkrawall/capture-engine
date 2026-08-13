@@ -198,16 +198,20 @@ void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, con
 
 namespace DXGIShared {
 // RTSS-style: draw the overlay present-time before a Streamline-startup bypass present so the
-// toggle-on / DLSS-G-init frozen frame carries the overlay. Opt-in + gated; HandleDX12ProcessFrame
-// resolves the submit queue and does the same-queue safety check internally (see the pre-SL un-gate
-// in dx12_hook.cpp). Gated so steady-state FG and the round-1..3 wins are untouched: D3D12 only,
-// DLSS FG turning on, PostSL not yet confirmed (once PostSL owns the overlay this bypass path is not
-// taken), and pure DLSS (no FSR history).
+// toggle-on window between the FG-ON edge and the first PostSL callback still carries the overlay
+// (session 20260813_170318: 150-203 ms blank on every switch-to-DLSS under FG-switch spam).
+// HandleDX12ProcessFrame resolves the submit queue and does the same-queue safety check internally
+// (see the pre-SL un-gate in dx12_hook.cpp). Gated so steady-state FG and the round-1..3 wins are
+// untouched: D3D12 only, DLSS FG turning on, PostSL not yet confirmed, and a live overlay backend -
+// post-FSR requires the prewarmed/preserved backend bound to the exact proxy, pure DLSS requires the
+// explicit-enable cold-start proof (or the legacy CE_DLSS_TOGGLE_OVERLAY_EAGER opt-in).
 void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
                                                                bool streamlineFGRunning, bool postSLConfirmedRendering,
-                                                               bool hadFSRFGPhase, const char* site) {
-    if (!IsDlssToggleEagerOverlayEnabled() || !isD3D12 || !streamlineFGRunning || postSLConfirmedRendering ||
-        hadFSRFGPhase)
+                                                               bool hadFSRFGPhase, bool explicitSetOptionsActivation,
+                                                               const char* site) {
+    if (!DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, isD3D12, streamlineFGRunning,
+                                                                  postSLConfirmedRendering, hadFSRFGPhase,
+                                                                  explicitSetOptionsActivation))
         return;
     static std::atomic<int> s_log{0};
     const int n = s_log.fetch_add(1, std::memory_order_relaxed);

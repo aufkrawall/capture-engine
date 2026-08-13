@@ -72,6 +72,30 @@ inline bool ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(bool strea
            syncInit && !deviceRemoved;
 }
 
+// During the DLSS toggle-ON startup window the top-level Presents are forwarded through the startup
+// normal-route bypass and ProcessFrame does not run until the first PostSL callback arrives
+// (150-203 ms in session 20260813_170318 — the overlay visibly blanks on EVERY switch-to-DLSS under
+// FG-switch spam). When the overlay backend is live, those bypass presents can draw the overlay
+// themselves: the prewarm/preserve already rebuilt the backend for the exact proxy, and
+// HandleDX12ProcessFrame re-checks the submit-queue safety internally. Pure-DLSS requires the
+// explicit-enable cold-start proof (GetState-only enables keep the documented GTA startup-churn
+// protection); post-FSR requires the live backend to be bound to the current swapchain queue.
+// PostSL confirmation immediately re-owns the overlay and this gate turns off.
+inline bool ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(bool isD3D12, bool streamlineFGRunning,
+                                                                bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                                bool configEagerEnabled,
+                                                                bool explicitEnablePureDLSSColdStartProof,
+                                                                bool overlayInit, bool syncInit,
+                                                                bool backendQueueMatchesSwapchainQueue) {
+    if (!isD3D12 || !streamlineFGRunning || postSLConfirmedRendering || !overlayInit || !syncInit) {
+        return false;
+    }
+    if (!hadFSRFGPhase) {
+        return configEagerEnabled || explicitEnablePureDLSSColdStartProof;
+    }
+    return backendQueueMatchesSwapchainQueue;
+}
+
 // Streamline FG ON while the keep-alive latch is set and PostSL is still
 // confirmed is a RESUME of a continuously-live path (suspend -> resume cycle),
 // not a cold start: skip the synthetic-startup pending dance, countdown

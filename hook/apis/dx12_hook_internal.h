@@ -360,6 +360,13 @@ void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool applicationSourcePr
 }
 
 namespace DXGIShared {
+bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
+                                                              bool streamlineFGRunning,
+                                                              bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                              bool explicitSetOptionsActivation);
+}
+
+namespace DXGIShared {
 void HandleDX12ResizeBegin();
 }
 

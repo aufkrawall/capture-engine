@@ -39,6 +39,9 @@ void HandleDX11ProcessFrame(IDXGISwapChain*, bool) {}
 void HandleDX12ResizeBegin() {}
 void HandleDX11ResizeBegin() {}
 void HandleDX12ResizeEnd() {}
+bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain*, bool, bool, bool, bool, bool) {
+    return false;
+}
 }  // namespace DXGIShared
 
 // Stubs for InlineHook - need to match actual class definition

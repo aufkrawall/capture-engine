@@ -64,7 +64,8 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 }
                 MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, ctx.api == APIType::D3D12,
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
-                                                                   ctx.hadFSRFGPhase, "startupHandoffNormalRoute");
+                                                                   ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
+                                                                   "startupHandoffNormalRoute");
                 const HRESULT hr = presentBypass(pSwapChain, SyncInterval, Flags);
                 if (SUCCEEDED(hr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
@@ -201,7 +202,8 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 }
                 MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, ctx.api == APIType::D3D12,
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
-                                                                   ctx.hadFSRFGPhase, "keepStartupNormalRoute");
+                                                                   ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
+                                                                   "keepStartupNormalRoute");
                 *earlyReturn = true;
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }

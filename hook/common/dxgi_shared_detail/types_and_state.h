@@ -198,6 +198,15 @@ void HandleDX12ResizeBegin();
 void HandleDX12ResizeEnd();
 void HandleDX11ResizeBegin();
 
+// True when the overlay backend is live and safe to draw on the current Streamline startup-handoff
+// bypass Present (prewarmed/preserved handoff backend or the explicit-enable pure-DLSS proof).
+// Implemented in dx12-land; the Present path must not draw without this proof (GTA startup-churn
+// protection stays intact for GetState-only enables).
+bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
+                                                              bool streamlineFGRunning,
+                                                              bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                              bool explicitSetOptionsActivation);
+
 // Opt-in kill-switch (env var CE_DLSS_TOGGLE_OVERLAY_EAGER, default OFF): when set, CE draws the
 // overlay present-time (RTSS-style) right before the Streamline-startup Present bypass so the frame
 // that DLSS-G freezes on during a runtime DLSS-FG toggle-ON still carries the overlay. See Round 4

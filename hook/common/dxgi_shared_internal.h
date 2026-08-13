@@ -462,7 +462,7 @@ bool IsDlssToggleEagerOverlayEnabled();
 }
 
 namespace DXGIShared {
-void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12, bool streamlineFGRunning, bool postSLConfirmedRendering, bool hadFSRFGPhase, const char* site);
+void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12, bool streamlineFGRunning, bool postSLConfirmedRendering, bool hadFSRFGPhase, bool explicitSetOptionsActivation, const char* site);
 }
 
 namespace DXGIShared {
