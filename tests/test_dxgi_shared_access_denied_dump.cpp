@@ -44,6 +44,10 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
     EXPECT_NE(fatalDump.find("swapchain_access_denied_exhausted.dmp"), std::string::npos);
     EXPECT_NE(fatalDump.find("kMinimalDumpType"), std::string::npos)
         << "the in-process fallback must stay minimal (session 20260813_220022 freeze: 36 s full-memory dump)";
+    EXPECT_NE(fatalDump.find("ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure("),
+              std::string::npos)
+        << "the in-process fallback must be refused while foreign overlay modules are loaded "
+           "(session 20260813_222058 freeze: the game's own dump deadlocked inside Steam's hooked version APIs)";
 
     const std::string inlineCreate =
         readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
@@ -51,10 +55,33 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
     EXPECT_NE(inlineCreate.find("CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd"), std::string::npos)
         << "the INLINE recovery arms must also dump on exhaustion";
 
+    const std::string externalDump = readFile(fs::current_path() / "hook" / "main_external_dump.cpp");
+    ASSERT_FALSE(externalDump.empty());
+    EXPECT_NE(externalDump.find("CopyCompletedDumpFile(hProcess"), std::string::npos)
+        << "the session mirror must be a plain copy of the game's completed dump, never a nested "
+           "MiniDumpWriteDump re-entry (session 20260813_222058 freeze)";
+    EXPECT_EQ(externalDump.find("WriteSupplementalCrashDump(sourcePath"), std::string::npos)
+        << "the rich supplemental dump must not run in-process inside the game's dump call";
+
     const std::string wrapper =
         readFile(fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_lifetime.cpp");
     ASSERT_FALSE(wrapper.empty());
     EXPECT_NE(wrapper.find("post-destruction real refcount=%u"), std::string::npos);
+    EXPECT_NE(wrapper.find("LogSwapChainLifetimeDiagnostics(pRealToFree"), std::string::npos)
+        << "the post-destruction probe must attribute the remaining refs and the vtable-slot owners";
+
+    const std::string attribution =
+        readFile(fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_attribution.cpp");
+    ASSERT_FALSE(attribution.empty());
+    EXPECT_NE(attribution.find("AttributionAddRefHook"), std::string::npos);
+    EXPECT_NE(attribution.find("AttributionReleaseHook"), std::string::npos);
+    EXPECT_NE(attribution.find("return original(self)"), std::string::npos)
+        << "the attribution hooks must ALWAYS forward to the saved original — the patched vtable is "
+           "shared by every chain the factory creates, and a dropped AddRef/Release corrupts dxgi's "
+           "internal refcounts (session 20260813_233025 telemetry heap crash)";
+    EXPECT_NE(attribution.find("IsThirdPartyOverlayLoaded()"), std::string::npos)
+        << "the attribution vtable hooks must stay out of foreign-overlay processes so Steam/RTSS "
+           "vtable state is never disturbed";
 
     const std::string appSwitch =
         readFile(fs::current_path() / "testapp" / "dx12_fg_switch_render_switch.cpp");
@@ -65,6 +92,13 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
     ASSERT_FALSE(appCommon.empty());
     EXPECT_EQ(appCommon.find("MiniDumpWithDataSegs"), std::string::npos)
         << "the app-side fatal dump must stay light so it cannot freeze the render thread";
+    EXPECT_NE(appCommon.find("TryCaptureFatalSwitchDumpWithExternalHelper("), std::string::npos)
+        << "the app-side fatal dump must prefer the external helper; the in-process dbghelp path "
+           "deadlocks with foreign overlay hooks loaded";
+    EXPECT_NE(appCommon.find("IsForeignOverlayModuleLoaded"), std::string::npos)
+        << "the in-process app-side fallback must be refused while foreign overlay modules are loaded";
+    EXPECT_NE(appSwitch.find("OFF mode keeps the FSR swapchain/context alive"), std::string::npos)
+        << "OFF-after-FSR must keep the FFX chain alive instead of recreating a foreign-pinned native chain";
     const std::string appMain = readFile(fs::current_path() / "testapp" / "dx12_fg_switch_test.cpp");
     ASSERT_FALSE(appMain.empty());
     EXPECT_NE(appMain.find("return dx12_fg_switch_test_g_ProcessExitCode;"), std::string::npos);

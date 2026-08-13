@@ -14,10 +14,115 @@
 
 namespace testapp {
 
+inline std::wstring QuoteCommandLineArg(const std::wstring& value);
+
+inline std::wstring FindNewestFileWithPrefix(const std::wstring& directory, const wchar_t* prefix) {
+    std::wstring newestPath;
+    ULARGE_INTEGER newestTime = {};
+    WIN32_FIND_DATAW findData = {};
+    const std::wstring pattern = directory + L"\\" + prefix + L"*";
+    HANDLE findHandle = FindFirstFileW(pattern.c_str(), &findData);
+    if (findHandle == INVALID_HANDLE_VALUE) {
+        return newestPath;
+    }
+    do {
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            continue;
+        }
+        ULARGE_INTEGER fileTime = {};
+        fileTime.LowPart = findData.ftLastWriteTime.dwLowDateTime;
+        fileTime.HighPart = findData.ftLastWriteTime.dwHighDateTime;
+        if (fileTime.QuadPart > newestTime.QuadPart) {
+            newestTime = fileTime;
+            newestPath = directory + L"\\" + findData.cFileName;
+        }
+    } while (FindNextFileW(findHandle, &findData));
+    FindClose(findHandle);
+    return newestPath;
+}
+
+// Captures a dump of this process through the EXTERNAL helper (captureengine.exe --dump-helper).
+// An in-process MiniDumpWriteDump on the render thread of a live game deadlocks against foreign
+// overlay hooks: Steam intercepts the module/version enumeration dbghelp performs and blocks
+// (session 20260813_222058 froze until the FreezeWatchdog killed the app). The helper process has
+// neither overlay loaded, so its enumeration cannot block. Returns the written dump path or empty.
+inline std::wstring TryCaptureFatalSwitchDumpWithExternalHelper(const wchar_t* nameHint) {
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) == 0) {
+        return std::wstring();
+    }
+    std::wstring exePath = modulePath;
+    const size_t slashPos = exePath.find_last_of(L"\\/");
+    if (slashPos == std::wstring::npos) {
+        return std::wstring();
+    }
+    const std::wstring directory = exePath.substr(0, slashPos);
+    const std::wstring helperPath = directory + L"\\..\\captureengine\\captureengine.exe";
+    if (GetFileAttributesW(helperPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return std::wstring();
+    }
+
+    std::wstring commandLine = QuoteCommandLineArg(helperPath);
+    commandLine += L" --dump-helper --dump-helper-pid=" + std::to_wstring(GetCurrentProcessId());
+    commandLine += L" --dump-helper-dir=" + QuoteCommandLineArg(directory);
+    commandLine += L" --dump-helper-hint=" + QuoteCommandLineArg(nameHint);
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    startupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    startupInfo.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION processInfo = {};
+    std::wstring mutableCommandLine = commandLine;
+    if (!CreateProcessW(helperPath.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, directory.c_str(), &startupInfo, &processInfo)) {
+        return std::wstring();
+    }
+
+    constexpr DWORD kHelperWaitMs = 8000;
+    const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, kHelperWaitMs);
+    DWORD exitCode = 0xFFFFFFFFu;
+    if (waitResult == WAIT_OBJECT_0) {
+        GetExitCodeProcess(processInfo.hProcess, &exitCode);
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    if (waitResult != WAIT_OBJECT_0 || exitCode != 0) {
+        return std::wstring();
+    }
+
+    return FindNewestFileWithPrefix(directory, L"crash_external_");
+}
+
+inline bool IsForeignOverlayModuleLoaded() {
+    static const wchar_t* kOverlayModuleNames[] = {
+        L"gameoverlayrenderer64.dll",
+        L"gameoverlayrenderer.dll",
+        L"RTSSHooks64.dll",
+        L"RTSSHooks.dll",
+    };
+    for (const wchar_t* moduleName : kOverlayModuleNames) {
+        if (GetModuleHandleW(moduleName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Fatal-FG-failure diagnostics: write a local minidump for failure paths that exit CLEANLY (no exception),
 // so the switch-failure state remains dumpable. dbghelp is resolved on demand and every failure is
 // non-fatal. Returns the dump path, or an empty string when the dump could not be written.
 inline std::wstring WriteFatalSwitchDump(const wchar_t* nameHint, unsigned long exceptionCode) {
+    std::wstring externalDumpPath = TryCaptureFatalSwitchDumpWithExternalHelper(nameHint);
+    if (!externalDumpPath.empty()) {
+        return externalDumpPath;
+    }
+    // With foreign overlay modules loaded the in-process fallback can deadlock inside dbghelp's
+    // module/version enumeration (session 20260813_222058: 0-byte .dmp.inprogress until the watchdog
+    // killed the app). Skip the fallback entirely there — no dump is better than a hung render thread.
+    if (IsForeignOverlayModuleLoaded()) {
+        return std::wstring();
+    }
+
     static HMODULE dbghelpModule = LoadLibraryW(L"dbghelp.dll");
     using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
                                               PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION,

@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-08-14 - FIXED: dump-path freeze + FSR re-entry pin — helper-first dumps, FSR swapchain keep-alive, lifetime attribution
+
+- Session `20260813_222058` (0.1.6029, dx12_fg_switch_test via Steam overlay + RTSS): the second OFF->FSR failed
+  E_ACCESSDENIED again, and the app's own fatal IN-PROCESS dump then froze the render thread (cdb:
+  `dbgcore!MiniDumpWriteDump -> GetFileVersionInfoW -> gameoverlayrenderer64` blocked; 0-byte `.dmp.inprogress`;
+  the FreezeWatchdog killed the app after 30 s). Re-entering MiniDumpWriteDump inside the game's dump call
+  deadlocks against Steam's hooked version APIs, so every nested/in-process dump is unsafe with foreign overlays.
+- Fixes: (1) the session mirror is now a plain stream copy of the game's COMPLETED dump file — never a nested
+  MiniDumpWriteDump; the rich supplemental dump goes through the external helper; (2) CE + testapp in-process
+  fallbacks are refused while third-party overlay modules are loaded (policy
+  `ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure`); (3) the testapp's `WriteFatalSwitchDump`
+  prefers the external helper and keeps the light in-process fallback only for overlay-free runs. Validated: the
+  fatal path now yields `crash_external_dx12_fg_switch_test_fatal_switch_*.dmp` without freezing.
+- Pin root cause (proven locally with a standalone dxgi probe): `CreateSwapChainForHwnd` returns 0x80070005 while
+  ANY chain for the HWND is still alive (also from a different factory), and the residual references never drain
+  within reasonable time after the game+CE released everything. New lifetime attribution hooks (CE-only gated)
+  attribute every remaining AddRef/Release to the calling module; the permanent holder is foreign per-chain
+  bookkeeping (Steam/RTSS) plus one internal ref. Retry-waiting cannot release them — no timing bandaid accepted.
+- Fix (proper): the switch app keeps the FSR swapchain/context alive across OFF<->FSR (real-FSR3-game lifecycle:
+  FG off = passthrough Present through the FFX proxy; re-entry = `ffxConfigure` only). No replacement create, so
+  the E_ACCESSDENIED wall is never hit. Locally validated OFF->FSR->OFF->FSR->OFF (all ok=1, same chain pointer,
+  clean presents). The FSR->DLSS direction still recreates the native chain and remains blocked by the pin.
+- Diagnostics added: vtable-slot ownership logging (AddRef/Release/Present/ResizeBuffers owner module),
+  create/post-destruction refcount probes, and per-module AddRef/Release attribution. The first attribution
+  implementation dropped AddRef/Release for unknown chains on the shared vtable and corrupted dxgi's heap
+  (0xC0000409 in dxgi telemetry); the hooks now ALWAYS forward to the saved original.
+- Tests: `CrashDumpPolicyTest.InProcessDumpFallbackRefusedWithForeignOverlayLoaded` + source-invariant pins for
+  the copy-based mirror, helper-first app dump, keep-alive branch, and attribution forward invariant.
+  `--verify` gate passed on 0.1.6039. OPEN: user re-run via Steam + RTSS — FSR->OFF->FSR->OFF must switch cleanly
+  without recreation; the next run's attribution names the exact foreign holder for the FSR->DLSS direction.
+
 ### 2026-08-13 - FIXED (freeze): the new exhaustion minidump ran in-process and froze the app ~36 s; dumps now go through the external helper (DLSS switch also proved the 1-foreign-ref pin)
 
 - Session `20260813_220022` (build 0.1.6027, dx12_fg_switch_test via Steam overlay + RTSS, switch to DLSS FG):

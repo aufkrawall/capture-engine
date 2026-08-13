@@ -203,6 +203,16 @@ inline bool ShouldMirrorExternalDumpToSessionDirectory(const char* sourcePath, c
     return !PathEqualsOrHasDirectoryPrefixAsciiInsensitive(sourcePath, sessionDirectory);
 }
 
+// In-process MiniDumpWriteDump fallbacks run inside the game process. With a foreign overlay module
+// loaded (Steam overlay / RTSS) the dump's module/version enumeration can deadlock inside the
+// overlay's hooked version APIs (session 20260813_222058: the game's own fatal dump froze the render
+// thread inside dbgcore -> GetFileVersionInfoW -> gameoverlayrenderer64 until the watchdog killed the
+// app). The external helper process has neither overlay loaded, so the fallback is only legal when no
+// foreign overlay is present; otherwise a missing dump is preferable to a hung game thread.
+inline bool ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(bool foreignOverlayLoaded) {
+    return !foreignOverlayLoaded;
+}
+
 inline const char* GetPathFileName(const char* path) {
     if (!path || path[0] == '\0') {
         return nullptr;

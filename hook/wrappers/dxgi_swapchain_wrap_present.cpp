@@ -61,6 +61,10 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice,
 
     WrapperStateManager::Get().RegisterSwapchain(this, pReal);
     WrapperLog("SwapChain: Created wrapper (real=%p, isD3D12=%d, flipModel=%d)", pReal, m_IsD3D12, m_FlipModel.active);
+    if (pReal && !m_StreamlineRuntimeNonRetaining) {
+        TryInstallSwapchainLifetimeAttribution(pReal);
+        LogSwapChainLifetimeDiagnostics(pReal, "create");
+    }
 }
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice)

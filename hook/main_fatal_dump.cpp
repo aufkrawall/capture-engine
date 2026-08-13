@@ -319,12 +319,20 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   const ExternalPreTerminationDumpResult externalDumpResult =
       TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
-  if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut) {
+  if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
+      ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(
+          ce::overlay_compat::IsThirdPartyOverlayLoaded())) {
     HookLogImportant("FatalExitDump: Falling back to in-process pre-termination dump attempt "
-                     "(source=%s hint=%s externalResult=%d)",
+                     "(source=%s hint=%s externalResult=%d overlays=0)",
                      source ? source : "unknown", dumpHint, static_cast<int>(externalDumpResult));
     wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
                                            ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
+  } else if (!wroteDump) {
+    HookLogImportant(
+        "FatalExitDump: Skipping in-process pre-termination dump fallback (source=%s externalResult=%d "
+        "overlays=%d) — in-process dbghelp enumeration can deadlock against foreign overlay hooks",
+        source ? source : "unknown", static_cast<int>(externalDumpResult),
+        ce::overlay_compat::IsThirdPartyOverlayLoaded() ? 1 : 0);
   }
   HookLogImportant("FatalExitDump: Pre-termination dump %s (source=%s code=0x%08lX hint=%s)",
                    wroteDump ? "captured" : "failed", source ? source : "unknown",
@@ -356,7 +364,9 @@ void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* cont
       TryCapturePreTerminationDumpWithExternalHelper(context && context[0] ? context : "CreateSwapChainForHwnd",
                                                      dumpHint);
   bool wroteDump = externalResult == ExternalPreTerminationDumpResult::kCaptured;
-  if (!wroteDump && externalResult != ExternalPreTerminationDumpResult::kTimedOut) {
+  if (!wroteDump && externalResult != ExternalPreTerminationDumpResult::kTimedOut &&
+      ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(
+          ce::overlay_compat::IsThirdPartyOverlayLoaded())) {
     // Minimal in-process fallback (stacks + module list only) so a missing helper still yields a
     // small, fast dump instead of a long full-memory capture.
     CONTEXT capturedContext = {};
@@ -373,6 +383,12 @@ void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* cont
     exceptionInfo.ClientPointers = FALSE;
     wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
                                            ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
+  } else if (!wroteDump) {
+    HookLogImportant(
+        "CreateSwapChainForHwnd: Skipping in-process exhaustion dump fallback (context=%s "
+        "externalResult=%d overlays=%d)",
+        context && context[0] ? context : "unknown", static_cast<int>(externalResult),
+        ce::overlay_compat::IsThirdPartyOverlayLoaded() ? 1 : 0);
   }
   HookLogImportant("CreateSwapChainForHwnd: E_ACCESSDENIED exhaustion diagnostic dump %s (context=%s)",
                    wroteDump ? "captured" : "failed", context && context[0] ? context : "unknown");

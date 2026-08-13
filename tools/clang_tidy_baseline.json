@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 593,
+    "entries": 595,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -359,7 +359,9 @@
       "hook/wrappers/dxgi_factory_wrap.cpp",
       "hook/wrappers/dxgi_output_wrap.cpp",
       "hook/wrappers/dxgi_swapchain_wrap.cpp",
+      "hook/wrappers/dxgi_swapchain_wrap_attribution.cpp",
       "hook/wrappers/dxgi_swapchain_wrap_com.cpp",
+      "hook/wrappers/dxgi_swapchain_wrap_diagnostics.cpp",
       "hook/wrappers/dxgi_swapchain_wrap_frame_latency.cpp",
       "hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp",
       "hook/wrappers/dxgi_swapchain_wrap_modern.cpp",

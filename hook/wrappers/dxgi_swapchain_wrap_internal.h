@@ -39,6 +39,17 @@ struct ScopedResizeGuard;
 
 #include "../common/overlay_compat.h"
 
+// Defined in dxgi_swapchain_wrap_diagnostics.cpp. Diagnostic-only, rate-limited, net-zero
+// (the refcount probe takes one temporary AddRef/Release).
+void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stage);
+
+// Defined in dxgi_swapchain_wrap_attribution.cpp. Diagnostic-only AddRef/Release vtable forwarding
+// hooks that attribute every remaining reference on the real chain to the module that took it
+// (installed only while no third-party overlay module is loaded, so foreign vtable hooks are never
+// disturbed). The finish call logs the per-module nets; the hooks stay installed for the process.
+void TryInstallSwapchainLifetimeAttribution(IDXGISwapChain* realChain);
+void FinishSwapchainLifetimeAttribution(IDXGISwapChain* realChain);
+
 #include "../common/perf_logger.h"
 
 #include "../common/performance_metrics.h"

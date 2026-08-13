@@ -109,10 +109,70 @@ std::string BuildExternalDumpMirrorPath(const char* sourcePath) {
   return mirrorPath.string();
 }
 
+bool CopyCompletedDumpFile(HANDLE sourceFile, const char* destinationPath, const char* sourcePath) {
+  if (!sourceFile || sourceFile == INVALID_HANDLE_VALUE || !destinationPath || !destinationPath[0]) {
+    return false;
+  }
+
+  // The game's dump file is still open on this handle (MiniDumpWriteDump just returned). Stream-copy
+  // through the open handle so file-share modes chosen by the game cannot block the mirror; the game
+  // only closes the handle afterwards, so a positional restore is not observable to it.
+  LARGE_INTEGER originalPosition = {};
+  LARGE_INTEGER zeroOffset = {};
+  if (!SetFilePointerEx(sourceFile, zeroOffset, &originalPosition, FILE_BEGIN)) {
+    HookLog("CrashMirror: Failed to rewind source dump %s for mirror copy (err=%lu)", sourcePath,
+            GetLastError());
+    return false;
+  }
+
+  HANDLE mirrorFile =
+      CreateFileA(destinationPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+  if (mirrorFile == INVALID_HANDLE_VALUE) {
+    HookLog("CrashMirror: Failed to create mirror dump %s (err=%lu)", destinationPath, GetLastError());
+    SetFilePointerEx(sourceFile, originalPosition, nullptr, FILE_BEGIN);
+    return false;
+  }
+
+  bool copied = false;
+  std::vector<unsigned char> buffer(64 * 1024);
+  for (;;) {
+    DWORD bytesRead = 0;
+    if (!ReadFile(sourceFile, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead, nullptr)) {
+      copied = false;
+      break;
+    }
+    if (bytesRead == 0) {
+      copied = true;
+      break;
+    }
+    DWORD bytesWritten = 0;
+    if (!WriteFile(mirrorFile, buffer.data(), bytesRead, &bytesWritten, nullptr) || bytesWritten != bytesRead) {
+      copied = false;
+      break;
+    }
+  }
+
+  if (copied) {
+    FlushFileBuffers(mirrorFile);
+  }
+  CloseHandle(mirrorFile);
+  SetFilePointerEx(sourceFile, originalPosition, nullptr, FILE_BEGIN);
+  if (!copied) {
+    HookLog("CrashMirror: Mirror copy of %s -> %s failed (err=%lu)", sourcePath, destinationPath, GetLastError());
+    DeleteFileA(destinationPath);
+  }
+  return copied;
+}
+
 void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess, DWORD processId, MINIDUMP_TYPE dumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
                                         PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
                                         PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
+  (void)dumpType;
+  (void)exceptionParam;
+  (void)userStreamParam;
+  (void)callbackParam;
   if (!sourcePath || sourcePath[0] == '\0') {
     return;
   }
@@ -147,12 +207,6 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
     return;
   }
 
-  const auto original = g_OriginalMiniDumpWriteDump.load(std::memory_order_acquire);
-  if (!original) {
-    HookLog("CrashMirror: Missing MiniDumpWriteDump trampoline while mirroring %s", sourcePath);
-    return;
-  }
-
   if (gateDecision.mirrorAllowed) {
     const std::filesystem::path tempDestination =
         destination.parent_path() /
@@ -160,30 +214,12 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
     const std::string tempMirrorPath = tempDestination.string();
     DeleteFileA(tempMirrorPath.c_str());
 
-    HANDLE mirrorFile =
-        CreateFileA(tempMirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-    if (mirrorFile == INVALID_HANDLE_VALUE) {
-      HookLog("CrashMirror: Failed to create mirror dump %s (err=%lu)", tempMirrorPath.c_str(), GetLastError());
-      return;
-    }
-
-    const BOOL mirrorResult = original(hProcess, processId, mirrorFile, dumpType, exceptionParam, userStreamParam,
-                                       callbackParam);
-    const DWORD mirrorError = mirrorResult ? ERROR_SUCCESS : GetLastError();
-    if (mirrorResult) {
-      FlushFileBuffers(mirrorFile);
-    }
-
-    LARGE_INTEGER mirrorSize = {};
-    const bool mirrorNonEmpty = mirrorResult && GetFileSizeEx(mirrorFile, &mirrorSize) && mirrorSize.QuadPart > 0;
-    CloseHandle(mirrorFile);
-
-    if (!mirrorNonEmpty) {
-      DeleteFileA(tempMirrorPath.c_str());
-      HookLog("CrashMirror: Failed to re-emit external dump %s -> %s (err=%lu nonEmpty=%d)", sourcePath,
-              mirrorPath.c_str(), mirrorError, mirrorNonEmpty ? 1 : 0);
+    // Re-entering MiniDumpWriteDump inside the game's own dump call deadlocks with foreign overlay
+    // hooks (Steam intercepts the module/version enumeration dbghelp performs and blocks, sessions
+    // 20260813_220022 / 20260813_222058) and re-dumps a large capture on the crash path. The game's
+    // dump file is complete and open on the hook's own handle, so the session mirror is a plain
+    // stream copy of that file — byte-identical content, no dbghelp re-entry.
+    if (!CopyCompletedDumpFile(hProcess, tempMirrorPath.c_str(), sourcePath)) {
       return;
     }
 
@@ -205,14 +241,35 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
   }
 
   if (gateDecision.supplementalAllowed) {
-    if (!WriteSupplementalCrashDump(sourcePath, hProcess, processId, ce::crash_dump_policy::kRichCrashDumpType,
-                                    exceptionParam, userStreamParam, callbackParam)) {
-      HookLog("CrashMirror: Supplemental CE-owned dump capture did not succeed for %s", sourcePath);
-      return;
+    // The rich supplemental CE-owned capture must not run in-process inside the game's dump call:
+    // the nested MiniDumpWriteDump froze the render thread for ~36 s on the quick-assert flags
+    // (session 20260813_220022) and can deadlock against foreign overlay hooks. The external helper
+    // process has neither overlay loaded, so its dbghelp enumeration cannot block. When the helper is
+    // unavailable or the dump targets another process, skip the supplemental instead of falling back
+    // to an in-process capture.
+    const bool targetsCurrentProcess = IsCurrentProcessHandle(hProcess);
+    if (targetsCurrentProcess) {
+      char supplementalHint[128] = {};
+      const char* sourceBaseName = sourcePath ? ce::crash_dump_policy::GetPathFileName(sourcePath) : nullptr;
+      snprintf(supplementalHint, sizeof(supplementalHint), "mirrored_%s",
+               (sourceBaseName && sourceBaseName[0]) ? sourceBaseName : "external_dump.dmp");
+      const ExternalPreTerminationDumpResult helperResult =
+          TryCapturePreTerminationDumpWithExternalHelper("CrashMirror supplemental", supplementalHint);
+      if (helperResult == ExternalPreTerminationDumpResult::kCaptured) {
+        MarkExternalSupplementalDumpCaptured(gateDecision.key);
+        HookLogImportant("CrashMirror: Captured supplemental CE-owned dump via external helper for %s",
+                         sourcePath);
+      } else {
+        HookLogImportant(
+            "CrashMirror: Supplemental CE-owned dump skipped for %s (helperResult=%d) — never re-enter "
+            "MiniDumpWriteDump in-process from the dump hook",
+            sourcePath, static_cast<int>(helperResult));
+      }
+    } else {
+      HookLogImportant(
+          "CrashMirror: Supplemental CE-owned dump skipped for foreign-process dump %s (pid=%lu)",
+          sourcePath, static_cast<unsigned long>(processId));
     }
-
-    MarkExternalSupplementalDumpCaptured(gateDecision.key);
-    HookLogImportant("CrashMirror: Captured supplemental CE-owned dump for externally handled crash %s", sourcePath);
   }
 
   TerminateProcessAfterExternalDumpStorm(gateDecision);

@@ -255,6 +255,10 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
                 "SwapChain: post-destruction real refcount=%u committed=%d (CE tracked=%d) wrapper=%p real=%p — "
                 "nonzero means foreign refs still pin this chain",
                 liveRefs, objectCommitted ? 1 : 0, m_RealSwapchainRefs.load(), this, pRealToFree);
+            if (liveRefs > 0) {
+                LogSwapChainLifetimeDiagnostics(pRealToFree, "post-destruction");
+            }
+            FinishSwapchainLifetimeAttribution(pRealToFree);
         }
     }
 }

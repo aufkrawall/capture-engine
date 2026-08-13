@@ -171,6 +171,15 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntime
         policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false, true));
 }
 
+TEST(CrashDumpPolicyTest, InProcessDumpFallbackRefusedWithForeignOverlayLoaded) {
+    // The in-process MiniDumpWriteDump fallback deadlocked the game's render thread inside the Steam
+    // overlay's hooked version APIs (session 20260813_222058: dbgcore -> GetFileVersionInfoW ->
+    // gameoverlayrenderer64 blocked until the FreezeWatchdog killed the app). The fallback stays legal
+    // only while no foreign overlay module is loaded; the external helper process has none.
+    EXPECT_TRUE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(false));
+    EXPECT_FALSE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
+}
+
 TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
     EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(false, false));
     EXPECT_TRUE(policy::ShouldSkipBreakpointExceptionDump(false, true));

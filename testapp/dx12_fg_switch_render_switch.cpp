@@ -264,15 +264,23 @@ bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         }
     } else {
         if (ok && dx12_fg_switch_test_g_SwapChainOwner == SwapChainOwner::FSR && dx12_fg_switch_test_g_FfxCtx && dx12_fg_switch_test_g_FfxSwapChainCtx) {
+            // Keep the FSR swapchain/context alive and present through the disabled FFX proxy —
+            // the real-FSR3-game lifecycle (FG off = passthrough through the persistent FFX chain).
+            // Destroying the contexts here would recreate a native swapchain for the same HWND;
+            // foreign overlays (Steam/RTSS) pin that recreated chain with per-chain references,
+            // and DXGI then refuses EVERY later FSR re-entry with E_ACCESSDENIED
+            // (CreateSwapChainForHwnd returns 0x80070005 while any chain for the HWND is alive;
+            // sessions 20260813_211734 / 20260813_220022 / 20260813_222058). The leave-FSR
+            // transition above already disabled FG and staged the passthrough Present.
             testapp::Log(
-                "[FG-DIAG] OFF mode destroys the FSR swapchain/context and recreates a native swapchain "
-                "(oldSwapChain=%p swapchainCtx=%p fgCtx=%p)\n",
-                g_SwapChain.Get(), (void*)dx12_fg_switch_test_g_FfxSwapChainCtx, (void*)dx12_fg_switch_test_g_FfxCtx);
-            DestroyFSRContexts();
-            dx12_fg_switch_test_g_FsrInitialized = false;
-            ok = RecreateSwapChain(false, "enter OFF mode after FSR") && ok;
-            MaybeUnloadFSRRuntimeAfterSwitch("enter OFF mode after FSR");
-            StartAsyncFSRRuntimePreload("after entering OFF mode from FSR");
+                "[FG-DIAG] OFF mode keeps the FSR swapchain/context alive and presents through the "
+                "disabled FFX proxy (swapChain=%p swapchainCtx=%p fgCtx=%p fsrSuspended=%d)\n",
+                g_SwapChain.Get(), (void*)dx12_fg_switch_test_g_FfxSwapChainCtx, (void*)dx12_fg_switch_test_g_FfxCtx,
+                dx12_fg_switch_test_g_FsrSuspended ? 1 : 0);
+            // The FSR-exit transition staged a passthrough Present and the presentation break was
+            // committed above; with the FFX contexts kept alive there is no teardown to consume the
+            // stage, so clear it here the way DestroyFSRContexts would.
+            dx12_fg_switch_test_g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
         } else if (ok && (dx12_fg_switch_test_g_FfxCtx || dx12_fg_switch_test_g_FfxSwapChainCtx)) {
             DestroyFSRContexts();
             dx12_fg_switch_test_g_FsrInitialized = false;
