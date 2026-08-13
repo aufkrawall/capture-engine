@@ -184,21 +184,26 @@ once those tools are loaded.
   re-entry in the ECL/Signal trace hooks") and
   `tests/test_dx12_ecl_recursion_break_policy.cpp`.
 - Talos (Streamline game) + SpecialK-involved combinations crash inside the
-  NVIDIA Streamline stack, with **no CE frames in any failing stack** (session
-  `20260813_051600`, build 0.1.5995). ReShade-only and ReShade+OptiScaler ran
-  clean. `SpecialK + ReShade + OptiScaler` failed twice, deterministically
-  ~5s after injection, with `STATUS_HEAP_CORRUPTION` raised in `RtlFreeHeap`
-  from `sl.interposer.dll` during `slInit` called by OptiScaler; the pointer
-  being freed lives inside `SpecialK64.dll`'s `.data` (a unique UTF-16 string
-  at SK+0xC86FA0) — a cross-tool pointer-ownership conflict (WER bucket
+  NVIDIA Streamline stack, with **no CE frames in any failing stack** (sessions
+  `20260813_051600` / `20260813_055907`, build 0.1.5995). ReShade-only and
+  ReShade+OptiScaler ran clean. `SpecialK + ReShade + OptiScaler` failed
+  deterministically ~5s after injection with `STATUS_HEAP_CORRUPTION` raised
+  in `RtlFreeHeap` from `sl.interposer.dll` during `slInit` called by
+  OptiScaler; the freed pointer lives inside `SpecialK64.dll`'s `.data`
+  (UTF-16 `XYZ:\123\456\!#$%^@?|` at SK+0xC86FA0), identical with the game's
+  own interposer 2.11.1 and the redirected 2.12.0 (WER bucket
   `HEAP_CORRUPTION_ACTIONABLE_BlockNotBusy_DOUBLE_FREE_sl.interposer.dll`).
-  `SpecialK`-only failed once, ~22s in, with an access violation writing 0x8
-  in `RtlEnterCriticalSection(NULL)` — game code invoked from an
-  sl.interposer worker thread during SL plugin loading, followed by a
-  60-second render-thread freeze. Both signatures involve the user's
-  redirected `sl.interposer.dll` 2.12.0.0 (the game ships 2.11.1) plus
-  SpecialK's hooks; bisection (SL overrides disabled / SK Streamline
-  integration off) was not yet performed. See `log/recent.md`.
+  **Root cause is a SpecialK bug, not CE:** `SHGetKnownFolderPath_Detour`
+  (`src/diagnostics/debug_utils.cpp` ~line 5185, upstream `11f5ccb`)
+  returns its `static wchar_t fake_path[MAX_PATH]` as the out-param for
+  `sl.interposer` callers querying `FOLDERID_ProgramData` (when SK's VEH saw
+  a prior exception on the thread); the interposer frees the static buffer
+  via `CoTaskMemFree` and corrupts the heap. Fix is a one-line
+  `CoTaskMemAlloc`+copy in SpecialK. `SpecialK`-only additionally failed
+  once, ~22s in, with an access violation writing 0x8 in
+  `RtlEnterCriticalSection(NULL)` — game code invoked from an sl.interposer
+  worker thread during SL plugin loading, followed by a 60-second
+  render-thread freeze (re-test after the SK fix). See `log/recent.md`.
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

@@ -1,22 +1,31 @@
 # llm-wiki Log
 
-### 2026-08-13 - DIAGNOSED (open): SpecialK-involved combinations crash the Streamline stack in Talos
+### 2026-08-13 - ROOT CAUSE FOUND (SpecialK upstream bug): fake SHGetKnownFolderPath buffer freed by sl.interposer
 
 - Session `20260813_051600` (build 0.1.5995): ReShade-only (2 runs) and ReShade+OptiScaler (1 run) worked;
-  every SpecialK-involved run crashed, and none of the failing stacks contains a CE frame.
+  every SpecialK-involved run crashed, and none of the failing stacks contains a CE frame. Re-testing WITHOUT the
+  user's `sl.*` DLL override (session `20260813_055907`, game's own interposer 2.11.1) reproduced the identical
+  crash with the IDENTICAL freed pointer — the version skew was irrelevant.
 - `SK+R+O` (2 runs, deterministic, ~5s in): `STATUS_HEAP_CORRUPTION` in `RtlFreeHeap` from
   `sl.interposer.dll` during `slInit` called by OptiScaler. The freed pointer is inside `SpecialK64.dll`'s
-  `.data` (unique UTF-16 string `XYZ:\123\456\!#$%^@?|` at SK+0xC86FA0) — a cross-tool pointer-ownership
-  conflict; WER bucket `HEAP_CORRUPTION_ACTIONABLE_BlockNotBusy_DOUBLE_FREE_sl.interposer.dll`.
-  SK's own `slInit_Detour` only rewrites flags/log callback, so the SK-owned pointer enters via another of
-  SK's hooks or the interposer's enumeration path; exact in-tool mechanism not yet pinpointed.
+  `.data` (unique UTF-16 string `XYZ:\123\456\!#$%^@?|` at SK+0xC86FA0); WER bucket
+  `HEAP_CORRUPTION_ACTIONABLE_BlockNotBusy_DOUBLE_FREE_sl.interposer.dll`.
+- **Root cause (SpecialK's code, not CE's):** `SK_IsModuleLoaded`/`SHGetKnownFolderPath_Detour` in
+  `src/diagnostics/debug_utils.cpp` (~line 5185, upstream HEAD `11f5ccb`, 2026-08-12) returns
+  `static wchar_t fake_path[MAX_PATH] = L"XYZ:\\123\\456\\!#$%^@?|"` as the `SHGetKnownFolderPath` out-param when
+  the caller is `sl.interposer`, `rfid == FOLDERID_ProgramData`, `dwFlags == 0`, `hToken == nullptr` and SK's VEH
+  saw a previous first-chance exception on the thread (UE raises many during startup). The
+  `SHGetKnownFolderPath` contract requires a CoTaskMem-owned buffer; the interposer (2.11 and 2.12) frees it via
+  `CoTaskMemFree` -> `RtlFreeHeap` -> `STATUS_HEAP_CORRUPTION`. The fix is in SpecialK: `CoTaskMemAlloc` + copy
+  instead of returning the static buffer.
 - `SK-only` (1 run, ~22s in): AV writing 0x8 in `RtlEnterCriticalSection(NULL)` — game code called from an
   sl.interposer worker thread while the game loaded its SL plugins (dlss_g/reflex), then the render thread
-  froze for 60s (FreezeWatchdog).
-- Suspicion: the user's global `sl.*` DLL override forces interposer 2.12.0.0 over the game's 2.11.1; R/O
-  tolerate that skew, SpecialK does not. Pending bisection: (1) SK-only and SK+R+O in Talos with the sl.*
-  overrides disabled, (2) SK's Streamline integration disabled in its per-game config. If the overrides are
-  the trigger, consider a CE policy for the third-party + SL-override combination.
+  froze for 60s (FreezeWatchdog). Possibly the same fake-path machinery or a separate SK/SL startup race;
+  re-test after the SHGetKnownFolderPath fix lands.
+- Upstream SpecialK issue text prepared (repro + one-line fix); GitHub connector was unavailable to file it.
+  Until SpecialK ships the fix, the user's custom SpecialK64.dll must be rebuilt with the patch, or CE would
+  need an opt-in compatibility shim on `SHGetKnownFolderPath` for sl.interposer callers (tool-specific
+  workaround, not yet implemented).
 
 ### 2026-08-13 - FIXED: ReShade proxy queue re-entry in the ECL/Signal trace hooks (Talos crash)
 
