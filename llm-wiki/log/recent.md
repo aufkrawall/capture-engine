@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-14 - CI: CodeQL default setup replaced by path-filtered advanced workflows
+
+- GitHub CodeQL default setup (three `Analyze` jobs on every push to `main`) was replaced by advanced
+  workflows. `codeql-actions.yml` and `codeql-python.yml` now run only on pushes/PRs touching
+  `.github/workflows/**` resp. `build.py`/`tools/`/`testapp` Python files (plus manual dispatch).
+  `codeql-cpp.yml` runs only on manual dispatch plus a weekly Monday-03:00-UTC cron.
+- Rationale: the default-setup `(c-cpp)` job ran an empty database every push — its Linux autobuild cannot
+  build this MSYS2 Windows project — while `(actions)`/`(python)` re-scanned unchanged files on every push
+  (main receives ~20 pushes/day). The C++ workflow instead traces the proven hardening-ci Linux
+  cross-compile (`python build.py --skip-updates` on `ubuntu-latest`) for real coverage.
+- Default setup was disabled via the code-scanning API (`state: not-configured`); `main` has no branch
+  protection, so no required-check updates were needed. codeql-action pinned at v4 SHA
+  `988661ebb5e81487b3fb31b2185d2856c0a10679` (repo convention: pin Actions by SHA).
+
 ### 2026-08-14 - HARDWARE-CONFIRMED pacing/topmost; FIXED locally: stable translucent-route ownership
 
 - Hardware session `20260814_055632` (0.1.6055) disproved the prior complete claim. Sharing the marker renderer did
