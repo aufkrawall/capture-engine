@@ -240,7 +240,9 @@ or telemetry fields.
 - **WGC:** the default non-injected window-capture path. It uses
   `Windows.Graphics.Capture`, works with DirectFlip content, and is generally the safer choice for software that does
   not permit injection. This is not a universal anti-cheat compatibility guarantee; use a profile with
-  `dll_injection=never` where injection must be excluded.
+  `dll_injection=never` where injection must be excluded. As a Windows limitation, a WGC capture session can make
+  Windows switch to a software-rendered (DWM-composed) mouse cursor instead of the hardware cursor; DXGI Desktop
+  Duplication is not affected and preserves the separate hardware cursor plane.
 - **DXGI Desktop Duplication:** non-injected monitor capture with explicit source-delivery and duplication-pressure
   diagnostics. It can fall back to WGC for the same selected monitor when necessary.
 - **Injected capture:** intercepts Present/swap-chain paths and publishes frames directly from the game process. The

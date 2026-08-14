@@ -43,6 +43,12 @@ black_when_no_fullscreen_focus=false
 auto_fullscreen_capture=dxgi_dup
 
 [WGC]
+; Windows limitation: a WGC capture session can make Windows switch to a
+; software-rendered (DWM-composed) mouse cursor instead of the hardware
+; cursor. This is independent of capture_cursor and of CaptureEngine's
+; encoder-side cursor composition. DXGI Desktop Duplication
+; (capture_method=dxgi_dup) is not affected and preserves the separate
+; hardware cursor plane.
 ; Keep frame delivery even while CaptureEngine is delaying video to match audio.
 wgc_active_delay_uniform_cadence=true
 
