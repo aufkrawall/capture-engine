@@ -112,6 +112,11 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue() {
 bool DX12_IsNativeFSRFGSuspendedDisablePending() {
     return false;
 }
+void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain*, bool) {}
+bool DX12_IsNoCallbackFSRTopmostBatchActive() {
+    return false;
+}
+void DX12_ClearNoCallbackFSRTopmostBatch(const char*) {}
 bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     return false;
 }

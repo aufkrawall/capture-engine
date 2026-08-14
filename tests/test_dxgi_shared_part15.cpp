@@ -1,10 +1,10 @@
 #include "test_dxgi_shared_shared.h"
 
-// The below-foreign-chain FSR deep draw keys its suspend-overlay renderer state by the presented FFX
+// The app-callback deep draw and no-callback final-batch draw key renderer state by the presented FFX
 // swapchain, while the queue bindings are keyed by the game-facing proxy. Both the explicit Streamline
-// enable prep and the FFX context-destroy unregister must retire every live renderer state, otherwise the
-// orphaned presented-swapchain state keeps command lists/backbuffer references across the FFX swapchain
-// teardown and the game's next resize/present fails E_ACCESSDENIED (Talos 20260813_142910).
+// enable prep and the FFX context-destroy unregister must retire the fence and inline-marker maps, otherwise
+// orphaned command lists/backbuffer references survive FFX teardown and the game's next resize/present fails
+// E_ACCESSDENIED (Talos 20260813_142910).
 TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
@@ -18,8 +18,10 @@ TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("void RetireAllForNativeFSRTeardown("), std::string::npos)
         << "the teardown retire-all entry point must exist";
-    EXPECT_NE(overlay.find("for (const auto& entry : g_ProxyStates)"), std::string::npos)
-        << "teardown must retire every live state, including the presented-swapchain deep-draw key";
+    EXPECT_NE(overlay.find("{&g_ProxyStates, &g_InlineProxyStates}"), std::string::npos)
+        << "teardown must enumerate both the fenced baseline and inline-marker renderer maps";
+    EXPECT_NE(overlay.find("for (const auto& entry : *states)"), std::string::npos)
+        << "teardown must retire every live state, including either presented-swapchain draw key";
 
     const std::string fgState = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_fg_state.cpp");
     ASSERT_FALSE(fgState.empty());

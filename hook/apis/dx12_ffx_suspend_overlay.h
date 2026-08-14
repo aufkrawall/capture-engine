@@ -17,9 +17,17 @@ struct RenderRequest {
     ID3D12Resource* targetResource = nullptr;
     D3D12_RESOURCE_STATES targetState = D3D12_RESOURCE_STATE_PRESENT;
     bool clearTransparent = false;
+    // False records only the requested clear/transitions. The no-callback FSR handoff uses this once to
+    // remove CE's previous pixels from a CE-owned substitute before the later same-batch route takes over.
+    bool renderOverlay = true;
     const char* routeName = "suspend-backbuffer";
     SubmitCommandListCallback submitCommandList = nullptr;
     SignalFenceCallback signalFence = nullptr;
+    // Record a GPU completion marker at the tail of the overlay command list instead of adding a queue Signal.
+    // Used only when the submit callback appends that list to an existing foreign ECL batch: AMD then observes
+    // the same queue operation it would have seen without CE, while the marker still protects allocator/upload
+    // slot reuse and target lifetime. The ordinary owner-queue routes retain their explicit fence contract.
+    bool inlineCompletionMarker = false;
     bool hdr = false;
 };
 
@@ -28,9 +36,19 @@ struct RenderRequest {
 // so queue order provides the handoff into Present without a CPU wait or foreign-queue access.
 bool Render(const RenderRequest& request);
 
+// True only after at least one inline-marker render was submitted for this swapchain key and every such
+// render has reached its command-list tail on the GPU. Used to hand overlay ownership away from the FFX UI
+// texture only after the topmost batch route has real completion proof.
+bool HasCompletedInlineRender(void* proxySwapChain);
+
+// True while a submitted inline render has not reached its tail marker. The final-batch path does not append
+// another list during this window; proxy prework keeps the UI baseline visible instead of risking double blend.
+bool HasPendingInlineRender(void* proxySwapChain);
+
 // Retire resources tied to one proxy when its FFX swapchain context is destroyed/rebound. In-flight resources
-// remain referenced until their real GPU fence completes; this never waits on the Present thread. Keying by
-// proxy avoids tearing down a new context that legitimately shares the same game queue with an older context.
+// remain referenced until their queue fence or inline marker completes; this never waits on the Present thread.
+// Keying by proxy avoids tearing down a new context that legitimately shares the same game queue with an older
+// context.
 void RetireProxy(void* proxySwapChain, const char* reason);
 
 // Retires every live renderer state. Used at native-FSR teardown boundaries (explicit Streamline enable prep

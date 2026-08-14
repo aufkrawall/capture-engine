@@ -182,6 +182,11 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 // True when native FSR FG is DISABLED/SUSPENDED while AMD still owns the swapchain (no-callback suspension —
 // AMD is not interpolating). The proxy-present prework uses this to select the exact-owner-queue backbuffer route.
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
+// No-app-callback FSR topmost transport: learns the final ECL batch immediately preceding the runtime's real
+// Present and appends CE to that same batch on stable frames. This is generic across Steam/RTSS/ReShade/etc.
+void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
+bool DX12_IsNoCallbackFSRTopmostBatchActive();
+void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
                               bool frameGenerationPresentationActive);

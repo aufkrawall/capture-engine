@@ -3,7 +3,7 @@
 
 static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason);  // defined below
 
-static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapChain* proxy) {
+static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapChain* proxy, bool clearOnly = false) {
     ID3D12Resource* uiTexture = nullptr;
     uint32_t ffxState = 0;
     uint32_t flags = 0;
@@ -23,6 +23,13 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
     if (!uiTexture) {
         return false;
     }
+    if (clearOnly && !isSubstitute) {
+        // A game-owned UI resource is rewritten by its producer before proxy Present. Never erase that content;
+        // simply stop injecting CE once the final-batch route has completion proof. A CE-owned substitute has
+        // no producer, so it needs the explicit transparent retirement below.
+        uiTexture->Release();
+        return true;
+    }
 
     const AcquiredNativeFSROwnerQueue ownerQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy, uiTexture);
     if (!ownerQueue.queue) {
@@ -37,7 +44,8 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
         // A CE-owned substitute has no incoming game-queue writer, so the legacy completion-waited route
         // remains a safe compatibility fallback for an unknown FFX descriptor revision. A game-owned UI
         // texture cannot use this fallback here because a foreign-queue write would race its producer.
-        const bool rendered = isSubstitute && DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+        const bool rendered = !clearOnly && isSubstitute &&
+                              DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
         uiTexture->Release();
         return rendered;
     }
@@ -47,11 +55,14 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
     request.presentationQueue = ownerQueue.queue;
     request.targetResource = uiTexture;
     request.targetState = GetDX12StateFromFFXResourceState(ffxState);
-    request.clearTransparent = needsTransparentClear;
-    request.routeName =
-        ownerQueue.route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
-            ? "active-ui-resource-streamline-unwrapped"
-            : "active-ui-resource";
+    request.clearTransparent = clearOnly || needsTransparentClear;
+    request.renderOverlay = !clearOnly;
+    request.routeName = clearOnly
+                            ? "active-ui-resource-retire-ce-pixels"
+                            : (ownerQueue.route ==
+                                       ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
+                                   ? "active-ui-resource-streamline-unwrapped"
+                                   : "active-ui-resource");
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
     request.hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(uiTexture->GetDesc().Format);
@@ -125,13 +136,33 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // gameFence handoff -> Present, without the staged internal present queue or a CPU wait. The substitute
     // re-assert stays skipped because AMD is not consuming the UI resource in either passthrough state.
     bool composited;
+    bool topmostBatchOwnsOverlay = false;
     const bool suspendBackbufferRoute = !protectedStartupBackbufferRoute && DX12_IsNativeFSRFGSuspendedDisablePending();
     const bool proxyBackbufferRoute = protectedStartupBackbufferRoute || suspendBackbufferRoute;
     if (proxyBackbufferRoute) {
         composited = DX12_CompositeOverlayOntoSuspendBackbuffer(
             proxy, protectedStartupBackbufferRoute ? "protected-startup-backbuffer" : "suspend-backbuffer");
     } else {
-        composited = DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy);
+        // Once the learned final ECL route has GPU completion proof, it renders CE after every foreign
+        // overlay/effect on both real and generated Presents. Retire prior CE pixels from a CE-owned substitute
+        // exactly once before yielding, then keep its registration alive. If the batch signature changes or
+        // marker proof is lost, normal UI refresh resumes immediately.
+        const bool topmostBatchActive = DX12_IsNoCallbackFSRTopmostBatchActive();
+        static std::atomic<bool> s_uiBaselineRetiredForTopmost{false};
+        if (topmostBatchActive) {
+            topmostBatchOwnsOverlay = s_uiBaselineRetiredForTopmost.load(std::memory_order_acquire);
+            if (!topmostBatchOwnsOverlay) {
+                topmostBatchOwnsOverlay =
+                    DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy, /*clearOnly=*/true);
+                if (topmostBatchOwnsOverlay) {
+                    s_uiBaselineRetiredForTopmost.store(true, std::memory_order_release);
+                }
+            }
+        } else {
+            s_uiBaselineRetiredForTopmost.store(false, std::memory_order_release);
+        }
+        composited = topmostBatchOwnsOverlay ||
+                     DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy);
         if (composited) {
             const auto reRegistration = FFXHook_ReRegisterSubstituteUiResource();
             if (reRegistration == FFXSubstituteUiReRegistrationResult::kFailed) {
@@ -146,6 +177,14 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
                     "overlay composite lacked owner-queue submission proof (log=%d)",
                     logCount + 1);
             }
+        }
+        static std::atomic<bool> s_topmostBatchYieldEdge{false};
+        if (s_topmostBatchYieldEdge.exchange(topmostBatchOwnsOverlay, std::memory_order_acq_rel) !=
+            topmostBatchOwnsOverlay) {
+            HookLogImportant(
+                "[OVERLAY LAYER] FFX UI-resource overlay %s the no-callback topmost same-batch route — "
+                "the baseline resumes automatically if final-batch completion proof is lost",
+                topmostBatchOwnsOverlay ? "YIELDS TO" : "RESUMES FROM");
         }
     }
     static std::atomic<void*> s_lastPreworkRouteProxy{nullptr};
@@ -169,7 +208,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
     g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0, std::memory_order_release);
-    if (composited && !proxyBackbufferRoute) {
+    if (composited && !proxyBackbufferRoute && !topmostBatchOwnsOverlay) {
         g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
         g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);

@@ -221,18 +221,22 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     HookLogImportant(
                         "DetourPresent: no-callback FSR FG window %s — overlay route is now %s (runtimeOwns=%d)",
                         noCallbackFSRFG ? "STARTED" : "ENDED",
-                        noCallbackFSRFG ? "UI-resource bundle only (no backbuffer submit)"
+                        noCallbackFSRFG ? "UI-resource baseline + learned same-batch topmost route"
                                         : "normal ProcessFrame backbuffer",
                         (DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath()) ? 1 : 0);
+                    if (!noCallbackFSRFG) {
+                        DX12_ClearNoCallbackFSRTopmostBatch("no-callback FSR window ended");
+                    }
                 }
             }
             if (noCallbackFSRFG) {
-                // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER submit overlay GPU work on
-                // AMD's backbuffer / runtime present queue (the documented ffxQuery null-deref AV, session
-                // 20260621_191028). The overlay's only AMD-safe channel there is the UI-resource composition:
-                // CE draws onto the registered/CE-substituted UI texture on its OWN fenced queue
-                // (DX12_CompositeOverlayOntoCachedFFXUiResource) and AMD composites it post-interpolation, so
-                // the route selector returns kSkipBundleCovers whenever AMD owns the swapchain.
+                // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER add an independent ECL/Signal
+                // to AMD's backbuffer/present queue (the documented ffxQuery null-deref AV, session
+                // 20260621_191028). The proven baseline is UI-resource composition on its owner queue. The
+                // topmost route below is deliberately different: after learning AMD/foreign ordering, CE's
+                // closed list is appended to the already-occurring final ECL batch and uses an inline marker,
+                // so AMD observes no extra queue operation. UI composition remains live until that marker proves
+                // completion and resumes immediately if the signature changes.
                 const bool runtimeOwnsSwapchain =
                     DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
                 // STALE-LATCH SIGNAL: during ACTIVE no-callback FSR FG the game presents on AMD's SEPARATE FG
@@ -254,6 +258,15 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 // ANY runtime-owned state now, so reaching the backbuffer branch here would be a logic regression.
                 const bool amdActivelyInterpolatingOnFGQueue =
                     runtimeOwnsSwapchain && !fsrFGDisabledSuspendPending && !liveSwapchainQueueIsOriginalGameQueue;
+                const bool topmostSameBatchEligible =
+                    !steamOnlyTest && amdActivelyInterpolatingOnFGQueue &&
+                    !g_SharedState.deviceRemovedFatal.load(std::memory_order_acquire) && !IsShuttingDown();
+                // This runs after the foreign Present chain has submitted its command lists but before the
+                // system Present when CE is below the chain; when CE is above it, the per-thread trace naturally
+                // spans to the next entry. The ECL detour records both forms without resolving modules. Two equal
+                // consecutive final-batch signatures arm a same-ECL append; instability immediately falls back
+                // to AMD's UI-resource composition. No known-overlay allowlist is involved.
+                DX12_ObserveNoCallbackFSRTopmostPresent(pSwapChain, topmostSameBatchEligible);
                 // bundleOverlayActivelyFiring is hardwired false: the fenced composite is driven ONLY from the
                 // kSkipBundleCovers arm below, and while AMD owns the swapchain the route selects kSkipBundleCovers
                 // regardless of this arg (active OR suspended). It is consulted only in the non-runtime-owned
@@ -283,7 +296,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                                 ? "the proxy-present prework (game thread) — presenter-thread present is passthrough"
                                 : "the DetourPresent fallback (presenter thread, composite only, no re-assert)");
                     }
-                    if (!proxyDriving) {
+                    if (!proxyDriving && !DX12_IsNoCallbackFSRTopmostBatchActive()) {
                         DX12_CompositeOverlayOntoCachedFFXUiResource();
                     }
                 } else if (amdActivelyInterpolatingOnFGQueue) {

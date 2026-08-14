@@ -237,14 +237,23 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     dx12_hook_s_insideECL = true;
     auto eclGuard = ce::make_scope_guard([&]() { dx12_hook_s_insideECL = wasInsideECL; });
 
-    // Minimal-overhead fast-path: during no-callback FSR FG, AMD's internal ECL calls on the FSR runtime
-    // queue (or any non-game queue) must not go through CE's policy/lock/module-resolution overhead —
-    // that overhead desyncs AMD's QPC-timed pacing (ffxQuery+0x225fe). Just forward immediately. The
-    // overlay is composited separately immediately before proxy Present on its target-compatible owner queue,
-    // so nothing is appended to arbitrary FFX-runtime ECLs here. The game's own ECLs on g_OriginalGameQueue
-    // still get full processing (for frame counting).
-    if (dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) && pThis != dx12_hook_g_OriginalGameQueue) {
-        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+    // Minimal-overhead path: during no-callback FSR FG, observe every non-CE batch on the presenter thread so
+    // the final submitter is learned without depending on a module/product name. Once its exact return-address
+    // and ordinal signature is stable, CE joins THAT SAME batch as the final list. All other runtime-queue calls
+    // remain pure forwards and avoid CE's policy/lock/module-resolution path, which would desync AMD's QPC-timed
+    // pacing (ffxQuery+0x225fe). Game-queue calls continue into normal processing for frame counting.
+    const bool noCallbackFSR =
+        dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
+    ExecuteCommandListsPtr noCallbackOriginal = nullptr;
+    if (noCallbackFSR && dx12_hook_s_insideCEOverlayECLDepth == 0) {
+        noCallbackOriginal = GetOriginalExecuteCommandLists(pThis);
+        if (DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
+                pThis, NumCommandLists, ppCommandLists, noCallbackOriginal, CE_RETURN_ADDRESS())) {
+            return;
+        }
+    }
+    if (noCallbackFSR && pThis != dx12_hook_g_OriginalGameQueue) {
+        ExecuteCommandListsPtr original = noCallbackOriginal ? noCallbackOriginal : GetOriginalExecuteCommandLists(pThis);
         if (original) {
             original(pThis, NumCommandLists, ppCommandLists);
         } else {

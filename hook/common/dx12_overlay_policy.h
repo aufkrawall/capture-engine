@@ -8,6 +8,7 @@
 
 #include "dx12_overlay_policy/overlay_submission.h"
 #include "dx12_overlay_policy/ffx_routing.h"
+#include "dx12_overlay_policy/ffx_topmost_batch.h"
 #include "dx12_overlay_policy/fg_metrics_and_transitions.h"
 #include "dx12_overlay_policy/streamline_ownership.h"
 #include "dx12_overlay_policy/upload_slot_guard.h"

@@ -228,6 +228,16 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
 
+bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
+    ID3D12CommandQueue* queue, UINT commandListCount, ID3D12CommandList* const* commandLists,
+    ExecuteCommandListsPtr original, const void* callSite);
+
+void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
+
+bool DX12_IsNoCallbackFSRTopmostBatchActive();
+
+void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
+
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags, ce::ffx_api::Resource* ceSubstitute, DX12FFXUiOverlayTargetPreparation* preparation);
 
 void DX12_DiscardFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparation);

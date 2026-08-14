@@ -697,6 +697,32 @@ The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the na
   and FFX context-destroy boundaries (`hook/apis/dx12_ffx_suspend_overlay.cpp`,
   `hook/apis/dx12_hook_fg_state.cpp`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`); in-flight states stay retained
   until their own fence completes. See the guardrails invariant and `log/recent.md` for the dump evidence.
+
+## IMPLEMENTED locally: no-callback FSR learns the final GPU batch and joins it last (2026-08-14)
+
+Session `installed/captureengine/logs/20260814_015902` is the distinct no-app-callback topology
+(`internalNoCallback=1`). Proxy-Present prework correctly draws CE into the registered/substituted FFX UI texture
+on its owner queue, but AMD composites that texture before the presenter thread's final DXGI work. Steam/RTSS then
+submit later ECL batches before the deep system Present, so the UI-resource route is intrinsically below them.
+
+- **Fix**: the no-callback ECL fast path records the presenter thread's immediate return address and ordinal for
+  each non-CE `ExecuteCommandLists` batch. Two identical consecutive final signatures arm the next frame. At that
+  exact batch, CE records against the exact current FSR backbuffer and calls the existing predecessor once with
+  `[original lists..., CE list]`. CE is therefore last regardless of whether Steam, RTSS, ReShade, Special K,
+  OptiScaler, or an unrecognized effect submitted the final batch; no product/module allowlist selects the route.
+- **Safety boundary**: this is not the failed arbitrary/separate FSR submit. It adds no second ECL call and no queue
+  `Signal`. `ID3D12GraphicsCommandList2::WriteBufferImmediate` writes a per-buffer completion marker at the list
+  tail, protecting allocator/upload/target reuse without changing AMD's queue-operation cadence. Signature/thread/
+  queue/target mismatch or pending slot reuse refuses the append without waiting.
+- **Make-before-break handoff**: the proven FFX UI-resource route stays visible during learning and until an inline
+  marker completes. Fence-based UI state and inline-marker state coexist. Before yielding, a CE-owned substitute is
+  cleared transparent once so the two routes cannot double-alpha-blend; game-owned UI is never erased. Any lost
+  signature or completion proof resumes the UI baseline immediately.
+- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`,
+  `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`, and
+  `tests/test_ffx_topmost_batch_policy.cpp`. Focused FSR/ECL/teardown tests pass. **Open**: on-hardware validation of
+  FSR FG with Steam, RTSS, and ReShade, plus all FSR/off/DLSS switch directions and teardown/device health.
+
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
 - Module-token detection is heuristic. Re-check it whenever new overlay modules appear in traces or bug reports.
