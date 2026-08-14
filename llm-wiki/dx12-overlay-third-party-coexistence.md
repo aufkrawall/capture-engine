@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-08-13 (Present-entry rule generalized to draw order in 0.1.5960: CE stays out of *any* `dxgi!Present` entry a foreign overlay owns — not only one two or more share — and intercepts below it with a deep hook in the `dxgi!Present` body, so its overlay composites after Steam's and RTSS's instead of underneath them; the FG-interposer exception is gone because the body view supersedes it, the prepend survives only as the refusal fallback against a single overlay, Streamline present routing is refused below the chain, and the foreign-jump classification now resolves the Present-owning module from the address instead of by name. Generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle remain as audited on 2026-08-11; the prior DX12/FG provenance rules remain in force. Open: layering against object-wrapping proxies such as ReShade — see Known limitations. The 0.1.5999 native-FSR-FG below-the-chain composite is covered in its own RESOLVED section below.)
+Last cross-checked: 2026-08-14 (Present-entry rule generalized to draw order in 0.1.5960: CE stays out of *any* `dxgi!Present` entry a foreign overlay owns — not only one two or more share — and intercepts below it with a deep hook in the `dxgi!Present` body, so its overlay composites after Steam's and RTSS's instead of underneath them; the FG-interposer exception is gone because the body view supersedes it, the prepend survives only as the refusal fallback against a single overlay, Streamline present routing is refused below the chain, and the foreign-jump classification now resolves the Present-owning module from the address instead of by name. Generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle remain as audited on 2026-08-11; the prior DX12/FG provenance rules remain in force. Open: layering against object-wrapping proxies such as ReShade — see Known limitations. The native-FSR-FG below-the-chain and marker-only topmost handoffs are covered in their own resolved sections below.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -714,22 +714,29 @@ submit later ECL batches before the deep system Present, so the UI-resource rout
   `Signal`. `ID3D12GraphicsCommandList2::WriteBufferImmediate` writes a per-buffer completion marker at the list
   tail, protecting allocator/upload/target reuse without changing AMD's queue-operation cadence. Signature/thread/
   queue/target mismatch or pending slot reuse refuses the append without waiting.
-- **Make-before-break handoff**: the proven FFX UI-resource route stays visible during learning and until an inline
-  marker completes. Fence-based UI state and inline-marker state coexist. Before yielding, a CE-owned substitute is
-  cleared transparent once so the two routes cannot double-alpha-blend; game-owned UI is never erased. Any lost
-  signature or completion proof resumes the UI baseline immediately.
+- **Make-before-break handoff**: the proven FFX UI-resource route stays visible during learning. The first stable
+  final-batch append is marker-only and does not create an RTV, transition, clear, or draw. After the marker completes,
+  proxy prework clears a CE-owned substitute once and explicitly grants visible ownership; until that grant, every
+  further append remains a non-visible probe. Revocation precedes UI-baseline resumption, closing the
+  completion-between-prework-and-ECL race. Game-owned UI is never erased.
 - **Hardware result / follow-up**: session `20260814_024908` (0.1.6049, Steam + RTSS) and the user's visual check
-  confirm that CE is topmost under FSR FG. The same session exposed a separate ownership overlap: the FFX callback
-  and later topmost route each drew at about 144 outputs/s, so a translucent panel was blended twice. Both paths
-  also called `PerformanceMetrics::Update`, producing about 288 FPS while the CSV QPC cadence remained about 144/s.
-  The callback now yields its CE draw and frame-time sample together: app-callback FSR consumes one successful deep
-  topmost-submit proof per output; no-callback FSR requires the completed inline-marker proof. FG publication remains
-  independent (the session correctly published about 72.6 base / 145.2 output), and any lost proof restores the
-  callback fallback without a timer.
-- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`,
+  confirm that CE is topmost under FSR FG. Session `20260814_032638` then isolated transition double blending: both
+  handoffs now begin with non-visible probes, no-callback drawing additionally requires the post-proof UI-retirement
+  grant, and every callback-routing edge synchronously clears both topmost epochs.
+- **Remaining 0.1.6051 causes (`20260814_035452`)**: the no-callback completion query incorrectly required *all*
+  latest inline markers to be complete. A freshly in-flight output therefore revoked already-proven ownership at
+  `03:55:04.922`, briefly restoring the darker UI-resource baseline. Completion proof now latches for the current
+  learned-signature generation, while 16 allocator/upload slots rotate independently and only their own marker
+  guards reuse. Signature change or a missed expected append invalidates the generation and requires a fresh probe.
+  Separately, both 6-second app-callback intervals sampled `PerformanceMetrics` at the FFX callback and the deep
+  Present boundary, matching the two ~288-FPS CSV blocks and alternating tiny/normal frame times. Deep Present is now
+  the sole timing observer when installed; the callback remains the fallback only when runtime-owned presentation
+  does not re-enter CE through DXGI. Draw ownership and frame-timing ownership are deliberately independent.
+- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`, `hook/apis/dx12_hook_ffx_metrics.cpp`,
   `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`, and
-  `tests/test_ffx_topmost_batch_policy.cpp`. Focused tests and the complete `--verify` gate pass on 0.1.6050
-  (full native suite, Python self-tests, lint ratchets, x64 ASan/UBSan). **Open**: fresh on-hardware ReShade validation
+  `tests/test_ffx_topmost_batch_policy.cpp`. Focused tests and the complete `--verify` gate pass on 0.1.6052
+  (full native suite, Python self-tests, lint ratchets, and x64 ASan/UBSan). **Open**: fresh on-hardware validation
+  of stable translucency/FPS plus ReShade validation
   plus the full FSR/off/DLSS switch matrix and teardown/device-health checks after the ownership handoff.
 
 ## Open Questions / Stale-Risk

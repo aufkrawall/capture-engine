@@ -71,6 +71,7 @@ struct FrameSlot {
     ComPtr<ID3D12Resource> inFlightTarget;
     UINT64 fenceValue = 0;
     uint32_t markerValue = 0;
+    uint64_t submissionSequence = 0;
 };
 
 class RendererState {
@@ -213,12 +214,26 @@ public:
         return device && SUCCEEDED(device->GetDeviceRemovedReason());
     }
 
-    bool HasCompletedInlineRender() const {
-        return inlineCompletionMarker && frameCount != 0 && IsGpuComplete();
+    bool HasCompletedInlineRender() {
+        if (!inlineCompletionMarker || frameCount == 0) {
+            return false;
+        }
+        if (!inlineCompletionObserved) {
+            for (size_t i = 0; i < kFrameSlotCount; ++i) {
+                if (slots[i].submissionSequence >= inlineCompletionProofMinSubmission &&
+                    slots[i].markerValue != 0 && completionMarkers &&
+                    completionMarkers[i] == slots[i].markerValue) {
+                    inlineCompletionObserved = true;
+                    break;
+                }
+            }
+        }
+        return inlineCompletionObserved;
     }
 
-    bool HasPendingInlineRender() const {
-        return inlineCompletionMarker && frameCount != 0 && !IsGpuComplete();
+    void ResetInlineCompletionProof() {
+        inlineCompletionObserved = false;
+        inlineCompletionProofMinSubmission = frameCount + 1;
     }
 
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
@@ -230,13 +245,45 @@ public:
 
         const D3D12_RESOURCE_DESC targetDesc = targetResource->GetDesc();
         const UINT64 completed = fence ? fence->GetCompletedValue() : 0;
-        if (backBufferIndex >= kFrameSlotCount) {
-            HookLogImportant(
-                "DX12: FSR-suspend owner-queue overlay rejected invalid backbuffer index %u (slotCapacity=%zu)",
-                backBufferIndex, kFrameSlotCount);
-            return RenderResult::kFailed;
+        size_t slotIndex = kFrameSlotCount;
+        if (inlineCompletionMarker) {
+            // The final-batch route may have several displayed outputs in flight at once. Command allocators and
+            // upload buffers, rather than swapchain-buffer identity, are the resources that require CPU-side
+            // completion before reuse; queue order already serializes repeated writes to the same backbuffer.
+            // Select any completed slot so one freshly submitted marker cannot revoke a previously proven route.
+            const size_t firstCandidate = static_cast<size_t>(frameCount % kFrameSlotCount);
+            for (size_t offset = 0; offset < kFrameSlotCount; ++offset) {
+                const size_t candidate = (firstCandidate + offset) % kFrameSlotCount;
+                const uint32_t markerValue = slots[candidate].markerValue;
+                if (markerValue == 0 || (completionMarkers && completionMarkers[candidate] == markerValue)) {
+                    slotIndex = candidate;
+                    if (markerValue != 0 &&
+                        slots[candidate].submissionSequence >= inlineCompletionProofMinSubmission) {
+                        inlineCompletionObserved = true;
+                    }
+                    break;
+                }
+            }
+        } else if (backBufferIndex < kFrameSlotCount) {
+            slotIndex = backBufferIndex;
         }
-        const size_t slotIndex = backBufferIndex;
+        if (slotIndex == kFrameSlotCount) {
+            if (!inlineCompletionMarker) {
+                HookLogImportant(
+                    "DX12: FSR-suspend owner-queue overlay rejected invalid backbuffer index %u (slotCapacity=%zu)",
+                    backBufferIndex, kFrameSlotCount);
+                return RenderResult::kFailed;
+            }
+            static std::atomic<int> s_noReusableSlotLogCount{0};
+            const int logCount = s_noReusableSlotLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 120) == 0) {
+                HookLogImportant(
+                    "DX12: FSR-suspend owner-queue overlay REFUSED because all %zu inline allocator/upload slots "
+                    "are in flight (bbIndex=%u queue=%p log=%d) — no wait, no overwrite",
+                    kFrameSlotCount, backBufferIndex, queue.Get(), logCount + 1);
+            }
+            return RenderResult::kBackBufferStillInFlight;
+        }
         const bool markerPending = inlineCompletionMarker && slots[slotIndex].markerValue != 0 &&
                                    (!completionMarkers ||
                                     completionMarkers[slotIndex] != slots[slotIndex].markerValue);
@@ -273,32 +320,35 @@ public:
             return RenderResult::kFailed;
         }
 
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        rtv.ptr += slotIndex * static_cast<SIZE_T>(rtvIncrement);
-        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-        rtvDesc.Format = format;
-        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        device->CreateRenderTargetView(targetResource, &rtvDesc, rtv);
-
         const UINT64 submitFenceValue = lastSubmittedFenceValue + 1;
-        Transition(slot.commandList.Get(), targetResource, targetState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        if (clearTransparent) {
-            constexpr float kTransparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            slot.commandList->ClearRenderTargetView(rtv, kTransparent, 0, nullptr);
-        }
-        if (renderOverlay) {
-            overlay.SetIPCClient(g_IPC);
-            overlay.SetReserveInactiveFGSpace(false);
-            if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-                overlay.SetMetrics(perf);
+        const bool writesTarget = clearTransparent || renderOverlay;
+        if (writesTarget) {
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += slotIndex * static_cast<SIZE_T>(rtvIncrement);
+            D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+            rtvDesc.Format = format;
+            rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            device->CreateRenderTargetView(targetResource, &rtvDesc, rtv);
+
+            Transition(slot.commandList.Get(), targetResource, targetState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            if (clearTransparent) {
+                constexpr float kTransparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                slot.commandList->ClearRenderTargetView(rtv, kTransparent, 0, nullptr);
             }
-            overlay.SetGraphicsAPI("DX12");
-            overlay.SetDX12UploadSlotFence(fence.Get(), inlineCompletionMarker ? 0 : submitFenceValue);
-            overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
-            overlay.SetDX12RenderTarget(slot.commandList.Get(), reinterpret_cast<void*>(rtv.ptr));
-            overlay.RenderOverlay(static_cast<int>(targetDesc.Width), static_cast<int>(targetDesc.Height));
+            if (renderOverlay) {
+                overlay.SetIPCClient(g_IPC);
+                overlay.SetReserveInactiveFGSpace(false);
+                if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+                    overlay.SetMetrics(perf);
+                }
+                overlay.SetGraphicsAPI("DX12");
+                overlay.SetDX12UploadSlotFence(fence.Get(), inlineCompletionMarker ? 0 : submitFenceValue);
+                overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
+                overlay.SetDX12RenderTarget(slot.commandList.Get(), reinterpret_cast<void*>(rtv.ptr));
+                overlay.RenderOverlay(static_cast<int>(targetDesc.Width), static_cast<int>(targetDesc.Height));
+            }
+            Transition(slot.commandList.Get(), targetResource, D3D12_RESOURCE_STATE_RENDER_TARGET, targetState);
         }
-        Transition(slot.commandList.Get(), targetResource, D3D12_RESOURCE_STATE_RENDER_TARGET, targetState);
 
         uint32_t submitMarkerValue = 0;
         if (inlineCompletionMarker) {
@@ -341,15 +391,18 @@ public:
         if (inlineCompletionMarker) {
             slot.markerValue = submitMarkerValue;
             ++frameCount;
+            slot.submissionSequence = frameCount;
             static std::atomic<int> s_inlineRenderLogCount{0};
             const int logCount = s_inlineRenderLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
-                    "DX12: FSR topmost overlay appended to the existing final ECL batch "
-                    "(queue=%p frame=%llu bbIndex=%u target=%p marker=%u slot=%zu route=%s log=%d) — "
+                    "DX12: FSR topmost %s appended to the existing final ECL batch "
+                    "(queue=%p frame=%llu bbIndex=%u target=%p marker=%u slot=%zu route=%s draw=%d log=%d) — "
                     "no extra ExecuteCommandLists and no queue Signal",
+                    renderOverlay ? "overlay" : "activation probe",
                     queue.Get(), static_cast<unsigned long long>(frameCount), backBufferIndex, targetResource,
-                    submitMarkerValue, slotIndex, routeName ? routeName : "unknown", logCount + 1);
+                    submitMarkerValue, slotIndex, routeName ? routeName : "unknown", renderOverlay ? 1 : 0,
+                    logCount + 1);
             }
             return RenderResult::kRendered;
         }
@@ -406,6 +459,8 @@ private:
     UINT64 lastSubmittedFenceValue = 0;
     uint32_t nextMarkerValue = 1;
     bool inlineCompletionMarker = false;
+    bool inlineCompletionObserved = false;
+    uint64_t inlineCompletionProofMinSubmission = 1;
     bool completionUnknown = false;
     uint64_t frameCount = 0;
     OverlayAdapter overlay;
@@ -571,13 +626,15 @@ bool HasCompletedInlineRender(void* proxySwapChain) {
     return it != g_InlineProxyStates.end() && it->second && it->second->HasCompletedInlineRender();
 }
 
-bool HasPendingInlineRender(void* proxySwapChain) {
+void ResetInlineCompletionProof(void* proxySwapChain) {
     if (!proxySwapChain || g_ShuttingDown.load(std::memory_order_acquire)) {
-        return false;
+        return;
     }
     std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
     const auto it = g_InlineProxyStates.find(proxySwapChain);
-    return it != g_InlineProxyStates.end() && it->second && it->second->HasPendingInlineRender();
+    if (it != g_InlineProxyStates.end() && it->second) {
+        it->second->ResetInlineCompletionProof();
+    }
 }
 
 void RetireProxy(void* proxySwapChain, const char* reason) {

@@ -233,10 +233,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER add an independent ECL/Signal
                 // to AMD's backbuffer/present queue (the documented ffxQuery null-deref AV, session
                 // 20260621_191028). The proven baseline is UI-resource composition on its owner queue. The
-                // topmost route below is deliberately different: after learning AMD/foreign ordering, CE's
-                // closed list is appended to the already-occurring final ECL batch and uses an inline marker,
-                // so AMD observes no extra queue operation. UI composition remains live until that marker proves
-                // completion and resumes immediately if the signature changes.
+                // topmost route below is deliberately different: after learning AMD/foreign ordering, CE first
+                // appends a marker-only list to the already-occurring final ECL batch. Only after that marker
+                // completes and proxy prework retires the UI baseline may the same-batch list blend CE, so AMD
+                // observes no extra queue operation and every transition output has exactly one visible owner.
                 const bool runtimeOwnsSwapchain =
                     DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
                 // STALE-LATCH SIGNAL: during ACTIVE no-callback FSR FG the game presents on AMD's SEPARATE FG

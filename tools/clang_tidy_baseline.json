@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 598,
+    "entries": 599,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -153,6 +153,7 @@
       "hook/apis/dx12_hook_ecl.cpp",
       "hook/apis/dx12_hook_ecl_install.cpp",
       "hook/apis/dx12_hook_ffx.cpp",
+      "hook/apis/dx12_hook_ffx_metrics.cpp",
       "hook/apis/dx12_hook_ffx_owner_queue.cpp",
       "hook/apis/dx12_hook_ffx_proxy_present.cpp",
       "hook/apis/dx12_hook_ffx_startup.cpp",

@@ -46,6 +46,29 @@ inline bool ShouldAppendTopmostOverlayToFinalECLBatch(
            commandListCount < combinedBatchCapacity;
 }
 
+inline bool HasCompletedNoCallbackTopmostActivation(bool routeReady, bool previousAppendSucceeded,
+                                                     bool inlineCompletionObserved) {
+    return routeReady && previousAppendSucceeded && inlineCompletionObserved;
+}
+
+inline bool ShouldGrantNoCallbackTopmostOwnership(bool activationComplete, bool uiBaselineRetired) {
+    return activationComplete && uiBaselineRetired;
+}
+
+inline bool ShouldRenderAppCallbackTopmostOverlay(bool routeArmed) {
+    return routeArmed;
+}
+
+inline bool ShouldSampleFrameTimingFromFFXPresentCallback(bool runtimeOwnsNativeFSRPresentation,
+                                                          bool callbackYieldsToTopmostRoute,
+                                                          bool presentInterceptedBelowForeignChain) {
+    // A deep-body Present interception observes the exact displayed-output boundary after the FFX callback.
+    // Sampling both sites doubles FPS and alternates tiny/normal frame times. Retain the callback only as the
+    // fallback for runtime-owned presentation that does not re-enter CE through DXGI.
+    return runtimeOwnsNativeFSRPresentation && !callbackYieldsToTopmostRoute &&
+           !presentInterceptedBelowForeignChain;
+}
+
 inline bool ShouldYieldFFXPresentCallbackToTopmostRoute(
     bool nativeNoCallbackComposition, bool belowForeignTopmostSubmitProven,
     bool completedNoCallbackTopmostBatch) {

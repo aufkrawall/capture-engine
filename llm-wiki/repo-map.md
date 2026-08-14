@@ -85,8 +85,9 @@ anchors that predate the split are approximate.
       `dx12_hook_main.cpp` (module lifecycle), `dx12_hook_fg_state.cpp` /
       `dx12_hook_fg_startup.cpp` / `dx12_hook_streamline_fg_transition.cpp` /
       `dx12_hook_focus_loss.cpp`, `dx12_hook_overlay*.cpp` (overlay, present,
-      d3d11on12), `dx12_hook_ffx*.cpp` (ffx, ui_composite, ui_state, owner_queue,
-      proxy_present), `dx12_hook_ecl*.cpp` (ecl, ecl_install),
+      d3d11on12), `dx12_hook_ffx*.cpp` (FFX, UI composite/state, owner queue,
+      proxy Present, final-batch topmost routing, callback frame-metric ownership),
+      `dx12_hook_ecl*.cpp` (ecl, ecl_install),
       `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/
       draw_transition/draw_main/draw_submit/draw_tail), `dx12_hook_postsl_render*.cpp`
       (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp`,

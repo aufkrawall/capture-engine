@@ -3,6 +3,7 @@
 #include "../../common/log_meter.h"
 
 static std::atomic<bool> g_BelowForeignChainFSRTopmostSubmitProven{false};
+static std::atomic<bool> g_BelowForeignChainFSRTopmostRouteArmed{false};
 
 bool DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof() {
     // One successful deep Present submit transfers exactly the next callback output. The following deep Present
@@ -11,9 +12,11 @@ bool DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof() {
 }
 
 void DX12_ResetBelowForeignChainFSRTopmostSubmitProof(const char* reason) {
-    if (g_BelowForeignChainFSRTopmostSubmitProven.exchange(false, std::memory_order_acq_rel)) {
+    const bool hadProof = g_BelowForeignChainFSRTopmostSubmitProven.exchange(false, std::memory_order_acq_rel);
+    const bool wasArmed = g_BelowForeignChainFSRTopmostRouteArmed.exchange(false, std::memory_order_acq_rel);
+    if (hadProof || wasArmed) {
         HookLogImportant(
-            "[OVERLAY LAYER] FSR app-callback topmost submit proof retired (%s) — callback baseline resumes",
+            "[OVERLAY LAYER] FSR app-callback topmost handoff retired (%s) — callback baseline resumes",
             reason && reason[0] ? reason : "route unavailable");
     }
 }
@@ -418,13 +421,17 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
         hdr = ResolveSwapchainOutputHDRState(presentedSwapChain, desc.BufferDesc.Format, nullptr);
     }
 
+    const bool activationProbe = !ce::dx12_overlay_policy::ShouldRenderAppCallbackTopmostOverlay(
+        g_BelowForeignChainFSRTopmostRouteArmed.load(std::memory_order_acquire));
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
     request.proxySwapChain = presentedSwapChain;
     request.presentationQueue = submitQueue;
     request.targetResource = backBuffer;
     request.targetState = D3D12_RESOURCE_STATE_PRESENT;
     request.clearTransparent = false;
-    request.routeName = "below-foreign-chain-fsr";
+    request.renderOverlay = !activationProbe;
+    request.routeName = activationProbe ? "below-foreign-chain-fsr-activation-probe"
+                                        : "below-foreign-chain-fsr";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
     request.hdr = hdr;
@@ -434,18 +441,24 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
     static std::atomic<int> s_renderedLog{0};
     static std::atomic<int> s_refusedLog{0};
     if (rendered) {
+        g_BelowForeignChainFSRTopmostRouteArmed.store(true, std::memory_order_release);
         g_BelowForeignChainFSRTopmostSubmitProven.store(true, std::memory_order_release);
         const int logCount = s_renderedLog.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 5 || (logCount % 300) == 0) {
             HookLogImportant(
-                "[OVERLAY LAYER] CE composites BELOW the foreign Present chain on the runtime-owned FSR "
+                "[OVERLAY LAYER] CE %s BELOW the foreign Present chain on the runtime-owned FSR "
                 "swapchain (site=deep-body-below-foreign-chain-runtime-owned-fsr "
                 "source=DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR sc=%p queue=%p log=%d) — "
-                "the foreign overlays drew on this queue before CE, so CE's overlay is the topmost layer%s",
+                "%s",
+                activationProbe ? "submitted a marker-only activation probe" : "composites",
                 (void*)presentedSwapChain, (void*)submitQueue, logCount + 1,
-                logCount == 0 ? "; callback draw/FPS ownership transfers on the next output" : "");
+                activationProbe
+                    ? "the callback remains the sole visible owner; its draw/FPS ownership transfers on the next output"
+                    : "the foreign overlays drew before CE, so CE's overlay is the topmost layer");
         }
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
+        if (!activationProbe) {
+            NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
+        }
     } else {
         DX12_ResetBelowForeignChainFSRTopmostSubmitProof("owner-queue renderer refused the deep draw");
         const int logCount = s_refusedLog.fetch_add(1, std::memory_order_relaxed);

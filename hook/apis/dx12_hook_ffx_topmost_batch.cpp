@@ -44,6 +44,7 @@ std::atomic<uint32_t> g_TargetStableFrames{0};
 std::atomic<DWORD> g_TargetPresenterThreadId{0};
 std::atomic<bool> g_TopmostBatchRouteReady{false};
 std::atomic<bool> g_PreviousPresentAppendSucceeded{false};
+std::atomic<bool> g_TopmostBatchOwnershipGranted{false};
 std::atomic<uint64_t> g_TopmostBatchSubmitCount{0};
 
 void ResetPresenterFrameTrace() {
@@ -139,12 +140,6 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     if (!g_TopmostBatchSwapChain || !g_TopmostBatchQueue || queue != g_TopmostBatchQueue) {
         return false;
     }
-    if (ce::dx12_ffx_suspend_overlay::HasPendingInlineRender(g_TopmostBatchSwapChain)) {
-        // Proxy prework has already seen the same pending marker and retained the UI baseline for this frame.
-        // Do not stack another final draw above it; retry after the prior marker proves completion.
-        return false;
-    }
-
     DXGI_SWAP_CHAIN_DESC desc = {};
     bool hdr = false;
     if (SUCCEEDED(g_TopmostBatchSwapChain->GetDesc(&desc))) {
@@ -156,11 +151,14 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     t_EmbeddedBatchSubmitContext = &submitContext;
     auto submitContextGuard = ce::make_scope_guard([]() { t_EmbeddedBatchSubmitContext = nullptr; });
 
+    const bool renderOverlay = g_TopmostBatchOwnershipGranted.load(std::memory_order_acquire);
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
     request.proxySwapChain = g_TopmostBatchSwapChain;
     request.presentationQueue = queue;
     request.targetState = D3D12_RESOURCE_STATE_PRESENT;
-    request.routeName = "no-callback-fsr-topmost-same-batch";
+    request.renderOverlay = renderOverlay;
+    request.routeName = renderOverlay ? "no-callback-fsr-topmost-same-batch"
+                                      : "no-callback-fsr-topmost-activation-probe";
     request.submitCommandList = &SubmitOverlayInsideObservedBatch;
     request.inlineCompletionMarker = true;
     request.hdr = hdr;
@@ -183,13 +181,17 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     const uint64_t submitCount = g_TopmostBatchSubmitCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (submitCount <= 10 || (submitCount % 300) == 0) {
         HookLogImportant(
-            "[OVERLAY LAYER] CE appended to the stable final foreign/runtime ECL batch under no-callback FSR "
+            "[OVERLAY LAYER] CE appended a %s to the stable final foreign/runtime ECL batch under no-callback FSR "
             "(sc=%p queue=%p callSite=%p ordinal=%u lists=%u submit=%llu) — same ExecuteCommandLists call, "
-            "inline GPU completion marker, no queue Signal; CE is topmost across injected overlays/effects",
+            "inline GPU completion marker, no queue Signal%s",
+            renderOverlay ? "topmost overlay" : "marker-only activation probe",
             g_TopmostBatchSwapChain, queue, callSite, currentOrdinal, commandListCount,
-            static_cast<unsigned long long>(submitCount));
+            static_cast<unsigned long long>(submitCount),
+            renderOverlay ? "; CE is topmost across injected overlays/effects" : "; UI baseline remains sole owner");
     }
-    NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
+    if (renderOverlay) {
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
+    }
     return true;
 }
 
@@ -215,6 +217,7 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
         g_TargetOrdinal.store(0, std::memory_order_release);
         g_TargetPresenterThreadId.store(0, std::memory_order_release);
         g_PreviousPresentAppendSucceeded.store(false, std::memory_order_release);
+        g_TopmostBatchOwnershipGranted.store(false, std::memory_order_release);
         g_LastObservedSignature = {};
         if (!routeEligible || !swapChain) {
             ReplaceRetainedPresentationObjects(nullptr, nullptr);
@@ -251,6 +254,10 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     g_TargetPresenterThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     g_TopmostBatchRouteReady.store(stableFrames >= 2, std::memory_order_release);
     g_PreviousPresentAppendSucceeded.store(t_PresenterFrameTrace.appendSucceeded, std::memory_order_release);
+    if (presentationChanged || !sameSignature || !t_PresenterFrameTrace.appendSucceeded) {
+        ce::dx12_ffx_suspend_overlay::ResetInlineCompletionProof(g_TopmostBatchSwapChain);
+        g_TopmostBatchOwnershipGranted.store(false, std::memory_order_release);
+    }
 
     if (!sameSignature || stableFrames == 2) {
         HookLogImportant(
@@ -264,16 +271,32 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     ResetPresenterFrameTrace();
 }
 
-bool DX12_IsNoCallbackFSRTopmostBatchActive() {
-    if (!g_TopmostBatchRouteReady.load(std::memory_order_acquire)) {
-        return false;
-    }
-    if (!g_PreviousPresentAppendSucceeded.load(std::memory_order_acquire)) {
-        return false;
-    }
+bool DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() {
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
-    return g_TopmostBatchSwapChain &&
-           ce::dx12_ffx_suspend_overlay::HasCompletedInlineRender(g_TopmostBatchSwapChain);
+    return ce::dx12_overlay_policy::HasCompletedNoCallbackTopmostActivation(
+        g_TopmostBatchRouteReady.load(std::memory_order_acquire),
+        g_PreviousPresentAppendSucceeded.load(std::memory_order_acquire),
+        g_TopmostBatchSwapChain &&
+            ce::dx12_ffx_suspend_overlay::HasCompletedInlineRender(g_TopmostBatchSwapChain));
+}
+
+bool DX12_IsNoCallbackFSRTopmostBatchActive() {
+    return g_TopmostBatchOwnershipGranted.load(std::memory_order_acquire) &&
+           DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership();
+}
+
+bool DX12_SetNoCallbackFSRTopmostBatchOwnership(bool ownsOverlay, const char* reason) {
+    std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
+    const bool grant = ce::dx12_overlay_policy::ShouldGrantNoCallbackTopmostOwnership(
+        DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership(), ownsOverlay);
+    const bool previous = g_TopmostBatchOwnershipGranted.exchange(grant, std::memory_order_acq_rel);
+    if (previous != grant) {
+        HookLogImportant(
+            "[OVERLAY LAYER] No-callback FSR final-batch overlay ownership %s (%s) — "
+            "the marker-only proof and UI-baseline retirement prevent transition double blending",
+            grant ? "GRANTED" : "REVOKED", reason && reason[0] ? reason : "unspecified");
+    }
+    return grant;
 }
 
 void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason) {
@@ -286,6 +309,7 @@ void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason) {
     g_TargetStableFrames.store(0, std::memory_order_release);
     g_TargetPresenterThreadId.store(0, std::memory_order_release);
     g_PreviousPresentAppendSucceeded.store(false, std::memory_order_release);
+    g_TopmostBatchOwnershipGranted.store(false, std::memory_order_release);
     g_LastObservedSignature = {};
     ReplaceRetainedPresentationObjects(nullptr, nullptr);
     ResetPresenterFrameTrace();

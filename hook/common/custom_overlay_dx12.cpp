@@ -592,9 +592,10 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     }
 
     size_t vbSize = vertices.size() * sizeof(DrawVertex);
-    // FFX proxy rendering pins the upload slot to the current swapchain-buffer index. Reuse of that index is
-    // AMD's proof that all prior work targeting the replacement buffer completed. Other routes keep the normal
-    // atomic ring so concurrent calls receive distinct slots.
+    // FFX owner-queue renderers pin the upload slot to the allocator/RTV slot whose own fence or inline marker
+    // proved it reusable. The UI-resource baseline normally maps that to a replacement-buffer index; the embedded
+    // final-batch route may select any completed slot while queue order serializes repeated target writes. Other
+    // routes keep the normal atomic ring so concurrent calls receive distinct slots.
     const int forcedSlot = nextForcedUploadSlot.exchange(-1, std::memory_order_acq_rel);
     int slot = forcedSlot >= 0 ? forcedSlot : frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
     DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);

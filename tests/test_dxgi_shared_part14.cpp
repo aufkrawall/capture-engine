@@ -228,37 +228,37 @@ TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
     EXPECT_LT(storage, guard);
 }
 
-// Session 20260812_153840 (Talos, DLSS FG -> FSR FG, Steam + RTSS active, build 0.1.5957):
-// the overlay stayed visible and GPU load kept updating, but the FPS readout and the frametime
-// graph froze at the switch. The log has ZERO DetourPresent lines after 15:39:29.889 while the
-// game keeps submitting (ECL heartbeats every ~2.7 s): once the native FSR runtime owns
-// presentation it presents from its own swapchain, so neither CE's Present detour nor its
-// swapchain wrapper is entered — and those are the only two places that advance the frame-time
-// history. The FFX present callback is CE's only per-frame present observation there.
-TEST(DXGISharedTest, FFXPresentCallbackAdvancesFrameTimingWhileTheRuntimeOwnsPresentation) {
+// Sessions 20260812_153840 and 20260814_035452 establish both sides of the ownership rule. When runtime-owned
+// FSR presentation does not re-enter CE through DXGI, the callback is the only observer and must advance timing.
+// Once CE has a deep-body Present observer below Steam/RTSS, callback plus Present samples the same output twice:
+// the overlay reports ~288 instead of ~144 FPS and the graph alternates tiny/normal frame times.
+TEST(DXGISharedTest, FFXFrameTimingHasExactlyOneDisplayedOutputObserver) {
     namespace fs = std::filesystem;
-    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx.cpp";
+    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx_metrics.cpp";
+    const fs::path callbackSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx.cpp";
     ASSERT_TRUE(fs::exists(ffxSource));
+    ASSERT_TRUE(fs::exists(callbackSource));
     const std::string ffx = ce::test_source::ReadFile(ffxSource);
+    const std::string callbackFfx = ce::test_source::ReadFile(callbackSource);
     ASSERT_FALSE(ffx.empty());
+    ASSERT_FALSE(callbackFfx.empty());
 
-    const size_t callback = ffx.find("uint32_t DX12_RenderOverlayViaFFXPresentCallback(");
+    const size_t callback = ffx.find("void DX12_UpdateFFXPresentCallbackFrameTiming(");
     ASSERT_NE(callback, std::string::npos);
-    const size_t metricsTick = ffx.find("perf->Update(PerfLogger::GetQpcUs());", callback);
+    const size_t deepObserver = ffx.find("DXGIShared::IsPresentInterceptedBelowForeignChain()", callback);
+    const size_t timingDecision = ffx.find("ShouldSampleFrameTimingFromFFXPresentCallback(", deepObserver);
+    const size_t timingGate = ffx.find("if (callbackSamplesFrameTiming) {", timingDecision);
+    const size_t metricsTick = ffx.find("metrics->Update(PerfLogger::GetQpcUs());", timingGate);
+    ASSERT_NE(deepObserver, std::string::npos);
+    ASSERT_NE(timingDecision, std::string::npos);
+    ASSERT_NE(timingGate, std::string::npos);
     ASSERT_NE(metricsTick, std::string::npos);
-
-    // Gated on runtime ownership: PerformanceMetrics::Update is a single-writer hot path, so
-    // when the runtime does NOT own presentation the Present detour must stay the only writer.
-    const size_t gate = ffx.rfind("if (ffxRuntimeOwnsNativeFSRPresentation) {", metricsTick);
-    ASSERT_NE(gate, std::string::npos);
-    EXPECT_LT(gate, metricsTick);
-    // Inside that gate's body: no closing brace between the gate and the tick. (A character
-    // distance was the original test; the [OVERLAY LAYER] site record now shares the block, so
-    // the structural check is the one that carries the meaning.)
-    EXPECT_EQ(ffx.find('}', gate + 1) > metricsTick, true);
+    EXPECT_LT(deepObserver, timingDecision);
+    EXPECT_LT(timingDecision, timingGate);
+    EXPECT_LT(timingGate, metricsTick);
 
     // The FG-state publication stays where it was — it is a different concern from the tick.
-    EXPECT_NE(ffx.find("PublishOverlayFGMetrics(perf, plan", metricsTick), std::string::npos);
+    EXPECT_NE(callbackFfx.find("PublishOverlayFGMetrics(perf, plan"), std::string::npos);
 }
 
 // Draw order in a dxgi!Present entry chain is the reverse of hook order: every participant

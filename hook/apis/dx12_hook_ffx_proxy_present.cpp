@@ -143,13 +143,13 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
         composited = DX12_CompositeOverlayOntoSuspendBackbuffer(
             proxy, protectedStartupBackbufferRoute ? "protected-startup-backbuffer" : "suspend-backbuffer");
     } else {
-        // Once the learned final ECL route has GPU completion proof, it renders CE after every foreign
-        // overlay/effect on both real and generated Presents. Retire prior CE pixels from a CE-owned substitute
-        // exactly once before yielding, then keep its registration alive. If the batch signature changes or
-        // marker proof is lost, normal UI refresh resumes immediately.
-        const bool topmostBatchActive = DX12_IsNoCallbackFSRTopmostBatchActive();
+        // A marker-only append first proves the learned final ECL route without blending CE a second time.
+        // Only after that marker completes and this prework retires the old UI pixels may the same-batch route
+        // draw. Revoking the grant before the UI baseline resumes also closes the completion-between-prework-
+        // and-ECL race: every output has exactly one CE overlay owner.
+        const bool topmostBatchReady = DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership();
         static std::atomic<bool> s_uiBaselineRetiredForTopmost{false};
-        if (topmostBatchActive) {
+        if (topmostBatchReady) {
             topmostBatchOwnsOverlay = s_uiBaselineRetiredForTopmost.load(std::memory_order_acquire);
             if (!topmostBatchOwnsOverlay) {
                 topmostBatchOwnsOverlay =
@@ -161,6 +161,10 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
         } else {
             s_uiBaselineRetiredForTopmost.store(false, std::memory_order_release);
         }
+        topmostBatchOwnsOverlay = DX12_SetNoCallbackFSRTopmostBatchOwnership(
+            topmostBatchOwnsOverlay,
+            topmostBatchOwnsOverlay ? "UI baseline retired after activation proof"
+                                    : "UI baseline owns this output");
         composited = topmostBatchOwnsOverlay ||
                      DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy);
         if (composited) {

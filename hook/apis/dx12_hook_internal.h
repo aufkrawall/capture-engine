@@ -236,6 +236,10 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
 
 bool DX12_IsNoCallbackFSRTopmostBatchActive();
 
+bool DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership();
+
+bool DX12_SetNoCallbackFSRTopmostBatchOwnership(bool ownsOverlay, const char* reason);
+
 void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
 
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags, ce::ffx_api::Resource* ceSubstitute, DX12FFXUiOverlayTargetPreparation* preparation);
@@ -261,6 +265,9 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
                                                               ID3D12CommandQueue* submitQueue);
 bool DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof();
 void DX12_ResetBelowForeignChainFSRTopmostSubmitProof(const char* reason);
+void DX12_UpdateFFXPresentCallbackFrameTiming(PerformanceMetrics* metrics,
+                                              bool runtimeOwnsNativeFSRPresentation,
+                                              bool callbackYieldsToTopmostRoute);
 
 bool DX12_IsFFXProxyPresentHookInstalled();
 

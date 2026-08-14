@@ -469,6 +469,7 @@ void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
 
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided) {
     DX12_ResetBelowForeignChainFSRTopmostSubmitProof("native FSR callback routing changed");
+    DX12_ClearNoCallbackFSRTopmostBatch("native FSR callback routing changed");
     const bool previousInternalNoCallbackComposition =
         dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
     const bool runtimeOwnsLivePresentPath = dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath();
@@ -753,7 +754,6 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 logCount + 1);
         }
     }
-
     const bool nativeNoCallbackComposition = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
     const bool belowForeignTopmostSubmitProven = DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof();
     const bool completedNoCallbackTopmostBatch = DX12_IsNoCallbackFSRTopmostBatchActive();
@@ -778,14 +778,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-        if (ffxRuntimeOwnsNativeFSRPresentation) {
-            if (!callbackYieldsToTopmostRoute) {
-                // Runtime-only fallback: this callback is the sole frame observer when no proven later route exists.
-                DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
-                                                     "DX12_RenderOverlayViaFFXPresentCallback");
-                perf->Update(PerfLogger::GetQpcUs());
-            }
-        }
+        DX12_UpdateFFXPresentCallbackFrameTiming(perf, ffxRuntimeOwnsNativeFSRPresentation,
+                                                 callbackYieldsToTopmostRoute);
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
         ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
                                                      g_FGCompat.GetFGMultiplier(),

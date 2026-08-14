@@ -17,8 +17,8 @@ struct RenderRequest {
     ID3D12Resource* targetResource = nullptr;
     D3D12_RESOURCE_STATES targetState = D3D12_RESOURCE_STATE_PRESENT;
     bool clearTransparent = false;
-    // False records only the requested clear/transitions. The no-callback FSR handoff uses this once to
-    // remove CE's previous pixels from a CE-owned substitute before the later same-batch route takes over.
+    // False records only the requested clear/transitions, or only the inline completion marker when clear is
+    // also false. The FSR handoffs use a marker-only submit to prove the new route before it may blend pixels.
     bool renderOverlay = true;
     const char* routeName = "suspend-backbuffer";
     SubmitCommandListCallback submitCommandList = nullptr;
@@ -36,14 +36,15 @@ struct RenderRequest {
 // so queue order provides the handoff into Present without a CPU wait or foreign-queue access.
 bool Render(const RenderRequest& request);
 
-// True only after at least one inline-marker render was submitted for this swapchain key and every such
-// render has reached its command-list tail on the GPU. Used to hand overlay ownership away from the FFX UI
-// texture only after the topmost batch route has real completion proof.
+// Latches true after at least one inline-marker submission for this swapchain key reaches its command-list tail
+// on the GPU. Later in-flight outputs do not erase that route proof; their allocator/upload slots are guarded
+// independently. Used to hand overlay ownership away from the FFX UI texture only after real GPU completion.
 bool HasCompletedInlineRender(void* proxySwapChain);
 
-// True while a submitted inline render has not reached its tail marker. The final-batch path does not append
-// another list during this window; proxy prework keeps the UI baseline visible instead of risking double blend.
-bool HasPendingInlineRender(void* proxySwapChain);
+// Invalidates only the route-activation latch when the learned ECL signature changes or an expected append is
+// missed. In-flight slot markers and retained resources remain intact; the next route must complete a fresh
+// marker-only probe before it can retire the UI baseline again.
+void ResetInlineCompletionProof(void* proxySwapChain);
 
 // Retire resources tied to one proxy when its FFX swapchain context is destroyed/rebound. In-flight resources
 // remain referenced until their queue fence or inline marker completes; this never waits on the Present thread.
