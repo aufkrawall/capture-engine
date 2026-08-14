@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.5299)
+(current `HEAD` build: 0.1.6060).
+
 ### New
 
 - Added `[ThirdParty]` configuration to load ReShade, OptiScaler, and Special K from user-supplied DLL paths
