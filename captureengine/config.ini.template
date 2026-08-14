@@ -65,6 +65,9 @@ wgc_smoothness_floor_ms=auto
 ; smaller 8-bit pool when an R10 pool is unavailable. bit_depth=10 still requires
 ; a 10-bit or FP16 source.
 wgc_allow_lossy_bgra8_pool=false
+; Same-device capture usually has the lowest overhead. false uses a dedicated
+; capture device and the split-device handoff (diagnostic fallback path).
+wgc_same_device_capture=true
 
 [Output]
 ; Empty paths use the captures folder next to CaptureEngine.exe. Relative paths
@@ -565,8 +568,6 @@ crash_dump_dir=
 wgc_skip_split_device_flush=false
 ; off, mandatory, or full. Changes WGC video-memory reservation experiments.
 wgc_video_memory_reservation=off
-; Same-device capture usually has the lowest overhead.
-wgc_same_device_capture=true
 
 ; Passive and staged injected-overlay tests used by developers.
 overlay_observer_only=false
@@ -662,6 +663,12 @@ dx12_focus_analysis=false
 ;DLSS.dlss_fg_factor=3x
 ;DLSS.dlss_fg_preset=B
 ;DLSS.dlss_debug_overlay=on
+; Third-party tool paths can be overridden per application. Values follow the
+; same file/folder rules as [ThirdParty] above; empty uses the global path.
+; Changing them requires relaunching the game.
+;ThirdParty.reshade_dll_path=C:\tools\reshade
+;ThirdParty.optiscaler_dll_path=C:\tools\OptiScaler.dll
+;ThirdParty.specialk_dll_path=C:\tools\specialk
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
 ;DesktopOverlay.pos=0

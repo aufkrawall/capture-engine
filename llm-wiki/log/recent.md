@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-08-15 - Fresh config template: per-profile ThirdParty overrides + wgc_same_device_capture canonical home
+
+- `captureengine/config.ini.template`'s `[Profile.My Game]` example now lists the three per-application
+  `ThirdParty.*_dll_path` override keys (file/folder rules as in `[ThirdParty]`; an empty profile value
+  inherits the global path and cannot disable a globally configured tool per app). `tests/test_config.cpp`
+  template-parity assertions cover the new example lines.
+- `wgc_same_device_capture` was sitting under `[Diagnostics]` in the template while the loader reads it from
+  `[WGC]` (legacy `[General]`), so the fresh-config key was dead. Moved it to `[WGC]`; parity test now asserts
+  it appears inside `[WGC]` and not in the `[Diagnostics]` span.
+
 ### 2026-08-14 - Test-app archives ship a default testappconfig.ini in the x64 and x86 folders
 
 - `build/packages/testapps.7z` now contains `testappconfig.ini` both in the `testapps/` root (x64)

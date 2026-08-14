@@ -109,6 +109,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(applicationProfilesHeading, diagnosticsSection);
     EXPECT_GT(profileExample, diagnosticsSection);
+    const size_t wgcSection = generatedText.find("\n[WGC]\n");
+    ASSERT_NE(wgcSection, std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_same_device_capture=true", wgcSection), std::string::npos);
+    EXPECT_EQ(generatedText.substr(diagnosticsSection, applicationProfilesHeading - diagnosticsSection)
+                  .find("wgc_same_device_capture"),
+              std::string::npos);
     EXPECT_NE(generatedText.find(";video_capture=inherit", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";monitor=window", profileExample), std::string::npos);
     EXPECT_EQ(generatedText.find(";video_capture=global", profileExample), std::string::npos);
@@ -161,6 +167,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_factor=3x", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_preset=B", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_debug_overlay=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";ThirdParty.reshade_dll_path=", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";ThirdParty.optiscaler_dll_path=", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";ThirdParty.specialk_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
     EXPECT_NE(generatedText.find("Choosing inject or always can trigger anti-cheat protection"), std::string::npos);
