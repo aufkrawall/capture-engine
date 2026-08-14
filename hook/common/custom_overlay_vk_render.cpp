@@ -454,7 +454,7 @@ bool VulkanBackend::CreateFontTexture(int width, int height, const uint8_t* data
     // Create staging buffer
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-    VkDeviceSize imageSize = width * height;
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height;
 
     VkBufferCreateInfo stagingInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     stagingInfo.size = imageSize;

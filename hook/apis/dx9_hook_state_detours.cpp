@@ -244,10 +244,11 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
             record->setTextureHooked = true;
             if (!dx9_hook_oSetTexture)
                 dx9_hook_oSetTexture = original;
-            HookLogImportant("DX9: SetTexture sampler hook installed for vtable=%p (slot=%p)", vtable, vtable[65]);
+            HookLogImportant("DX9: SetTexture sampler hook installed for vtable=%p (slot=%p)", vtable,
+                             (void*)vtable[65]);
         } else {
             HookLogImportant("DX9: SetTexture hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
-                             vtable[65]);
+                             (void*)vtable[65]);
         }
     }
 
@@ -260,10 +261,11 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
             record->getSamplerStateHooked = true;
             if (!dx9_hook_oGetSamplerState)
                 dx9_hook_oGetSamplerState = original;
-            HookLogImportant("DX9: Logical GetSamplerState hook installed for vtable=%p (slot=%p)", vtable, vtable[68]);
+            HookLogImportant("DX9: Logical GetSamplerState hook installed for vtable=%p (slot=%p)", vtable,
+                             (void*)vtable[68]);
         } else {
-            HookLogImportant("DX9: GetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
-                             vtable[68]);
+            HookLogImportant("DX9: GetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
+                             (int)status, (void*)vtable[68]);
         }
     }
 
@@ -276,10 +278,11 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
             record->setSamplerStateHooked = true;
             if (!dx9_hook_oSetSamplerState)
                 dx9_hook_oSetSamplerState = original;
-            HookLogImportant("DX9: SetSamplerState hook installed for vtable=%p (slot=%p)", vtable, vtable[69]);
+            HookLogImportant("DX9: SetSamplerState hook installed for vtable=%p (slot=%p)", vtable,
+                             (void*)vtable[69]);
         } else {
-            HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
-                             vtable[69]);
+            HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
+                             (int)status, (void*)vtable[69]);
         }
     }
 

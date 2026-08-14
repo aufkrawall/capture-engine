@@ -333,7 +333,7 @@ void RenderFrame() {
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += frameIndex * g_RtvDescriptorSize;
+    rtv.ptr += static_cast<UINT64>(frameIndex) * g_RtvDescriptorSize;
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const float bg[] = {state.color.r / 255.0f, state.color.g / 255.0f, state.color.b / 255.0f, 1.0f};

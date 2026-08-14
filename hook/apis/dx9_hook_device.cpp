@@ -171,12 +171,13 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
                 VTableHook::Create(&vtable[17], (void*)&DetourPresent, (void**)&dx9_hook_oPresent);
             if (presentStatus == VTableHook::Success) {
                 LogDirect("Present hook SUCCESS on vtable %p, vtable[17]=%p", vtable, (void*)vtable[17]);
-                EarlyLog("DX9: Present hook installed (VTable) at vtable[17]=%p", vtable[17]);
+                EarlyLog("DX9: Present hook installed (VTable) at vtable[17]=%p", (void*)vtable[17]);
                 HookLogImportant("DX9: Present hook installed (vtable=%p, vtable[17]=%p)", vtable, (void*)vtable[17]);
                 s_hookedVtables.insert(vtable);
             } else {
                 LogDirect("Present hook FAILED on vtable %p, status=%d", vtable, (int)presentStatus);
-                EarlyLog("DX9: Present hook FAILED (status=%d, vtable[17]=%p)", (int)presentStatus, vtable[17]);
+                EarlyLog("DX9: Present hook FAILED (status=%d, vtable[17]=%p)", (int)presentStatus,
+                         (void*)vtable[17]);
                 HookLogImportant("DX9: Present hook FAILED (status=%d, vtable=%p)", (int)presentStatus, vtable);
             }
         } else {
@@ -188,9 +189,9 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
     if (!dx9_hook_oReset) {
         VTableHook::Status resetStatus = VTableHook::Create(&vtable[16], (void*)&DetourReset, (void**)&dx9_hook_oReset);
         if (resetStatus == VTableHook::Success) {
-            EarlyLog("DX9: Reset hook installed at vtable[16]=%p", vtable[16]);
+            EarlyLog("DX9: Reset hook installed at vtable[16]=%p", (void*)vtable[16]);
         } else {
-            EarlyLog("DX9: Reset hook FAILED (status=%d, vtable[16]=%p)", (int)resetStatus, vtable[16]);
+            EarlyLog("DX9: Reset hook FAILED (status=%d, vtable[16]=%p)", (int)resetStatus, (void*)vtable[16]);
         }
     }
 
@@ -198,10 +199,11 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
     if (!dx9_hook_oEndScene) {
         VTableHook::Status esStatus = VTableHook::Create(&vtable[42], (void*)&DetourEndScene, (void**)&dx9_hook_oEndScene);
         if (esStatus == VTableHook::Success) {
-            EarlyLog("DX9: EndScene hook installed at vtable[42]=%p", vtable[42]);
-            HookLogImportant("DX9: EndScene hook installed (vtable[42]=%p)", vtable[42]);
+            EarlyLog("DX9: EndScene hook installed at vtable[42]=%p", (void*)vtable[42]);
+            HookLogImportant("DX9: EndScene hook installed (vtable[42]=%p)", (void*)vtable[42]);
         } else {
-            HookLogImportant("DX9: EndScene hook FAILED (status=%d, vtable[42]=%p)", (int)esStatus, vtable[42]);
+            HookLogImportant("DX9: EndScene hook FAILED (status=%d, vtable[42]=%p)", (int)esStatus,
+                             (void*)vtable[42]);
         }
     }
 
@@ -217,8 +219,8 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
         if (texStageStatus == VTableHook::Success) {
             EarlyLog("DX9: SetTextureStageState hook installed");
         } else {
-            HookLogImportant("DX9: SetTextureStageState hook FAILED (status=%d, vtable[67]=%p)", (int)texStageStatus,
-                             vtable[67]);
+            HookLogImportant("DX9: SetTextureStageState hook FAILED (status=%d, vtable[67]=%p)",
+                             (int)texStageStatus, (void*)vtable[67]);
         }
     }
 

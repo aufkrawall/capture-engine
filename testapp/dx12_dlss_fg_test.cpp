@@ -650,7 +650,7 @@ void Render() {
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
+    rtvHandle.ptr += static_cast<UINT64>(frameIndex) * g_RtvDescriptorSize;
     const float clearColor[] = {0.1f, 0.1f, 0.1f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 

@@ -79,13 +79,13 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
         (hasPath && ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath))) {
       if (hasPath) {
         HookLogImportant("Loader: runtime module loaded: %s -> %s (base=%p size=0x%zX%s)", base,
-                         narrowPath, data->DllBase, data->SizeOfImage,
+                         narrowPath, data->DllBase, static_cast<size_t>(data->SizeOfImage),
                          ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath)
                              ? ", NGX model repository"
                              : "");
       } else {
         HookLogImportant("Loader: runtime module loaded: %s (base=%p size=0x%zX, path unavailable)",
-                         base, data->DllBase, data->SizeOfImage);
+                         base, data->DllBase, static_cast<size_t>(data->SizeOfImage));
       }
     }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {

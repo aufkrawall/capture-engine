@@ -134,7 +134,7 @@ if (rtvOverride) {
         return;
     }
     rtvHandle = dx12_hook_g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += bufferIdx * dx12_hook_g_State.rtvDescriptorSize;
+    rtvHandle.ptr += static_cast<UINT64>(bufferIdx) * dx12_hook_g_State.rtvDescriptorSize;
 }
 
 g_OverlayAdapter.SetDX12RenderTarget(cmdList, (void*)rtvHandle.ptr);

@@ -571,7 +571,7 @@ void Render() {
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
+    rtvHandle.ptr += static_cast<UINT64>(frameIndex) * g_RtvDescriptorSize;
     dx12_fg_switch_test_g_PresentBlit.Render(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), rtvHandle,
                          static_cast<UINT>(dx12_fg_switch_test_g_WindowWidth), static_cast<UINT>(dx12_fg_switch_test_g_WindowHeight), frameIndex,
                          static_cast<uint32_t>(dx12_fg_switch_test_g_FrameIdCounter));

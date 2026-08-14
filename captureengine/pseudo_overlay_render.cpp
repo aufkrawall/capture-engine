@@ -451,7 +451,7 @@ void PseudoOverlay::UpdateOverlay() {
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
-                        memset(pBits, 0, fullS * fullS * 4);
+                        memset(pBits, 0, static_cast<size_t>(fullS) * fullS * 4);
 
                         HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
                         HBRUSH hBrush = CreateSolidBrush(curCol);
@@ -487,7 +487,7 @@ void PseudoOverlay::UpdateOverlay() {
                     HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
-                        memset(pBits, 0, fullS * fullS * 4);
+                        memset(pBits, 0, static_cast<size_t>(fullS) * fullS * 4);
                         static_cast<DWORD*>(pBits)[pixY * fullS + pixX] = 0xFFFFFFFFu;
 
                         POINT ptDst = {winX, winY};
