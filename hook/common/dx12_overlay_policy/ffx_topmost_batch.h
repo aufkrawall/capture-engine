@@ -46,4 +46,13 @@ inline bool ShouldAppendTopmostOverlayToFinalECLBatch(
            commandListCount < combinedBatchCapacity;
 }
 
+inline bool ShouldYieldFFXPresentCallbackToTopmostRoute(
+    bool nativeNoCallbackComposition, bool belowForeignTopmostSubmitProven,
+    bool completedNoCallbackTopmostBatch) {
+    // App-callback FSR yields only after the deep Present route has submitted successfully in this routing epoch.
+    // No-callback FSR needs the stronger learned final-batch completion proof before retiring either baseline.
+    return nativeNoCallbackComposition ? completedNoCallbackTopmostBatch
+                                       : belowForeignTopmostSubmitProven;
+}
+
 }  // namespace ce::dx12_overlay_policy

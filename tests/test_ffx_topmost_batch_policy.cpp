@@ -13,6 +13,7 @@ namespace {
 using ce::dx12_overlay_policy::AdvanceFinalECLBatchSignatureStability;
 using ce::dx12_overlay_policy::FinalECLBatchSignature;
 using ce::dx12_overlay_policy::ShouldAppendTopmostOverlayToFinalECLBatch;
+using ce::dx12_overlay_policy::ShouldYieldFFXPresentCallbackToTopmostRoute;
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
@@ -63,6 +64,21 @@ TEST(FFXTopmostBatchPolicyTest, RefusesInvalidOrUnrepresentableBatch) {
     EXPECT_FALSE(ShouldAppendTopmostOverlayToFinalECLBatch(true, 2, target, 0x1234, 0x9876, 1, 129, 129));
 }
 
+TEST(FFXTopmostBatchPolicyTest, CallbackYieldsOnlyToAProvenLaterTopmostRoute) {
+    EXPECT_FALSE(ShouldYieldFFXPresentCallbackToTopmostRoute(
+        /*nativeNoCallbackComposition=*/false, /*belowForeignTopmostSubmitProven=*/false,
+        /*completedNoCallbackTopmostBatch=*/false));
+    EXPECT_TRUE(ShouldYieldFFXPresentCallbackToTopmostRoute(
+        /*nativeNoCallbackComposition=*/false, /*belowForeignTopmostSubmitProven=*/true,
+        /*completedNoCallbackTopmostBatch=*/false));
+    EXPECT_FALSE(ShouldYieldFFXPresentCallbackToTopmostRoute(
+        /*nativeNoCallbackComposition=*/true, /*belowForeignTopmostSubmitProven=*/true,
+        /*completedNoCallbackTopmostBatch=*/false));
+    EXPECT_TRUE(ShouldYieldFFXPresentCallbackToTopmostRoute(
+        /*nativeNoCallbackComposition=*/true, /*belowForeignTopmostSubmitProven=*/false,
+        /*completedNoCallbackTopmostBatch=*/true));
+}
+
 TEST(FFXTopmostBatchSourceTest, OverlayIsLastInOneExistingExecuteCommandListsCall) {
     const std::string source = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
     ASSERT_FALSE(source.empty());
@@ -99,6 +115,37 @@ TEST(FFXTopmostBatchSourceTest, FallbackAndInlineRenderersCoexistAndHandoffWitho
     EXPECT_NE(renderer.find("WriteBufferImmediate"), std::string::npos);
     EXPECT_NE(proxy.find("active-ui-resource-retire-ce-pixels"), std::string::npos);
     EXPECT_NE(proxy.find("request.renderOverlay = !clearOnly;"), std::string::npos);
+}
+
+TEST(FFXTopmostBatchSourceTest, CallbackTransfersDrawAndFrameTimingOwnershipTogether) {
+    const std::string source = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(ownerQueue.empty());
+
+    const size_t decision = source.find("const bool callbackYieldsToTopmostRoute =");
+    const size_t draw = source.find(
+        "if (!callbackYieldsToTopmostRoute && RenderOverlayViaFFXPresentCallback(desc))", decision);
+    const size_t timingGate = source.find("if (!callbackYieldsToTopmostRoute) {", draw);
+    const size_t timingUpdate = source.find("perf->Update(PerfLogger::GetQpcUs());", timingGate);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(draw, std::string::npos);
+    ASSERT_NE(timingGate, std::string::npos);
+    ASSERT_NE(timingUpdate, std::string::npos);
+    EXPECT_LT(decision, draw);
+    EXPECT_LT(draw, timingGate);
+    EXPECT_LT(timingGate, timingUpdate);
+
+    // App-callback proof is one-shot: every successful deep submit arms exactly the next callback. If the
+    // Present route disappears, no stale latch can suppress later callback draws or frame-time samples.
+    EXPECT_NE(source.find("DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof()", decision - 300),
+              std::string::npos);
+    EXPECT_NE(ownerQueue.find(
+                  "g_BelowForeignChainFSRTopmostSubmitProven.exchange(false, std::memory_order_acq_rel)"),
+              std::string::npos);
+    EXPECT_NE(ownerQueue.find(
+                  "g_BelowForeignChainFSRTopmostSubmitProven.store(true, std::memory_order_release)"),
+              std::string::npos);
 }
 
 }  // namespace

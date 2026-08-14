@@ -685,7 +685,7 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the native FSR FG app-callback route re-created the same symptom one layer deeper. Session `20260813_061015` (Talos + Steam overlay + official FFX FSR FG, build 0.1.5995) shows why: CE's FFX present callback composites the overlay into the runtime output buffer, the runtime presents that buffer through DXGI afterwards, and Steam's entry hook composites on top of it. CE's deep body hook below the foreign chain runs on that same present every frame — the `[OVERLAY LAYER] deep-body-below-foreign-chain` note fired — but `ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain` routed the actual draw away because the runtime-owned native-FSR path must normally keep CE's separate GPU work suppressed.
 
 - **Fix**: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR` (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`, wired from `DrawSkipAndCounters` in `hook/apis/dx12_hook_process_session_draw_main.cpp`). When CE is below a foreign chain, at least one tracked overlay is loaded, the FFX present callback is live and un-stalled, and none of the no-callback/teardown/protected-startup/deviceremoved states apply, the deep body hook draws a second overlay composite onto the presented swapchain's exact current backbuffer on the swapchain-owning queue. In the repro that is the queue Steam's own ECL went through (`scQueue=000001A1FA0B1440`), so queue order is Steam -> CE and CE's overlay is topmost.
-- **Why it is safe where 0.1.5970-0.1.5972 were not**: the draw uses `dx12_ffx_suspend_overlay` — the exact-current-buffer RTV per frame (the normal backend's preserved RTV heap can still reference the pre-FG buffers, the stale-target shape of the 0.1.5972 FG-off device removal), per-slot in-flight refusal without waiting/overwriting, and retained target resources until completion proof. It is the swapchain-owning queue (not the idle game queue of the 0.1.5970 save-load "never landed" case). The FFX callback draw stays as the guaranteed baseline (no yield), so a refusal can only leave today's behavior, never hide the overlay.
+- **Why it is safe where 0.1.5970-0.1.5972 were not**: the draw uses `dx12_ffx_suspend_overlay` — the exact-current-buffer RTV per frame (the normal backend's preserved RTV heap can still reference the pre-FG buffers, the stale-target shape of the 0.1.5972 FG-off device removal), per-slot in-flight refusal without waiting/overwriting, and retained target resources until completion proof. It is the swapchain-owning queue (not the idle game queue of the 0.1.5970 save-load "never landed" case). The callback baseline remains until the first successful deep submit; each success arms exactly the next callback to yield, and that callback consumes the proof. If deep Presents stop or a submit is refused, no stale latch survives to suppress the following callback.
 - **Route value**: `DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR` (`below-foreign-chain-runtime-owned-fsr`); the layering diagnostic is `[OVERLAY LAYER] ... site=deep-body-below-foreign-chain-runtime-owned-fsr ...`. The FG-UI-composition `[OVERLAY LAYER]` note no longer claims the callback is the only runtime-safe channel unconditionally.
 - **Explicitly excluded**: no-callback internal composition (the documented ffxQuery wedge / 0x887A002B boundary), explicit FSR-off teardown, stalled callbacks (the existing stall fallback rules own that state), protected startup quiescence, DLSS/Streamline, and any frame where the routed queue is not the swapchain queue.
 - **Tests**: `tests/test_ffx_below_foreign_chain_policy.cpp`. Verify gate passed on 0.1.5999. **Open**: needs the user's Talos FSR-FG + Steam run to confirm topmost layering and no device removal across the FG switch matrix; GTA's historical app-callback ACCESS_DENIED boundary must be re-checked there too.
@@ -698,7 +698,7 @@ The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the na
   `hook/apis/dx12_hook_fg_state.cpp`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`); in-flight states stay retained
   until their own fence completes. See the guardrails invariant and `log/recent.md` for the dump evidence.
 
-## IMPLEMENTED locally: no-callback FSR learns the final GPU batch and joins it last (2026-08-14)
+## VALIDATED: no-callback FSR learns the final GPU batch and joins it last (2026-08-14)
 
 Session `installed/captureengine/logs/20260814_015902` is the distinct no-app-callback topology
 (`internalNoCallback=1`). Proxy-Present prework correctly draws CE into the registered/substituted FFX UI texture
@@ -718,10 +718,19 @@ submit later ECL batches before the deep system Present, so the UI-resource rout
   marker completes. Fence-based UI state and inline-marker state coexist. Before yielding, a CE-owned substitute is
   cleared transparent once so the two routes cannot double-alpha-blend; game-owned UI is never erased. Any lost
   signature or completion proof resumes the UI baseline immediately.
+- **Hardware result / follow-up**: session `20260814_024908` (0.1.6049, Steam + RTSS) and the user's visual check
+  confirm that CE is topmost under FSR FG. The same session exposed a separate ownership overlap: the FFX callback
+  and later topmost route each drew at about 144 outputs/s, so a translucent panel was blended twice. Both paths
+  also called `PerformanceMetrics::Update`, producing about 288 FPS while the CSV QPC cadence remained about 144/s.
+  The callback now yields its CE draw and frame-time sample together: app-callback FSR consumes one successful deep
+  topmost-submit proof per output; no-callback FSR requires the completed inline-marker proof. FG publication remains
+  independent (the session correctly published about 72.6 base / 145.2 output), and any lost proof restores the
+  callback fallback without a timer.
 - **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`,
   `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`, and
-  `tests/test_ffx_topmost_batch_policy.cpp`. Focused FSR/ECL/teardown tests pass. **Open**: on-hardware validation of
-  FSR FG with Steam, RTSS, and ReShade, plus all FSR/off/DLSS switch directions and teardown/device health.
+  `tests/test_ffx_topmost_batch_policy.cpp`. Focused tests and the complete `--verify` gate pass on 0.1.6050
+  (full native suite, Python self-tests, lint ratchets, x64 ASan/UBSan). **Open**: fresh on-hardware ReShade validation
+  plus the full FSR/off/DLSS switch matrix and teardown/device-health checks after the ownership handoff.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.

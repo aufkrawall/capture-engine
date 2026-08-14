@@ -1,11 +1,5 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
-
-static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason);  // defined below
-
-
-#include "dx12_hook_internal.h"
-
 static bool KnownDLSSFGModuleLoaded() {
     if (dx12_hook_g_KnownDLSSFGModuleSeen.load(std::memory_order_acquire)) {
         return true;
@@ -474,6 +468,7 @@ void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
 }
 
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided) {
+    DX12_ResetBelowForeignChainFSRTopmostSubmitProof("native FSR callback routing changed");
     const bool previousInternalNoCallbackComposition =
         dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
     const bool runtimeOwnsLivePresentPath = dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath();
@@ -516,6 +511,7 @@ void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeA
 }
 
 void DX12_OnNativeFSRFrameGenerationContextsDestroyed() {
+    DX12_ResetBelowForeignChainFSRTopmostSubmitProof("native FSR contexts destroyed");
     ForceClearNativeFSRInternalNoCallbackComposition("native FSR contexts destroyed");
     DX12_UnregisterNativeFSRSwapchainPresentationQueue(nullptr, "all native FSR contexts destroyed");
     // The destroyed contexts are the strong half of the "stronger off signal":
@@ -537,7 +533,8 @@ void DX12_OnNativeFSRFrameGenerationContextsDestroyed() {
 
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge) {
     static std::atomic<int> s_nativeFSROffRuntimeTeardownLogCount{0};
-
+    DX12_ResetBelowForeignChainFSRTopmostSubmitProof(
+        enabled ? "native FSR epoch enabled" : "native FSR epoch disabled");
     if (enabled) {
         g_RenderWatchdog.SetRuntimePresentationMonitor(true);
         s_nativeFSROffRuntimeTeardownLogCount.store(0, std::memory_order_release);
@@ -724,11 +721,6 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode),
                 composeLogCount + 1);
         }
-        // WEDGE PRECURSOR DIAGNOSTIC: self-composing on AMD's command list while AMD owns the native-FSR
-        // presentation is the documented ffxQuery-wedge path (session 20260615_021242). With the
-        // app->null-callback toggle fix this should no longer be reached (CE's bridge keeps a delegate),
-        // so if it fires for a runtime-owned FSR it is the high-risk case — log the resource states once
-        // so the exact desc encoding (native vs FFX) is attributable from the log alone.
         if (ffxRuntimeOwnsNativeFSRPresentation) {
             static std::atomic<int> s_ffxComposeWedgeRiskLogCount{0};
             const int wedgeLogCount = s_ffxComposeWedgeRiskLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -743,10 +735,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             }
         }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
-        // GPU-breadcrumb the no-app-callback self-compose path (recorded into AMD's command list, which AMD
-        // executes after this callback returns). On freeze: start=reached the callback, rt=self-compose copy
-        // executed, draw=overlay executed. If all reach the latest seq but ffxQuery still wedges, even AMD's
-        // correct-state path can't host CE work; if they stop, that op is where AMD's GPU hangs.
+        // Breadcrumb the self-compose path on AMD's command list for freeze attribution.
         BeginOverlayGpuBreadcrumbFrame(static_cast<ID3D12Device*>(desc->device));
         WriteOverlayGpuBreadcrumb(cmdList, kOverlayBcStart);
         CopyFFXPresentSourceToOutput(cmdList, desc);
@@ -765,7 +754,23 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         }
     }
 
-    if (RenderOverlayViaFFXPresentCallback(desc)) {
+    const bool nativeNoCallbackComposition = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+    const bool belowForeignTopmostSubmitProven = DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof();
+    const bool completedNoCallbackTopmostBatch = DX12_IsNoCallbackFSRTopmostBatchActive();
+    const bool callbackYieldsToTopmostRoute =
+        ce::dx12_overlay_policy::ShouldYieldFFXPresentCallbackToTopmostRoute(
+            nativeNoCallbackComposition, belowForeignTopmostSubmitProven, completedNoCallbackTopmostBatch);
+    static std::atomic<bool> s_callbackYieldedToTopmostRoute{false};
+    if (s_callbackYieldedToTopmostRoute.exchange(callbackYieldsToTopmostRoute, std::memory_order_acq_rel) !=
+        callbackYieldsToTopmostRoute) {
+        HookLogImportant(
+            "[OVERLAY LAYER] FFX present-callback %s the proven topmost Present route "
+            "(noCallback=%d belowForeignSubmitProven=%d finalBatchComplete=%d) — draw and FPS-sample ownership move together",
+            callbackYieldsToTopmostRoute ? "YIELDS TO" : "RESUMES FROM", nativeNoCallbackComposition ? 1 : 0,
+            belowForeignTopmostSubmitProven ? 1 : 0, completedNoCallbackTopmostBatch ? 1 : 0);
+    }
+
+    if (!callbackYieldsToTopmostRoute && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     }
     WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);
@@ -773,17 +778,13 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-        // While the runtime owns presentation, neither DetourPresent nor CWrapDXGISwapChain is
-        // entered, and those are the only other places that advance the frame-time history —
-        // so this callback must, or the overlay draws a frozen FPS and a static graph (Talos
-        // DLSS FG -> FSR FG, session 20260812_153840). Gated on ownership because
-        // PerformanceMetrics::Update is a single-writer hot path.
         if (ffxRuntimeOwnsNativeFSRPresentation) {
-            // Layering: composited into the runtime's output buffer before the runtime's own DXGI
-            // present, so overlays patching that present land on top (session 20260812_202746).
-            DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
-                                                 "DX12_RenderOverlayViaFFXPresentCallback");
-            perf->Update(PerfLogger::GetQpcUs());
+            if (!callbackYieldsToTopmostRoute) {
+                // Runtime-only fallback: this callback is the sole frame observer when no proven later route exists.
+                DXGIShared::NoteOverlayCompositeSite(DXGIShared::kFGRuntimeUiCompositeSite,
+                                                     "DX12_RenderOverlayViaFFXPresentCallback");
+                perf->Update(PerfLogger::GetQpcUs());
+            }
         }
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
         ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),

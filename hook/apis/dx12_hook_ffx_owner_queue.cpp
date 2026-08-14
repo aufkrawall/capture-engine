@@ -2,6 +2,21 @@
 #include "dx12_hook_ffx_shared.h"
 #include "../../common/log_meter.h"
 
+static std::atomic<bool> g_BelowForeignChainFSRTopmostSubmitProven{false};
+
+bool DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof() {
+    // One successful deep Present submit transfers exactly the next callback output. The following deep Present
+    // replenishes the proof; if Presents cease, the callback resumes on its next entry without a timer/stale latch.
+    return g_BelowForeignChainFSRTopmostSubmitProven.exchange(false, std::memory_order_acq_rel);
+}
+
+void DX12_ResetBelowForeignChainFSRTopmostSubmitProof(const char* reason) {
+    if (g_BelowForeignChainFSRTopmostSubmitProven.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "[OVERLAY LAYER] FSR app-callback topmost submit proof retired (%s) — callback baseline resumes",
+            reason && reason[0] ? reason : "route unavailable");
+    }
+}
 
 static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                         ID3D12CommandQueue* presentationQueue, bool onlyWhenMissing,
@@ -366,6 +381,7 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
 bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* presentedSwapChain,
                                                               ID3D12CommandQueue* submitQueue) {
     if (!presentedSwapChain || !submitQueue) {
+        DX12_ResetBelowForeignChainFSRTopmostSubmitProof("missing presented swapchain/queue");
         return false;
     }
 
@@ -377,11 +393,13 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
     IDXGISwapChain3* swapChain3 = nullptr;
     ID3D12Resource* backBuffer = nullptr;
     if (FAILED(presentedSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) || !swapChain3) {
+        DX12_ResetBelowForeignChainFSRTopmostSubmitProof("presented swapchain lacks IDXGISwapChain3");
         return false;
     }
     swapChain3->GetBuffer(swapChain3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer));
     swapChain3->Release();
     if (!backBuffer) {
+        DX12_ResetBelowForeignChainFSRTopmostSubmitProof("presented backbuffer unavailable");
         static std::atomic<int> s_getBufferRefusedLog{0};
         const int logCount = s_getBufferRefusedLog.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
@@ -416,22 +434,25 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
     static std::atomic<int> s_renderedLog{0};
     static std::atomic<int> s_refusedLog{0};
     if (rendered) {
+        g_BelowForeignChainFSRTopmostSubmitProven.store(true, std::memory_order_release);
         const int logCount = s_renderedLog.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 5 || (logCount % 300) == 0) {
             HookLogImportant(
                 "[OVERLAY LAYER] CE composites BELOW the foreign Present chain on the runtime-owned FSR "
                 "swapchain (site=deep-body-below-foreign-chain-runtime-owned-fsr "
                 "source=DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR sc=%p queue=%p log=%d) — "
-                "the foreign overlays drew on this queue before CE, so CE's overlay is the topmost layer",
-                (void*)presentedSwapChain, (void*)submitQueue, logCount + 1);
+                "the foreign overlays drew on this queue before CE, so CE's overlay is the topmost layer%s",
+                (void*)presentedSwapChain, (void*)submitQueue, logCount + 1,
+                logCount == 0 ? "; callback draw/FPS ownership transfers on the next output" : "");
         }
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR);
     } else {
+        DX12_ResetBelowForeignChainFSRTopmostSubmitProof("owner-queue renderer refused the deep draw");
         const int logCount = s_refusedLog.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
                 "DX12: Below-foreign-chain FSR deep draw REFUSED by the owner-queue renderer (sc=%p queue=%p "
-                "log=%d) — the FFX present-callback draw remains the overlay transport",
+                "log=%d) — the FFX present-callback draw resumes on the next output",
                 (void*)presentedSwapChain, (void*)submitQueue, logCount + 1);
         }
     }

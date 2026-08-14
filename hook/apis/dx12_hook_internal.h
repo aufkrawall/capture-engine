@@ -259,6 +259,8 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
 bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const char* routeName);
 bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* presentedSwapChain,
                                                               ID3D12CommandQueue* submitQueue);
+bool DX12_ConsumeBelowForeignChainFSRTopmostSubmitProof();
+void DX12_ResetBelowForeignChainFSRTopmostSubmitProof(const char* reason);
 
 bool DX12_IsFFXProxyPresentHookInstalled();
 

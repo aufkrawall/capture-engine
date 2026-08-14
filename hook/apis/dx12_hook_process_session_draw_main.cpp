@@ -393,9 +393,9 @@ if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuR
     // Native-FSR-FG layering exception for a foreign Present chain: the FFX present callback
     // composites CE's overlay before the runtime presents the output through DXGI, so Steam/RTSS
     // (which patch that present) draw on top of CE. CE's deep body hook runs on the same present
-    // after all of them; draw a second, topmost composite onto the presented swapchain backbuffer
-    // via the teardown-safe owner-queue renderer. The callback draw stays as the guaranteed
-    // baseline, so a refusal here can never hide the overlay.
+    // after all of them; draw a topmost composite onto the presented swapchain backbuffer via the
+    // teardown-safe owner-queue renderer. The callback baseline yields only after the first successful
+    // submit in this routing epoch and resumes if a later submit is refused.
     if (TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()) {
         return ProcessFrameFlow::kOverlayDone;
     }
@@ -581,6 +581,7 @@ bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR
         ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(), dx12_hook_g_SwapchainQueue != nullptr,
         submitQueueIsSwapchainQueue, dx12_hook_g_DeviceRemoved.load(std::memory_order_relaxed), HookIsShuttingDown());
     if (decision == ce::dx12_overlay_policy::BelowForeignChainFSRDeepDrawDecision::kUnavailable) {
+        DX12_ResetBelowForeignChainFSRTopmostSubmitProof("deep Present route became unavailable");
         return false;
     }
     return DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(pSwapChain, gameQueue);

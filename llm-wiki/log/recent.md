@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-14 - FIXED locally: FSR topmost handoff no longer double-blends translucent UI or doubles FPS
+
+- User validation session `20260814_024908` (0.1.6049, Steam + RTSS) confirms the learned final-ECL-batch route
+  keeps CE topmost under no-callback FSR FG. The log also showed two overlay owners per output: the FFX callback and
+  the later topmost route each ran at about 144/s. The translucent background was therefore blended twice, while
+  both paths advanced `PerformanceMetrics`, yielding about 288 FPS against an actual ~144/s CSV QPC cadence.
+- Draw and frame-time ownership now transfer together. App-callback FSR keeps its callback baseline until one deep
+  topmost submit succeeds, consumes exactly one proof at the next callback, and replenishes it only from the next
+  successful deep Present; stopped/refused Presents therefore restore the callback without a timer or stale latch.
+  No-callback FSR yields only after the existing inline completion marker proves the final-batch route.
+- FG status publication is unchanged and remained correct in the source session (~72.6 base / ~145.2 output).
+  Focused policy/source-contract tests cover proof selection, one-shot consumption, and the shared draw/FPS gate;
+  the complete `--verify` gate passed on 0.1.6050 (native/Python tests, lint ratchets, x64 ASan/UBSan).
+
 ### 2026-08-14 - FIXED locally: retained Streamline-hook reconciliation and stateful DX12 hot-path diagnostics
 
 - Clean validation session `20260814_014012` exposed diagnostic volume rather than a functional failure: 1,826

@@ -11,7 +11,9 @@
 > configure dedupe publishes only actual FG/routing transitions. This supersedes the 2026-07-03
 > independent-CE-queue implementation described in the historical line below.
 > The 2026-08-14 no-callback topmost route learns and joins the existing final ECL batch with an inline completion
-> marker; the FFX UI-resource route remains visible until a successful completed append is observed.
+> marker; the FFX UI-resource route remains visible until a successful completed append is observed. Once either
+> this proof or an app-callback deep topmost-submit proof exists, the FFX callback yields both its draw and its
+> frame-time sample together so translucent UI is not double-blended and FPS history is not counted twice.
 
 Last cross-checked: 2026-08-14 (including real-swapchain identity preservation below Steam + RTSS and suppression of cross-API internal probes in active DX12 processes; see the current invariant bullets and `log/recent.md`.)
 
