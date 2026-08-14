@@ -1,5 +1,21 @@
 #include "dx12_hook_internal.h"
 
+void DX12_LogRuntimeOwnedCallbackHDRSourceChange(DXGI_FORMAT format, int colorSpace,
+                                                 bool presentationContractSupported, bool isHDR) {
+    const uint64_t signature = static_cast<uint32_t>(format) |
+                               (static_cast<uint64_t>(static_cast<uint32_t>(colorSpace + 1)) << 32) |
+                               (static_cast<uint64_t>(presentationContractSupported ? 1 : 0) << 62) |
+                               (static_cast<uint64_t>(isHDR ? 1 : 0) << 63);
+    static std::atomic<uint64_t> s_lastSignature{UINT64_MAX};
+    if (s_lastSignature.exchange(signature, std::memory_order_acq_rel) == signature) {
+        return;
+    }
+    HookLogImportant(
+        "DX12: Runtime-owned callback HDR source changed "
+        "(format=%d colorSpace=%d supported=%d isHDR=%d) — stable per-frame configurations are silent",
+        static_cast<int>(format), colorSpace, presentationContractSupported ? 1 : 0, isHDR ? 1 : 0);
+}
+
 void DX12_UpdateFFXPresentCallbackFrameTiming(PerformanceMetrics* metrics,
                                               bool runtimeOwnsNativeFSRPresentation,
                                               bool callbackYieldsToTopmostRoute) {

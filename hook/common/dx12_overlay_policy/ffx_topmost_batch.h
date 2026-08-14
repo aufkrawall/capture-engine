@@ -59,6 +59,15 @@ inline bool ShouldRenderAppCallbackTopmostOverlay(bool routeArmed) {
     return routeArmed;
 }
 
+inline bool ShouldRetireWarmFSRRendererForPresentationChange(bool hadPresentation,
+                                                             bool hasReplacementPresentation,
+                                                             bool presentationIdentityChanged) {
+    // Callback/no-callback routing changes temporarily release the topmost tracker's COM references while the
+    // same FFX context remains live. Retiring there rebuilds PSOs/upload pools on a later Present. Only a real
+    // live-identity replacement (or the separate authoritative context teardown) retires renderer resources.
+    return hadPresentation && hasReplacementPresentation && presentationIdentityChanged;
+}
+
 inline bool ShouldSampleFrameTimingFromFFXPresentCallback(bool runtimeOwnsNativeFSRPresentation,
                                                           bool callbackYieldsToTopmostRoute,
                                                           bool presentInterceptedBelowForeignChain) {

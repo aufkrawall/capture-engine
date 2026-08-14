@@ -169,8 +169,10 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
     int outputColorSpace = -1;
     bool presentationContractSupported = false;
     const bool isActualHDR = ResolveSwapchainOutputHDRState(
-        dxgiSwapChain, desc.BufferDesc.Format, "DX12: Cached runtime-owned callback HDR source", &outputColorSpace,
+        dxgiSwapChain, desc.BufferDesc.Format, nullptr, &outputColorSpace,
         &presentationContractSupported);
+    DX12_LogRuntimeOwnedCallbackHDRSourceChange(desc.BufferDesc.Format, outputColorSpace,
+                                                presentationContractSupported, isActualHDR);
     UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace,
                                           presentationContractSupported);
 
@@ -765,7 +767,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         callbackYieldsToTopmostRoute) {
         HookLogImportant(
             "[OVERLAY LAYER] FFX present-callback %s the proven topmost Present route "
-            "(noCallback=%d belowForeignSubmitProven=%d finalBatchComplete=%d) — draw and FPS-sample ownership move together",
+            "(noCallback=%d belowForeignSubmitProven=%d finalBatchComplete=%d) — visible draw ownership moves; "
+            "frame-time sampling remains independently owned by the displayed-output observer",
             callbackYieldsToTopmostRoute ? "YIELDS TO" : "RESUMES FROM", nativeNoCallbackComposition ? 1 : 0,
             belowForeignTopmostSubmitProven ? 1 : 0, completedNoCallbackTopmostBatch ? 1 : 0);
     }

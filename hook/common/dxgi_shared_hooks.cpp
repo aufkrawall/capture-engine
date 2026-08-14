@@ -418,9 +418,13 @@ bool IsAddressInsideSystemDXGI(const void* address) {
 
 namespace DXGIShared {
 void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source) {
-    static std::atomic<int> s_currentSite{-1};
-    const int siteValue = static_cast<int>(site);
-    if (s_currentSite.exchange(siteValue, std::memory_order_relaxed) == siteValue) {
+    // Multiple sites can be concurrently correct: an FFX callback/UI baseline draws first and the deep Present
+    // route observes or composites later. Treating that stable pair as an edge made the site value oscillate twice
+    // per output and synchronously wrote thousands of long log lines on AMD's presenter thread. Log each semantic
+    // site once; hook-install and route-ownership diagnostics cover later topology changes explicitly.
+    static std::atomic<uint32_t> s_loggedSites{0};
+    const uint32_t siteBit = 1u << static_cast<unsigned>(site);
+    if ((s_loggedSites.fetch_or(siteBit, std::memory_order_relaxed) & siteBit) != 0) {
         return;
     }
     const size_t foreignOverlays =

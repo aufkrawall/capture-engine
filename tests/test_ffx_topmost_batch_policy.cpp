@@ -16,6 +16,7 @@ using ce::dx12_overlay_policy::HasCompletedNoCallbackTopmostActivation;
 using ce::dx12_overlay_policy::ShouldAppendTopmostOverlayToFinalECLBatch;
 using ce::dx12_overlay_policy::ShouldGrantNoCallbackTopmostOwnership;
 using ce::dx12_overlay_policy::ShouldRenderAppCallbackTopmostOverlay;
+using ce::dx12_overlay_policy::ShouldRetireWarmFSRRendererForPresentationChange;
 using ce::dx12_overlay_policy::ShouldSampleFrameTimingFromFFXPresentCallback;
 using ce::dx12_overlay_policy::ShouldYieldFFXPresentCallbackToTopmostRoute;
 
@@ -97,6 +98,21 @@ TEST(FFXTopmostBatchPolicyTest, NoCallbackOwnershipRequiresCompletedProbeAndReti
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {
     EXPECT_FALSE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/false));
     EXPECT_TRUE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/true));
+}
+
+TEST(FFXTopmostBatchPolicyTest, TemporaryRoutingChangesKeepWarmRendererResources) {
+    EXPECT_FALSE(ShouldRetireWarmFSRRendererForPresentationChange(
+        /*hadPresentation=*/true, /*hasReplacementPresentation=*/false,
+        /*presentationIdentityChanged=*/true));
+    EXPECT_FALSE(ShouldRetireWarmFSRRendererForPresentationChange(
+        /*hadPresentation=*/false, /*hasReplacementPresentation=*/true,
+        /*presentationIdentityChanged=*/true));
+    EXPECT_FALSE(ShouldRetireWarmFSRRendererForPresentationChange(
+        /*hadPresentation=*/true, /*hasReplacementPresentation=*/true,
+        /*presentationIdentityChanged=*/false));
+    EXPECT_TRUE(ShouldRetireWarmFSRRendererForPresentationChange(
+        /*hadPresentation=*/true, /*hasReplacementPresentation=*/true,
+        /*presentationIdentityChanged=*/true));
 }
 
 TEST(FFXTopmostBatchPolicyTest, DeepPresentIsTheOnlyFrameTimingObserverWhenAvailable) {
@@ -182,6 +198,41 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackHandoffProvesRouteBeforeFirstVisibleT
     EXPECT_LT(probe, drawGate);
     EXPECT_LT(drawGate, arm);
     EXPECT_LT(arm, visibleNote);
+}
+
+TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreStateful) {
+    const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");
+    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    const std::string layerLogging = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string ffx = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    ASSERT_FALSE(topmostBatch.empty());
+    ASSERT_FALSE(renderer.empty());
+    ASSERT_FALSE(ownerQueue.empty());
+    ASSERT_FALSE(layerLogging.empty());
+    ASSERT_FALSE(ffx.empty());
+
+    const size_t replacementPolicy = topmostBatch.find(
+        "ShouldRetireWarmFSRRendererForPresentationChange(");
+    const size_t guardedRetirement = topmostBatch.find("if (presentationReplaced) {", replacementPolicy);
+    const size_t retirement = topmostBatch.find("RetireProxy(oldSwapChain", guardedRetirement);
+    const size_t preservedLog = topmostBatch.find("preserving its warm renderer", retirement);
+    ASSERT_NE(replacementPolicy, std::string::npos);
+    ASSERT_NE(guardedRetirement, std::string::npos);
+    ASSERT_NE(retirement, std::string::npos);
+    ASSERT_NE(preservedLog, std::string::npos);
+    EXPECT_LT(replacementPolicy, guardedRetirement);
+    EXPECT_LT(guardedRetirement, retirement);
+    EXPECT_LT(retirement, preservedLog);
+    EXPECT_NE(renderer.find("ComPtr<IDXGISwapChain> proxyLifetime;"), std::string::npos);
+    EXPECT_NE(renderer.find("proxyLifetime = newProxy;"), std::string::npos);
+    EXPECT_NE(renderer.find("state->ReleaseProxyLifetime();"), std::string::npos);
+    EXPECT_NE(ownerQueue.find("RetireAllForNativeFSRTeardown(reason);"), std::string::npos);
+
+    EXPECT_NE(layerLogging.find("s_loggedSites.fetch_or(siteBit"), std::string::npos);
+    EXPECT_EQ(layerLogging.find("s_currentSite.exchange"), std::string::npos);
+    EXPECT_NE(ffx.find("DX12_LogRuntimeOwnedCallbackHDRSourceChange("), std::string::npos);
+    EXPECT_EQ(ffx.find("\"DX12: Cached runtime-owned callback HDR source\""), std::string::npos);
 }
 
 TEST(FFXTopmostBatchSourceTest, CallbackRoutingChangeImmediatelyRetiresBothTopmostRoutes) {

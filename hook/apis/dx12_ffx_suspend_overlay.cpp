@@ -83,12 +83,14 @@ public:
         kFailed,
     };
 
-    bool Initialize(ID3D12Device* newDevice, ID3D12CommandQueue* newQueue, DXGI_FORMAT newFormat, bool newHdr,
-                    bool newInlineCompletionMarker) {
-        if (!newDevice || !newQueue || newQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+    bool Initialize(IDXGISwapChain* newProxy, ID3D12Device* newDevice, ID3D12CommandQueue* newQueue,
+                    DXGI_FORMAT newFormat, bool newHdr, bool newInlineCompletionMarker) {
+        if (!newProxy || !newDevice || !newQueue ||
+            newQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
             return false;
         }
 
+        proxyLifetime = newProxy;
         device = newDevice;
         queue = newQueue;
         format = newFormat;
@@ -444,7 +446,16 @@ public:
         return RenderResult::kRendered;
     }
 
+    void ReleaseProxyLifetime() {
+        // The proxy is needed only while this renderer remains addressable by its raw map key. Once retirement
+        // removes that key, release the pin immediately so a still-in-flight renderer cannot delay FFX teardown.
+        proxyLifetime.Reset();
+    }
+
 private:
+    // Warm callback/no-callback route changes release the topmost tracker's reference but intentionally keep this
+    // live renderer. Pin the exact key so its raw map identity cannot dangle or be ABA-reused between route flips.
+    ComPtr<IDXGISwapChain> proxyLifetime;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -491,6 +502,7 @@ void RetireState(std::unique_ptr<RendererState>& state, const char* reason) {
     if (!state) {
         return;
     }
+    state->ReleaseProxyLifetime();
     if (state->IsGpuComplete()) {
         state.reset();
         return;
@@ -589,8 +601,8 @@ bool Render(const RenderRequest& request) {
     }
     auto createState = [&]() -> bool {
         auto replacement = std::make_unique<RendererState>();
-        if (!replacement->Initialize(backBufferDevice.Get(), request.presentationQueue, rtvFormat, request.hdr,
-                                     request.inlineCompletionMarker)) {
+        if (!replacement->Initialize(request.proxySwapChain, backBufferDevice.Get(), request.presentationQueue,
+                                     rtvFormat, request.hdr, request.inlineCompletionMarker)) {
             return false;
         }
         state = std::move(replacement);

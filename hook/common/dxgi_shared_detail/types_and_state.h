@@ -250,9 +250,9 @@ bool IsAddressInsideSystemDXGI(const void* address);
 
 // Where CE's overlay is composited relative to a foreign Present chain. Every participant in
 // such a chain draws BEFORE it forwards, so the site alone decides whether CE's overlay ends
-// up on top of Steam's/RTSS's or underneath them. Reported on change only (an atomic compare
-// per present, one log line per edge) because it is otherwise invisible in a session log and
-// was previously reconstructed by hand from install-time hook lines.
+// up on top of Steam's/RTSS's or underneath them. Each semantic site is reported once because
+// FSR may legitimately alternate UI-composition and deep-Present observations every output;
+// ownership-edge diagnostics report later route changes without synchronous per-frame logging.
 enum class OverlayCompositeSite {
     kPresentEntry,        // CE's own entry patch: CE draws first, foreign overlays draw on top.
     kBelowForeignChain,   // deep body hook: CE draws after every entry patcher, so it is topmost.

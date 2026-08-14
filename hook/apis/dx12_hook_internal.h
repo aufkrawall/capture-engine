@@ -268,6 +268,8 @@ void DX12_ResetBelowForeignChainFSRTopmostSubmitProof(const char* reason);
 void DX12_UpdateFFXPresentCallbackFrameTiming(PerformanceMetrics* metrics,
                                               bool runtimeOwnsNativeFSRPresentation,
                                               bool callbackYieldsToTopmostRoute);
+void DX12_LogRuntimeOwnedCallbackHDRSourceChange(DXGI_FORMAT format, int colorSpace,
+                                                 bool presentationContractSupported, bool isHDR);
 
 bool DX12_IsFFXProxyPresentHookInstalled();
 

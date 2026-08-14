@@ -95,10 +95,27 @@ void ReplaceRetainedPresentationObjects(IDXGISwapChain* swapChain, ID3D12Command
     }
     IDXGISwapChain* oldSwapChain = g_TopmostBatchSwapChain;
     ID3D12CommandQueue* oldQueue = g_TopmostBatchQueue;
+    const bool presentationReplaced =
+        ce::dx12_overlay_policy::ShouldRetireWarmFSRRendererForPresentationChange(
+            oldSwapChain != nullptr, swapChain != nullptr,
+            oldSwapChain != swapChain || oldQueue != queue);
     g_TopmostBatchSwapChain = swapChain;
     g_TopmostBatchQueue = queue;
     if (oldSwapChain) {
-        ce::dx12_ffx_suspend_overlay::RetireProxy(oldSwapChain, "no-callback FSR final presentation changed");
+        // A callback/no-callback routing edge only releases this tracker's COM references. The FFX context and
+        // exact presentation identity remain alive, so keep both renderer families warm; tearing them down here
+        // rebuilt PSOs/upload pools on AMD's Present thread every cycle. A genuinely different live presentation
+        // still retires the old key, while context teardown remains authoritative in the owner-binding path.
+        if (presentationReplaced) {
+            ce::dx12_ffx_suspend_overlay::RetireProxy(oldSwapChain,
+                                                      "no-callback FSR final presentation changed");
+        } else {
+            HookLogImportant(
+                "[OVERLAY PACING] Released the no-callback FSR route tracker while preserving its warm renderer "
+                "cache (sc=%p queue=%p) — callback routing alone does not rebuild GPU resources; authoritative "
+                "owner/context teardown still retires them",
+                oldSwapChain, oldQueue);
+        }
         oldSwapChain->Release();
     }
     if (oldQueue) {

@@ -732,11 +732,22 @@ submit later ECL batches before the deep system Present, so the UI-resource rout
   Present boundary, matching the two ~288-FPS CSV blocks and alternating tiny/normal frame times. Deep Present is now
   the sole timing observer when installed; the callback remains the fallback only when runtime-owned presentation
   does not re-enter CE through DXGI. Draw ownership and frame-timing ownership are deliberately independent.
+- **Pacing follow-up (`20260814_041840`)**: displayed cadence was flat between route edges, but CE synchronously
+  rebuilt the suspend/topmost renderer inside AMD's live ECL/Present path after callback/no-callback cleanup. The
+  test kept FSR enabled but changed that internal route every six seconds; its recurring no-callback entries align
+  with 17.3 ms and 16.1 ms ECL stalls and 20.1/48.8 ms displayed-output gaps. Exact presentation identities now
+  retain both warm renderer families across routing-only clears, avoiding repeated PSO, 16-slot allocator/list,
+  upload-pool, font, and RTV construction. The renderer pins its proxy while the raw-keyed cache is live, drops
+  that pin immediately on retirement, and real replacement/context teardown remains authoritative. First-use
+  callback/UI behavior is unchanged so the pacing fix cannot trade a stall for a missing fallback draw. The same
+  session emitted 3,451 stable UI/deep-site alternation logs and 1,789 identical HDR-source lines; those
+  diagnostics are now stateful instead of performing synchronous per-output file I/O.
 - **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`, `hook/apis/dx12_hook_ffx_metrics.cpp`,
-  `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`, and
-  `tests/test_ffx_topmost_batch_policy.cpp`. Focused tests and the complete `--verify` gate pass on 0.1.6052
-  (full native suite, Python self-tests, lint ratchets, and x64 ASan/UBSan). **Open**: fresh on-hardware validation
-  of stable translucency/FPS plus ReShade validation
+  `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`,
+  and `tests/test_ffx_topmost_batch_policy.cpp`. Focused pacing-policy/source and FSR transition/replay tests pass;
+  the complete `--verify` gate also passes on 0.1.6053 (full native/Python suites, lint ratchets, and x64
+  ASan/UBSan). **Open**: fresh on-hardware validation of stable translucency/FPS and elimination of CE-attributed
+  pacing spikes, plus ReShade validation
   plus the full FSR/off/DLSS switch matrix and teardown/device-health checks after the ownership handoff.
 
 ## Open Questions / Stale-Risk

@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-14 - FIXED locally: recurring FSR route flips reuse warm overlay renderers
+
+- Session `20260814_041840` is steady at ~144 displayed outputs/s between routing edges, but its internal FSR
+  callback/no-callback route alternates every six seconds while FSR remains enabled. Repeated no-callback entries
+  align with 17.3/16.1 ms ECL stalls and 20.1/48.8 ms displayed-output gaps recorded by CE's own graph/CSV.
+- Routing-only cleanup had retired both suspend/topmost renderer maps. The next Present/ECL rebuilt PSOs, 16
+  allocator/list slots, 16 VB/IB upload pools, font resources, and RTV heaps synchronously. Both exact-identity
+  renderer families now remain warm across route clears; genuine live replacement and FFX teardown still retire.
+- Each cached renderer pins the proxy behind its raw map key across the route gap, preventing dangling/ABA reuse.
+  Retirement drops that pin before retaining any still-in-flight GPU state, so the cache cannot delay FFX teardown.
+  First-use callback/UI initialization was deliberately left unchanged to avoid trading the pacing issue for a
+  temporarily missing overlay draw.
+- The session also contained 3,451 stable UI/deep `[OVERLAY LAYER]` alternation lines and 1,789 identical callback
+  HDR-source lines in 31 seconds. Semantic sites and HDR source contracts now log only first observation/change.
+- Focused `FFXTopmostBatch*`, FSR owner/deep-route, and FG transition/replay tests pass. The complete 0.1.6053
+  `--verify` gate also passes: product builds, full native/Python suites, lint ratchets, and x64 ASan/UBSan.
+  Fresh hardware pacing validation remains open.
+
 ### 2026-08-14 - FIXED locally: stable FSR topmost completion ownership and one displayed-output timing observer
 
 - Follow-up session `20260814_035452` tested 0.1.6051 and disproved the prior final claim. The two ~288-FPS blocks
