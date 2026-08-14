@@ -101,8 +101,11 @@ def _stage_captureengine_package(source_root: str, destination_root: str, clean_
     return sorted(copied)
 
 
-def _stage_testapps_package(source_root: str, destination_root: str, runtime_note: str) -> List[str]:
+def _stage_testapps_package(
+    source_root: str, destination_root: str, runtime_note: str, testapp_config: str
+) -> List[str]:
     copied: List[str] = []
+    staged_x86 = False
     for relative_directory, app_names, required in (
         ("", PACKAGED_X64_TEST_APPS, True),
         ("x86", PACKAGED_X86_TEST_APPS, False),
@@ -121,6 +124,8 @@ def _stage_testapps_package(source_root: str, destination_root: str, runtime_not
             shutil.copy2(executable, destination)
             relative_executable = os.path.join(relative_directory, executable_name).replace("\\", "/")
             copied.append(relative_executable)
+            if relative_directory:
+                staged_x86 = True
 
             pdb = os.path.join(source_directory, app_name + ".pdb")
             if os.path.isfile(pdb):
@@ -135,6 +140,17 @@ def _stage_testapps_package(source_root: str, destination_root: str, runtime_not
     note_name = os.path.basename(runtime_note)
     shutil.copy2(runtime_note, os.path.join(destination_root, note_name))
     copied.append(note_name)
+    if not os.path.isfile(testapp_config):
+        raise RuntimeError(f"Cannot package test apps: default config template is missing: {testapp_config}")
+    config_name = os.path.basename(testapp_config)
+    config_destination = os.path.join(destination_root, config_name)
+    shutil.copy2(testapp_config, config_destination)
+    copied.append(config_name)
+    if staged_x86:
+        x86_config_destination = os.path.join(destination_root, "x86", config_name)
+        os.makedirs(os.path.dirname(x86_config_destination), exist_ok=True)
+        shutil.copy2(testapp_config, x86_config_destination)
+        copied.append("x86/" + config_name)
     return sorted(copied)
 
 
@@ -189,7 +205,9 @@ def package_build_outputs() -> Tuple[str, ...]:
             capture_stage,
             os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
         )
-        testapp_files = _stage_testapps_package(TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE)
+        testapp_files = _stage_testapps_package(
+            TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE, TESTAPP_CONFIG_TEMPLATE
+        )
         source_files = []
         if IS_WINDOWS:
             source_files = _stage_ffmpeg_corresponding_source(
@@ -212,8 +230,17 @@ def package_build_outputs() -> Tuple[str, ...]:
 
         required_capture_member = "captureengine/captureengine.exe"
         required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
-        if required_capture_member not in capture_members or required_note_member not in testapp_members:
+        required_config_member = "testapps/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
+        if (
+            required_capture_member not in capture_members
+            or required_note_member not in testapp_members
+            or required_config_member not in testapp_members
+        ):
             raise RuntimeError("Automatic package verification failed: required archive member is missing")
+        if any(member.startswith("testapps/x86/") for member in testapp_members):
+            x86_config_member = "testapps/x86/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
+            if x86_config_member not in testapp_members:
+                raise RuntimeError("Automatic package verification failed: x86 test-app config is missing")
         if any(member.lower().endswith(".dll") for member in testapp_members):
             raise RuntimeError("Automatic package verification failed: test-app archive contains a vendor DLL")
         if IS_WINDOWS and not {

@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-08-14 - Test-app archives ship a default testappconfig.ini in the x64 and x86 folders
+
+- `build/packages/testapps.7z` now contains `testappconfig.ini` both in the `testapps/` root (x64)
+  and in `testapps/x86/`, staged fresh from the checked-in default `testapp/testappconfig.ini`
+  (4K borderless fullscreen, `gpu_load=120`, `vsync=1`). Staging fails closed when the template is
+  missing, and archive verification requires the root config member plus the x86 one whenever x86
+  members are staged.
+- Packaging regression tests extended: staging covers both-arch and x64-only layouts plus the
+  missing-template failure, and an archive-level test lists the config members in the produced 7z.
+
 ### 2026-08-14 - CI: CodeQL default setup replaced by path-filtered advanced workflows
 
 - GitHub CodeQL default setup (three `Analyze` jobs on every push to `main`) was replaced by advanced

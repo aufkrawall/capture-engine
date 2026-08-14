@@ -320,6 +320,7 @@ CAPTUREENGINE_PACKAGE_NAME = "captureengine.7z"
 TESTAPPS_PACKAGE_NAME = "testapps.7z"
 FFMPEG_SOURCE_PACKAGE_NAME = "ffmpeg-corresponding-source.7z"
 TESTAPP_RUNTIME_NOTE = os.path.join(PROJECT_ROOT, "testapp", "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt")
+TESTAPP_CONFIG_TEMPLATE = os.path.join(PROJECT_ROOT, "testapp", "testappconfig.ini")
 DEFAULT_LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 LOG_FILE = DEFAULT_LOG_FILE
 DETAIL_LOG_FILE: Optional[str] = None

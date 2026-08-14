@@ -97,6 +97,7 @@ class PackagingTests(unittest.TestCase):
             source = root / "installed" / "testapp"
             destination = root / "stage" / "testapps"
             note = root / "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt"
+            config = root / "testappconfig.ini"
             (source / "x86").mkdir(parents=True)
             for relative in (
                 "sample.exe",
@@ -111,11 +112,14 @@ class PackagingTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(relative.encode("utf-8"))
             note.write_text("requirements", encoding="utf-8")
+            config.write_text("default-config", encoding="utf-8")
 
             with patch.object(build, "PACKAGED_X64_TEST_APPS", ("sample",)), patch.object(
                 build, "PACKAGED_X86_TEST_APPS", ("sample",)
             ), patch.object(build, "IS_WINDOWS", False):
-                copied = build._stage_testapps_package(str(source), str(destination), str(note))
+                copied = build._stage_testapps_package(
+                    str(source), str(destination), str(note), str(config)
+                )
 
             self.assertEqual(
                 copied,
@@ -123,13 +127,63 @@ class PackagingTests(unittest.TestCase):
                     "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt",
                     "sample.exe",
                     "sample.pdb",
+                    "testappconfig.ini",
                     "x86/sample.exe",
                     "x86/sample.pdb",
+                    "x86/testappconfig.ini",
                 ],
+            )
+            self.assertEqual((destination / "testappconfig.ini").read_text(encoding="utf-8"), "default-config")
+            self.assertEqual(
+                (destination / "x86" / "testappconfig.ini").read_text(encoding="utf-8"), "default-config"
             )
             self.assertFalse(any(path.suffix.lower() == ".dll" for path in destination.rglob("*")))
             self.assertFalse((destination / "sample.log").exists())
             self.assertFalse((destination / "sample.exe.link-cache.json").exists())
+
+    def test_testapp_staging_ships_default_config_only_for_staged_architectures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "installed" / "testapp"
+            destination = root / "stage" / "testapps"
+            note = root / "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt"
+            config = root / "testappconfig.ini"
+            (source / "x86").mkdir(parents=True)
+            (source / "sample.exe").write_bytes(b"exe")
+            (source / "x86" / "sample.exe").write_bytes(b"exe-x86")
+            note.write_text("requirements", encoding="utf-8")
+            config.write_text("default-config", encoding="utf-8")
+
+            with patch.object(build, "PACKAGED_X64_TEST_APPS", ("sample",)), patch.object(
+                build, "PACKAGED_X86_TEST_APPS", ()
+            ), patch.object(build, "IS_WINDOWS", False):
+                copied = build._stage_testapps_package(
+                    str(source), str(destination), str(note), str(config)
+                )
+
+            self.assertIn("testappconfig.ini", copied)
+            self.assertNotIn("x86/testappconfig.ini", copied)
+            self.assertEqual((destination / "testappconfig.ini").read_text(encoding="utf-8"), "default-config")
+            self.assertFalse((destination / "x86").exists())
+
+    def test_testapp_staging_fails_closed_without_default_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "installed" / "testapp"
+            destination = root / "stage" / "testapps"
+            note = root / "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt"
+            missing_config = root / "missing" / "testappconfig.ini"
+            source.mkdir(parents=True)
+            (source / "sample.exe").write_bytes(b"exe")
+            note.write_text("requirements", encoding="utf-8")
+
+            with patch.object(build, "PACKAGED_X64_TEST_APPS", ("sample",)), patch.object(
+                build, "PACKAGED_X86_TEST_APPS", ()
+            ), patch.object(build, "IS_WINDOWS", False):
+                with self.assertRaisesRegex(RuntimeError, "default config template is missing"):
+                    build._stage_testapps_package(
+                        str(source), str(destination), str(note), str(missing_config)
+                    )
 
     def test_cmake_creates_a_verified_7z_with_one_root_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -150,6 +204,35 @@ class PackagingTests(unittest.TestCase):
             self.assertTrue(archive.is_file())
             self.assertIn("captureengine/captureengine.exe", members)
             self.assertTrue(all(member == "captureengine" or member.startswith("captureengine/") for member in members))
+
+    def test_testapps_archive_ships_default_config_in_both_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "installed" / "testapp"
+            stage = root / "stage"
+            note = root / "THIRD_PARTY_RUNTIME_REQUIREMENTS.txt"
+            config = root / "testappconfig.ini"
+            archive = root / "testapps.7z"
+            (source / "x86").mkdir(parents=True)
+            for relative in ("sample.exe", "x86/sample.exe"):
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(relative.encode("utf-8"))
+            note.write_text("requirements", encoding="utf-8")
+            config.write_text("default-config", encoding="utf-8")
+
+            with patch.object(build, "PACKAGED_X64_TEST_APPS", ("sample",)), patch.object(
+                build, "PACKAGED_X86_TEST_APPS", ("sample",)
+            ), patch.object(build, "IS_WINDOWS", False):
+                build._stage_testapps_package(
+                    str(source), str(stage / "testapps"), str(note), str(config)
+                )
+                members = build._create_7z_archive(
+                    build._get_cmake_archiver(), str(stage), "testapps", str(archive)
+                )
+
+            self.assertIn("testapps/testappconfig.ini", members)
+            self.assertIn("testapps/x86/testappconfig.ini", members)
 
     def test_runtime_note_maps_every_requested_feature_to_root_dlls(self) -> None:
         note = Path(build.TESTAPP_RUNTIME_NOTE).read_text(encoding="utf-8")
