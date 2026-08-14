@@ -1,6 +1,63 @@
 # llm-wiki Log
 
-### 2026-08-14 - FIXED locally: recurring FSR route flips reuse warm overlay renderers
+### 2026-08-14 - HARDWARE-CONFIRMED pacing/topmost; FIXED locally: stable translucent-route ownership
+
+- Hardware session `20260814_055632` (0.1.6055) disproved the prior complete claim. Sharing the marker renderer did
+  eliminate the delayed *deep-route* backend build, but CSV frame 1605 still has a 24.443 ms displayed-output gap
+  while CE `ProcessFrame` took only 136 us. The FFX callback thread built the separate callback fallback adapter
+  from `05:56:48.840` to `.858` (PSOs, 32 upload buffers, font/descriptor resources) at the exact 6.027-second flip.
+- The required callback fallback adapter is now prewarmed during the initial no-callback activation probe. Its
+  immutable backend creation therefore stays inside the FSR transition window instead of the later stable cadence;
+  the live app callback only reuses it.
+- Hardware session `20260814_061442` (0.1.6056) confirms both requested major outcomes: the six-second steady-state
+  pacing spike is gone and CE remains topmost over Steam. It also isolates the remaining translucent-box flicker as
+  visible-route ownership, not HDR/blend-state mutation. At `06:15:05.972`, cooldown reached zero, the deep topmost
+  proof disappeared, and the callback baseline resumed; the trace's first callback takeover also records the route
+  boundary through `[OVERLAY DOUBLE-DRAW]` diagnostics.
+- Exact queue pinning and placement before Phase4 were necessary but still insufficient. While cooldown was nonzero,
+  Phase3 returned `kSkipOverlayInit`, allowing the later independent route to run. At zero, Phase3 intentionally
+  returned `kReturn` for the uninitialized normal runtime-owned backend and preempted it. The independent composite
+  now runs after Phase2 and before Phase3, retaining the callback/deep marker handshake and per-Present completion
+  flag so every stable output has one topmost visible owner without rebuilding or changing queue cadence.
+- Focused FSR topmost/deep-route tests and the complete 0.1.6057 `--verify` gate pass (product, native/Python
+  suites, lint ratchets, x64 ASan/UBSan, PE/privacy checks, and packages). Fresh translucency coverage remains.
+
+### 2026-08-14 - PARTIAL: delayed FSR callback handoff reused the marker renderer and pinned its queue
+
+- Hardware session `20260814_053934` (0.1.6054, Steam) disproved the prior completion claim. FSR started in
+  no-callback mode with a warm final-ECL marker renderer, then changed to app-callback mode exactly 6.028 seconds
+  later. The first deep callback-route Present synchronously created a separate full renderer (PSOs, 16 command/
+  upload slots, font and RTV resources), making `ProcessFrame` take 20.4 ms. CSV frame 2425 independently records
+  a 24.194 ms displayed-output gap. This is the reproducible CE-attributed spike, not transition noise.
+- The app-callback deep route now uses the same exact-swapchain inline-marker renderer as the no-callback route.
+  Its separate owner-queue ECL ends in the same GPU completion marker and needs neither another renderer nor an
+  extra queue `Signal`. The embedded final-batch route remains distinguishable in diagnostics.
+- The same trace lost deep-route submits when the 90-frame transition cooldown ended, allowing the callback/UI
+  baseline below Steam to resume. Eligibility still depended on `FrameProcessSession::gameQueue`, which deliberately
+  changes with normal-backend routing. The independent compositor now AddRef-pins `dx12_hook_g_SwapchainQueue`
+  under its queue mutex and submits on that authoritative presented-swapchain queue across cooldown changes.
+- Focused FSR topmost, deep-draw, Present-chain, and real-swapchain-identity tests pass. The complete 0.1.6055
+  `--verify` gate passes; fresh Steam/ReShade hardware coverage remains pending.
+
+### 2026-08-14 - PARTIAL: Steam-only early-inject FSR replacement denial and app-callback topmost gate
+
+- Session `20260814_051557` did not contain a CPU memory crash. Its first dump is official FFX replacement creation
+  returning `E_ACCESSDENIED`; the second is the switch app's controlled `ExitProcess(0xE000EACC)` after retries.
+  CE wrapped the initial native DX12 chain while its HWND was hidden. When the app released that wrapper, Steam still
+  left three real-chain references, so the same-HWND FFX replacement was denied before any warm FSR renderer existed.
+- The hidden-window create path already skipped hook refresh and authoritative swapchain side effects, but the outer
+  wrapped factory inconsistently added a retaining CE proxy. With a tracked overlay loaded it now returns the real
+  DX12 identity. The existing complete-deep-view identity rule is also generalized from two overlays to one: Steam
+  alone can retain the old chain, and CE already needs the below-chain view for topmost order.
+- Successful 0.1.6053 sessions `20260814_051200` and `20260814_051350` proved the no-callback final-batch route stayed
+  topmost, but app-callback intervals only used FFX UI composition below Steam. The dedicated deep owner-queue renderer
+  was nested behind normal `overlayInit && syncInit`; callback-route changes intentionally invalidate that backend,
+  making the topmost route unreachable. It now runs before the normal backend gate while retaining its exact queue,
+  callback, teardown, startup, and device-health policy checks.
+- Moving the deep route before the normal backend initialization gate was necessary but insufficient: session
+  `20260814_053934` exposed the remaining queue/cooldown coupling and delayed-renderer construction described above.
+
+### 2026-08-14 - PARTIAL: recurring FSR route flips reuse warm overlay renderers
 
 - Session `20260814_041840` is steady at ~144 displayed outputs/s between routing edges, but its internal FSR
   callback/no-callback route alternates every six seconds while FSR remains enabled. Repeated no-callback entries
@@ -10,8 +67,8 @@
   renderer families now remain warm across route clears; genuine live replacement and FFX teardown still retire.
 - Each cached renderer pins the proxy behind its raw map key across the route gap, preventing dangling/ABA reuse.
   Retirement drops that pin before retaining any still-in-flight GPU state, so the cache cannot delay FFX teardown.
-  First-use callback/UI initialization was deliberately left unchanged to avoid trading the pacing issue for a
-  temporarily missing overlay draw.
+  Session `20260814_053934` later proved that the separate app-callback renderer's delayed first use was itself a
+  remaining spike; the shared marker-renderer fix is recorded in the newest entry above.
 - The session also contained 3,451 stable UI/deep `[OVERLAY LAYER]` alternation lines and 1,789 identical callback
   HDR-source lines in 31 seconds. Semantic sites and HDR source contracts now log only first observation/change.
 - Focused `FFXTopmostBatch*`, FSR owner/deep-route, and FG transition/replay tests pass. The complete 0.1.6053
@@ -146,52 +203,3 @@
   the copy-based mirror, helper-first app dump, keep-alive branch, and attribution forward invariant.
   `--verify` gate passed on 0.1.6039. OPEN: user re-run via Steam + RTSS — FSR->OFF->FSR->OFF must switch cleanly
   without recreation; the next run's attribution names the exact foreign holder for the FSR->DLSS direction.
-
-### 2026-08-13 - FIXED (freeze): the new exhaustion minidump ran in-process and froze the app ~36 s; dumps now go through the external helper (DLSS switch also proved the 1-foreign-ref pin)
-
-- Session `20260813_220022` (build 0.1.6027, dx12_fg_switch_test via Steam overlay + RTSS, switch to DLSS FG):
-  Streamline's `linkSwapchainToCmdQueue` failed E_ACCESSDENIED ("Zugriff verweigert"), the app's native fallback
-  failed identically, and the process appeared to FREEZE for ~36 s before the user killed it. This time the session
-  kept dumps: `dx12_fg_switch_test.exe_2026-08-13_22-00-56.dmp` (FreezeWatchdog) and
-  `crash_external_swapchain_access_denied_exhausted_f3172865.dmp` (the new exhaustion dump).
-- Freeze root cause (cdb-confirmed): the exhaustion dump ran MiniDumpWriteDump IN-PROCESS on the render thread with
-  the quick-assert flags (DataSegs/IndirectlyReferencedMemory/FullMemoryInfo) - a 114 MB capture took ~36 s and
-  tripped the FreezeWatchdog. Render-thread stack: `DeepHookCreateSwapChainForHwnd ->
-  CaptureCreateSwapchainAccessDeniedExhaustedDump -> WriteSupplementalCrashDump -> HookedMiniDumpWriteDump ->
-  dbgcore!MiniDumpWriteDump`; the create chain below proves Steam AND RTSS both processed this create
-  (`DetourCreateSwapChainForHwndGlobal -> gameoverlayrenderer64!OverlayHookD3D3 -> RTSSHooks64 -> DeepHook`).
-- Pin evidence (same family as FSR): `SwapChain: post-destruction real refcount=1` - exactly ONE foreign reference
-  pins the old chain after the game and CE released everything; pre-cleanup probe refs=2 (incl. probe), post-cleanup
-  and post-entry-retry probes show no tracked chains. The live-entry retry ran RTSS's handler again without
-  releasing it.
-- Fix: `CaptureCreateSwapchainAccessDeniedExhaustedDump` moved to the main dump layer (`hook/main_fatal_dump.cpp`)
-  and now prefers the EXTERNAL dump helper (`captureengine.exe --dump-helper` - the game's threads are never
-  suspended for a large capture), falling back to a minimal in-process MiniDumpNormal-class dump when the helper is
-  unavailable. The test app's own fatal dump is now MiniDumpNormal+ThreadInfo+UnloadedModules instead of the heavy
-  data-segment scan.
-- Tests: `AccessDeniedExhaustionWritesDiagnosticDumpAndBracketedPinProbes` pins the external-helper-first order and
-  the light fallback (`tests/test_dxgi_shared_access_denied_dump.cpp`). `--verify` gate passed on 0.1.6029.
-  OPEN: user re-run - no freeze expected on the failure path; the dump plus probes should finally attribute the
-  single remaining foreign reference.
-### 2026-08-13 - ROOT-CAUSE REFINEMENT + DUMP COVERAGE: FSR re-entry after FSR->OFF still failed E_ACCESSDENIED; fatal switch failures now always produce dumps
-
-- Session `20260813_211734` (build 0.1.6023, dx12_fg_switch_test via Steam overlay + RTSS): the first OFF->FSR
-  switch now succeeds (the live-entry-chain retry fixed that seam), but after FSR->OFF the SECOND OFF->FSR
-  switch failed identically and the app exited cleanly — still no .dmp.
-- New pin diagnostics at the failure: `E_ACCESSDENIED pin diagnostics ... chain=00000194A4DEFF00 committed=1
-  refs=3` — the old OFF-phase native swapchain still had 3 live references after the game AND CE released
-  everything (wrapper destructor "real refs=8" = CE base + 4 promoted + 3 foreign). The route diagnostics show
-  the CreateSwapChainForHwnd entry holding ORIGINAL bytes with RTSS's vtable-slot handler as the immediate
-  caller, so the remaining refs are foreign (RTSS/Steam per-swapchain bookkeeping), not CE's.
-- Why the .dmp was missing: the failure path is a CLEAN exit (exit code 0, no exception), and
-  `ShouldCapturePreTerminationDump` deliberately skips exit code 0 — the pre-termination dump hooks never fire.
-- Fixes: (1) every exhausted CreateSwapChainForHwnd E_ACCESSDENIED recovery arm (deep + inline) now writes a
-  session-local diagnostic minidump via `WriteSupplementalCrashDump`
-  (`CaptureCreateSwapchainAccessDeniedExhaustedDump`, once per process, hint
-  `swapchain_access_denied_exhausted.dmp`, synthetic exception code 0xE000EACC); (2) the test app writes its own
-  fatal minidump (`WriteFatalSwitchDump` in testapp_common.h) and exits with 0xE000EACC instead of 0 on
-  "Fatal switch failure"; (3) added bracketed pin probes (pre-cleanup / post-cleanup / post-entry-retry) plus a
-  post-destruction wrapper refcount probe so the next failing run attributes the residual refs exactly.
-- Tests: `AccessDeniedExhaustionWritesDiagnosticDumpAndBracketedPinProbes`
-  (`tests/test_dxgi_shared_access_denied_dump.cpp`). `--verify` gate passed on 0.1.6027. OPEN: user re-run — if
-  the second OFF->FSR still fails, the new dump plus probes will name the remaining pin holder.

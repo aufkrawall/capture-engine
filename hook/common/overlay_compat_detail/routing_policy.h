@@ -215,15 +215,31 @@ inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryPatchO
     return foreignEntryPatchOwnedByOverlay && loadedOverlayModuleCount >= 1;
 }
 
-// Once CE has a deep Present hook below a chain shared by multiple foreign overlays, wrapping
-// the DX12 swapchain adds no coverage: every Present already reaches CE after the foreign chain.
+// Once CE has a deep Present hook below a foreign overlay chain, wrapping the DX12 swapchain
+// adds no coverage: every Present already reaches CE after the foreign chain.
 // Returning a proxy object would nevertheless change COM identity and Release traffic above that
-// chain. Steam/RTSS maintain per-swapchain state there, so preserve the real object just as CE
-// preserves the entry bytes. Non-DX12 swapchains and the wrapper-only fallback remain unchanged.
+// chain. Steam and the other overlays maintain per-swapchain state there, so preserve the real
+// object just as CE preserves the entry bytes. This applies with one overlay too: the draw-order
+// reason already requires the same below-chain view, and Steam alone can retain the proxy's old
+// real object long enough to reject a same-HWND FSR replacement. Non-DX12 swapchains and the
+// wrapper-only fallback remain unchanged.
 inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(bool d3d12CommandQueueSwapchain,
                                                                         bool interceptedBelowForeignChain,
                                                                         size_t loadedOverlayModuleCount) {
-    return d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 2;
+    return d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 1;
+}
+
+// A hidden-window DX12 create deliberately skips Present-hook refresh and all authoritative
+// swapchain side effects because it may be an auxiliary chain. A retaining CE proxy is itself a
+// side effect, though, and can leave a foreign overlay holding the hidden chain after the app
+// releases it. Preserve COM identity when a known overlay is already loaded; the later global
+// Present-body installation covers a main window once it becomes visible, while a genuine helper
+// remains completely untouched.
+inline bool ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(
+    bool d3d12CommandQueueSwapchain, bool hasOutputWindow, bool outputWindowVisible,
+    size_t loadedOverlayModuleCount) {
+    return d3d12CommandQueueSwapchain && hasOutputWindow && !outputWindowVisible &&
+           loadedOverlayModuleCount >= 1;
 }
 
 // Pure decision: the below-the-chain body patch was refused (thread quiescence, an

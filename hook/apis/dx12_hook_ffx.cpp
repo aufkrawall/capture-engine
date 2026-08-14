@@ -225,82 +225,12 @@ void CopyFFXPresentSourceToOutput(ID3D12GraphicsCommandList* cmdList,
     TransitionResourceIfNeeded(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE, sourceState);
 }
 
-static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
-    const ce::ffx_api::CallbackDescFrameGenerationPresent* desc) {
-    if (!desc || !desc->device || !desc->outputSwapChainBuffer.resource) {
-        return false;
-    }
-
-    auto* dx12Device = static_cast<ID3D12Device*>(desc->device);
-    auto* outputResource = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
-    const D3D12_RESOURCE_DESC resourceDesc = outputResource->GetDesc();
-    ID3D12CommandQueue* callbackQueue = nullptr;
-    {
-        std::lock_guard<std::recursive_mutex> qLock(g_CommandQueueMutex);
-        callbackQueue = dx12_hook_g_SwapchainQueue ? dx12_hook_g_SwapchainQueue : g_CommandQueue.load(std::memory_order_acquire);
-        if (!callbackQueue) {
-            callbackQueue = dx12_hook_g_OriginalGameQueue;
-        }
-    }
-    if (!callbackQueue) {
-        HookLogImportant(
-            "DX12: FFX present callback has no live queue for overlay backend init (device=%p frameId=%llu)",
-            dx12Device, static_cast<unsigned long long>(desc->frameID));
-        return false;
-    }
-
-    std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
-
-    dx12_hook_g_State.cachedWidth = static_cast<int>(resourceDesc.Width);
-    dx12_hook_g_State.cachedHeight = static_cast<int>(resourceDesc.Height);
-    dx12_hook_g_State.format = resourceDesc.Format;
-
-    if (ce::dx12_overlay_policy::ShouldResetFFXPresentCallbackOverlayBackend(
-            dx12_hook_g_FFXPresentOverlayAdapter.IsInitialized(), dx12_hook_g_FFXPresentOverlayDevice != dx12Device,
-            dx12_hook_g_FFXPresentOverlayFormat != resourceDesc.Format)) {
-        HookLogImportant(
-            "DX12: Resetting FFX present callback overlay backend before runtime-owned FSR render "
-            "(oldDevice=%p newDevice=%p oldFmt=%d newFmt=%d)",
-            dx12_hook_g_FFXPresentOverlayDevice, dx12Device, static_cast<int>(dx12_hook_g_FFXPresentOverlayFormat),
-            static_cast<int>(resourceDesc.Format));
-        dx12_hook_g_FFXPresentOverlayAdapter.Shutdown();
-    }
-
-    if (!dx12_hook_g_FFXPresentOverlayAdapter.IsInitialized()) {
-        dx12_hook_g_FFXPresentOverlayAdapter.SetHwnd(nullptr);
-        if (!dx12_hook_g_FFXPresentOverlayAdapter.InitDX12(dx12Device, callbackQueue, static_cast<int>(resourceDesc.Format))) {
-            HookLogImportant(
-                "DX12: FFX present callback failed to initialize overlay adapter (device=%p fmt=%d frameId=%llu)",
-                dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
-            return false;
-        }
-
-        const bool callbackOutputHDR = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(resourceDesc.Format);
-        dx12_hook_g_FFXPresentOverlayAdapter.SetHDR(callbackOutputHDR, static_cast<int>(resourceDesc.Format));
-        dx12_hook_g_FFXPresentOverlayDevice = dx12Device;
-        dx12_hook_g_FFXPresentOverlayFormat = resourceDesc.Format;
-        HookLogImportant("DX12: FFX present callback initialized overlay adapter for runtime-owned FSR (fmt=%d hdr=%d)",
-                         static_cast<int>(resourceDesc.Format), callbackOutputHDR ? 1 : 0);
-    } else {
-        static std::atomic<int> s_ffxPresentOverlayReuseLogCount{0};
-        const int reuseLogCount = s_ffxPresentOverlayReuseLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (reuseLogCount < 10 || (reuseLogCount % 300) == 0) {
-            HookLog(
-                "DX12: Reusing FFX present callback overlay adapter for runtime-owned FSR (device=%p fmt=%d "
-                "frameId=%llu)",
-                dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
-        }
-    }
-
-    return true;
-}
-
 bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc) {
     if (!ShouldBridgeOverlayViaFFXPresentCallback(desc)) {
         return false;
     }
 
-    if (!EnsureOverlayAdapterReadyForFFXPresentCallback(desc)) {
+    if (!DX12_EnsureOverlayAdapterReadyForFFXPresentCallback(desc)) {
         return false;
     }
 

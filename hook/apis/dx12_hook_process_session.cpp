@@ -42,6 +42,15 @@ void FrameProcessSession::Run() {
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
+    // This renderer owns an independent backbuffer/queue/completion contract. Run it before Phase3: once the
+    // transition cooldown reaches zero, Phase3 intentionally returns before normal-backend initialization while
+    // runtime-owned FSR presentation is active. Any later placement therefore retires the proven topmost owner and
+    // makes the callback baseline resume, changing the translucent overlay blend and putting foreign overlays above
+    // CE again.
+    if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL) {
+        independentFSRTopmostCompositedThisPresent =
+            TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR();
+    }
     flow = Phase3();
     if (flow == ProcessFrameFlow::kReturn) {
         return;

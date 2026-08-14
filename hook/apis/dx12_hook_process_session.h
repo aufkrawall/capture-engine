@@ -63,6 +63,7 @@ public:
     bool nativeFSRGameSwapchainRecoveryReinitializedThisPresent = false;
     bool exactGameSwapchainRecoverySwapchainProof = false;
     bool exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
+    bool independentFSRTopmostCompositedThisPresent = false;
     std::unique_lock<std::recursive_mutex> lock;
     bool allowOverlayRender;
     SharedMemoryLayout* observerModeShm;

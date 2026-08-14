@@ -426,6 +426,9 @@ if (!(allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && d
 
 ProcessFrameFlow FrameProcessSession::DrawOverlayFrame() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
+    if (independentFSRTopmostCompositedThisPresent) {
+        return ProcessFrameFlow::kContinue;
+    }
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit &&
         !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
         !suppressOverlayRenderForLoadedStartupOverlay && !delayOverlayRenderAfterResourcePrime &&

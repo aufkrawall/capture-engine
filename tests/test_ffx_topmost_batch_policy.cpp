@@ -200,6 +200,93 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackHandoffProvesRouteBeforeFirstVisibleT
     EXPECT_LT(arm, visibleNote);
 }
 
+TEST(FFXTopmostBatchSourceTest, AppCallbackTopmostRouteRunsBeforeNormalBackendEarlyReturns) {
+    const std::string processSession = ReadSource("hook/apis/dx12_hook_process_session.cpp");
+    const std::string phase3Source = ReadSource("hook/apis/dx12_hook_process_session_phase3.cpp");
+    const std::string phase5 = ReadSource("hook/apis/dx12_hook_process_session_phase5.cpp");
+    const std::string drawMain = ReadSource("hook/apis/dx12_hook_process_session_draw_main.cpp");
+    ASSERT_FALSE(processSession.empty());
+    ASSERT_FALSE(phase3Source.empty());
+    ASSERT_FALSE(phase5.empty());
+    ASSERT_FALSE(drawMain.empty());
+
+    const size_t phase2 = processSession.find("flow = Phase2();");
+    const size_t independentRoute =
+        processSession.find("TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()", phase2);
+    const size_t phase3 = processSession.find("flow = Phase3();", independentRoute);
+    ASSERT_NE(phase2, std::string::npos);
+    ASSERT_NE(independentRoute, std::string::npos);
+    ASSERT_NE(phase3, std::string::npos);
+    EXPECT_LT(phase2, independentRoute);
+    EXPECT_LT(independentRoute, phase3)
+        << "normal-backend Phase3 returns after the FSR cooldown and must not preempt the independent route";
+    const size_t runtimeOwnedSkip =
+        phase3Source.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(");
+    const size_t runtimeOwnedReturn = phase3Source.find("return ProcessFrameFlow::kReturn;", runtimeOwnedSkip);
+    ASSERT_NE(runtimeOwnedSkip, std::string::npos);
+    EXPECT_NE(runtimeOwnedReturn, std::string::npos)
+        << "the source-order regression must remain tied to Phase3's runtime-owned FSR early return";
+
+    const size_t drawFrame = phase5.find("ProcessFrameFlow FrameProcessSession::DrawOverlayFrame()");
+    ASSERT_NE(drawFrame, std::string::npos);
+    EXPECT_EQ(phase5.find("TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()", drawFrame), std::string::npos);
+    EXPECT_NE(phase5.find("independentFSRTopmostCompositedThisPresent", drawFrame), std::string::npos);
+    const size_t oldNestedSite = drawMain.find("ProcessFrameFlow FrameProcessSession::DrawSkipAndCounters()");
+    const size_t helperDefinition =
+        drawMain.find("bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()", oldNestedSite);
+    ASSERT_NE(oldNestedSite, std::string::npos);
+    ASSERT_NE(helperDefinition, std::string::npos);
+    const std::string oldNestedBody = drawMain.substr(oldNestedSite, helperDefinition - oldNestedSite);
+    EXPECT_EQ(oldNestedBody.find("TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()"), std::string::npos)
+        << "the independent renderer must not be re-nested behind the normal backend skip gate";
+}
+
+TEST(FFXTopmostBatchSourceTest, AppCallbackRouteReusesWarmMarkerRendererAndPinsPresentationQueue) {
+    const std::string callbackAdapter = ReadSource("hook/apis/dx12_hook_ffx_overlay_adapter.cpp");
+    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");
+    const std::string drawMain = ReadSource("hook/apis/dx12_hook_process_session_draw_main.cpp");
+    ASSERT_FALSE(callbackAdapter.empty());
+    ASSERT_FALSE(ownerQueue.empty());
+    ASSERT_FALSE(topmostBatch.empty());
+    ASSERT_FALSE(renderer.empty());
+    ASSERT_FALSE(drawMain.empty());
+
+    const size_t deepComposite = ownerQueue.find(
+        "bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(");
+    ASSERT_NE(deepComposite, std::string::npos);
+    const std::string deepCompositeBody = ownerQueue.substr(deepComposite);
+    const size_t helper =
+        drawMain.find("bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()");
+    const size_t nextFunction = drawMain.find("ProcessFrameFlow FrameProcessSession::DrawDeviceScope()", helper);
+    ASSERT_NE(helper, std::string::npos);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const std::string helperBody = drawMain.substr(helper, nextFunction - helper);
+
+    EXPECT_NE(deepCompositeBody.find("request.inlineCompletionMarker = true;"), std::string::npos);
+    EXPECT_EQ(deepCompositeBody.find("request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;"),
+              std::string::npos);
+    EXPECT_NE(topmostBatch.find("request.embeddedInExistingBatch = true;"), std::string::npos);
+    EXPECT_NE(renderer.find("request.inlineCompletionMarker ? g_InlineProxyStates : g_ProxyStates"),
+              std::string::npos);
+    EXPECT_NE(topmostBatch.find(
+                  "DX12_PrewarmFFXPresentCallbackOverlayAdapter(g_TopmostBatchSwapChain, queue)"),
+              std::string::npos);
+    EXPECT_NE(callbackAdapter.find("\"no-callback topmost prewarm\", false"), std::string::npos);
+    EXPECT_NE(callbackAdapter.find("\"live app-callback\", true"), std::string::npos);
+
+    EXPECT_NE(helperBody.find("presentationQueue = dx12_hook_g_SwapchainQueue;"), std::string::npos);
+    EXPECT_NE(helperBody.find("presentationQueue->AddRef();"), std::string::npos);
+    EXPECT_NE(helperBody.find(
+                  "DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(pSwapChain, presentationQueue)"),
+              std::string::npos);
+    EXPECT_NE(helperBody.find("presentationQueue->Release();"), std::string::npos);
+    EXPECT_EQ(helperBody.find(
+                  "DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(pSwapChain, gameQueue)"),
+              std::string::npos);
+}
+
 TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreStateful) {
     const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
     const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");

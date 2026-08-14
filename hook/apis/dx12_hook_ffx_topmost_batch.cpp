@@ -178,6 +178,7 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
                                       : "no-callback-fsr-topmost-activation-probe";
     request.submitCommandList = &SubmitOverlayInsideObservedBatch;
     request.inlineCompletionMarker = true;
+    request.embeddedInExistingBatch = true;
     request.hdr = hdr;
     const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
     if (!rendered || !submitContext.submitted) {
@@ -192,6 +193,13 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
                 submitContext.submitted ? 1 : 0, logCount + 1);
         }
         return false;
+    }
+
+    if (!renderOverlay) {
+        // This callback fallback may become live several seconds after FSR activation. Build its immutable DX12
+        // backend during the initial no-callback transition instead of synchronously creating PSOs, 32 upload
+        // buffers, and font resources on the later steady-state callback output.
+        DX12_PrewarmFFXPresentCallbackOverlayAdapter(g_TopmostBatchSwapChain, queue);
     }
 
     t_PresenterFrameTrace.appendSucceeded = true;

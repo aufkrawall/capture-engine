@@ -433,7 +433,10 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
     request.routeName = activationProbe ? "below-foreign-chain-fsr-activation-probe"
                                         : "below-foreign-chain-fsr";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
-    request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
+    // Reuse the no-callback final-batch renderer for this exact presentation identity. Its inline GPU marker
+    // is equally valid at the tail of this separate owner-queue submission and avoids both a second complete
+    // renderer initialization on the delayed callback-route flip and a per-output queue Signal.
+    request.inlineCompletionMarker = true;
     request.hdr = hdr;
     const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
     backBuffer->Release();

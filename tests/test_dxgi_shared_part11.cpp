@@ -623,7 +623,7 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     EXPECT_NE(routing.find("HookIsPostSLOverlayActiveButUnconfirmed()"), std::string::npos);
 }
 
-TEST(DXGISharedSourceTest, DeepMultiOverlayPresentViewPreservesRealDX12SwapchainIdentity) {
+TEST(DXGISharedSourceTest, DeepForeignPresentViewPreservesRealDX12SwapchainIdentity) {
     namespace fs = std::filesystem;
     const std::string create = ce::test_source::ReadFile(
         fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
@@ -631,6 +631,15 @@ TEST(DXGISharedSourceTest, DeepMultiOverlayPresentViewPreservesRealDX12Swapchain
     const size_t policyCall = create.find("ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)");
     ASSERT_NE(policyCall, std::string::npos);
     EXPECT_NE(create.find("Preserving real DX12 swapchain identity", policyCall), std::string::npos);
+    const size_t legacyCreate = create.find("DetourCreateSwapChainGlobal(");
+    const size_t legacyInvisibleBypass =
+        create.find("ShouldBypassInvisibleWindowCreateSwapchainSideEffects(", legacyCreate);
+    const size_t legacyPresentRefresh = create.find("RefreshPresentHooksForRealSwapchain(", legacyCreate);
+    ASSERT_NE(legacyCreate, std::string::npos);
+    ASSERT_NE(legacyInvisibleBypass, std::string::npos);
+    ASSERT_NE(legacyPresentRefresh, std::string::npos);
+    EXPECT_LT(legacyInvisibleBypass, legacyPresentRefresh)
+        << "legacy hidden-window creates must skip global wrapping side effects too";
 
     const std::string factory = ce::test_source::ReadFile(
         fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
@@ -639,9 +648,14 @@ TEST(DXGISharedSourceTest, DeepMultiOverlayPresentViewPreservesRealDX12Swapchain
     ASSERT_NE(assign, std::string::npos);
     const size_t preserve = factory.find(
         "ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(", assign);
+    const size_t invisiblePreserve = factory.find(
+        "ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(", assign);
     const size_t retainingWrap = factory.find("new CWrapDXGISwapChain(pReal, pDevice)", assign);
     ASSERT_NE(preserve, std::string::npos);
+    ASSERT_NE(invisiblePreserve, std::string::npos);
     ASSERT_NE(retainingWrap, std::string::npos);
+    EXPECT_LT(invisiblePreserve, retainingWrap)
+        << "an invisible DX12 chain with a foreign overlay must never gain a retaining proxy";
     EXPECT_LT(preserve, retainingWrap)
         << "the factory wrapper must return the real object before any retaining wrapper is constructed";
 }

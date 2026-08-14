@@ -88,18 +88,28 @@ bool ShouldBypassSwapchainWrapperForFrameGenerationRuntime(bool d3d12CommandQueu
 
 template <typename TSwapChain>
 void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12CommandQueueSwapchain, const char* callName,
-                            TSwapChain** ppSwapChain) {
+                            TSwapChain** ppSwapChain, HWND outputWindow = nullptr) {
     if (!pReal || !ppSwapChain) {
         return;
     }
 
     const size_t loadedOverlayCount = ce::overlay_compat::CountLoadedTrackedOverlayModules(
         ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const bool outputWindowVisible = !outputWindow || IsWindowVisible(outputWindow) != FALSE;
+    if (ce::overlay_compat::ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(
+            d3d12CommandQueueSwapchain, outputWindow != nullptr, outputWindowVisible, loadedOverlayCount)) {
+        WrapperLog(
+            "%s: Preserving real DX12 swapchain identity for an invisible-window create with a foreign "
+            "overlay loaded (sc=%p hwnd=%p overlays=%zu) — hidden chains must not gain a retaining CE proxy",
+            callName ? callName : "CreateSwapChain", pReal, outputWindow, loadedOverlayCount);
+        *ppSwapChain = pReal;
+        return;
+    }
     if (ce::overlay_compat::ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
             d3d12CommandQueueSwapchain, DXGIShared::ArePresentMethodsInterceptedBelowForeignChain(),
             loadedOverlayCount)) {
         WrapperLog(
-            "%s: Preserving real DX12 swapchain identity below the multi-overlay foreign Present chain "
+            "%s: Preserving real DX12 swapchain identity below the foreign Present chain "
             "(sc=%p overlays=%zu)",
             callName ? callName : "CreateSwapChain", pReal, loadedOverlayCount);
         *ppSwapChain = pReal;
@@ -337,7 +347,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     IDXGISwapChain* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChain", ppSwapChain);
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChain", ppSwapChain,
+                               pDesc ? pDesc->OutputWindow : nullptr);
     } else
         *ppSwapChain = nullptr;
     return hr;
@@ -423,7 +434,8 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     HRESULT hr =
         m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForHwnd", ppSwapChain);
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForHwnd", ppSwapChain,
+                               hWnd);
     } else
         *ppSwapChain = nullptr;
     return hr;

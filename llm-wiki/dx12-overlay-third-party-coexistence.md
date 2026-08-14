@@ -106,12 +106,14 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 - `HasPresentInlineHooks()` / `HasPresentDetourHooks()` count the deep bodies — otherwise `FindAndWrapPreExistingSwapchains` keeps reporting failure and the wrapper keeps running a second Present path over the same frames. `HasPrependedPresentEntryHook()` is the new predicate for "CE owns entry bytes"; the late-overlay-join warning in `main_overlay_detect.cpp` uses it, because in this mode CE owns none.
 - **Complete deep coverage also preserves swapchain COM identity (2026-08-14).** Leaving the shared entry and class
   vtable pristine is insufficient if CE then hands the game/runtime a `CWrapDXGISwapChain`: that proxy changes the
-  object and mirrored AddRef/Release traffic observed by Steam/RTSS, while its Present delegation creates a redundant
-  second CE transport. Session `20260814_004913` ended with four foreign refs after wrapper teardown, then official
-  FFX replacement creation failed `E_ACCESSDENIED`; RTSS submissions also stopped while Steam continued. When at
-  least two tracked overlays are loaded and both Present methods have deep hooks, all ordinary DX12 factory paths now
-  return the real swapchain. The wrapper remains only where it supplies missing coverage (incomplete deep view,
-  non-DX12/single-overlay fallback, or the dedicated non-retaining Streamline runtime route).
+  object and mirrored AddRef/Release traffic observed by foreign overlays, while its Present delegation creates a
+  redundant second CE transport. Sessions `20260814_004913` (Steam + RTSS) and `20260814_051557` (Steam only) ended
+  with foreign refs after wrapper teardown, then official FFX replacement creation failed `E_ACCESSDENIED`. With at
+  least one tracked overlay and complete deep coverage, ordinary DX12 factory paths therefore return the real object.
+  A hidden-window DX12 create also returns the real object when an overlay is already loaded, before deep coverage can
+  exist: hidden-chain policy deliberately skips Present-hook refresh, so adding a retaining proxy there is an
+  inconsistent side effect that can pin the future main chain. Visible incomplete-deep, non-DX12, overlay-free, and
+  dedicated non-retaining Streamline runtime fallbacks remain unchanged.
 - Internal D3D10/11 hook-discovery swapchains are thread-locally excluded from the DX12 global factory detour. RTSS's
   D3D11On12 startup had caused CE's temp D3D11 chain to enter DX12 wrapping/tracking and retain a foreign reference.
   The thread-local scope preserves concurrent real game creates, while first proven D3D12 Present publishes API-use
@@ -684,11 +686,11 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 
 The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the native FSR FG app-callback route re-created the same symptom one layer deeper. Session `20260813_061015` (Talos + Steam overlay + official FFX FSR FG, build 0.1.5995) shows why: CE's FFX present callback composites the overlay into the runtime output buffer, the runtime presents that buffer through DXGI afterwards, and Steam's entry hook composites on top of it. CE's deep body hook below the foreign chain runs on that same present every frame — the `[OVERLAY LAYER] deep-body-below-foreign-chain` note fired — but `ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain` routed the actual draw away because the runtime-owned native-FSR path must normally keep CE's separate GPU work suppressed.
 
-- **Fix**: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR` (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`, wired from `DrawSkipAndCounters` in `hook/apis/dx12_hook_process_session_draw_main.cpp`). When CE is below a foreign chain, at least one tracked overlay is loaded, the FFX present callback is live and un-stalled, and none of the no-callback/teardown/protected-startup/deviceremoved states apply, the deep body hook draws a second overlay composite onto the presented swapchain's exact current backbuffer on the swapchain-owning queue. In the repro that is the queue Steam's own ECL went through (`scQueue=000001A1FA0B1440`), so queue order is Steam -> CE and CE's overlay is topmost.
+- **Fix**: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR` (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`, invoked at the start of `DrawOverlayFrame` in `hook/apis/dx12_hook_process_session_phase5.cpp`). When CE is below a foreign chain, at least one tracked overlay is loaded, the FFX present callback is live and un-stalled, and none of the no-callback/teardown/protected-startup/deviceremoved states apply, the deep body hook draws a second overlay composite onto the presented swapchain's exact current backbuffer on the swapchain-owning queue. In the repro that is the queue Steam's own ECL went through (`scQueue=000001A1FA0B1440`), so queue order is Steam -> CE and CE's overlay is topmost. This independent route must run before the normal `overlayInit && syncInit` gate: app-callback routing intentionally invalidates that normal backend, and nesting the dedicated renderer behind it makes the topmost route unreachable.
 - **Why it is safe where 0.1.5970-0.1.5972 were not**: the draw uses `dx12_ffx_suspend_overlay` — the exact-current-buffer RTV per frame (the normal backend's preserved RTV heap can still reference the pre-FG buffers, the stale-target shape of the 0.1.5972 FG-off device removal), per-slot in-flight refusal without waiting/overwriting, and retained target resources until completion proof. It is the swapchain-owning queue (not the idle game queue of the 0.1.5970 save-load "never landed" case). The callback baseline remains until the first successful deep submit; each success arms exactly the next callback to yield, and that callback consumes the proof. If deep Presents stop or a submit is refused, no stale latch survives to suppress the following callback.
 - **Route value**: `DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR` (`below-foreign-chain-runtime-owned-fsr`); the layering diagnostic is `[OVERLAY LAYER] ... site=deep-body-below-foreign-chain-runtime-owned-fsr ...`. The FG-UI-composition `[OVERLAY LAYER]` note no longer claims the callback is the only runtime-safe channel unconditionally.
 - **Explicitly excluded**: no-callback internal composition (the documented ffxQuery wedge / 0x887A002B boundary), explicit FSR-off teardown, stalled callbacks (the existing stall fallback rules own that state), protected startup quiescence, DLSS/Streamline, and any frame where the routed queue is not the swapchain queue.
-- **Tests**: `tests/test_ffx_below_foreign_chain_policy.cpp`. Verify gate passed on 0.1.5999. **Open**: needs the user's Talos FSR-FG + Steam run to confirm topmost layering and no device removal across the FG switch matrix; GTA's historical app-callback ACCESS_DENIED boundary must be re-checked there too.
+- **Tests**: `tests/test_ffx_below_foreign_chain_policy.cpp`. Verify gate passed on 0.1.5999. User runs subsequently confirmed FSR topmost layering; ReShade and the full cross-runtime switch matrix remain open hardware coverage.
 - **Follow-up (2026-08-13, build 0.1.6000)**: the Talos FSR-FG + Steam validation run crashed on the FSR->DLSS
   menu switch with the game's own `WindowsD3D12Viewport.cpp:267` `80070005` fatal ensure, because the deep draw's
   renderer state is keyed by the PRESENTED FFX swapchain while the FFX teardown only retired the registered
@@ -732,22 +734,32 @@ submit later ECL batches before the deep system Present, so the UI-resource rout
   Present boundary, matching the two ~288-FPS CSV blocks and alternating tiny/normal frame times. Deep Present is now
   the sole timing observer when installed; the callback remains the fallback only when runtime-owned presentation
   does not re-enter CE through DXGI. Draw ownership and frame-timing ownership are deliberately independent.
-- **Pacing follow-up (`20260814_041840`)**: displayed cadence was flat between route edges, but CE synchronously
-  rebuilt the suspend/topmost renderer inside AMD's live ECL/Present path after callback/no-callback cleanup. The
-  test kept FSR enabled but changed that internal route every six seconds; its recurring no-callback entries align
-  with 17.3 ms and 16.1 ms ECL stalls and 20.1/48.8 ms displayed-output gaps. Exact presentation identities now
-  retain both warm renderer families across routing-only clears, avoiding repeated PSO, 16-slot allocator/list,
-  upload-pool, font, and RTV construction. The renderer pins its proxy while the raw-keyed cache is live, drops
-  that pin immediately on retirement, and real replacement/context teardown remains authoritative. First-use
-  callback/UI behavior is unchanged so the pacing fix cannot trade a stall for a missing fallback draw. The same
-  session emitted 3,451 stable UI/deep-site alternation logs and 1,789 identical HDR-source lines; those
-  diagnostics are now stateful instead of performing synchronous per-output file I/O.
-- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`, `hook/apis/dx12_hook_ffx_metrics.cpp`,
+- **Pacing/topmost follow-ups (`20260814_041840`, `20260814_053934`)**: exact identities retain warm renderer maps
+  across route-only clears, but the later trace proved that retention was insufficient: 6.028 seconds after FSR
+  activation the first app-callback deep Present built its previously nonexistent *separate* renderer, taking
+  20.4 ms (`perf_metrics` frame 2425: 24.194 ms output gap). Both deep topmost routes now share the exact-swapchain
+  inline-marker renderer; the app route issues one ordinary owner-queue ECL ending in the GPU marker, while the
+  no-callback route embeds that same list in the foreign final ECL batch. Neither needs a queue `Signal`.
+- **0.1.6055 correction (`20260814_055632`)**: sharing removed the delayed deep-renderer build, but the FFX callback
+  fallback adapter remained cold. CSV frame 1605 records a 24.443 ms output gap while `ProcessFrame` took 136 us;
+  the callback thread synchronously created PSOs, 32 upload buffers, font, and descriptors from `.840` to `.858`.
+  The no-callback activation probe now prewarms that required immutable backend inside the initial FSR transition.
+- **0.1.6056 hardware result/correction (`20260814_061442`)**: prewarming removes the six-second pacing spike and CE
+  remains topmost over Steam, but the remaining translucent-box flicker exposed one higher early return. While the
+  90-frame cooldown was nonzero, Phase3 returned `kSkipOverlayInit` and the later independent route still ran; at
+  zero, its runtime-owned-FSR init deferral returned `kReturn`, dropped the deep proof, and made the callback baseline
+  resume at `06:15:05.972`. The independent route now runs after Phase2 and before Phase3, records a per-Present
+  completion flag, and still AddRef-pins `dx12_hook_g_SwapchainQueue` under its mutex. The later draw stage cannot
+  duplicate it, and normal-backend init/early-return policy cannot change visible ownership.
+- Warm raw-keyed renderer states pin their swapchain identity until retirement; real replacement/context teardown
+  remains authoritative. Stable site/HDR diagnostics are stateful rather than performing per-output file I/O.
+- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`, `hook/apis/dx12_hook_ffx_overlay_adapter.cpp`,
+  `hook/apis/dx12_hook_ffx_metrics.cpp`,
   `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`,
-  and `tests/test_ffx_topmost_batch_policy.cpp`. Focused pacing-policy/source and FSR transition/replay tests pass;
-  the complete `--verify` gate also passes on 0.1.6053 (full native/Python suites, lint ratchets, and x64
-  ASan/UBSan). **Open**: fresh on-hardware validation of stable translucency/FPS and elimination of CE-attributed
-  pacing spikes, plus ReShade validation
+  and `tests/test_ffx_topmost_batch_policy.cpp`. Focused pacing-policy/source tests and the complete 0.1.6057
+  `--verify` gate pass.
+  **Open**: fresh on-hardware validation of stable translucency after the pre-Phase3 correction,
+  plus ReShade validation
   plus the full FSR/off/DLSS switch matrix and teardown/device-health checks after the ownership handoff.
 
 ## Open Questions / Stale-Risk

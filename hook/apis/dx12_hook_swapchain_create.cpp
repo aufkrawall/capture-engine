@@ -470,6 +470,10 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
                                               captureEvidence);
         return hr;
     }
+    if (pDesc && ShouldBypassInvisibleWindowCreateSwapchainSideEffects(
+                     pDesc->OutputWindow, *ppSwapChain, "DetourCreateSwapChainGlobal", hr)) {
+        return hr;
+    }
 
     // Log swapchain details
     if (pDesc) {
@@ -525,14 +529,14 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
 
     if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
         HookLogImportant(
-            "DetourCreateSwapChainGlobal: Preserving real DX12 swapchain identity below the multi-overlay "
+            "DetourCreateSwapChainGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p) — deep Present interception already covers CE",
             *ppSwapChain);
         return hr;
     }
 
-    // The wrapper remains the fallback when CE has no deep Present view below a multi-overlay
-    // foreign chain. Do not use it merely as a second view when the deep hook already covers CE.
+    // The wrapper remains the fallback when CE has no deep Present view below a foreign
+    // chain. Do not use it merely as a second view when the deep hook already covers CE.
 
     // CRITICAL: Check if this swapchain is already wrapped
     // This prevents double-wrapping which causes infinite Present recursion
@@ -723,13 +727,13 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
     if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
         HookLogImportant(
             "DetourCreateSwapChainForHwndGlobal: Preserving real DX12 swapchain identity below the "
-            "multi-overlay foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",
+            "foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",
             *ppSC, hWnd);
         return hr;
     }
 
-    // The wrapper remains the fallback when CE has no deep Present view below a multi-overlay
-    // foreign chain. Do not use it merely as a second view when the deep hook already covers CE.
+    // The wrapper remains the fallback when CE has no deep Present view below a foreign
+    // chain. Do not use it merely as a second view when the deep hook already covers CE.
 
     // CRITICAL: Check if this swapchain is already wrapped
     // This prevents double-wrapping which causes infinite Present recursion

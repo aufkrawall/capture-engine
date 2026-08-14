@@ -24,10 +24,14 @@ struct RenderRequest {
     SubmitCommandListCallback submitCommandList = nullptr;
     SignalFenceCallback signalFence = nullptr;
     // Record a GPU completion marker at the tail of the overlay command list instead of adding a queue Signal.
-    // Used only when the submit callback appends that list to an existing foreign ECL batch: AMD then observes
-    // the same queue operation it would have seen without CE, while the marker still protects allocator/upload
-    // slot reuse and target lifetime. The ordinary owner-queue routes retain their explicit fence contract.
+    // The no-callback route appends that list to an existing foreign ECL batch; the app-callback topmost route
+    // submits it normally below the foreign Present chain. Both share this renderer so callback routing cannot
+    // trigger a second PSO/upload/font initialization, while the marker protects allocator/upload slot reuse
+    // and target lifetime without perturbing AMD's queue with an extra Signal.
     bool inlineCompletionMarker = false;
+    // Diagnostic/contract distinction only: true means submitCommandList joins an already-active foreign ECL
+    // call rather than issuing CE's ordinary owner-queue ECL call.
+    bool embeddedInExistingBatch = false;
     bool hdr = false;
 };
 

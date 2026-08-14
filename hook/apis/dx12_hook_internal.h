@@ -232,6 +232,9 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     ID3D12CommandQueue* queue, UINT commandListCount, ID3D12CommandList* const* commandLists,
     ExecuteCommandListsPtr original, const void* callSite);
 
+bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapChain,
+                                                   ID3D12CommandQueue* presentationQueue);
+
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
 
 bool DX12_IsNoCallbackFSRTopmostBatchActive();

@@ -253,13 +253,24 @@ TEST(OverlayPresentEntryChainPolicyTest, CEStaysOutOfForeignPresentEntryChains) 
     EXPECT_FALSE(ShouldLeavePresentEntryToForeignOverlayChain(true, 0));
 }
 
-TEST(OverlayPresentEntryChainPolicyTest, DeepMultiOverlayViewPreservesDX12SwapchainIdentity) {
+TEST(OverlayPresentEntryChainPolicyTest, DeepForeignOverlayViewPreservesDX12SwapchainIdentity) {
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1));
     EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 2));
     EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3));
 
     EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(false, true, 2));
     EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, false, 2));
-    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 0));
+}
+
+TEST(OverlayPresentEntryChainPolicyTest, InvisibleDX12CreateWithForeignOverlayPreservesIdentity) {
+    EXPECT_TRUE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(true, true, false, 1));
+    EXPECT_TRUE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(true, true, false, 2));
+
+    EXPECT_FALSE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(false, true, false, 1));
+    EXPECT_FALSE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(true, false, false, 1));
+    EXPECT_FALSE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(true, true, true, 1));
+    EXPECT_FALSE(ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(true, true, false, 0));
 }
 
 // The below-the-chain body patch can be refused (thread quiescence, unrecognized prolog). The

@@ -102,6 +102,10 @@ bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format);
 void TransitionResourceIfNeeded(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
 void CopyFFXPresentSourceToOutput(ID3D12GraphicsCommandList* cmdList, const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
 bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
+bool DX12_EnsureOverlayAdapterReadyForFFXPresentCallback(
+    const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
+bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapChain,
+                                                   ID3D12CommandQueue* presentationQueue);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx);
 void RecordFFXUiCompositeTimelineEntry(const FFXUiCompositeTimelineEntry& entry);
 bool DX12_IsFFXUiResourceCachedForBundle();

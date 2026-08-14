@@ -390,15 +390,6 @@ if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuR
             dx12_hook_g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
             dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) ? 1 : 0);
     }
-    // Native-FSR-FG layering exception for a foreign Present chain: the FFX present callback
-    // composites CE's overlay before the runtime presents the output through DXGI, so Steam/RTSS
-    // (which patch that present) draw on top of CE. CE's deep body hook runs on the same present
-    // after all of them; draw a topmost composite onto the presented swapchain backbuffer via the
-    // teardown-safe owner-queue renderer. The callback baseline yields only after the first successful
-    // submit in this routing epoch and resumes if a later submit is refused.
-    if (TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()) {
-        return ProcessFrameFlow::kOverlayDone;
-    }
 return ProcessFrameFlow::kSkipOverlayDraw;
 }
 
@@ -571,20 +562,36 @@ bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR
         ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay) > 0;
     const bool nativeFSRActive =
         g_FGCompat.IsFSRFGApiActive() || ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode());
-    const bool submitQueueIsSwapchainQueue = gameQueue != nullptr && gameQueue == dx12_hook_g_SwapchainQueue;
+    // The normal session queue deliberately changes after transition cooldowns. This independent route must
+    // instead pin the queue captured for the presented FSR swapchain itself; otherwise its eligibility expires
+    // with the cooldown and the callback/UI baseline falls back below Steam.
+    ID3D12CommandQueue* presentationQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> queueLock(g_CommandQueueMutex);
+        presentationQueue = dx12_hook_g_SwapchainQueue;
+        if (presentationQueue) {
+            presentationQueue->AddRef();
+        }
+    }
+    const bool submitQueueIsSwapchainQueue = presentationQueue != nullptr;
     const auto decision = ce::dx12_overlay_policy::DecideBelowForeignChainFSRDeepDraw(
         DXGIShared::IsPresentInterceptedBelowForeignChain(), foreignOverlayLoaded, nativeFSRActive,
         HookHasRuntimeOwnedNativeFGPresentPath(),
         dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
         dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0, IsFFXPresentCallbackStalled(),
         dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
-        ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(), dx12_hook_g_SwapchainQueue != nullptr,
+        ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(), presentationQueue != nullptr,
         submitQueueIsSwapchainQueue, dx12_hook_g_DeviceRemoved.load(std::memory_order_relaxed), HookIsShuttingDown());
     if (decision == ce::dx12_overlay_policy::BelowForeignChainFSRDeepDrawDecision::kUnavailable) {
+        if (presentationQueue) {
+            presentationQueue->Release();
+        }
         DX12_ResetBelowForeignChainFSRTopmostSubmitProof("deep Present route became unavailable");
         return false;
     }
-    return DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(pSwapChain, gameQueue);
+    const bool rendered = DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(pSwapChain, presentationQueue);
+    presentationQueue->Release();
+    return rendered;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawDeviceScope() {

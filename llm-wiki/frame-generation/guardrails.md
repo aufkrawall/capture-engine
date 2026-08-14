@@ -13,9 +13,13 @@
 > The 2026-08-14 no-callback topmost route learns and joins the existing final ECL batch with a marker-only activation
 > probe. The FFX UI-resource route remains the sole visible owner until that marker completes and proxy prework
 > retires the prior CE pixels; only the resulting explicit grant permits a later final-batch draw. The app-callback
-> deep route likewise starts with a non-visible submit proof. Callback-routing edges retire both handoffs immediately,
-> and no-callback completion proof latches for only the current learned-signature generation. In-flight outputs rotate
-> across independently marker-guarded allocator/upload slots, so a new marker cannot revoke an already-proven route.
+> deep route likewise starts with a non-visible submit proof and shares the exact-swapchain inline-marker renderer.
+> The no-callback activation probe also prewarms the separate callback fallback adapter, because constructing that
+> immutable backend at the delayed app-callback flip creates a steady-state pacing spike. The independent route pins
+> the captured swapchain presentation queue and runs after Phase2 but before normal-backend Phase3: once cooldown
+> reaches zero, Phase3's intentional runtime-owned-FSR init deferral returns outright and must not preempt topmost
+> work or make the callback baseline alter translucent blending. Callback edges retire handoffs while warm resources remain until real
+> replacement/teardown; in-flight outputs use marker-guarded slots and completion proof is generation-bound.
 > Draw and frame-time ownership are separate: when the deep Present hook observes displayed output it is the sole FPS/
 > history writer; the FFX callback samples only as the fallback when runtime-owned presentation bypasses CE's DXGI path.
 
@@ -110,17 +114,15 @@ This page records current guardrails and tested transition families for no-FG, D
 - The pseudo-overlay is not an injected-overlay replacement for FG. It must not be used to paper over DLSS FG or FSR FG injected-overlay failures.
 
 ## Facts
-- **CURRENT MULTI-OVERLAY SWAPCHAIN-IDENTITY INVARIANT (2026-08-14):** session
-  `installed/captureengine/logs/20260814_004913` disproved the app-side persistent-initial-FFX-proxy workaround.
-  Pressing OFF destroyed that proxy, CE's retaining `CWrapDXGISwapChain` teardown left four foreign references, and
-  the later official FFX ForHwnd create failed `E_ACCESSDENIED`; the dump is the controlled fatal switch path, not an
-  AV. The same run showed RTSS submissions disappearing while Steam continued. CE already had complete Present and
-  Present1 deep-body hooks below the two-overlay chain, so its additional swapchain proxy provided no interception
-  coverage while changing COM identity and mirrored AddRef/Release traffic above Steam/RTSS. Current rule:
-  `ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain` returns the real DX12 object when at least two tracked
-  overlays are loaded and both deep methods are installed. Single-overlay, non-DX12, incomplete-deep-view, and
-  Streamline runtime-special paths retain their existing fallbacks. The switch app remains a normal lifecycle stress
-  client; CaptureEngine owns the compatibility fix.
+- **CURRENT FOREIGN-OVERLAY SWAPCHAIN-IDENTITY INVARIANT (2026-08-14):** sessions
+  `installed/captureengine/logs/20260814_004913` (Steam + RTSS) and `20260814_051557` (Steam only) show CE's retaining
+  `CWrapDXGISwapChain` teardown leaving foreign references before official FFX replacement creation fails controlled
+  with `E_ACCESSDENIED`, not an AV. A proxy adds no coverage after complete Present/Present1 deep interception, so
+  `ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain` returns the real DX12 object with one or more tracked
+  overlays. The Steam-only run was an earlier injection: the native chain was created while its HWND was hidden, the
+  create-side hook correctly skipped authoritative side effects, but the outer wrapped factory still added a
+  retaining proxy. Hidden-window DX12 creates with any tracked overlay now preserve real identity even before deep
+  coverage; visible incomplete-deep, non-DX12, overlay-free, and Streamline-special fallbacks remain unchanged.
 - Internal D3D10/D3D11 discovery swapchains must not flow through the DX12 global swapchain detour. The same session
   showed RTSS's D3D11On12 startup causing CE's D3D11 temp probe to be wrapped/tracked as a DX12 game chain, retaining
   one extra foreign reference and polluting same-HWND diagnostics. A thread-local internal-probe scope now bypasses

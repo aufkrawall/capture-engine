@@ -240,7 +240,8 @@ public:
 
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
                         bool clearTransparent, bool renderOverlay, const char* routeName,
-                        SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence) {
+                        SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
+                        bool embeddedInExistingBatch) {
         if (!targetResource || !submitCommandList || (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
             return RenderResult::kFailed;
         }
@@ -394,17 +395,28 @@ public:
             slot.markerValue = submitMarkerValue;
             ++frameCount;
             slot.submissionSequence = frameCount;
-            static std::atomic<int> s_inlineRenderLogCount{0};
-            const int logCount = s_inlineRenderLogCount.fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<int> s_markerRenderLogCount{0};
+            const int logCount = s_markerRenderLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
-                HookLogImportant(
-                    "DX12: FSR topmost %s appended to the existing final ECL batch "
-                    "(queue=%p frame=%llu bbIndex=%u target=%p marker=%u slot=%zu route=%s draw=%d log=%d) — "
-                    "no extra ExecuteCommandLists and no queue Signal",
-                    renderOverlay ? "overlay" : "activation probe",
-                    queue.Get(), static_cast<unsigned long long>(frameCount), backBufferIndex, targetResource,
-                    submitMarkerValue, slotIndex, routeName ? routeName : "unknown", renderOverlay ? 1 : 0,
-                    logCount + 1);
+                if (embeddedInExistingBatch) {
+                    HookLogImportant(
+                        "DX12: FSR topmost %s appended to the existing final ECL batch "
+                        "(queue=%p frame=%llu bbIndex=%u target=%p marker=%u slot=%zu route=%s draw=%d log=%d) — "
+                        "no extra ExecuteCommandLists and no queue Signal",
+                        renderOverlay ? "overlay" : "activation probe", queue.Get(),
+                        static_cast<unsigned long long>(frameCount), backBufferIndex, targetResource,
+                        submitMarkerValue, slotIndex, routeName ? routeName : "unknown", renderOverlay ? 1 : 0,
+                        logCount + 1);
+                } else {
+                    HookLogImportant(
+                        "DX12: FSR topmost %s submitted on the owner presentation queue with marker completion "
+                        "(queue=%p frame=%llu bbIndex=%u target=%p marker=%u slot=%zu route=%s draw=%d log=%d) — "
+                        "one owner-queue ExecuteCommandLists call and no queue Signal",
+                        renderOverlay ? "overlay" : "activation probe", queue.Get(),
+                        static_cast<unsigned long long>(frameCount), backBufferIndex, targetResource,
+                        submitMarkerValue, slotIndex, routeName ? routeName : "unknown", renderOverlay ? 1 : 0,
+                        logCount + 1);
+                }
             }
             return RenderResult::kRendered;
         }
@@ -618,7 +630,8 @@ bool Render(const RenderRequest& request) {
 
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
-                      request.renderOverlay, request.routeName, request.submitCommandList, request.signalFence);
+                      request.renderOverlay, request.routeName, request.submitCommandList, request.signalFence,
+                      request.embeddedInExistingBatch);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
         return true;
