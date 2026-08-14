@@ -1,14 +1,12 @@
 name: CodeQL (C/C++)
 
-# Manual (workflow_dispatch) plus a weekly baseline scan. Deliberately NOT
-# triggered on every push: a traced Linux cross-compile of the full product
-# is heavy, and the repo's own CI is manual-only. The previous default-setup
-# c-cpp job was useless: its Linux autobuild could not build this MSYS2
-# Windows project, so it scanned an empty database on every push.
+# Manual-only (workflow_dispatch). Deliberately NOT triggered on push or
+# schedule: a traced Linux cross-compile of the full product is heavy, and
+# the repo's CI policy is manual-only. The previous default-setup c-cpp job
+# was useless: its Linux autobuild could not build this MSYS2 Windows
+# project, so it scanned an empty database on every push.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 3 * * 1'
 
 concurrency:
   group: codeql-cpp

@@ -1,21 +1,9 @@
 name: CodeQL (python)
 
+# Manual-only (workflow_dispatch): the repo's CI policy is manual-only, so no
+# job runs on push, PR, or schedule without an explicit dispatch.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'build.py'
-      - 'tools/**'
-      - 'testapp/**'
-      - '**/*.py'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'build.py'
-      - 'tools/**'
-      - 'testapp/**'
-      - '**/*.py'
 
 concurrency:
   group: codeql-python-${{ github.ref }}

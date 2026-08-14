@@ -10,18 +10,22 @@
 - Packaging regression tests extended: staging covers both-arch and x64-only layouts plus the
   missing-template failure, and an archive-level test lists the config members in the produced 7z.
 
-### 2026-08-14 - CI: CodeQL default setup replaced by path-filtered advanced workflows
+### 2026-08-14 - CI: CodeQL default setup replaced by manual-only advanced workflows
 
-- GitHub CodeQL default setup (three `Analyze` jobs on every push to `main`) was replaced by advanced
-  workflows. `codeql-actions.yml` and `codeql-python.yml` now run only on pushes/PRs touching
-  `.github/workflows/**` resp. `build.py`/`tools/`/`testapp` Python files (plus manual dispatch).
-  `codeql-cpp.yml` runs only on manual dispatch plus a weekly Monday-03:00-UTC cron.
-- Rationale: the default-setup `(c-cpp)` job ran an empty database every push — its Linux autobuild cannot
-  build this MSYS2 Windows project — while `(actions)`/`(python)` re-scanned unchanged files on every push
-  (main receives ~20 pushes/day). The C++ workflow instead traces the proven hardening-ci Linux
-  cross-compile (`python build.py --skip-updates` on `ubuntu-latest`) for real coverage.
-- Default setup was disabled via the code-scanning API (`state: not-configured`); `main` has no branch
-  protection, so no required-check updates were needed. codeql-action pinned at v4 SHA
+- GitHub CodeQL default setup (three `Analyze` jobs on every push to `main`, main receives ~20
+  pushes/day) was replaced by three manual-only advanced workflows: `codeql-actions.yml`,
+  `codeql-python.yml`, `codeql-cpp.yml` — all `workflow_dispatch` only, no push/PR/schedule triggers.
+  Rationale: the default-setup `(c-cpp)` job scanned an empty database every push (its Linux autobuild
+  cannot build this MSYS2 Windows project), and the other two re-scanned unchanged files on every push.
+- Default setup was disabled via the code-scanning API (`state: not-configured`). The `Review main`
+  ruleset's required status check was first updated from the dead `CodeQL` context to the new check
+  names, then removed when scanning became fully manual (a required check can never pass for a
+  manual-only workflow).
+- `codeql-cpp.yml` traces the hardening-ci Linux cross-compile (`python build.py --skip-updates` on
+  `ubuntu-latest`). Its first validation run exposed a pre-existing GCC incompatibility:
+  `inline template <typename T>` in `hook/apis/ffx_hook_internal.h:219/254` (clang tolerates it, GCC
+  rejects it); fixed to `template <typename T> inline` in commit `53354b26` (Windows incremental
+  build + unit tests + Python self-tests pass). codeql-action pinned at v4 SHA
   `988661ebb5e81487b3fb31b2185d2856c0a10679` (repo convention: pin Actions by SHA).
 
 ### 2026-08-14 - HARDWARE-CONFIRMED pacing/topmost; FIXED locally: stable translucent-route ownership
