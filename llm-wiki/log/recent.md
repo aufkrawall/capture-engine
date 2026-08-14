@@ -25,8 +25,11 @@
   `ubuntu-latest`). Its first validation run exposed a pre-existing GCC incompatibility:
   `inline template <typename T>` in `hook/apis/ffx_hook_internal.h:219/254` (clang tolerates it, GCC
   rejects it); fixed to `template <typename T> inline` in commit `53354b26` (Windows incremental
-  build + unit tests + Python self-tests pass). codeql-action pinned at v4 SHA
-  `988661ebb5e81487b3fb31b2185d2856c0a10679` (repo convention: pin Actions by SHA).
+  build + unit tests + Python self-tests pass). The first validation run then succeeded with real
+  coverage (1.2 GB extracted database vs. the empty default-setup database) and uploaded 29 findings
+  (`cpp/wrong-type-format-argument`, `cpp/integer-multiplication-cast-to-long`,
+  `cpp/redundant-null-check-simple`) for review under Security > Code scanning. codeql-action pinned
+  at v4 SHA `988661ebb5e81487b3fb31b2185d2856c0a10679` (repo convention: pin Actions by SHA).
 
 ### 2026-08-14 - HARDWARE-CONFIRMED pacing/topmost; FIXED locally: stable translucent-route ownership
 
