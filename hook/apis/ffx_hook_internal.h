@@ -216,7 +216,7 @@ ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigur
 
 void ClearSubstituteUiReRegistrationForContext(ffxContext ffx_hook_context);bool IsCommittedReadableCodeAddress(void* address);
 
-inline template <typename T>
+template <typename T> inline
 void RefreshDirectOriginalForModuleReload(T& original, T resolved, std::atomic<bool>& inlineHooked,
                                           std::atomic<void*>& targetSlot, const char* hookName,
                                           const char* ffx_hook_moduleName) {
@@ -251,7 +251,7 @@ void PublishFfxInlineHookTrampoline(void* trampoline, void* context) {
         trampoline ? reinterpret_cast<T>(trampoline) : publication->fallback;
 }
 
-inline template <typename T>
+template <typename T> inline
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
                            std::atomic<void*>& targetSlot, const char* hookName) {
     if (!target) {
