@@ -42,6 +42,10 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
     EXPECT_FALSE(config.graphics.nvLodSpreadFix);
+    EXPECT_FALSE(config.graphics.forceRayReconstruction);
+    EXPECT_FALSE(config.graphics.rayReconstructionOptimalSettings);
+    EXPECT_FALSE(config.graphics.disablePostProcessingEffects);
+    EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, -1.0f);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
@@ -167,6 +171,11 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_factor=3x", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_preset=B", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_debug_overlay=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.force_ray_reconstruction=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.ray_reconstruction_optimal_settings=on", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.disable_post_processing_effects=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.tonemapper_sharpen=0.5", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.reshade_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.optiscaler_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.specialk_dll_path=", profileExample), std::string::npos);
@@ -183,6 +192,13 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("Shows the frame-time graph"), std::string::npos);
     EXPECT_NE(generatedText.find("vsync_mode: default, off, fifo"), std::string::npos);
     EXPECT_NE(generatedText.find("Sharpening accepts default, off"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[UE5]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("ray_reconstruction_optimal_settings=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("disable_post_processing_effects=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("tonemapper_sharpen=default"), std::string::npos);
+    EXPECT_NE(generatedText.find("r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32"),
+              std::string::npos);
+    EXPECT_NE(generatedText.find("r.MegaLights.NumSamplesPerPixel=8"), std::string::npos);
     EXPECT_NE(generatedText.find("audio_capture_latency_ms=0 measures"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);

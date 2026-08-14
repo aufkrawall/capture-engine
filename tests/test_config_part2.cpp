@@ -306,23 +306,6 @@ TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
     EXPECT_TRUE(config.graphics.nvLodSpreadFix);
 }
 
-TEST_F(ConfigTest, ParsesRayReconstructionForcePolicyFromDlssAndLegacyGraphicsSections) {
-    WriteConfig("[DLSS]\nforce_ray_reconstruction=on\n");
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config);
-    EXPECT_TRUE(config.graphics.forceRayReconstruction);
-
-    WriteConfig("[Graphics]\nforce_ray_reconstruction=true\n");
-    LoadConfig(tempConfigFile, config);
-    EXPECT_TRUE(config.graphics.forceRayReconstruction);
-
-    WriteConfig("[DLSS]\nforce_ray_reconstruction=off\n"
-                "[Graphics]\nforce_ray_reconstruction=true\n");
-    LoadConfig(tempConfigFile, config);
-    EXPECT_FALSE(config.graphics.forceRayReconstruction);
-}
-
 TEST_F(ConfigTest, NormalizesAndValidatesMipMappingMode) {
     WriteConfig("[Graphics]\nmip_mapping=BiLiNeAr\n");
 

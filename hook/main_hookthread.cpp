@@ -313,7 +313,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   HookLogImportant("HookThread: IAT hooks installed");
 
   // Install the graphics hooks before any optional engine-memory discovery.
-  // The UE5 RR CVar scan can take several seconds in large shipping modules;
+  // UE5 CVar discovery can take several seconds in large shipping modules;
   // running it first lets the game create its initial swapchain before the
   // DXGI queue-capture hooks exist and strands the PostSL overlay without an
   // authoritative queue.
@@ -321,7 +321,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   MarkHookLifecycleBootstrapComplete();
 
   const GraphicsConfig initialGraphicsConfig = GetActiveGraphicsConfig();
-  UE5::RefreshRayReconstructionOverride(initialGraphicsConfig.forceRayReconstruction);
+  UE5::RefreshOverrides(initialGraphicsConfig);
 
   HookLogImportant("HookThread: All hooks installed, entering exit monitor loop");
 
@@ -360,7 +360,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     // Keep graphics/module hook installation ahead of the optional UE5 module
     // scan on every service pass as well as during initial startup.
-    UE5::RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction);
+    UE5::RefreshOverrides(activeGraphicsConfig);
 
     // Check for recording state changes
     static bool s_WasRecording = false;
@@ -433,7 +433,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
   }
 
-  UE5::ShutdownRayReconstructionOverride();
+  UE5::ShutdownOverrides();
 
   // Cleanup Event
   CloseCheckHooksEvent();

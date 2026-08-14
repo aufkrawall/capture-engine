@@ -3,14 +3,14 @@
 
 TEST_F(ConfigOverrideTest, ProfileCanEnableAndDisableRayReconstructionForcePolicy) {
     WriteConfig(
-        "[DLSS]\n"
+        "[UE5]\n"
         "force_ray_reconstruction=true\n"
         "[App.1]\n"
         "Process=off.exe\n"
-        "DLSS.force_ray_reconstruction=false\n"
+        "UE5.force_ray_reconstruction=false\n"
         "[App.2]\n"
         "Process=on.exe\n"
-        "DLSS.force_ray_reconstruction=true\n");
+        "UE5.force_ray_reconstruction=true\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "off.exe");
@@ -21,6 +21,42 @@ TEST_F(ConfigOverrideTest, ProfileCanEnableAndDisableRayReconstructionForcePolic
 
     LoadConfig(tempConfigFile, config, "other.exe");
     EXPECT_TRUE(config.graphics.forceRayReconstruction);
+}
+
+TEST_F(ConfigOverrideTest, LegacyDLSSProfileRayReconstructionValueBeatsNewUE5GlobalDefault) {
+    WriteConfig(
+        "[UE5]\n"
+        "force_ray_reconstruction=false\n"
+        "[Profile.Legacy]\n"
+        "Process=legacy.exe\n"
+        "DLSS.force_ray_reconstruction=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "legacy.exe");
+    EXPECT_TRUE(config.graphics.forceRayReconstruction);
+
+    LoadConfig(tempConfigFile, config, "other.exe");
+    EXPECT_FALSE(config.graphics.forceRayReconstruction);
+}
+
+TEST_F(ConfigOverrideTest, ProfileControlsUE5BundlesAndSharpenPrecedenceInput) {
+    WriteConfig(
+        "[UE5]\n"
+        "ray_reconstruction_optimal_settings=false\n"
+        "disable_post_processing_effects=false\n"
+        "tonemapper_sharpen=default\n"
+        "[Profile.UE5]\n"
+        "process=ue5.exe\n"
+        "UE5.ray_reconstruction_optimal_settings=true\n"
+        "UE5.disable_post_processing_effects=true\n"
+        "UE5.tonemapper_sharpen=0.6\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "ue5.exe");
+    EXPECT_TRUE(config.graphics.rayReconstructionOptimalSettings);
+    EXPECT_TRUE(config.graphics.forceRayReconstruction);
+    EXPECT_TRUE(config.graphics.disablePostProcessingEffects);
+    EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, 0.6f);
 }
 
 TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {

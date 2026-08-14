@@ -128,7 +128,8 @@ DLSS.dlss_fg_factor=3x
 
 The following example is a full-featured injected profile for STALKER 2: app audio capture on track 1, forced
 V-Sync, forced 16x anisotropic filtering, DLSS super-resolution, frame-generation, and Streamline DLL overrides,
-a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, forced UE5 Ray Reconstruction with preset E:
+a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, and the UE5 Ray Reconstruction
+optimal-settings bundle with RR preset E:
 
 ```ini
 [Profile.stalker]
@@ -146,7 +147,7 @@ streamline_dll_path=C:\path\to\dlls\folder
 dlss_fg_factor=3x
 dlss_fg_preset=b
 dlss_debug_overlay=on
-force_ray_reconstruction=on
+UE5.ray_reconstruction_optimal_settings=on
 dlss_rr_preset=e
 ```
 
@@ -528,11 +529,20 @@ CaptureEngine for first-run creation.
 
 See the [app profile example](#app-profile-example) for a minimal per-game setup.
 
-For an x64 UE5 title whose NVIDIA plugin already supports Ray Reconstruction,
-`[DLSS] force_ray_reconstruction=on` persistently selects the plugin's
-`r.NGX.DLSS.DenoiserMode=1` path in memory. It does not edit `Engine.ini`, invent missing RR inputs, spoof driver
-support, or block ordinary DLSS SR if RR fails. A compatible `nvngx_dlssd.dll` can still be supplied separately with
-`dlss_rr_dll_path` when the title's shipped DLL is the missing piece.
+The `[UE5]` section contains process-local overrides that persistently redirect validated game-thread/render-thread
+CVar shadows in memory; they never edit `Engine.ini` or other game files. `force_ray_reconstruction=on` selects an
+existing NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` path, while
+`ray_reconstruction_optimal_settings=on` also applies the documented Lumen, virtual-shadow, and MegaLights quality
+bundle from `config.ini`. Neither option invents missing RR inputs, spoofs driver support, or blocks ordinary DLSS SR
+fallback. A compatible `nvngx_dlssd.dll` can still be supplied separately with `[DLSS] dlss_rr_dll_path`.
+
+`disable_post_processing_effects=on` disables UE's built-in sharpen, film grain, vignette, motion blur, and chromatic
+aberration through dedicated CVars/show flags without lowering `r.Tonemapper.Quality`. Set
+`tonemapper_sharpen=0..10` to restore a chosen built-in tonemapper sharpen strength while keeping the other effects
+disabled; this explicit value takes precedence over the disable bundle. CaptureEngine deliberately does not disable
+all game-authored post-process materials merely to catch a possible custom sharpen shader, because those materials
+can also implement gameplay, damage, underwater, and accessibility effects. Every exact injected CVar/value is listed
+beside these settings in the generated `config.ini`.
 
 While CaptureEngine is running, it checks `config.ini` for live changes and applies them where possible — for
 example switching the FPS limiter on or off or changing the target FPS. Settings that are used when a recording

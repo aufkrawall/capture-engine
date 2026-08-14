@@ -436,6 +436,9 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.msaaSamples = sharedMem->graphicsConfig.msaaSamples;
         result.nvLodSpreadFix = sharedMem->graphicsConfig.nvLodSpreadFix;
         result.forceRayReconstruction = sharedMem->graphicsConfig.forceRayReconstruction;
+        result.rayReconstructionOptimalSettings = sharedMem->graphicsConfig.rayReconstructionOptimalSettings;
+        result.disablePostProcessingEffects = sharedMem->graphicsConfig.disablePostProcessingEffects;
+        result.tonemapperSharpen = sharedMem->graphicsConfig.tonemapperSharpen;
         result.cpuPrerenderLimit = sharedMem->graphicsConfig.prerenderLimit;
         result.backbufferCount = sharedMem->graphicsConfig.backbufferCount;
         result.frameLatency = sharedMem->graphicsConfig.frameLatency;

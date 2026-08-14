@@ -2,6 +2,9 @@
 
 #include "config_internal.h"
 
+#include <array>
+#include <utility>
+
 constexpr const char* kMissingConfigValue = "\x1d";
 
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def);
@@ -47,6 +50,46 @@ public:
         if (value != kMissingConfigValue)
             return value;
         return GetStr(legacySection, legacyKey, def);
+    }
+
+    std::string GetStrCompat2(const char* section, const char* key, const char* legacySection,
+                              const char* legacyKey, const char* olderSection, const char* olderKey,
+                              const char* def) {
+        const std::array locations{
+            std::pair{section, key},
+            std::pair{legacySection, legacyKey},
+            std::pair{olderSection, olderKey},
+        };
+        if (!overrideSection_.empty()) {
+            // A legacy section-qualified profile value must keep overriding a
+            // newly added canonical global default after a config migration.
+            for (const auto& [candidateSection, candidateKey] : locations) {
+                const std::string explicitKey = std::string(candidateSection) + "." + candidateKey;
+                GetPrivateProfileStringA(overrideSection_.c_str(), explicitKey.c_str(), "", buffer_, 4096,
+                                         path_.c_str());
+                const std::string value = Trim(buffer_);
+                if (!value.empty())
+                    return value;
+            }
+            for (const auto& [candidateSection, candidateKey] : locations) {
+                (void)candidateSection;
+                if (IsReservedOverrideSelectorKey(candidateKey))
+                    continue;
+                GetPrivateProfileStringA(overrideSection_.c_str(), candidateKey, "", buffer_, 4096,
+                                         path_.c_str());
+                const std::string value = Trim(buffer_);
+                if (!value.empty())
+                    return value;
+            }
+        }
+        for (const auto& [candidateSection, candidateKey] : locations) {
+            GetPrivateProfileStringA(candidateSection, candidateKey, kMissingConfigValue, buffer_, 4096,
+                                     path_.c_str());
+            const std::string value = Trim(buffer_);
+            if (value != kMissingConfigValue)
+                return value;
+        }
+        return def;
     }
 
     int GetInt(const char* section, const char* key, int def) {
@@ -133,6 +176,20 @@ public:
     bool GetBoolCompat(const char* section, const char* key, const char* legacySection, const char* legacyKey,
                              bool def) {
         std::string value = GetStrCompat(section, key, legacySection, legacyKey, def ? "true" : "false");
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (value == "true" || value == "1" || value == "yes" || value == "on")
+            return true;
+        if (value == "false" || value == "0" || value == "no" || value == "off")
+            return false;
+        LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
+        return def;
+    }
+
+    bool GetBoolCompat2(const char* section, const char* key, const char* legacySection, const char* legacyKey,
+                        const char* olderSection, const char* olderKey, bool def) {
+        std::string value = GetStrCompat2(section, key, legacySection, legacyKey, olderSection, olderKey,
+                                          def ? "true" : "false");
         std::transform(value.begin(), value.end(), value.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (value == "true" || value == "1" || value == "yes" || value == "on")

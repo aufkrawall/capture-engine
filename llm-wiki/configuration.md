@@ -7,12 +7,15 @@ Primary sources:
 - `captureengine/captureengine.rc`
 - `common/config_resource.h`
 - `common/config.{h,cpp}`
+- `common/config_load_core.cpp`
+- `captureengine/inject_config.cpp`
 - `common/monitor_selection.{h,cpp}`
 - `common/screen_grab_privacy.{h,cpp}`
 - `captureengine/media_main.cpp`
 - `captureengine/screen_grab_privacy_runtime.{h,cpp}`
 - `tests/config_template.rc`
 - `tests/test_config.cpp`
+- `tests/test_config_ue5.cpp`
 - `tests/test_config_override.cpp`
 - `tests/test_monitor_selection.cpp`
 - `testapp/run_tests.py`
@@ -33,7 +36,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 ## Current section layout and compatibility
 
-- Fresh configs group capture selection in `[Capture]`, ordinary WGC behavior in `[WGC]` (including `wgc_same_device_capture`; it lives here, not in `[Diagnostics]`), file locations/container in `[Output]`, scaling in `[VideoScaling]`, DLSS overrides in `[DLSS]`, audio timing in `[AudioSync]`, logging in `[Logging]`, and troubleshooting switches in `[Diagnostics]`.
+- Fresh configs group capture selection in `[Capture]`, ordinary WGC behavior in `[WGC]` (including `wgc_same_device_capture`; it lives here, not in `[Diagnostics]`), file locations/container in `[Output]`, scaling in `[VideoScaling]`, UE engine overrides in `[UE5]`, NVIDIA runtime overrides in `[DLSS]`, audio timing in `[AudioSync]`, logging in `[Logging]`, and troubleshooting switches in `[Diagnostics]`.
 - `[DesktopOverlay]` is the canonical name for the non-injected screen-corner window. `[Overlay]` remains the injected overlay. Any `[DesktopOverlay]` setting can be qualified inside a process-backed application profile, for example `DesktopOverlay.mode=1`.
 - `[Audio]` contains shared encoding defaults. `[SystemAudio]` and `[SystemAudio.N]` describe render-output sources; `[Microphone]` / `[Microphone.N]` describe inputs. New per-application audio belongs in the application's `[Profile.*]` section beside its video/injection route and setting overrides. `[AppAudio.N]` remains readable for existing configs.
 - Existing locations remain aliases: `[General]`, `[Scaling]`, `[Screenshot]`, `[pseudo-overlay]`, `[Audio]` source keys, `[Audio.N]`, DLSS keys in `[Graphics]`, and `copy_queue_priority` in `[Performance]`. The new location wins when both are present, including an intentionally empty canonical value.
@@ -61,10 +64,19 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - NVENC `lookahead` is deliberately not Boolean: it accepts `off`, `auto`, or a depth from `1` through `31`. `spatial_aq` and `temporal_aq` are independent Booleans, and `aq_strength` applies only to spatial AQ (`0` asks NVENC to choose, otherwise `1..15`).
 - NVENC `split_encode=0..4` controls native single-session split-frame encoding for HEVC and AV1. `0` explicitly disables it and is the fresh/default policy; `1` forces splitting when multiple engines exist and lets the driver choose the strip count; `2..4` request that many physical encoder strips when available. H.264 accepts only `0`. The former `auto`, `disabled`, and `forced` spellings remain compatibility inputs for existing configs, where `auto` retains NVIDIA's preset/tuning/resolution policy. Splitting favors throughput over a small amount of compression efficiency; it is not multiple independent recordings or GOP concatenation.
 - NVIDIA Smooth Motion compatibility is detected and applied automatically. There is no user-facing compatibility switch; failures must be fixed in the detection/compatibility code.
-- `[DLSS] force_ray_reconstruction=on` is an opt-in injected x64 UE5 override. It persistently selects the existing
-  NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` read without changing Engine.ini; legacy `[Graphics]` and qualified
-  `DLSS.force_ray_reconstruction` profile input remain supported. It cannot add an absent RR integration or render
-  inputs and does not falsify runtime capability/support results.
+- `[UE5] force_ray_reconstruction=on` is the canonical opt-in x64 location for persistent selection of an existing
+  NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` read. Legacy `[DLSS]` and `[Graphics]` input remains readable, while
+  the canonical global location wins when several globals are present. Existing section-qualified legacy profile
+  values retain profile precedence over globals. It does not change Engine.ini, add absent RR inputs, or falsify
+  runtime capability/support results.
+- `[UE5] ray_reconstruction_optimal_settings=on` applies the exact 29-CVar DenoiserMode/Lumen/VSM/MegaLights bundle
+  documented in the template and implies the force policy because DenoiserMode=1 is one of those values. Missing
+  CVars in a particular UE/plugin build are logged and skipped rather than guessed.
+- `[UE5] disable_post_processing_effects=on` persistently disables built-in tonemapper sharpening, film grain/grain
+  quantization, vignette, motion blur, and scene-color fringe through dedicated CVars/show flags. It deliberately
+  does not lower `r.Tonemapper.Quality` or globally disable game-authored post-process materials. A finite
+  `tonemapper_sharpen=0..10` takes precedence over only the bundle's sharpen=0 while retaining every other disable;
+  `default` leaves sharpen untouched unless the bundle is enabled.
 - `[ThirdParty] reshade_dll_path` / `optiscaler_dll_path` / `specialk_dll_path` configure the injected hook's early
   loads of user-supplied ReShade / OptiScaler / Special K DLLs. Each value is a file (loaded verbatim) or a folder
   (the per-bitness default name is appended). They are consumed by the hook directly from `config.ini`, not
@@ -80,8 +92,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Validation boundary
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
-- `force_ray_reconstruction` defaults off, is live-reloadable, and is published through an existing shared-config
-  alignment gap; static offset/size assertions keep the shared-memory ABI unchanged.
+- All four `[UE5]` settings default off/default and are live-reloadable. The two policy flags and sharpen value are
+  appended to `SharedGraphicsConfig`; shared-memory ABI/version 39 and mapping/event names isolate older processes.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-09
+Last cross-checked: 2026-08-15
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -8,13 +8,13 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
-- `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,reflex_limiter.h,ue5_rr_override_policy.h}`
-- `hook/main_ue5.cpp`
+- `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,reflex_limiter.h,ue5_rr_override_policy.h,ue5_cvar_override_policy.h}`
+- `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy}.cpp`
 
 ## Configuration contract
 
@@ -42,10 +42,13 @@ Primary sources:
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
   "DLSS on-screen indicator" below.
-- `force_ray_reconstruction=off|on` is an opt-in x64 UE5 policy. `on` persistently selects the existing NVIDIA
-  plugin's `r.NGX.DLSS.DenoiserMode=1` render path in process memory; `[DLSS]` is canonical, legacy `[Graphics]`
-  remains accepted, and `DLSS.force_ray_reconstruction` works in a process-backed profile. It does not edit game
-  files or imply that the title supplies the RR render inputs and runtime support described below.
+- `[UE5] force_ray_reconstruction=off|on` is the canonical x64 policy. `on` persistently selects the existing NVIDIA
+  plugin's `r.NGX.DLSS.DenoiserMode=1` render path in process memory; legacy `[DLSS]` / `[Graphics]` inputs remain
+  accepted, and `UE5.force_ray_reconstruction` works in a process-backed profile.
+- `ray_reconstruction_optimal_settings=on` adds the exact 29-CVar DenoiserMode/Lumen/VSM/MegaLights bundle listed in
+  `captureengine/config.ini.template`; it implies force RR. `disable_post_processing_effects=on` applies dedicated
+  built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
+  touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.
 - Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
   exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
 
@@ -213,14 +216,15 @@ Primary sources:
   logging tags those loads as `NGX model repository`. The mapping (`ModelSegmentToDllName`,
   `IsNgxModelRepositoryPath`) is unit-tested.
 
-## UE5 DLSS Ray Reconstruction force policy
+## Persistent UE5 CVar override policy
 
 - NVIDIA's UE plugin declares `CVarNGXDLSSDenoiserMode` as a static `TAutoConsoleVariable<int32>` and selects SR
   (`0`) versus RR (`1`) with `GetValueOnRenderThread()`. CE therefore changes the exact value source the plugin reads,
   rather than periodically issuing a console command that a map/device-profile reload can undo.
-- On opt-in, `hook/main_ue5.cpp` scans the main x64 game module first, then the remaining initial module set, and after
-  that only newly loaded modules. It finds the exact NUL-terminated UTF-16 `r.NGX.DLSS.DenoiserMode` literal and
-  correlates nearby x64 RIP-relative constructor/store references. Raw candidates first have to prove the writable
+- The generalized scanner resolves every currently requested exact NUL-terminated UTF-16 CVar literal in one read-
+  section pass per module, correlates their nearby x64 RIP-relative constructor/store references, and counts all
+  surviving candidate references in one executable pass. It scans the main game module first, then remaining initial
+  modules, and after that only newly loaded modules. Raw candidates first have to prove the writable
   24-byte `FAutoConsoleObject`/`Target`/`Ref` layout, callable object and target vtables, readable
   `TConsoleVariableData<int32>`, and plausible `{game, render}` shadow values of `0` or `1`; impossible layouts are
   discarded before one combined executable-code pass counts reference evidence for every survivor. Only one strongly
@@ -231,12 +235,17 @@ Primary sources:
   passes. This ordering protects DXGI queue capture even if an unfamiliar large image remains expensive to inspect;
   RR discovery itself must also finish early enough to select the denoiser before the first DLSS feature rather than
   hot-switching an active renderer.
-- CE atomically redirects only the `Ref` pointer to page-aligned process-lifetime `{1,1}` shadow storage. The game's
+- CE atomically redirects only each validated `Ref` pointer to typed process-lifetime `{game,render}` shadow storage.
+  The game's
   real console variable and priority/history state remain intact; later Engine.ini, scalability, level, or game code
   writes update the original shadow but cannot change the plugin's direct read. Disabling the setting or shutting the
   hook down compare/exchanges the original pointer back. Owner-module unload retires the stale address and an eventual
-  reload is rescanned. There is no disk write, render-thread hook, repeated module sweep, or vtable call into unknown
-  UE code.
+  reload is rescanned. Live policy/value changes restore removed CVars and atomically update retained shadows. There
+  is no disk write, render-thread hook, repeated module sweep, or vtable call into unknown UE code.
+- Post-processing removal uses `r.Tonemapper.Sharpen`, `r.FilmGrain`, `r.Tonemapper.GrainQuantization`,
+  `r.MotionBlurQuality`, `r.SceneColorFringeQuality`, and matching `ShowFlag.*` CVars including vignette. It does not
+  force `r.Tonemapper.Quality` down and does not disable `ShowFlag.PostProcessMaterial`: custom materials have no
+  generic semantic label distinguishing sharpen from gameplay/damage/underwater/accessibility effects.
 - The policy deliberately does not spoof `SuperSamplingDenoising.Available`,
   `SuperSamplingDenoising.FeatureInitResult`, or `GetFeatureRequirements(Feature 13)`. It cannot add missing
   albedo/specular/normal/depth/motion-vector inputs, enable a disabled temporal upscaler, retrofit an older NVIDIA UE

@@ -259,8 +259,30 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         reader.GetStrCompat("DLSS", "dlss_auto_exposure", "Graphics", "dlss_auto_exposure", "default");
     config.graphics.dlssExposureNormalization = reader.GetStrCompat(
         "DLSS", "dlss_exposure_normalization", "Graphics", "dlss_exposure_normalization", "default");
-    config.graphics.forceRayReconstruction = reader.GetBoolCompat(
-        "DLSS", "force_ray_reconstruction", "Graphics", "force_ray_reconstruction", false);
+    config.graphics.forceRayReconstruction = reader.GetBoolCompat2(
+        "UE5", "force_ray_reconstruction", "DLSS", "force_ray_reconstruction", "Graphics",
+        "force_ray_reconstruction", false);
+    config.graphics.rayReconstructionOptimalSettings =
+        reader.GetBool("UE5", "ray_reconstruction_optimal_settings", false);
+    // The optimal bundle explicitly contains r.NGX.DLSS.DenoiserMode=1, so it
+    // also enables the existing RR lifecycle diagnostics and SR-fallback proof.
+    config.graphics.forceRayReconstruction |= config.graphics.rayReconstructionOptimalSettings;
+    config.graphics.disablePostProcessingEffects =
+        reader.GetBool("UE5", "disable_post_processing_effects", false);
+    std::string tonemapperSharpen = reader.GetStr("UE5", "tonemapper_sharpen", "default");
+    std::transform(tonemapperSharpen.begin(), tonemapperSharpen.end(), tonemapperSharpen.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::replace(tonemapperSharpen.begin(), tonemapperSharpen.end(), ',', '.');
+    config.graphics.tonemapperSharpen = -1.0f;
+    if (tonemapperSharpen != "default") {
+        float parsedSharpen = 0.0f;
+        if (!ce::TryParseFiniteFloat(tonemapperSharpen, parsedSharpen) || parsedSharpen < 0.0f ||
+            parsedSharpen > 10.0f) {
+            LogInvalidConfigBoundary("UE5", "tonemapper_sharpen", tonemapperSharpen, "default");
+        } else {
+            config.graphics.tonemapperSharpen = parsedSharpen;
+        }
+    }
 
     // DLSS Presets
     config.graphics.dlssPresetDLAA =

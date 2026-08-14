@@ -446,20 +446,71 @@ cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.
 backbuffer_count=-1
 
+[UE5]
+; UE5 overrides affect injected x64 applications only. They redirect validated
+; game-thread/render-thread CVar shadows in memory, never Engine.ini or game
+; files, and remain authoritative across map, scalability, and config reloads.
+; Missing CVars from older UE/plugin builds are logged and skipped safely.
+; Injecting/overriding engine or vendor features is not anti-cheat safe, so leave
+; these settings off for competitive online games.
+;
+; When the game already contains a capable NVIDIA Ray Reconstruction integration,
+; this selects its r.NGX.DLSS.DenoiserMode=1 path. It cannot add missing RR render
+; inputs or make unsupported hardware/runtime combinations work. A compatible
+; nvngx_dlssd.dll can still be selected with [DLSS] dlss_rr_dll_path below.
+force_ray_reconstruction=off
+;
+; Applies the complete Ray Reconstruction quality bundle below. This option also
+; implies force_ray_reconstruction=on because DenoiserMode=1 is part of the bundle:
+; r.NGX.DLSS.DenoiserMode=1
+; r.Lumen.Reflections.BilateralFilter=0
+; r.Lumen.Reflections.ScreenSpaceReconstruction=0
+; r.Lumen.Reflections.Temporal=0
+; r.Lumen.Reflections.DownsampleFactor=1
+; r.Lumen.Reflections.DownsampleCheckerboard=0
+; r.Lumen.Reflections.MaxRayIntensity=100
+; r.Lumen.ScreenProbeGather.StochasticInterpolation=0
+; r.Lumen.ScreenProbeGather.SpatialFilterProbes=1
+; r.Lumen.ScreenProbeGather.SpatialFilterNumPasses=3
+; r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated=10
+; r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections=8
+; r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal=0
+; r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp=0
+; r.Lumen.ScreenProbeGather.TracingOctahedronResolution=16
+; r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget=600
+; r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32
+; r.Lumen.ScreenProbeGather.ShortRangeAO.ApplyDuringIntegration=0
+; r.LumenScene.Radiosity.Temporal.MaxFramesAccumulated=4
+; r.LumenScene.Radiosity.UpdateFactor=16
+; r.LumenScene.DirectLighting.UpdateFactor=16
+; r.Shadow.Virtual.SMRT.RayCountDirectional=12
+; r.Shadow.Virtual.SMRT.SamplesPerRayDirectional=4
+; r.Shadow.Virtual.SMRT.RayCountLocal=12
+; r.Shadow.Virtual.SMRT.SamplesPerRayLocal=4
+; r.Shadow.Virtual.ResolutionLodBiasLocal=-0.5
+; r.Shadow.Virtual.ResolutionLodBiasLocalMoving=0.5
+; r.MegaLights.DownsampleMode=0
+; r.MegaLights.NumSamplesPerPixel=8
+ray_reconstruction_optimal_settings=off
+;
+; Disables UE's built-in tonemapper sharpen, film grain (including tonemapper
+; grain quantization), vignette, motion blur, and chromatic aberration without
+; lowering r.Tonemapper.Quality. It uses the dedicated engine CVars and show flags.
+; Arbitrary game-authored post-process materials have no generic semantic marker,
+; so they are left intact instead of disabling every custom material and breaking
+; unrelated effects such as damage, underwater, or accessibility rendering.
+disable_post_processing_effects=off
+;
+; default follows the game, except that the disable bundle above selects 0.
+; A number from 0 to 10 persistently sets r.Tonemapper.Sharpen and takes precedence
+; over disable_post_processing_effects, allowing the other effects to stay off.
+tonemapper_sharpen=default
+
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.
 ; auto exposure and exposure normalization accept default, on, or off.
 dlss_auto_exposure=default
 dlss_exposure_normalization=default
-; Opt-in x64 UE5 compatibility override. When the game already contains a
-; capable NVIDIA DLSS Ray Reconstruction integration, CaptureEngine persistently
-; selects its r.NGX.DLSS.DenoiserMode=1 path in memory. No Engine.ini or game
-; files are changed, and map/config reloads cannot reset the plugin's direct
-; CVar read. This cannot add missing RR render inputs or make unsupported
-; hardware/runtime combinations work; use dlss_rr_dll_path below if the title
-; also needs a compatible nvngx_dlssd.dll. Injecting/overriding vendor features
-; is not anti-cheat safe, so leave this off for competitive online games.
-force_ray_reconstruction=off
 ; Presets accept A-Z or default.
 dlss_preset_dlaa=default
 dlss_preset_quality=default
@@ -663,6 +714,10 @@ dx12_focus_analysis=false
 ;DLSS.dlss_fg_factor=3x
 ;DLSS.dlss_fg_preset=B
 ;DLSS.dlss_debug_overlay=on
+;UE5.force_ray_reconstruction=on
+;UE5.ray_reconstruction_optimal_settings=on
+;UE5.disable_post_processing_effects=on
+;UE5.tonemapper_sharpen=0.5
 ; Third-party tool paths can be overridden per application. Values follow the
 ; same file/folder rules as [ThirdParty] above; empty uses the global path.
 ; Changing them requires relaunching the game.

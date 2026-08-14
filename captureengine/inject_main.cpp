@@ -16,6 +16,7 @@
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "host_metrics.h"
+#include "inject_config.h"
 #include "injection.h"
 #include "inject_lifecycle.h"
 
@@ -120,129 +121,6 @@ static AppConfig ResolveActiveTargetConfig(const std::string& configPath, Shared
     }
 
     return activeConfig;
-}
-
-// Helper: Update shared memory from config
-static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const AppConfig& config) {
-    if (!pSharedMem)
-        return;
-
-    static uint64_t s_ConfigSummaryHash = 0;
-
-    pSharedMem->SetDebugLogging(IsDebugLoggingEnabled(config.logLevel));
-    pSharedMem->SetLogLevel(config.logLevel);
-    strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
-    pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
-
-    // Graphics
-    strncpy(pSharedMem->graphicsConfig.vsyncMode, config.graphics.vsyncMode.c_str(), 31);
-    strncpy(pSharedMem->graphicsConfig.anisotropicFiltering, config.graphics.anisotropicFiltering.c_str(), 31);
-    strncpy(pSharedMem->graphicsConfig.samplerOverrideMode, config.graphics.samplerOverrideMode.c_str(),
-            sizeof(pSharedMem->graphicsConfig.samplerOverrideMode) - 1);
-    pSharedMem->graphicsConfig.samplerOverrideMode[sizeof(pSharedMem->graphicsConfig.samplerOverrideMode) - 1] = '\0';
-    strncpy(pSharedMem->graphicsConfig.mipMapping, config.graphics.mipMapping.c_str(), 31);
-    strncpy(pSharedMem->graphicsConfig.mipBias, config.graphics.mipBias.c_str(), 31);
-    strncpy(pSharedMem->graphicsConfig.mipBiasMode, config.graphics.mipBiasMode.c_str(), 31);
-    pSharedMem->graphicsConfig.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
-    strncpy(pSharedMem->graphicsConfig.msaaSamples, config.graphics.msaaSamples.c_str(), 31);
-    pSharedMem->graphicsConfig.nvLodSpreadFix = config.graphics.nvLodSpreadFix;
-    pSharedMem->graphicsConfig.forceRayReconstruction = config.graphics.forceRayReconstruction;
-    pSharedMem->graphicsConfig.prerenderLimit = config.graphics.cpuPrerenderLimit;
-    pSharedMem->graphicsConfig.backbufferCount = config.graphics.backbufferCount;
-    pSharedMem->graphicsConfig.sgssaa = config.graphics.sgssaa;
-    pSharedMem->graphicsConfig.disableAutoMipBias = config.graphics.disableAutoMipBias;
-    strncpy(pSharedMem->graphicsConfig.dlssAutoExposure, config.graphics.dlssAutoExposure.c_str(), 31);
-    strncpy(pSharedMem->graphicsConfig.dlssExposureNormalization, config.graphics.dlssExposureNormalization.c_str(),
-            31);
-
-    // DLSS Presets
-    pSharedMem->graphicsConfig.dlssPresetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
-    pSharedMem->graphicsConfig.dlssPresetQuality = ParseDlssPreset(config.graphics.dlssPresetQuality);
-    pSharedMem->graphicsConfig.dlssPresetBalanced = ParseDlssPreset(config.graphics.dlssPresetBalanced);
-    pSharedMem->graphicsConfig.dlssPresetPerformance = ParseDlssPreset(config.graphics.dlssPresetPerformance);
-    pSharedMem->graphicsConfig.dlssPresetUltraPerformance = ParseDlssPreset(config.graphics.dlssPresetUltraPerformance);
-    pSharedMem->graphicsConfig.dlssPresetUltraQuality = ParseDlssPreset(config.graphics.dlssPresetUltraQuality);
-
-    // RR Presets
-    pSharedMem->graphicsConfig.dlssRRPresetDLAA = ParseDlssRRPreset(config.graphics.dlssRRPresetDLAA);
-    pSharedMem->graphicsConfig.dlssRRPresetQuality = ParseDlssRRPreset(config.graphics.dlssRRPresetQuality);
-    pSharedMem->graphicsConfig.dlssRRPresetBalanced = ParseDlssRRPreset(config.graphics.dlssRRPresetBalanced);
-    pSharedMem->graphicsConfig.dlssRRPresetPerformance = ParseDlssRRPreset(config.graphics.dlssRRPresetPerformance);
-    pSharedMem->graphicsConfig.dlssRRPresetUltraPerformance =
-        ParseDlssRRPreset(config.graphics.dlssRRPresetUltraPerformance);
-    pSharedMem->graphicsConfig.dlssRRPresetUltraQuality = ParseDlssRRPreset(config.graphics.dlssRRPresetUltraQuality);
-
-    pSharedMem->graphicsConfig.dlssSRPreset = ParseDlssPreset(config.graphics.dlssSRPreset);
-    pSharedMem->graphicsConfig.dlssRRPreset = ParseDlssRRPreset(config.graphics.dlssRRPreset);
-
-    pSharedMem->graphicsConfig.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
-    pSharedMem->graphicsConfig.dlssFGFactor = config.graphics.parsed.dlssFGFactor;
-    pSharedMem->graphicsConfig.dlssFGPreset = NormalizeDLSSFGPreset(config.graphics.parsed.fgPreset);
-
-    pSharedMem->configVersion.fetch_add(1, std::memory_order_release);
-
-    // Overlay — use seqlock to prevent torn reads by the hook
-    pSharedMem->BeginWriteOverlayConfig();
-    pSharedMem->overlayConfig = config.overlay;
-    pSharedMem->EndWriteOverlayConfig();
-
-    // Performance / Priority
-    pSharedMem->SetGpuPriority(config.video.gpuPriority);
-    if (config.copyQueuePriority == "low")
-        pSharedMem->SetCopyQueuePriority(0);
-    else if (config.copyQueuePriority == "high")
-        pSharedMem->SetCopyQueuePriority(2);
-    else
-        pSharedMem->SetCopyQueuePriority(1);
-
-    // Synchronization
-    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
-    pSharedMem->SetUseGameQueue(config.useGameQueue);
-
-    // FPS Limiter
-    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
-    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
-    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
-    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
-    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
-    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
-    // Note: captureFps is usually set dynamically during recording start,
-    // but we can update it here if it's based on config.video.fps
-    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
-    pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
-
-    const uint64_t summaryHash =
-        std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.vsyncMode)) ^
-        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.anisotropicFiltering)) << 1) ^
-        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.samplerOverrideMode)) << 2) ^
-        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 3) ^
-        (static_cast<uint64_t>(pSharedMem->graphicsConfig.backbufferCount) << 3) ^
-        (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
-        (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^
-        (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
-        (static_cast<uint64_t>(config.logLevel) << 7) ^
-        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerPolicyOnly) << 8) ^
-        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerStartupPresentOnly) << 9) ^
-        (static_cast<uint64_t>(pSharedMem->graphicsConfig.forceRayReconstruction) << 10);
-
-    if (summaryHash != s_ConfigSummaryHash) {
-        LogInfo(
-            "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
-            "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
-            "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
-            "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d",
-            LogLevelToConfigString(config.logLevel), pSharedMem->graphicsConfig.vsyncMode,
-            pSharedMem->graphicsConfig.anisotropicFiltering, pSharedMem->graphicsConfig.mipBias,
-            pSharedMem->graphicsConfig.mipBiasMode, pSharedMem->graphicsConfig.prerenderLimit,
-            pSharedMem->graphicsConfig.backbufferCount, pSharedMem->fpsLimiter.GetGeneralFps(),
-            pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF", pSharedMem->overlayConfig.showOverlay,
-            pSharedMem->overlayConfig.observerOnly, pSharedMem->overlayConfig.observerPolicyOnly,
-            pSharedMem->overlayConfig.observerStartupPresentOnly, pSharedMem->overlayConfig.captureIncludeOverlay,
-            pSharedMem->overlayConfig.screenshotIncludeOverlay, pSharedMem->graphicsConfig.dlssAutoExposure,
-            pSharedMem->graphicsConfig.dlssSharpening, pSharedMem->graphicsConfig.dlssSRPreset,
-            pSharedMem->graphicsConfig.forceRayReconstruction ? 1 : 0);
-        s_ConfigSummaryHash = summaryHash;
-    }
 }
 
 static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {

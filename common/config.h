@@ -199,6 +199,12 @@ struct GraphicsConfig {
     // Persistently select the UE NVIDIA plugin's Ray Reconstruction denoiser
     // mode when that integration is already present and capable.
     bool forceRayReconstruction = false;
+    // Persistently apply the UE5 rendering CVars selected for Ray Reconstruction.
+    bool rayReconstructionOptimalSettings = false;
+    // Disable UE5 sharpening, film grain, vignette, motion blur, and chromatic aberration.
+    bool disablePostProcessingEffects = false;
+    // -1 leaves the game/default bundle policy alone; otherwise r.Tonemapper.Sharpen 0..10.
+    float tonemapperSharpen = -1.0f;
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;

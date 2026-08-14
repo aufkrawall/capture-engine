@@ -54,14 +54,15 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 36: Expanded Vulkan encoder-owned texture publication to the full shared texture slot count
 // Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
 // Version 38: Added latched recording-health telemetry and finalization-result notifications
-static constexpr uint32_t SHARED_MEMORY_VERSION = 38;
+// Version 39: Added persistent UE5 CVar override policy and tonemapper sharpening fields
+static constexpr uint32_t SHARED_MEMORY_VERSION = 39;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_38_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_39_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_38";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_39";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -432,6 +433,12 @@ struct SharedGraphicsConfig {
     // layout and ABI signature are unchanged: a host that predates this field
     // leaves it zero, which reads back as "no override".
     uint32_t dlssFGPreset;
+
+    // UE5 process-local persistent CVar overrides. A negative sharpen value
+    // leaves r.Tonemapper.Sharpen alone unless disablePostProcessingEffects is set.
+    bool rayReconstructionOptimalSettings;
+    bool disablePostProcessingEffects;
+    float tonemapperSharpen;
 };
 
 static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
@@ -443,7 +450,13 @@ static_assert(offsetof(SharedGraphicsConfig, forceRayReconstruction) ==
 static_assert(offsetof(SharedGraphicsConfig, prerenderLimit) ==
                   offsetof(SharedGraphicsConfig, forceRayReconstruction) + 2,
               "RR policy flags must not move later SharedGraphicsConfig fields");
-static_assert(sizeof(SharedGraphicsConfig) == 360,
+static_assert(offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) ==
+                  offsetof(SharedGraphicsConfig, dlssFGPreset) + sizeof(uint32_t),
+              "UE5 policy fields must remain appended to SharedGraphicsConfig");
+static_assert(offsetof(SharedGraphicsConfig, tonemapperSharpen) ==
+                  offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) + 4,
+              "UE5 sharpen must retain natural float alignment");
+static_assert(sizeof(SharedGraphicsConfig) == 368,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

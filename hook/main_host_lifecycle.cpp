@@ -86,7 +86,7 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
     FFXHook::ReactivateResidentHooks();
     ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
         g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
-    UE5::RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction);
+    UE5::RefreshOverrides(activeGraphicsConfig);
     ArmManualReflexQueryHookIfConfigured("reconnected shared memory");
     ArmNgxFgPresetOverrideIfConfigured("reconnected shared memory");
     ce::SyncWithLegacyGlobals();
@@ -131,7 +131,7 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
     g_GraphicsOverridesActive.store(false, std::memory_order_release);
     ce::dlss_indicator::Install(ce::dlss_indicator::Mode::kPassthrough);
     ce::ngx_fg_preset::SetConfiguredPreset(0);
-    UE5::ShutdownRayReconstructionOverride();
+    UE5::ShutdownOverrides();
     FFXHook::EnterDormant();
     CaptureManager::Get().SetCaptureEnabled(false);
     g_SharedFpsLimiter.Shutdown();

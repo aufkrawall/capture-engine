@@ -487,6 +487,9 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
         mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
+        mergedConfig.rayReconstructionOptimalSettings = shmGfx.rayReconstructionOptimalSettings;
+        mergedConfig.disablePostProcessingEffects = shmGfx.disablePostProcessingEffects;
+        mergedConfig.tonemapperSharpen = shmGfx.tonemapperSharpen;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

@@ -183,6 +183,9 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.msaaSamples[sizeof(dst.msaaSamples) - 1] = '\0';
         dst.nvLodSpreadFix = src.nvLodSpreadFix;
         dst.forceRayReconstruction = src.forceRayReconstruction;
+        dst.rayReconstructionOptimalSettings = src.rayReconstructionOptimalSettings;
+        dst.disablePostProcessingEffects = src.disablePostProcessingEffects;
+        dst.tonemapperSharpen = src.tonemapperSharpen;
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;

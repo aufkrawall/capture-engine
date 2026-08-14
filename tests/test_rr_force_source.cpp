@@ -18,8 +18,11 @@ std::string ReadProjectSource(const std::filesystem::path& relativePath) {
 
 TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInsteadOfEngineVtableCalls) {
     const std::string source = ReadProjectSource("hook/main_ue5.cpp");
+    const std::string policy = ReadProjectSource("hook/common/ue5_cvar_override_policy.h");
 
-    EXPECT_NE(source.find("kDenoiserModeCVar"), std::string::npos);
+    EXPECT_NE(policy.find("r.NGX.DLSS.DenoiserMode"), std::string::npos);
+    EXPECT_NE(policy.find("r.Lumen.Reflections.BilateralFilter"), std::string::npos);
+    EXPECT_NE(policy.find("ShowFlag.Vignette"), std::string::npos);
     EXPECT_NE(source.find("InterlockedCompareExchangePointer"), std::string::npos);
     EXPECT_NE(source.find("IsUniquelyStrongCandidate"), std::string::npos);
     EXPECT_NE(source.find("RestoreOverride"), std::string::npos);
@@ -43,32 +46,32 @@ TEST(RayReconstructionForceSourceTest, ObservesRealNgxCapabilityAndEvaluationLif
 }
 
 TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeHookUnload) {
-    const std::string host = ReadProjectSource("captureengine/inject_main.cpp");
+    const std::string host = ReadProjectSource("captureengine/inject_config.cpp");
     const std::string hookCommon = ReadProjectSource("hook/common/hook_common.cpp");
     const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
 
-    EXPECT_NE(host.find("graphicsConfig.forceRayReconstruction = config.graphics.forceRayReconstruction"),
+    EXPECT_NE(host.find("graphics.forceRayReconstruction = config.graphics.forceRayReconstruction"),
               std::string::npos);
+    EXPECT_NE(host.find("graphics.rayReconstructionOptimalSettings"), std::string::npos);
+    EXPECT_NE(host.find("graphics.disablePostProcessingEffects"), std::string::npos);
+    EXPECT_NE(host.find("graphics.tonemapperSharpen"), std::string::npos);
     EXPECT_NE(hookCommon.find("mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction"),
               std::string::npos);
-    EXPECT_NE(hookThread.find("RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction)"),
-              std::string::npos);
-    EXPECT_NE(hookThread.find("ShutdownRayReconstructionOverride()"), std::string::npos);
+    EXPECT_NE(hookThread.find("RefreshOverrides(activeGraphicsConfig)"), std::string::npos);
+    EXPECT_NE(hookThread.find("ShutdownOverrides()"), std::string::npos);
 }
 
 TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExpensiveEngineDiscovery) {
     const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
 
     const size_t initialHookInstall = hookThread.find("CheckAndInstallHooks();");
-    const size_t initialRRRefresh =
-        hookThread.find("RefreshRayReconstructionOverride(initialGraphicsConfig.forceRayReconstruction)");
+    const size_t initialRRRefresh = hookThread.find("RefreshOverrides(initialGraphicsConfig)");
     ASSERT_NE(initialHookInstall, std::string::npos);
     ASSERT_NE(initialRRRefresh, std::string::npos);
     EXPECT_LT(initialHookInstall, initialRRRefresh);
 
     const size_t periodicHookInstall = hookThread.find("CheckAndInstallHooks();", initialHookInstall + 1);
-    const size_t periodicRRRefresh =
-        hookThread.find("RefreshRayReconstructionOverride(activeGraphicsConfig.forceRayReconstruction)");
+    const size_t periodicRRRefresh = hookThread.find("RefreshOverrides(activeGraphicsConfig)");
     ASSERT_NE(periodicHookInstall, std::string::npos);
     ASSERT_NE(periodicRRRefresh, std::string::npos);
     EXPECT_LT(periodicHookInstall, periodicRRRefresh);

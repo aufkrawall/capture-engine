@@ -396,8 +396,8 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics, PUN
 namespace UE5 {
 void NotifyModuleLoaded(HMODULE module);
 void NotifyModuleUnloaded(void* moduleBase, std::size_t moduleSize);
-void RefreshRayReconstructionOverride(bool enabled);
-void ShutdownRayReconstructionOverride();
+void RefreshOverrides(const GraphicsConfig& config);
+void ShutdownOverrides();
 }
 
 void CheckAndInstallHooks();
@@ -581,28 +581,6 @@ struct ChildInjectParams {
   HANDLE hThread;
   char dllPath[MAX_PATH];
 };
-
-namespace UE5 {
-class IConsoleVariable {
-public:
-  virtual ~IConsoleVariable() {}
-  virtual void Set(const wchar_t *Value, uint32_t SetBy = 0) = 0;
-  virtual void Set(const char *Value, uint32_t SetBy = 0) = 0;
-  virtual void Set(int32_t Value, uint32_t SetBy = 0) = 0;
-  virtual void Set(float Value, uint32_t SetBy = 0) = 0;
-  // The above is a GUESS. The actual interface has overloads.
-  // Usually Set(const TCHAR* InValue, EConsoleVariableSetBy InSetBy) is the
-  // main one. EConsoleVariableSetBy: SetByCommandline = 0x00000002.
-};
-}
-
-namespace UE5 {
-// We will use a "manual vtable call" helper to avoid interface mismatches.
-template <typename T> T GetVFunc(void *instance, int index) {
-  uintptr_t *vtable = *((uintptr_t **)instance);
-  return (T)vtable[index];
-}
-}
 
 // Helper for QueueUserWorkItem (requires DWORD return, LPVOID param)
 inline DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
