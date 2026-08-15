@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-08-15 - FIXED locally: the startup stack overflow was CE's temp swapchain, not Steam's bug
+
+- Correction to the entry below: the recursion is Steam's, but **CE starts it**. No CE frames appear on the
+  stack, which is why the first read was wrong - the stack shows the loop, not who entered it.
+- `DX12Hook::Init` refuses the eager temp swapchain when a third-party overlay is hooked before the game's
+  first real D3D12 device, because entering that overlay's handler during hook install is a crash CE's own
+  source documents (`dx12_hook_hook_install.cpp:25`: Steam dispatches through callback slots that stay NULL
+  until it has rendered on a real game swapchain). **That deferral protected nothing** - `Init` called
+  `FindAndWrapPreExistingSwapchains` on the next line and it created the temp swapchain anyway, justified by
+  "the overlay's startup hook chain should be settled". Session `20260815_203836` logged both decisions in
+  the same millisecond, and the crashing thread's last CE line is `CreateSwapChainForHwnd INLINE: Temp
+  swapchain — passthrough`, 440 ms before it died.
+- Fix (cc7ed7cc): the deferred install re-evaluates the same startup window through
+  `ShouldPostponeDeferredTempSwapchainPresentHookInstall` and waits for the game's own D3D12 device - the
+  evidence the eager decision already trusts. `DX12Hook::ServicePendingPresentHooks` retries from the hook
+  thread's service pass, because nothing else calls back once that window closes. No third-party overlay, or
+  no deferral, means byte-for-byte the historical path. A unit test pins the invariant that the postponement
+  can never outlast the deferral condition, so a pre-existing swapchain cannot be stranded without hooks.
+- The other crash - `0xC0000005` at `capture_hook_x64.dll+0x850A0`, session `20260815_174213`, build 6087 -
+  needs no fix. Resolved with that session's archived binary + PDB: the faulting instruction is
+  `cmp dword ptr [rbp+r15*4], 0x680053`, i.e. UTF-16 `"Sh"` - a raw heap scan for `ShowFlag…` reading ~18 MB
+  past its region. That was the uncommitted ShowFlag discovery experiment (findings in 8a558623).
+  `git log -S "MEM_PRIVATE" -- hook/` shows the only committed heap scanner is the console registry from
+  28faeae2, which reads exclusively via `ReadProcessMemory` and fails cleanly instead of faulting.
+- Validation still owed: several launches with the Steam overlay enabled, confirming the inject overlay still
+  appears and `Postponed Present hook install resolved by the game's own swapchain` is logged.
+
 ### 2026-08-15 - Intermittent startup crash characterised: Steam overlay self-recursion, not CE code
 
 - Session `20260815_203836` crashed on startup with `0xC00000FD` (stack overflow). The stack is 750+

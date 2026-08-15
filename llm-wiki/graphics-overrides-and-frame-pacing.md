@@ -323,6 +323,17 @@ Primary sources:
   `TAutoConsoleVariable<int32>`. The literal scanner previously skipped first characters other than `r`/`s`
   (`FindRequestedLiterals` in `hook/main_ue5_scan.cpp`); `t` is now admitted for `t.MaxFPS`. The FPS limit and AF
   settings are independent of the RR/post-processing bundles and of each other.
+- Third-party overlay coexistence at DX12 hook install: CE reads the Present vtable from a temp 2x2 swapchain,
+  and creating it can enter an overlay that hooked the creation path first. Steam dispatches through callback
+  slots that stay NULL until it has rendered on a real game swapchain, so entering its handler during startup
+  recurses until the stack is gone (`0xC00000FD`, 750+ `gameoverlayrenderer64!OverlayHookD3D3` frames; 4 of 21
+  sessions on 2026-08-15). `DX12Hook::Init` deferred the eager install for exactly this reason but
+  `FindAndWrapPreExistingSwapchains` ran it on the next line anyway, so the guard was a no-op. Both the eager
+  and the deferred decision now use the same startup window (`ShouldDeferEarlyDX12TempSwapchainPresentHookInstall`
+  / `ShouldPostponeDeferredTempSwapchainPresentHookInstall`), keyed on the game's own D3D12 device, and
+  `DX12Hook::ServicePendingPresentHooks` retries from the hook thread's service pass. Invariant, unit-tested:
+  the postponement never outlasts the deferral condition, so a swapchain that pre-dates injection cannot be
+  left without Present hooks.
 - The UE5 override code is five units: `main_ue5.cpp` (policy/lifecycle), `main_ue5_scan.cpp` (literal and candidate
   discovery), `main_ue5_install.cpp` (install/refresh/verify/restore), `main_ue5_memory.cpp` (process-memory and PE
   primitives), and `main_ue5_registry.cpp` (console-registry resolution), with shared declarations in
