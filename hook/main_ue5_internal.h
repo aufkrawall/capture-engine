@@ -107,6 +107,16 @@ struct OverrideState {
   bool dataPointerValueWritten = false;
   bool dataShadowPointerRedirect = false;
   bool registryResolved = false;
+  // Ref-redirect mode only. Repointing the wrapper's `Ref` covers reads that go
+  // back through the wrapper (`TAutoConsoleVariable::GetValueOnRenderThread`),
+  // but UE's renderer routinely caches the `TConsoleVariableData<T>*` itself
+  // (`IConsoleManager::FindTConsoleVariableDataInt`, resolved once into a
+  // static) and then never consults the wrapper again. Such a reader keeps
+  // seeing the game's original pair, so CE mirrors its value into that pair as
+  // well - the same both-read-paths contract the data-pointer mode already has.
+  bool referencePairWritten = false;
+  uint32_t originalReferenceGameBits = 0;
+  uint32_t originalReferenceRenderBits = 0;
   // Verification bookkeeping. Drift reporting is capped per override, and the
   // cap only lifts after a long clean run, so a variable the game rewrites
   // constantly stays quiet while a rare regression is still reported.

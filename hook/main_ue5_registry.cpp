@@ -109,10 +109,17 @@ std::vector<std::size_t> CollectMissingSpecs() {
   return missing;
 }
 
-std::vector<Region> CollectHeapRegions() {
+// Enumerates from `fromAddress` rather than from zero. A resumed pass has no
+// use for anything below its cursor, and re-walking it is not free: VirtualQuery
+// visits every region in the address space, reserved ones included, and a loaded
+// UE5 title has a great many. Industria 2 (20260816_011313) covered 211 MB in
+// the first 400 ms pass and then only 4-8 MB per pass once the level had loaded
+// and the address space had grown - the scan budget was being spent re-reaching
+// the cursor instead of advancing past it.
+std::vector<Region> CollectHeapRegions(uintptr_t fromAddress) {
   std::vector<Region> regions;
   MEMORY_BASIC_INFORMATION memory{};
-  uintptr_t cursor = 0;
+  uintptr_t cursor = fromAddress;
   while (VirtualQuery(reinterpret_cast<LPCVOID>(cursor), &memory, sizeof(memory)) == sizeof(memory)) {
     const uintptr_t base = reinterpret_cast<uintptr_t>(memory.BaseAddress);
     const std::size_t size = static_cast<std::size_t>(memory.RegionSize);
@@ -248,12 +255,16 @@ bool AnchorStillHolds(const RegistryMap& map) {
 // hold the element the resolve pass is looking for - and because the closing
 // verdict distinguishes "swept everywhere, absent" from "stopped early".
 void SweepForRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map,
-                         ce::ue5_registry::SweepProgress& progress, ULONGLONG deadline) {
+                         ce::ue5_registry::SweepProgress& progress, ULONGLONG deadline,
+                         ULONGLONG& enumerateMs) {
   const AnchorFilter filter(anchors);
   std::vector<uint8_t> buffer(kChunkBytes);
   uint64_t passBytes = 0;
   ++progress.passes;
-  for (const Region& region : CollectHeapRegions()) {
+  const ULONGLONG enumerateStart = GetTickCount64();
+  const std::vector<Region> regions = CollectHeapRegions(progress.cursor);
+  enumerateMs = GetTickCount64() - enumerateStart;
+  for (const Region& region : regions) {
     const ce::ue5_registry::RegionSpan span{region.base, region.size};
     if (ce::ue5_registry::RegionAlreadySwept(span, progress.cursor))
       continue;
@@ -421,7 +432,8 @@ bool ResolveMissingThroughConsoleRegistry() {
     const bool wasValid = g_map.valid;
     const ULONGLONG start = GetTickCount64();
     const uint64_t before = g_sweep.sweptBytes;
-    SweepForRegistryMap(anchors, g_map, g_sweep, start + kScanBudgetMs);
+    ULONGLONG enumerateMs = 0;
+    SweepForRegistryMap(anchors, g_map, g_sweep, start + kScanBudgetMs, enumerateMs);
     const auto passMb = static_cast<unsigned long long>((g_sweep.sweptBytes - before) >> 20);
     const auto totalMb = static_cast<unsigned long long>(g_sweep.sweptBytes >> 20);
     if (!wasValid && g_map.valid) {
@@ -446,11 +458,15 @@ bool ResolveMissingThroughConsoleRegistry() {
           "coverage stays partial and cannot prove any name unregistered",
           totalMb, g_sweep.passes, reinterpret_cast<void*>(g_sweep.cursor));
     } else if (g_sweep.passes <= 4 || (g_sweep.passes % 8) == 0) {
+      // enumerateMs separates "the heap is genuinely this big" from "the budget
+      // went into re-reaching the cursor", which is what made passes 2-4 of
+      // 20260816_011313 collapse to single-digit megabytes.
       HookLogImportant(
           "UE5 overrides: console-registry sweep paused at %p after pass %u (%llu MB this pass, "
-          "%llu MB total, %zu/%zu anchor element(s), %zu region(s)); resuming there",
+          "%llu MB total, enumerate=%llums, %zu/%zu anchor element(s), %zu region(s)); resuming there",
           reinterpret_cast<void*>(g_sweep.cursor), g_sweep.passes, passMb, totalMb,
-          CountConfirmedAnchors(anchors), anchors.size(), g_map.regions.size());
+          static_cast<unsigned long long>(enumerateMs), CountConfirmedAnchors(anchors), anchors.size(),
+          g_map.regions.size());
     }
   }
 

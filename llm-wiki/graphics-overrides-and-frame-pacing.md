@@ -268,6 +268,22 @@ Primary sources:
   install log) and restores it on undo, because engine code generated for `FAutoConsoleVariableRef` CVars reads that
   global directly instead of going through the console object - the redirect alone would be invisible to it.
   otherwise the best-correlated data-pointer candidate is applied as a safe best effort.
+- **Ref redirect mirrors its shadow pair too, and until 2026-08-16 it did not - which silently disabled most of the
+  post-processing bundle.** Repointing the wrapper's `Ref` at CE's shadow only reaches readers that go back through
+  the wrapper (`TAutoConsoleVariable::GetValueOnRenderThread()`). UE's renderer routinely resolves
+  `IConsoleManager::FindTConsoleVariableDataInt(TEXT("r.X"))` once into a static and reads the returned
+  `TConsoleVariableData<T>*` - the very pointer CE swapped out of the wrapper - directly from then on. Those readers
+  never consult the wrapper again and kept seeing the game's original value. Every Ref-redirect install logged
+  `writeThrough=0`, and **verification could not detect it**: for this mode it read CE's own shadow and compared it
+  against CE's own configured value, so it always agreed. `verified 38/38` meant nothing here. The install now also
+  mirrors into that `{game, render}` pair, recording both slots first
+  (`ce::ue5_redirect::MakeReferencePlan` / `CanMirror`), restores values before the pointer on undo, and verification
+  reads the pair back as `through=`. Measured impact on the first run with the fix (Industria 2, 20260816_012826):
+  **15 of 38 overrides re-asserted on the first verification pass**, i.e. 15 had been inert - among them
+  `r.SceneColorFringeQuality` (`through=0x1` vs `expected=0x0`), `r.MotionBlurQuality` (`0x4` vs `0x0`),
+  `r.MaxAnisotropy` and `r.VT.MaxAnisotropy` (`0x8` vs `0x10`) and both `r.Shadow.Virtual.ResolutionLodBiasLocal*`.
+  This is the answer to the standing "chromatic aberration is still visible in the Industria 2 main menu despite
+  `r.SceneColorFringeQuality=0` verified" report: user-confirmed off after the fix.
 - Version-conditional specs: some bundle CVars do not exist in every UE build. `r.MegaLights.DownsampleMode` and
   `r.Tonemapper.GrainQuantization` have no literal in UE 5.4 or 5.6; `r.Lumen.Reflections.DownsampleCheckerboard` and
   `r.MegaLights.NumSamplesPerPixel` exist in 5.6 but not 5.4. The summary log separates these ("literals not found in
@@ -322,18 +338,19 @@ Primary sources:
   into `.pdata`, so the data-pointer validation correctly refuses it). Industria 2 also exercised drift recovery:
   two Lumen CVars were rewritten by the game ~30 s in and were re-asserted automatically.
 - **Stale-risk / unverified:** all four `ShowFlag.*` installs report `prevValue=0` in *both* titles and both engine
-  versions (20260815_210850 and 20260815_214219). UE registers these as `TAutoConsoleVariable<int32>` whose
-  documented default is 2 ("obey the game/editor setting"), so a pre-write value of 0 is either a genuine
-  game-side force-off or CE reading a slot that is not the one the renderer consults. Writing 0 over 0 changes
-  nothing either way, so **the ShowFlag path is proven to install but not proven to have an effect** - it has no
-  end-to-end evidence comparable to the RR bundle's `Feature 13 evaluation succeeded`. Relevant open report: the
-  Industria 2 main menu still shows a chromatic-aberration / lens-distortion look with both
-  `r.SceneColorFringeQuality=0` and `ShowFlag.SceneColorFringe=0` installed and verified, which points at either
-  this gap or a custom post-process material (which CE deliberately does not disable, see below). Talos in-game (session 20260815_191332) is the
+  versions. UE registers these as `TAutoConsoleVariable<int32>` whose documented default is 2 ("obey the
+  game/editor setting"), so a pre-write value of 0 is either a genuine game-side force-off or CE reading a slot
+  that is not the one the renderer consults; writing 0 over 0 changes nothing either way. These go through the
+  data-pointer path, which has always mirrored, so they are unaffected by the Ref-redirect defect above - but they
+  still have **no end-to-end evidence** comparable to the RR bundle's `Feature 13 evaluation succeeded`. Note that
+  chromatic aberration turned off only once the *Ref-redirect* path started mirroring, which is evidence that
+  `r.SceneColorFringeQuality` (not `ShowFlag.SceneColorFringe`) is what actually gates the effect in UE 5.6. Talos in-game (session 20260815_191332) is the
   end-to-end proof for the RR bundle: `r.NGX.DLSS.DenoiserMode=1` installed as a Ref redirect and NGX then logged
   `Feature 13 evaluation succeeded; Ray Reconstruction is rendering`, with no Feature 1 SR fallback for the rest of
-  the session. Ref redirect is therefore proven to reach the engine; **no data-pointer-mode override has an
-  equivalent end-to-end proof yet**, which is what the write-through and the read-back verification below exist for.
+  the session. Ref redirect is therefore proven to reach the engine *through the wrapper* - which, as the mirroring
+  defect above showed, says nothing about readers that cached the shadow pair instead. **No data-pointer-mode
+  override has an equivalent end-to-end proof yet**, which is what the write-through and the read-back verification
+  below exist for.
 - **Read-back verification** (`VerifyOverrides` in `hook/main_ue5_install.cpp`, once a second from
   `RefreshOverrides`) closes the gap between "the write succeeded" and "the value is live". It re-reads the redirect
   slot, CE's shadow, and the write-through storage for every installed override. A slot no longer pointing at CE's

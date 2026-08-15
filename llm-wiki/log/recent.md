@@ -1,5 +1,34 @@
 # llm-wiki Log
 
+### 2026-08-16 - Ref redirect never mirrored its shadow pair: 15 of 38 overrides were inert (CA solved)
+
+- Chasing "chromatic aberration is still visible in the Industria 2 main menu despite `r.SceneColorFringeQuality=0`
+  installed and `verified`" found a defect far bigger than the symptom. `ApplyCandidate`'s **Ref redirect** branch
+  repointed the `TAutoConsoleVariable` wrapper's `Ref` at CE's shadow and stopped there - it never called
+  `ApplyRestorePlan`, so `writeThrough=0` for every Ref-mode CVar in every session ever logged.
+- Why that matters: repointing only reaches readers that go back through the wrapper. UE's renderer typically
+  resolves `IConsoleManager::FindTConsoleVariableDataInt(...)` once into a static and then reads the returned
+  `TConsoleVariableData<T>*` - the exact pointer CE swapped out - directly. Those readers kept the game's value.
+- Why nobody noticed: `VerifyOverrides` read **CE's own shadow** for this mode and compared it to CE's own
+  configured value, so it always agreed. `verified 38/38` was self-confirming for Ref-mode CVars.
+- Fix: mirror CE's value into that `{game, render}` pair as well, recording both slots first
+  (`MakeReferencePlan`/`CanMirror` in `ue5_redirect_plan.h`, mirroring the existing data-pointer contract), restore
+  values before the pointer on undo, and verify by reading the pair back as `through=`.
+- First run with the fix (`20260816_012826`, build 0.1.6111): every Ref install now logs `writeThrough=1`, and the
+  first verification pass reported **`verified 23/38 ... re-asserted=15`** - 15 overrides had been inert.
+  `r.SceneColorFringeQuality through=0x1 expected=0x0`, `r.MotionBlurQuality 0x4 vs 0x0`, `r.MaxAnisotropy` and
+  `r.VT.MaxAnisotropy 0x8 vs 0x10`, both `r.Shadow.Virtual.ResolutionLodBiasLocal*`. Second pass: `verified 38/38`.
+  User confirmed the chromatic aberration is gone. So `r.SceneColorFringeQuality`, not `ShowFlag.SceneColorFringe`,
+  is what gates the effect in UE 5.6 - and forced AF had been ineffective in-engine too.
+- Same build: the registry sweep now enumerates from its cursor instead of from address 0
+  (`CollectHeapRegions(fromAddress)`). Re-walking the address space with `VirtualQuery` had been eating the pass
+  budget as the game's address space grew - `20260816_011313` collapsed from 211 MB on pass 1 to 4-8 MB on passes
+  2-4. With the fix, `enumerate=` is 0-109 ms and pass 16 covered 768 MB (the per-pass byte cap) instead of 10 MB;
+  1848 MB total by pass 16 versus 903 MB before. Pause lines now report `enumerate=Nms` so the two costs stay
+  separable. Neither session ran long enough to reach `sweep complete`.
+- Unrelated flake seen once: the full unit suite died at `ScreenshotWorkerTest.ReportsWorkerPublicationFailure...`
+  while a live CE session was shutting down; passes standalone and on a clean re-run. Possible test-isolation gap.
+
 ### 2026-08-16 - Console-registry sweep is resumable; "never registered" is no longer assumed
 
 - Reviewing Industria 2 session `20260815_214219` (UE 5.6.1, build 0.1.6109) surfaced two defects behind one log

@@ -294,6 +294,50 @@ TEST(UE5RedirectPlanTest, RefusesToInstallWhenTheOriginalPointerIsUnknown) {
     EXPECT_EQ(plan.restorePointer, nullptr);
 }
 
+TEST(UE5ReferenceRedirectPlanTest, MirrorsAndRecordsBothSlotsOfTheShadowPair) {
+    // The regression this encodes: repointing a TAutoConsoleVariable's Ref used
+    // to be the whole install (writeThrough=0 for every Ref-redirect CVar in
+    // Industria 2 and Talos). That only reaches readers which go back through
+    // the wrapper - UE's renderer typically caches the TConsoleVariableData<T>*
+    // itself and reads the pair directly, so it kept seeing the game's value
+    // while CE's verification happily read CE's own shadow and agreed.
+    const uint32_t pairStorage[2] = {1, 1};  // r.SceneColorFringeQuality as shipped
+    ce::ue5_redirect::ObservedReference observed{};
+    observed.pair = pairStorage;
+    observed.gameBits = pairStorage[0];
+    observed.renderBits = pairStorage[1];
+    observed.pairWritable = true;
+
+    const ce::ue5_redirect::ReferencePlan plan = ce::ue5_redirect::MakeReferencePlan(observed);
+    ASSERT_TRUE(ce::ue5_redirect::CanMirror(plan));
+    EXPECT_EQ(plan.restorePair, pairStorage);
+    // Both slots, not just the game one: the render thread reads the second.
+    EXPECT_EQ(plan.restoreGameBits, 1u);
+    EXPECT_EQ(plan.restoreRenderBits, 1u);
+}
+
+TEST(UE5ReferenceRedirectPlanTest, RefusesToMirrorWhatItCannotHandBack) {
+    const uint32_t pairStorage[2] = {4, 4};
+    ce::ue5_redirect::ObservedReference readOnly{};
+    readOnly.pair = pairStorage;
+    readOnly.gameBits = 4;
+    readOnly.renderBits = 4;
+    readOnly.pairWritable = false;
+    const ce::ue5_redirect::ReferencePlan readOnlyPlan = ce::ue5_redirect::MakeReferencePlan(readOnly);
+    // Still a valid record of the game's values, just not mirrorable. The
+    // redirect itself may proceed; only the mirroring is withheld.
+    EXPECT_TRUE(readOnlyPlan.valid);
+    EXPECT_FALSE(ce::ue5_redirect::CanMirror(readOnlyPlan));
+    EXPECT_EQ(readOnlyPlan.restoreGameBits, 4u);
+
+    ce::ue5_redirect::ObservedReference unknown{};
+    unknown.pairWritable = true;
+    const ce::ue5_redirect::ReferencePlan unknownPlan = ce::ue5_redirect::MakeReferencePlan(unknown);
+    EXPECT_FALSE(unknownPlan.valid);
+    EXPECT_FALSE(ce::ue5_redirect::CanMirror(unknownPlan));
+    EXPECT_EQ(unknownPlan.restorePair, nullptr);
+}
+
 TEST(UE5RedirectPlanTest, SkipsWriteThroughWhenTheGameStorageIsReadOnly) {
     const int32_t constantStorage = 2;
     ce::ue5_redirect::Observed observed{};

@@ -66,6 +66,43 @@ bool WriteThroughOriginalStorage(OverrideState& state, uint32_t bits) {
   return true;
 }
 
+// Ref-redirect counterpart. `originalReference` is the `TConsoleVariableData<T>`
+// the wrapper pointed at, i.e. the {game, render} shadow pair, so both slots are
+// written. Repointing the wrapper alone leaves this pair holding the game's
+// value, and every reader that cached the pair directly keeps reading it - the
+// redirect is invisible to them, and so is CE's own verification, which reads
+// CE's shadow rather than anything the engine consults.
+bool WriteThroughReferencePair(OverrideState& state, uint32_t bits) {
+  if (!state.referencePairWritten)
+    return false;
+  auto* pair = reinterpret_cast<volatile LONG*>(state.originalReference);
+  InterlockedExchange(pair, static_cast<LONG>(bits));
+  InterlockedExchange(pair + 1, static_cast<LONG>(bits));
+  return true;
+}
+
+// Records the undo information first, then mirrors, so a mirrored pair can
+// never exist without the values needed to put it back.
+bool ApplyReferencePlan(OverrideState& state, const ce::ue5_redirect::ReferencePlan& plan, uint32_t bits) {
+  if (!ce::ue5_redirect::CanMirror(plan))
+    return false;
+  state.originalReferenceGameBits = plan.restoreGameBits;
+  state.originalReferenceRenderBits = plan.restoreRenderBits;
+  state.referencePairWritten = true;
+  return WriteThroughReferencePair(state, bits);
+}
+
+// Hands the game's own pair back. Ordering matters exactly as it does for the
+// data-pointer path: the values go back before the pointer does, so no reader
+// can observe the game's pointer addressing CE's value.
+void RestoreReferencePair(OverrideState& state) {
+  if (!state.referencePairWritten || !IsWritableRange(state.originalReference, sizeof(uint32_t) * 2))
+    return;
+  auto* pair = reinterpret_cast<volatile LONG*>(state.originalReference);
+  InterlockedExchange(pair, static_cast<LONG>(state.originalReferenceGameBits));
+  InterlockedExchange(pair + 1, static_cast<LONG>(state.originalReferenceRenderBits));
+}
+
 // Commits the recorded undo information, then mirrors CE's value into the
 // storage the data pointer addressed. Shared by both redirect install paths so
 // neither can forget part of the contract.
@@ -100,6 +137,8 @@ void UpdateForcedData(std::size_t specIndex, uint32_t bits) {
   }
   if (state.dataPointerValueWritten)
     WriteThroughOriginalStorage(state, bits);
+  if (state.referencePairWritten)
+    WriteThroughReferencePair(state, bits);
 }
 
 bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
@@ -131,6 +170,18 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
     g_overrides[specIndex].referenceField = referenceField;
     g_overrides[specIndex].originalReference = candidate.originalReference;
     g_overrides[specIndex].object = candidate.object;
+    // `shadowValuesPlausible` is a hard gate on this path, so the {game, render}
+    // pair behind the old Ref is layout-proven - mirroring into it is exactly as
+    // well-founded as the redirect itself, and it is what makes the override
+    // visible to readers that cached the pair instead of the wrapper.
+    ce::ue5_redirect::ObservedReference observedPair{};
+    observedPair.pair = candidate.originalReference;
+    observedPair.gameBits = candidate.gameThreadBits;
+    observedPair.renderBits = candidate.renderThreadBits;
+    observedPair.pairWritable = IsWritableRange(candidate.originalReference, sizeof(uint32_t) * 2);
+    writeThrough = ApplyReferencePlan(g_overrides[specIndex],
+                                      ce::ue5_redirect::MakeReferencePlan(observedPair),
+                                      g_desired[specIndex].bits);
   } else if (candidate.dataShadowUsable) {
     if (!IsWritableRange(reinterpret_cast<void*>(candidate.dataShadowAddress),
                          sizeof(uint32_t) * (candidate.dataShadowPointerRedirect ? 4 : 2))) {
@@ -324,6 +375,17 @@ VerificationCounts VerifyOverrides() {
         !ReadValue(state.originalReference, throughBits)) {
       failure = "write-through storage unreadable";
     }
+    // Without this the Ref-redirect mode verifies CE's own shadow against CE's
+    // own configured value and always agrees, whatever the engine is reading.
+    if (!failure && !lostRedirect && state.referencePairWritten) {
+      uint32_t pairGame = expected;
+      uint32_t pairRender = expected;
+      const auto* pair = static_cast<const uint8_t*>(state.originalReference);
+      if (!ReadValue(pair, pairGame) || !ReadValue(pair + sizeof(uint32_t), pairRender))
+        failure = "reference value pair unreadable";
+      else
+        throughBits = pairGame != expected ? pairGame : pairRender;
+    }
 
     if (lostRedirect) {
       // The game re-registered or replaced the variable: retire the stale
@@ -342,6 +404,7 @@ VerificationCounts VerifyOverrides() {
         InterlockedExchange(reinterpret_cast<volatile LONG*>(state.originalReference),
                             static_cast<LONG>(state.originalDataPointerBits));
       }
+      RestoreReferencePair(state);
       state = {};
       g_activeModules[index].store(nullptr, std::memory_order_release);
       g_fullRescanRequested.store(true, std::memory_order_release);
@@ -453,10 +516,13 @@ void RestoreOverride(std::size_t specIndex, const char* reason) {
     state = {};
     return;
   }
+  // Values first, then the pointer: the same ordering the data-pointer path
+  // uses, so no reader observes the game's Ref addressing CE's value.
+  RestoreReferencePair(state);
   ForcedConsoleVariableData* forcedData = g_forcedData[specIndex].load(std::memory_order_acquire);
   void* observed = InterlockedCompareExchangePointer(state.referenceField, state.originalReference, forcedData);
   if (observed == forcedData) {
-    HookLogImportant("UE5 overrides: restored the game's %s reference (%s)",
+    HookLogImportant("UE5 overrides: restored the game's %s reference and value pair (%s)",
                      ce::ue5_cvar::kSpecs[specIndex].name, reason);
   } else {
     HookLogImportant("UE5 overrides: %s reference changed before restore (%s, observed=%p); "
