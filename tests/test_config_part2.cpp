@@ -562,6 +562,39 @@ TEST(ConfigHelpersTest, ParseHotkeyModifierAndKeyCombinations) {
     EXPECT_EQ(hk.vkey, 0);
 }
 
+TEST_F(ConfigTest, ToggleOverlayHotkeyParsesFromConfig) {
+    std::string iniContent =
+        "[Hotkeys]\n"
+        "start_stop=F9\n"
+        "toggle_overlay=CTRL+8\n"
+        "screenshot=F12\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.hotkeyToggleOverlay.vkey, '8');
+    EXPECT_TRUE(config.hotkeyToggleOverlay.ctrl);
+    EXPECT_FALSE(config.hotkeyToggleOverlay.shift);
+    EXPECT_FALSE(config.hotkeyToggleOverlay.alt);
+    EXPECT_FALSE(config.hotkeyToggleOverlay.win);
+}
+
+TEST_F(ConfigTest, ToggleOverlayHotkeyDefaultsToDisabled) {
+    std::string iniContent =
+        "[Hotkeys]\n"
+        "start_stop=F9\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.hotkeyToggleOverlay.vkey, 0);
+    EXPECT_FALSE(config.hotkeyToggleOverlay.ctrl);
+}
+
 TEST_F(WhitelistEntryTest, SimpleProcessNameOnly) {
     std::string iniContent =
         "[Injection]\n"

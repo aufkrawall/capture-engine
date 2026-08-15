@@ -18,6 +18,7 @@ enum class ProcessCommand : uint16_t {
     StopRecording = 3,
     ReloadConfig = 4,
     Ping = 5,
+    ToggleOverlay = 6,
 };
 
 enum class ProcessResponse : uint16_t {

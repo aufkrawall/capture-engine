@@ -502,7 +502,7 @@ struct AppConfig {
     };
 
     HotkeyConfig hotkeyStartStop;
-    HotkeyConfig hotkeyToggleFPS;
+    HotkeyConfig hotkeyToggleOverlay;
     HotkeyConfig hotkeyScreenshot;
     HotkeyConfig hotkeyAudioOnly;
 

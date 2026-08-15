@@ -508,6 +508,17 @@ int InjectProcessMain(const AppConfig& config) {
                     case ProcessCommand::Ping:
                         ipc.SendResponse(ProcessResponse::Pong);
                         break;
+                    case ProcessCommand::ToggleOverlay: {
+                        // Runtime overlay visibility override. Only this process
+                        // writes overlayConfig, so the seqlock stays single-writer;
+                        // the controller forwards the hotkey intent over IPC.
+                        currentConfig.overlay.showOverlay = !currentConfig.overlay.showOverlay;
+                        UpdateSharedMemoryFromConfig(pSharedMem, currentConfig);
+                        LogInfo("[Inject] Overlay %s via controller hotkey",
+                                currentConfig.overlay.showOverlay ? "enabled" : "disabled");
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    }
                     case ProcessCommand::ReloadConfig: {
                         AppConfig reloadedConfig;
                         LoadConfig(configPath, reloadedConfig);

@@ -291,6 +291,41 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_NE(stopBlock.find("g_Running = false"), std::string::npos);
 }
 
+TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
+    const std::string controllerSource = ReadSource("captureengine/main.cpp");
+    const std::string injectSource = ReadSource("captureengine/inject_main.cpp");
+    const std::string protocolHeader = ReadSource("common/process_ipc.h");
+    const std::string templateSource = ReadSource("captureengine/config.ini.template");
+    ASSERT_FALSE(controllerSource.empty());
+    ASSERT_FALSE(injectSource.empty());
+    ASSERT_FALSE(protocolHeader.empty());
+    ASSERT_FALSE(templateSource.empty());
+
+    EXPECT_NE(protocolHeader.find("ToggleOverlay = 6"), std::string::npos);
+
+    // The controller registers the hotkey, dispatches it in the message loop and
+    // forwards the intent to the inject client over the authenticated channel.
+    EXPECT_NE(controllerSource.find("HOTKEY_ID_TOGGLE_OVERLAY"), std::string::npos);
+    const size_t dispatch = controllerSource.find("msg.wParam == HOTKEY_ID_TOGGLE_OVERLAY");
+    ASSERT_NE(dispatch, std::string::npos);
+    EXPECT_NE(controllerSource.find("ToggleOverlay();", dispatch), std::string::npos);
+    EXPECT_NE(controllerSource.find("SendCommand(ProcessCommand::ToggleOverlay, nullptr, &response)"),
+              std::string::npos);
+
+    // The inject process flips the shared-memory overlay flag and acknowledges.
+    const size_t toggleCase = injectSource.find("case ProcessCommand::ToggleOverlay:");
+    ASSERT_NE(toggleCase, std::string::npos);
+    EXPECT_NE(injectSource.find("currentConfig.overlay.showOverlay = !currentConfig.overlay.showOverlay",
+                                toggleCase),
+              std::string::npos);
+    EXPECT_NE(injectSource.find("ProcessResponse::Ack", toggleCase), std::string::npos);
+
+    // The config template exposes the renamed hotkey and no longer carries the
+    // dead toggle_fps key.
+    EXPECT_NE(templateSource.find("toggle_overlay="), std::string::npos);
+    EXPECT_EQ(templateSource.find("toggle_fps"), std::string::npos);
+}
+
 TEST(RestrictedChildLauncherProbe, InheritsOnlyAllowlistedMapping) {
     const auto allowedValue = CommandLineHandle(L"--probe-allowed=");
     const auto blockedValue = CommandLineHandle(L"--probe-blocked=");

@@ -104,6 +104,10 @@ TEST(IpcMessageValidationTest, AcceptsWellFormedMessages) {
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::StartRecording), 8, "audio_only");
     EXPECT_TRUE(Validate(start, start.totalSize, 7, false));
 
+    const ProcessMessage toggleOverlay =
+        MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleOverlay), 9);
+    EXPECT_TRUE(Validate(toggleOverlay, toggleOverlay.totalSize, 8, false));
+
     const ProcessMessage ack = MakeValid(ProcessMessageKind::Response, static_cast<uint16_t>(ProcessResponse::Ack), 9);
     EXPECT_TRUE(Validate(ack, ack.totalSize, 8, false));
 
@@ -188,6 +192,10 @@ TEST(IpcMessageValidationTest, RejectsOutOfRangeOpcodesAndUnexpectedPayloads) {
     ProcessMessage pingWithPayload =
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::Ping), 7, "audio_only");
     EXPECT_FALSE(Validate(pingWithPayload, pingWithPayload.totalSize, 6, false));
+
+    ProcessMessage toggleWithPayload =
+        MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleOverlay), 7, "audio_only");
+    EXPECT_FALSE(Validate(toggleWithPayload, toggleWithPayload.totalSize, 6, false));
 
     ProcessMessage startWrongToken =
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::StartRecording), 7, "video_only");

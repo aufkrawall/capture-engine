@@ -112,6 +112,8 @@ int ControllerMain(HINSTANCE hInstance) {
                     ToggleRecording();
                 } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
                     ToggleAudioOnlyRecording();
+                } else if (msg.wParam == HOTKEY_ID_TOGGLE_OVERLAY) {
+                    ToggleOverlay();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
                     if (main_g_PseudoOverlay)
                         main_g_PseudoOverlay->BeginScreenshotCapture();
@@ -231,6 +233,17 @@ int ControllerMain(HINSTANCE hInstance) {
                         }
                     }
 
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, main_g_Config.hotkeyToggleOverlay)) {
+                        UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
+                        if (main_g_Config.hotkeyToggleOverlay.vkey != 0) {
+                            if (!RegisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY,
+                                                main_g_Config.hotkeyToggleOverlay.GetModifiers(),
+                                                main_g_Config.hotkeyToggleOverlay.vkey)) {
+                                LogError("[Controller] Failed to re-register overlay toggle hotkey");
+                            }
+                        }
+                    }
+
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
                         SyncLoggerAndSensorProcesses(main_g_Config);
@@ -282,6 +295,7 @@ int ControllerMain(HINSTANCE hInstance) {
     // Unregister hotkeys first
     UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
     UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
+    UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
 
     // Keep tray icon alive during shutdown (animation already started by
     // right-click handler) Process messages during shutdown so animation

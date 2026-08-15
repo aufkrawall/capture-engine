@@ -42,9 +42,9 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
         config.hotkeyStartStop.vkey = VK_F9;
     }
 
-    std::string toggleFpsKey = reader.GetStr("Hotkeys", "toggle_fps", "");
-    if (!toggleFpsKey.empty()) {
-        config.hotkeyToggleFPS = ParseHotkey(toggleFpsKey);
+    std::string toggleOverlayKey = reader.GetStr("Hotkeys", "toggle_overlay", "");
+    if (!toggleOverlayKey.empty()) {
+        config.hotkeyToggleOverlay = ParseHotkey(toggleOverlayKey);
     }
 
     std::string screenshotKey = reader.GetStr("Hotkeys", "screenshot", "");

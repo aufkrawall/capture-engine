@@ -307,7 +307,8 @@ track=2
 ; Combinations such as Ctrl+Shift+F10 are supported. Empty disables a hotkey,
 ; except start_stop, which falls back to F9 so recording always has a toggle.
 start_stop=CTRL+9
-toggle_fps=CTRL+8
+; Toggles the in-game overlay on/off at runtime (no restart required).
+toggle_overlay=CTRL+8
 screenshot=CTRL+0
 ; Starts or stops a recording that contains audio but no video.
 audio_only=CTRL+Minus

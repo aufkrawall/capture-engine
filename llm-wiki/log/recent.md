@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-08-15 - Runtime overlay toggle hotkey
+
+- The previously dead `toggle_fps` hotkey became `toggle_overlay` (default `CTRL+8`). The controller registers
+  `HOTKEY_ID_TOGGLE_OVERLAY`, dispatches it in the `WM_HOTKEY` loop, and forwards `ProcessCommand::ToggleOverlay`
+  over the authenticated channel; the inject process flips `overlayConfig.showOverlay` in shared memory under the
+  single-writer seqlock and acknowledges. The toggle is a runtime-only override: a config hot-reload or a newly
+  injected target restores the `[Overlay] enabled` baseline. The old `toggle_fps` key no longer parses.
+
 ### 2026-08-15 - UE5 persistent RR-quality and post-processing override bundles
 
 - `[UE5]` is now the canonical home for `force_ray_reconstruction`; `[DLSS]` and `[Graphics]` remain compatibility

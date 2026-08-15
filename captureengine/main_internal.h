@@ -80,6 +80,8 @@ extern int SensorProcessMain(const AppConfig& config);
 
 #define HOTKEY_ID_AUDIO_ONLY 3
 
+#define HOTKEY_ID_TOGGLE_OVERLAY 4
+
 void LaunchGameSuspended(const std::string& path);
 
 bool ConnectToChildProcesses(DWORD);
@@ -93,6 +95,8 @@ void CheckRecordingFailureState();
 void ToggleRecording();
 
 void ToggleAudioOnlyRecording();
+
+void ToggleOverlay();
 
 void ShutdownChildProcesses();
 

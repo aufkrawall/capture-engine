@@ -217,6 +217,25 @@ void ToggleAudioOnlyRecording() {
         main_g_Tray->SetRecordingState(main_g_Recording);
 }
 
+// Toggle the injected in-game overlay on/off at runtime. The inject process owns
+// the shared-memory overlay config, so the controller only forwards the intent;
+// this keeps the overlay-config seqlock single-writer.
+void ToggleOverlay() {
+    if (!main_g_InjectClient || !main_g_InjectClient->IsConnected()) {
+        LogWarn("[Controller] Overlay toggle hotkey pressed, but no inject process is connected");
+        return;
+    }
+
+    MainThreadBlockTimer _blk("overlay toggle IPC");
+    ProcessResponse response = ProcessResponse::Error;
+    if (!main_g_InjectClient->SendCommand(ProcessCommand::ToggleOverlay, nullptr, &response) ||
+        response == ProcessResponse::Error) {
+        LogError("[Controller] Inject process did not accept the overlay toggle");
+        return;
+    }
+    LogInfo("[Controller] Overlay toggle hotkey handled");
+}
+
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
@@ -539,6 +558,10 @@ bool CompleteControllerStartup() {
     if (main_g_Config.hotkeyAudioOnly.vkey != 0) {
         RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly.GetModifiers(),
                        main_g_Config.hotkeyAudioOnly.vkey);
+    }
+    if (main_g_Config.hotkeyToggleOverlay.vkey != 0) {
+        RegisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay.GetModifiers(),
+                       main_g_Config.hotkeyToggleOverlay.vkey);
     }
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
