@@ -100,4 +100,64 @@ constexpr bool IsPlausibleConsoleObject(uintptr_t object) noexcept {
     return object >= 0x10000 && (object % 8) == 0 && object < (uintptr_t{1} << 47);
 }
 
+// Progress of the sweep that locates the registry's element storage.
+//
+// Locating the map means walking every committed private RW region, and that
+// does not fit in one time-boxed pass on a large title: Industria 2
+// (20260815_214219) covered 218 MB in the 400 ms budget and stopped mid-heap
+// with 31 of 34 anchors placed. Freezing that partial result was wrong twice
+// over - the regions it never reached could hold the very elements the second
+// pass is looking for, and every "this name is not registered" verdict rests
+// on having actually looked everywhere. The sweep therefore carries a cursor
+// and resumes at the exact chunk it did not reach, and only a sweep that ran
+// the enumeration to its end may support an absence conclusion.
+struct SweepProgress {
+    // Address the next pass examines first. Regions entirely below it were
+    // already covered. The cursor only moves forward: memory that appears
+    // below it was committed after CE swept there, and element storage that
+    // moves is caught by re-reading the anchor element instead.
+    uintptr_t cursor = 0;
+    uint64_t sweptBytes = 0;
+    uint32_t passes = 0;
+    // The enumeration was walked to its end.
+    bool complete = false;
+    // The cumulative bound ran out before that happened.
+    bool budgetExhausted = false;
+};
+
+// Whether "the name is absent" is a supportable reading of "the name was not
+// found". Only a finished sweep proves it; a paused or abandoned one proves
+// nothing about the memory it never read.
+constexpr bool SweepProvesAbsence(const SweepProgress& progress) noexcept {
+    return progress.complete && !progress.budgetExhausted;
+}
+
+constexpr bool SweepCanContinue(const SweepProgress& progress, uint32_t maxPasses,
+                                uint64_t maxBytes) noexcept {
+    return !progress.complete && !progress.budgetExhausted && progress.passes < maxPasses &&
+           progress.sweptBytes < maxBytes;
+}
+
+struct RegionSpan {
+    uintptr_t base = 0;
+    std::size_t size = 0;
+};
+
+// True once the cursor has moved past the whole region, so a resumed pass may
+// skip it. Written as a subtraction because base + size can overflow.
+constexpr bool RegionAlreadySwept(const RegionSpan& region, uintptr_t cursor) noexcept {
+    return cursor >= region.base && (cursor - region.base) >= region.size;
+}
+
+// Offset a resumed pass re-enters a region at: the start when the cursor lies
+// below it, the cursor itself when it points inside. The caller stores the
+// offset of the chunk it did *not* scan, so resuming here re-reads that chunk
+// whole and no element can fall through the pause.
+constexpr std::size_t SweepResumeOffset(const RegionSpan& region, uintptr_t cursor) noexcept {
+    if (cursor <= region.base)
+        return 0;
+    const uintptr_t into = cursor - region.base;
+    return into >= region.size ? region.size : static_cast<std::size_t>(into);
+}
+
 }  // namespace ce::ue5_registry

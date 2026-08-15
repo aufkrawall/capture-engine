@@ -272,13 +272,13 @@ Primary sources:
   `r.Tonemapper.GrainQuantization` have no literal in UE 5.4 or 5.6; `r.Lumen.Reflections.DownsampleCheckerboard` and
   `r.MegaLights.NumSamplesPerPixel` exist in 5.6 but not 5.4. The summary log separates these ("literals not found in
   loaded modules") from present-but-unvalidated CVars. `ShowFlag.*` CVars are composed at runtime from a short-name
-  table via `FString::Printf(TEXT("ShowFlag.%s"), ...)` in UE 5.4/5.6, so no `ShowFlag.X` literal exists to match;
-  disabling vignette via `ShowFlag.Vignette` therefore remains unsupported. The composed names do exist in the game's
+  table via `FString::Printf(TEXT("ShowFlag.%s"), ...)` in UE 5.4/5.6, so no `ShowFlag.X` literal exists to match and
+  the literal scan alone cannot disable vignette. The composed names do exist in the game's
   writable memory as a contiguous UTF-16 table (present once a world/graphics state exists), but they are not embedded
   in the CVar objects and no FString references them inside the owning region, so a literal scan cannot reach the CVar
   objects. Film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`,
   `r.MotionBlurQuality`, and `r.SceneColorFringeQuality`; vignette is the one post-processing effect that needs the
-  registry path below.
+  registry path below, which does resolve it (both games, since 20260815_210850).
 - **Console-registry resolution** (`hook/main_ue5_registry.cpp`, decoders in `hook/common/ue5_console_registry.h`)
   is the answer to both runtime-composed names and per-title layouts the candidate scoring rejects. `FConsoleManager`
   keeps a `TMap<FString, IConsoleObject*>` of every registered variable, so the composed name is present as an
@@ -288,23 +288,48 @@ Primary sources:
   distance, after which the same allocation is re-read for the missing names and the resolved object goes through the
   ordinary `ref+0x50` redirect (`InstallConsoleObjectRedirect`, logged as `installed via console registry`).
   Constraints that keep it safe: every read is `ReadProcessMemory` rather than a raw dereference (a live game frees
-  heap regions mid-walk, and the kernel-checked copy fails instead of raising); the search is bounded to 768 MB /
-  400 ms and four attempts; and it never runs before an anchor exists, so it can only ever add to what the scan
-  proved. **The walk must not stop at the first confirmed element** - the map's storage does not fit in one heap
-  region, and stopping early made the second pass re-read a single 64 KB region (Talos 20260815_202743: anchored in
-  47 ms, then failed to resolve `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`, which is certainly
-  registered). It now continues until every anchor is placed or the budget ends, records each region holding
-  confirmed elements, and resolves across all of them; confirmations count distinct anchors so a CVar registered
-  from several sites cannot end the walk early. Locating the map is the expensive half - once anchored, retries only
-  re-read the recorded regions (up to 90 attempts at ~1 Hz), which covers `ShowFlag.*` appearing during
-  world/graphics init rather than at startup. A TMap growth reallocates the element storage, so the representative
-  element is re-checked each pass and a move triggers a fresh search rather than silent misses. The anchored log
-  line reports confirmed/total anchors and region count: a full ratio is what makes "these names are genuinely not
-  registered" a supportable conclusion instead of "the walk ran short".
-- Observed coverage: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4, profile
-  adds the two AF CVars) installs 31/40. The remaining entries are the version-conditional/absent names above plus
+  heap regions mid-walk, and the kernel-checked copy fails instead of raising); and it never runs before an anchor
+  exists, so it can only ever add to what the scan proved. **The walk must not stop at the first confirmed
+  element** - the map's storage does not fit in one heap region, and stopping early made the second pass re-read a
+  single 64 KB region (Talos 20260815_202743: anchored in 47 ms, then failed to resolve
+  `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`, which is certainly registered). It records each region
+  holding confirmed elements and resolves across all of them; confirmations count distinct anchors (tracked by
+  object address, not list index, because the anchor list is rebuilt each pass) so a CVar registered from several
+  sites cannot inflate the ratio.
+- **The sweep is resumable, and only a finished sweep may support an absence verdict** (`SweepProgress` and its
+  predicates in `hook/common/ue5_console_registry.h`). The 400 ms / 768 MB bound is *per pass*, not per sweep:
+  Industria 2 (20260815_214219) covered 218 MB in 406 ms, stopped mid-heap with 31 of 34 anchors placed, and the
+  old code then froze that partial result - once `g_map.valid` was set the search never ran again, so all 90 retry
+  passes re-read the same two regions and the regions the walk never reached stayed unexamined for the session.
+  The sweep now carries a cursor, parks on the chunk it did *not* read (so the chunk overlap still guarantees no
+  element falls through a pause), and resumes there on the next pass until the heap enumeration is exhausted;
+  cumulative bounds are 32 passes / 8 GB, after which it says it gave up. The all-anchors-placed early exit was
+  removed: placing every anchor does not prove every region of the map was seen, and completeness is what the
+  verdict rests on. Consequently the closing summary distinguishes **"absent from the fully swept registry"** from
+  **"not found in the N MB swept before the sweep stopped at X - unproven, not known-absent"**; the old wording
+  called both "never registered by the engine". Resolve passes are time-boxed too (100 ms) and rotate their
+  starting region, so a budget that expires cannot starve the regions behind it. Locating the map is the expensive
+  half - once anchored, retries only re-read the recorded regions (up to 90 attempts at ~1 Hz), which covers
+  `ShowFlag.*` appearing during world/graphics init rather than at startup. A TMap growth reallocates the element
+  storage, so the representative element is re-checked each pass and a move restarts the whole sweep (cursor,
+  confirmed anchors and region set included) rather than producing silent misses. The cursor only moves forward:
+  memory committed below it after CE swept there is new memory, and element storage that *moves* is caught by the
+  anchor re-check instead.
+- Observed coverage: Industria 2 Demo (UE 5.6.1, session 20260815_214219) installs **38/40** requested CVars and
+  verifies 38/38, including all four `ShowFlag.*` through the registry; Talos Reawakened (UE 5.4.4) installs 35/40.
+  The remaining entries are the version-conditional/absent names above plus
   `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points
-  into `.pdata`, so the data-pointer validation correctly refuses it). Talos in-game (session 20260815_191332) is the
+  into `.pdata`, so the data-pointer validation correctly refuses it). Industria 2 also exercised drift recovery:
+  two Lumen CVars were rewritten by the game ~30 s in and were re-asserted automatically.
+- **Stale-risk / unverified:** all four `ShowFlag.*` installs report `prevValue=0` in *both* titles and both engine
+  versions (20260815_210850 and 20260815_214219). UE registers these as `TAutoConsoleVariable<int32>` whose
+  documented default is 2 ("obey the game/editor setting"), so a pre-write value of 0 is either a genuine
+  game-side force-off or CE reading a slot that is not the one the renderer consults. Writing 0 over 0 changes
+  nothing either way, so **the ShowFlag path is proven to install but not proven to have an effect** - it has no
+  end-to-end evidence comparable to the RR bundle's `Feature 13 evaluation succeeded`. Relevant open report: the
+  Industria 2 main menu still shows a chromatic-aberration / lens-distortion look with both
+  `r.SceneColorFringeQuality=0` and `ShowFlag.SceneColorFringe=0` installed and verified, which points at either
+  this gap or a custom post-process material (which CE deliberately does not disable, see below). Talos in-game (session 20260815_191332) is the
   end-to-end proof for the RR bundle: `r.NGX.DLSS.DenoiserMode=1` installed as a Ref redirect and NGX then logged
   `Feature 13 evaluation succeeded; Ray Reconstruction is rendering`, with no Feature 1 SR fallback for the rest of
   the session. Ref redirect is therefore proven to reach the engine; **no data-pointer-mode override has an

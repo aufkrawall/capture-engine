@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,31 @@ ce::ue5_registry::StringHeader HeaderFor(const std::string& text) {
     header.num = static_cast<int32_t>(text.size()) + 1;
     header.max = header.num;
     return header;
+}
+
+// Chunk stride of the anchor sweep in hook/main_ue5_registry.cpp: consecutive
+// chunks overlap so an element straddling a boundary is still seen whole.
+constexpr std::size_t kChunkBytes = 64 * 1024;
+constexpr std::size_t kChunkOverlap = 64;
+
+// One time-boxed pass over a region, mirroring the sweep loop. `chunkLimit`
+// stands in for the wall-clock budget: the pass parks on the chunk it did not
+// read, exactly as the real loop does.
+std::vector<std::size_t> SweepPass(const ce::ue5_registry::RegionSpan& region, uintptr_t& cursor,
+                                   std::size_t chunkLimit) {
+    std::vector<std::size_t> visited;
+    if (ce::ue5_registry::RegionAlreadySwept(region, cursor))
+        return visited;
+    for (std::size_t offset = ce::ue5_registry::SweepResumeOffset(region, cursor);
+         offset < region.size; offset += kChunkBytes - kChunkOverlap) {
+        if (visited.size() == chunkLimit) {
+            cursor = region.base + offset;
+            return visited;
+        }
+        visited.push_back(offset);
+    }
+    cursor = region.base + region.size;
+    return visited;
 }
 
 }  // namespace
@@ -114,6 +140,125 @@ TEST(UE5ConsoleRegistryTest, ValueOffsetAndObjectPlausibility) {
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(0x400));      // first page
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(0x10004));    // unaligned
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(uintptr_t{1} << 48));
+}
+
+TEST(UE5RegistrySweepTest, ResumingAfterAPauseCoversExactlyTheSameChunks) {
+    // The regression: Industria 2 (20260815_214219) covered 218 MB of heap in
+    // the 400 ms budget, stopped mid-heap with 31 of 34 anchors placed, and the
+    // partial result was then frozen and reused for the rest of the session.
+    // Splitting a pass must cost nothing but latency, so a paused-and-resumed
+    // sweep has to visit the very same chunk offsets a single pass would.
+    const ce::ue5_registry::RegionSpan region{0x7FF000000000ull, kChunkBytes * 10 + 1234};
+
+    uintptr_t wholeCursor = 0;
+    const std::vector<std::size_t> whole =
+        SweepPass(region, wholeCursor, std::numeric_limits<std::size_t>::max());
+    ASSERT_FALSE(whole.empty());
+    EXPECT_EQ(wholeCursor, region.base + region.size);
+
+    uintptr_t splitCursor = 0;
+    std::vector<std::size_t> split;
+    for (int pass = 0; pass < 32 && !ce::ue5_registry::RegionAlreadySwept(region, splitCursor); ++pass) {
+        const std::vector<std::size_t> chunk = SweepPass(region, splitCursor, 3);
+        split.insert(split.end(), chunk.begin(), chunk.end());
+    }
+    EXPECT_EQ(split, whole);
+    EXPECT_EQ(splitCursor, wholeCursor);
+}
+
+TEST(UE5RegistrySweepTest, ResumeOffsetParksOnTheUnreadChunkNotThePreviousOne) {
+    const ce::ue5_registry::RegionSpan region{0x20000, kChunkBytes * 4};
+    const std::size_t stride = kChunkBytes - kChunkOverlap;
+
+    uintptr_t cursor = 0;
+    const std::vector<std::size_t> first = SweepPass(region, cursor, 2);
+    ASSERT_EQ(first.size(), 2u);
+    EXPECT_EQ(first[0], 0u);
+    EXPECT_EQ(first[1], stride);
+    // Parking on the chunk that was read would skip it on resume; the whole
+    // point of the overlap is that the next pass re-enters at the unread one.
+    EXPECT_EQ(cursor, region.base + stride * 2);
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(region, cursor), stride * 2);
+}
+
+TEST(UE5RegistrySweepTest, RegionSkippingAndResumeArithmeticStayInBounds) {
+    const ce::ue5_registry::RegionSpan region{0x100000, 0x10000};
+
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(region, 0));
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(region, region.base));
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(region, region.base + region.size - 1));
+    EXPECT_TRUE(ce::ue5_registry::RegionAlreadySwept(region, region.base + region.size));
+    EXPECT_TRUE(ce::ue5_registry::RegionAlreadySwept(region, region.base + region.size + 0x1000));
+
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(region, 0), 0u);
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(region, region.base), 0u);
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(region, region.base + 0x40), 0x40u);
+    // Clamped, never past the end, so the caller's loop cannot read outside it.
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(region, region.base + region.size + 0x100),
+              region.size);
+
+    // A region whose end would overflow must never wrap into a bogus "already
+    // swept": that would silently skip memory the sweep never read, which is
+    // exactly the coverage claim the closing verdict rests on.
+    const ce::ue5_registry::RegionSpan high{std::numeric_limits<uintptr_t>::max() - 0xFFF, 0x1000};
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(high, high.base));
+    // The last byte of the region is still pending, so the cursor sitting on it
+    // is not past the region.
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(high, std::numeric_limits<uintptr_t>::max()));
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(high, std::numeric_limits<uintptr_t>::max()), 0xFFFu);
+    // base + size wraps to 0 for this region; a wrapped cursor must read as
+    // "below every region", never as "past this one".
+    EXPECT_FALSE(ce::ue5_registry::RegionAlreadySwept(high, 0));
+    EXPECT_EQ(ce::ue5_registry::SweepResumeOffset(high, 0), 0u);
+}
+
+TEST(UE5RegistrySweepTest, OnlyAFinishedSweepMayCallANameUnregistered) {
+    // The second half of the same regression: with the walk stopped early, the
+    // summary still reported the leftovers as "never registered by the engine",
+    // which is a conclusion the coverage did not support.
+    ce::ue5_registry::SweepProgress paused;
+    paused.cursor = 0x7FF000000000ull;
+    paused.sweptBytes = 218ull << 20;
+    paused.passes = 1;
+    EXPECT_FALSE(ce::ue5_registry::SweepProvesAbsence(paused));
+
+    ce::ue5_registry::SweepProgress finished = paused;
+    finished.complete = true;
+    EXPECT_TRUE(ce::ue5_registry::SweepProvesAbsence(finished));
+
+    ce::ue5_registry::SweepProgress abandoned = paused;
+    abandoned.budgetExhausted = true;
+    EXPECT_FALSE(ce::ue5_registry::SweepProvesAbsence(abandoned));
+}
+
+TEST(UE5RegistrySweepTest, SweepContinuesUntilFinishedOrBounded) {
+    constexpr uint32_t kMaxPasses = 32;
+    constexpr uint64_t kMaxBytes = 8ull << 30;
+
+    ce::ue5_registry::SweepProgress progress;
+    EXPECT_TRUE(ce::ue5_registry::SweepCanContinue(progress, kMaxPasses, kMaxBytes));
+
+    // A pass that found the map but ran out of time must still continue: the
+    // old code stopped searching the moment the first element was located.
+    progress.passes = 1;
+    progress.sweptBytes = 218ull << 20;
+    EXPECT_TRUE(ce::ue5_registry::SweepCanContinue(progress, kMaxPasses, kMaxBytes));
+
+    ce::ue5_registry::SweepProgress done = progress;
+    done.complete = true;
+    EXPECT_FALSE(ce::ue5_registry::SweepCanContinue(done, kMaxPasses, kMaxBytes));
+
+    ce::ue5_registry::SweepProgress outOfPasses = progress;
+    outOfPasses.passes = kMaxPasses;
+    EXPECT_FALSE(ce::ue5_registry::SweepCanContinue(outOfPasses, kMaxPasses, kMaxBytes));
+
+    ce::ue5_registry::SweepProgress outOfBytes = progress;
+    outOfBytes.sweptBytes = kMaxBytes;
+    EXPECT_FALSE(ce::ue5_registry::SweepCanContinue(outOfBytes, kMaxPasses, kMaxBytes));
+
+    ce::ue5_registry::SweepProgress gaveUp = progress;
+    gaveUp.budgetExhausted = true;
+    EXPECT_FALSE(ce::ue5_registry::SweepCanContinue(gaveUp, kMaxPasses, kMaxBytes));
 }
 
 TEST(UE5RedirectPlanTest, RecordsTheGamePointerSoRestoreNeverWritesNull) {

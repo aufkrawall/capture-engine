@@ -24,18 +24,32 @@ constexpr std::size_t kChunkBytes = 64 * 1024;
 // Every element CE reads spans at most a key header plus the largest accepted
 // value distance, so chunks overlap by that much and no element is missed.
 constexpr std::size_t kChunkOverlap = 64;
+// Per pass. The sweep resumes at the chunk it did not reach, so running out of
+// time here costs latency, never coverage.
 constexpr ULONGLONG kScanBudgetMs = 400;
 constexpr uint64_t kScanBudgetBytes = 768ull << 20;
-// Locating the map walks the heap and is bounded hard. Re-reading a map that
-// is already located is cheap, and it has to be retried for a while: UE
-// registers the ShowFlag variables during world/graphics init, long after the
-// first module scan.
-constexpr uint32_t kMaxSearchAttempts = 4;
+// Cumulative bounds for the whole sweep. It runs at roughly 1 Hz from the hook
+// service thread, so a title whose heap cannot be covered within these gives up
+// and says so, rather than sweeping for the lifetime of the session.
+constexpr uint32_t kMaxSweepPasses = 32;
+constexpr uint64_t kMaxSweepBytes = 8ull << 30;
+// Re-reading the recorded regions is the cheap half, but the region set grows
+// as the sweep proceeds, so it is time-boxed too.
+constexpr ULONGLONG kResolveBudgetMs = 100;
+// Retried for a while: UE registers the ShowFlag variables during world and
+// graphics init, long after the first module scan.
 constexpr uint32_t kMaxResolveAttempts = 90;
 
-uint32_t g_searchAttempts = 0;
 uint32_t g_resolveAttempts = 0;
 bool g_exhausted = false;
+ce::ue5_registry::SweepProgress g_sweep;
+// Confirmed anchors are tracked by object address rather than by index into the
+// anchor list: that list is rebuilt on every pass and grows as more CVars
+// install, so an index would name a different anchor after the sweep resumes.
+std::vector<uintptr_t> g_confirmedAnchors;
+// Region the next resolve pass starts at, so a resolve budget that expires in
+// the same place cannot starve every region behind it.
+std::size_t g_resolveRegionCursor = 0;
 // A CVar the registry located but could not install is a permanent per-title
 // layout fact, not a transient miss. Without this it is re-found, re-refused
 // and re-logged on every retry: the 20260815_210850 session carried 91 copies
@@ -188,7 +202,6 @@ struct RegistryMap {
   bool valid = false;
   std::size_t valueOffset = 0;
   std::vector<Region> regions;
-  std::size_t confirmed = 0;
   // One representative element, re-checked each pass so a TMap growth that
   // relocates the storage triggers a fresh search instead of silent misses.
   const char* name = nullptr;
@@ -197,6 +210,26 @@ struct RegistryMap {
 };
 
 RegistryMap g_map;
+
+// Distinct anchors only: a CVar registered from several sites would otherwise
+// inflate the confirmed count, and that count is what says whether the element
+// set the resolve pass reads is the whole map or a corner of it.
+void MarkAnchorConfirmed(uintptr_t object) {
+  const auto at = std::lower_bound(g_confirmedAnchors.begin(), g_confirmedAnchors.end(), object);
+  if (at == g_confirmedAnchors.end() || *at != object)
+    g_confirmedAnchors.insert(at, object);
+}
+
+std::size_t CountConfirmedAnchors(const std::vector<Anchor>& anchors) {
+  std::size_t confirmed = 0;
+  for (const Anchor& anchor : anchors) {
+    const auto at =
+        std::lower_bound(g_confirmedAnchors.begin(), g_confirmedAnchors.end(), anchor.object);
+    if (at != g_confirmedAnchors.end() && *at == anchor.object)
+      ++confirmed;
+  }
+  return confirmed;
+}
 
 // UE reallocates the map's element storage when it grows, which moves every
 // element. Re-reading the element the search confirmed distinguishes "the map
@@ -209,25 +242,36 @@ bool AnchorStillHolds(const RegistryMap& map) {
   return ReadStringHeader(map.valueAddress - map.valueOffset, header) && KeyMatchesName(header, map.name);
 }
 
-bool FindRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map, uint64_t& scannedBytes,
-                     ULONGLONG deadline) {
+// One time-boxed pass of the sweep. It never restarts and never stops at the
+// first hit: it walks on to the end of the heap enumeration across as many
+// passes as that takes, because a region it did not read is a region that could
+// hold the element the resolve pass is looking for - and because the closing
+// verdict distinguishes "swept everywhere, absent" from "stopped early".
+void SweepForRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map,
+                         ce::ue5_registry::SweepProgress& progress, ULONGLONG deadline) {
   const AnchorFilter filter(anchors);
-  std::vector<bool> seen(anchors.size(), false);
   std::vector<uint8_t> buffer(kChunkBytes);
+  uint64_t passBytes = 0;
+  ++progress.passes;
   for (const Region& region : CollectHeapRegions()) {
-    for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes - kChunkOverlap) {
-      // Walking on past the first hit is what makes the element set complete;
-      // it stops as soon as every anchor has been placed, or on the budget.
-      if (map.confirmed >= anchors.size() || scannedBytes >= kScanBudgetBytes ||
-          GetTickCount64() >= deadline) {
-        return map.valid;
+    const ce::ue5_registry::RegionSpan span{region.base, region.size};
+    if (ce::ue5_registry::RegionAlreadySwept(span, progress.cursor))
+      continue;
+    for (std::size_t offset = ce::ue5_registry::SweepResumeOffset(span, progress.cursor);
+         offset < region.size; offset += kChunkBytes - kChunkOverlap) {
+      if (passBytes >= kScanBudgetBytes || GetTickCount64() >= deadline) {
+        // Park on the chunk that was not read, not on the one that was: the
+        // next pass re-reads it whole, so nothing falls through the pause.
+        progress.cursor = region.base + offset;
+        return;
       }
       const std::size_t bytes = (std::min)(kChunkBytes, region.size - offset);
       if (bytes < sizeof(uintptr_t))
         break;
       if (!ReadBytes(region.base + offset, buffer.data(), bytes))
         continue;
-      scannedBytes += bytes;
+      passBytes += bytes;
+      progress.sweptBytes += bytes;
       const std::size_t slots = bytes / sizeof(uintptr_t);
       const auto* words = reinterpret_cast<const uintptr_t*>(buffer.data());
       for (std::size_t slot = 0; slot < slots; ++slot) {
@@ -249,20 +293,14 @@ bool FindRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map, uint6
         } else if (valueOffset != map.valueOffset) {
           continue;  // A different layout is a different structure, not ours.
         }
-        // Count distinct anchors, not raw hits: a CVar registered from several
-        // sites would otherwise satisfy the early exit before the whole map
-        // has been walked.
-        const std::size_t anchorIndex = static_cast<std::size_t>(anchor - anchors.data());
-        if (!seen[anchorIndex]) {
-          seen[anchorIndex] = true;
-          ++map.confirmed;
-        }
+        MarkAnchorConfirmed(anchor->object);
         if (map.regions.empty() || map.regions.back().base != region.base)
           map.regions.push_back(region);
       }
     }
+    progress.cursor = region.base + region.size;
   }
-  return map.valid;
+  progress.complete = true;
 }
 
 // Second pass over every proven allocation: find the key of each missing name
@@ -322,13 +360,39 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
   return installed;
 }
 
+// Every region the sweep proved, time-boxed and resumed by rotation. Regions
+// here are the VirtualQuery spans holding confirmed elements, so this is the
+// cheap half - but the sweep no longer stops at the first one, and a budget
+// that always expired in the same region would starve the rest.
+std::size_t ResolveMissingAcrossRegions(const std::vector<Region>& regions, std::size_t valueOffset,
+                                        const std::vector<std::size_t>& missing, HMODULE owner,
+                                        ULONGLONG deadline) {
+  if (regions.empty())
+    return 0;
+  if (g_resolveRegionCursor >= regions.size())
+    g_resolveRegionCursor = 0;
+  std::size_t installed = 0;
+  for (std::size_t visited = 0; visited < regions.size(); ++visited) {
+    const std::size_t index = (g_resolveRegionCursor + visited) % regions.size();
+    if (GetTickCount64() >= deadline) {
+      g_resolveRegionCursor = index;
+      return installed;
+    }
+    installed += ResolveMissingInRegion(regions[index], valueOffset, missing, owner);
+  }
+  g_resolveRegionCursor = 0;
+  return installed;
+}
+
 }  // namespace
 
 void ResetConsoleRegistry() {
-  g_searchAttempts = 0;
   g_resolveAttempts = 0;
   g_exhausted = false;
   g_map = {};
+  g_sweep = {};
+  g_confirmedAnchors.clear();
+  g_resolveRegionCursor = 0;
   g_registryRefused.fill(false);
 }
 
@@ -345,43 +409,66 @@ bool ResolveMissingThroughConsoleRegistry() {
   if (g_map.valid && !AnchorStillHolds(g_map)) {
     HookLogImportant("UE5 overrides: console-registry element storage moved; re-locating it");
     g_map = {};
+    g_sweep = {};
+    g_confirmedAnchors.clear();
+    g_resolveRegionCursor = 0;
+  }
+
+  // The sweep keeps going after the first element is found. Locating the map
+  // is only half of what the walk produces; the other half is the coverage
+  // that lets the closing verdict below say "absent" instead of "not seen".
+  if (ce::ue5_registry::SweepCanContinue(g_sweep, kMaxSweepPasses, kMaxSweepBytes)) {
+    const bool wasValid = g_map.valid;
+    const ULONGLONG start = GetTickCount64();
+    const uint64_t before = g_sweep.sweptBytes;
+    SweepForRegistryMap(anchors, g_map, g_sweep, start + kScanBudgetMs);
+    const auto passMb = static_cast<unsigned long long>((g_sweep.sweptBytes - before) >> 20);
+    const auto totalMb = static_cast<unsigned long long>(g_sweep.sweptBytes >> 20);
+    if (!wasValid && g_map.valid) {
+      HookLogImportant(
+          "UE5 overrides: console registry anchored on %s (valueOffset=%zu, %zu/%zu anchor element(s) "
+          "across %zu region(s), first=%p) after %llu MB in %llums",
+          g_map.name, g_map.valueOffset, CountConfirmedAnchors(anchors), anchors.size(),
+          g_map.regions.size(), reinterpret_cast<void*>(g_map.regions.front().base), passMb,
+          static_cast<unsigned long long>(GetTickCount64() - start));
+    }
+    if (g_sweep.complete) {
+      HookLogImportant(
+          "UE5 overrides: console-registry sweep complete after %llu MB in %u pass(es) — "
+          "%zu/%zu anchor element(s) across %zu region(s); a name absent from this sweep is "
+          "genuinely unregistered",
+          totalMb, g_sweep.passes, CountConfirmedAnchors(anchors), anchors.size(),
+          g_map.regions.size());
+    } else if (!ce::ue5_registry::SweepCanContinue(g_sweep, kMaxSweepPasses, kMaxSweepBytes)) {
+      g_sweep.budgetExhausted = true;
+      HookLogImportant(
+          "UE5 overrides: console-registry sweep gave up after %llu MB in %u pass(es), parked at %p; "
+          "coverage stays partial and cannot prove any name unregistered",
+          totalMb, g_sweep.passes, reinterpret_cast<void*>(g_sweep.cursor));
+    } else if (g_sweep.passes <= 4 || (g_sweep.passes % 8) == 0) {
+      HookLogImportant(
+          "UE5 overrides: console-registry sweep paused at %p after pass %u (%llu MB this pass, "
+          "%llu MB total, %zu/%zu anchor element(s), %zu region(s)); resuming there",
+          reinterpret_cast<void*>(g_sweep.cursor), g_sweep.passes, passMb, totalMb,
+          CountConfirmedAnchors(anchors), anchors.size(), g_map.regions.size());
+    }
   }
 
   if (!g_map.valid) {
-    if (g_searchAttempts >= kMaxSearchAttempts) {
+    // Only a sweep that ran out of room to look has finished looking.
+    if (!ce::ue5_registry::SweepCanContinue(g_sweep, kMaxSweepPasses, kMaxSweepBytes)) {
       g_exhausted = true;
-      HookLogImportant("UE5 overrides: console registry could not be located in %u attempt(s); "
-                       "%zu CVar(s) stay unresolved",
-                       kMaxSearchAttempts, missing.size());
-      return false;
+      HookLogImportant("UE5 overrides: console registry could not be located in %llu MB across %u "
+                       "pass(es); %zu CVar(s) stay unresolved",
+                       static_cast<unsigned long long>(g_sweep.sweptBytes >> 20), g_sweep.passes,
+                       missing.size());
     }
-    ++g_searchAttempts;
-    const ULONGLONG start = GetTickCount64();
-    uint64_t scannedBytes = 0;
-    RegistryMap located;
-    if (!FindRegistryMap(anchors, located, scannedBytes, start + kScanBudgetMs)) {
-      HookLogImportant(
-          "UE5 overrides: console registry not located (attempt %u/%u, %llu MB scanned in %llums, "
-          "%zu anchor(s)); keeping the module-scan results",
-          g_searchAttempts, kMaxSearchAttempts, static_cast<unsigned long long>(scannedBytes >> 20),
-          static_cast<unsigned long long>(GetTickCount64() - start), anchors.size());
-      return false;
-    }
-    g_map = located;
-    // The confirmed/anchor ratio says whether the element set is complete: a
-    // partial match means the walk ran out of budget before the whole map.
-    HookLogImportant(
-        "UE5 overrides: console registry anchored on %s (valueOffset=%zu, %zu/%zu anchor element(s) "
-        "across %zu region(s), first=%p) after %llu MB in %llums",
-        g_map.name, g_map.valueOffset, g_map.confirmed, anchors.size(), g_map.regions.size(),
-        reinterpret_cast<void*>(g_map.regions.front().base),
-        static_cast<unsigned long long>(scannedBytes >> 20),
-        static_cast<unsigned long long>(GetTickCount64() - start));
+    return false;
   }
 
-  std::size_t installed = 0;
-  for (const Region& region : g_map.regions)
-    installed += ResolveMissingInRegion(region, g_map.valueOffset, missing, GetModuleHandleW(nullptr));
+  const std::size_t installed =
+      ResolveMissingAcrossRegions(g_map.regions, g_map.valueOffset, missing, GetModuleHandleW(nullptr),
+                                  GetTickCount64() + kResolveBudgetMs);
   if (installed) {
     HookLogImportant("UE5 overrides: console registry resolved %zu of %zu remaining CVar(s)",
                      installed, missing.size());
@@ -397,10 +484,26 @@ bool ResolveMissingThroughConsoleRegistry() {
   const bool nothingLeftToWaitFor = refused == missing.size();
   if (nothingLeftToWaitFor || ++g_resolveAttempts >= kMaxResolveAttempts) {
     g_exhausted = true;
-    HookLogImportant(
-        "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "
-        "%zu located but carrying a layout CE cannot drive, %zu never registered by the engine",
-        missing.size(), g_resolveAttempts, refused, missing.size() - refused);
+    // "Not found" only becomes "not registered" behind a finished sweep. The
+    // sweep is bounded and always terminal by the time the attempts run out, so
+    // this reports which of the two it actually was instead of assuming.
+    const std::size_t unseen = missing.size() - refused;
+    if (ce::ue5_registry::SweepProvesAbsence(g_sweep)) {
+      HookLogImportant(
+          "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "
+          "%zu located but carrying a layout CE cannot drive, %zu absent from the fully swept registry "
+          "(%llu MB across %u pass(es))",
+          missing.size(), g_resolveAttempts, refused, unseen,
+          static_cast<unsigned long long>(g_sweep.sweptBytes >> 20), g_sweep.passes);
+    } else {
+      HookLogImportant(
+          "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "
+          "%zu located but carrying a layout CE cannot drive, %zu not found in the %llu MB swept "
+          "before the sweep stopped at %p; those %zu are unproven, not known-absent",
+          missing.size(), g_resolveAttempts, refused, unseen,
+          static_cast<unsigned long long>(g_sweep.sweptBytes >> 20),
+          reinterpret_cast<void*>(g_sweep.cursor), unseen);
+    }
   }
   return false;
 }

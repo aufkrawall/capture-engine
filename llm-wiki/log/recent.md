@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-08-16 - Console-registry sweep is resumable; "never registered" is no longer assumed
+
+- Reviewing Industria 2 session `20260815_214219` (UE 5.6.1, build 0.1.6109) surfaced two defects behind one log
+  line: `console registry anchored on r.VT.MaxAnisotropy (31/34 anchor element(s) across 2 region(s)) after
+  218 MB in 406ms`. 406 ms against a 400 ms budget is a **deadline exit**, not a finished walk (contrast Talos
+  `20260815_210850`: 30/31 in 93 ms over 175 MB, which *did* reach the end of the heap).
+- Defect 1: the partial result was frozen. `FindRegistryMap` only ran while `!g_map.valid`, so once the first
+  element was confirmed the search never ran again - all 90 retry passes re-read the same two regions and the
+  heap beyond the park point stayed unexamined for the whole session. Fixed: the sweep carries a cursor, parks on
+  the chunk it did **not** read (the 64-byte chunk overlap then guarantees nothing falls through the pause), and
+  resumes there each pass until the enumeration is exhausted; bounds are now per-pass (400 ms / 768 MB) plus
+  cumulative (32 passes / 8 GB). The all-anchors-placed early exit was removed - placing every anchor does not
+  prove every region of the map was seen.
+- Defect 2: the closing summary reported the leftovers as "never registered by the engine", computed as
+  `missing - refused`, i.e. "not found in the regions we happened to prove". With an incomplete sweep that is an
+  inference, not a measurement. It now branches on `SweepProvesAbsence`: "absent from the fully swept registry"
+  vs "not found in the N MB swept before the sweep stopped at X - unproven, not known-absent".
+- For the two names Industria 2 reported (`r.MegaLights.DownsampleMode`, `r.Tonemapper.GrainQuantization`) the
+  verdict happens to hold anyway on independent evidence: neither has a UTF-16 literal in any of the 119 loaded
+  modules, in *either* title or engine version, and a statically registered CVar always carries its name literal.
+- Sweep progress lives in `hook/common/ue5_console_registry.h` as pure predicates so the resume arithmetic is
+  unit-testable (`UE5RegistrySweepTest`, 5 tests): a paused-and-resumed sweep visits exactly the chunk offsets a
+  single pass would, the cursor parks on the unread chunk, region skipping stays in bounds and never wraps, and
+  only a finished sweep may support an absence claim.
+- Resolve passes are time-boxed (100 ms) and rotate their starting region, since the region set can now grow.
+- Open, not addressed here: all four `ShowFlag.*` installs read `prevValue=0` in both titles, so writing 0 may be
+  a no-op - see the stale-risk note in `graphics-overrides-and-frame-pacing.md`. Reported symptom: Industria 2's
+  main menu still shows chromatic aberration / lens distortion despite `r.SceneColorFringeQuality=0` and
+  `ShowFlag.SceneColorFringe=0` both installed and verified.
+
 ### 2026-08-15 - VALIDATED: no crash, ShowFlag overrides land, 35/40; one self-inflicted log-spam regression fixed
 
 - Session `20260815_210850` (build 0.1.6108) is the validation run for both fixes. **No crash, no dump.**
