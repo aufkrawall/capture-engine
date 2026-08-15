@@ -10,12 +10,21 @@ Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/
 - Added `[ThirdParty]` configuration to load ReShade, OptiScaler, and Special K from user-supplied DLL paths
   (`reshade_dll_path`, `optiscaler_dll_path`, `specialk_dll_path`) so the tools work without copying their DLLs into
   each game folder; all three can be active at once and load in the order Special K, ReShade, OptiScaler.
+- Added persistent `[UE5]` overrides for injected x64 games: `force_ray_reconstruction`,
+  `ray_reconstruction_optimal_settings`, `disable_post_processing_effects`, `tonemapper_sharpen`,
+  `internal_fps_limit`, and `internal_anisotropic_filtering`. They redirect validated game-thread/render-thread
+  CVar shadows in memory (never Engine.ini or game files), stay authoritative across map, scalability, and config
+  reloads, and skip missing CVars from older UE/plugin builds safely.
+- Added per-application `[ThirdParty]` override keys (`reshade_dll_path`, `optiscaler_dll_path`,
+  `specialk_dll_path`) that take precedence over the global paths.
 
 ### Improved
 
 - Made build and verification gates faster by isolating sanitizer Vulkan objects and overlapping packaging with lint.
 - Packaged a default `testappconfig.ini` into the test-app archive folders.
 - Reduced diagnostic log spam from the injected overlay and media pipeline with rate-limited, trace-level logging.
+- Extended the UE5 console-registry scanner with data-pointer redirects so Lumen CVars resolve correctly in
+  UE 5.6 and across UE versions; every proven element region is now covered, not just the first.
 
 ### Fixed
 
@@ -33,6 +42,11 @@ Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/
   threads are suspended around tool loads, and loads run on the loader work queue).
 - Fixed the pseudo-overlay font and circle scale to track the anchor monitor's DPI instead of the
   DPI-awareness-dependent window DPI, so text no longer resizes when the foreground app's DPI awareness changes.
+- Fixed a DX12 startup crash in which the third-party-overlay Present-hook deferral was never made real: the
+  deferred temp-swapchain Present hook now waits for the game's own D3D12 device and installs inside the same
+  startup window, resolving the intermittent Steam-overlay recursion and the CaptureEngine access violation.
+- Stopped re-attempting console-registry CVars whose layout CaptureEngine cannot drive, avoiding repeated failed
+  writes and scan retries.
 - Fixed frame timing under native FSR FG by ticking from the FFX present callback and submitting the overlay on the
   queue the FG runtime actually flushes.
 - Fixed DLSS FG integration: the overlay no longer uses a dedicated overlay queue for NVIDIA DLSS FG, late-inject
