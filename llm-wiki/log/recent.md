@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-15 - Intermittent startup crash characterised: Steam overlay self-recursion, not CE code
+
+- Session `20260815_203836` crashed on startup with `0xC00000FD` (stack overflow). The stack is 750+
+  identical recursive frames of `gameoverlayrenderer64!OverlayHookD3D3+0x14bc4` calling itself, then
+  `VulkanSteamOverlayProcessCapturedFrame+0x23346 -> +0x2f9ce -> KERNELBASE!WriteFile` at the innermost end.
+  **No CE frames anywhere on the stack**; the WriteFile is Steam writing its own log and is only what finally
+  exhausts the stack (CE calls WriteFile for logging but does not hook it).
+- Not a regression from the UE5 override rework: the identical signature appears in `20260815_171603`
+  (build 0.1.6081) and `20260815_174131` (0.1.6087), hours earlier and in Industria 2 rather than Talos, and in
+  the crashing session the UE5 override code never executed at all (no `UE5 overrides enabled` line - the hook
+  thread was still in its initial install). Rate: 4 crashed sessions out of 21 on 2026-08-15.
+- Lead worth chasing: every crash lands ~0.5-1 s after `DX12Hook: Deferring eager temp-swapchain Present hook
+  install because third-party overlay gameoverlayrenderer64.dll is already loaded`, and before
+  `InstallPresentInlineHooks` is reached; good runs pass that point ~0.6 s after the deferral. That window -
+  CE's deferred Present hooking against Steam's overlay init - is where to look. Unproven; no CE frames.
+  Decisive test: several launches with the Steam overlay disabled.
+- Separate and also pre-existing: `20260815_174213` (build 0.1.6087) crashed `0xC0000005` inside
+  `capture_hook_x64.dll+0x850A0`. A genuine CE fault, distinct from the recursion, uninvestigated.
+
 ### 2026-08-15 - Talos 20260815_202743 validates the UE5 override rework; registry region scope was too narrow
 
 - First run with the reworked overrides. Confirmed working: `writeThrough=1` on all 20 data-pointer installs,
