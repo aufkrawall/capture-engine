@@ -147,4 +147,16 @@ constexpr bool IsUniquelyStrongCandidate(int bestScore, int secondBestScore) noe
     return bestScore >= 125 && (secondBestScore < 0 || bestScore - secondBestScore >= 6);
 }
 
+// A single validated candidate is unambiguous and acceptable even below the
+// 125 "uniquely strong" cutoff: score >= 110 already proves every hard layout
+// check (aligned writable 24-byte object, callable vtables, readable shadow
+// with plausible values). UE 5.6 Lumen/rendering CVars can register through a
+// layout with fewer nearby references, leaving exactly one survivor.
+constexpr int kMinimumAcceptableScore = 110;
+
+constexpr bool ShouldAcceptCandidate(int bestScore, int secondBestScore) noexcept {
+    return (bestScore >= kMinimumAcceptableScore && secondBestScore < 0) ||
+           IsUniquelyStrongCandidate(bestScore, secondBestScore);
+}
+
 }  // namespace ce::ue5_rr

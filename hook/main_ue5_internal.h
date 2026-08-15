@@ -44,6 +44,17 @@ struct Candidate {
   uint32_t gameThreadBits = 0;
   uint32_t renderThreadBits = 0;
   int score = -1;
+  // Ref-only layout (UE 5.6 Lumen/rendering CVars): the {game, render} value
+  // pair lives inside the Ref object instead of behind the third object
+  // pointer. When dataShadowPointerRedirect is set, the Ref exposes a data
+  // pointer at dataShadowAddress (expected original in originalReference) that
+  // the engine dereferences for the value; the local fallback pair sits eight
+  // bytes after it.
+  uintptr_t dataShadowAddress = 0;
+  uint32_t dataShadowGameBits = 0;
+  uint32_t dataShadowRenderBits = 0;
+  bool dataShadowUsable = false;
+  bool dataShadowPointerRedirect = false;
 };
 
 enum class CandidateReferenceField : uint8_t {
@@ -68,6 +79,12 @@ struct OverrideState {
   void* volatile* referenceField = nullptr;
   void* originalReference = nullptr;
   uintptr_t object = 0;
+  // Non-zero when this override writes the {game, render} pair directly into
+  // the Ref object (no redirectable pointer exists for that layout).
+  uintptr_t dataShadowAddress = 0;
+  uint32_t originalDataShadowGameBits = 0;
+  uint32_t originalDataShadowRenderBits = 0;
+  bool dataShadowPointerRedirect = false;
 };
 
 struct ForcedConsoleVariableData {

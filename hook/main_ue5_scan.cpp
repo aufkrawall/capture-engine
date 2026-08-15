@@ -342,7 +342,39 @@ void ValidateCandidateLayout(const ModuleView& image, Candidate& candidate) {
         ce::ue5_cvar::IsPlausibleShadowValue(candidate.specIndex, candidate.renderThreadBits);
     candidate.originalReference = referenceData;
   }
+  if (candidate.evidence.targetObjectCallable && targetObject) {
+    constexpr std::size_t kRefDataPointerOffset = 0x50;
+    const uintptr_t refBase = reinterpret_cast<uintptr_t>(targetObject);
+    uintptr_t dataPtr = 0;
+    uint32_t value = 0;
+    uint32_t valueFlags = 0;
+    if (ReadValue(reinterpret_cast<const void*>(refBase + kRefDataPointerOffset), dataPtr) &&
+        ReadValue(reinterpret_cast<const void*>(dataPtr), value) &&
+        ReadValue(reinterpret_cast<const void*>(dataPtr + sizeof(uint32_t)), valueFlags) &&
+        ce::ue5_cvar::IsPlausibleShadowValue(candidate.specIndex, value)) {
+      // UE 5.6 FConsoleVariable exposes the value through a data pointer at
+      // +0x50 (render-thread reads dereference it; game-thread reads use the
+      // local fallback pair at +0x58). Redirect the pointer to CE's shadow and
+      // mirror the value into the local pair so both read paths see it.
+      candidate.dataShadowAddress = refBase + kRefDataPointerOffset;
+      candidate.dataShadowGameBits = value;
+      candidate.dataShadowRenderBits = valueFlags;
+      candidate.originalReference = reinterpret_cast<void*>(dataPtr);
+      candidate.dataShadowPointerRedirect = true;
+      candidate.dataShadowUsable = true;
+    }
+  }
   candidate.evidence.instructionDistance = candidate.instructionDistance;
+}
+
+int CandidateScore(const Candidate& candidate) noexcept {
+  const int pointerScore = ce::ue5_rr::ScoreCandidate(candidate.evidence);
+  if (pointerScore >= 0 || !candidate.dataShadowUsable)
+    return pointerScore;
+  int score = ce::ue5_rr::kMinimumAcceptableScore;
+  if (candidate.instructionDistance < 64)
+    score += static_cast<int>((64 - candidate.instructionDistance) / 4);
+  return score;
 }
 
 ForcedConsoleVariableData* GetOrCreateForcedData(std::size_t specIndex) {
@@ -373,47 +405,86 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
                      ce::ue5_cvar::kSpecs[specIndex].name, GetLastError());
     return false;
   }
-  UpdateForcedData(specIndex, g_desired[specIndex].bits);
-  auto* referenceField = reinterpret_cast<void* volatile*>(candidate.object + sizeof(void*) * 2);
-  void* observed = InterlockedCompareExchangePointer(referenceField, forcedData, candidate.originalReference);
-  if (observed != candidate.originalReference) {
-    char modulePath[MAX_PATH];
-    HookLogImportant(
-        "UE5 overrides: refused changed TAutoConsoleVariable reference for %s in %s "
-        "(object=%p expected=%p observed=%p)",
-        ce::ue5_cvar::kSpecs[specIndex].name, ModuleBaseName(image.module, modulePath),
-        reinterpret_cast<void*>(candidate.object), candidate.originalReference, observed);
+  char modulePath[MAX_PATH];
+  const char* baseName = ModuleBaseName(image.module, modulePath);
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  if (candidate.originalReference && candidate.evidence.shadowValuesPlausible) {
+    auto* referenceField = reinterpret_cast<void* volatile*>(candidate.object + sizeof(void*) * 2);
+    void* observed = InterlockedCompareExchangePointer(referenceField, forcedData, candidate.originalReference);
+    if (observed != candidate.originalReference) {
+      HookLogImportant(
+          "UE5 overrides: refused changed TAutoConsoleVariable reference for %s in %s "
+          "(object=%p expected=%p observed=%p)",
+          spec.name, baseName, reinterpret_cast<void*>(candidate.object), candidate.originalReference,
+          observed);
+      return false;
+    }
+    g_overrides[specIndex] = {image.module, referenceField, candidate.originalReference, candidate.object};
+  } else if (candidate.dataShadowUsable) {
+    if (!IsWritableRange(reinterpret_cast<void*>(candidate.dataShadowAddress),
+                         sizeof(uint32_t) * (candidate.dataShadowPointerRedirect ? 4 : 2))) {
+      HookLogImportant(
+          "UE5 overrides: %s data-shadow storage not writable in %s; leaving game memory unchanged",
+          spec.name, baseName);
+      return false;
+    }
+    g_overrides[specIndex] = {image.module, nullptr, nullptr, candidate.object,
+                              candidate.dataShadowAddress, candidate.dataShadowGameBits,
+                              candidate.dataShadowRenderBits};
+    g_overrides[specIndex].dataShadowPointerRedirect = candidate.dataShadowPointerRedirect;
+    if (candidate.dataShadowPointerRedirect) {
+      auto* pointerSlot = reinterpret_cast<void* volatile*>(candidate.dataShadowAddress);
+      void* observed = InterlockedCompareExchangePointer(pointerSlot, forcedData, candidate.originalReference);
+      if (observed != candidate.originalReference) {
+        HookLogImportant("UE5 overrides: refused changed %s data pointer (expected=%p observed=%p)",
+                         spec.name, candidate.originalReference, observed);
+        g_overrides[specIndex] = {};
+        return false;
+      }
+      ReadValue(reinterpret_cast<const void*>(candidate.dataShadowAddress + sizeof(void*)),
+                g_overrides[specIndex].originalDataShadowGameBits);
+      ReadValue(
+          reinterpret_cast<const void*>(candidate.dataShadowAddress + sizeof(void*) + sizeof(uint32_t)),
+          g_overrides[specIndex].originalDataShadowRenderBits);
+    }
+  } else {
+    HookLogImportant("UE5 overrides: %s candidate scored without a usable override path in %s",
+                     spec.name, baseName);
     return false;
   }
-
-  g_overrides[specIndex] = {image.module, referenceField, candidate.originalReference, candidate.object};
+  const bool installedAsDataShadow =
+      !(candidate.originalReference && candidate.evidence.shadowValuesPlausible);
+  const char* installMode = installedAsDataShadow ? "data-pointer redirect" : "Ref redirect";
+  UpdateForcedData(specIndex, g_desired[specIndex].bits);
   g_activeModules[specIndex].store(image.module, std::memory_order_release);
   g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
-  char modulePath[MAX_PATH];
-  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  const uint32_t oldGame =
+      installedAsDataShadow ? candidate.dataShadowGameBits : candidate.gameThreadBits;
+  const uint32_t oldRender =
+      installedAsDataShadow ? candidate.dataShadowRenderBits : candidate.renderThreadBits;
   if (spec.type == ce::ue5_cvar::ValueType::Float) {
     HookLogImportant(
-        "UE5 overrides: persistent %s=%.3f installed in %s "
+        "UE5 overrides: persistent %s=%.3f installed in %s (%s) "
         "(objectRva=0x%llX oldGame=%.3f oldRender=%.3f score=%d scanMs=%llu candidates=%zu/%zu)",
-        spec.name, std::bit_cast<float>(g_desired[specIndex].bits), ModuleBaseName(image.module, modulePath),
+        spec.name, std::bit_cast<float>(g_desired[specIndex].bits), baseName, installMode,
         static_cast<unsigned long long>(candidate.object - image.base),
-        std::bit_cast<float>(candidate.gameThreadBits), std::bit_cast<float>(candidate.renderThreadBits),
+        std::bit_cast<float>(oldGame), std::bit_cast<float>(oldRender),
         candidate.score, static_cast<unsigned long long>(scanElapsedMs), validatedCandidates,
         discoveredCandidates);
   } else {
     HookLogImportant(
-        "UE5 overrides: persistent %s=%d installed in %s "
+        "UE5 overrides: persistent %s=%d installed in %s (%s) "
         "(objectRva=0x%llX oldGame=%d oldRender=%d score=%d scanMs=%llu candidates=%zu/%zu)",
-        spec.name, static_cast<int32_t>(g_desired[specIndex].bits), ModuleBaseName(image.module, modulePath),
+        spec.name, static_cast<int32_t>(g_desired[specIndex].bits), baseName, installMode,
         static_cast<unsigned long long>(candidate.object - image.base),
-        static_cast<int32_t>(candidate.gameThreadBits), static_cast<int32_t>(candidate.renderThreadBits),
+        static_cast<int32_t>(oldGame), static_cast<int32_t>(oldRender),
         candidate.score, static_cast<unsigned long long>(scanElapsedMs), validatedCandidates,
         discoveredCandidates);
   }
   return true;
 }
 
-bool ScanModule(HMODULE module) {
+bool ScanModule(HMODULE module, std::vector<uint8_t>* seenLiterals) {
   const ULONGLONG scanStart = GetTickCount64();
   ScopedModuleReference reference(module);
   if (!reference.Get())
@@ -424,18 +495,48 @@ bool ScanModule(HMODULE module) {
   const std::vector<LiteralReference> literals = FindRequestedLiterals(image);
   if (literals.empty())
     return false;
+  if (seenLiterals) {
+    for (const LiteralReference& literal : literals)
+      (*seenLiterals)[literal.specIndex] = 1;
+  }
 
   std::vector<Candidate> candidates = FindCandidates(image, literals);
   const std::size_t discoveredCandidateCount = candidates.size();
   for (Candidate& candidate : candidates)
     ValidateCandidateLayout(image, candidate);
+  std::array<Candidate, kCVarCount> bestRawCandidates{};
+  std::array<bool, kCVarCount> hasRawCandidate{};
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    const int rawScore = CandidateScore(candidates[index]);
+    const std::size_t specIndex = candidates[index].specIndex;
+    if (!hasRawCandidate[specIndex] || rawScore > bestRawCandidates[specIndex].score) {
+      bestRawCandidates[specIndex] = candidates[index];
+      bestRawCandidates[specIndex].score = rawScore;
+      hasRawCandidate[specIndex] = true;
+    }
+  }
   candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
-                     return ce::ue5_rr::ScoreCandidate(candidate.evidence) < 0;
+                     return CandidateScore(candidate) < 0;
                    }),
                    candidates.end());
   CountCandidateReferences(image, candidates);
   for (Candidate& candidate : candidates)
-    candidate.score = ce::ue5_rr::ScoreCandidate(candidate.evidence);
+    candidate.score = CandidateScore(candidate);
+  // UE 5.6 registers some Lumen/rendering CVars from several sites that share
+  // the same Ref data pointer. Keep the highest-scoring representative so the
+  // duplicates cannot make a single override target look ambiguous.
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    if (!candidates[index].dataShadowAddress)
+      continue;
+    for (std::size_t other = candidates.size(); other-- > index + 1;) {
+      if (candidates[other].originalReference != candidates[index].originalReference ||
+          candidates[other].specIndex != candidates[index].specIndex)
+        continue;
+      if (candidates[other].score > candidates[index].score)
+        candidates[index] = candidates[other];
+      candidates.erase(candidates.begin() + static_cast<std::ptrdiff_t>(other));
+    }
+  }
 
   bool installedAny = false;
   for (const LiteralReference& literal : literals) {
@@ -446,6 +547,11 @@ bool ScanModule(HMODULE module) {
     int bestScore = -1;
     int secondBestScore = -1;
     std::size_t matchCount = 0;
+    Candidate* bestPointerCandidate = nullptr;
+    int pointerBest = -1;
+    int pointerSecond = -1;
+    Candidate* bestDataShadowCandidate = nullptr;
+    int dataShadowBest = -1;
     for (Candidate& candidate : candidates) {
       if (candidate.specIndex != specIndex)
         continue;
@@ -457,16 +563,92 @@ bool ScanModule(HMODULE module) {
       } else if (candidate.score > secondBestScore) {
         secondBestScore = candidate.score;
       }
+      if (candidate.dataShadowAddress) {
+        if (candidate.score > dataShadowBest) {
+          dataShadowBest = candidate.score;
+          bestDataShadowCandidate = &candidate;
+        }
+      } else if (candidate.score > pointerBest) {
+        pointerSecond = pointerBest;
+        pointerBest = candidate.score;
+        bestPointerCandidate = &candidate;
+      } else if (candidate.score > pointerSecond) {
+        pointerSecond = candidate.score;
+      }
     }
-    if (!bestCandidate || !ce::ue5_rr::IsUniquelyStrongCandidate(bestScore, secondBestScore)) {
+    // A validated pointer-model variable is the proven high-confidence target;
+    // data-pointer duplicates of the same name must not make it look ambiguous.
+    // UE 5.6 can register one CVar from several sites that each own a separate
+    // value record, so when no pointer-model candidate exists, overriding the
+    // best-correlated data-pointer variable is a safe best effort: the hard
+    // layout and plausibility checks already passed, and an ineffective
+    // duplicate simply means the engine reads another copy of the same name.
+    const bool accepted = pointerBest >= 0
+                              ? ce::ue5_rr::ShouldAcceptCandidate(pointerBest, pointerSecond)
+                              : dataShadowBest >= ce::ue5_rr::kMinimumAcceptableScore;
+    if (pointerBest >= 0 && accepted)
+      bestCandidate = bestPointerCandidate;
+    else if (pointerBest < 0 && accepted)
+      bestCandidate = bestDataShadowCandidate;
+    if (!accepted) {
       static std::atomic<uint32_t> validationLogs{0};
-      if (validationLogs.fetch_add(1, std::memory_order_relaxed) < 12) {
+      if (validationLogs.fetch_add(1, std::memory_order_relaxed) < 40) {
         char modulePath[MAX_PATH];
-        HookLogImportant(
-            "UE5 overrides: found %s literal in %s but no unique validated TAutoConsoleVariable "
-            "(candidates=%zu best=%d second=%d); leaving game memory unchanged",
-            ce::ue5_cvar::kSpecs[specIndex].name, ModuleBaseName(image.module, modulePath), matchCount,
-            bestScore, secondBestScore);
+        const char* baseName = ModuleBaseName(image.module, modulePath);
+        if (hasRawCandidate[specIndex]) {
+          const Candidate& raw = bestRawCandidates[specIndex];
+          void* fieldVtable = nullptr;
+          void* fieldTarget = nullptr;
+          void* fieldReference = nullptr;
+          ReadValue(reinterpret_cast<void*>(raw.object), fieldVtable);
+          ReadValue(reinterpret_cast<void*>(raw.object + sizeof(void*)), fieldTarget);
+          ReadValue(reinterpret_cast<void*>(raw.object + sizeof(void*) * 2), fieldReference);
+          HookLogImportant(
+              "UE5 overrides: %s literal in %s: closest raw candidate score=%d "
+              "(aligned=%d writableSec=%d pageWr=%d objVtable=%d targetCall=%d refRead=%d shadowOk=%d "
+              "refs=%d/%d/%d objRva=0x%llX fields=0x%p/0x%p/0x%p); survivors=%zu best=%d second=%d",
+              ce::ue5_cvar::kSpecs[specIndex].name, baseName,
+              ce::ue5_rr::ScoreCandidate(raw.evidence), raw.evidence.objectAligned ? 1 : 0,
+              raw.evidence.objectInWritableSection ? 1 : 0, raw.evidence.objectPageWritable ? 1 : 0,
+              raw.evidence.objectVtableCallable ? 1 : 0, raw.evidence.targetObjectCallable ? 1 : 0,
+              raw.evidence.referenceDataReadable ? 1 : 0, raw.evidence.shadowValuesPlausible ? 1 : 0,
+              raw.evidence.baseReferenceCount, raw.evidence.targetFieldReferenceCount,
+              raw.evidence.referenceFieldReferenceCount,
+              static_cast<unsigned long long>(raw.object - image.base), fieldVtable, fieldTarget,
+              fieldReference, matchCount, bestScore, secondBestScore);
+          if (!raw.dataShadowUsable) {
+            uintptr_t objectQwords[12] = {};
+            uintptr_t refQwords[16] = {};
+            for (std::size_t qwordIndex = 0; qwordIndex < 12; ++qwordIndex)
+              ReadValue(reinterpret_cast<void*>(raw.object + qwordIndex * sizeof(uintptr_t)),
+                        objectQwords[qwordIndex]);
+            const uintptr_t refBase = reinterpret_cast<uintptr_t>(fieldTarget);
+            if (refBase) {
+              for (std::size_t qwordIndex = 0; qwordIndex < 16; ++qwordIndex)
+                ReadValue(reinterpret_cast<void*>(refBase + qwordIndex * sizeof(uintptr_t)),
+                          refQwords[qwordIndex]);
+            }
+            HookLogImportant(
+                "UE5 overrides: %s raw candidate memory base=0x%llX obj[0x00..0x60]=0x%llX 0x%llX "
+                "0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX",
+                ce::ue5_cvar::kSpecs[specIndex].name,
+                static_cast<unsigned long long>(image.base), objectQwords[0], objectQwords[1],
+                objectQwords[2], objectQwords[3], objectQwords[4], objectQwords[5], objectQwords[6],
+                objectQwords[7], objectQwords[8], objectQwords[9], objectQwords[10], objectQwords[11]);
+            HookLogImportant(
+                "UE5 overrides: %s raw candidate ref[0x00..0x80]=0x%llX 0x%llX 0x%llX 0x%llX 0x%llX "
+                "0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX",
+                ce::ue5_cvar::kSpecs[specIndex].name, refQwords[0], refQwords[1], refQwords[2],
+                refQwords[3], refQwords[4], refQwords[5], refQwords[6], refQwords[7], refQwords[8],
+                refQwords[9], refQwords[10], refQwords[11], refQwords[12], refQwords[13], refQwords[14],
+                refQwords[15]);
+          }
+        } else {
+          HookLogImportant(
+              "UE5 overrides: found %s literal in %s but no validated TAutoConsoleVariable layout "
+              "(survivors=%zu best=%d second=%d); leaving game memory unchanged",
+              ce::ue5_cvar::kSpecs[specIndex].name, baseName, matchCount, bestScore, secondBestScore);
+        }
       }
       continue;
     }
@@ -522,13 +704,26 @@ void UpdateForcedData(std::size_t specIndex, uint32_t bits) {
     return;
   InterlockedExchange(&data->gameThreadBits, static_cast<LONG>(bits));
   InterlockedExchange(&data->renderThreadBits, static_cast<LONG>(bits));
+  const OverrideState& state = g_overrides[specIndex];
+  if (state.dataShadowAddress) {
+    if (state.dataShadowPointerRedirect) {
+      // Game-thread reads use the local fallback pair; keep it mirrored.
+      auto* localSlot = reinterpret_cast<volatile LONG*>(state.dataShadowAddress + sizeof(void*));
+      InterlockedExchange(localSlot, static_cast<LONG>(bits));
+      InterlockedExchange(localSlot + 1, static_cast<LONG>(bits));
+    } else {
+      auto* gameSlot = reinterpret_cast<volatile LONG*>(state.dataShadowAddress);
+      InterlockedExchange(gameSlot, static_cast<LONG>(bits));
+      InterlockedExchange(gameSlot + 1, static_cast<LONG>(bits));
+    }
+  }
 }
 
 void ForgetUnloadedOverrides() {
   for (std::size_t index = 0; index < kCVarCount; ++index) {
     if (!g_activeModuleUnloaded[index].exchange(false, std::memory_order_acq_rel))
       continue;
-    if (g_overrides[index].referenceField) {
+    if (g_overrides[index].referenceField || g_overrides[index].dataShadowAddress) {
       HookLogImportant("UE5 overrides: module owning %s unloaded; retired stale override and awaiting reload",
                        ce::ue5_cvar::kSpecs[index].name);
       g_overrides[index] = {};
@@ -540,8 +735,40 @@ void ForgetUnloadedOverrides() {
 
 void RestoreOverride(std::size_t specIndex, const char* reason) {
   OverrideState& state = g_overrides[specIndex];
-  if (!state.referenceField)
+  if (!state.referenceField && !state.dataShadowAddress)
     return;
+  if (state.dataShadowAddress) {
+    if (state.dataShadowPointerRedirect) {
+      ForcedConsoleVariableData* forcedData = g_forcedData[specIndex].load(std::memory_order_acquire);
+      void* observed = InterlockedCompareExchangePointer(
+          reinterpret_cast<void* volatile*>(state.dataShadowAddress), state.originalReference, forcedData);
+      if (observed == forcedData) {
+        HookLogImportant("UE5 overrides: restored the game's %s data pointer (%s)",
+                         ce::ue5_cvar::kSpecs[specIndex].name, reason);
+      } else {
+        HookLogImportant("UE5 overrides: %s data pointer changed before restore (%s, observed=%p); "
+                         "left newer owner untouched",
+                         ce::ue5_cvar::kSpecs[specIndex].name, reason, observed);
+      }
+      auto* localSlot = reinterpret_cast<volatile LONG*>(state.dataShadowAddress + sizeof(void*));
+      InterlockedExchange(localSlot, static_cast<LONG>(state.originalDataShadowGameBits));
+      InterlockedExchange(localSlot + 1, static_cast<LONG>(state.originalDataShadowRenderBits));
+      HookLogImportant("UE5 overrides: restored the game's %s local value pair (%s)",
+                       ce::ue5_cvar::kSpecs[specIndex].name, reason);
+    } else {
+      auto* gameSlot = reinterpret_cast<volatile LONG*>(state.dataShadowAddress);
+      InterlockedExchange(gameSlot, static_cast<LONG>(state.originalDataShadowGameBits));
+      InterlockedExchange(gameSlot + 1, static_cast<LONG>(state.originalDataShadowRenderBits));
+      HookLogImportant("UE5 overrides: restored the game's %s data-shadow pair (%s)",
+                       ce::ue5_cvar::kSpecs[specIndex].name, reason);
+    }
+  }
+  if (!state.referenceField) {
+    g_activeModules[specIndex].store(nullptr, std::memory_order_release);
+    g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
+    state = {};
+    return;
+  }
   HMODULE activeModule = g_activeModules[specIndex].load(std::memory_order_acquire);
   if (!activeModule) {
     state = {};
@@ -584,12 +811,13 @@ bool ScanAllLoadedModules() {
 
   const ULONGLONG start = GetTickCount64();
   bool installedAny = false;
+  std::vector<uint8_t> seenLiterals(kCVarCount, 0);
   HMODULE mainModule = GetModuleHandleW(nullptr);
   if (mainModule)
-    installedAny |= ScanModule(mainModule);
+    installedAny |= ScanModule(mainModule, &seenLiterals);
   for (HMODULE module : modules) {
     if (module != mainModule)
-      installedAny |= ScanModule(module);
+      installedAny |= ScanModule(module, &seenLiterals);
   }
   ClearPendingModules();
 
@@ -597,23 +825,30 @@ bool ScanAllLoadedModules() {
   const std::size_t active = ActiveCount();
   if (active < desired && !g_missingSummaryLogged) {
     g_missingSummaryLogged = true;
-    std::string missing;
+    std::string missingLiterals;
+    std::string missingCandidates;
     for (std::size_t index = 0; index < kCVarCount; ++index) {
       if (!g_desired[index].enabled || g_activeModules[index].load(std::memory_order_acquire))
         continue;
-      if (!missing.empty())
-        missing += ", ";
-      if (missing.size() > 480) {
-        missing += "...";
-        break;
+      std::string& missing = seenLiterals[index] ? missingCandidates : missingLiterals;
+      if (missing.size() >= 480) {
+        if (missing.size() < 484)
+          missing += "...";
+      } else {
+        if (!missing.empty())
+          missing += ", ";
+        missing += ce::ue5_cvar::kSpecs[index].name;
       }
-      missing += ce::ue5_cvar::kSpecs[index].name;
     }
+    std::string detail;
+    if (!missingLiterals.empty())
+      detail += "; literals not found in loaded modules: " + missingLiterals;
+    if (!missingCandidates.empty())
+      detail += "; found but no validated CVar object: " + missingCandidates;
     HookLogImportant(
-        "UE5 overrides: installed %zu/%zu requested persistent CVars across %zu modules in %llums; "
-        "unresolved variables may be absent from this UE/plugin build: %s",
+        "UE5 overrides: installed %zu/%zu requested persistent CVars across %zu modules in %llums%s",
         active, desired, modules.size(), static_cast<unsigned long long>(GetTickCount64() - start),
-        missing.c_str());
+        detail.c_str());
   }
   return installedAny;
 }
@@ -623,7 +858,7 @@ bool ScanPendingModules() {
   for (auto& slot : g_pendingModules) {
     HMODULE module = slot.exchange(nullptr, std::memory_order_acq_rel);
     if (module)
-      installedAny |= ScanModule(module);
+      installedAny |= ScanModule(module, nullptr);
   }
   return installedAny;
 }

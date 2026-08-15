@@ -19,12 +19,14 @@ std::string ReadProjectSource(const std::filesystem::path& relativePath) {
 TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInsteadOfEngineVtableCalls) {
     const std::string source = ReadProjectSource("hook/main_ue5.cpp");
     const std::string policy = ReadProjectSource("hook/common/ue5_cvar_override_policy.h");
+    const std::string rrPolicy = ReadProjectSource("hook/common/ue5_rr_override_policy.h");
 
     EXPECT_NE(policy.find("r.NGX.DLSS.DenoiserMode"), std::string::npos);
     EXPECT_NE(policy.find("r.Lumen.Reflections.BilateralFilter"), std::string::npos);
     EXPECT_NE(policy.find("ShowFlag.Vignette"), std::string::npos);
     EXPECT_NE(source.find("InterlockedCompareExchangePointer"), std::string::npos);
-    EXPECT_NE(source.find("IsUniquelyStrongCandidate"), std::string::npos);
+    EXPECT_NE(source.find("ShouldAcceptCandidate"), std::string::npos);
+    EXPECT_NE(rrPolicy.find("IsUniquelyStrongCandidate"), std::string::npos);
     EXPECT_NE(source.find("RestoreOverride"), std::string::npos);
     EXPECT_EQ(source.find("FindConsoleVariable"), std::string::npos);
     EXPECT_EQ(source.find("r.NGX.DLSS.RayReconstruction"), std::string::npos);
@@ -97,7 +99,7 @@ TEST(RayReconstructionForceSourceTest, ScansTheMonolithicGameModuleBeforeDepende
     const std::string source = ReadProjectSource("hook/main_ue5.cpp");
 
     const size_t mainModule = source.find("HMODULE mainModule = GetModuleHandleW(nullptr);");
-    const size_t mainModuleScan = source.find("ScanModule(mainModule)", mainModule);
+    const size_t mainModuleScan = source.find("ScanModule(mainModule, &seenLiterals)", mainModule);
     const size_t dependencyLoop = source.find("for (HMODULE module : modules)", mainModule);
     ASSERT_NE(mainModule, std::string::npos);
     ASSERT_NE(mainModuleScan, std::string::npos);

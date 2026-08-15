@@ -119,6 +119,19 @@ TEST(UE5RROverridePolicyTest, ScoresOnlyFullyValidatedAutoConsoleVariableCandida
     EXPECT_EQ(ce::ue5_rr::ScoreCandidate(evidence), -1);
 }
 
+TEST(UE5RROverridePolicyTest, AcceptsLoneValidatedCandidateBelowStrongCutoff) {
+    constexpr int kAllChecksScore = ce::ue5_rr::kMinimumAcceptableScore;
+    EXPECT_TRUE(ce::ue5_rr::ShouldAcceptCandidate(kAllChecksScore, -1))
+        << "a single candidate whose hard layout checks pass is unambiguous";
+    EXPECT_TRUE(ce::ue5_rr::ShouldAcceptCandidate(124, -1));
+    EXPECT_TRUE(ce::ue5_rr::ShouldAcceptCandidate(140, -1));
+    EXPECT_FALSE(ce::ue5_rr::ShouldAcceptCandidate(kAllChecksScore - 1, -1))
+        << "below the baseline a required layout check failed";
+    EXPECT_FALSE(ce::ue5_rr::ShouldAcceptCandidate(kAllChecksScore, kAllChecksScore - 2))
+        << "competing candidates still require a strong margin";
+    EXPECT_FALSE(ce::ue5_rr::ShouldAcceptCandidate(124, 124));
+}
+
 TEST(UE5RROverridePolicyTest, AcceptsOnlyRealDenoiserModeShadowValues) {
     EXPECT_TRUE(ce::ue5_rr::IsPlausibleDenoiserModeShadow(0));
     EXPECT_TRUE(ce::ue5_rr::IsPlausibleDenoiserModeShadow(1));
