@@ -205,6 +205,14 @@ struct GraphicsConfig {
     bool disablePostProcessingEffects = false;
     // -1 leaves the game/default bundle policy alone; otherwise r.Tonemapper.Sharpen 0..10.
     float tonemapperSharpen = -1.0f;
+    // Override UE5's own engine frame rate limiter (t.MaxFPS), separate from the
+    // CaptureEngine fps limiter. -1 leaves the engine alone, 0 disables the engine
+    // limiter, a positive value caps it (fractional values such as 59.94 are accepted).
+    float internalFpsLimit = -1.0f;
+    // Override UE5's internal anisotropic filtering with one shared level applied to
+    // both r.MaxAnisotropy and r.VT.MaxAnisotropy. 0 leaves the engine alone, 1..16
+    // is the AF level (1 disables anisotropic filtering).
+    int internalAnisotropicFiltering = 0;
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;

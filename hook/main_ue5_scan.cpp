@@ -188,7 +188,7 @@ std::vector<LiteralReference> FindRequestedLiterals(const ModuleView& image) {
       if (bytes[offset + 1] != 0)
         continue;
       const uint8_t first = ce::ue5_rr::FoldAscii(bytes[offset]);
-      if (first != 'r' && first != 's')
+      if (first != 'r' && first != 's' && first != 't')
         continue;
       for (std::size_t specIndex : requested) {
         const char* name = ce::ue5_cvar::kSpecs[specIndex].name;

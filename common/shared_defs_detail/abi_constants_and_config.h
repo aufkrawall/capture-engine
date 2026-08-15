@@ -55,14 +55,16 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
 // Version 38: Added latched recording-health telemetry and finalization-result notifications
 // Version 39: Added persistent UE5 CVar override policy and tonemapper sharpening fields
-static constexpr uint32_t SHARED_MEMORY_VERSION = 39;
+// Version 40: Added UE5 internal fps limiter (t.MaxFPS) and internal anisotropic
+// filtering (r.MaxAnisotropy / r.VT.MaxAnisotropy) CVar override fields
+static constexpr uint32_t SHARED_MEMORY_VERSION = 40;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_39_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_40_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_39";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_40";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -439,6 +441,12 @@ struct SharedGraphicsConfig {
     bool rayReconstructionOptimalSettings;
     bool disablePostProcessingEffects;
     float tonemapperSharpen;
+    // -1 leaves UE's own engine limiter alone, 0 disables it (t.MaxFPS=0),
+    // a positive value caps it (t.MaxFPS=<value>).
+    float internalFpsLimit;
+    // 0 leaves UE's internal AF CVars alone, 1..16 applies the same level to
+    // r.MaxAnisotropy and r.VT.MaxAnisotropy (1 disables anisotropic filtering).
+    int32_t internalAnisotropicFiltering;
 };
 
 static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
@@ -456,7 +464,13 @@ static_assert(offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) =
 static_assert(offsetof(SharedGraphicsConfig, tonemapperSharpen) ==
                   offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) + 4,
               "UE5 sharpen must retain natural float alignment");
-static_assert(sizeof(SharedGraphicsConfig) == 368,
+static_assert(offsetof(SharedGraphicsConfig, internalFpsLimit) ==
+                  offsetof(SharedGraphicsConfig, tonemapperSharpen) + sizeof(float),
+              "UE5 internal fps limit must follow the sharpen field");
+static_assert(offsetof(SharedGraphicsConfig, internalAnisotropicFiltering) ==
+                  offsetof(SharedGraphicsConfig, internalFpsLimit) + sizeof(float),
+              "UE5 internal AF level must follow the fps limit field");
+static_assert(sizeof(SharedGraphicsConfig) == 376,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

@@ -490,6 +490,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.rayReconstructionOptimalSettings = shmGfx.rayReconstructionOptimalSettings;
         mergedConfig.disablePostProcessingEffects = shmGfx.disablePostProcessingEffects;
         mergedConfig.tonemapperSharpen = shmGfx.tonemapperSharpen;
+        mergedConfig.internalFpsLimit = shmGfx.internalFpsLimit;
+        mergedConfig.internalAnisotropicFiltering = shmGfx.internalAnisotropicFiltering;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

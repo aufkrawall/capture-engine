@@ -283,6 +283,46 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
             config.graphics.tonemapperSharpen = parsedSharpen;
         }
     }
+    std::string internalFpsLimit = reader.GetStr("UE5", "internal_fps_limit", "default");
+    std::transform(internalFpsLimit.begin(), internalFpsLimit.end(), internalFpsLimit.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::replace(internalFpsLimit.begin(), internalFpsLimit.end(), ',', '.');
+    config.graphics.internalFpsLimit = -1.0f;
+    if (internalFpsLimit != "default") {
+        float parsedFpsLimit = 0.0f;
+        if (internalFpsLimit == "off" || internalFpsLimit == "0") {
+            config.graphics.internalFpsLimit = 0.0f;
+        } else if (!ce::TryParseFiniteFloat(internalFpsLimit, parsedFpsLimit) || parsedFpsLimit <= 0.0f ||
+                   parsedFpsLimit > 1000.0f) {
+            LogInvalidConfigBoundary("UE5", "internal_fps_limit", internalFpsLimit, "default");
+        } else {
+            config.graphics.internalFpsLimit = parsedFpsLimit;
+        }
+    }
+    std::string internalAnisotropicFiltering =
+        reader.GetStr("UE5", "internal_anisotropic_filtering", "default");
+    std::transform(internalAnisotropicFiltering.begin(), internalAnisotropicFiltering.end(),
+                   internalAnisotropicFiltering.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    config.graphics.internalAnisotropicFiltering = 0;
+    if (internalAnisotropicFiltering != "default") {
+        int afLevel = 0;
+        if (internalAnisotropicFiltering == "off" || internalAnisotropicFiltering == "1x") {
+            afLevel = 1;
+        } else if (internalAnisotropicFiltering == "2x") {
+            afLevel = 2;
+        } else if (internalAnisotropicFiltering == "4x") {
+            afLevel = 4;
+        } else if (internalAnisotropicFiltering == "8x") {
+            afLevel = 8;
+        } else if (internalAnisotropicFiltering == "16x") {
+            afLevel = 16;
+        } else {
+            LogInvalidConfigBoundary("UE5", "internal_anisotropic_filtering",
+                                     internalAnisotropicFiltering, "default");
+        }
+        config.graphics.internalAnisotropicFiltering = afLevel;
+    }
 
     // DLSS Presets
     config.graphics.dlssPresetDLAA =

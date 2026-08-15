@@ -506,6 +506,21 @@ disable_post_processing_effects=off
 ; A number from 0 to 10 persistently sets r.Tonemapper.Sharpen and takes precedence
 ; over disable_post_processing_effects, allowing the other effects to stay off.
 tonemapper_sharpen=default
+;
+; Overrides UE5's own engine frame rate limiter (t.MaxFPS) in memory. This is
+; separate from CaptureEngine's own fps limiter ([FpsLimiter] / capture sync);
+; the two pace different stages and can be active at the same time. default
+; leaves the engine limiter alone, off (or 0) disables it, and a number from 1
+; to 1000 caps the engine frame rate. Fractional values such as 59.94 are
+; accepted because UE's t.MaxFPS is a float.
+internal_fps_limit=default
+;
+; Overrides UE5's internal anisotropic filtering with one shared level: both
+; r.MaxAnisotropy and r.VT.MaxAnisotropy are set to the same value. This is
+; separate from the general [Graphics] anisotropic_filtering override, which
+; forces sampler states. off or 1x disables anisotropic filtering, then 2x, 4x,
+; 8x, or 16x select the level. default leaves the engine alone.
+internal_anisotropic_filtering=default
 
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.
@@ -719,6 +734,8 @@ dx12_focus_analysis=false
 ;UE5.ray_reconstruction_optimal_settings=on
 ;UE5.disable_post_processing_effects=on
 ;UE5.tonemapper_sharpen=0.5
+;UE5.internal_fps_limit=60
+;UE5.internal_anisotropic_filtering=8x
 ; Third-party tool paths can be overridden per application. Values follow the
 ; same file/folder rules as [ThirdParty] above; empty uses the global path.
 ; Changing them requires relaunching the game.

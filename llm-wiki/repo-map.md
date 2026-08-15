@@ -61,7 +61,7 @@ anchors that predate the split are approximate.
   | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
-  - `shared_defs.h` - shared-memory ABI (current version `39`).
+  - `shared_defs.h` - shared-memory ABI (current version `40`).
   - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`).
   - `process_ipc.h/.cpp` + `process_ipc_client.cpp` - private IPC channels.
@@ -178,7 +178,7 @@ anchors that predate the split are approximate.
 
 ## High-Risk / High-Value Files
 
-- `common/shared_defs.h` - shared-memory ABI (version `39`, source-verified).
+- `common/shared_defs.h` - shared-memory ABI (version `40`, source-verified).
 - `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_inject.cpp` -
   host-side startup/late injection, resident target adoption, and deject acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +

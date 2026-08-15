@@ -18,6 +18,8 @@ enum class Activation : uint8_t {
     RayReconstructionOptimal,
     DisablePostProcessing,
     TonemapperSharpen,
+    InternalFpsLimit,
+    InternalAnisotropicFiltering,
 };
 
 struct Settings {
@@ -25,6 +27,12 @@ struct Settings {
     bool rayReconstructionOptimalSettings = false;
     bool disablePostProcessingEffects = false;
     float tonemapperSharpen = -1.0f;
+    // -1 leaves UE's own engine limiter alone, 0 disables it (t.MaxFPS=0), a
+    // positive value caps it (t.MaxFPS=<value>).
+    float internalFpsLimit = -1.0f;
+    // 0 leaves UE's internal AF CVars alone, 1..16 applies the same level to
+    // r.MaxAnisotropy and r.VT.MaxAnisotropy (1 disables anisotropic filtering).
+    int32_t internalAnisotropicFiltering = 0;
 };
 
 struct Spec {
@@ -105,6 +113,9 @@ inline constexpr std::array kSpecs{
     Spec{"ShowFlag.Grain", ValueType::Int32, Activation::DisablePostProcessing, 0.0},
     Spec{"ShowFlag.MotionBlur", ValueType::Int32, Activation::DisablePostProcessing, 0.0},
     Spec{"ShowFlag.SceneColorFringe", ValueType::Int32, Activation::DisablePostProcessing, 0.0},
+    Spec{"t.MaxFPS", ValueType::Float, Activation::InternalFpsLimit, 0.0},
+    Spec{"r.MaxAnisotropy", ValueType::Int32, Activation::InternalAnisotropicFiltering, 16.0},
+    Spec{"r.VT.MaxAnisotropy", ValueType::Int32, Activation::InternalAnisotropicFiltering, 16.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -133,13 +144,22 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             enabled = settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f;
             value = settings.tonemapperSharpen >= 0.0f ? settings.tonemapperSharpen : 0.0;
             break;
+        case Activation::InternalFpsLimit:
+            enabled = settings.internalFpsLimit >= 0.0f;
+            value = enabled ? settings.internalFpsLimit : 0.0;
+            break;
+        case Activation::InternalAnisotropicFiltering:
+            enabled = settings.internalAnisotropicFiltering != 0;
+            value = settings.internalAnisotropicFiltering;
+            break;
     }
     return {enabled, ValueBits(spec.type, value)};
 }
 
 inline bool AnyEnabled(const Settings& settings) noexcept {
     return settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings ||
-           settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f;
+           settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
+           settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0;
 }
 
 inline bool IsPlausibleShadowValue(std::size_t specIndex, uint32_t bits) noexcept {

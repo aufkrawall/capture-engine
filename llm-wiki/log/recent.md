@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-15 - UE5 internal fps limiter and internal anisotropic filtering overrides
+
+- `[UE5] internal_fps_limit=default|off|1..1000` overrides UE5's own `t.MaxFPS` engine frame rate limiter (float
+  CVar, read on the game thread); `off`/`0` disables it, fractional values like `59.94` are accepted. It is
+  independent of CaptureEngine's own fps limiter and both can pace at once.
+- `[UE5] internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` sets `r.MaxAnisotropy` and `r.VT.MaxAnisotropy`
+  (int32 render-thread CVars) to one shared level, separate from the general `[Graphics] anisotropic_filtering`
+  sampler override.
+- Both reuse the typed persistent CVar scanner; shared-memory ABI 40 appends `internalFpsLimit` and
+  `internalAnisotropicFiltering`. The literal scanner's first-character filter now admits `t` (`t.MaxFPS`).
+  Config/template, profile, exact-policy, and mapping-name regression coverage was extended.
+
 ### 2026-08-15 - Runtime overlay toggle hotkey
 
 - The previously dead `toggle_fps` hotkey became `toggle_overlay` (default `CTRL+8`). The controller registers

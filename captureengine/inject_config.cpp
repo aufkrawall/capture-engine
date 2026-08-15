@@ -35,6 +35,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.rayReconstructionOptimalSettings = config.graphics.rayReconstructionOptimalSettings;
     graphics.disablePostProcessingEffects = config.graphics.disablePostProcessingEffects;
     graphics.tonemapperSharpen = config.graphics.tonemapperSharpen;
+    graphics.internalFpsLimit = config.graphics.internalFpsLimit;
+    graphics.internalAnisotropicFiltering = config.graphics.internalAnisotropicFiltering;
     graphics.prerenderLimit = config.graphics.cpuPrerenderLimit;
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
@@ -102,7 +104,9 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(graphics.forceRayReconstruction) << 10) ^
         (static_cast<uint64_t>(graphics.rayReconstructionOptimalSettings) << 11) ^
         (static_cast<uint64_t>(graphics.disablePostProcessingEffects) << 12) ^
-        (std::hash<float>{}(graphics.tonemapperSharpen) << 13);
+        (std::hash<float>{}(graphics.tonemapperSharpen) << 13) ^
+        (std::hash<float>{}(graphics.internalFpsLimit) << 14) ^
+        (static_cast<uint64_t>(graphics.internalAnisotropicFiltering) << 15);
 
     if (summaryHash != configSummaryHash) {
         LogInfo(
@@ -110,7 +114,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d ue5RROptimal=%d "
-            "ue5DisablePost=%d ue5Sharpen=%.2f",
+            "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
@@ -121,7 +125,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             sharedMemory->overlayConfig.screenshotIncludeOverlay, graphics.dlssAutoExposure,
             graphics.dlssSharpening, graphics.dlssSRPreset, graphics.forceRayReconstruction ? 1 : 0,
             graphics.rayReconstructionOptimalSettings ? 1 : 0,
-            graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen);
+            graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
+            graphics.internalFpsLimit, graphics.internalAnisotropicFiltering);
         configSummaryHash = summaryHash;
     }
 }

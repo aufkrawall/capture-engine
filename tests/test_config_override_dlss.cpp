@@ -59,6 +59,26 @@ TEST_F(ConfigOverrideTest, ProfileControlsUE5BundlesAndSharpenPrecedenceInput) {
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, 0.6f);
 }
 
+TEST_F(ConfigOverrideTest, ProfileControlsUE5InternalFpsLimitAndAnisotropy) {
+    WriteConfig(
+        "[UE5]\n"
+        "internal_fps_limit=default\n"
+        "internal_anisotropic_filtering=default\n"
+        "[Profile.UE5]\n"
+        "process=ue5.exe\n"
+        "UE5.internal_fps_limit=60\n"
+        "UE5.internal_anisotropic_filtering=8x\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "ue5.exe");
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, 60.0f);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 8);
+
+    LoadConfig(tempConfigFile, config, "other.exe");
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
+}
+
 TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {
     std::string iniContent =
         "[Graphics]\n"

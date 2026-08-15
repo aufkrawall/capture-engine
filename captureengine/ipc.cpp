@@ -186,6 +186,8 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.rayReconstructionOptimalSettings = src.rayReconstructionOptimalSettings;
         dst.disablePostProcessingEffects = src.disablePostProcessingEffects;
         dst.tonemapperSharpen = src.tonemapperSharpen;
+        dst.internalFpsLimit = src.internalFpsLimit;
+        dst.internalAnisotropicFiltering = src.internalAnisotropicFiltering;
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;

@@ -57,3 +57,79 @@ TEST_F(ConfigTest, RejectsInvalidUE5TonemapperSharpenStrength) {
     LoadConfig(tempConfigFile, config);
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, -1.0f);
 }
+
+TEST_F(ConfigTest, ParsesUE5InternalFpsLimitOverride) {
+    AppConfig config;
+
+    WriteConfig("[UE5]\ninternal_fps_limit=off\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, 0.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=0\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, 0.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=60\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, 60.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=59.94\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, 59.94f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=default\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=-1\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=1001\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+
+    WriteConfig("[UE5]\ninternal_fps_limit=not-a-number\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+}
+
+TEST_F(ConfigTest, ParsesUE5InternalAnisotropicFilteringOverride) {
+    AppConfig config;
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=off\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 1);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=1x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 1);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=2x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 2);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=4x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 4);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=8x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 8);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=16x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 16);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=default\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=3x\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
+
+    WriteConfig("[UE5]\ninternal_anisotropic_filtering=not-a-level\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
+}

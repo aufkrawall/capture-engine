@@ -49,6 +49,15 @@ Primary sources:
   `captureengine/config.ini.template`; it implies force RR. `disable_post_processing_effects=on` applies dedicated
   built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
   touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.
+- `internal_fps_limit=default|off|1..1000` overrides UE5's own engine frame rate limiter (`t.MaxFPS`, a float CVar
+  read on the game thread). `default` leaves the engine alone, `off`/`0` disables the engine limiter, and a positive
+  value (fractional values such as 59.94 are accepted) caps the engine frame rate. This is deliberately independent
+  from CaptureEngine's own fps limiter: the engine limiter paces `FEngineLoop::Tick`, CE's limiter paces presents, and
+  both can be active at once.
+- `internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` overrides UE5's internal anisotropic filtering with a
+  single shared level applied to both `r.MaxAnisotropy` and `r.VT.MaxAnisotropy` (both int32 render-thread CVars).
+  `off`/`1x` disables anisotropic filtering. This is separate from the general `[Graphics] anisotropic_filtering`
+  sampler override, which forces API sampler states rather than engine CVars.
 - Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
   exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
 
@@ -242,6 +251,12 @@ Primary sources:
   hook down compare/exchanges the original pointer back. Owner-module unload retires the stale address and an eventual
   reload is rescanned. Live policy/value changes restore removed CVars and atomically update retained shadows. There
   is no disk write, render-thread hook, repeated module sweep, or vtable call into unknown UE code.
+- The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
+  `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
+  the spec uses the float value type and the scan log prints it as a float; the two AF CVars are
+  `TAutoConsoleVariable<int32>`. The literal scanner previously skipped first characters other than `r`/`s`
+  (`FindRequestedLiterals` in `hook/main_ue5_scan.cpp`); `t` is now admitted for `t.MaxFPS`. The FPS limit and AF
+  settings are independent of the RR/post-processing bundles and of each other.
 - Post-processing removal uses `r.Tonemapper.Sharpen`, `r.FilmGrain`, `r.Tonemapper.GrainQuantization`,
   `r.MotionBlurQuality`, `r.SceneColorFringeQuality`, and matching `ShowFlag.*` CVars including vignette. It does not
   force `r.Tonemapper.Quality` down and does not disable `ShowFlag.PostProcessMaterial`: custom materials have no

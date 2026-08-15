@@ -77,6 +77,12 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   does not lower `r.Tonemapper.Quality` or globally disable game-authored post-process materials. A finite
   `tonemapper_sharpen=0..10` takes precedence over only the bundle's sharpen=0 while retaining every other disable;
   `default` leaves sharpen untouched unless the bundle is enabled.
+- `[UE5] internal_fps_limit=default|off|1..1000` overrides UE5's own engine frame rate limiter (`t.MaxFPS`),
+  independent of CaptureEngine's own fps limiter. `off`/`0` disables the engine limiter; fractional caps such as
+  `59.94` are accepted because `t.MaxFPS` is a float.
+- `[UE5] internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` sets UE5's internal `r.MaxAnisotropy` and
+  `r.VT.MaxAnisotropy` CVars to one shared level, independent of the general `[Graphics] anisotropic_filtering`
+  sampler override. `off`/`1x` disables anisotropic filtering.
 - `[ThirdParty] reshade_dll_path` / `optiscaler_dll_path` / `specialk_dll_path` configure the injected hook's early
   loads of user-supplied ReShade / OptiScaler / Special K DLLs. Each value is a file (loaded verbatim) or a folder
   (the per-bitness default name is appended). They are consumed by the hook directly from `config.ini`, not
@@ -92,8 +98,9 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Validation boundary
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
-- All four `[UE5]` settings default off/default and are live-reloadable. The two policy flags and sharpen value are
-  appended to `SharedGraphicsConfig`; shared-memory ABI/version 39 and mapping/event names isolate older processes.
+- The six `[UE5]` settings default off/default and are live-reloadable. The policy flags, sharpen value, internal fps
+  limit, and internal AF level are appended to `SharedGraphicsConfig`; shared-memory ABI/version 40 and
+  mapping/event names isolate older processes.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

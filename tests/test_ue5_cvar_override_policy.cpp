@@ -110,3 +110,78 @@ TEST(UE5CVarOverridePolicyTest, DefaultSettingsRequestNoMemoryOverrides) {
     for (const auto& spec : ce::ue5_cvar::kSpecs)
         EXPECT_FALSE(ce::ue5_cvar::Resolve(spec, settings).enabled) << spec.name;
 }
+
+TEST(UE5CVarOverridePolicyTest, ContainsInternalFpsLimitAndAnisotropicFilteringSpecs) {
+    const auto* maxFps = FindSpec("t.MaxFPS");
+    ASSERT_NE(maxFps, nullptr);
+    EXPECT_EQ(maxFps->type, ce::ue5_cvar::ValueType::Float);
+    EXPECT_EQ(maxFps->activation, ce::ue5_cvar::Activation::InternalFpsLimit);
+
+    const auto* maxAnisotropy = FindSpec("r.MaxAnisotropy");
+    ASSERT_NE(maxAnisotropy, nullptr);
+    EXPECT_EQ(maxAnisotropy->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(maxAnisotropy->activation, ce::ue5_cvar::Activation::InternalAnisotropicFiltering);
+
+    const auto* vtMaxAnisotropy = FindSpec("r.VT.MaxAnisotropy");
+    ASSERT_NE(vtMaxAnisotropy, nullptr);
+    EXPECT_EQ(vtMaxAnisotropy->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(vtMaxAnisotropy->activation, ce::ue5_cvar::Activation::InternalAnisotropicFiltering);
+}
+
+TEST(UE5CVarOverridePolicyTest, InternalFpsLimitResolution) {
+    const auto* maxFps = FindSpec("t.MaxFPS");
+    ASSERT_NE(maxFps, nullptr);
+
+    const ce::ue5_cvar::Settings defaultSettings;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxFps, defaultSettings).enabled);
+
+    ce::ue5_cvar::Settings settings;
+    settings.internalFpsLimit = 0.0f;
+    auto resolved = ce::ue5_cvar::Resolve(*maxFps, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 0.0f);
+
+    settings.internalFpsLimit = 60.0f;
+    resolved = ce::ue5_cvar::Resolve(*maxFps, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 60.0f);
+
+    settings.internalFpsLimit = 59.94f;
+    resolved = ce::ue5_cvar::Resolve(*maxFps, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 59.94f);
+}
+
+TEST(UE5CVarOverridePolicyTest, InternalAnisotropicFilteringAppliesToBothSpecs) {
+    const auto* maxAnisotropy = FindSpec("r.MaxAnisotropy");
+    const auto* vtMaxAnisotropy = FindSpec("r.VT.MaxAnisotropy");
+    ASSERT_NE(maxAnisotropy, nullptr);
+    ASSERT_NE(vtMaxAnisotropy, nullptr);
+
+    const ce::ue5_cvar::Settings defaultSettings;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxAnisotropy, defaultSettings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*vtMaxAnisotropy, defaultSettings).enabled);
+
+    for (int32_t level : {1, 2, 4, 8, 16}) {
+        ce::ue5_cvar::Settings settings;
+        settings.internalAnisotropicFiltering = level;
+        const auto resolvedR = ce::ue5_cvar::Resolve(*maxAnisotropy, settings);
+        const auto resolvedVt = ce::ue5_cvar::Resolve(*vtMaxAnisotropy, settings);
+        ASSERT_TRUE(resolvedR.enabled) << level;
+        ASSERT_TRUE(resolvedVt.enabled) << level;
+        EXPECT_EQ(static_cast<int32_t>(resolvedR.bits), level) << level;
+        EXPECT_EQ(static_cast<int32_t>(resolvedVt.bits), level) << level;
+    }
+}
+
+TEST(UE5CVarOverridePolicyTest, InternalOverridesAreIndependentlySelectable) {
+    ce::ue5_cvar::Settings settings;
+    settings.internalFpsLimit = 144.0f;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.internalFpsLimit = -1.0f;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.internalAnisotropicFiltering = 8;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.internalAnisotropicFiltering = 0;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+}

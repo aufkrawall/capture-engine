@@ -26,6 +26,8 @@ ce::ue5_cvar::Settings MakeSettings(const GraphicsConfig& config) {
       config.rayReconstructionOptimalSettings,
       config.disablePostProcessingEffects,
       config.tonemapperSharpen,
+      config.internalFpsLimit,
+      config.internalAnisotropicFiltering,
   };
 }
 
@@ -34,7 +36,10 @@ bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settin
          left.rayReconstructionOptimalSettings == right.rayReconstructionOptimalSettings &&
          left.disablePostProcessingEffects == right.disablePostProcessingEffects &&
          std::bit_cast<uint32_t>(left.tonemapperSharpen) ==
-             std::bit_cast<uint32_t>(right.tonemapperSharpen);
+             std::bit_cast<uint32_t>(right.tonemapperSharpen) &&
+         std::bit_cast<uint32_t>(left.internalFpsLimit) ==
+             std::bit_cast<uint32_t>(right.internalFpsLimit) &&
+         left.internalAnisotropicFiltering == right.internalAnisotropicFiltering;
 }
 
 void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
@@ -132,11 +137,13 @@ void RefreshOverrides(const GraphicsConfig& config) {
     detail::g_missingSummaryLogged = false;
     detail::g_fullRescanRequested.store(true, std::memory_order_release);
     HookLogImportant(
-        "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f; "
+        "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
+        "internalFpsLimit=%.3f internalAF=%d; "
         "installing persistent in-memory CVar shadows without changing Engine.ini",
         settings.forceRayReconstruction ? 1 : 0,
         settings.rayReconstructionOptimalSettings ? 1 : 0,
-        settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen);
+        settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen,
+        settings.internalFpsLimit, settings.internalAnisotropicFiltering);
   }
 
   detail::ForgetUnloadedOverrides();

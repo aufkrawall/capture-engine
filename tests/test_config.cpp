@@ -46,6 +46,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_FALSE(config.graphics.rayReconstructionOptimalSettings);
     EXPECT_FALSE(config.graphics.disablePostProcessingEffects);
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, -1.0f);
+    EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
+    EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
@@ -176,6 +178,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
               std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.disable_post_processing_effects=on", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.tonemapper_sharpen=0.5", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.internal_fps_limit=60", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.internal_anisotropic_filtering=8x", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.reshade_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.optiscaler_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.specialk_dll_path=", profileExample), std::string::npos);
@@ -196,6 +200,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("ray_reconstruction_optimal_settings=off"), std::string::npos);
     EXPECT_NE(generatedText.find("disable_post_processing_effects=off"), std::string::npos);
     EXPECT_NE(generatedText.find("tonemapper_sharpen=default"), std::string::npos);
+    EXPECT_NE(generatedText.find("internal_fps_limit=default"), std::string::npos);
+    EXPECT_NE(generatedText.find("internal_anisotropic_filtering=default"), std::string::npos);
     EXPECT_NE(generatedText.find("r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32"),
               std::string::npos);
     EXPECT_NE(generatedText.find("r.MegaLights.NumSamplesPerPixel=8"), std::string::npos);
