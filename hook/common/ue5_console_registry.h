@@ -123,19 +123,30 @@ struct SweepProgress {
     bool complete = false;
     // The cumulative bound ran out before that happened.
     bool budgetExhausted = false;
+    // Every region of the allocation holding the map's elements has been read.
+    //
+    // This, not whole-heap exhaustion, is the criterion that actually answers
+    // "is this name registered": a TMap's element storage is a single
+    // allocation, so once all of it has been seen, a name absent from it is
+    // absent from the registry - no matter how much unrelated heap was never
+    // touched. Sweeping the whole heap instead is both far more expensive and
+    // strictly weaker evidence about the map. Talos (20260816_014003) read
+    // 3698 MB across 32 passes without reaching the end and had to give up,
+    // while its map lived in three regions found in the first 180 MB.
+    bool allocationCovered = false;
 };
 
 // Whether "the name is absent" is a supportable reading of "the name was not
-// found". Only a finished sweep proves it; a paused or abandoned one proves
-// nothing about the memory it never read.
+// found". Either the map's own allocation was covered, or - failing that - the
+// whole heap was read. A paused or abandoned sweep proves neither.
 constexpr bool SweepProvesAbsence(const SweepProgress& progress) noexcept {
-    return progress.complete && !progress.budgetExhausted;
+    return progress.allocationCovered || (progress.complete && !progress.budgetExhausted);
 }
 
 constexpr bool SweepCanContinue(const SweepProgress& progress, uint32_t maxPasses,
                                 uint64_t maxBytes) noexcept {
-    return !progress.complete && !progress.budgetExhausted && progress.passes < maxPasses &&
-           progress.sweptBytes < maxBytes;
+    return !progress.allocationCovered && !progress.complete && !progress.budgetExhausted &&
+           progress.passes < maxPasses && progress.sweptBytes < maxBytes;
 }
 
 struct RegionSpan {

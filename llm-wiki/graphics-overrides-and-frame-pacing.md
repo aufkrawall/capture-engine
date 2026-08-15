@@ -312,6 +312,17 @@ Primary sources:
   holding confirmed elements and resolves across all of them; confirmations count distinct anchors (tracked by
   object address, not list index, because the anchor list is rebuilt each pass) so a CVar registered from several
   sites cannot inflate the ratio.
+- **Covering the map's own allocation is the completeness bar, not whole-heap exhaustion.** A `TMap` keeps its
+  elements in one allocation; VirtualQuery only reports it in pieces wherever protection or state changes, and all
+  those pieces share `AllocationBase`. So once every region of that allocation has been read, a name absent from
+  them is absent from the registry, however much unrelated heap was never touched. Sweeping the whole heap instead
+  is both far more expensive and strictly weaker evidence *about the map*: Talos (20260816_014003) read 3698 MB
+  across 32 passes, never reached the end, and correctly reported that it could not prove anything - while its map
+  sat in three regions found inside the first 180 MB. `ExpandToMapAllocations` now pulls in the remaining regions of
+  the owning allocation in one enumeration, sets `allocationCovered`, and **stops the sweep**, which also removes
+  the 32-pass background scan. It fails closed: an `AllocationBase` that turns out to be a large shared pool rather
+  than a discrete block exceeds `kMaxAllocationExpansionBytes` (256 MB), claims nothing, and leaves the whole-heap
+  sweep as the fallback.
 - **The sweep is resumable, and only a finished sweep may support an absence verdict** (`SweepProgress` and its
   predicates in `hook/common/ue5_console_registry.h`). The 400 ms / 768 MB bound is *per pass*, not per sweep:
   Industria 2 (20260815_214219) covered 218 MB in 406 ms, stopped mid-heap with 31 of 34 anchors placed, and the

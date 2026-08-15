@@ -33,6 +33,10 @@ constexpr uint64_t kScanBudgetBytes = 768ull << 20;
 // and says so, rather than sweeping for the lifetime of the session.
 constexpr uint32_t kMaxSweepPasses = 32;
 constexpr uint64_t kMaxSweepBytes = 8ull << 30;
+// A discrete TMap element allocation is far below this. Exceeding it means the
+// AllocationBase is a shared pool rather than the map's own block, which proves
+// nothing about the map, so the expansion is abandoned instead of scanned.
+constexpr uint64_t kMaxAllocationExpansionBytes = 256ull << 20;
 // Re-reading the recorded regions is the cheap half, but the region set grows
 // as the sweep proceeds, so it is time-boxed too.
 constexpr ULONGLONG kResolveBudgetMs = 100;
@@ -43,6 +47,9 @@ constexpr uint32_t kMaxResolveAttempts = 90;
 uint32_t g_resolveAttempts = 0;
 bool g_exhausted = false;
 ce::ue5_registry::SweepProgress g_sweep;
+// Set once the owning allocation refused to be bounded, so the expensive
+// enumeration is not retried every second for the rest of the session.
+bool g_allocationExpansionRefused = false;
 // Confirmed anchors are tracked by object address rather than by index into the
 // anchor list: that list is rebuilt on every pass and grows as more CVars
 // install, so an index would name a different anchor after the sweep resumes.
@@ -64,6 +71,9 @@ struct Anchor {
 struct Region {
   uintptr_t base = 0;
   std::size_t size = 0;
+  // VirtualQuery splits one allocation wherever protection or state changes, so
+  // this is what ties the pieces of the map's storage back together.
+  uintptr_t allocationBase = 0;
 };
 
 // Every read goes through ReadProcessMemory rather than a raw dereference: a
@@ -127,7 +137,7 @@ std::vector<Region> CollectHeapRegions(uintptr_t fromAddress) {
       break;
     if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
         (memory.Protect & 0xFF) == PAGE_READWRITE && !(memory.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
-      regions.push_back({base, size});
+      regions.push_back({base, size, reinterpret_cast<uintptr_t>(memory.AllocationBase)});
     }
     cursor = base + size;
   }
@@ -371,6 +381,53 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
   return installed;
 }
 
+// Pulls in every remaining region of the allocation(s) the map's elements live
+// in, which is what makes "this name is not registered" answerable cheaply.
+//
+// A TMap keeps its elements in one allocation; VirtualQuery merely reports it in
+// pieces wherever protection or state changes, and all those pieces share
+// AllocationBase. Covering that allocation therefore settles the question the
+// whole-heap sweep was being asked to settle - at the cost of one enumeration
+// instead of gigabytes. Fails closed: if the owning allocation turns out to be a
+// large shared pool rather than a discrete block, nothing is claimed and the
+// whole-heap sweep stays the fallback.
+bool ExpandToMapAllocations(RegistryMap& map, uint64_t& addedBytes, std::size_t& addedRegions) {
+  addedBytes = 0;
+  addedRegions = 0;
+  if (map.regions.empty())
+    return false;
+  std::vector<uintptr_t> bases;
+  for (const Region& region : map.regions) {
+    if (region.allocationBase == 0)
+      return false;  // Nothing to reason about; leave the verdict unproven.
+    const auto at = std::lower_bound(bases.begin(), bases.end(), region.allocationBase);
+    if (at == bases.end() || *at != region.allocationBase)
+      bases.insert(at, region.allocationBase);
+  }
+  std::vector<Region> added;
+  for (const Region& region : CollectHeapRegions(0)) {
+    const auto at = std::lower_bound(bases.begin(), bases.end(), region.allocationBase);
+    if (at == bases.end() || *at != region.allocationBase)
+      continue;
+    bool known = false;
+    for (const Region& existing : map.regions) {
+      if (existing.base == region.base) {
+        known = true;
+        break;
+      }
+    }
+    if (known)
+      continue;
+    addedBytes += region.size;
+    if (addedBytes > kMaxAllocationExpansionBytes)
+      return false;
+    added.push_back(region);
+  }
+  addedRegions = added.size();
+  map.regions.insert(map.regions.end(), added.begin(), added.end());
+  return true;
+}
+
 // Every region the sweep proved, time-boxed and resumed by rotation. Regions
 // here are the VirtualQuery spans holding confirmed elements, so this is the
 // cheap half - but the sweep no longer stops at the first one, and a budget
@@ -404,6 +461,7 @@ void ResetConsoleRegistry() {
   g_sweep = {};
   g_confirmedAnchors.clear();
   g_resolveRegionCursor = 0;
+  g_allocationExpansionRefused = false;
   g_registryRefused.fill(false);
 }
 
@@ -423,6 +481,30 @@ bool ResolveMissingThroughConsoleRegistry() {
     g_sweep = {};
     g_confirmedAnchors.clear();
     g_resolveRegionCursor = 0;
+    g_allocationExpansionRefused = false;
+  }
+
+  // Tried before the sweep: covering the map's own allocation answers the
+  // absence question outright, and doing so stops the sweep from spending
+  // further passes on heap that cannot contain the map.
+  if (g_map.valid && !g_sweep.allocationCovered && !g_allocationExpansionRefused) {
+    uint64_t addedBytes = 0;
+    std::size_t addedRegions = 0;
+    if (ExpandToMapAllocations(g_map, addedBytes, addedRegions)) {
+      g_sweep.allocationCovered = true;
+      HookLogImportant(
+          "UE5 overrides: console-registry map allocation covered — %zu region(s) total (+%zu, %llu KB "
+          "from the owning allocation); a name absent from these is genuinely unregistered, so the "
+          "heap sweep stops here after %llu MB in %u pass(es)",
+          g_map.regions.size(), addedRegions, static_cast<unsigned long long>(addedBytes >> 10),
+          static_cast<unsigned long long>(g_sweep.sweptBytes >> 20), g_sweep.passes);
+    } else {
+      g_allocationExpansionRefused = true;
+      HookLogImportant(
+          "UE5 overrides: console-registry map allocation could not be bounded (%llu KB before the cap); "
+          "falling back to the whole-heap sweep for coverage",
+          static_cast<unsigned long long>(addedBytes >> 10));
+    }
   }
 
   // The sweep keeps going after the first element is found. Locating the map
@@ -507,10 +589,12 @@ bool ResolveMissingThroughConsoleRegistry() {
     if (ce::ue5_registry::SweepProvesAbsence(g_sweep)) {
       HookLogImportant(
           "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "
-          "%zu located but carrying a layout CE cannot drive, %zu absent from the fully swept registry "
-          "(%llu MB across %u pass(es))",
+          "%zu located but carrying a layout CE cannot drive, %zu absent from the registry (%s, "
+          "%zu region(s), %llu MB swept in %u pass(es))",
           missing.size(), g_resolveAttempts, refused, unseen,
-          static_cast<unsigned long long>(g_sweep.sweptBytes >> 20), g_sweep.passes);
+          g_sweep.allocationCovered ? "owning allocation covered" : "whole heap swept",
+          g_map.regions.size(), static_cast<unsigned long long>(g_sweep.sweptBytes >> 20),
+          g_sweep.passes);
     } else {
       HookLogImportant(
           "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "

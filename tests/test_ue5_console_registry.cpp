@@ -231,6 +231,38 @@ TEST(UE5RegistrySweepTest, OnlyAFinishedSweepMayCallANameUnregistered) {
     EXPECT_FALSE(ce::ue5_registry::SweepProvesAbsence(abandoned));
 }
 
+TEST(UE5RegistrySweepTest, CoveringTheMapAllocationProvesAbsenceWithoutTheWholeHeap) {
+    // Talos (20260816_014003) read 3698 MB across 32 passes, never reached the
+    // end of the heap and gave up - while its map sat in three regions found in
+    // the first 180 MB. Whole-heap exhaustion is the wrong bar: a TMap's
+    // elements live in one allocation, so covering that allocation answers the
+    // question, and anything past it is unrelated memory.
+    ce::ue5_registry::SweepProgress gaveUp;
+    gaveUp.sweptBytes = 3698ull << 20;
+    gaveUp.passes = 32;
+    gaveUp.budgetExhausted = true;
+    EXPECT_FALSE(ce::ue5_registry::SweepProvesAbsence(gaveUp));
+
+    ce::ue5_registry::SweepProgress covered = gaveUp;
+    covered.allocationCovered = true;
+    EXPECT_TRUE(ce::ue5_registry::SweepProvesAbsence(covered));
+}
+
+TEST(UE5RegistrySweepTest, CoveringTheAllocationStopsFurtherSweeping) {
+    constexpr uint32_t kMaxPasses = 32;
+    constexpr uint64_t kMaxBytes = 8ull << 30;
+
+    ce::ue5_registry::SweepProgress progress;
+    progress.passes = 1;
+    progress.sweptBytes = 180ull << 20;
+    ASSERT_TRUE(ce::ue5_registry::SweepCanContinue(progress, kMaxPasses, kMaxBytes));
+
+    // Once the map's own allocation is covered there is nothing left for the
+    // sweep to establish, so it must stop rather than spend 31 more passes.
+    progress.allocationCovered = true;
+    EXPECT_FALSE(ce::ue5_registry::SweepCanContinue(progress, kMaxPasses, kMaxBytes));
+}
+
 TEST(UE5RegistrySweepTest, SweepContinuesUntilFinishedOrBounded) {
     constexpr uint32_t kMaxPasses = 32;
     constexpr uint64_t kMaxBytes = 8ull << 30;

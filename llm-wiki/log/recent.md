@@ -1,5 +1,40 @@
 # llm-wiki Log
 
+### 2026-08-16 - Absence is proved from the map's allocation, not the whole heap; overlay flickers on FG toggle
+
+- Talos `20260816_014003` (7 min, build 0.1.6111) was the first session long enough to reach both terminal states,
+  and it showed the whole-heap completeness criterion was simply wrong. The sweep read **3698 MB across 32 passes,
+  never reached the end, and gave up** - then the closing verdict correctly reported `4 not found in the 3698 MB
+  swept before the sweep stopped at ...; those 4 are unproven, not known-absent`. Aspect 2 works exactly as
+  intended; aspect 1's bar was unreachable.
+- The bar was wrong, not the budget. A `TMap`'s elements live in **one allocation**; VirtualQuery reports it in
+  pieces that all share `AllocationBase`. Covering that allocation answers "is this name registered" outright -
+  Talos's map was three regions inside the first 180 MB. `ExpandToMapAllocations` now adds the remaining regions of
+  the owning allocation in a single enumeration, sets `allocationCovered`, and **stops the sweep**, removing the
+  32-pass background scan entirely. Fails closed above 256 MB of expansion (a shared pool, not a discrete block),
+  falling back to the whole-heap sweep. `SweepProvesAbsence` is now `allocationCovered || (complete &&
+  !budgetExhausted)`.
+- **Restore is unexercised, not broken.** Five sessions, zero `restored the game's` lines - because none triggered
+  a path that needs it. `ShutdownOverrides` runs from the hook thread's exit (only on lifecycle failure; normal
+  host shutdown leaves the thread resident) and from `DeactivateHookRuntimeAndWaitForHost` (host dies while the
+  game lives). In `20260816_014003` the game exited at 01:47:11 and the controller followed at 01:47:35 - the
+  opposite order, and process teardown makes restore moot anyway. To exercise it: close CaptureEngine while the
+  game keeps running, or toggle the profile's `ue5.*` keys off mid-session.
+- **New defect, not yet fixed: the overlay is uncovered on every other present during FG transitions.** Same
+  session, window `01:40:52.714`-`01:40:57.279`, bracketing the DLSS-FG DEACTIVATED/ACTIVATED churn: **201 of ~403
+  presents carried no overlay draw and no inherited FG composition**, in a strict alternation (`longestStreak=1`,
+  `missed=1` each time, 106 streaks). `source=ProcessFrameExternal` on every interrupted present,
+  `source=PostSL` on every restoring one - i.e. presents arrive alternately through the external path and the
+  PostSL path during the transition, and only PostSL carries the draw while the pre-SL route is skipped
+  (`skip=1`, "Preserving active PostSL while pre-SL draw is skipped"). At ~135 fps that is ~4.6 s of half-rate
+  overlay, which reads as flicker and violates "must not be visibly hidden during FG transitions". Outside the
+  window it is clean: `uncovered` stays at 201 for the remaining ~45,000 presents, `render%=100%`. Suspected
+  direction: the pre-SL keep-alive (`dx12_hook_g_PostSLExplicitOffKeepAlive` in
+  `dx12_hook_process_session_draw_main.cpp`) is not engaging for this transition shape, so the skip decision is
+  made against a PostSL-active flag that does not hold for externally-sourced presents.
+- Otherwise the session was clean: 54,176 frames, avg 136 fps, `render%=100%`, RR rendering, no device removal,
+  no access violations, `verified 35/35 re-asserted=0` (Talos does not rewrite its CVars, unlike Industria).
+
 ### 2026-08-16 - Ref redirect never mirrored its shadow pair: 15 of 38 overrides were inert (CA solved)
 
 - Chasing "chromatic aberration is still visible in the Industria 2 main menu despite `r.SceneColorFringeQuality=0`
