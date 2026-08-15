@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-15 - Talos 20260815_202743 validates the UE5 override rework; registry region scope was too narrow
+
+- First run with the reworked overrides. Confirmed working: `writeThrough=1` on all 20 data-pointer installs,
+  `verified 31/31 installed CVar(s) ... (re-asserted=0, retired=0)` and then silence for the rest of the session
+  (the summary only logs on change), `prevValue`/`neighborDword` labelling, and **no**
+  `module notification queue overflowed` at all - the 32 -> 128 slot bump removed both full rescans, though the
+  scan itself now covers 122 modules in 1141 ms. RR still reaches `Feature 13 evaluation succeeded`.
+- The console registry located UE's map in 47 ms after 21 MB, anchoring on `r.SceneColorFringeQuality` with
+  `valueOffset=16` - the layout derivation works on a real UE 5.4.4 process.
+- But it resolved nothing, including `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`, which is definitely
+  a registered console variable. That is the tell: the search stopped at the first confirmed element and the second
+  pass only re-read that one 64 KB region. Fixed in 23fd7b5f - walk until every anchor is placed, record every
+  region holding confirmed elements, resolve across all of them, and report confirmed/total in the log.
+- Consequence for the `ShowFlag.*` question: this session does **not** show they are unregistered, only that the
+  search was incomplete. A run with a full confirmed/total ratio and still no ShowFlag hits would be the evidence.
+- Still unproven: whether a data-pointer-mode override changes rendering. `verified 31/31` proves CE's value is
+  what the storage holds, not that the engine reads that storage. Needs an A/B against the game's own console on
+  something visible, e.g. `r.Lumen.Reflections.DownsampleFactor` 2 -> 1.
+
 ### 2026-08-15 - UE5 overrides: restore-null fix, write-through, read-back verification, console registry
 
 - Reviewing Talos session `20260815_191332` (31/40 installed, exactly as documented) turned up a **crash-on-restore

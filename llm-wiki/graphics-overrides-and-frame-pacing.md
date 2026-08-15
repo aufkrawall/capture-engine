@@ -290,10 +290,17 @@ Primary sources:
   Constraints that keep it safe: every read is `ReadProcessMemory` rather than a raw dereference (a live game frees
   heap regions mid-walk, and the kernel-checked copy fails instead of raising); the search is bounded to 768 MB /
   400 ms and four attempts; and it never runs before an anchor exists, so it can only ever add to what the scan
-  proved. Locating the map is the expensive half - once anchored, retries only re-read that one region (up to 90
-  attempts at ~1 Hz), which is what covers `ShowFlag.*` appearing during world/graphics init rather than at startup.
-  A TMap growth reallocates the element storage, so the anchor element is re-checked each pass and a move triggers a
-  fresh search rather than a silent failure.
+  proved. **The walk must not stop at the first confirmed element** - the map's storage does not fit in one heap
+  region, and stopping early made the second pass re-read a single 64 KB region (Talos 20260815_202743: anchored in
+  47 ms, then failed to resolve `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`, which is certainly
+  registered). It now continues until every anchor is placed or the budget ends, records each region holding
+  confirmed elements, and resolves across all of them; confirmations count distinct anchors so a CVar registered
+  from several sites cannot end the walk early. Locating the map is the expensive half - once anchored, retries only
+  re-read the recorded regions (up to 90 attempts at ~1 Hz), which covers `ShowFlag.*` appearing during
+  world/graphics init rather than at startup. A TMap growth reallocates the element storage, so the representative
+  element is re-checked each pass and a move triggers a fresh search rather than silent misses. The anchored log
+  line reports confirmed/total anchors and region count: a full ratio is what makes "these names are genuinely not
+  registered" a supportable conclusion instead of "the walk ran short".
 - Observed coverage: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4, profile
   adds the two AF CVars) installs 31/40. The remaining entries are the version-conditional/absent names above plus
   `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points
