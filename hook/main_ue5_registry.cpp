@@ -173,36 +173,50 @@ bool ConfirmAnchorElement(uintptr_t valueAddress, const Anchor& anchor, std::siz
   return false;
 }
 
-struct AnchorHit {
+// Every region proven to hold map elements, not just the first one found. A
+// UE console map does not fit in one 64 KB heap region, and stopping at the
+// first hit searched a fraction of it: the 20260815_202743 Talos session
+// anchored on r.SceneColorFringeQuality and then failed to find
+// r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated, which is certainly
+// registered - the element simply lived outside that one region.
+struct RegistryMap {
   bool valid = false;
-  Region region;
   std::size_t valueOffset = 0;
+  std::vector<Region> regions;
+  std::size_t confirmed = 0;
+  // One representative element, re-checked each pass so a TMap growth that
+  // relocates the storage triggers a fresh search instead of silent misses.
   const char* name = nullptr;
   uintptr_t valueAddress = 0;
   uintptr_t object = 0;
 };
 
-AnchorHit g_anchor;
+RegistryMap g_map;
 
 // UE reallocates the map's element storage when it grows, which moves every
 // element. Re-reading the element the search confirmed distinguishes "the map
 // moved, search again" from "these names are simply not registered yet".
-bool AnchorStillHolds(const AnchorHit& hit) {
+bool AnchorStillHolds(const RegistryMap& map) {
   uintptr_t object = 0;
-  if (!ReadBytes(hit.valueAddress, &object, sizeof(object)) || object != hit.object)
+  if (!ReadBytes(map.valueAddress, &object, sizeof(object)) || object != map.object)
     return false;
   ce::ue5_registry::StringHeader header;
-  return ReadStringHeader(hit.valueAddress - hit.valueOffset, header) && KeyMatchesName(header, hit.name);
+  return ReadStringHeader(map.valueAddress - map.valueOffset, header) && KeyMatchesName(header, map.name);
 }
 
-bool FindRegistryRegion(const std::vector<Anchor>& anchors, AnchorHit& hit, uint64_t& scannedBytes,
-                        ULONGLONG deadline) {
+bool FindRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map, uint64_t& scannedBytes,
+                     ULONGLONG deadline) {
   const AnchorFilter filter(anchors);
+  std::vector<bool> seen(anchors.size(), false);
   std::vector<uint8_t> buffer(kChunkBytes);
   for (const Region& region : CollectHeapRegions()) {
     for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes - kChunkOverlap) {
-      if (scannedBytes >= kScanBudgetBytes || GetTickCount64() >= deadline)
-        return false;
+      // Walking on past the first hit is what makes the element set complete;
+      // it stops as soon as every anchor has been placed, or on the budget.
+      if (map.confirmed >= anchors.size() || scannedBytes >= kScanBudgetBytes ||
+          GetTickCount64() >= deadline) {
+        return map.valid;
+      }
       const std::size_t bytes = (std::min)(kChunkBytes, region.size - offset);
       if (bytes < sizeof(uintptr_t))
         break;
@@ -221,34 +235,46 @@ bool FindRegistryRegion(const std::vector<Anchor>& anchors, AnchorHit& hit, uint
         std::size_t valueOffset = 0;
         if (!ConfirmAnchorElement(valueAddress, *anchor, valueOffset))
           continue;
-        hit.valid = true;
-        hit.region = region;
-        hit.valueOffset = valueOffset;
-        hit.name = anchor->name;
-        hit.valueAddress = valueAddress;
-        hit.object = anchor->object;
-        return true;
+        if (!map.valid) {
+          map.valid = true;
+          map.valueOffset = valueOffset;
+          map.name = anchor->name;
+          map.valueAddress = valueAddress;
+          map.object = anchor->object;
+        } else if (valueOffset != map.valueOffset) {
+          continue;  // A different layout is a different structure, not ours.
+        }
+        // Count distinct anchors, not raw hits: a CVar registered from several
+        // sites would otherwise satisfy the early exit before the whole map
+        // has been walked.
+        const std::size_t anchorIndex = static_cast<std::size_t>(anchor - anchors.data());
+        if (!seen[anchorIndex]) {
+          seen[anchorIndex] = true;
+          ++map.confirmed;
+        }
+        if (map.regions.empty() || map.regions.back().base != region.base)
+          map.regions.push_back(region);
       }
     }
   }
-  return false;
+  return map.valid;
 }
 
-// Second pass over the one confirmed allocation: find the key of each missing
-// name and read its object from the distance the anchor proved.
-std::size_t ResolveMissingInRegion(const AnchorHit& hit, const std::vector<std::size_t>& missing,
-                                   HMODULE owner) {
+// Second pass over every proven allocation: find the key of each missing name
+// and read its object from the distance the anchors proved.
+std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset,
+                                   const std::vector<std::size_t>& missing, HMODULE owner) {
   std::array<int32_t, kCVarCount> wantedNum{};
   for (std::size_t index : missing)
     wantedNum[index] = static_cast<int32_t>(std::strlen(ce::ue5_cvar::kSpecs[index].name)) + 1;
 
   std::vector<uint8_t> buffer(kChunkBytes);
   std::size_t installed = 0;
-  for (std::size_t offset = 0; offset < hit.region.size; offset += kChunkBytes - kChunkOverlap) {
-    const std::size_t bytes = (std::min)(kChunkBytes, hit.region.size - offset);
-    if (bytes < sizeof(uintptr_t) * 2 + hit.valueOffset)
+  for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes - kChunkOverlap) {
+    const std::size_t bytes = (std::min)(kChunkBytes, region.size - offset);
+    if (bytes < sizeof(uintptr_t) * 2 + valueOffset)
       break;
-    if (!ReadBytes(hit.region.base + offset, buffer.data(), bytes))
+    if (!ReadBytes(region.base + offset, buffer.data(), bytes))
       continue;
     const std::size_t limit = bytes - sizeof(uintptr_t) * 2;
     for (std::size_t position = 0; position <= limit; position += sizeof(uintptr_t)) {
@@ -264,8 +290,8 @@ std::size_t ResolveMissingInRegion(const AnchorHit& hit, const std::vector<std::
         if (!KeyMatchesName(header, ce::ue5_cvar::kSpecs[index].name))
           continue;
         uintptr_t object = 0;
-        const uintptr_t keyAddress = hit.region.base + offset + position;
-        if (!ReadBytes(keyAddress + hit.valueOffset, &object, sizeof(object)))
+        const uintptr_t keyAddress = region.base + offset + position;
+        if (!ReadBytes(keyAddress + valueOffset, &object, sizeof(object)))
           continue;
         if (!ce::ue5_registry::IsPlausibleConsoleObject(object) ||
             !HasCallableVtable(reinterpret_cast<const void*>(object))) {
@@ -290,7 +316,7 @@ void ResetConsoleRegistry() {
   g_searchAttempts = 0;
   g_resolveAttempts = 0;
   g_exhausted = false;
-  g_anchor = {};
+  g_map = {};
 }
 
 bool ResolveMissingThroughConsoleRegistry() {
@@ -303,12 +329,12 @@ bool ResolveMissingThroughConsoleRegistry() {
   if (anchors.empty())
     return false;  // Nothing proven yet; the module scan has to land first.
 
-  if (g_anchor.valid && !AnchorStillHolds(g_anchor)) {
+  if (g_map.valid && !AnchorStillHolds(g_map)) {
     HookLogImportant("UE5 overrides: console-registry element storage moved; re-locating it");
-    g_anchor = {};
+    g_map = {};
   }
 
-  if (!g_anchor.valid) {
+  if (!g_map.valid) {
     if (g_searchAttempts >= kMaxSearchAttempts) {
       g_exhausted = true;
       HookLogImportant("UE5 overrides: console registry could not be located in %u attempt(s); "
@@ -319,8 +345,8 @@ bool ResolveMissingThroughConsoleRegistry() {
     ++g_searchAttempts;
     const ULONGLONG start = GetTickCount64();
     uint64_t scannedBytes = 0;
-    AnchorHit hit;
-    if (!FindRegistryRegion(anchors, hit, scannedBytes, start + kScanBudgetMs)) {
+    RegistryMap located;
+    if (!FindRegistryMap(anchors, located, scannedBytes, start + kScanBudgetMs)) {
       HookLogImportant(
           "UE5 overrides: console registry not located (attempt %u/%u, %llu MB scanned in %llums, "
           "%zu anchor(s)); keeping the module-scan results",
@@ -328,17 +354,21 @@ bool ResolveMissingThroughConsoleRegistry() {
           static_cast<unsigned long long>(GetTickCount64() - start), anchors.size());
       return false;
     }
-    g_anchor = hit;
+    g_map = located;
+    // The confirmed/anchor ratio says whether the element set is complete: a
+    // partial match means the walk ran out of budget before the whole map.
     HookLogImportant(
-        "UE5 overrides: console registry anchored on %s (valueOffset=%zu region=%p+0x%llX) after "
-        "%llu MB in %llums",
-        hit.name, hit.valueOffset, reinterpret_cast<void*>(hit.region.base),
-        static_cast<unsigned long long>(hit.region.size),
+        "UE5 overrides: console registry anchored on %s (valueOffset=%zu, %zu/%zu anchor element(s) "
+        "across %zu region(s), first=%p) after %llu MB in %llums",
+        g_map.name, g_map.valueOffset, g_map.confirmed, anchors.size(), g_map.regions.size(),
+        reinterpret_cast<void*>(g_map.regions.front().base),
         static_cast<unsigned long long>(scannedBytes >> 20),
         static_cast<unsigned long long>(GetTickCount64() - start));
   }
 
-  const std::size_t installed = ResolveMissingInRegion(g_anchor, missing, GetModuleHandleW(nullptr));
+  std::size_t installed = 0;
+  for (const Region& region : g_map.regions)
+    installed += ResolveMissingInRegion(region, g_map.valueOffset, missing, GetModuleHandleW(nullptr));
   if (installed) {
     HookLogImportant("UE5 overrides: console registry resolved %zu of %zu remaining CVar(s)",
                      installed, missing.size());
