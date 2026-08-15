@@ -251,6 +251,28 @@ Primary sources:
   hook down compare/exchanges the original pointer back. Owner-module unload retires the stale address and an eventual
   reload is rescanned. Live policy/value changes restore removed CVars and atomically update retained shadows. There
   is no disk write, render-thread hook, repeated module sweep, or vtable call into unknown UE code.
+- UE 5.4/5.6 (validated: Talos Reawakened 5.4.4, Industria 2 Demo 5.6.1) registers many Lumen/rendering CVars through
+  a different layout: the static `FAutoConsoleVariable`-style object is a `{vtable, Ref}` pair (16 bytes) and the
+  `FConsoleVariable` holds its value behind a data pointer at `ref+0x50`, with a local fallback pair at `ref+0x58`
+  (verified against `IConsoleVariable::GetValueOnGameThread`, which returns `*[this+0x50]` when the CVar is
+  registered and `[this+0x58]` otherwise). The scanner therefore has a second install mode, **data-pointer redirect**:
+  it CAS-replaces the `ref+0x50` pointer with CE's shadow (render-thread reads) and mirrors the value into the
+  `+0x58` local pair (game-thread reads). Multiple registration sites can exist per CVar with separate value records;
+  duplicates are deduplicated by data pointer, a validated pointer-model candidate is preferred when present, and
+  otherwise the best-correlated data-pointer candidate is applied as a safe best effort.
+- Version-conditional specs: some bundle CVars do not exist in every UE build. `r.MegaLights.DownsampleMode` and
+  `r.Tonemapper.GrainQuantization` have no literal in UE 5.4 or 5.6; `r.Lumen.Reflections.DownsampleCheckerboard` and
+  `r.MegaLights.NumSamplesPerPixel` exist in 5.6 but not 5.4. The summary log separates these ("literals not found in
+  loaded modules") from present-but-unvalidated CVars. `ShowFlag.*` CVars are composed at runtime from a short-name
+  table via `FString::Printf(TEXT("ShowFlag.%s"), ...)` in UE 5.4/5.6, so no `ShowFlag.X` literal exists to match;
+  disabling vignette via `ShowFlag.Vignette` therefore remains unsupported until a runtime-composed-name discovery is
+  implemented (film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`,
+  `r.MotionBlurQuality`, and `r.SceneColorFringeQuality`).
+- Observed coverage: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4, profile
+  adds the two AF CVars) installs 31/40. The remaining entries are the version-conditional/absent names above plus
+  `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points
+  into `.pdata`, so the data-pointer validation correctly refuses it). Talos's main menu does not render 3D, so only
+  install coverage, not visual effect, is verifiable there; Industria 2 renders during the test window.
 - The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are

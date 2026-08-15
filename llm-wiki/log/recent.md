@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-15 - UE5 scanner: data-pointer redirect mode for UE 5.4/5.6 Lumen CVars
+
+- UE 5.4/5.6 `FConsoleVariable` keeps its value behind a data pointer at `ref+0x50` with a local fallback pair at
+  `ref+0x58` (verified by disassembling `GetValueOnGameThread`). The UE5 scanner now has a data-pointer redirect mode
+  (CAS `ref+0x50` -> CE shadow + mirror into `+0x58`), a lone-validated-candidate acceptance rule, dedup of duplicate
+  registration sites, and preference for the proven pointer-model target. Per-CVar failure diagnostics now separate
+  "literal not found" (version-conditional/absent CVar) from "found but no validated object".
+- Validation: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4) installs 31/40.
+  `ShowFlag.*` CVars are composed at runtime (`ShowFlag.%s`) in both engines, so vignette disabling needs a
+  runtime-composed-name discovery (open). `r.MegaLights.DownsampleMode`/`r.Tonemapper.GrainQuantization` are absent in
+  both; `DownsampleCheckerboard`/`MegaLights.NumSamplesPerPixel` are 5.6-only; Talos's
+  `ScreenProbeGather.Temporal.MaxFramesAccumulated` has a per-title layout variance (ref+0x50 points into `.pdata`).
+
 ### 2026-08-15 - UE5 internal fps limiter and internal anisotropic filtering overrides
 
 - `[UE5] internal_fps_limit=default|off|1..1000` overrides UE5's own `t.MaxFPS` engine frame rate limiter (float
