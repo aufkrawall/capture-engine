@@ -358,6 +358,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       CheckAndInstallHooks();
     }
 
+    // A Present-hook install postponed because a third-party overlay owned the
+    // swapchain creation path during startup has to be retried from here; the
+    // startup window it is waiting out ends without any further hook callback.
+    if (g_DX12Hook)
+      g_DX12Hook->ServicePendingPresentHooks();
+
     // Keep graphics/module hook installation ahead of the optional UE5 module
     // scan on every service pass as well as during initial startup.
     UE5::RefreshOverrides(activeGraphicsConfig);

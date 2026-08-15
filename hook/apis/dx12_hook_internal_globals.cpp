@@ -294,6 +294,8 @@ bool dx12_hook_g_FGRuntimeOwnsSwapchain = false;
 ULONGLONG dx12_hook_g_FGRuntimeOwnsSwapchainSince = 0;
 
 std::atomic<bool> dx12_hook_g_CreatingTempSwapchain{false};
+std::atomic<bool> dx12_hook_g_EarlyPresentHookInstallDeferred{false};
+std::atomic<bool> dx12_hook_g_PostponedPresentHookInstallLogged{false};
 
 thread_local unsigned dx12_hook_s_InternalDXGISwapchainProbeDepth = 0;
 

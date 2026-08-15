@@ -131,6 +131,7 @@ void DX12Hook::Init() {
     // hooking, so DX11 state corruption is not a concern.
     if (ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(d3d12DeviceCreated,
                                                                                      startupOverlayModule != nullptr)) {
+        dx12_hook_g_EarlyPresentHookInstallDeferred.store(true, std::memory_order_release);
         HookLogImportant(
             "DX12Hook: Deferring eager temp-swapchain Present hook install because third-party overlay %s is already "
             "loaded before the first real D3D12 device",
@@ -222,12 +223,35 @@ static void FindAndWrapPreExistingSwapchains() {
     // the CreateSwapChainForHwnd detours will never fire, and Present hooks
     // would remain uninstalled forever — the overlay would never render.
     //
-    // Try installing Present hooks now via a second temp swapchain.  The
-    // g_CreatingTempSwapchain guard prevents our own CreateSwapChainForHwnd
-    // hooks from processing the temp swapchain's queue, and calling
-    // oCreateSwapChainForHwndGlobal bypasses our hooks entirely.  At this point
-    // the overlay's startup hook chain should be settled, so the recursion risk
-    // is minimal.
+    // Install Present hooks via a temp swapchain.  The g_CreatingTempSwapchain
+    // guard prevents our own CreateSwapChainForHwnd hooks from processing the
+    // temp swapchain's queue, and calling oCreateSwapChainForHwndGlobal
+    // bypasses our hooks entirely.
+    //
+    // What it cannot bypass is a third-party overlay that hooked the creation
+    // path before us. This function runs on the line after Init decided to
+    // defer for exactly that reason, so "the overlay's startup hook chain
+    // should be settled by now" was never true - in session 20260815_203836
+    // both were logged in the same millisecond and Steam's handler, whose
+    // dispatch slots stay NULL until it has rendered on a real game swapchain,
+    // recursed until the stack was gone. Wait for the game's own D3D12 device
+    // instead; DX12Hook::ServicePendingPresentHooks retries from the hook
+    // thread's service pass, and a game that creates its swapchain normally
+    // gets Present hooks from the factory detour long before that matters.
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    if (ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall(
+            false, dx12_hook_g_EarlyPresentHookInstallDeferred.load(std::memory_order_acquire),
+            WasD3D12DeviceCreated(), overlayModule != nullptr)) {
+        if (!dx12_hook_g_PostponedPresentHookInstallLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Present hooks still uninstalled and third-party overlay %s owns the creation path before the "
+                "game's first D3D12 device — postponing the temp swapchain instead of recursing through its startup "
+                "hook chain; retrying from the hook service pass",
+                overlayModule);
+        }
+        return;
+    }
+
     HookLogImportant(
         "DX12: Present hooks not installed during init — installing via "
         "postponed temp swapchain for pre-existing swapchain coverage");
@@ -244,6 +268,39 @@ static void FindAndWrapPreExistingSwapchains() {
 }
 
 
+
+void DX12Hook::ServicePendingPresentHooks() {
+    if (!dx12_hook_g_EarlyPresentHookInstallDeferred.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        // The game's own swapchain arrived and the factory detour covered it,
+        // which is the outcome the deferral was waiting for.
+        if (dx12_hook_g_EarlyPresentHookInstallDeferred.exchange(false, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Postponed Present hook install resolved by the game's own swapchain — no temp swapchain was "
+                "created while the third-party overlay was still initializing");
+        }
+        return;
+    }
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    if (ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall(
+            false, true, WasD3D12DeviceCreated(), overlayModule != nullptr)) {
+        return;  // Still inside the startup window; stay armed.
+    }
+    HookLogImportant(
+        "DX12: Installing the postponed Present hooks now — the game's D3D12 device exists, so a third-party "
+        "overlay's startup hook chain is no longer mid-initialization");
+    HookSwapchainVTableViaTempSwapchain();
+    dx12_hook_g_EarlyPresentHookInstallDeferred.store(false, std::memory_order_release);
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        HookLogImportant("DX12: Present hooks installed via the postponed temp swapchain");
+    } else {
+        HookLogImportant(
+            "DX12: Postponed temp swapchain did not yield Present hooks — pre-existing swapchains stay uncovered "
+            "until a real CreateSwapChainForHwnd call is intercepted");
+    }
+}
 
 void DX12Hook::Shutdown() {
     LogOverlayCoverageSummary("shutdown summary");

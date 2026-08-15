@@ -75,6 +75,10 @@ public:
     void Shutdown() override;
     void OnHostDisconnect() override;
     void EnsurePresentHooks();  // Called after D3D12 device creation is confirmed
+    // Retries a Present-hook install that was postponed because a third-party
+    // overlay owned the swapchain creation path during startup. Cheap no-op
+    // once hooks exist; safe to call from the hook thread's service pass.
+    void ServicePendingPresentHooks();
 
     void TrackResource(IUnknown* res);
     void CleanupResources();

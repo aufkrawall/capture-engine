@@ -65,6 +65,28 @@ inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12Device
     return !d3d12DeviceCreated && thirdPartyOverlayLoaded;
 }
 
+inline bool ShouldPostponeDeferredTempSwapchainPresentHookInstall(bool presentHooksInstalled,
+                                                                  bool earlyInstallDeferred,
+                                                                  bool d3d12DeviceCreated,
+                                                                  bool thirdPartyOverlayLoaded) {
+    // Same startup window as above, re-evaluated where the deferred install is
+    // actually attempted. Without this the deferral is a no-op: DX12Hook::Init
+    // skips the eager temp swapchain because a third-party overlay is loaded and
+    // then calls FindAndWrapPreExistingSwapchains on the next line, which built
+    // the temp swapchain anyway "because the overlay's startup hook chain should
+    // be settled" - in session 20260815_203836 both decisions were logged in the
+    // same millisecond, so nothing had settled, and the creation recursed to
+    // death inside gameoverlayrenderer64. The install now waits for the game's
+    // own D3D12 device, which is the same evidence Init already trusts.
+    if (presentHooksInstalled) {
+        return false;
+    }
+    if (!earlyInstallDeferred || !thirdPartyOverlayLoaded) {
+        return false;
+    }
+    return !d3d12DeviceCreated;
+}
+
 inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlayLoaded,
                                                      bool actualFrameGenerationActive,
                                                      bool startupCompatSettled = false,

@@ -623,6 +623,52 @@ TEST(DXGISharedTest, EarlyDX12TempSwapchainHookInstallDefersForStartupOverlayBef
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(true, false));
 }
 
+TEST(DXGISharedTest, DeferredTempSwapchainInstallHonoursTheSameStartupWindowAsTheDeferral) {
+    using ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall;
+
+    // The regression: DX12Hook::Init deferred the eager temp swapchain because a
+    // third-party overlay owned the creation path, and the deferred install ran
+    // immediately afterwards anyway, recursing to death inside the overlay
+    // (session 20260815_203836). The deferred attempt must re-check the window.
+    EXPECT_TRUE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(
+        /*presentHooksInstalled=*/false, /*earlyInstallDeferred=*/true, /*d3d12DeviceCreated=*/false,
+        /*thirdPartyOverlayLoaded=*/true));
+
+    // The game's own D3D12 device is the evidence the startup window has passed;
+    // it is the same input the eager decision already trusts.
+    EXPECT_FALSE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(false, true, true, true));
+
+    // Hooks already installed: nothing to postpone, the retry must disarm.
+    EXPECT_FALSE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(true, true, false, true));
+
+    // No overlay owns the path, or the eager install was never deferred: the
+    // historical behaviour must be preserved exactly, including for a game whose
+    // swapchain pre-dates injection.
+    EXPECT_FALSE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(false, true, false, false));
+    EXPECT_FALSE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(false, false, false, true));
+    EXPECT_FALSE(ShouldPostponeDeferredTempSwapchainPresentHookInstall(false, false, false, false));
+}
+
+TEST(DXGISharedTest, DeferredTempSwapchainPostponementNeverOutlastsTheDeferralCondition) {
+    using ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall;
+    using ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall;
+
+    // Coverage invariant: whenever the eager install would no longer be deferred,
+    // the postponed one must be allowed to run. Otherwise a pre-existing
+    // swapchain could stay without Present hooks - and without an overlay -
+    // forever, which is a worse failure than the crash being fixed.
+    for (int deviceCreated = 0; deviceCreated < 2; ++deviceCreated) {
+        for (int overlayLoaded = 0; overlayLoaded < 2; ++overlayLoaded) {
+            const bool stillDeferring =
+                ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(deviceCreated != 0, overlayLoaded != 0);
+            const bool stillPostponing = ShouldPostponeDeferredTempSwapchainPresentHookInstall(
+                false, true, deviceCreated != 0, overlayLoaded != 0);
+            EXPECT_EQ(stillDeferring, stillPostponing)
+                << "device=" << deviceCreated << " overlay=" << overlayLoaded;
+        }
+    }
+}
+
 // Regression: 64-bit DX12 test app overlay missing when injection wait window
 // allowed the game to create its swapchain before hooks installed, AND a
 // third-party overlay (e.g. nvspcap64.dll) deferred the eager temp-swapchain
