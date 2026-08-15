@@ -265,9 +265,12 @@ Primary sources:
   `r.MegaLights.NumSamplesPerPixel` exist in 5.6 but not 5.4. The summary log separates these ("literals not found in
   loaded modules") from present-but-unvalidated CVars. `ShowFlag.*` CVars are composed at runtime from a short-name
   table via `FString::Printf(TEXT("ShowFlag.%s"), ...)` in UE 5.4/5.6, so no `ShowFlag.X` literal exists to match;
-  disabling vignette via `ShowFlag.Vignette` therefore remains unsupported until a runtime-composed-name discovery is
-  implemented (film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`,
-  `r.MotionBlurQuality`, and `r.SceneColorFringeQuality`).
+  disabling vignette via `ShowFlag.Vignette` therefore remains unsupported. The composed names do exist in the game's
+  writable memory as a contiguous UTF-16 table (present once a world/graphics state exists), but they are not embedded
+  in the CVar objects and no FString references them inside the owning region, so a memory scan cannot reach the CVar
+  objects; a registration-capture hook (e.g., on `IConsoleManager::RegisterConsoleVariable`) is the viable path.
+  Film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`, `r.MotionBlurQuality`, and
+  `r.SceneColorFringeQuality`.
 - Observed coverage: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4, profile
   adds the two AF CVars) installs 31/40. The remaining entries are the version-conditional/absent names above plus
   `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points

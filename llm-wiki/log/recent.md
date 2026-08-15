@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-15 - Rate-limit repeated hook diagnostics; ShowFlag discovery findings
+
+- `hook_debug.log` was dominated by repeated loader/Streamline/FFX module notifications ("Fresh module load
+  inspected", "IAT: ... already patched", "Redirecting ... to:", "Hooks installed successfully"), producing 26k+
+  lines / 5 MB per session. The first occurrences plus periodic counters are now logged; a 20 s Industria 2 loop
+  drops the hook log to ~2.9k lines / 475 KB (~10%) with identical UE5 override coverage (32/38). The UE5 scanner's
+  raw-candidate memory dumps are additionally bounded to four and its unresolved-CVar detail budget halved.
+- ShowFlag.* investigation: the composed names ("ShowFlag.Vignette", ...) DO exist in the game's writable memory as a
+  contiguous UTF-16 string table (created at world/graphics init, present once DLSS features exist). They are not
+  embedded in the CVar objects (the S-0x60 heuristic hits unrelated heap objects like thread pools), and no FString
+  referencing them was found in the owning region. Reaching the CVar objects therefore needs a registration-capture
+  hook (e.g., on IConsoleManager::RegisterConsoleVariable) rather than a memory scan; vignette remains the last
+  functional gap for `disable_post_processing_effects` on UE 5.4/5.6.
+
 ### 2026-08-15 - UE5 scanner: data-pointer redirect mode for UE 5.4/5.6 Lumen CVars
 
 - UE 5.4/5.6 `FConsoleVariable` keeps its value behind a data pointer at `ref+0x50` with a local fallback pair at
