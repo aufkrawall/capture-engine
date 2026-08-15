@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-15 - VALIDATED: no crash, ShowFlag overrides land, 35/40; one self-inflicted log-spam regression fixed
+
+- Session `20260815_210850` (build 0.1.6108) is the validation run for both fixes. **No crash, no dump.**
+- DX12 fix behaved exactly as designed: `Deferring eager temp-swapchain ...` then the new
+  `postponing the temp swapchain instead of recursing through its startup hook chain`, so nothing was created
+  during the dangerous window. 6.8 s later the game's own swapchain arrived, Present hooks installed from it,
+  and `Postponed Present hook install resolved by the game's own swapchain` disarmed the retry. Multi-overlay
+  behaviour intact: `CE intercepts BELOW the foreign Present chain via a deep body hook` plus the Present1
+  deep body hook, with Steam still owning the Present entry.
+- Console registry proved out on a real UE 5.4.4 process: anchored on `r.SceneColorFringeQuality`,
+  `valueOffset=16`, **30/31 anchor elements across 3 regions** - confirming the earlier single-region walk was
+  the reason it resolved nothing. `ShowFlag.Vignette`, `ShowFlag.Grain`, `ShowFlag.MotionBlur` and
+  `ShowFlag.SceneColorFringe` now install with `writeThrough=1`, so vignette is no longer the standing gap.
+  Coverage 31/40 -> **35/40**, `verified 35/35` with `re-asserted=0 retired=0`, RR still rendering.
+- Regression introduced by that same change and fixed in cdb9f5c0: the per-CVar registry failure for
+  `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` was logged on every retry - 91 copies in one
+  session, exactly the log-spam class 3ec11124 exists to prevent. A located-but-undrivable CVar is now
+  recorded and skipped, retrying stops once every remaining name has been refused, and the closing summary
+  distinguishes "located but undrivable" from "never registered" instead of claiming the latter for a name
+  the registry had just found.
+- Remaining 5 of 40: four version-conditional names absent from UE 5.4 (`DownsampleCheckerboard`,
+  `MegaLights.DownsampleMode`, `MegaLights.NumSamplesPerPixel`, `Tonemapper.GrainQuantization`) and
+  `MaxFramesAccumulated`, whose object the registry finds but whose value storage matches neither supported
+  layout. Refusing it stays correct - its `ref+0x50` points into `.pdata`.
+
 ### 2026-08-15 - FIXED locally: the startup stack overflow was CE's temp swapchain, not Steam's bug
 
 - Correction to the entry below: the recursion is Steam's, but **CE starts it**. No CE frames appear on the
