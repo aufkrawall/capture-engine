@@ -286,10 +286,14 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
             IATHook::PatchIAT(module, "kernel32.dll", "GetProcAddress",
                               reinterpret_cast<void *>(&IATHook::DetourGetProcAddress),
                               &originalGetProcAddress);
-        HookLogImportant(
-            "NGX FG preset: GetProcAddress import patch on %s %s (module=%p orig=%p)",
-            baseName, patched ? "installed" : "FAILED", (void *)module,
-            originalGetProcAddress);
+        static std::atomic<uint32_t> fgPresetPatchLogs{0};
+        const uint32_t logIndex = fgPresetPatchLogs.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 4 || (logIndex % 500) == 0 || !patched) {
+          HookLogImportant(
+              "NGX FG preset: GetProcAddress import patch on %s %s (module=%p orig=%p)",
+              baseName, patched ? "installed" : "FAILED", (void *)module,
+              originalGetProcAddress);
+        }
       }
     }
     if (ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleNameOrPath)) {

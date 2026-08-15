@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include <atomic>
+
 // DLL Redirection Helper
 std::string GetRedirectedPath(const std::string &requestedPath) {
   if (requestedPath.empty())
@@ -158,7 +160,11 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
         }
       }
 
-      HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.c_str());
+      static std::atomic<uint32_t> redirectLogs{0};
+      const uint32_t logIndex = redirectLogs.fetch_add(1, std::memory_order_relaxed);
+      if (logIndex < 8 || (logIndex % 1000) == 0) {
+        HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.c_str());
+      }
       return finalPath;
     }
 

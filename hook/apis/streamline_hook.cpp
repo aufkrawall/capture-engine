@@ -198,7 +198,7 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
     } else if (inspectedModule) {
         static std::atomic<int> s_deferredLookupLogCount{0};
         const int logCount = s_deferredLookupLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (logCount <= 20 || (logCount % 100) == 0) {
+        if (logCount <= 3 || (logCount % 500) == 0) {
             HookLogImportant(
                 "Streamline Hook: Deferred proactive feature-function lookup during module load for %s (%p) "
                 "(log=%d); direct exports/IAT hooks installed now, feature lookup will retry after slSetD3DDevice or "
@@ -208,24 +208,28 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
     }
 
     if (inspectedModule || resolvedDLSSG || resolvedReflex) {
-        HookLogImportant(
-            "Streamline Hook: Fresh module load inspected %s (%p) "
-            "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
-            "slSetTagHooked=%d slSetTagForFrameHooked=%d slEvaluateFeatureHooked=%d "
-            "dlssgSetOptionsHooked=%d "
-            "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
-            GetModuleBaseName(moduleNameOrPath), module,
-            streamline_hook_g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_SLSetTagHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_SLSetTagForFrameHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_SLEvaluateFeatureHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
+        static std::atomic<int> s_freshInspectLogCount{0};
+        const int logCount = s_freshInspectLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 16 || (logCount % 1000) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Fresh module load inspected %s (%p) "
+                "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
+                "slSetTagHooked=%d slSetTagForFrameHooked=%d slEvaluateFeatureHooked=%d "
+                "dlssgSetOptionsHooked=%d "
+                "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
+                GetModuleBaseName(moduleNameOrPath), module,
+                streamline_hook_g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_SLSetTagHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_SLSetTagForFrameHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_SLEvaluateFeatureHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
+        }
     }
 }
 }

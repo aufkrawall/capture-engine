@@ -237,8 +237,13 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
                                 if (outOriginal && originalFunction) {
                                     *outOriginal = originalFunction;
                                 }
-                                WrapperLog("IAT: %s!%s in module %p already patched", sourceModule, functionName,
-                                           targetModule);
+                                static std::atomic<uint32_t> alreadyPatchedLogs{0};
+                                const uint32_t logIndex =
+                                    alreadyPatchedLogs.fetch_add(1, std::memory_order_relaxed);
+                                if (logIndex < 16 || (logIndex % 1000) == 0) {
+                                    WrapperLog("IAT: %s!%s in module %p already patched", sourceModule,
+                                               functionName, targetModule);
+                                }
                                 return true;
                             }
                             WrapperLog("IAT: %s!%s in module %p already points at hook but original is not tracked",

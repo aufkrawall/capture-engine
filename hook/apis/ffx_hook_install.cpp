@@ -267,7 +267,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
     if (routedAnything) {
         static std::atomic<int> s_hooksInstalledLogCount{0};
         const int logCount = s_hooksInstalledLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (firstSeenModule || logCount <= 20 || (logCount % 300) == 0) {
+        if (firstSeenModule || logCount <= 3 || (logCount % 500) == 0) {
             HookLog(
                 "FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d veh=%d dynamic=1 protected=%d "
                 "log=%d)",

@@ -592,7 +592,7 @@ bool ScanModule(HMODULE module, std::vector<uint8_t>* seenLiterals) {
       bestCandidate = bestDataShadowCandidate;
     if (!accepted) {
       static std::atomic<uint32_t> validationLogs{0};
-      if (validationLogs.fetch_add(1, std::memory_order_relaxed) < 40) {
+      if (validationLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
         char modulePath[MAX_PATH];
         const char* baseName = ModuleBaseName(image.module, modulePath);
         if (hasRawCandidate[specIndex]) {
@@ -617,6 +617,9 @@ bool ScanModule(HMODULE module, std::vector<uint8_t>* seenLiterals) {
               static_cast<unsigned long long>(raw.object - image.base), fieldVtable, fieldTarget,
               fieldReference, matchCount, bestScore, secondBestScore);
           if (!raw.dataShadowUsable) {
+            static std::atomic<uint32_t> memoryDumpLogs{0};
+            if (memoryDumpLogs.fetch_add(1, std::memory_order_relaxed) >= 4)
+              continue;
             uintptr_t objectQwords[12] = {};
             uintptr_t refQwords[16] = {};
             for (std::size_t qwordIndex = 0; qwordIndex < 12; ++qwordIndex)
