@@ -3,16 +3,26 @@
 #include "main_internal.h"
 
 #include "common/ue5_cvar_override_policy.h"
+#include "common/ue5_redirect_plan.h"
 #include "common/ue5_rr_override_policy.h"
 
 #include <array>
+#include <cstring>
 #include <limits>
 
 namespace UE5::detail {
 
-constexpr std::size_t kPendingModuleCapacity = 32;
+// Loader bursts in a UE title (112 modules in Talos, more with third-party
+// overlays) overflowed a 32-slot queue 8-11 times per launch, and every
+// overflow costs a full ~700 ms rescan of every loaded module. Sized so an
+// ordinary launch never falls back.
+constexpr std::size_t kPendingModuleCapacity = 128;
 constexpr std::size_t kCandidateWindowBytes = 96;
 constexpr std::size_t kAutoConsoleVariablePointerCount = 3;
+// UE 5.4/5.6 FConsoleVariable exposes its value through a data pointer here,
+// with the local fallback pair eight bytes further on (verified against
+// IConsoleVariable::GetValueOnGameThread).
+constexpr std::size_t kRefDataPointerOffset = 0x50;
 constexpr std::size_t kCVarCount = ce::ue5_cvar::kSpecs.size();
 
 struct SectionView {
@@ -77,6 +87,10 @@ struct LiteralReference {
 struct OverrideState {
   HMODULE module = nullptr;
   void* volatile* referenceField = nullptr;
+  // The pointer value the game owned before the redirect: the third object
+  // pointer for the pointer model, the `ref+0x50` data pointer for the
+  // data-pointer model. Restoring writes exactly this back, so it must never
+  // be left null while dataShadowPointerRedirect is set.
   void* originalReference = nullptr;
   uintptr_t object = 0;
   // Non-zero when this override writes the {game, render} pair directly into
@@ -84,7 +98,31 @@ struct OverrideState {
   uintptr_t dataShadowAddress = 0;
   uint32_t originalDataShadowGameBits = 0;
   uint32_t originalDataShadowRenderBits = 0;
+  // Value the game kept in the storage the original data pointer addressed,
+  // plus whether CE mirrored its own value into it. Engine code generated for
+  // `FAutoConsoleVariableRef` CVars reads that storage directly instead of
+  // going through the console object, so redirecting the pointer alone would
+  // leave those reads on the game's value.
+  uint32_t originalDataPointerBits = 0;
+  bool dataPointerValueWritten = false;
   bool dataShadowPointerRedirect = false;
+  bool registryResolved = false;
+  // Verification bookkeeping. Drift reporting is capped per override, and the
+  // cap only lifts after a long clean run, so a variable the game rewrites
+  // constantly stays quiet while a rare regression is still reported.
+  uint32_t driftReports = 0;
+  uint32_t cleanVerifications = 0;
+};
+
+// Consecutive clean verifications (at roughly one per second) before an
+// override may report drift again.
+constexpr uint32_t kDriftReportResetPasses = 60;
+
+struct VerificationCounts {
+  std::size_t checked = 0;
+  std::size_t verified = 0;
+  std::size_t reasserted = 0;
+  std::size_t lost = 0;
 };
 
 struct ForcedConsoleVariableData {
@@ -127,13 +165,45 @@ extern bool g_missingSummaryLogged;
 
 bool IsReadableRange(const void* pointer, std::size_t size);
 bool IsWritableRange(const void* pointer, std::size_t size);
+bool IsExecutableAddress(const void* pointer);
+bool HasCallableVtable(const void* object);
 const char* ModuleBaseName(HMODULE module, char (&path)[MAX_PATH]);
+bool BuildModuleView(HMODULE module, ModuleView& image);
+const SectionView* FindSection(const ModuleView& image, uintptr_t address, std::size_t bytes,
+                               DWORD requiredCharacteristics);
+
+template <typename T>
+bool ReadValue(const void* pointer, T& value) {
+  if (!IsReadableRange(pointer, sizeof(T)))
+    return false;
+  std::memcpy(static_cast<void*>(&value), pointer, sizeof(T));
+  return true;
+}
+
 void ClearPendingModules();
 void UpdateForcedData(std::size_t specIndex, uint32_t bits);
 void RestoreOverride(std::size_t specIndex, const char* reason);
 void RestoreAllOverrides(const char* reason);
 void ForgetUnloadedOverrides();
+bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
+                    std::size_t validatedCandidates, ULONGLONG scanElapsedMs);
+// Installs the data-pointer redirect straight onto an IConsoleObject whose
+// address came from somewhere other than the module scan (today: UE's console
+// registry), where no static FAutoConsoleVariable wrapper is involved.
+bool InstallConsoleObjectRedirect(std::size_t specIndex, HMODULE owner, uintptr_t consoleObject,
+                                  const char* origin);
 bool ScanAllLoadedModules();
 bool ScanPendingModules();
+
+// Reads every installed override back through the storage the engine reads,
+// re-asserting drifted values and retiring redirects the game took back.
+VerificationCounts VerifyOverrides();
+
+// Resolves still-missing CVars through UE's own console-object registry. The
+// literal scan cannot see names UE composes at runtime (`ShowFlag.%s`), and
+// per-title object layouts can defeat candidate validation; both resolve
+// exactly once an already-installed override anchors the registry.
+bool ResolveMissingThroughConsoleRegistry();
+void ResetConsoleRegistry();
 
 }  // namespace UE5::detail

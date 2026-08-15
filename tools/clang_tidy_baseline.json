@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 604,
+    "entries": 608,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -334,6 +334,9 @@
       "hook/main_redirect.cpp",
       "hook/main_thirdparty_load.cpp",
       "hook/main_ue5.cpp",
+      "hook/main_ue5_install.cpp",
+      "hook/main_ue5_memory.cpp",
+      "hook/main_ue5_registry.cpp",
       "hook/main_ue5_scan.cpp",
       "hook/vulkan_layer/layer_bridge.cpp",
       "hook/vulkan_layer/layer_capture.cpp",
@@ -616,6 +619,7 @@
       "tests/test_third_party_load_policy.cpp",
       "tests/test_thread_wait.cpp",
       "tests/test_tray_source.cpp",
+      "tests/test_ue5_console_registry.cpp",
       "tests/test_ue5_cvar_override_policy.cpp",
       "tests/test_ue5_rr_override_policy.cpp",
       "tests/test_video_encoder_hardware_options.cpp",

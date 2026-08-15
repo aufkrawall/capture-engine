@@ -259,6 +259,14 @@ Primary sources:
   it CAS-replaces the `ref+0x50` pointer with CE's shadow (render-thread reads) and mirrors the value into the
   `+0x58` local pair (game-thread reads). Multiple registration sites can exist per CVar with separate value records;
   duplicates are deduplicated by data pointer, a validated pointer-model candidate is preferred when present, and
+  <!-- keep the data-pointer install contract next to the layout it depends on -->
+  a redirect is only installed when the pointer it replaces has been recorded (`ce::ue5_redirect::MakePlan` /
+  `CanInstall` in `hook/common/ue5_redirect_plan.h`). Until 2026-08-15 the data-pointer path left that record
+  default-initialised, so restoring on config disable or hook shutdown compare-exchanged **null** into the live
+  console object and the engine dereferenced it on its next read; 20 of Talos's 31 overrides used this path.
+  The install also mirrors CE's value into the storage the original pointer addressed (`writeThrough=1` in the
+  install log) and restores it on undo, because engine code generated for `FAutoConsoleVariableRef` CVars reads that
+  global directly instead of going through the console object - the redirect alone would be invisible to it.
   otherwise the best-correlated data-pointer candidate is applied as a safe best effort.
 - Version-conditional specs: some bundle CVars do not exist in every UE build. `r.MegaLights.DownsampleMode` and
   `r.Tonemapper.GrainQuantization` have no literal in UE 5.4 or 5.6; `r.Lumen.Reflections.DownsampleCheckerboard` and
@@ -267,21 +275,52 @@ Primary sources:
   table via `FString::Printf(TEXT("ShowFlag.%s"), ...)` in UE 5.4/5.6, so no `ShowFlag.X` literal exists to match;
   disabling vignette via `ShowFlag.Vignette` therefore remains unsupported. The composed names do exist in the game's
   writable memory as a contiguous UTF-16 table (present once a world/graphics state exists), but they are not embedded
-  in the CVar objects and no FString references them inside the owning region, so a memory scan cannot reach the CVar
-  objects; a registration-capture hook (e.g., on `IConsoleManager::RegisterConsoleVariable`) is the viable path.
-  Film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`, `r.MotionBlurQuality`, and
-  `r.SceneColorFringeQuality`.
+  in the CVar objects and no FString references them inside the owning region, so a literal scan cannot reach the CVar
+  objects. Film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`,
+  `r.MotionBlurQuality`, and `r.SceneColorFringeQuality`; vignette is the one post-processing effect that needs the
+  registry path below.
+- **Console-registry resolution** (`hook/main_ue5_registry.cpp`, decoders in `hook/common/ue5_console_registry.h`)
+  is the answer to both runtime-composed names and per-title layouts the candidate scoring rejects. `FConsoleManager`
+  keeps a `TMap<FString, IConsoleObject*>` of every registered variable, so the composed name is present as an
+  ordinary heap FString next to its object. CE does not hard-code that map's layout: it takes CVars the module scan
+  already installed as **anchors**, walks committed private RW regions for a qword equal to a known object, and only
+  accepts an element whose neighbouring FString also decodes to that CVar's name. That proves the key-to-value
+  distance, after which the same allocation is re-read for the missing names and the resolved object goes through the
+  ordinary `ref+0x50` redirect (`InstallConsoleObjectRedirect`, logged as `installed via console registry`).
+  Constraints that keep it safe: every read is `ReadProcessMemory` rather than a raw dereference (a live game frees
+  heap regions mid-walk, and the kernel-checked copy fails instead of raising); the search is bounded to 768 MB /
+  400 ms and four attempts; and it never runs before an anchor exists, so it can only ever add to what the scan
+  proved. Locating the map is the expensive half - once anchored, retries only re-read that one region (up to 90
+  attempts at ~1 Hz), which is what covers `ShowFlag.*` appearing during world/graphics init rather than at startup.
+  A TMap growth reallocates the element storage, so the anchor element is re-checked each pass and a move triggers a
+  fresh search rather than a silent failure.
 - Observed coverage: Industria 2 Demo (UE 5.6.1) installs 32/38 requested CVars; Talos Reawakened (UE 5.4.4, profile
   adds the two AF CVars) installs 31/40. The remaining entries are the version-conditional/absent names above plus
   `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points
-  into `.pdata`, so the data-pointer validation correctly refuses it). Talos's main menu does not render 3D, so only
-  install coverage, not visual effect, is verifiable there; Industria 2 renders during the test window.
+  into `.pdata`, so the data-pointer validation correctly refuses it). Talos in-game (session 20260815_191332) is the
+  end-to-end proof for the RR bundle: `r.NGX.DLSS.DenoiserMode=1` installed as a Ref redirect and NGX then logged
+  `Feature 13 evaluation succeeded; Ray Reconstruction is rendering`, with no Feature 1 SR fallback for the rest of
+  the session. Ref redirect is therefore proven to reach the engine; **no data-pointer-mode override has an
+  equivalent end-to-end proof yet**, which is what the write-through and the read-back verification below exist for.
+- **Read-back verification** (`VerifyOverrides` in `hook/main_ue5_install.cpp`, once a second from
+  `RefreshOverrides`) closes the gap between "the write succeeded" and "the value is live". It re-reads the redirect
+  slot, CE's shadow, and the write-through storage for every installed override. A slot no longer pointing at CE's
+  shadow means the game re-registered the variable: the record is retired, the mirrored value handed back, and a
+  rescan requested. A value that drifted means a game-side `Set()` reached storage CE owns: the configured value is
+  re-asserted rather than reinstalled. Reporting is per-override capped at three and only lifts after 60 consecutive
+  clean passes, so a constantly rewritten CVar stays quiet while a rare regression is still logged; the summary line
+  is emitted only when the counts change.
 - The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are
   `TAutoConsoleVariable<int32>`. The literal scanner previously skipped first characters other than `r`/`s`
   (`FindRequestedLiterals` in `hook/main_ue5_scan.cpp`); `t` is now admitted for `t.MaxFPS`. The FPS limit and AF
   settings are independent of the RR/post-processing bundles and of each other.
+- The UE5 override code is five units: `main_ue5.cpp` (policy/lifecycle), `main_ue5_scan.cpp` (literal and candidate
+  discovery), `main_ue5_install.cpp` (install/refresh/verify/restore), `main_ue5_memory.cpp` (process-memory and PE
+  primitives), and `main_ue5_registry.cpp` (console-registry resolution), with shared declarations in
+  `main_ue5_internal.h`. The split happened when `main_ue5_scan.cpp` had grown to 869 lines, past the 800-line
+  ceiling, without being recorded in `tools/file_size_baseline.json` - lint would have failed on the next run.
 - Post-processing removal uses `r.Tonemapper.Sharpen`, `r.FilmGrain`, `r.Tonemapper.GrainQuantization`,
   `r.MotionBlurQuality`, `r.SceneColorFringeQuality`, and matching `ShowFlag.*` CVars including vignette. It does not
   force `r.Tonemapper.Quality` down and does not disable `ShowFlag.PostProcessMaterial`: custom materials have no

@@ -79,8 +79,12 @@ anchors that predate the split are approximate.
 - `hook/`
   - `main.cpp` + `main_*.cpp` (dllmain, injection, install, loadlibrary, hookthread,
     host_lifecycle, redirect, overlay_detect, fatal hooks/dumps, external_dump) + `main_internal.h`;
-    `main_ue5.cpp` + `main_ue5_scan.cpp` own validated typed persistent UE CVar shadow redirection and module
-    lifecycle; `hook/common/ue5_cvar_override_policy.h` defines the exact UE5 bundles and sharpen precedence.
+    validated typed persistent UE CVar shadow redirection is five units behind `main_ue5_internal.h`:
+    `main_ue5.cpp` (policy/lifecycle/service pass), `main_ue5_scan.cpp` (literal + candidate discovery),
+    `main_ue5_install.cpp` (install, refresh, read-back verification, restore), `main_ue5_memory.cpp`
+    (process-memory/PE primitives), `main_ue5_registry.cpp` (resolution through UE's console-object map).
+    `hook/common/ue5_cvar_override_policy.h` defines the exact UE5 bundles and sharpen precedence,
+    `ue5_redirect_plan.h` the redirect undo contract, `ue5_console_registry.h` the registry decoders.
   - `apis/` - per-API hook sets, de-inlined into semantic units:
     - DX12: `dx12_hook.cpp` (facade) + `dx12_hook_internal.h` + semantic units:
       `dx12_hook_main.cpp` (module lifecycle), `dx12_hook_fg_state.cpp` /

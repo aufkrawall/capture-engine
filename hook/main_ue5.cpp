@@ -136,6 +136,7 @@ void RefreshOverrides(const GraphicsConfig& config) {
     g_wasEnabled = true;
     detail::g_missingSummaryLogged = false;
     detail::g_fullRescanRequested.store(true, std::memory_order_release);
+    detail::ResetConsoleRegistry();
     HookLogImportant(
         "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
         "internalFpsLimit=%.3f internalAF=%d; "
@@ -155,6 +156,39 @@ void RefreshOverrides(const GraphicsConfig& config) {
     detail::ScanAllLoadedModules();
   }
   detail::ScanPendingModules();
+
+  // The hook thread services every ~100 ms, but reading every override back
+  // and retrying registry resolution are once-a-second concerns. Both are
+  // polling for state the engine changes on its own schedule (a game-side
+  // Set(), a CVar registered during world init); neither guards a race.
+  static ULONGLONG lastServiceTick = 0;
+  const ULONGLONG now = GetTickCount64();
+  if (now - lastServiceTick < 1000)
+    return;
+  lastServiceTick = now;
+
+  // Names UE composes at runtime only exist once the engine registers them,
+  // which happens well after the first module scan.
+  detail::ResolveMissingThroughConsoleRegistry();
+
+  // Reading every override back through the storage the engine reads is what
+  // turns "the write succeeded" into "the value is live", and it is the only
+  // way a game-side Set() or re-registration becomes visible instead of
+  // silently winning. Reported on change, so a steady state stays quiet.
+  const detail::VerificationCounts counts = detail::VerifyOverrides();
+  static detail::VerificationCounts lastReported{};
+  static uint32_t verificationLogs = 0;
+  if (counts.checked != lastReported.checked || counts.verified != lastReported.verified ||
+      counts.reasserted != lastReported.reasserted || counts.lost != lastReported.lost) {
+    lastReported = counts;
+    // A CVar the game rewrites every frame would otherwise flip this line
+    // between states once a second for the whole session.
+    if (counts.checked && verificationLogs++ < 20) {
+      HookLogImportant("UE5 overrides: verified %zu/%zu installed CVar(s) reading back the configured "
+                       "value (re-asserted=%zu, retired=%zu)",
+                       counts.verified, counts.checked, counts.reasserted, counts.lost);
+    }
+  }
 #else
   static bool logged = false;
   if (enabled && !logged) {
@@ -175,6 +209,7 @@ void ShutdownOverrides() {
   detail::g_missingSummaryLogged = false;
   detail::g_fullRescanRequested.store(true, std::memory_order_release);
   detail::ClearPendingModules();
+  detail::ResetConsoleRegistry();
 #endif
 }
 
