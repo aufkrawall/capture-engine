@@ -36,6 +36,11 @@ constexpr uint32_t kMaxResolveAttempts = 90;
 uint32_t g_searchAttempts = 0;
 uint32_t g_resolveAttempts = 0;
 bool g_exhausted = false;
+// A CVar the registry located but could not install is a permanent per-title
+// layout fact, not a transient miss. Without this it is re-found, re-refused
+// and re-logged on every retry: the 20260815_210850 session carried 91 copies
+// of the same r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated line.
+std::array<bool, kCVarCount> g_registryRefused{};
 
 struct Anchor {
   uintptr_t object = 0;
@@ -285,7 +290,8 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
       if (!ce::ue5_registry::IsPlausibleStringHeader(header))
         continue;
       for (std::size_t index : missing) {
-        if (g_activeModules[index].load(std::memory_order_acquire) || header.num != wantedNum[index])
+        if (g_activeModules[index].load(std::memory_order_acquire) || g_registryRefused[index] ||
+            header.num != wantedNum[index])
           continue;
         if (!KeyMatchesName(header, ce::ue5_cvar::kSpecs[index].name))
           continue;
@@ -295,15 +301,21 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
           continue;
         if (!ce::ue5_registry::IsPlausibleConsoleObject(object) ||
             !HasCallableVtable(reinterpret_cast<const void*>(object))) {
+          g_registryRefused[index] = true;
           HookLogImportant(
               "UE5 overrides: console registry holds %s but its object slot is not a console object "
-              "(key=%p object=%p); leaving game memory unchanged",
+              "(key=%p object=%p); leaving game memory unchanged and not retrying it",
               ce::ue5_cvar::kSpecs[index].name, reinterpret_cast<void*>(keyAddress),
               reinterpret_cast<void*>(object));
           continue;
         }
-        if (InstallConsoleObjectRedirect(index, owner, object, "console registry"))
+        if (InstallConsoleObjectRedirect(index, owner, object, "console registry")) {
           ++installed;
+        } else {
+          // The object was located; its layout is simply not one CE can drive.
+          // That verdict cannot change later, so stop re-attempting it.
+          g_registryRefused[index] = true;
+        }
       }
     }
   }
@@ -317,6 +329,7 @@ void ResetConsoleRegistry() {
   g_resolveAttempts = 0;
   g_exhausted = false;
   g_map = {};
+  g_registryRefused.fill(false);
 }
 
 bool ResolveMissingThroughConsoleRegistry() {
@@ -374,12 +387,20 @@ bool ResolveMissingThroughConsoleRegistry() {
                      installed, missing.size());
     return true;
   }
-  if (++g_resolveAttempts >= kMaxResolveAttempts) {
+  std::size_t refused = 0;
+  for (std::size_t index : missing) {
+    if (g_registryRefused[index])
+      ++refused;
+  }
+  // Retrying only makes sense for names the engine might still register. Once
+  // every remaining one has been located and refused, waiting cannot help.
+  const bool nothingLeftToWaitFor = refused == missing.size();
+  if (nothingLeftToWaitFor || ++g_resolveAttempts >= kMaxResolveAttempts) {
     g_exhausted = true;
     HookLogImportant(
-        "UE5 overrides: %zu CVar(s) are still absent from the located console registry after %u "
-        "attempt(s); the engine never registered them",
-        missing.size(), kMaxResolveAttempts);
+        "UE5 overrides: console registry finished with %zu CVar(s) unresolved after %u attempt(s) — "
+        "%zu located but carrying a layout CE cannot drive, %zu never registered by the engine",
+        missing.size(), g_resolveAttempts, refused, missing.size() - refused);
   }
   return false;
 }
