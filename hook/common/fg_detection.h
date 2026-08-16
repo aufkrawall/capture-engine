@@ -160,6 +160,22 @@ public:
         return directFFXApiConfirmed.load(std::memory_order_acquire);
     }
 
+    // Records an FFX-API frame-generation enable/disable that the game itself
+    // performed (an ffxConfigure whose enabled state actually changed). This is
+    // deliberately NOT inferred from SetFSRFGActive, because several callers
+    // clear that flag heuristically - stale-latch recovery after a real-frame
+    // streak, for instance - and a heuristic clear must not be mistaken for the
+    // game saying "frame generation is off".
+    void NotifyAuthoritativeFSRFGApiTransition(bool enabled) {
+        fsrFGAuthoritativeApiOff.store(!enabled, std::memory_order_release);
+    }
+
+    // True while the most recent authoritative FFX-API transition was a
+    // disable. The heuristic FSR detector must not contradict that.
+    bool HasAuthoritativeFSRFGApiOff() const {
+        return fsrFGAuthoritativeApiOff.load(std::memory_order_acquire);
+    }
+
     // Clear NVIDIA Smooth Motion detection state.  Called when SL FG turns OFF
     // to prevent the cached 2× multiplier from falsely triggering NVIDIA_SM.
     void ClearNvidiaSMState() {
@@ -226,6 +242,7 @@ private:
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};
+    std::atomic<bool> fsrFGAuthoritativeApiOff{false};
     std::atomic<int> dlssFGMultiplier{0};
     std::atomic<int> fsrFGMultiplier{0};
     std::atomic<bool> streamlineSupportPresent{false};

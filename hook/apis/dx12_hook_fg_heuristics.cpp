@@ -243,6 +243,21 @@ HookLogImportant(
 
 
 bool UpdateHeuristicFSRFGState(bool active, const char* source) {
+if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(
+        active, g_FGCompat.HasAuthoritativeFSRFGApiOff())) {
+    g_FGCompat.SetHeuristicFSRFGActive(false);
+
+    static std::atomic<int> s_authoritativeOffSuppressedLogCount{0};
+    const int logCount = s_authoritativeOffSuppressedLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 600) == 0) {
+        HookLogImportant(
+            "DX12: Suppressing %s FSR FG heuristic — the game disabled frame generation through the FFX "
+            "API and has not re-enabled it (log=%d)",
+            source ? source : "unknown", logCount + 1);
+    }
+    return false;
+}
+
 if (active && ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(
                   dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
                   dx12_hook_g_FGRuntimeOwnsSwapchain)) {

@@ -622,4 +622,29 @@ TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRCl
     EXPECT_LT(restorePolicy, clearCall);
 }
 
+TEST(DXGISharedTest, AuthoritativeFFXConfigureOffVetoesHeuristicFSRUntilItIsReEnabled) {
+    using ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff;
+
+    // dx12_fg_switch_test under Steam, 20260816_021557: the app disabled frame
+    // generation through ffxConfigure ("Frame Generation configure transition
+    // DISABLED"), CE cleared the heuristic - and 5 ms later the heuristic
+    // re-latched from queue/present shape alone, pinning routing to
+    // runtime=FSR_FG. The overlay then kept composing into AMD's UI resource,
+    // which nothing consumes once FG is off, and disappeared for the rest of
+    // the session. Clearing once at the transition is not enough; the veto has
+    // to hold until the API says frame generation is back on.
+    EXPECT_TRUE(ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(true, true));
+
+    // Released once the API says frame generation is on again, so a genuine
+    // re-enable is never held off.
+    EXPECT_FALSE(ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(true, false));
+
+    // A title whose FFX transitions CE never observes keeps the heuristic: the
+    // latch is only ever set by an observed authoritative disable.
+    EXPECT_FALSE(ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(false, false));
+    // Deactivation requests are never suppressed - turning the heuristic off
+    // must always be allowed to proceed.
+    EXPECT_FALSE(ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(false, true));
+}
+
 } // namespace

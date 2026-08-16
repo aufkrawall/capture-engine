@@ -636,6 +636,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     }
     if (enabledStateChanged) {
         DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled, retainedBridgeForConfigure);
+        // The game itself changed the FFX frame-generation state, so this is the
+        // one signal allowed to veto (or release) the FSR heuristic. Recorded
+        // before SetFSRFGActive so no heuristic pass can observe the new API
+        // state without the matching veto.
+        g_FGCompat.NotifyAuthoritativeFSRFGApiTransition(parsed.enabled);
         g_FGCompat.SetFSRFGActive(parsed.enabled);
         ce::fg_session::EmitFGEvent(
             parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn

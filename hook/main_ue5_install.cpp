@@ -310,17 +310,27 @@ bool InstallConsoleObjectRedirect(std::size_t specIndex, HMODULE owner, uintptr_
   g_activeModules[specIndex].store(owner, std::memory_order_release);
   g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
 
+  // The local fallback pair is logged alongside the pointed value because the
+  // two disagreeing is the only in-process signal that CE wrote the slot the
+  // engine does not read. It is the open question for the `ShowFlag.*` CVars:
+  // they report prevValue=0 in every title and engine version seen so far, and
+  // UE documents these as defaulting to 2 ("obey the game setting"). A local
+  // pair reading 2 next to a pointed value of 0 would say the pointed storage
+  // is not the one being consulted; both reading 0 says the game really had
+  // them off and CE's write is a no-op with nothing to fix.
   if (spec.type == ce::ue5_cvar::ValueType::Float) {
     HookLogImportant("UE5 overrides: persistent %s=%.3f installed via %s (object=%p prevValue=%.3f "
-                     "writeThrough=%d)",
+                     "prevLocal=%.3f/%.3f writeThrough=%d)",
                      spec.name, std::bit_cast<float>(g_desired[specIndex].bits), origin,
                      reinterpret_cast<void*>(consoleObject), std::bit_cast<float>(value),
+                     std::bit_cast<float>(observed.localGame), std::bit_cast<float>(observed.localRender),
                      state.dataPointerValueWritten ? 1 : 0);
   } else {
     HookLogImportant("UE5 overrides: persistent %s=%d installed via %s (object=%p prevValue=%d "
-                     "writeThrough=%d)",
+                     "prevLocal=%d/%d writeThrough=%d)",
                      spec.name, static_cast<int32_t>(g_desired[specIndex].bits), origin,
                      reinterpret_cast<void*>(consoleObject), static_cast<int32_t>(value),
+                     static_cast<int32_t>(observed.localGame), static_cast<int32_t>(observed.localRender),
                      state.dataPointerValueWritten ? 1 : 0);
   }
   return true;
@@ -430,6 +440,18 @@ VerificationCounts VerifyOverrides() {
             "UE5 overrides: %s drifted (game=0x%08X render=0x%08X through=0x%08X expected=0x%08X); "
             "re-asserting the configured value",
             ce::ue5_cvar::kSpecs[index].name, gameBits, renderBits, throughBits, expected);
+      }
+      // A one-off drift after level load is ordinary; the same CVar drifting
+      // over and over is the game continuously winning the storage back, which
+      // means the setting is not actually holding. That has to stay visible
+      // after the drift cap without turning into a per-second log.
+      ++state.reassertCount;
+      if (state.reassertCount == 10 || state.reassertCount == 100 || state.reassertCount == 1000 ||
+          (state.reassertCount % 5000) == 0) {
+        HookLogImportant(
+            "UE5 overrides: %s re-asserted %u time(s) — the game keeps rewriting this value, so it is "
+            "contested rather than held (last observed 0x%08X, expected 0x%08X)",
+            ce::ue5_cvar::kSpecs[index].name, state.reassertCount, throughBits, expected);
       }
       UpdateForcedData(index, expected);
       ++counts.reasserted;

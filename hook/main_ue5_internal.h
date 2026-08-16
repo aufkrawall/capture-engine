@@ -122,6 +122,12 @@ struct OverrideState {
   // constantly stays quiet while a rare regression is still reported.
   uint32_t driftReports = 0;
   uint32_t cleanVerifications = 0;
+  // Lifetime re-assert count. The per-override drift report is capped at three
+  // and the summary line only prints when the counts change, so a CVar the game
+  // rewrites on every pass would fall silent after three lines and look
+  // settled - while the setting is in fact flickering between CE's value and
+  // the game's for the whole session. Reported on a widening scale instead.
+  uint32_t reassertCount = 0;
 };
 
 // Consecutive clean verifications (at roughly one per second) before an

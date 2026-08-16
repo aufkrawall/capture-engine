@@ -485,6 +485,25 @@ inline bool ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigu
            runtimeOwnsLivePresentPath;
 }
 
+// The FSR FG heuristic exists to infer frame generation when the FFX API is
+// not observable. It must never contradict the API when the API just spoke.
+//
+// dx12_fg_switch_test under Steam, 20260816_021557: the app disabled frame
+// generation through ffxConfigure, CE logged the authoritative
+// "Frame Generation configure transition DISABLED" and cleared the heuristic -
+// and 5 ms later the heuristic re-latched from queue/present shape alone.
+// Routing therefore stayed on runtime=FSR_FG with the overlay composited into
+// AMD's UI resource, which nothing consumes once FG is off, so the overlay
+// vanished for the rest of the session. Clearing the heuristic once at the
+// transition is not enough; it has to stay vetoed until the API says FG is on
+// again, which a later enabled ffxConfigure (or a fresh ffxCreateContext)
+// provides. A title whose FFX transitions CE never observes is unaffected: the
+// latch is only ever set by an observed authoritative disable.
+inline bool ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff(bool requestedActive,
+                                                               bool authoritativeApiOffLatched) {
+    return requestedActive && authoritativeApiOffLatched;
+}
+
 // The first Present through AMD's runtime-owned swapchain right after an
 // enabled ffxConfigure finalized the official FFX takeover on the internal
 // no-callback composition route. The staged runtime queue is already applied

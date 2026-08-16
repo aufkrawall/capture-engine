@@ -196,6 +196,12 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
 void FGCompatibility::SetFSRFGActive(bool active) {
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (active) {
+        // Both callers of the active form are FFX context creations, i.e. the
+        // API asserting a live FSR FG session. That releases any heuristic veto
+        // left by an earlier authoritative disable, so a game that recreates its
+        // context instead of re-enabling it is not held off. Only the disable
+        // direction is latched, and only from an observed ffxConfigure.
+        fsrFGAuthoritativeApiOff.store(false, std::memory_order_release);
         if (!wasActive) {
             if (directFFXApiConfirmed.exchange(false, std::memory_order_acq_rel)) {
                 HookLog("FG: Cleared direct FFX API confirmation — FSR FG context recreated");
