@@ -62,6 +62,12 @@ Primary sources:
   `0f57d2`, the float overload; an int default would go in a GPR), and **0 is a real value** ("no bias"), so the
   untouched state is a sentinel outside the accepted range rather than 0 or a negative number
   (`IsTextureMipBiasRequested`). Shared ABI 41.
+  **User-confirmed end-to-end** (Talos, `20260816_220117`, `+3.0` visibly blurrier) - the first UE5 override other
+  than Ray Reconstruction with visual proof rather than a verified write. That session also validates the float
+  typing against a real value (`prevValue=0.500`; as an int32 that is 1057013760, which the plausibility check
+  would have refused) and exercises the write-through check: the game moved the *global* to 2.5 while CE's own
+  shadow still read 3.0, which is exactly the drift that is invisible without reading the engine's storage back.
+  Re-asserted once, then held at 33/33.
 - `internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` overrides UE5's internal anisotropic filtering with a
   single shared level applied to both `r.MaxAnisotropy` and `r.VT.MaxAnisotropy` (both int32 render-thread CVars).
   `off`/`1x` disables anisotropic filtering. This is separate from the general `[Graphics] anisotropic_filtering`
