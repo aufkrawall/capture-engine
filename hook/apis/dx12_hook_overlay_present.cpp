@@ -95,7 +95,26 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
     }
 
     const uint64_t successfulSubmitSequenceBefore = dx12_hook_s_PostSLSuccessfulSubmitSequence;
-    PostSLOverlayRenderGated(pSwapChain);
+    {
+        // This draw belongs to the Present that is about to run, which
+        // DX12_ProcessFrameExternal accounts on every exit path. Letting the
+        // callback account itself as a separate present consumes the draw in
+        // the inner scope, so the enclosing present observes no draw of its own
+        // and is recorded uncovered - one physical present producing a covered
+        // and an uncovered entry, in strict alternation for as long as the
+        // explicit-OFF keep-alive runs. Talos 20260816_014003 logged exactly
+        // that: 201 keep-alive renders, all submitted (`completed=1`), and 201
+        // "uncovered" presents across the FG-toggle window, which read as an
+        // overlay dropout that never happened. The in-ProcessFrame fallback
+        // submit already carries this attribution; the pre-routing submit is
+        // the same draw for the same present and needs it just as much.
+        const bool previousInlineCoverageOwner = dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent;
+        dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = true;
+        auto inlineCoverageOwnerGuard = ce::make_scope_guard([previousInlineCoverageOwner]() {
+            dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousInlineCoverageOwner;
+        });
+        PostSLOverlayRenderGated(pSwapChain);
+    }
     const uint64_t successfulSubmitSequenceAfter = dx12_hook_s_PostSLSuccessfulSubmitSequence;
     const bool submitted = successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;
     if (submitted) {

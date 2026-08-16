@@ -104,6 +104,40 @@ TEST(DXGISharedTest, InlinePostSLKeepAliveDrawBelongsToEnclosingPresent) {
     EXPECT_FALSE(ShouldAccountPostSLCallbackAsSeparatePresent(true, true, false));
 }
 
+TEST(DXGISharedTest, PreRoutingPostSLKeepAliveMustNotDoubleAccountItsPresent) {
+    // Field signature this pins down (Talos 20260816_014003, DLSS-FG toggle
+    // window 01:40:52-01:40:57): 201 `PostSL keep-alive render after explicit
+    // Streamline OFF` submits, every one reporting `completed=1`, alongside
+    // exactly 201 "uncovered" presents in 201 single-present streaks
+    // (`missed=1`, `longestStreak=1`). The overlay was drawn on every one of
+    // those presents - the dropout was an accounting artifact.
+    //
+    // Cause: the pre-routing keep-alive submit ran PostSLOverlayRenderGated
+    // without claiming the draw for the enclosing Present, so the callback
+    // accounted itself AND DX12_ProcessFrameExternal accounted the same
+    // physical present, the second time with the draw already consumed.
+    ce::dx12_overlay_policy::OverlayPresentCoverageTracker doubleAccounted;
+    for (int present = 0; present < 8; ++present) {
+        doubleAccounted.NotePresent(true, false);   // callback accounts the draw
+        doubleAccounted.NotePresent(false, false);  // ProcessFrame re-accounts it
+    }
+    // Two entries per present, half of them spuriously blank, in the strict
+    // alternation that made the log look like a half-rate overlay.
+    EXPECT_EQ(doubleAccounted.TotalPresents(), 16u);
+    EXPECT_EQ(doubleAccounted.UncoveredPresents(), 8u);
+    EXPECT_EQ(doubleAccounted.LongestUncoveredStreak(), 1u);
+
+    // With the draw attributed to the enclosing Present, the callback does not
+    // account separately and each present yields exactly one covered entry.
+    ce::dx12_overlay_policy::OverlayPresentCoverageTracker attributed;
+    for (int present = 0; present < 8; ++present) {
+        EXPECT_TRUE(attributed.NotePresent(true, false).covered);
+    }
+    EXPECT_EQ(attributed.TotalPresents(), 8u);
+    EXPECT_EQ(attributed.UncoveredPresents(), 0u);
+    EXPECT_EQ(attributed.LongestUncoveredStreak(), 0u);
+}
+
 TEST(DXGISharedTest, OverlayPresentCoverageFGComposedInheritance) {
     ce::dx12_overlay_policy::OverlayPresentCoverageTracker tracker;
 
