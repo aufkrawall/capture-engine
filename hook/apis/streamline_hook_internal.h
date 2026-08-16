@@ -691,7 +691,26 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     }
 
     const void* installedTarget = targetSlot.load(std::memory_order_acquire);
-    if (installedFlag.load(std::memory_order_acquire) && installedTarget == target) {
+    const bool slotInstalled = installedFlag.load(std::memory_order_acquire);
+    if (slotInstalled && installedTarget == target) {
+        return false;
+    }
+
+    // A single process-global `original` cannot serve two live targets. Refuse the
+    // newcomer while the installed target is still mapped; the live instance keeps
+    // working and CE simply does not observe the duplicate.
+    if (!ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(
+            slotInstalled, installedTarget, target,
+            installedTarget != nullptr &&
+                DoesAddressBelongToLoadedModule(const_cast<void*>(installedTarget), nullptr, nullptr, 0, nullptr))) {
+        static std::atomic<uint32_t> s_refusedRetargetCount{0};
+        const uint32_t refusedCount = s_refusedRetargetCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(refusedCount, 10, 300)) {
+            HookLogImportant(
+                "Streamline Hook: Refusing to retarget %s from %p to %p — the installed target is still mapped, so a "
+                "second live instance would take over CE's single forward pointer (count=%u)",
+                hookName, installedTarget, target, refusedCount);
+        }
         return false;
     }
 

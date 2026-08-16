@@ -1,5 +1,55 @@
 # llm-wiki Log
 
+### 2026-08-16 - Cyberpunk crashed on start inside Streamline: CE's own DLL redirect turned a module *pin* into a duplicate `sl.interposer`
+
+- Two crashes, both inside NVIDIA Streamline, both `0xC0000005` on a null this-pointer, neither in CE code
+  (build 0.1.6120): `20260816_045933` six seconds after inject — `Cyberpunk2077 -> sl_interposer -> sl_dlss_g+0x4df9f`,
+  `cmp [rax+8],r12` with `rax=0`; and `20260816_032716` after a long session — `Cyberpunk2077 -> sl_reflex ->
+  sl_common(1B0_E658703.dll)`, `call [rax+0x50]` with `rax=0`.
+- **Root cause chain (all CE):**
+  1. `ScopedStreamlineFeatureQueryGuard` pins every loaded `sl.*` module for a feature query.
+     `PinLoadedStreamlineModule` did that with `GetModuleFileNameA` + `LoadLibraryA(<that exact path>)`.
+  2. CE hooks `ntdll!LdrLoadDll` process-globally when a runtime override is configured, so **CE's own pin was
+     redirected**: `LoadLibraryA("H:\…\Cyberpunk 2077\bin\x64\sl.interposer.dll")` became a load of
+     `C:\…\npi\sl\sl.interposer.dll` — a different file, therefore a **second live sl.interposer instance**
+     (`Loader: runtime module loaded: sl.interposer.dll -> …\npi\sl\… (base=00007FFB7DAF0000)`, later
+     `base=0000030092670000`).
+  3. `NotifyHookModuleLoaded` ran the full hook pipeline on the duplicate. CE forwards each Streamline export
+     through ONE process-global `original` pointer, so `InstallInlineHookOnce` **overwrote** the live interposer's
+     forward pointers with trampolines into the duplicate.
+  4. `pinned != module` → `FreeLibrary` → the duplicate unmapped → the unload invalidation nulled those slots.
+- **Result:** the live `sl.interposer` was still entry-patched to CE, but `Hooked_slSetTag` /
+  `slSetTagForFrame` / `slSetD3DDevice` / `slEvaluateFeature` had no original to call and returned
+  `kSlResultErrorInvalidState` **without ever reaching Streamline**. The game ignored the errors and ran on state
+  that was never established; sl.dlss_g / sl.common then dereferenced null. Log signature: `Invalidated <symbol>
+  hook slot for unloaded sl.interposer.dll` with no later `Reconciled rediscovered …` line.
+- **Fixes (0.1.6121), three layers, all generic:**
+  - `GetRedirectedPath` refuses any redirect whose **target base name** is already loaded from a different file
+    (`RedirectWouldDuplicateLoadedModule`, both decision points). See `graphics-overrides-and-frame-pacing.md`.
+  - `PinLoadedStreamlineModule` pins by address (`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`), never by re-loading a
+    path. A path load is a fresh loader resolution, not a pin. Side effect: with an override dir configured the pin
+    previously *always* failed, so proactive DLSS-G/Reflex feature resolution never ran for those users.
+  - `InstallInlineHookOnce` refuses to retarget a slot while the installed target is still mapped
+    (`ShouldRetargetStreamlineHookSlot`). One forward pointer cannot serve two live targets; CE loses visibility
+    into a duplicate rather than misrouting the live instance.
+- **Second bug in the same session — no overlay, and an unbounded leak.** With Steam loaded before the game's first
+  D3D12 device, the deferral falls back to the guarded system-DXGI temp-swapchain route — which was gated on
+  `hSystemDXGI != hDXGI`, i.e. on a **dxgi proxy existing**. Cyberpunk has none, so the route never ran: every
+  service pass (~120 ms) reported `Failed to create temp swapchain (hr=0x80004005)` from the untouched initial
+  `E_FAIL`, built a fresh `CreateDXGIFactory1` bypass trampoline (65 executable pools in one second) and created a
+  throwaway D3D12 device. Present hooks never arrived.
+  - What makes the route safe next to a foreign overlay is the guarded creation itself (refuses a slot owned by a
+    foreign module, steps over a foreign entry patch), not the proxy. With no proxy the factory built from the
+    bypassed genuine export already **is** the system factory, so the guarded-only caller now uses it. The
+    unguarded historical fallback stays deferred, unchanged.
+  - `InlineHook::CreateBypassTrampoline` now caches per `(target, resumeOffset)` — a bypass trampoline is a pure
+    function of those plus the disk bytes. The resume offset is part of the key so a later, longer foreign patch
+    never reuses a trampoline that would resume inside it.
+  - `TryInstallPresentHooksViaGuardedTempSwapchain` bounds the retry (120 attempts); a structurally refused slot
+    must not cost a throwaway device forever.
+- **Not yet validated on hardware.** Both fixes are proven by unit/source-policy tests only; a real Cyberpunk launch
+  (Steam overlay + Streamline + the `npi` override dir) still has to confirm no crash and a visible overlay.
+
 ### 2026-08-16 - No overlay at all under Steam: late injection left `WasD3D12DeviceCreated()` false forever
 
 - `dx12_fg_switch_test` launched through Steam with FG off showed **no overlay at all** (`20260816_023850`,

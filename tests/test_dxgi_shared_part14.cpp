@@ -378,8 +378,9 @@ TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAP
 
     const size_t systemFactory = install.find("DXGIShared::GetSystemDXGIModuleHandle();");
     ASSERT_NE(systemFactory, std::string::npos);
-    // Only when a proxy is actually in play — no extra factory in the common case.
-    EXPECT_NE(install.find("hSystemDXGI && hSystemDXGI != hDXGI", systemFactory), std::string::npos);
+    // A second factory is created only when a proxy is actually in play.
+    EXPECT_NE(install.find("hSystemDXGI != nullptr && hSystemDXGI != hDXGI", systemFactory), std::string::npos);
+    EXPECT_NE(install.find("if (proxyDXGILoaded) {", systemFactory), std::string::npos);
     const size_t validation = install.find("DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)", systemFactory);
     ASSERT_NE(validation, std::string::npos);
     // Rejection releases the swapchain and falls through to the historical path.
@@ -454,4 +455,63 @@ TEST(DXGISharedSourceTest, TempSwapChainCreationNeverEntersAForeignOverlayHandle
     // An unbypassable patch refuses rather than running the foreign handler.
     EXPECT_NE(install.find("if (!bypass) {", bypass), std::string::npos);
     EXPECT_LT(install.find("if (!bypass) {", bypass), call);
+}
+
+// Cyberpunk 20260816_045933: Steam's overlay was loaded before the game's first D3D12 device, so
+// DX12Hook::Init deferred the eager temp swapchain and the service pass fell back to the guarded
+// system-DXGI route. No dxgi proxy exists in that game, so the guarded route — gated on
+// `hSystemDXGI != hDXGI` — never ran at all: every attempt logged `Failed to create temp swapchain
+// (hr=0x80004005)` from the untouched initial E_FAIL, rebuilt the CreateDXGIFactory1 bypass
+// trampoline into a fresh executable pool (65 pools in one second), and the process never got
+// Present hooks or an overlay.
+//
+// What makes the route safe next to a foreign overlay is the guarded creation itself, not the
+// presence of a proxy: with no proxy, the factory built from the bypassed genuine export already
+// IS the system factory. The unguarded historical fallback stays deferred, and the retry is
+// bounded so a structurally refused slot cannot cost a throwaway D3D12 device forever.
+TEST(DXGISharedSourceTest, GuardedTempSwapchainRouteRunsWithoutADXGIProxy) {
+    namespace fs = std::filesystem;
+    const std::string install =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp");
+    const std::string main =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_main.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(main.empty());
+
+    // No proxy + the guarded-only caller: create through the factory already built from the
+    // bypassed genuine export, with the same terminal-Present validation as the proxy branch.
+    const size_t noProxyRoute = install.find("} else if (hSystemDXGI && guardedSystemRouteOnly) {");
+    ASSERT_NE(noProxyRoute, std::string::npos);
+    const size_t guardedCreate =
+        install.find("CreateTempSwapChainViaFactorySlot(pFactory, pQueue, hwnd, &scd, &pSwapChain)", noProxyRoute);
+    ASSERT_NE(guardedCreate, std::string::npos);
+    const size_t guardedValidation =
+        install.find("DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)", guardedCreate);
+    ASSERT_NE(guardedValidation, std::string::npos);
+
+    // The unguarded historical fallback still refuses to run for the guarded-only caller.
+    EXPECT_NE(install.find("if (!pSwapChain && guardedSystemRouteOnly) {"), std::string::npos);
+
+    // The retry is bounded: every attempt builds a throwaway device/queue/window.
+    const size_t retry = main.find("void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason) {");
+    ASSERT_NE(retry, std::string::npos);
+    EXPECT_NE(main.find("kMaxGuardedTempSwapchainAttempts", retry), std::string::npos);
+
+    // A bypass trampoline is a pure function of (target, disk bytes, resume offset), so retries
+    // reuse it instead of reserving a new executable pool per attempt.
+    const std::string deep =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "inline_hook_deep.cpp");
+    ASSERT_FALSE(deep.empty());
+    const size_t bypassFn = deep.find("void* CreateBypassTrampoline(void* target) {");
+    ASSERT_NE(bypassFn, std::string::npos);
+    const size_t cacheLookup = deep.find("s_bypassTrampolines.find(target)", bypassFn);
+    ASSERT_NE(cacheLookup, std::string::npos);
+    const size_t slotAllocation = deep.find("GetTrampolineSlot(target)", bypassFn);
+    ASSERT_NE(slotAllocation, std::string::npos);
+    EXPECT_LT(cacheLookup, slotAllocation);
+    // Keyed on the resume offset too, so a later longer foreign patch never reuses a trampoline
+    // that would resume inside it.
+    EXPECT_NE(deep.find("cached->second.resumeOffset == resumeOffset", bypassFn), std::string::npos);
+    EXPECT_NE(deep.find("s_bypassTrampolines[target] = BypassTrampolineEntry{trampoline, resumeOffset};", bypassFn),
+              std::string::npos);
 }

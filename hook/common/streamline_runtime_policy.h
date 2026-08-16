@@ -211,6 +211,32 @@ inline bool IsInstalledStreamlineModuleMaskStaleForReloadedModule(bool moduleMas
     return moduleMaskClaimsInstalled && !anyCoreHookTargetWithinModule;
 }
 
+// CE forwards each Streamline export through ONE process-global original
+// pointer, so a hook slot can serve exactly one live target at a time.
+//
+// When a SECOND live instance of the same export exists — a duplicate module
+// image, or two core modules exporting the same symbol — installing on the
+// newcomer overwrites that forward pointer with a trampoline into the OTHER
+// image, and the first instance's entry patch then dispatches the game's calls
+// into a foreign Streamline runtime with its own uninitialised plugin state.
+// When the duplicate is unloaded again the slot is invalidated to null and the
+// hooks degrade further into silent no-ops (Cyberpunk 20260816_045933:
+// slSetTag/slEvaluateFeature/slSetD3DDevice all returned kSlResultErrorInvalidState
+// without ever reaching Streamline, and sl.dlss_g dereferenced null).
+//
+// Retargeting is therefore allowed only when the installed target no longer
+// belongs to a loaded module, i.e. an ordinary unload/reload generation.
+inline bool ShouldRetargetStreamlineHookSlot(bool slotInstalled, const void* installedTarget, const void* newTarget,
+                                             bool installedTargetStillLoaded) {
+    if (!slotInstalled || !installedTarget) {
+        return true;
+    }
+    if (installedTarget == newTarget) {
+        return true;
+    }
+    return !installedTargetStillLoaded;
+}
+
 inline bool ShouldHookStreamlineCoreExportsOnLoad(const char* moduleNameOrPath) {
     return IsStreamlineCoreModuleName(moduleNameOrPath);
 }

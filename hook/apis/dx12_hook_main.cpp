@@ -162,8 +162,24 @@ void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason) {
     if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
         return;
     }
+    // Each attempt builds a throwaway D3D12 device, command queue and window. The service pass
+    // calls this every ~120 ms and the deferral it serves is a STARTUP window, so a route that
+    // has not worked after this many attempts is structurally refused (a foreign module owns
+    // the creation slot), not merely early — keep retrying and the process pays for device
+    // creation forever. Session 20260816_045933 spun this loop for the whole game session.
+    // Present hooks can still arrive from a real CreateSwapChainForHwnd interception.
+    constexpr int kMaxGuardedTempSwapchainAttempts = 120;
     static std::atomic<int> s_attemptLogCount{0};
     const int logCount = s_attemptLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount >= kMaxGuardedTempSwapchainAttempts) {
+        if (logCount == kMaxGuardedTempSwapchainAttempts) {
+            HookLogImportant(
+                "DX12: Giving up on the guarded system-DXGI temp swapchain after %d attempts (%s) — the creation slot "
+                "stays refused, so Present hooks now depend on a real CreateSwapChainForHwnd interception",
+                kMaxGuardedTempSwapchainAttempts, reason && reason[0] ? reason : "unknown");
+        }
+        return;
+    }
     if (logCount < 5 || (logCount % 60) == 0) {
         HookLogImportant(
             "DX12: Trying the guarded system-DXGI temp swapchain for Present hooks (%s, attempt %d)",

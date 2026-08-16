@@ -4,19 +4,29 @@ namespace {
 constexpr size_t kMaxPinnedStreamlineFeatureQueryModules = 16;
 
 // Pins an already-loaded module (refcount++) so it cannot be unmapped while CE calls into the
-// Streamline runtime. Returns the same HMODULE on success, null when the module is gone or a
-// fresh instance had to be loaded (a fresh instance would leave the interposer's plugin table
-// stale, so it must never be used for the query).
+// Streamline runtime. Returns the same HMODULE on success, null when the module is gone.
+//
+// The pin resolves the module by ADDRESS, never by re-loading its path. A path-based
+// LoadLibrary is not a pin: it is a fresh loader resolution that anything in the process can
+// re-point — including CE's own runtime-override redirect, which rewrites every sl.* load to
+// the configured override directory. Session 20260816_045933: pinning the live sl.interposer
+// mapped the override copy as a SECOND instance, CE hooked that duplicate (overwriting the
+// process-global forward pointers for slSetTag/slEvaluateFeature/slSetD3DDevice with
+// trampolines into it), then freed it again because `pinned != module`. The live interposer's
+// entry patches then forwarded into nothing, the game's Streamline calls became silent
+// no-ops, and sl.dlss_g crashed on the uninitialised state six seconds later.
+//
+// GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS increments the reference count of exactly the mapped
+// image that contains the address, so it cannot resolve to a different file and cannot load
+// anything new.
 HMODULE PinLoadedStreamlineModule(HMODULE module) {
     if (!module) {
         return nullptr;
     }
-    char modulePath[MAX_PATH] = {};
-    const DWORD pathLength = GetModuleFileNameA(module, modulePath, sizeof(modulePath));
-    if (pathLength == 0 || pathLength >= sizeof(modulePath)) {
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(module), &pinned)) {
         return nullptr;
     }
-    HMODULE pinned = LoadLibraryA(modulePath);
     if (pinned != module) {
         if (pinned) {
             FreeLibrary(pinned);

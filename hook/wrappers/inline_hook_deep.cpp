@@ -23,6 +23,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "../common/hook_common.h"
 
@@ -617,6 +618,27 @@ void* CreateBypassTrampoline(void* target) {
     HookLog("BypassTrampoline: Resume offset = %d (past %d-byte external JMP, firstCandidate=%d)", resumeOffset,
             existingJmpSize, verifiedResume.firstCandidateOffset);
 
+    // Step 3b: Reuse the trampoline already built for this exact target/resume pair.
+    // A bypass trampoline is a pure function of (target, original disk bytes, resume
+    // offset) — none of which change while the target stays patched the same way — so
+    // rebuilding one per call only burns a fresh executable pool. Retry paths do call
+    // repeatedly: the deferred DX12 Present-hook service pass rebuilt the
+    // CreateDXGIFactory1 bypass on every attempt and reserved 65 pools within a second
+    // in session 20260816_045933. The resume offset is part of the key so a later,
+    // longer foreign patch never reuses a trampoline that would resume inside it.
+    struct BypassTrampolineEntry {
+        void* trampoline;
+        int resumeOffset;
+    };
+    static std::unordered_map<void*, BypassTrampolineEntry> s_bypassTrampolines;
+    auto cached = s_bypassTrampolines.find(target);
+    if (cached != s_bypassTrampolines.end() && cached->second.resumeOffset == resumeOffset &&
+        cached->second.trampoline) {
+        HookLog("BypassTrampoline: Reusing trampoline %p for %p (resume=%d)", cached->second.trampoline, target,
+                resumeOffset);
+        return cached->second.trampoline;
+    }
+
     // Step 4: Allocate trampoline slot near the target
     uint8_t* trampoline = GetTrampolineSlot(target);
     if (!trampoline) {
@@ -752,6 +774,7 @@ void* CreateBypassTrampoline(void* target) {
         trampoline, trampolineOffset, trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect),
         existingJmpSize, target, resumeOffset, verifiedResume.firstCandidateOffset);
 
+    s_bypassTrampolines[target] = BypassTrampolineEntry{trampoline, resumeOffset};
     return trampoline;
 }
 }  // namespace InlineHook

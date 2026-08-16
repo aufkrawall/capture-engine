@@ -138,7 +138,9 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
     // generation changed between the liveness check and the pins.
     EXPECT_NE(resolve.find("class ScopedStreamlineFeatureQueryGuard"), std::string::npos);
     EXPECT_NE(resolve.find("PinLoadedStreamlineModule"), std::string::npos);
-    EXPECT_NE(resolve.find("LoadLibraryA(modulePath)"), std::string::npos);
+    // The pin resolves the module by address; see
+    // StreamlineFeatureQueryPinsByAddressNotByPath for why a path-based LoadLibrary is not a pin.
+    EXPECT_NE(resolve.find("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS"), std::string::npos);
     EXPECT_NE(resolve.find("OpenLoadedModuleSnapshotWithRetry"), std::string::npos);
     EXPECT_NE(resolve.find("IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath)"), std::string::npos);
     EXPECT_NE(resolve.find("kMaxPinnedStreamlineFeatureQueryModules"), std::string::npos);
@@ -279,6 +281,73 @@ TEST(StreamlineRuntimePolicyTest, ReloadedCoreModuleMaskIsStaleWhenNoTargetBelon
     EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(true, true));
     EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(false, true));
+}
+
+// Cyberpunk 20260816_045933: three sl.interposer instances existed within three seconds because
+// CE's own loader redirect turned the feature-query pin into a load of the override copy. Each
+// duplicate re-hooked the core exports and overwrote CE's SINGLE process-global forward pointer
+// with a trampoline into that duplicate; when the duplicate was freed the slots were invalidated
+// to null, and slSetTag / slSetTagForFrame / slSetD3DDevice / slEvaluateFeature then returned
+// kSlResultErrorInvalidState without ever reaching Streamline. Six seconds later sl.dlss_g
+// dereferenced null (READ from 0x8) on the state those calls never established.
+TEST(StreamlineRuntimePolicyTest, HookSlotIsNotRetargetedWhileTheInstalledTargetIsStillMapped) {
+    alignas(16) static unsigned char liveInstance[0x100];
+    alignas(16) static unsigned char secondInstance[0x100];
+    void* installedTarget = liveInstance + 0x40;
+    void* duplicateTarget = secondInstance + 0x40;
+
+    // A second live instance must never take over the slot.
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(true, installedTarget,
+                                                                                duplicateTarget, true));
+    // An ordinary unload/reload generation must still re-hook the fresh instance.
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(true, installedTarget,
+                                                                               duplicateTarget, false));
+    // First install, re-install of the same target, and a cleared slot stay unaffected.
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(false, nullptr, duplicateTarget, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(true, nullptr, duplicateTarget, true));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(true, installedTarget, installedTarget, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, InlineHookInstallConsultsTheRetargetGuard) {
+    namespace fs = std::filesystem;
+    const std::string header =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h");
+    ASSERT_FALSE(header.empty());
+
+    const size_t installer = header.find("bool InstallInlineHookOnce(void* target, void* detour");
+    ASSERT_NE(installer, std::string::npos);
+    const size_t guard = header.find("ShouldRetargetStreamlineHookSlot(", installer);
+    ASSERT_NE(guard, std::string::npos);
+    // The guard must run BEFORE the install/reconcile paths that publish a new trampoline.
+    const size_t reconcile = header.find("TryGetInstalledTrampoline(", installer);
+    const size_t install = header.find("InlineHook::InstallPublished(", installer);
+    ASSERT_NE(reconcile, std::string::npos);
+    ASSERT_NE(install, std::string::npos);
+    EXPECT_LT(guard, reconcile);
+    EXPECT_LT(guard, install);
+    // Liveness comes from the loaded-module owner lookup, not from a stored flag.
+    EXPECT_NE(header.find("DoesAddressBelongToLoadedModule(", installer), std::string::npos);
+}
+
+// The feature-query pin must resolve the module by ADDRESS. A path-based LoadLibrary is a fresh
+// loader resolution that CE's own runtime-override redirect rewrites, which is how the duplicate
+// sl.interposer instances above were created in the first place.
+TEST(StreamlineRuntimePolicyTest, StreamlineFeatureQueryPinsByAddressNotByPath) {
+    namespace fs = std::filesystem;
+    const std::string resolve =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp");
+    ASSERT_FALSE(resolve.empty());
+
+    const size_t pin = resolve.find("HMODULE PinLoadedStreamlineModule(HMODULE module)");
+    ASSERT_NE(pin, std::string::npos);
+    const size_t pinEnd = resolve.find("\n}", pin);
+    ASSERT_NE(pinEnd, std::string::npos);
+    const std::string body = resolve.substr(pin, pinEnd - pin);
+
+    EXPECT_NE(body.find("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS"), std::string::npos);
+    EXPECT_EQ(body.find("LoadLibrary"), std::string::npos);
+    EXPECT_EQ(body.find("GetModuleFileName"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

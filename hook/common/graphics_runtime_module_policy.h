@@ -56,6 +56,70 @@ inline bool HasPrefixIgnoreCase(const char* value, const char* prefix) {
     return true;
 }
 
+// Compares two module paths the way the Windows loader keys module identity:
+// case-insensitive, with '/' and '\' treated as the same separator.
+inline bool EqualsModulePathIgnoreCase(const char* left, const char* right) {
+    if (!left || !right) {
+        return false;
+    }
+    while (*left != '\0' && *right != '\0') {
+        char a = *left;
+        char b = *right;
+        if (a >= 'A' && a <= 'Z') {
+            a = static_cast<char>(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = static_cast<char>(b - 'A' + 'a');
+        }
+        if (a == '/') {
+            a = '\\';
+        }
+        if (b == '/') {
+            b = '\\';
+        }
+        if (a != b) {
+            return false;
+        }
+        ++left;
+        ++right;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+// A runtime-override redirect must never introduce a SECOND instance of a
+// module base name that is already loaded from a different file.
+//
+// Windows keys module identity on the resolved path, so a name-based load of an
+// already-loaded runtime returns that instance, while the same load rewritten to
+// the override directory maps a duplicate image. The Streamline/NGX runtimes are
+// process-global singletons: a duplicate gets its own uninitialised plugin
+// registry, and anything that reaches it (including CE's own export hooks, which
+// forward each symbol through ONE process-global pointer) drives the game's
+// Streamline calls into the wrong image. Session 20260816_045933 is exactly that
+// — CE pinned the live sl.interposer by re-loading its full path, this redirect
+// rewrote the pin to the override copy, CE hooked the duplicate and then freed
+// it, and the game's slSetTag/slEvaluateFeature became silent no-ops until
+// sl.dlss_g dereferenced null.
+//
+// The same rule already governs `PreloadConfiguredGraphicsRuntimeDlls`: a name
+// that is already loaded keeps the loaded copy, because a second instance cannot
+// take effect anyway.
+inline bool WouldRedirectDuplicateLoadedModule(const char* redirectTargetPath, bool baseNameAlreadyLoaded,
+                                               const char* loadedModulePath) {
+    if (!baseNameAlreadyLoaded) {
+        return false;
+    }
+    if (!redirectTargetPath || !redirectTargetPath[0]) {
+        return false;
+    }
+    if (!loadedModulePath || !loadedModulePath[0]) {
+        // The base name is loaded but its path is unresolvable. Fail closed:
+        // honouring the redirect could map a duplicate we cannot rule out.
+        return true;
+    }
+    return !EqualsModulePathIgnoreCase(redirectTargetPath, loadedModulePath);
+}
+
 inline const char* ModuleFileName(const char* moduleNameOrPath) {
     if (!moduleNameOrPath) {
         return "";

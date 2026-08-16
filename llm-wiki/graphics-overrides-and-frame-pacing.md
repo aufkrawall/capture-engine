@@ -223,7 +223,24 @@ Primary sources:
   `1B0_E658703.dll` (observed RoboCop 2026-08-09). Since build 0.1.5897 `GetRedirectedPath` maps such paths back to the real DLL
   (`sl_dlss_g_0` -> `sl.dlss_g.dll`) and redirects them to the configured `streamline_dll_path` when set; the loader
   logging tags those loads as `NGX model repository`. The mapping (`ModelSegmentToDllName`,
-  `IsNgxModelRepositoryPath`) is unit-tested.
+  `IsNgxModelRepositoryPath`) is unit-tested. Note the base name is **not** unique: the same
+  `1B0_E658703.dll` name appears under `sl_common_0`, `sl_reflex_0`, `sl_dlss_0`, `sl_dlss_g_0`, `sl_dlss_d_0` and
+  `sl_pcl_0`, so any "is this already loaded" reasoning must key on the redirect **target**, never on the
+  requested base name.
+- **Invariant (build 0.1.6121): a redirect must never introduce a SECOND instance of an already-loaded module base
+  name.** Windows keys module identity on the resolved path, so rewriting a load whose target base name is already
+  present maps a duplicate image instead of returning the loaded one. The Streamline/NGX runtimes are process-global
+  singletons: a duplicate gets its own uninitialised plugin registry and cannot take effect, but CE's own export
+  hooks *do* find it and forward the live instance's calls into it. `RedirectWouldDuplicateLoadedModule` in
+  `hook/main_redirect.cpp` guards **both** redirect decisions (the NGX-model branch returns early with its own
+  path), backed by `ce::graphics_runtime::WouldRedirectDuplicateLoadedModule`. This generalizes the rule the preload
+  already followed. The override still wins every load it can actually win — a name that is not loaded yet, and a
+  repeat load of the override copy itself.
+- **Consequence for CE's own loader calls:** the `LdrLoadDll` hook is process-global, so CE's own
+  `LoadLibrary`-by-path calls are redirected too. Anything that means "pin this exact mapped image" must resolve by
+  address (`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`), never by re-loading a path — see
+  `PinLoadedStreamlineModule` in `hook/apis/streamline_hook_resolve.cpp` and the Cyberpunk 20260816_045933 entry in
+  `log/recent.md`.
 
 ## Persistent UE5 CVar override policy
 

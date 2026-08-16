@@ -2,6 +2,47 @@
 
 #include <atomic>
 
+namespace {
+
+// True when honouring a redirect to `finalPath` would map a SECOND instance of
+// that module base name, because the name is already loaded from a different
+// file. See ce::graphics_runtime::WouldRedirectDuplicateLoadedModule for why a
+// duplicate Streamline/NGX instance is fatal rather than merely useless.
+//
+// GetModuleHandleA/GetModuleFileNameA take the loader lock, which this thread
+// already owns when the call arrives through HookedLdrLoadDll; the lock is
+// re-entrant for its owner, and the surrounding redirect resolution already
+// touches the file system here.
+bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath) {
+  const char *baseName = ce::graphics_runtime::ModuleFileName(finalPath.c_str());
+  if (!baseName || !baseName[0]) {
+    return false;
+  }
+  const HMODULE loaded = GetModuleHandleA(baseName);
+  if (!loaded) {
+    return false;
+  }
+  char loadedPath[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameA(loaded, loadedPath, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    loadedPath[0] = '\0';
+  }
+  if (!ce::graphics_runtime::WouldRedirectDuplicateLoadedModule(finalPath.c_str(), true, loadedPath)) {
+    return false;
+  }
+
+  static std::atomic<uint32_t> refusalLogs{0};
+  const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant("Loader redirect refused for %s: %s is already loaded from %s, so redirecting would map a "
+                     "SECOND instance of a process-global runtime; keeping the loaded copy",
+                     finalPath.c_str(), baseName, loadedPath[0] ? loadedPath : "an unresolved path");
+  }
+  return true;
+}
+
+}  // namespace
+
 // DLL Redirection Helper
 std::string GetRedirectedPath(const std::string &requestedPath) {
   if (requestedPath.empty())
@@ -69,6 +110,9 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
             }
             modelFinal += modelDllName;
             if (GetFileAttributesA(modelFinal.c_str()) != INVALID_FILE_ATTRIBUTES) {
+              if (RedirectWouldDuplicateLoadedModule(modelFinal)) {
+                return "";
+              }
               HookLog("Redirecting %s (NGX model %s) to: %s", filename.c_str(), segmentBuf,
                       modelFinal.c_str());
               return modelFinal;
@@ -158,6 +202,10 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
                   filename.c_str(), finalPath.c_str());
           return "";
         }
+      }
+
+      if (RedirectWouldDuplicateLoadedModule(finalPath)) {
+        return "";
       }
 
       static std::atomic<uint32_t> redirectLogs{0};

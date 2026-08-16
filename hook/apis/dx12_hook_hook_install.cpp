@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 
+#include "../../common/log_meter.h"
 #include "../common/dx12_factory_slot_policy.h"
 
 namespace {
@@ -333,7 +334,8 @@ IDXGIFactory2* pTerminalFactory = nullptr;
 // inside the system image, so a proxy that also hooks real factory vtables cannot silently put
 // CE back above it — that case falls through to the historical path unchanged.
 HMODULE hSystemDXGI = DXGIShared::GetSystemDXGIModuleHandle();
-if (hSystemDXGI && hSystemDXGI != hDXGI) {
+const bool proxyDXGILoaded = hSystemDXGI != nullptr && hSystemDXGI != hDXGI;
+if (proxyDXGILoaded) {
     char proxyPath[MAX_PATH] = {};
     GetModuleFileNameA(hDXGI, proxyPath, sizeof(proxyPath));
     auto pSystemCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hSystemDXGI, "CreateDXGIFactory1");
@@ -360,6 +362,43 @@ if (hSystemDXGI && hSystemDXGI != hDXGI) {
         } else {
             HookLogImportant("DX12: System-DXGI temp swapchain creation failed (hr=0x%08X); using the live factory",
                              hr);
+        }
+    }
+} else if (hSystemDXGI && guardedSystemRouteOnly) {
+    // No proxy dxgi.dll is loaded, so `pFactory` above ALREADY is a genuine system factory:
+    // it came from the real CreateDXGIFactory1 export, with any foreign entry patch bypassed.
+    //
+    // What makes this route safe to run next to a third-party overlay is the guarded creation
+    // itself — it refuses a CreateSwapChainForHwnd slot owned by a foreign module and steps
+    // over a foreign entry patch, so no overlay handler is entered — not the presence of a
+    // proxy. Requiring a proxy left the third-party-overlay deferral with NO usable route at
+    // all in the ordinary no-proxy case: Cyberpunk 20260816_045933 (Steam overlay loaded
+    // before the game's first D3D12 device, swapchain created after injection) retried this
+    // every service pass forever, reported hr=E_FAIL because nothing had run, and never got
+    // Present hooks or an overlay.
+    hr = CreateTempSwapChainViaFactorySlot(pFactory, pQueue, hwnd, &scd, &pSwapChain);
+    if (SUCCEEDED(hr) && pSwapChain) {
+        void* terminalPresent = (*reinterpret_cast<void***>(pSwapChain))[8];
+        if (DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)) {
+            HookLogImportant(
+                "DX12: Created temp swapchain via the guarded system dxgi factory (Present=%p) — no dxgi proxy is "
+                "loaded, so this already is the terminal dxgi!CDXGISwapChain::Present",
+                terminalPresent);
+        } else {
+            HookLogImportant(
+                "DX12: Guarded temp swapchain resolves Present to %p outside the system image — refusing it rather "
+                "than hooking a foreign swapchain wrapper",
+                terminalPresent);
+            pSwapChain->Release();
+            pSwapChain = nullptr;
+            hr = E_FAIL;
+        }
+    } else {
+        static std::atomic<uint32_t> s_guardedNoProxyFailures{0};
+        const uint32_t failures = s_guardedNoProxyFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(failures, 5, 120)) {
+            HookLogImportant("DX12: Guarded system-dxgi temp swapchain creation failed (hr=0x%08X attempt=%u)", hr,
+                             failures);
         }
     }
 }

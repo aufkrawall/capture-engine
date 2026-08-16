@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "../hook/common/graphics_runtime_module_policy.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
+using ce::graphics_runtime::EqualsModulePathIgnoreCase;
 using ce::graphics_runtime::IsRuntimeModuleBaseName;
 using ce::graphics_runtime::IsNgxModelRepositoryPath;
 using ce::graphics_runtime::ModelSegmentToDllName;
+using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
 // The full family CE can redirect through the per-profile override paths
 // (dlss_sr_dll_path, dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path).
@@ -102,6 +107,66 @@ TEST(GraphicsRuntimeModulePolicy, RecognizesNgxModelRepositoryPaths) {
     EXPECT_FALSE(IsNgxModelRepositoryPath("C:\\ProgramData\\NVIDIA\\NGX\\notmodels\\x.dll"));
     EXPECT_FALSE(IsNgxModelRepositoryPath(nullptr));
     EXPECT_FALSE(IsNgxModelRepositoryPath(""));
+}
+
+TEST(GraphicsRuntimeModulePolicy, ComparesModulePathsTheWayTheLoaderKeysIdentity) {
+    EXPECT_TRUE(EqualsModulePathIgnoreCase("C:\\npi\\sl\\sl.common.dll", "c:\\NPI\\SL\\SL.COMMON.DLL"));
+    EXPECT_TRUE(EqualsModulePathIgnoreCase("C:/npi/sl/sl.common.dll", "C:\\npi\\sl\\sl.common.dll"));
+    EXPECT_FALSE(EqualsModulePathIgnoreCase("C:\\npi\\sl\\sl.common.dll", "H:\\game\\bin\\sl.common.dll"));
+    EXPECT_FALSE(EqualsModulePathIgnoreCase("C:\\npi\\sl\\sl.common.dll", "C:\\npi\\sl\\sl.common.dll.bak"));
+    EXPECT_FALSE(EqualsModulePathIgnoreCase(nullptr, "x"));
+    EXPECT_FALSE(EqualsModulePathIgnoreCase("x", nullptr));
+}
+
+// Cyberpunk 20260816_045933: CE pinned the live sl.interposer by re-loading its own full path,
+// this redirect rewrote the pin to the override directory, and the loader mapped the override
+// copy as a SECOND sl.interposer instance. CE hooked the duplicate — overwriting the single
+// process-global forward pointers for slSetTag/slSetD3DDevice/slEvaluateFeature — then freed it
+// again, after which the game's Streamline calls returned kSlResultErrorInvalidState without
+// ever reaching Streamline and sl.dlss_g dereferenced null.
+TEST(GraphicsRuntimeModulePolicy, RefusesRedirectThatWouldDuplicateAnAlreadyLoadedRuntime) {
+    EXPECT_TRUE(WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.interposer.dll", true,
+                                                   "H:\\game\\bin\\x64\\sl.interposer.dll"));
+    // The name is loaded but its path is unresolvable: fail closed, exactly like the preload,
+    // which skips any base name that is already loaded.
+    EXPECT_TRUE(WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.interposer.dll", true, ""));
+    EXPECT_TRUE(WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.interposer.dll", true, nullptr));
+}
+
+// The override must still win every load it can actually win, or the whole feature dies with the
+// fix: a name that is NOT loaded yet, and a repeat load of the override copy itself (Streamline
+// and NGX both re-request the same plugin several times per startup), keep redirecting.
+TEST(GraphicsRuntimeModulePolicy, KeepsRedirectingWhenNoDuplicateInstanceCanResult) {
+    EXPECT_FALSE(WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.dlss_g.dll", false, nullptr));
+    EXPECT_FALSE(WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.dlss_g.dll", false,
+                                                    "H:\\game\\bin\\x64\\sl.dlss_g.dll"));
+    EXPECT_FALSE(
+        WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.common.dll", true, "C:\\npi\\sl\\sl.common.dll"));
+    EXPECT_FALSE(
+        WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.common.dll", true, "c:/NPI/sl/SL.COMMON.DLL"));
+    EXPECT_FALSE(WouldRedirectDuplicateLoadedModule(nullptr, true, "H:\\game\\bin\\x64\\sl.common.dll"));
+    EXPECT_FALSE(WouldRedirectDuplicateLoadedModule("", true, "H:\\game\\bin\\x64\\sl.common.dll"));
+}
+
+// Both redirect decisions in GetRedirectedPath must consult the duplicate check: the NGX
+// model-repository branch returns early with its own path, so guarding only the generic branch
+// would leave the driver-managed plugin loads (which is how sl.common/sl.reflex arrive) unguarded.
+TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplicateInstances) {
+    namespace fs = std::filesystem;
+    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+
+    EXPECT_NE(redirect.find("WouldRedirectDuplicateLoadedModule("), std::string::npos);
+
+    const size_t modelReturn = redirect.find("return modelFinal;");
+    ASSERT_NE(modelReturn, std::string::npos);
+    const size_t modelGuard = redirect.rfind("RedirectWouldDuplicateLoadedModule(modelFinal)", modelReturn);
+    EXPECT_NE(modelGuard, std::string::npos);
+
+    const size_t genericReturn = redirect.find("return finalPath;");
+    ASSERT_NE(genericReturn, std::string::npos);
+    const size_t genericGuard = redirect.rfind("RedirectWouldDuplicateLoadedModule(finalPath)", genericReturn);
+    EXPECT_NE(genericGuard, std::string::npos);
 }
 
 }  // namespace
