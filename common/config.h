@@ -217,6 +217,9 @@ struct GraphicsConfig {
     // blurs, and 0 is a real setting rather than "off". Anything outside UE's
     // accepted -15..15 range means the engine is left alone.
     float internalTextureMipBias = 1000.0f;
+    // UE's display gamma transform: negative leaves the engine alone, 0 selects
+    // the piecewise sRGB/Rec709 transform, 1.0..3.0 a pure power curve.
+    float displayGamma = -1.0f;
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;

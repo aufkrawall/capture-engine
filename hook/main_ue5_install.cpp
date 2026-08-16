@@ -154,6 +154,19 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
   char modulePath[MAX_PATH];
   const char* baseName = ModuleBaseName(image.module, modulePath);
   const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  // Some overrides are only safe in a particular engine state, and the value the
+  // game currently holds is the evidence. Checked before anything is written, so
+  // a refusal leaves game memory untouched rather than being undone after.
+  const uint32_t observedBits = candidate.originalReference && candidate.evidence.shadowValuesPlausible
+                                    ? candidate.gameThreadBits
+                                    : candidate.dataShadowGameBits;
+  if (!ce::ue5_cvar::MayApplyOverObservedValue(spec, observedBits)) {
+    HookLogImportant(
+        "UE5 overrides: %s not applied in %s - the game's current value (%d) puts it outside the "
+        "state this override is safe in; leaving game memory unchanged",
+        spec.name, baseName, static_cast<int32_t>(observedBits));
+    return false;
+  }
   bool writeThrough = false;
   if (candidate.originalReference && candidate.evidence.shadowValuesPlausible) {
     auto* referenceField = reinterpret_cast<void* volatile*>(candidate.object + sizeof(void*) * 2);

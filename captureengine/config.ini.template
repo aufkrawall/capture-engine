@@ -532,6 +532,17 @@ internal_anisotropic_filtering=default
 ; default leaves the engine alone. Note that 0 is a real setting here (no bias),
 ; not a synonym for default.
 internal_texture_mip_bias=default
+;
+; Overrides UE5's display gamma transform, for games whose own gamma/display
+; option is missing or does not work.
+; srgb selects UE's piecewise sRGB/Rec709 curve (the usual "sRGB display" choice).
+; A number from 1.0 to 3.0 selects a pure power curve of that exponent, so 2.2 is
+; the usual "gamma 2.2 display" choice. default leaves the engine alone.
+; Under the hood this drives r.TonemapperGamma, plus r.HDR.Display.OutputDevice
+; for the sRGB direction. The output-device write is applied only when the game
+; is already on an SDR device (sRGB, Rec709 or explicit gamma), so this can never
+; pull an HDR game out of HDR output - with HDR active the option does nothing.
+display_gamma=default
 
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.

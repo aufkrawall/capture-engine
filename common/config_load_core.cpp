@@ -345,6 +345,27 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         }
     }
 
+    // Display gamma transform. srgb selects UE's piecewise sRGB/Rec709 curve,
+    // a number selects a pure power curve of that exponent. Carried as the
+    // r.TonemapperGamma value itself, so srgb is literally 0 ("default
+    // behavior") and negative means untouched.
+    std::string displayGamma = reader.GetStr("UE5", "display_gamma", "default");
+    std::transform(displayGamma.begin(), displayGamma.end(), displayGamma.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::replace(displayGamma.begin(), displayGamma.end(), ',', '.');
+    config.graphics.displayGamma = -1.0f;
+    if (displayGamma != "default") {
+        float parsedGamma = 0.0f;
+        if (displayGamma == "srgb" || displayGamma == "piecewise") {
+            config.graphics.displayGamma = 0.0f;
+        } else if (!ce::TryParseFiniteFloat(displayGamma, parsedGamma) || parsedGamma < 1.0f ||
+                   parsedGamma > 3.0f) {
+            LogInvalidConfigBoundary("UE5", "display_gamma", displayGamma, "default");
+        } else {
+            config.graphics.displayGamma = parsedGamma;
+        }
+    }
+
     // DLSS Presets
     config.graphics.dlssPresetDLAA =
         reader.GetStrCompat("DLSS", "dlss_preset_dlaa", "Graphics", "dlss_preset_dlaa", "default");

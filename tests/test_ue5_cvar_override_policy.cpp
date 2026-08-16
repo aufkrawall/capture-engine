@@ -228,3 +228,69 @@ TEST(UE5CVarOverridePolicyTest, PositionalSpecIndicesStillNameTheirCVars) {
     EXPECT_STREQ(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex].name, "r.NGX.DLSS.DenoiserMode");
     EXPECT_STREQ(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kTonemapperSharpenIndex].name, "r.Tonemapper.Sharpen");
 }
+
+// The display gamma request is carried as the r.TonemapperGamma value itself:
+// negative untouched, 0 UE's piecewise sRGB/Rec709 transform, 1.0..3.0 a pure
+// power curve. Only the sRGB direction touches the output device, because UE
+// raises the device to explicit-gamma mapping by itself once the exponent is
+// positive.
+TEST(UE5CVarOverridePolicyTest, DisplayGammaDrivesExponentAlwaysAndDeviceOnlyForSrgb) {
+    const auto* device = FindSpec("r.HDR.Display.OutputDevice");
+    const auto* exponent = FindSpec("r.TonemapperGamma");
+    ASSERT_NE(device, nullptr);
+    ASSERT_NE(exponent, nullptr);
+    EXPECT_EQ(device->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(exponent->type, ce::ue5_cvar::ValueType::Float);
+
+    const ce::ue5_cvar::Settings defaults;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*device, defaults).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*exponent, defaults).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(defaults));
+
+    ce::ue5_cvar::Settings srgb;
+    srgb.displayGamma = ce::ue5_cvar::kDisplayGammaSrgb;
+    auto resolvedDevice = ce::ue5_cvar::Resolve(*device, srgb);
+    ASSERT_TRUE(resolvedDevice.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolvedDevice.bits), 0);  // SDR_sRGB
+    auto resolvedExponent = ce::ue5_cvar::Resolve(*exponent, srgb);
+    ASSERT_TRUE(resolvedExponent.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolvedExponent.bits), 0.0f);
+
+    ce::ue5_cvar::Settings power;
+    power.displayGamma = 2.2f;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*device, power).enabled)
+        << "the pure-power direction must not select an output device";
+    resolvedExponent = ce::ue5_cvar::Resolve(*exponent, power);
+    ASSERT_TRUE(resolvedExponent.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolvedExponent.bits), 2.2f);
+
+    for (float outside : {-0.5f, 0.99f, 3.01f, ce::ue5_cvar::kDisplayGammaDefault}) {
+        ce::ue5_cvar::Settings rejected;
+        rejected.displayGamma = outside;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*exponent, rejected).enabled) << outside;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*device, rejected).enabled) << outside;
+    }
+}
+
+// The output-device write must never pull a game out of an HDR device. The guard
+// is judged from the value the game currently holds, before anything is written.
+TEST(UE5CVarOverridePolicyTest, OutputDeviceOverrideIsRefusedOnHdrDevices) {
+    const auto* device = FindSpec("r.HDR.Display.OutputDevice");
+    ASSERT_NE(device, nullptr);
+    EXPECT_EQ(device->guard, ce::ue5_cvar::ApplyGuard::SdrOutputDeviceOnly);
+
+    for (int32_t sdr : {0, 1, 2}) {
+        EXPECT_TRUE(ce::ue5_cvar::MayApplyOverObservedValue(*device, static_cast<uint32_t>(sdr))) << sdr;
+    }
+    // 3-6 ST-2084/ScRGB HDR, 7-9 linear: all left alone.
+    for (int32_t hdr : {3, 4, 5, 6, 7, 8, 9}) {
+        EXPECT_FALSE(ce::ue5_cvar::MayApplyOverObservedValue(*device, static_cast<uint32_t>(hdr))) << hdr;
+    }
+    EXPECT_FALSE(ce::ue5_cvar::MayApplyOverObservedValue(*device, static_cast<uint32_t>(-1)));
+
+    // Everything else stays unconditional.
+    const auto* mipBias = FindSpec("r.MipMapLODBias");
+    ASSERT_NE(mipBias, nullptr);
+    EXPECT_EQ(mipBias->guard, ce::ue5_cvar::ApplyGuard::Always);
+    EXPECT_TRUE(ce::ue5_cvar::MayApplyOverObservedValue(*mipBias, 0x41C80000));
+}

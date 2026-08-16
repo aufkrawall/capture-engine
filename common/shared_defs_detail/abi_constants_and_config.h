@@ -55,20 +55,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
 // Version 38: Added latched recording-health telemetry and finalization-result notifications
 // Version 39: Added persistent UE5 CVar override policy and tonemapper sharpening fields
+// Version 42: Added UE5 display gamma override (r.HDR.Display.OutputDevice /
+//             r.TonemapperGamma)
 // Version 41: Added UE5 internal texture mip bias (r.MipMapLODBias)
 // Version 40: Added UE5 internal fps limiter (t.MaxFPS) and internal anisotropic
 // filtering (r.MaxAnisotropy / r.VT.MaxAnisotropy) CVar override fields
-static constexpr uint32_t SHARED_MEMORY_VERSION = 41;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 42;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_41_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_42_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_41";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_42";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -457,6 +459,12 @@ struct SharedGraphicsConfig {
     // outside the accepted range means untouched, and the host publishes
     // kUE5TextureMipBiasDisabled for it.
     float internalTextureMipBias;
+    // UE's display gamma transform. Negative leaves the engine alone, 0 selects
+    // the piecewise sRGB/Rec709 transform (r.TonemapperGamma=0, UE's "default
+    // behavior"), and 1.0..3.0 selects a pure power curve of that exponent.
+    // The matching r.HDR.Display.OutputDevice write is guarded so it can never
+    // pull a game out of an HDR output device.
+    float displayGamma;
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -494,7 +502,10 @@ static_assert(offsetof(SharedGraphicsConfig, internalAnisotropicFiltering) ==
 static_assert(offsetof(SharedGraphicsConfig, internalTextureMipBias) ==
                   offsetof(SharedGraphicsConfig, internalAnisotropicFiltering) + sizeof(int32_t),
               "UE5 texture mip bias must follow the internal AF level");
-static_assert(sizeof(SharedGraphicsConfig) == 380,
+static_assert(offsetof(SharedGraphicsConfig, displayGamma) ==
+                  offsetof(SharedGraphicsConfig, internalTextureMipBias) + sizeof(float),
+              "UE5 display gamma must follow the texture mip bias");
+static_assert(sizeof(SharedGraphicsConfig) == 384,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

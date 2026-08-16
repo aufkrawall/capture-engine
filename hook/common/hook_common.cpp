@@ -493,6 +493,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.internalFpsLimit = shmGfx.internalFpsLimit;
         mergedConfig.internalAnisotropicFiltering = shmGfx.internalAnisotropicFiltering;
         mergedConfig.internalTextureMipBias = shmGfx.internalTextureMipBias;
+        mergedConfig.displayGamma = shmGfx.displayGamma;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

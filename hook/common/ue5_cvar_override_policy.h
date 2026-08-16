@@ -22,6 +22,23 @@ enum class Activation : uint8_t {
     InternalFpsLimit,
     InternalAnisotropicFiltering,
     InternalTextureMipBias,
+    // Piecewise-sRGB half of the display gamma override: only written when the
+    // game is asking for the sRGB transform, never to pick a device.
+    DisplayGammaOutputDevice,
+    DisplayGammaExponent,
+};
+
+// Whether an override may be applied at all, judged from the value the game
+// currently holds. Most CVars are unconditional; a few are only safe to touch in
+// a particular engine state, and guessing there is how a capture gets wrecked.
+enum class ApplyGuard : uint8_t {
+    Always,
+    // r.HDR.Display.OutputDevice doubles as the HDR output selector: 0 sRGB,
+    // 1 Rec709, 2 explicit gamma, 3-6 ST-2084/ScRGB HDR, 7-9 linear (the engine's
+    // own help text). Writing an SDR device over an HDR one would silently drop
+    // a game out of HDR and ruin an HDR capture, so this override applies only
+    // when the game is already on an SDR device.
+    SdrOutputDeviceOnly,
 };
 
 // UE's own texture mip bias is a float CVar whose engine help documents the
@@ -34,6 +51,23 @@ inline constexpr float kTextureMipBiasDisabled = 1000.0f;
 
 constexpr bool IsTextureMipBiasRequested(float bias) noexcept {
     return bias >= -kTextureMipBiasLimit && bias <= kTextureMipBiasLimit;
+}
+
+// The display gamma request is carried as the r.TonemapperGamma value itself:
+// negative means untouched, 0 is UE's own "default behavior" (the piecewise sRGB
+// / Rec709 transform), and a positive exponent is a pure power curve.
+inline constexpr float kDisplayGammaDefault = -1.0f;
+inline constexpr float kDisplayGammaSrgb = 0.0f;
+inline constexpr float kDisplayGammaMinExponent = 1.0f;
+inline constexpr float kDisplayGammaMaxExponent = 3.0f;
+
+constexpr bool IsDisplayGammaRequested(float gamma) noexcept {
+    return gamma == kDisplayGammaSrgb ||
+           (gamma >= kDisplayGammaMinExponent && gamma <= kDisplayGammaMaxExponent);
+}
+
+constexpr bool IsDisplayGammaPiecewiseSrgb(float gamma) noexcept {
+    return gamma == kDisplayGammaSrgb;
 }
 
 struct Settings {
@@ -50,6 +84,9 @@ struct Settings {
     // Anything outside -15..15 leaves r.MipMapLODBias alone; a value inside it
     // (including 0) is applied.
     float internalTextureMipBias = kTextureMipBiasDisabled;
+    // Negative leaves the engine's display gamma alone, 0 selects UE's piecewise
+    // sRGB/Rec709 transform, 1.0..3.0 selects a pure power curve.
+    float displayGamma = kDisplayGammaDefault;
 };
 
 struct Spec {
@@ -57,6 +94,7 @@ struct Spec {
     ValueType type = ValueType::Int32;
     Activation activation = Activation::RayReconstructionOptimal;
     double value = 0.0;
+    ApplyGuard guard = ApplyGuard::Always;
 };
 
 struct ResolvedValue {
@@ -145,6 +183,13 @@ inline constexpr std::array kSpecs{
     // are positional, so a new entry anywhere earlier would silently retarget
     // them. Float type confirmed from the engine's own registration.
     Spec{"r.MipMapLODBias", ValueType::Float, Activation::InternalTextureMipBias, 0.0},
+    // Display gamma. Only the sRGB direction needs to touch the output device:
+    // UE raises the device to explicit-gamma mapping by itself once
+    // r.TonemapperGamma is positive, so the pure-power direction writes the
+    // exponent alone and never selects a device.
+    Spec{"r.HDR.Display.OutputDevice", ValueType::Int32, Activation::DisplayGammaOutputDevice, 0.0,
+         ApplyGuard::SdrOutputDeviceOnly},
+    Spec{"r.TonemapperGamma", ValueType::Float, Activation::DisplayGammaExponent, 0.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -185,6 +230,15 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             enabled = IsTextureMipBiasRequested(settings.internalTextureMipBias);
             value = enabled ? settings.internalTextureMipBias : 0.0;
             break;
+        case Activation::DisplayGammaOutputDevice:
+            enabled = IsDisplayGammaRequested(settings.displayGamma) &&
+                      IsDisplayGammaPiecewiseSrgb(settings.displayGamma);
+            value = 0.0;  // EDisplayOutputFormat::SDR_sRGB
+            break;
+        case Activation::DisplayGammaExponent:
+            enabled = IsDisplayGammaRequested(settings.displayGamma);
+            value = enabled ? settings.displayGamma : 0.0;
+            break;
     }
     return {enabled, ValueBits(spec.type, value)};
 }
@@ -193,7 +247,8 @@ inline bool AnyEnabled(const Settings& settings) noexcept {
     return settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings ||
            settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
            settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0 ||
-           IsTextureMipBiasRequested(settings.internalTextureMipBias);
+           IsTextureMipBiasRequested(settings.internalTextureMipBias) ||
+           IsDisplayGammaRequested(settings.displayGamma);
 }
 
 // UE registers the show flag console variables as `FConsoleVariableBitRef` -
@@ -205,6 +260,16 @@ inline constexpr char kShowFlagPrefix[] = "ShowFlag.";
 inline bool IsShowFlagSpec(std::size_t specIndex) noexcept {
     return specIndex < kSpecs.size() && kSpecs[specIndex].name &&
            std::strncmp(kSpecs[specIndex].name, kShowFlagPrefix, sizeof(kShowFlagPrefix) - 1) == 0;
+}
+
+// Whether the value the game currently holds permits this override at all.
+// Evaluated at install time, where the observed value is known, so a refusal
+// leaves game memory untouched rather than being undone afterwards.
+inline bool MayApplyOverObservedValue(const Spec& spec, uint32_t observedBits) noexcept {
+    if (spec.guard == ApplyGuard::Always)
+        return true;
+    const int32_t observed = static_cast<int32_t>(observedBits);
+    return observed >= 0 && observed <= 2;
 }
 
 inline bool IsPlausibleShadowValue(std::size_t specIndex, uint32_t bits) noexcept {

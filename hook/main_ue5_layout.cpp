@@ -121,6 +121,12 @@ bool InstallReferencePointer(std::size_t specIndex, HMODULE owner, uintptr_t con
       !ReadValue(reinterpret_cast<const void*>(dataPointer), value)) {
     return false;
   }
+  if (!ce::ue5_cvar::MayApplyOverObservedValue(spec, value)) {
+    HookLogImportant("UE5 overrides: %s not applied via %s - the game's current value (%d) puts it "
+                     "outside the state this override is safe in; leaving game memory unchanged",
+                     spec.name, origin, static_cast<int32_t>(value));
+    return false;
+  }
   if (!IsWritableRange(reinterpret_cast<void*>(pointerSlot), sizeof(uint32_t) * 4)) {
     HookLogImportant("UE5 overrides: %s value storage found via %s is not writable; leaving it unchanged",
                      spec.name, origin);
@@ -184,6 +190,12 @@ bool InstallInlinePair(std::size_t specIndex, HMODULE owner, uintptr_t consoleOb
   uint32_t render = 0;
   if (!ReadValue(reinterpret_cast<const void*>(pairAddress), game) ||
       !ReadValue(reinterpret_cast<const void*>(pairAddress + sizeof(uint32_t)), render)) {
+    return false;
+  }
+  if (!ce::ue5_cvar::MayApplyOverObservedValue(spec, game)) {
+    HookLogImportant("UE5 overrides: %s not applied via %s - the game's current value (%d) puts it "
+                     "outside the state this override is safe in; leaving game memory unchanged",
+                     spec.name, origin, static_cast<int32_t>(game));
     return false;
   }
   if (!GetOrCreateForcedData(specIndex)) {

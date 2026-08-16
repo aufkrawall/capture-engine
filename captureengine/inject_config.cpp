@@ -38,6 +38,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.internalFpsLimit = config.graphics.internalFpsLimit;
     graphics.internalAnisotropicFiltering = config.graphics.internalAnisotropicFiltering;
     graphics.internalTextureMipBias = config.graphics.internalTextureMipBias;
+    graphics.displayGamma = config.graphics.displayGamma;
     graphics.prerenderLimit = config.graphics.cpuPrerenderLimit;
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
@@ -108,7 +109,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (std::hash<float>{}(graphics.tonemapperSharpen) << 13) ^
         (std::hash<float>{}(graphics.internalFpsLimit) << 14) ^
         (static_cast<uint64_t>(graphics.internalAnisotropicFiltering) << 15) ^
-        (std::hash<float>{}(graphics.internalTextureMipBias) << 16);
+        (std::hash<float>{}(graphics.internalTextureMipBias) << 16) ^
+        (std::hash<float>{}(graphics.displayGamma) << 17);
 
     if (summaryHash != configSummaryHash) {
         LogInfo(
@@ -117,7 +119,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
-            "ue5InternalTextureMipBias=%.2f",
+            "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
@@ -130,7 +132,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.rayReconstructionOptimalSettings ? 1 : 0,
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
             graphics.internalFpsLimit, graphics.internalAnisotropicFiltering,
-            graphics.internalTextureMipBias);
+            graphics.internalTextureMipBias, graphics.displayGamma);
         configSummaryHash = summaryHash;
     }
 }

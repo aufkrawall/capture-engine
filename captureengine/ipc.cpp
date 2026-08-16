@@ -189,6 +189,7 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.internalFpsLimit = src.internalFpsLimit;
         dst.internalAnisotropicFiltering = src.internalAnisotropicFiltering;
         dst.internalTextureMipBias = src.internalTextureMipBias;
+        dst.displayGamma = src.displayGamma;
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;
