@@ -198,6 +198,13 @@ TEST(UE5ConsoleLayout, BitReferenceRequiresTwoDistinctMaskPointersInOneModule) {
     EXPECT_FALSE(ce::ue5_layout::IsBitReference(unread));
 }
 
+// Diagnostic addressing only. CE does not write these bits: 0.1.6128 forced the
+// four configured show flags off through the very numbers their console objects
+// reported and Talos lost all lighting, so the index a console object carries is
+// not proven to be the index the renderer reads the mask by. The decomposition
+// is still checked because it is what the reported bit map prints - and because
+// `Vignette` at 13 sits one bit above `GlobalIllumination` at 12, which is the
+// neighbour an off-by-one would land on.
 TEST(UE5ConsoleLayout, ForceMaskBitAddressing) {
     EXPECT_EQ(ce::ue5_layout::BitByteIndex(0), 0u);
     EXPECT_EQ(ce::ue5_layout::BitMask(0), 0x01);
@@ -205,31 +212,10 @@ TEST(UE5ConsoleLayout, ForceMaskBitAddressing) {
     EXPECT_EQ(ce::ue5_layout::BitMask(7), 0x80);
     EXPECT_EQ(ce::ue5_layout::BitByteIndex(8), 1u);
     EXPECT_EQ(ce::ue5_layout::BitMask(8), 0x01);
+    EXPECT_EQ(ce::ue5_layout::BitByteIndex(12), 1u);
+    EXPECT_EQ(ce::ue5_layout::BitMask(12), 0x10);
+    EXPECT_EQ(ce::ue5_layout::BitByteIndex(13), 1u);
+    EXPECT_EQ(ce::ue5_layout::BitMask(13), 0x20);
     EXPECT_EQ(ce::ue5_layout::BitByteIndex(137), 17u);
     EXPECT_EQ(ce::ue5_layout::BitMask(137), 0x02);
-}
-
-// A force bit can say "off" or "on" and nothing else, so a configured value
-// outside that has to be refused rather than truncated into a bit.
-TEST(UE5ConsoleLayout, OnlyZeroAndOneAreExpressibleAsForceBits) {
-    EXPECT_TRUE(ce::ue5_layout::IsExpressibleBitValue(0));
-    EXPECT_TRUE(ce::ue5_layout::IsExpressibleBitValue(1));
-    EXPECT_FALSE(ce::ue5_layout::IsExpressibleBitValue(2));
-    EXPECT_FALSE(ce::ue5_layout::IsExpressibleBitValue(static_cast<uint32_t>(-1)));
-}
-
-// Every ShowFlag spec has to be expressible as a force bit, or the layout work
-// buys nothing: an inexpressible one would be found, classified, and refused.
-TEST(UE5ConsoleLayout, EveryShowFlagSpecIsExpressibleAsAForceBit) {
-    ce::ue5_cvar::Settings settings;
-    settings.disablePostProcessingEffects = true;
-    for (std::size_t index = 0; index < ce::ue5_cvar::kSpecs.size(); ++index) {
-        if (!ce::ue5_cvar::IsShowFlagSpec(index))
-            continue;
-        const ce::ue5_cvar::ResolvedValue resolved =
-            ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[index], settings);
-        EXPECT_TRUE(resolved.enabled) << ce::ue5_cvar::kSpecs[index].name;
-        EXPECT_TRUE(ce::ue5_layout::IsExpressibleBitValue(resolved.bits))
-            << ce::ue5_cvar::kSpecs[index].name;
-    }
 }

@@ -391,13 +391,28 @@ Primary sources:
   padding satisfies it), and **bit reference**. Bit-ref writes set/clear CE's own bit with a compare-exchange on
   the containing word, so the other show flags sharing the byte are untouched; restore puts back only that bit.
   Two independent gates keep the bit path off everything else: it is offered only to `ShowFlag.` names
-  (`ce::ue5_cvar::IsShowFlagSpec`), and a candidate is committed only once a *second* show flag independently
-  reports the same mask pair with a different bit index (`CommitConfirmedBitReferences`). Force-0/force-1 roles come
-  from `FConsoleVariableBitRef`'s member order; both mask addresses are logged at install so a run can confirm that
-  reading rather than infer it. **Open question:** whether a Shipping build consults the force masks at all - the
-  objects are registered in `Talos1-Win64-Shipping.exe`, but the show flags CE targets are `SHOWFLAG_FIXED_IN_SHIPPING`
-  in UE. Practically this only exposes vignette: grain, motion blur and chromatic aberration are already carried by
-  `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`.
+  (`ce::ue5_cvar::IsShowFlagSpec`), and a candidate is only accepted once a *second* show flag independently
+  reports the same mask pair with a different bit index.
+- **CE does not write the force bits, and 0.1.6128 is why.** That one build drove them, and it settles the
+  standing "are the masks even live in Shipping" question in the worst way: forcing the four configured flags off
+  removed **all lighting** from Talos (`20260816_165501`). The reported numbers explain it. The masks came back as
+  `force0=0x…16C0` / `force1=0x…16F0`, exactly 0x30 apart - two adjacent 48-byte (384-flag) bit arrays, so the
+  mask discovery is right. The bit numbers are self-consistent too: `Vignette`=13 and `Grain`=14 are adjacent, and
+  the engine's own show flag name table in the Talos binary (offsets `0x810d0e0`/`0x810d108`/`0x810d120`) lists
+  `GlobalIllumination`, `Vignette`, `Grain` in exactly that order - which puts **`GlobalIllumination` at bit 12,
+  one below the first bit CE set**. So the discovery is sound and the *mapping* is not: the index a console object
+  carries is not the index the renderer reads the mask by, plausibly because `SHOWFLAG_FIXED_IN_SHIPPING` flags are
+  compiled out of one side and not the other. Writing a bit therefore means guessing which flag gets turned off.
+  Bit references are now classified, confirmed, and **reported only** (`ReportConfirmedBitReferences`), with the
+  mask addresses, bit number, byte and mask in the log line. The classification is kept regardless: it is what
+  stops the old redirect from replacing the engine's mask pointer.
+- **`ProbeShowFlagBitNumbers`** resolves eight extra show flag names (`GlobalIllumination`, `Lighting`,
+  `DirectLighting`, `DiffuseIndirect`, `Tonemapper`, `AntiAliasing`, `TemporalAA`, `Bloom`) through the
+  already-anchored map purely to log `name -> bit`, once per session, and only when a bit reference was actually
+  seen. That is the measurement the mapping needs: if `GlobalIllumination` reports 12 next to `Vignette`'s 13, the
+  console-object side is exactly the table order and the discrepancy is entirely on the renderer's side of the
+  mask. Practically the whole question only exposes vignette - grain, motion blur and chromatic aberration are
+  already carried by `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`, all verified live.
 - An object matching no shape, or matching one shape at two offsets, is left untouched and its first 0x80 bytes are
   dumped (rate-limited to 6 per session). That is deliberate: guessing a layout is what produced the ShowFlag writes,
   and the dump is what lets the next run identify a per-title layout instead of re-deriving it from a refusal.
@@ -431,9 +446,8 @@ Primary sources:
   rescan requested. A value that drifted means a game-side `Set()` reached storage CE owns: the configured value is
   re-asserted rather than reinstalled. Reporting is per-override capped at three and only lifts after 60 consecutive
   clean passes, so a constantly rewritten CVar stays quiet while a rare regression is still logged; the summary line
-  is emitted only when the counts change. The bit-reference mode is the one branch whose verification is entirely
-  about game memory: it reads both force bits straight back out of the engine's masks, with no CE-owned shadow that
-  could agree with CE's own configured value.
+  is emitted only when the counts change. There is no bit-reference branch here: CE never writes a force bit, so
+  there is nothing to verify or restore for one.
 - The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are

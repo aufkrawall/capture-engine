@@ -372,14 +372,13 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
           case ConsoleObjectOutcome::Installed:
             ++installed;
             break;
-          case ConsoleObjectOutcome::BitReferencePending:
-            // Recorded, not written: a show flag force bit is only committed
-            // once a second flag confirms the same mask pair, which may be a
-            // later element in this same pass or a later pass entirely.
-            break;
+          case ConsoleObjectOutcome::BitReferenceNotDriven:
           case ConsoleObjectOutcome::Refused:
-            // The object was located; its layout is simply not one CE can
-            // drive. That verdict cannot change later, so stop re-attempting.
+            // Two different reasons, one consequence: the object was located and
+            // CE will not write it, either because the layout is not one it can
+            // drive or because it is a show flag force bit CE deliberately
+            // leaves alone. Neither verdict can change later, so stop
+            // re-reading it every pass for the rest of the session.
             g_registryRefused[index] = true;
             break;
         }
@@ -460,6 +459,90 @@ std::size_t ResolveMissingAcrossRegions(const std::vector<Region>& regions, std:
   return installed;
 }
 
+// Show flag names resolved purely to learn their bit numbers. CE never writes
+// them; the point is the index map.
+//
+// 0.1.6128 forced the four configured show flags off through their own reported
+// bit numbers and Talos lost all lighting (20260816_165501). The numbers are
+// self-consistent - `Vignette` 13 and `Grain` 14 are adjacent, matching the
+// engine's own name table - so the failure is in the mapping between the index
+// a console object carries and the index the renderer reads the mask by, and
+// the table places `GlobalIllumination` at 12, one below the first bit CE set.
+// Logging what the lighting flags actually report is what turns that from a
+// theory into a measurement, and it costs one already-anchored pass.
+constexpr const char* kBitNumberProbeNames[] = {
+    "ShowFlag.GlobalIllumination", "ShowFlag.Lighting",  "ShowFlag.DirectLighting",
+    "ShowFlag.DiffuseIndirect",    "ShowFlag.Tonemapper", "ShowFlag.AntiAliasing",
+    "ShowFlag.TemporalAA",         "ShowFlag.Bloom",
+};
+constexpr std::size_t kBitNumberProbeCount = std::size(kBitNumberProbeNames);
+
+std::array<bool, kBitNumberProbeCount> g_bitNumberProbed{};
+bool g_bitNumberProbeLogged = false;
+
+// One pass over the already-proven regions. Runs only while a bit reference has
+// actually been seen, so a title without show flag bit refs never pays for it.
+void ProbeShowFlagBitNumbers() {
+  if (g_bitNumberProbeLogged || !g_map.valid)
+    return;
+  bool anyBitReference = false;
+  for (std::size_t index = 0; index < kCVarCount; ++index) {
+    if (g_registryRefused[index] && ce::ue5_cvar::IsShowFlagSpec(index))
+      anyBitReference = true;
+  }
+  if (!anyBitReference)
+    return;
+
+  std::vector<uint8_t> buffer(kChunkBytes);
+  std::size_t found = 0;
+  for (const Region& region : g_map.regions) {
+    for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes - kChunkOverlap) {
+      const std::size_t bytes = (std::min)(kChunkBytes, region.size - offset);
+      if (bytes < sizeof(uintptr_t) * 2 + g_map.valueOffset)
+        break;
+      if (!ReadBytes(region.base + offset, buffer.data(), bytes))
+        continue;
+      const std::size_t limit = bytes - sizeof(uintptr_t) * 2;
+      for (std::size_t position = 0; position <= limit; position += sizeof(uintptr_t)) {
+        ce::ue5_registry::StringHeader header;
+        std::memcpy(&header.data, buffer.data() + position, sizeof(uint64_t));
+        std::memcpy(&header.num, buffer.data() + position + 8, sizeof(int32_t));
+        std::memcpy(&header.max, buffer.data() + position + 12, sizeof(int32_t));
+        if (!ce::ue5_registry::IsPlausibleStringHeader(header))
+          continue;
+        for (std::size_t probe = 0; probe < kBitNumberProbeCount; ++probe) {
+          if (g_bitNumberProbed[probe] ||
+              header.num != static_cast<int32_t>(std::strlen(kBitNumberProbeNames[probe])) + 1 ||
+              !KeyMatchesName(header, kBitNumberProbeNames[probe])) {
+            continue;
+          }
+          uintptr_t object = 0;
+          if (!ReadBytes(region.base + offset + position + g_map.valueOffset, &object, sizeof(object)) ||
+              !ce::ue5_registry::IsPlausibleConsoleObject(object) ||
+              !HasCallableVtable(reinterpret_cast<const void*>(object))) {
+            continue;
+          }
+          uintptr_t forceZeroMask = 0;
+          uintptr_t forceOneMask = 0;
+          uint32_t bitNumber = 0;
+          if (!DescribeBitReference(object, forceZeroMask, forceOneMask, bitNumber))
+            continue;
+          g_bitNumberProbed[probe] = true;
+          ++found;
+          HookLogImportant("UE5 overrides: show flag bit map — %s bit=%u (force0=%p force1=%p)",
+                           kBitNumberProbeNames[probe], bitNumber,
+                           reinterpret_cast<void*>(forceZeroMask), reinterpret_cast<void*>(forceOneMask));
+        }
+      }
+    }
+  }
+  // One shot either way: the map does not change what it holds between passes,
+  // and repeating a diagnostic every second is how a log stops being readable.
+  g_bitNumberProbeLogged = true;
+  HookLogImportant("UE5 overrides: show flag bit map complete — %zu of %zu probe name(s) resolved",
+                   found, kBitNumberProbeCount);
+}
+
 }  // namespace
 
 void ResetConsoleRegistry() {
@@ -471,6 +554,8 @@ void ResetConsoleRegistry() {
   g_resolveRegionCursor = 0;
   g_allocationExpansionRefused = false;
   g_registryRefused.fill(false);
+  g_bitNumberProbed.fill(false);
+  g_bitNumberProbeLogged = false;
   ResetBitReferenceCandidates();
 }
 
@@ -588,12 +673,12 @@ bool ResolveMissingThroughConsoleRegistry() {
     return false;
   }
 
-  std::size_t installed =
+  const std::size_t installed =
       ResolveMissingAcrossRegions(g_map.regions, g_map.valueOffset, missing, GetModuleHandleW(nullptr),
                                   GetTickCount64() + kResolveBudgetMs);
-  // Show flag force bits are written only after the pass that found them, once
-  // enough of them agree on the mask pair to prove the layout.
-  installed += CommitConfirmedBitReferences("console registry");
+  // Reported, not installed: a show flag force bit is recognised and left alone.
+  ReportConfirmedBitReferences("console registry");
+  ProbeShowFlagBitNumbers();
   if (installed) {
     HookLogImportant("UE5 overrides: console registry resolved %zu of %zu remaining CVar(s)",
                      installed, missing.size());

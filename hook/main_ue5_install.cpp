@@ -118,21 +118,12 @@ void ApplyRestorePlan(OverrideState& state, const ce::ue5_redirect::Plan& plan, 
 }
 
 void UpdateForcedData(std::size_t specIndex, uint32_t bits) {
-  OverrideState& state = g_overrides[specIndex];
-  if (state.bitReference) {
-    // A force bit has no CE-owned storage to point anything at: the value lives
-    // entirely in the engine's masks. Force-1 wins over force-0 in
-    // `FConsoleVariableBitRef`, so asserting a value means owning both bits
-    // rather than only setting the one that matches.
-    UpdateForceMaskBit(state.forceOneByte, state.bitMask, bits == 1);
-    UpdateForceMaskBit(state.forceZeroByte, state.bitMask, bits == 0);
-    return;
-  }
   ForcedConsoleVariableData* data = g_forcedData[specIndex].load(std::memory_order_acquire);
   if (!data)
     return;
   InterlockedExchange(&data->gameThreadBits, static_cast<LONG>(bits));
   InterlockedExchange(&data->renderThreadBits, static_cast<LONG>(bits));
+  OverrideState& state = g_overrides[specIndex];
   if (state.dataShadowAddress) {
     if (state.dataShadowPointerRedirect) {
       // Game-thread reads use the local fallback pair; keep it mirrored.
@@ -272,55 +263,6 @@ VerificationCounts VerifyOverrides() {
     const char* failure = nullptr;
     bool lostRedirect = false;
 
-    // A force bit is read straight back out of the engine's own mask - there is
-    // no CE-owned shadow to agree with itself here, so this is the one mode
-    // whose verification is entirely about game memory.
-    if (state.bitReference) {
-      bool zeroBit = false;
-      bool oneBit = false;
-      if (!ReadForceMaskBit(state.forceZeroByte, state.bitMask, zeroBit) ||
-          !ReadForceMaskBit(state.forceOneByte, state.bitMask, oneBit)) {
-        if (state.driftReports < 3) {
-          ++state.driftReports;
-          HookLogImportant("UE5 overrides: %s force-mask bit could not be read back",
-                           ce::ue5_cvar::kSpecs[index].name);
-        }
-        state.cleanVerifications = 0;
-        continue;
-      }
-      if (zeroBit == (expected == 0) && oneBit == (expected == 1)) {
-        ++counts.verified;
-        if (++state.cleanVerifications >= kDriftReportResetPasses) {
-          state.cleanVerifications = 0;
-          state.driftReports = 0;
-        }
-        continue;
-      }
-      if (state.driftReports < 3) {
-        ++state.driftReports;
-        HookLogImportant("UE5 overrides: %s force bit drifted (force0=%d force1=%d expected=%d); "
-                         "re-asserting the configured value",
-                         ce::ue5_cvar::kSpecs[index].name, zeroBit ? 1 : 0, oneBit ? 1 : 0,
-                         static_cast<int32_t>(expected));
-      }
-      // Same widening scale the value modes use: a show flag the game re-forces
-      // every pass is contested, not held, and that has to stay visible after
-      // the three-line drift cap without becoming a per-second log.
-      ++state.reassertCount;
-      if (state.reassertCount == 10 || state.reassertCount == 100 || state.reassertCount == 1000 ||
-          (state.reassertCount % 5000) == 0) {
-        HookLogImportant(
-            "UE5 overrides: %s force bit re-asserted %u time(s) — the game keeps rewriting the show "
-            "flag masks, so it is contested rather than held (force0=%d force1=%d expected=%d)",
-            ce::ue5_cvar::kSpecs[index].name, state.reassertCount, zeroBit ? 1 : 0, oneBit ? 1 : 0,
-            static_cast<int32_t>(expected));
-      }
-      UpdateForcedData(index, expected);
-      ++counts.reasserted;
-      state.cleanVerifications = 0;
-      continue;
-    }
-
     if (state.referenceField || state.dataShadowPointerRedirect) {
       const void* slot = state.dataShadowAddress
                              ? reinterpret_cast<const void*>(state.dataShadowAddress)
@@ -457,18 +399,6 @@ void RestoreOverride(std::size_t specIndex, const char* reason) {
   OverrideState& state = g_overrides[specIndex];
   if (!IsOverrideInstalled(state))
     return;
-  if (state.bitReference) {
-    // Only CE's own bit goes back to what it was. Writing the whole byte would
-    // undo whatever the game did to the other show flags sharing it.
-    UpdateForceMaskBit(state.forceZeroByte, state.bitMask, state.originalForceZeroBit);
-    UpdateForceMaskBit(state.forceOneByte, state.bitMask, state.originalForceOneBit);
-    HookLogImportant("UE5 overrides: restored the game's %s show flag force bit (%s)",
-                     ce::ue5_cvar::kSpecs[specIndex].name, reason);
-    g_activeModules[specIndex].store(nullptr, std::memory_order_release);
-    g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
-    state = {};
-    return;
-  }
   if (state.dataShadowAddress) {
     if (state.dataShadowPointerRedirect) {
       // Put the game's value back before the pointer, so no read observes the

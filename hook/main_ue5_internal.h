@@ -108,16 +108,6 @@ struct OverrideState {
   bool dataPointerValueWritten = false;
   bool dataShadowPointerRedirect = false;
   bool registryResolved = false;
-  // Bit-reference mode (`FConsoleVariableBitRef`, i.e. UE's `ShowFlag.*`). The
-  // variable owns no value of its own: it is one bit in each of two masks the
-  // engine shares across every show flag, so CE owns exactly that bit and
-  // leaves every other bit in those bytes to the game.
-  bool bitReference = false;
-  uintptr_t forceZeroByte = 0;
-  uintptr_t forceOneByte = 0;
-  uint8_t bitMask = 0;
-  bool originalForceZeroBit = false;
-  bool originalForceOneBit = false;
   // Ref-redirect mode only. Repointing the wrapper's `Ref` covers reads that go
   // back through the wrapper (`TAutoConsoleVariable::GetValueOnRenderThread`),
   // but UE's renderer routinely caches the `TConsoleVariableData<T>*` itself
@@ -220,15 +210,10 @@ void ForgetUnloadedOverrides();
 bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
                     std::size_t validatedCandidates, ULONGLONG scanElapsedMs);
 
-// True once any of the three modes owns storage for this override.
+// True once either value mode owns storage for this override.
 inline bool IsOverrideInstalled(const OverrideState& state) {
-  return state.referenceField != nullptr || state.dataShadowAddress != 0 || state.bitReference;
+  return state.referenceField != nullptr || state.dataShadowAddress != 0;
 }
-
-// Sets or clears one bit of a UE force mask without disturbing the other flags
-// sharing the byte. Exposed for the installer and the verifier.
-void UpdateForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool set);
-bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set);
 
 // Drives an IConsoleObject whose address came from somewhere other than the
 // module scan (today: UE's console registry), where no static
@@ -236,21 +221,24 @@ bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set);
 // probed first and only written through the layout it proves to have; an
 // unrecognised object is left untouched and reported.
 //
-// A bit-reference object is not installed here: it is recorded as a candidate
-// and only committed once a second show flag confirms the same mask pair, so a
-// pair of adjacent module pointers can never be mistaken for one.
+// A bit-reference object is never written. It is recorded, confirmed against a
+// second show flag, and reported - see `ReportConfirmedBitReferences`.
 enum class ConsoleObjectOutcome : uint8_t {
   Installed,
-  BitReferencePending,
+  BitReferenceNotDriven,
   Refused,
 };
 
 ConsoleObjectOutcome InstallConsoleObjectOverride(std::size_t specIndex, HMODULE owner,
                                                   uintptr_t consoleObject, const char* origin);
-// Installs every recorded bit-reference candidate whose mask pair a second
-// candidate independently confirms. Returns how many were installed.
-std::size_t CommitConfirmedBitReferences(const char* origin);
+// Reports every recorded bit-reference candidate whose mask pair a second
+// candidate independently confirms, once each. Returns how many were reported.
+std::size_t ReportConfirmedBitReferences(const char* origin);
 void ResetBitReferenceCandidates();
+// Reads the `{Force0MaskPtr, Force1MaskPtr, BitNumber}` triple out of a console
+// object that carries the bit-reference shape. Diagnostic only.
+bool DescribeBitReference(uintptr_t consoleObject, uintptr_t& forceZeroMask, uintptr_t& forceOneMask,
+                          uint32_t& bitNumber);
 bool ScanAllLoadedModules();
 bool ScanPendingModules();
 

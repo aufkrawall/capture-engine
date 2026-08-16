@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-16 - Driving the show flag force bits removed all lighting from Talos; CE stops writing them
+
+- 0.1.6128 shipped the bit-ref write. Talos then rendered with no lighting at all (`20260816_165501`), and the
+  install lines say why it is not a discovery failure: `force0=00007FF73B3A16C0 force1=00007FF73B3A16F0`, exactly
+  0x30 apart - two adjacent 48-byte (384-flag) bit arrays, identical across all four flags. The bit numbers are
+  self-consistent too: Vignette=13, Grain=14, MotionBlur=37, SceneColorFringe=46, all distinct.
+- The engine's own show flag name table in the Talos binary (`0x810d0e0` `GlobalIllumination`, `0x810d108`
+  `Vignette`, `0x810d120` `Grain`) lists them in that exact order, so **`GlobalIllumination` is bit 12 - one below
+  the first bit CE set**. Any off-by-one between the index a console object carries and the index the renderer
+  reads the mask by lands precisely on global illumination, which is the observed symptom.
+- So the masks *are* live in a Shipping build (that standing open question is now answered), the discovery is
+  right, and the **mapping** is what is unproven - plausibly `SHOWFLAG_FIXED_IN_SHIPPING` flags compiled out of
+  one side and not the other. Writing a bit means guessing which flag gets turned off, and the guess cost a
+  broken frame.
+- **0.1.6131:** bit references are classified, confirmed against a second flag, and *reported only*. No force bit
+  is written, so the verify/restore/update branches for that mode are gone rather than left dead. Classification
+  stays - it is what stops the old redirect from replacing the engine's mask pointer, the defect that made these
+  overrides inert in the first place.
+- Added `ProbeShowFlagBitNumbers`: eight extra show flag names resolved through the already-anchored map purely to
+  log `name -> bit` once per session. If `GlobalIllumination` reports 12 next to `Vignette`'s 13, the
+  console-object side is exactly the table order and the discrepancy is entirely renderer-side.
+- Net effect on the user-visible bundle: unchanged from before 0.1.6128. Grain, motion blur and chromatic
+  aberration ride on `r.FilmGrain` / `r.MotionBlurQuality` / `r.SceneColorFringeQuality` (all verified live);
+  vignette remains the one post-processing effect with no working lever.
+
 ### 2026-08-16 - `ShowFlag.*` was never a value variable: four UE5 overrides had been writing the wrong structure
 
 - Follow-up to the 7-minute Talos run (`20260816_014003`, 35/40 installed, verified 35/35, re-asserted 0). The

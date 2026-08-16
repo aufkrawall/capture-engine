@@ -185,20 +185,21 @@ inline Selection SelectLayout(const ObjectProbe* probes, std::size_t count, std:
 }
 
 // Which byte of a force mask carries a flag, and which bit inside it.
+//
+// Diagnostic only - CE does not write force bits. Build 0.1.6128 did, using the
+// bit index each console object reports, and Talos lost all lighting
+// (20260816_165501). The indices are self-consistent (`Vignette` 13, `Grain` 14,
+// adjacent, matching the engine's own name table), so the defect is in the
+// mapping between them and the index the renderer reads the mask by - and that
+// table places `GlobalIllumination` at 12, exactly one below the first bit CE
+// set. Until a run measures that mapping, setting a bit means guessing which
+// flag is being turned off.
 constexpr std::size_t BitByteIndex(uint32_t bitNumber) noexcept {
     return bitNumber / 8;
 }
 
 constexpr uint8_t BitMask(uint32_t bitNumber) noexcept {
     return static_cast<uint8_t>(1u << (bitNumber % 8));
-}
-
-// `FConsoleVariableBitRef` reads the pair as: neither bit set means "leave the
-// game's own setting alone", the force-1 bit wins over the force-0 bit. So a
-// value is only expressible when it is 0 or 1, and driving it means owning the
-// bit in both masks rather than only setting one of them.
-constexpr bool IsExpressibleBitValue(uint32_t bits) noexcept {
-    return bits == 0 || bits == 1;
 }
 
 }  // namespace ce::ue5_layout
