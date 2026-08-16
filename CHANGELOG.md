@@ -1,9 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.1.6142
 
-Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.5299)
-(current `HEAD` build: 0.1.6060).
+Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.5299).
 
 ### New
 
@@ -17,7 +16,7 @@ Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/
   reloads, and skip missing CVars from older UE/plugin builds safely. `internal_texture_mip_bias` shifts which
   mip level all 2D textures sample from via `r.MipMapLODBias`; `display_gamma` selects `r.TonemapperGamma`
   with sRGB/Rec709 or a pure power-curve exponent and is guarded so `r.HDR.Display.OutputDevice` is only
-  written on SDR devices.
+  written on SDR devices. Added "internal_texture_mip_bias" and "display_gamma" to the per-app profile example in the default config template.
 - Added per-application `[ThirdParty]` override keys (`reshade_dll_path`, `optiscaler_dll_path`,
   `specialk_dll_path`) that take precedence over the global paths.
 
