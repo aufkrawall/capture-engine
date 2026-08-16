@@ -285,10 +285,15 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
 
     const size_t leaveEntry = install.find("ShouldLeavePresentEntryToForeignOverlayChain(");
     ASSERT_NE(leaveEntry, std::string::npos);
-    // The entry bytes are volatile (RTSS restores/re-patches them around every call), so the
-    // decision must rest on the loaded-overlay count, not on this instant's sample, and it must
-    // run before the bypass machinery that does need a visible foreign jump.
-    EXPECT_NE(install.find("externalJmpDetected || loadedOverlayCount >= 2", leaveEntry), std::string::npos);
+    // The entry bytes are volatile (RTSS restores/re-patches them around every call) and a
+    // loaded overlay may not have patched Present yet at all (Steam hooks it only when the
+    // game's first swapchain appears, seconds after CE's guarded temp swapchain installs CE's
+    // hooks — 20260816_154722). The decision must therefore rest on the loaded-overlay count
+    // alone, never on this instant's sample, and must run before the bypass machinery that does
+    // need a visible foreign jump.
+    EXPECT_NE(install.find("ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)", leaveEntry),
+              std::string::npos);
+    EXPECT_EQ(install.find("externalJmpDetected || loadedOverlayCount", leaveEntry), std::string::npos);
     const size_t bypassBlock = install.find("if (externalJmpDetected) {");
     ASSERT_NE(bypassBlock, std::string::npos);
     EXPECT_LT(leaveEntry, bypassBlock);

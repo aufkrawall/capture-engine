@@ -199,10 +199,9 @@ inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedO
 //    build 0.1.5959). Below the chain CE composites after all of them and is topmost, which is
 //    the project rule for CE's own overlay.
 //
-// A single foreign overlay does compose with a CE prepend, so there the second reason is the
-// one that decides; `MayPrependPresentEntryWhenBelowChainViewUnavailable` allows the prepend
-// back as a fallback when the body patch cannot be placed. With two or more it is forbidden
-// outright.
+// `MayPrependPresentEntryWhenBelowChainViewUnavailable` allows the prepend back as a fallback
+// when the body patch cannot be placed against a single overlay; with two or more it is
+// forbidden outright.
 //
 // The frame-generation interposer (Streamline / NvPresent) used to keep the prepend, because
 // the alternative then was wrapper-only interception, which cannot see a runtime present on a
@@ -210,9 +209,20 @@ inline bool IsSteamExternalChainOwnerByLoadOrderEvidence(const char* lastLoadedO
 // a deep body hook, and every present reaches it — including presents from swapchains that
 // pre-date injection, which the entry hook itself covers no better. The exception therefore
 // has no remaining purpose and would only keep FG games on the bottom layer.
-inline bool ShouldLeavePresentEntryToForeignOverlayChain(bool foreignEntryPatchOwnedByOverlay,
-                                                         size_t loadedOverlayModuleCount) {
-    return foreignEntryPatchOwnedByOverlay && loadedOverlayModuleCount >= 1;
+//
+// The decision is made from the loaded overlay MODULE, never from whether its patch is visible
+// at this instant. Steam installs its Present hook when the game's first swapchain appears,
+// which can be seconds after CE installed its own Present hooks from the guarded temp
+// swapchain; RTSS restores and re-patches those bytes around every call. Requiring a visible
+// patch made ownership a race — and CE winning it is precisely how the other overlay breaks.
+// Cyberpunk + Steam, 20260816_154722 (four launches, identical): CE prepended at 15:47:36.8
+// with `foreignJumpVisibleNow=0`, the game's swapchain arrived at 15:47:41.8, Steam met CE's
+// five-byte patch on the entry it was about to take, and the Steam overlay stopped working for
+// the whole session (`g_externalOverlayHook=0000000000000000` in every frame's diagnostics).
+// A loaded overlay owns that entry; CE goes below it and composites last, which is also the
+// project rule for CE's own overlay being topmost.
+inline bool ShouldLeavePresentEntryToForeignOverlayChain(size_t loadedOverlayModuleCount) {
+    return loadedOverlayModuleCount >= 1;
 }
 
 // Once CE has a deep Present hook below a foreign overlay chain, wrapping the DX12 swapchain
@@ -261,14 +271,12 @@ inline bool MayPrependPresentEntryWhenBelowChainViewUnavailable(size_t loadedOve
 // already took the entry recorded CE's relay inside its own saved chain, and un-prepending then
 // cannot repair that state (CE must not touch bytes it no longer owns).
 inline bool ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(bool entryPatchStillIntact,
-                                                             bool foreignEntryPatchOwnedByOverlay,
                                                              size_t loadedOverlayModuleCount,
                                                              bool alreadyLeftToForeignChain) {
     if (alreadyLeftToForeignChain || !entryPatchStillIntact) {
         return false;
     }
-    return ShouldLeavePresentEntryToForeignOverlayChain(foreignEntryPatchOwnedByOverlay,
-                                                        loadedOverlayModuleCount);
+    return ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayModuleCount);
 }
 
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No

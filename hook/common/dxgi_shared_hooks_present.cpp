@@ -264,13 +264,13 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     }
 
     // Decided before the bypass machinery below, because that machinery needs a foreign jump to
-    // be visible right now and this decision must not: with two loaded overlays the entry is
-    // theirs whether or not this instant's sample shows it (RTSS restores and re-patches those
-    // bytes around every call). With exactly one, a visible patch is required — an unpatched
-    // entry has no chain to go below, and assuming one would place a body patch into a pristine
-    // prolog for nothing.
-    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(
-            externalJmpDetected || loadedOverlayCount >= 2, loadedOverlayCount)) {
+    // be visible right now and this decision must not: a loaded overlay module owns that entry
+    // whether or not this instant's sample shows its patch. Steam hooks Present only once the
+    // game's first swapchain exists — seconds after CE's guarded temp swapchain installs its
+    // Present hooks — and RTSS restores and re-patches those bytes around every call. Sampling
+    // therefore decided nothing but who was first, and CE being first is what breaks the other
+    // overlay (Cyberpunk + Steam, 20260816_154722).
+    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)) {
         const PFN_Present previousPresent = dxgi_shared_oPresent;
         const PFN_Present1 previousPresent1 = dxgi_shared_oPresent1;
         dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
@@ -503,8 +503,7 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
         ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
     const bool frameGenerationInterposerLoaded =
         ce::overlay_compat::IsStreamlineInterposerModuleLoaded() || g_FGCompat.IsNvPresentLoaded();
-    if (!ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(
-            /*foreignEntryPatchOwnedByOverlay=*/true, loadedOverlayCount)) {
+    if (!ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)) {
         static std::atomic<int> s_keepEntryAfterWrapLogCount{0};
         const int logCount = s_keepEntryAfterWrapLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 500) == 0) {
@@ -527,8 +526,7 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
     const bool entryPatchIntact =
         InlineHook::IsInstalledEntryPatchIntact(dxgi_shared_s_presentEntryAddress, nullptr);
     if (!ce::overlay_compat::ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(
-            entryPatchIntact, /*foreignEntryPatchOwnedByOverlay=*/true, loadedOverlayCount,
-            /*alreadyLeftToForeignChain=*/false)) {
+            entryPatchIntact, loadedOverlayCount, /*alreadyLeftToForeignChain=*/false)) {
         if (!entryPatchIntact) {
             HookLogImportant(
                 "DXGIShared: Cannot leave the Present entry after wrapped FG runtime swapchain — a foreign "

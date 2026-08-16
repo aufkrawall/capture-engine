@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-16 - Steam's overlay stopped working next to CE's: entry ownership was decided by a race CE now always wins
+
+- Crashes gone (0.1.6122 confirmed on hardware), but the Steam overlay no longer rendered in Cyberpunk
+  (`20260816_154722`, four launches, identical evidence).
+- CE owned the `dxgi!CDXGISwapChain::Present` entry: `[OVERLAY LAYER] CE composites ABOVE the foreign Present chain
+  (site=present-entry-patch … foreignOverlays=1)`, and `g_externalOverlayHook=0000000000000000` in every frame's
+  diagnostics — CE never observed *any* foreign patch on that entry, i.e. **Steam never hooked Present at all**.
+  Steam does patch `CreateSwapChainForHwnd` (CE bypasses that E9 for its temp swapchain), so its hooking engine is
+  alive and simply declined an entry that already carried a foreign `E9`.
+- **Why now:** `ShouldLeavePresentEntryToForeignOverlayChain` required, with exactly one overlay, that the foreign
+  patch be *visible right now* — "an unpatched entry has no chain to go below". But Steam hooks Present only when
+  the game's first swapchain appears (`15:47:41.8`), while CE's guarded temp swapchain installs Present hooks as
+  soon as the hook thread runs (`15:47:36.8`). The previous fix, which made that guarded route work at all without
+  a dxgi proxy, therefore turned a latent coin flip into a systematic CE win — and CE winning it is exactly the
+  documented way to break the other overlay.
+- **Fix (0.1.6123):** the decision takes the loaded overlay MODULE count and nothing else —
+  `ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)`, one argument, `>= 1`. A loaded overlay owns
+  that entry whether or not it has patched it yet. CE takes its deep body hook below the chain, which is a
+  full-strength Present view (it also covers swapchains that pre-date injection) and makes CE topmost — the
+  project rule anyway. `InstallDeepHook` already handles a pristine prolog: with no jump visible it uses the
+  caller's observed span, and the install site passes the widest form CE recognizes (14 bytes) precisely so a later
+  foreign `E9` or `FF25` cannot land inside CE's patch.
+- Nothing else changed: the prepend survives as the refusal fallback against a single overlay
+  (`MayPrependPresentEntryWhenBelowChainViewUnavailable`), and with zero overlay modules CE still takes the entry
+  outright.
+- Residual, deliberately not addressed: an overlay that loads *after* CE's Present install still meets CE's entry
+  patch (`main_overlay_detect.cpp` logs that join). Steam and RTSS inject at process start, so the install-time
+  decision covers the real cases; un-prepending live from the loader callback would need thread quiescing under
+  the loader lock.
+- **Needs a hardware check:** Shift+Tab in Cyberpunk with the CE overlay active, plus one DLSS-FG and one FSR-FG
+  run to confirm the below-the-chain topology holds across FG transitions.
+
 ### 2026-08-16 - Cyberpunk still crashed on start: CE's Streamline override was applied to HALF the plugin set
 
 - `20260816_153027`, build 0.1.6121 (with the duplicate-instance fix from the entry below). Same crash site as the
@@ -9,7 +41,7 @@
   | --- | --- | --- |
   | `sl.interposer` | 2.7.1 | game dir (`H:\SteamLibrary\…\bin\x64`) |
   | `1B0_E658703.dll` = **sl.common** | **2.11.0** | `C:\ProgramData\NVIDIA\NGX\models\sl_common_0\…` |
-  | `sl.reflex` (and dlss_g / dlss_d / pcl / nis) | **2.12.0** | `C:\Users\…\npi\sl\` (CE's override) |
+  | `sl.reflex` (and dlss_g / dlss_d / pcl / nis) | **2.12.0** | the configured `streamline_dll_path` override dir |
   sl.reflex 2.12 asked that 2.11 sl.common for an interface it does not provide and called through the null result.
 - **Why the mix:** NGX loaded its OTA sl.common at `15:30:37.416`; CE's `LdrLoadDll` redirect was armed at
   `15:30:37.879` — **463 ms too late**. Streamline had already resolved its core, so that load could not be
