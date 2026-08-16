@@ -622,6 +622,38 @@ TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRCl
     EXPECT_LT(restorePolicy, clearCall);
 }
 
+TEST(DXGISharedSourceTest, CommandQueueAtSwapchainCreateProvesTheGameD3D12DeviceExists) {
+    namespace fs = std::filesystem;
+    // dx12_fg_switch_test under Steam, 20260816_023850: CE injected after the
+    // app had already created its D3D12 device, so the D3D12CreateDevice hook
+    // never fired and WasD3D12DeviceCreated() stayed false for the whole
+    // process. DX12Hook::Init logged deviceCreated=0, deferred the eager temp
+    // swapchain because Steam was loaded, and the postponed install then waited
+    // forever for a creation call that could not arrive - no Present hooks were
+    // installed and the overlay never appeared.
+    //
+    // A command queue handed to CreateSwapChainFor* cannot exist without its
+    // device, so that is the proof, and it must be recorded where CE first
+    // holds it rather than from ProcessFrame (which needs the missing hooks).
+    const std::string wrapper =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    ASSERT_FALSE(wrapper.empty());
+
+    const std::size_t queryInterface = wrapper.find("QueryInterface(IID_PPV_ARGS(&pQueue))");
+    ASSERT_NE(queryInterface, std::string::npos) << "the D3D12 command-queue probe must still exist";
+    const std::size_t markDevice = wrapper.find("MarkD3D12DeviceCreated()", queryInterface);
+    ASSERT_NE(markDevice, std::string::npos)
+        << "a proven D3D12 command queue must mark the game's device as existing";
+
+    // It has to happen before the FG-runtime skip and the invisible-window
+    // bypass, both of which return early and would otherwise swallow the proof.
+    const std::size_t fgRuntimeSkip = wrapper.find("ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule",
+                                                   queryInterface);
+    ASSERT_NE(fgRuntimeSkip, std::string::npos);
+    EXPECT_LT(markDevice, fgRuntimeSkip)
+        << "the device proof must not be skipped for frame-generation runtime queues";
+}
+
 TEST(DXGISharedTest, AuthoritativeFFXConfigureOffVetoesHeuristicFSRUntilItIsReEnabled) {
     using ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff;
 

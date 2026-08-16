@@ -13,6 +13,7 @@
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "hook_common.h"
+#include "wrapper_hooks.h"
 
 static bool g_DisableSwapchainWrapper = false;
 
@@ -27,6 +28,21 @@ bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* ca
     if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue))) || !pQueue) {
         return false;
     }
+
+    // A live command queue is conclusive proof that the game's D3D12 device
+    // already exists, whatever CE did or did not witness of its creation.
+    // WasD3D12DeviceCreated() is asked exactly that question, but it only ever
+    // answered "did CE observe D3D12CreateDevice" - which is false for the
+    // whole life of a process CE injected into after device creation. In
+    // dx12_fg_switch_test under Steam (20260816_023850) the device predated
+    // injection, so the Steam-deferred Present hook install kept postponing
+    // itself waiting for a creation call that could never arrive, no Present
+    // hooks were ever installed, and the overlay never appeared at all. The
+    // existing late recovery cannot cover this: it runs from ProcessFrame,
+    // which needs the very Present hooks that are missing. Marking here is the
+    // earliest point CE holds proof, and it is never earlier than the normal
+    // path, where the flag is already set by the time a swapchain is created.
+    MarkD3D12DeviceCreated();
 
     void** vtbl = *reinterpret_cast<void***>(pQueue);
     char vtableModulePath[MAX_PATH] = {};
