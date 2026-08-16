@@ -758,6 +758,8 @@ dx12_focus_analysis=false
 ;UE5.tonemapper_sharpen=0.5
 ;UE5.internal_fps_limit=60
 ;UE5.internal_anisotropic_filtering=8x
+;UE5.internal_texture_mip_bias=-2
+;UE5.display_gamma=srgb
 ; Third-party tool paths can be overridden per application. Values follow the
 ; same file/folder rules as [ThirdParty] above; empty uses the global path.
 ; Changing them requires relaunching the game.
