@@ -68,6 +68,21 @@ Primary sources:
   would have refused) and exercises the write-through check: the game moved the *global* to 2.5 while CE's own
   shadow still read 3.0, which is exactly the drift that is invisible without reading the engine's storage back.
   Re-asserted once, then held at 33/33.
+- `display_gamma=default|srgb|1.0..3.0` selects UE's display gamma transform, for titles whose own gamma option is
+  missing or bugged (Talos ships one that visibly does nothing). `srgb` is the piecewise sRGB/Rec709 curve, a number
+  is a pure power curve of that exponent. The request is carried **as the `r.TonemapperGamma` value itself** -
+  negative untouched, 0 is UE's own documented "default behavior" (the piecewise transform), positive is the power
+  curve - so there is one field and one predicate rather than a mode enum that can drift out of sync.
+  Only the sRGB direction writes `r.HDR.Display.OutputDevice`: UE raises the device to explicit-gamma mapping by
+  itself once the exponent is positive, so the pure-power direction never selects a device. Types read from the
+  binary, not assumed: OutputDevice takes its default in a GPR (int32), TonemapperGamma in `xmm2` (float).
+- **`ApplyGuard` - overrides that are only safe in a particular engine state.** A spec can carry a guard evaluated
+  against *the value the game currently holds*, checked at every install site before anything is written, so a
+  refusal leaves memory untouched rather than being undone afterwards. `r.HDR.Display.OutputDevice` needs it because
+  that CVar doubles as the **HDR output selector** (engine help: 0 sRGB, 1 Rec709, 2 explicit gamma, 3-6
+  ST-2084/ScRGB HDR, 7-9 linear). An unguarded write would silently drop an HDR game to SDR and ruin an HDR capture,
+  so the override applies only on an SDR device; under HDR the option does nothing at all. The mechanism is general
+  - reach for it whenever the game's current value, not the config, decides whether a write is safe.
 - `internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` overrides UE5's internal anisotropic filtering with a
   single shared level applied to both `r.MaxAnisotropy` and `r.VT.MaxAnisotropy` (both int32 render-thread CVars).
   `off`/`1x` disables anisotropic filtering. This is separate from the general `[Graphics] anisotropic_filtering`

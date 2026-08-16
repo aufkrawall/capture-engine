@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-16 - Display gamma override, and a general "only safe in this engine state" guard
+
+- `[UE5] display_gamma=default|srgb|1.0..3.0` (0.1.6139, shared ABI 42). Motivated by Talos shipping a
+  piecewise-sRGB vs power-2.2 option that visibly does nothing - the kind of bug CE can route around, because it
+  writes the CVar directly instead of going through the game's settings code.
+- Carried as the `r.TonemapperGamma` value itself: negative untouched, 0 is UE's documented "default behavior"
+  (piecewise sRGB/Rec709), positive is a pure power curve. One field, one predicate, no separate mode enum.
+  Only the sRGB direction writes `r.HDR.Display.OutputDevice` - UE raises the device to explicit-gamma mapping on
+  its own once the exponent is positive.
+- **New: `ApplyGuard`.** `r.HDR.Display.OutputDevice` doubles as the HDR output selector (3-6 are ST-2084/ScRGB),
+  so writing an SDR device over it would silently drop an HDR game out of HDR and ruin the capture. A spec can now
+  carry a guard judged from *the value the game currently holds*, checked at every install site before any write.
+  General mechanism, not a special case - use it whenever the engine's current state decides whether a write is
+  safe. Under HDR the gamma option does nothing rather than degrading anything.
+- Types read from the binary again (GPR = int32 for OutputDevice, `xmm2` = float for TonemapperGamma). That check
+  has now caught two mistypes and prevented a third; it should be routine for every new spec.
+- The ABI-name lockstep noted last time paid off immediately: bumping 41 -> 42 needed
+  `SHARED_MEM_BASE_NAME`/`SHARED_MEM_DISCOVERY` moved in the same commit.
+
 ### 2026-08-16 - UE5 texture mip bias override, and two traps it walked into
 
 - `[UE5] internal_texture_mip_bias=default|-15.0..15.0` drives `r.MipMapLODBias` (0.1.6138, shared ABI 41).
