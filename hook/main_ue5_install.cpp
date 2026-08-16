@@ -397,6 +397,16 @@ void ForgetUnloadedOverrides() {
 
 void RestoreOverride(std::size_t specIndex, const char* reason) {
   OverrideState& state = g_overrides[specIndex];
+  if (state.bitReference) {
+    // Only CE's own bit goes back. Writing the whole byte would undo whatever
+    // the game did to the other show flags sharing it.
+    UpdateForceMaskBit(state.forceZeroByte, state.bitMask, state.originalForceZeroBit);
+    UpdateForceMaskBit(state.forceOneByte, state.bitMask, state.originalForceOneBit);
+    HookLogImportant("UE5 overrides: restored the game's %s show flag force bit (%s)",
+                     ce::ue5_cvar::kSpecs[specIndex].name, reason);
+    state = {};
+    return;
+  }
   if (!IsOverrideInstalled(state))
     return;
   if (state.dataShadowAddress) {

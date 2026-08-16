@@ -108,6 +108,15 @@ struct OverrideState {
   bool dataPointerValueWritten = false;
   bool dataShadowPointerRedirect = false;
   bool registryResolved = false;
+  // Bit-reference mode (`FConsoleVariableBitRef`, UE's `ShowFlag.*`). Deliberately
+  // NOT part of `IsOverrideInstalled`: nothing verifies or re-asserts a force bit,
+  // it is written once and handed back on teardown.
+  bool bitReference = false;
+  uintptr_t forceZeroByte = 0;
+  uintptr_t forceOneByte = 0;
+  uint8_t bitMask = 0;
+  bool originalForceZeroBit = false;
+  bool originalForceOneBit = false;
   // Ref-redirect mode only. Repointing the wrapper's `Ref` covers reads that go
   // back through the wrapper (`TAutoConsoleVariable::GetValueOnRenderThread`),
   // but UE's renderer routinely caches the `TConsoleVariableData<T>*` itself
@@ -231,6 +240,11 @@ enum class ConsoleObjectOutcome : uint8_t {
 
 ConsoleObjectOutcome InstallConsoleObjectOverride(std::size_t specIndex, HMODULE owner,
                                                   uintptr_t consoleObject, const char* origin);
+// Sets or clears one bit of a UE force mask without disturbing the flags sharing
+// the byte, and reads one back.
+void UpdateForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool set);
+bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set);
+
 // Reports every recorded bit-reference candidate whose mask pair a second
 // candidate independently confirms, once each. Returns how many were reported.
 std::size_t ReportConfirmedBitReferences(const char* origin);

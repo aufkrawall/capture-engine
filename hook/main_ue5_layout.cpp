@@ -226,6 +226,56 @@ bool InstallInlinePair(std::size_t specIndex, HMODULE owner, uintptr_t consoleOb
 // The classification stays: it is what stops the old redirect from replacing
 // the engine's mask pointer, which is the defect that made these overrides
 // inert in the first place.
+// Exactly one flag is driven, and it is the only one with no alternative: every
+// other show flag CE targets is already covered by a value CVar
+// (`r.FilmGrain`, `r.MotionBlurQuality`, `r.SceneColorFringeQuality`), while UE
+// ships no vignette CVar at all - the whole binary contains only the show flag's
+// own name and its localization key.
+//
+// One bit rather than four because the four-at-once write in 0.1.6128 cost a
+// broken frame and taught nothing about which bit did it. The engine reads these
+// masks through the console object's own pointer, so no static reference to them
+// exists to disassemble; the convention has to be measured. Vignette is bit 13
+// and `GlobalIllumination` is bit 12, so a uniform off-by-one is visible as
+// exactly the 0.1.6128 symptom, and any other outcome is equally diagnostic.
+constexpr const char* kDrivenBitReference = "ShowFlag.Vignette";
+
+bool DriveBitReference(std::size_t specIndex, const BitReferenceCandidate& candidate,
+                       const char* origin) {
+  const uint32_t desired = g_desired[specIndex].bits;
+  if (desired != 0)
+    return false;  // Only "force off" is expressible without knowing the roles.
+  const std::size_t byteIndex = ce::ue5_layout::BitByteIndex(candidate.bitNumber);
+  const uint8_t mask = ce::ue5_layout::BitMask(candidate.bitNumber);
+  const uintptr_t forceZeroByte = candidate.forceZeroMask + byteIndex;
+  const uintptr_t forceOneByte = candidate.forceOneMask + byteIndex;
+  bool zeroBit = false;
+  bool oneBit = false;
+  if (!ReadForceMaskBit(forceZeroByte, mask, zeroBit) || !ReadForceMaskBit(forceOneByte, mask, oneBit))
+    return false;
+
+  OverrideState& state = g_overrides[specIndex];
+  state = {};
+  state.object = candidate.object;
+  state.bitReference = true;
+  state.forceZeroByte = forceZeroByte;
+  state.forceOneByte = forceOneByte;
+  state.bitMask = mask;
+  state.originalForceZeroBit = zeroBit;
+  state.originalForceOneBit = oneBit;
+  UpdateForceMaskBit(forceOneByte, mask, false);
+  UpdateForceMaskBit(forceZeroByte, mask, true);
+  HookLogImportant(
+      "UE5 overrides: %s force bit SET via %s (object=%p force0=%p force1=%p bit=%u byte=%zu "
+      "mask=0x%02X prevForce0=%d prevForce1=%d). This is the single-flag measurement of the mask "
+      "convention: if vignette disappears the mapping is right, if global illumination disappears "
+      "the index is off by one, if nothing changes the masks are inert in this build",
+      ce::ue5_cvar::kSpecs[specIndex].name, origin, reinterpret_cast<void*>(candidate.object),
+      reinterpret_cast<void*>(candidate.forceZeroMask), reinterpret_cast<void*>(candidate.forceOneMask),
+      candidate.bitNumber, byteIndex, mask, zeroBit ? 1 : 0, oneBit ? 1 : 0);
+  return true;
+}
+
 void ReportBitReference(std::size_t specIndex, const BitReferenceCandidate& candidate,
                         const char* origin) {
   HookLogImportant(
@@ -240,6 +290,40 @@ void ReportBitReference(std::size_t specIndex, const BitReferenceCandidate& cand
 }
 
 }  // namespace
+
+void UpdateForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool set) {
+  // The masks are byte arrays, so CE's bit shares its 32-bit word with other
+  // show flags. Compare-exchange on the containing word is what keeps a
+  // concurrent engine-side update to a neighbouring flag from being lost.
+  const uintptr_t wordAddress = byteAddress & ~uintptr_t{3};
+  const unsigned shift = static_cast<unsigned>((byteAddress - wordAddress) * 8);
+  const uint32_t shiftedMask = static_cast<uint32_t>(mask) << shift;
+  const LONG bits = static_cast<LONG>(shiftedMask);
+  if (!IsWritableRange(reinterpret_cast<void*>(wordAddress), sizeof(LONG)))
+    return;
+  auto* word = reinterpret_cast<volatile LONG*>(wordAddress);
+  LONG observed = *word;
+  for (;;) {
+    const LONG wanted = set ? (observed | bits) : (observed & ~bits);
+    if (wanted == observed)
+      return;
+    const LONG previous = InterlockedCompareExchange(word, wanted, observed);
+    if (previous == observed)
+      return;
+    observed = previous;
+  }
+}
+
+bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set) {
+  const uintptr_t wordAddress = byteAddress & ~uintptr_t{3};
+  uint8_t value = 0;
+  if (!IsWritableRange(reinterpret_cast<void*>(wordAddress), sizeof(LONG)) ||
+      !ReadValue(reinterpret_cast<const void*>(byteAddress), value)) {
+    return false;
+  }
+  set = (value & mask) != 0;
+  return true;
+}
 
 bool DescribeBitReference(uintptr_t consoleObject, uintptr_t& forceZeroMask, uintptr_t& forceOneMask,
                           uint32_t& bitNumber) {
@@ -325,6 +409,11 @@ std::size_t ReportConfirmedBitReferences(const char* origin) {
     if (agreeing < kBitReferenceConfirmations)
       continue;
     candidate.reported = true;
+    if (std::strcmp(ce::ue5_cvar::kSpecs[index].name, kDrivenBitReference) == 0 &&
+        DriveBitReference(index, candidate, origin)) {
+      ++reported;
+      continue;
+    }
     ReportBitReference(index, candidate, origin);
     ++reported;
   }
