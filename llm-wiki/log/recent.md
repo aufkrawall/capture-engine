@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-08-16 - UE5 texture mip bias override, and two traps it walked into
+
+- `[UE5] internal_texture_mip_bias=default|-15.0..15.0` drives `r.MipMapLODBias` (0.1.6138, shared ABI 41).
+  Distinct from the `[Graphics]` sampler mip overrides: this changes what the engine asks for, so it also moves
+  texture streaming.
+- **The CVar is a float, verified not assumed.** The registration passes its default in `xmm2` (`0f57d2`,
+  `xorps xmm2,xmm2`) - the float overload; an int default goes in a GPR. Same check should be used for any future
+  spec: it is a two-minute scan and it is exactly the bug that made
+  `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` silently unreachable for its whole life.
+- **0 is a real value here**, not "leave alone", unlike every other numeric UE5 knob. The untouched state is a
+  sentinel outside UE's -15..15 range; `IsTextureMipBiasRequested` is the one predicate that decides it.
+- Two process notes the gate taught: new specs must be **appended** to `kSpecs` (`kTonemapperSharpenIndex` is
+  positional), and an ABI bump must move `SHARED_MEM_BASE_NAME`/`SHARED_MEM_DISCOVERY` too - those literals are
+  hardcoded while the event names are derived, so a partial bump compiles fine and only the name test catches it.
+
 ### 2026-08-16 - Show flag force bits: one bit proven safe on two engine versions, effect still unproven
 
 - **Handoff note.** The `ShowFlag.*` force bits are the only open part of the UE5 override work. The full state,

@@ -54,6 +54,14 @@ Primary sources:
   value (fractional values such as 59.94 are accepted) caps the engine frame rate. This is deliberately independent
   from CaptureEngine's own fps limiter: the engine limiter paces `FEngineLoop::Tick`, CE's limiter paces presents, and
   both can be active at once.
+- `internal_texture_mip_bias=default|-15.0..15.0` overrides UE's own texture mip bias (`r.MipMapLODBias`).
+  Negative sharpens, positive blurs, fractional values are accepted, and the range is UE's own documented one.
+  Separate from the general `[Graphics] mip_bias` / `mip_mapping` overrides: those act on API sampler state, while
+  this changes what the engine asks for, so it also affects which mips texture streaming loads. Two traps, both
+  verified rather than assumed: the CVar is a **float** (the Talos registration passes its default in `xmm2` -
+  `0f57d2`, the float overload; an int default would go in a GPR), and **0 is a real value** ("no bias"), so the
+  untouched state is a sentinel outside the accepted range rather than 0 or a negative number
+  (`IsTextureMipBiasRequested`). Shared ABI 41.
 - `internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` overrides UE5's internal anisotropic filtering with a
   single shared level applied to both `r.MaxAnisotropy` and `r.VT.MaxAnisotropy` (both int32 render-thread CVars).
   `off`/`1x` disables anisotropic filtering. This is separate from the general `[Graphics] anisotropic_filtering`
@@ -501,6 +509,12 @@ mode is a visibly broken frame in the user's game.
   clean passes, so a constantly rewritten CVar stays quiet while a rare regression is still logged; the summary line
   is emitted only when the counts change. There is no bit-reference branch here: CE never writes a force bit, so
   there is nothing to verify or restore for one.
+- New specs are **appended** to `kSpecs`, never inserted: `kDenoiserModeIndex` and `kTonemapperSharpenIndex` are
+  positional, so an earlier entry silently retargets them. `PositionalSpecIndicesStillNameTheirCVars` pins both.
+- Bumping `SHARED_MEMORY_VERSION` requires bumping the `SHARED_MEM_BASE_NAME` / `SHARED_MEM_DISCOVERY` literals in
+  the same commit - they are hardcoded, not derived, and that lockstep is what stops a hook or Vulkan layer built
+  against an older layout from opening the mapping (ABI 34). The event names *are* derived from the version.
+  `SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting` pins all of them and is what catches a half-done bump.
 - The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are
