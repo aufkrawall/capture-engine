@@ -18,6 +18,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 }  // extern "C" (DX12_SetCommandQueue)
 
 static void FindAndWrapPreExistingSwapchains();
+void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason);
 
 CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
 
@@ -152,6 +153,25 @@ void DX12Hook::Init() {
     FindAndWrapPreExistingSwapchains();
 }
 
+// Installs Present hooks using ONLY the route that is provably safe while a
+// third-party overlay owns the creation path: the system-DXGI factory slot,
+// which refuses a slot owned by a foreign module and bypasses a foreign entry
+// patch, so no overlay handler is entered. Idempotent and cheap enough to retry
+// from the service pass; the unguarded historical fallback is never reached.
+void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason) {
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        return;
+    }
+    static std::atomic<int> s_attemptLogCount{0};
+    const int logCount = s_attemptLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 5 || (logCount % 60) == 0) {
+        HookLogImportant(
+            "DX12: Trying the guarded system-DXGI temp swapchain for Present hooks (%s, attempt %d)",
+            reason && reason[0] ? reason : "unknown", logCount + 1);
+    }
+    HookSwapchainVTableViaTempSwapchain(false, /*guardedSystemRouteOnly=*/true);
+}
+
 void DX12Hook::EnsurePresentHooks() {
     static std::atomic<bool> s_done{false};
     bool expected = false;
@@ -242,6 +262,22 @@ static void FindAndWrapPreExistingSwapchains() {
     if (ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall(
             false, dx12_hook_g_EarlyPresentHookInstallDeferred.load(std::memory_order_acquire),
             WasD3D12DeviceCreated(), overlayModule != nullptr)) {
+        // Waiting for the game's own D3D12 device is unreachable in the very
+        // case this function exists for. When the swapchain predates injection,
+        // so do the device and the factory, so no CE hook can ever observe any
+        // of them and WasD3D12DeviceCreated() stays false for the process
+        // lifetime — dx12_fg_switch_test under Steam (20260816_025920) ran with
+        // deviceCreated=0, no Present hooks and no overlay at all.
+        //
+        // The guarded system-DXGI route is safe to run anyway: it refuses a
+        // creation slot owned by a foreign module and bypasses a foreign entry
+        // patch, so it enters no overlay handler — which is precisely the crash
+        // the postponement guards against. Only the unguarded historical
+        // fallback stays deferred.
+        TryInstallPresentHooksViaGuardedTempSwapchain("postponed deferral");
+        if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+            return;
+        }
         if (!dx12_hook_g_PostponedPresentHookInstallLogged.exchange(true, std::memory_order_acq_rel)) {
             HookLogImportant(
                 "DX12: Present hooks still uninstalled and third-party overlay %s owns the creation path before the "
@@ -286,6 +322,17 @@ void DX12Hook::ServicePendingPresentHooks() {
     const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
     if (ce::dx12_overlay_policy::ShouldPostponeDeferredTempSwapchainPresentHookInstall(
             false, true, WasD3D12DeviceCreated(), overlayModule != nullptr)) {
+        // Retry the guarded route every service pass. Under late injection the
+        // device signal never arrives, so this is the only way out; the route
+        // enters no overlay handler, and the unguarded fallback stays deferred.
+        TryInstallPresentHooksViaGuardedTempSwapchain("service pass");
+        if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+            dx12_hook_g_EarlyPresentHookInstallDeferred.store(false, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Present hooks installed via the guarded system-DXGI temp swapchain while %s owns the "
+                "creation path — the game's swapchain predated injection, so no creation call could be intercepted",
+                overlayModule ? overlayModule : "a third-party overlay");
+        }
         return;  // Still inside the startup window; stay armed.
     }
     HookLogImportant(

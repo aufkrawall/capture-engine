@@ -608,7 +608,7 @@ void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pS
 // Forward declarations
 void InstallGlobalVTableHooks();;
 
-void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false);;
+void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false, bool guardedSystemRouteOnly = false);
 void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);
 void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);
 void StartTransitionCooldown();
@@ -628,7 +628,7 @@ bool IsStreamlineLoaded();
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 void InstallGlobalVTableHooks();
-void HookSwapchainVTableViaTempSwapchain(bool presentOnly);
+void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly);
 void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx, D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride);
 bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format);
 bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue, const char* context);

@@ -229,7 +229,7 @@ s_installed.store(true, std::memory_order_release);
 // for Strange Brigade)
 
 
-void HookSwapchainVTableViaTempSwapchain(bool presentOnly) {
+void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly) {
 HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
 HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
 if (!hDXGI || !hD3D12)
@@ -367,7 +367,19 @@ if (hSystemDXGI && hSystemDXGI != hDXGI) {
 // CRITICAL: Call the ORIGINAL CreateSwapChainForHwnd to get an unwrapped
 // swapchain We must use oCreateSwapChainForHwndGlobal directly to bypass our
 // wrapper If the original is not available, skip vtable hook installation
-if (!pSwapChain) {
+if (!pSwapChain && guardedSystemRouteOnly) {
+    // Called from the third-party-overlay deferral. Only the system-DXGI route
+    // above is provably safe there: it refuses a slot owned by a foreign module
+    // and bypasses a foreign entry patch, so it enters no overlay handler. The
+    // historical path below has neither guarantee and is what recursed to death
+    // through Steam's NULL dispatch slots, so it stays deferred.
+    static std::atomic<bool> s_guardedOnlyRefusedLogged{false};
+    if (!s_guardedOnlyRefusedLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Guarded system-DXGI temp swapchain unavailable while a third-party overlay owns the "
+            "creation path — leaving Present hooks deferred rather than entering the unguarded fallback");
+    }
+} else if (!pSwapChain) {
     const bool factoryMatchesSavedSlotVtable =
         ce::dx12_factory_slot::ShouldInvokeSavedCreateSwapChainForHwndSlot(
             static_cast<const void*>(dx12_hook_s_savedCreateSwapChainForHwndVtable), pFactory);

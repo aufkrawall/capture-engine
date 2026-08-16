@@ -622,6 +622,45 @@ TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRCl
     EXPECT_LT(restorePolicy, clearCall);
 }
 
+TEST(DXGISharedSourceTest, DeferredPresentHookInstallStillTriesTheGuardedTempSwapchain) {
+    namespace fs = std::filesystem;
+    // dx12_fg_switch_test under Steam, 20260816_025920: the app's swapchain,
+    // factory and device all predated injection, so no CE hook could observe
+    // any of them, WasD3D12DeviceCreated() stayed false for the whole process,
+    // and the third-party-overlay postponement waited forever on a signal that
+    // could never arrive. deviceCreated=0, no Present hooks, no overlay at all
+    // - which is precisely the case FindAndWrapPreExistingSwapchains exists to
+    // cover, broken by the crash fix's release condition.
+    //
+    // The postponement must therefore still attempt the guarded system-DXGI
+    // route, which refuses a foreign-owned creation slot and bypasses a foreign
+    // entry patch (so it enters no overlay handler), while the unguarded
+    // historical fallback stays deferred.
+    const std::string mainSrc =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook_main.cpp");
+    ASSERT_FALSE(mainSrc.empty());
+
+    const std::size_t postponeCheck = mainSrc.find("ShouldPostponeDeferredTempSwapchainPresentHookInstall");
+    ASSERT_NE(postponeCheck, std::string::npos);
+    const std::size_t guardedAttempt =
+        mainSrc.find("TryInstallPresentHooksViaGuardedTempSwapchain", postponeCheck);
+    ASSERT_NE(guardedAttempt, std::string::npos)
+        << "a postponed install must still try the guarded route, or late injection never gets Present hooks";
+
+    // Both deferral sites, not just one: Init's FindAndWrapPreExistingSwapchains
+    // and the hook thread's service-pass retry.
+    const std::size_t secondAttempt =
+        mainSrc.find("TryInstallPresentHooksViaGuardedTempSwapchain", guardedAttempt + 1);
+    EXPECT_NE(secondAttempt, std::string::npos) << "the service-pass retry must attempt it too";
+
+    // The guarded-only mode must exist and refuse the unguarded fallback.
+    const std::string install =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp");
+    ASSERT_FALSE(install.empty());
+    EXPECT_NE(install.find("guardedSystemRouteOnly"), std::string::npos)
+        << "the temp-swapchain installer needs a mode that stops before the unguarded fallback";
+}
+
 TEST(DXGISharedSourceTest, CommandQueueAtSwapchainCreateProvesTheGameD3D12DeviceExists) {
     namespace fs = std::filesystem;
     // dx12_fg_switch_test under Steam, 20260816_023850: CE injected after the
