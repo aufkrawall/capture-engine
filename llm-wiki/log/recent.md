@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-08-16 - Cyberpunk still crashed on start: CE's Streamline override was applied to HALF the plugin set
+
+- `20260816_153027`, build 0.1.6121 (with the duplicate-instance fix from the entry below). Same crash site as the
+  earlier `20260816_032716` session: `Cyberpunk2077 -> sl_reflex -> sl.common`, `call [rax+0x50]` with `rax=0`.
+- **The dump names the bug outright — one Streamline runtime, three versions:**
+  | module | version | path |
+  | --- | --- | --- |
+  | `sl.interposer` | 2.7.1 | game dir (`H:\SteamLibrary\…\bin\x64`) |
+  | `1B0_E658703.dll` = **sl.common** | **2.11.0** | `C:\ProgramData\NVIDIA\NGX\models\sl_common_0\…` |
+  | `sl.reflex` (and dlss_g / dlss_d / pcl / nis) | **2.12.0** | `C:\Users\…\npi\sl\` (CE's override) |
+  sl.reflex 2.12 asked that 2.11 sl.common for an interface it does not provide and called through the null result.
+- **Why the mix:** NGX loaded its OTA sl.common at `15:30:37.416`; CE's `LdrLoadDll` redirect was armed at
+  `15:30:37.879` — **463 ms too late**. Streamline had already resolved its core, so that load could not be
+  redirected. Every *later* plugin load (39.2x) did reach the redirect and became the npi 2.12 copy. CE's preload
+  also added a third, unused sl.common 2.12 at 37.584, because Streamline had probed and unloaded the game's own
+  `sl.common.dll` (37.435 → 37.477) and `GetModuleHandleA` therefore found nothing.
+- **Fix (0.1.6122): the Streamline override is all-or-nothing, anchored on `sl.common`.** See the invariant in
+  `graphics-overrides-and-frame-pacing.md`. Once an image providing sl.common is seen outside the override
+  location, a latch refuses every `sl.*` redirect and the whole `sl.*` preload set; the game/driver keeps one
+  coherent distribution. Answering "which plugin does this image provide" needs the resolved full path
+  (`ResolveStreamlineProvidedDllName`), because the NGX cache names every plugin `1B0_E658703.dll`. A startup
+  module scan covers cores that predate CE. `nvngx_dlss*` / `nvngx_deepdvc` / `nvlowlatencyvk` are outside the gate.
+- **Why not "arm the redirect earlier" instead:** the hook thread reaches `PreloadConfiguredGraphicsRuntimeDlls`
+  after the crash-handler and IAT passes, and the `LdrLoadDll` inline hook quiesces peer threads — moving either
+  into `DllMain` (loader lock) is not acceptable. Winning the race is timing-dependent by nature; refusing a
+  partial override is not. When CE *does* win (session `20260816_045933`: CE's sl.common preloaded first, the later
+  NGX `sl_common_0` load redirected onto it), the latch never sets and the override applies in full.
+- Confirmed working in this session's log: the duplicate guard from the entry below fired correctly —
+  `Loader redirect refused for …\npi\sl\sl.dlss.dll: sl.dlss.dll is already loaded from H:\SteamLibrary\…`.
+- **Still not hardware-validated.** Unit/source-policy tests only; a real Cyberpunk launch has to confirm it.
+
 ### 2026-08-16 - Cyberpunk crashed on start inside Streamline: CE's own DLL redirect turned a module *pin* into a duplicate `sl.interposer`
 
 - Two crashes, both inside NVIDIA Streamline, both `0xC0000005` on a null this-pointer, neither in CE code

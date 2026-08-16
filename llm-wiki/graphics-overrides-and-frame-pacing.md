@@ -236,6 +236,20 @@ Primary sources:
   path), backed by `ce::graphics_runtime::WouldRedirectDuplicateLoadedModule`. This generalizes the rule the preload
   already followed. The override still wins every load it can actually win — a name that is not loaded yet, and a
   repeat load of the override copy itself.
+- **Invariant (build 0.1.6122): the Streamline override is all-or-nothing, anchored on `sl.common`.** `sl.common`
+  is the plugin manager's shared core; every other `sl.*` plugin is built against it and resolves its services
+  through it, so a process runs exactly **one** Streamline distribution. CE can only place the override while it
+  owns that core. The moment an image *providing* `sl.common` is observed from anywhere other than the override
+  location, `g_ForeignStreamlineCoreObserved` latches and every `sl.*` redirect **and** the `sl.*` preload set are
+  refused, leaving the game/driver's coherent set intact (`ShouldApplyStreamlineOverrideRedirect`,
+  `StreamlineOverrideRedirectAllowed`). It is a **latch**, not a last-writer state: a core Streamline probes and
+  unloads has still been resolved, and CE's own later preload must not look like a win.
+  - "Providing sl.common" must be answered from the **resolved full path** — the driver's NGX cache stores every
+    plugin under the same hashed base name (`ResolveStreamlineProvidedDllName` maps both `...\sl.common.dll` and
+    `...\models\sl_common_0\...\<hash>.dll`). Fed from the `LdrRegisterDllNotification` callback, plus one
+    `ScanLoadedModulesForForeignStreamlineCore()` pass at preload time for modules that predate CE.
+  - The gate is scoped to `sl.*`. `nvngx_dlss*`/`nvngx_deepdvc`/`nvlowlatencyvk` are negotiated independently by
+    NGX and the Vulkan loader, so those overrides keep working even when the Streamline stack is left alone.
 - **Consequence for CE's own loader calls:** the `LdrLoadDll` hook is process-global, so CE's own
   `LoadLibrary`-by-path calls are redirected too. Anything that means "pin this exact mapped image" must resolve by
   address (`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`), never by re-loading a path — see

@@ -12,6 +12,10 @@
 // redirect.
 namespace ce::graphics_runtime {
 
+// Windows MAX_PATH, spelled locally so the policy header stays free of
+// <windows.h> for the unit tests.
+inline constexpr size_t kMaxRuntimeModulePath = 260;
+
 inline bool EqualsIgnoreCase(const char* value, const char* expected) {
     if (!value || !expected) {
         return false;
@@ -221,6 +225,97 @@ inline bool IsNgxModelRepositoryPath(const char* path) {
         ++cursor;
     }
     return false;
+}
+
+// Extracts the model folder name from an NGX model-repository path, i.e. the
+// segment directly under "...\NVIDIA\NGX\models\" ("sl_dlss_g_0"). Returns false
+// when the path carries no such segment.
+inline bool NgxModelSegment(const char* path, char* out, size_t outSize) {
+    if (!path || !out || outSize == 0) {
+        return false;
+    }
+    const char* segment = nullptr;
+    for (const char* cursor = path; *cursor; ++cursor) {
+        if ((cursor[0] == 'm' || cursor[0] == 'M') && (cursor[1] == 'o' || cursor[1] == 'O') &&
+            (cursor[2] == 'd' || cursor[2] == 'D') && (cursor[3] == 'e' || cursor[3] == 'E') &&
+            (cursor[4] == 'l' || cursor[4] == 'L') && (cursor[5] == 's' || cursor[5] == 'S') &&
+            (cursor[6] == '\\' || cursor[6] == '/')) {
+            segment = cursor + 7;
+            break;
+        }
+    }
+    if (!segment) {
+        return false;
+    }
+    const char* segmentEnd = segment;
+    while (*segmentEnd && *segmentEnd != '\\' && *segmentEnd != '/') {
+        ++segmentEnd;
+    }
+    const size_t segmentLength = static_cast<size_t>(segmentEnd - segment);
+    if (segmentLength == 0 || segmentLength >= outSize) {
+        return false;
+    }
+    for (size_t i = 0; i < segmentLength; ++i) {
+        out[i] = segment[i];
+    }
+    out[segmentLength] = '\0';
+    return true;
+}
+
+// Resolves which Streamline plugin a physically loaded image provides. Both
+// "...\sl.common.dll" and the driver's hashed model image
+// "...\NVIDIA\NGX\models\sl_common_0\versions\<v>\files\<hash>.dll" provide
+// "sl.common.dll", and only the resolved full path can tell them apart.
+inline bool ResolveStreamlineProvidedDllName(const char* resolvedPath, char* out, size_t outSize) {
+    if (!resolvedPath || !resolvedPath[0] || !out || outSize == 0) {
+        return false;
+    }
+    if (IsNgxModelRepositoryPath(resolvedPath)) {
+        char segment[kMaxRuntimeModulePath] = {};
+        if (!NgxModelSegment(resolvedPath, segment, sizeof(segment))) {
+            return false;
+        }
+        return ModelSegmentToDllName(segment, out, outSize);
+    }
+    const char* baseName = ModuleFileName(resolvedPath);
+    if (!HasPrefixIgnoreCase(baseName, "sl.")) {
+        return false;
+    }
+    size_t length = 0;
+    while (baseName[length] != '\0') {
+        ++length;
+    }
+    if (length + 1 > outSize) {
+        return false;
+    }
+    for (size_t i = 0; i < length; ++i) {
+        const char c = baseName[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+    out[length] = '\0';
+    return true;
+}
+
+// sl.common is the Streamline plugin manager's shared core: every other sl.*
+// plugin is built against it and resolves its services through it. A process can
+// therefore run exactly one Streamline distribution, and the core decides which
+// one. Mixing (sl.common 2.11 from the driver's NGX cache with sl.reflex 2.12
+// from an override directory) is undefined and crashed Cyberpunk on start —
+// sl.reflex called a null interface pointer at sl.common+0x7BA7D
+// (20260816_153027).
+inline bool IsStreamlineCoreProvidedDllName(const char* providedDllName) {
+    return EqualsIgnoreCase(ModuleFileName(providedDllName), "sl.common.dll");
+}
+
+// CE may only apply the configured Streamline override when it owns that core.
+// The moment an image providing sl.common is loaded from anywhere other than the
+// override location, the game's Streamline runtime has already chosen its own
+// distribution: CE cannot replace it any more, and redirecting the REMAINING
+// plugins to the override directory builds a version-mixed stack that is worse
+// than not overriding at all. The decision is a latch, not a last-writer state —
+// a foreign core that Streamline probes and unloads has still been resolved.
+inline bool ShouldApplyStreamlineOverrideRedirect(bool overrideConfigured, bool foreignCoreObserved) {
+    return overrideConfigured && !foreignCoreObserved;
 }
 
 inline bool IsRuntimeModuleBaseName(const char* baseName) {

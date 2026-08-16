@@ -10,7 +10,11 @@ namespace {
 using ce::graphics_runtime::EqualsModulePathIgnoreCase;
 using ce::graphics_runtime::IsRuntimeModuleBaseName;
 using ce::graphics_runtime::IsNgxModelRepositoryPath;
+using ce::graphics_runtime::IsStreamlineCoreProvidedDllName;
 using ce::graphics_runtime::ModelSegmentToDllName;
+using ce::graphics_runtime::NgxModelSegment;
+using ce::graphics_runtime::ResolveStreamlineProvidedDllName;
+using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
 using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
 // The full family CE can redirect through the per-profile override paths
@@ -148,6 +152,60 @@ TEST(GraphicsRuntimeModulePolicy, KeepsRedirectingWhenNoDuplicateInstanceCanResu
     EXPECT_FALSE(WouldRedirectDuplicateLoadedModule("", true, "H:\\game\\bin\\x64\\sl.common.dll"));
 }
 
+TEST(GraphicsRuntimeModulePolicy, ExtractsNgxModelSegments) {
+    char segment[64] = {};
+    EXPECT_TRUE(NgxModelSegment(
+        "C:\\ProgramData\\NVIDIA\\NGX\\models\\sl_common_0\\versions\\133888\\files\\1B0_E658703.dll", segment,
+        sizeof(segment)));
+    EXPECT_STREQ(segment, "sl_common_0");
+    EXPECT_TRUE(NgxModelSegment("C:/ProgramData/NVIDIA/NGX/models/sl_dlss_g_0/versions/1/files/x.dll", segment,
+                                sizeof(segment)));
+    EXPECT_STREQ(segment, "sl_dlss_g_0");
+    EXPECT_FALSE(NgxModelSegment("C:\\games\\app\\sl.dlss_g.dll", segment, sizeof(segment)));
+    EXPECT_FALSE(NgxModelSegment(nullptr, segment, sizeof(segment)));
+    EXPECT_FALSE(NgxModelSegment("C:\\ProgramData\\NVIDIA\\NGX\\models\\sl_common_0\\x.dll", segment, 4));
+}
+
+// Which Streamline plugin an image provides can only be answered from the resolved full path:
+// the driver's NGX cache stores every plugin under the same hashed base name.
+TEST(GraphicsRuntimeModulePolicy, ResolvesTheStreamlinePluginAnImageProvides) {
+    char provided[64] = {};
+    EXPECT_TRUE(ResolveStreamlineProvidedDllName(
+        "C:\\ProgramData\\NVIDIA\\NGX\\models\\sl_common_0\\versions\\133888\\files\\1B0_E658703.dll", provided,
+        sizeof(provided)));
+    EXPECT_STREQ(provided, "sl.common.dll");
+    EXPECT_TRUE(ResolveStreamlineProvidedDllName(
+        "C:\\ProgramData\\NVIDIA\\NGX\\models\\sl_reflex_0\\versions\\133888\\files\\1B0_E658703.dll", provided,
+        sizeof(provided)));
+    EXPECT_STREQ(provided, "sl.reflex.dll");
+    EXPECT_TRUE(ResolveStreamlineProvidedDllName("H:\\game\\bin\\x64\\SL.Common.DLL", provided, sizeof(provided)));
+    EXPECT_STREQ(provided, "sl.common.dll");
+
+    EXPECT_FALSE(ResolveStreamlineProvidedDllName("H:\\game\\bin\\x64\\nvngx_dlss.dll", provided, sizeof(provided)));
+    EXPECT_FALSE(ResolveStreamlineProvidedDllName(
+        "C:\\ProgramData\\NVIDIA\\NGX\\models\\dlss\\versions\\131844\\files\\160_B9DB490.bin", provided,
+        sizeof(provided)));
+    EXPECT_FALSE(ResolveStreamlineProvidedDllName(nullptr, provided, sizeof(provided)));
+    EXPECT_FALSE(ResolveStreamlineProvidedDllName("H:\\game\\bin\\x64\\sl.common.dll", provided, 4));
+
+    EXPECT_TRUE(IsStreamlineCoreProvidedDllName("sl.common.dll"));
+    EXPECT_TRUE(IsStreamlineCoreProvidedDllName("C:\\npi\\sl\\SL.COMMON.DLL"));
+    EXPECT_FALSE(IsStreamlineCoreProvidedDllName("sl.reflex.dll"));
+    EXPECT_FALSE(IsStreamlineCoreProvidedDllName("sl.interposer.dll"));
+}
+
+// Cyberpunk 20260816_153027: NVIDIA's NGX cache loaded sl.common 2.11 before CE's loader
+// redirect was armed, so Streamline had already resolved its core. Every LATER plugin load did
+// reach the redirect and became the 2.12 override copy — sl.interposer 2.7.1 + sl.common 2.11 +
+// sl.reflex 2.12 in one runtime, and sl.reflex called through a null interface pointer it asked
+// that sl.common for. A partially applied Streamline override is worse than none.
+TEST(GraphicsRuntimeModulePolicy, StreamlineOverrideIsAllOrNothingAnchoredOnTheCore) {
+    EXPECT_TRUE(ShouldApplyStreamlineOverrideRedirect(true, false));
+    EXPECT_FALSE(ShouldApplyStreamlineOverrideRedirect(true, true));
+    EXPECT_FALSE(ShouldApplyStreamlineOverrideRedirect(false, false));
+    EXPECT_FALSE(ShouldApplyStreamlineOverrideRedirect(false, true));
+}
+
 // Both redirect decisions in GetRedirectedPath must consult the duplicate check: the NGX
 // model-repository branch returns early with its own path, so guarding only the generic branch
 // would leave the driver-managed plugin loads (which is how sl.common/sl.reflex arrive) unguarded.
@@ -167,6 +225,54 @@ TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplic
     ASSERT_NE(genericReturn, std::string::npos);
     const size_t genericGuard = redirect.rfind("RedirectWouldDuplicateLoadedModule(finalPath)", genericReturn);
     EXPECT_NE(genericGuard, std::string::npos);
+}
+
+// The all-or-nothing rule has to be enforced at every place CE can place an override plugin:
+// both redirect decisions AND the up-front preload, which would otherwise register override
+// copies under names a foreign-core runtime then resolves by name.
+TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheCore) {
+    namespace fs = std::filesystem;
+    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    const std::string detect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_overlay_detect.cpp");
+    ASSERT_FALSE(redirect.empty());
+    ASSERT_FALSE(detect.empty());
+
+    // The core observation is fed from the loader notification, which resolves every load's
+    // full path — the only place the driver's hashed NGX copy is identifiable.
+    EXPECT_NE(detect.find("NoteRuntimeModuleLoadedForOverridePolicy(narrowPath)"), std::string::npos);
+    EXPECT_NE(redirect.find("ResolveStreamlineProvidedDllName("), std::string::npos);
+    EXPECT_NE(redirect.find("IsStreamlineCoreProvidedDllName("), std::string::npos);
+    EXPECT_NE(redirect.find("ShouldApplyStreamlineOverrideRedirect("), std::string::npos);
+
+    // It is a latch: a core Streamline probes and unloads has still been resolved.
+    EXPECT_NE(redirect.find("g_ForeignStreamlineCoreObserved.exchange(true"), std::string::npos);
+
+    // Both redirect decisions are gated.
+    const size_t modelReturn = redirect.find("return modelFinal;");
+    ASSERT_NE(modelReturn, std::string::npos);
+    EXPECT_NE(redirect.rfind("StreamlineOverrideRedirectAllowed(modelDllName)", modelReturn), std::string::npos);
+    const size_t genericReturn = redirect.find("return finalPath;");
+    ASSERT_NE(genericReturn, std::string::npos);
+    EXPECT_NE(redirect.rfind("StreamlineOverrideRedirectAllowed(filename.c_str())", genericReturn),
+              std::string::npos);
+
+    // The preload answers the question for modules that predate CE, then gates the sl.* set.
+    const size_t preload = redirect.find("void PreloadConfiguredGraphicsRuntimeDlls()");
+    ASSERT_NE(preload, std::string::npos);
+    const size_t scan = redirect.find("ScanLoadedModulesForForeignStreamlineCore();", preload);
+    ASSERT_NE(scan, std::string::npos);
+    const size_t gate = redirect.find("StreamlineOverrideRedirectAllowed(\"sl.* plugin set\")", preload);
+    ASSERT_NE(gate, std::string::npos);
+    EXPECT_LT(scan, gate);
+    const size_t interposerPreload = redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")",
+                                                   preload);
+    ASSERT_NE(interposerPreload, std::string::npos);
+    EXPECT_LT(gate, interposerPreload);
+    // The independent NGX snippet overrides must stay outside the gate.
+    const size_t snippetPreload = redirect.find("PreloadOverrideDll(gfx.dlssSrDllPath, \"nvngx_dlss.dll\")", preload);
+    ASSERT_NE(snippetPreload, std::string::npos);
+    EXPECT_LT(interposerPreload, snippetPreload);
 }
 
 }  // namespace

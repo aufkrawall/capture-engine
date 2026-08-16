@@ -328,6 +328,18 @@ void CheckAndInstallHooks();
 
 std::string GetRedirectedPath(const std::string &requestedPath);
 
+// Records which physical image provides a Streamline plugin. Called from the
+// loader notification for every runtime-family load with its resolved full path.
+// Once an image providing the Streamline core (sl.common, including the driver's
+// hashed NGX model copy) is seen outside the configured override location, CE has
+// lost the stack and every sl.* redirect is refused so the runtime keeps one
+// coherent plugin set.
+void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath);
+
+// Same question for modules that were already mapped when CE injected, which the
+// loader notification cannot have observed.
+void ScanLoadedModulesForForeignStreamlineCore();
+
 bool NeedsLoaderRedirectionHook();
 
 bool NeedsLowLevelModuleLoadObservationHook();

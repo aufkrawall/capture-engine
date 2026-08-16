@@ -75,6 +75,11 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     if (hasPath) {
       WideCharToMultiByte(CP_UTF8, 0, fullPath, -1, narrowPath, MAX_PATH, nullptr, nullptr);
     }
+    if (hasPath) {
+      // Which physical image provides the Streamline core decides whether CE's
+      // override may still be applied to the remaining plugins at all.
+      NoteRuntimeModuleLoadedForOverridePolicy(narrowPath);
+    }
     if (ce::graphics_runtime::IsRuntimeModuleBaseName(base) ||
         (hasPath && ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath))) {
       if (hasPath) {
