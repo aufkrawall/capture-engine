@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -196,6 +197,28 @@ TEST(UE5ConsoleLayout, BitReferenceRequiresTwoDistinctMaskPointersInOneModule) {
     ce::ue5_layout::ObjectProbe unread = ShowFlagProbe();
     unread.bitNumberRead = false;
     EXPECT_FALSE(ce::ue5_layout::IsBitReference(unread));
+}
+
+// The value type in the spec table has to match the type the engine registered,
+// and the plausibility check is what catches a mismatch. Talos carries
+// `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` as a float holding
+// 25.0f (0x41C80000); while the spec said Int32 the reference layout was refused
+// every session, and installing it would have written 10 - a denormal float - as
+// the new value. Both directions are checked so the entry cannot silently flip
+// back to a type that corrupts the variable it is meant to set.
+TEST(UE5ConsoleLayout, TemporalMaxFramesAccumulatedIsTypedAsTheEngineRegistersIt) {
+    const std::size_t spec = SpecIndex("r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated");
+    EXPECT_EQ(ce::ue5_cvar::kSpecs[spec].type, ce::ue5_cvar::ValueType::Float);
+
+    constexpr uint32_t kObservedShadow = 0x41C80000;  // 25.0f, read out of Talos
+    EXPECT_EQ(std::bit_cast<float>(kObservedShadow), 25.0f);
+    EXPECT_TRUE(ce::ue5_cvar::IsPlausibleShadowValue(spec, kObservedShadow));
+    EXPECT_TRUE(ce::ue5_layout::IsReferencePointer(ReferenceProbe(kObservedShadow), spec));
+
+    // The other direction stays fail-closed: an int-shaped 10 or 25 reinterprets
+    // as a denormal float, which is refused rather than written.
+    EXPECT_FALSE(ce::ue5_cvar::IsPlausibleShadowValue(spec, 10));
+    EXPECT_FALSE(ce::ue5_cvar::IsPlausibleShadowValue(spec, 25));
 }
 
 // Diagnostic addressing only. CE does not write these bits: 0.1.6128 forced the

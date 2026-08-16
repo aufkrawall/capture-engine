@@ -35,7 +35,8 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Lumen.ScreenProbeGather.StochasticInterpolation", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ce::ue5_cvar::ValueType::Int32, 3.0},
-        {"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ce::ue5_cvar::ValueType::Int32, 10.0},
+        // Float in the engine, not int: Talos's console object holds 25.0f.
+        {"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ce::ue5_cvar::ValueType::Float, 10.0},
         {"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ce::ue5_cvar::ValueType::Int32, 8.0},
         {"r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp", ce::ue5_cvar::ValueType::Int32, 0.0},

@@ -67,7 +67,15 @@ inline constexpr std::array kSpecs{
          Activation::RayReconstructionOptimal, 1.0},
     Spec{"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ValueType::Int32,
          Activation::RayReconstructionOptimal, 3.0},
-    Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ValueType::Int32,
+    // Float, not int: Talos's console object carries a shadow of 25.0f
+    // (0x41C80000) behind its reference pointer, which the Int32 plausibility
+    // check refused for the whole life of this entry. The refusal was right -
+    // installing it as an int would have written 10 (1.4e-44 as a float) into a
+    // float global, i.e. no temporal accumulation at all. The type checks stay
+    // fail-closed in the other direction too: an int-typed build would present
+    // 10 or 25, which reinterpret as denormal floats and are refused rather
+    // than written.
+    Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ValueType::Float,
          Activation::RayReconstructionOptimal, 10.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ValueType::Int32,
          Activation::RayReconstructionOptimal, 8.0},

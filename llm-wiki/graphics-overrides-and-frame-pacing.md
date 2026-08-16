@@ -409,9 +409,11 @@ Primary sources:
 - **`ProbeShowFlagBitNumbers`** resolves eight extra show flag names (`GlobalIllumination`, `Lighting`,
   `DirectLighting`, `DiffuseIndirect`, `Tonemapper`, `AntiAliasing`, `TemporalAA`, `Bloom`) through the
   already-anchored map purely to log `name -> bit`, once per session, and only when a bit reference was actually
-  seen. That is the measurement the mapping needs: if `GlobalIllumination` reports 12 next to `Vignette`'s 13, the
-  console-object side is exactly the table order and the discrepancy is entirely on the renderer's side of the
-  mask. Practically the whole question only exposes vignette - grain, motion blur and chromatic aberration are
+  seen. **Measured (Talos, `20260816_201740`):** Bloom 1, Tonemapper 3, AntiAliasing 4, TemporalAA 5,
+  GlobalIllumination 12, Vignette 13, Grain 14, DirectLighting 28, MotionBlur 37, SceneColorFringe 46, Lighting 109
+  (`DiffuseIndirect` is not registered). GI at 12 is exactly what the binary's name table predicted, so the
+  console-object side is completely self-consistent and the discrepancy is entirely on the renderer's side of the
+  mask - what is still missing is how the renderer indexes it, not what the objects report. Practically the whole question only exposes vignette - grain, motion blur and chromatic aberration are
   already carried by `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`, all verified live.
 - An object matching no shape, or matching one shape at two offsets, is left untouched and its first 0x80 bytes are
   dumped (rate-limited to 6 per session). That is deliberate: guessing a layout is what produced the ShowFlag writes,
@@ -419,9 +421,13 @@ Primary sources:
 - Observed coverage: Industria 2 Demo (UE 5.6.1, session 20260815_214219) installs **38/40** requested CVars and
   verifies 38/38; Talos Reawakened (UE 5.4.4) installs 35/40. Note that the four `ShowFlag.*` counted as "installed"
   in every session before 0.1.6128 were the inert bit-ref writes described above. The remaining entries are the
-  version-conditional/absent names plus `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos, whose
-  registry-resolved object carries an `object+0x50` pointer (`0x00007FF73B2AF42C`) whose dword is not a plausible
-  value for it, so validation refuses it; the layout dump is expected to identify it on the next Talos run.
+  version-conditional/absent names plus the four show flag force bits. `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`
+  was in this list until 0.1.6132: the layout dump showed its shadow at `object+0x58` reading `0x41C80000` = **25.0f**,
+  i.e. the variable is a *float* while the spec table declared it `Int32`, so the Int32 plausibility check refused it
+  every session. Correctly - installing it as an int would have written 10, a denormal float, into a float global and
+  disabled temporal accumulation outright. The spec is now typed `Float`; the checks stay fail-closed in the other
+  direction because an int-shaped 10 or 25 reinterprets as a denormal and is refused rather than written. A CVar that
+  is "found but never validated" in one title and fine in another is a type mismatch until proven otherwise.
   Industria 2 also exercised drift recovery: two Lumen CVars were rewritten by the game ~30 s in and were
   re-asserted automatically.
 - A configuration change that newly requests CVars re-opens the registry resolver (`ReopenConsoleRegistry`). The

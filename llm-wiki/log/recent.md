@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-16 - The bit map measurement lands, and the last unreachable CVar turns out to be mistyped
+
+- `20260816_201740` (0.1.6131, Talos): lighting is back, 31/40 installed, **verified 31/31, re-asserted 0,
+  retired 0**. The four show flags are recognised as force bits and reported, not written.
+- `ProbeShowFlagBitNumbers` resolved 7 of 8: **Bloom 1, Tonemapper 3, AntiAliasing 4, TemporalAA 5,
+  GlobalIllumination 12, Vignette 13, Grain 14, DirectLighting 28, MotionBlur 37, SceneColorFringe 46,
+  Lighting 109** (`ShowFlag.DiffuseIndirect` is not registered in Talos). GI at 12 is exactly what the binary's
+  name table predicted, one below Vignette's 13.
+- That settles the direction of the 0.1.6128 defect: **the console-object side is completely self-consistent** -
+  distinct indices, matching the engine's own declaration order. CE set bits 13/14/37/46 and the renderer dropped
+  global illumination (12), so the discrepancy is entirely on the renderer's side of the mask, not in what CE
+  read. Still not enough to write by; what is missing now is how the renderer indexes the mask, not what the
+  objects say.
+- The rate-limited dump also cracked `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`, unreachable in
+  Talos across every session: its shadow at `object+0x58` is `0x41C80000` = **25.0f**. The variable is a *float*
+  and the spec table declared it `Int32`, so the Int32 plausibility check refused it every time - correctly, since
+  installing it would have written 10 (a denormal float, effectively zero) into a float global and turned temporal
+  accumulation off. Fixed in 0.1.6132 by typing the spec `Float`; the checks stay fail-closed the other way too,
+  because an int-shaped 10 or 25 reinterprets as a denormal and is refused rather than written.
+- Lesson worth keeping: a spec-table type is a claim about the engine's registration, and the plausibility check
+  is the only thing standing between a wrong claim and a corrupted variable. A CVar that is "found but never
+  validated" in one title and fine in another is a type mismatch until proven otherwise.
+
 ### 2026-08-16 - Driving the show flag force bits removed all lighting from Talos; CE stops writing them
 
 - 0.1.6128 shipped the bit-ref write. Talos then rendered with no lighting at all (`20260816_165501`), and the
