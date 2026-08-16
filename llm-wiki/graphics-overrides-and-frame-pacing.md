@@ -393,28 +393,75 @@ Primary sources:
   Two independent gates keep the bit path off everything else: it is offered only to `ShowFlag.` names
   (`ce::ue5_cvar::IsShowFlagSpec`), and a candidate is only accepted once a *second* show flag independently
   reports the same mask pair with a different bit index.
-- **CE does not write the force bits, and 0.1.6128 is why.** That one build drove them, and it settles the
-  standing "are the masks even live in Shipping" question in the worst way: forcing the four configured flags off
-  removed **all lighting** from Talos (`20260816_165501`). The reported numbers explain it. The masks came back as
-  `force0=0x…16C0` / `force1=0x…16F0`, exactly 0x30 apart - two adjacent 48-byte (384-flag) bit arrays, so the
-  mask discovery is right. The bit numbers are self-consistent too: `Vignette`=13 and `Grain`=14 are adjacent, and
-  the engine's own show flag name table in the Talos binary (offsets `0x810d0e0`/`0x810d108`/`0x810d120`) lists
-  `GlobalIllumination`, `Vignette`, `Grain` in exactly that order - which puts **`GlobalIllumination` at bit 12,
-  one below the first bit CE set**. So the discovery is sound and the *mapping* is not: the index a console object
-  carries is not the index the renderer reads the mask by, plausibly because `SHOWFLAG_FIXED_IN_SHIPPING` flags are
-  compiled out of one side and not the other. Writing a bit therefore means guessing which flag gets turned off.
-  Bit references are now classified, confirmed, and **reported only** (`ReportConfirmedBitReferences`), with the
-  mask addresses, bit number, byte and mask in the log line. The classification is kept regardless: it is what
-  stops the old redirect from replacing the engine's mask pointer.
-- **`ProbeShowFlagBitNumbers`** resolves eight extra show flag names (`GlobalIllumination`, `Lighting`,
-  `DirectLighting`, `DiffuseIndirect`, `Tonemapper`, `AntiAliasing`, `TemporalAA`, `Bloom`) through the
-  already-anchored map purely to log `name -> bit`, once per session, and only when a bit reference was actually
-  seen. **Measured (Talos, `20260816_201740`):** Bloom 1, Tonemapper 3, AntiAliasing 4, TemporalAA 5,
-  GlobalIllumination 12, Vignette 13, Grain 14, DirectLighting 28, MotionBlur 37, SceneColorFringe 46, Lighting 109
-  (`DiffuseIndirect` is not registered). GI at 12 is exactly what the binary's name table predicted, so the
-  console-object side is completely self-consistent and the discrepancy is entirely on the renderer's side of the
-  mask - what is still missing is how the renderer indexes it, not what the objects report. Practically the whole question only exposes vignette - grain, motion blur and chromatic aberration are
-  already carried by `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`, all verified live.
+### `ShowFlag.*` force bits - state of knowledge (open, 2026-08-16)
+
+This is the one unfinished part of the UE5 override work. Read this whole block before touching it; the failure
+mode is a visibly broken frame in the user's game.
+
+- **Why it matters:** UE ships **no vignette CVar at all**. Enumerating every UTF-16 literal in
+  `Talos1-Win64-Shipping.exe` (5.4.4) turns up exactly three matches for "vignette": `SunColorVignetteIntensity`
+  (an unrelated material parameter), `Vignette` (the show flag's short name) and `VignetteSF` (its localization
+  key). There is no `r.Vignette*`, and no `r.DefaultFeature.*` entry for it either. Grain has only `r.FilmGrain`
+  (+ `SequenceLength`, `CacheTextureConstants`), which covers the modern 5.1+ film grain pass but not the legacy
+  tonemapper grain. So for **vignette, and for legacy-path grain, the show flag is the only per-effect lever.**
+- **`r.Tonemapper.Quality` is rejected as the alternative.** UE's own help text (read out of the Talos binary)
+  documents it as a cumulative ladder: "0: basic tonemapper only / 2: + Vignette / 4: + Grain / 5: + GrainJitter =
+  full quality (default)", so anything below 2 does remove vignette - but it removes the rest of the ladder with
+  it. User decision, 2026-08-16: **tonemapper quality must not be reduced to disable vignette or grain.** A test
+  asserts the spec table never contains it (`PostProcessingBundleUsesDedicatedControlsAndShowFlags`); do not
+  delete that assertion to make a change fit.
+- **What a bit ref is:** `FConsoleVariableBitRef` at `object+0x50` = `Force0MaskPtr`, `+0x58` = `Force1MaskPtr`,
+  `+0x60` = `BitNumber`. Both mask pointers are shared by every show flag in the process, which is what
+  `CommitConfirmedBitReferences`/`ReportConfirmedBitReferences` use as proof of the shape (two flags must agree on
+  the pair with different bit numbers).
+- **The masks are read through the object's own pointer, never RIP-relative.** A scan of all 124 MB of `.text`
+  finds only an inlined 48-byte copy between the two masks plus two destructor calls, and the file contains **zero**
+  absolute pointers to them. So there is nothing to disassemble statically to recover the convention - an earlier
+  conclusion that "the apply site is compiled out of Shipping" was wrong for this reason.
+- **Measured bit maps** (`ProbeShowFlagBitNumbers` logs `show flag bit map — <name> bit=N` once per session, only
+  when a bit reference was seen). Both mask geometry and indices are per-engine-version, which is why CE reads
+  them per object and never assumes:
+
+  | | Talos Reawakened 5.4.4 | Industria 2 Demo 5.6.1 |
+  | --- | --- | --- |
+  | mask spacing | 0x30 (48 B, 384 flags) | 0x40 (64 B, 512 flags) |
+  | Bloom / Tonemapper / AntiAliasing / TemporalAA | 1 / 3 / 4 / 5 | 1 / 3 / 4 / 5 |
+  | GlobalIllumination | 12 | 14 |
+  | Vignette | 13 | 15 |
+  | Grain | 14 | 16 |
+  | DirectLighting | 28 | 32 |
+  | MotionBlur | 37 | 41 |
+  | SceneColorFringe | 46 | 51 |
+  | Lighting | 109 | 108 |
+
+  Invariant worth keeping: **`GlobalIllumination` sits exactly one bit below `Vignette` in both versions**, which
+  is why an off-by-one was the first theory - it lands on GI.
+- **What is proven:**
+  - 0.1.6128 wrote four bits at once (Talos 13/14/37/46) and **all lighting disappeared**. Reverted in 0.1.6131.
+  - 0.1.6134 writes **only `ShowFlag.Vignette`** (`DriveBitReference` in `main_ue5_layout.cpp`, gated on
+    `kDrivenBitReference`), recorded before writing and handed back on teardown, with a compare-exchange on the
+    containing word so neighbouring flags survive. Validated on **both** titles (`20260816_205827` Talos,
+    `20260816_210946` Industria 2): no visual regression, and value CVars still verify 32/32 and 34/34.
+  - Therefore **there is no uniform off-by-one**: bit 13 alone is harmless. The 0.1.6128 culprit is one of
+    Grain 14, MotionBlur 37 or SceneColorFringe 46, and which one is unknown.
+- **What is NOT proven:** that the write actually disables vignette. Neither test title visibly uses vignette or
+  grain, so "no change" and "correct but invisible" are indistinguishable here. **This needs a title that visibly
+  shows vignette or grain.**
+- **Next steps when such a title appears**, cheapest first:
+  1. Run it. If vignette disappears, the mapping is right - extend `kDrivenBitReference` to the other show flags
+     one at a time, watching for the lighting regression to identify the bad bit.
+  2. If vignette does not disappear, the masks are inert in Shipping for that build and the show flag route is
+     dead for it; say so rather than reaching for the quality ladder.
+  3. The version-agnostic fix, if per-title measurement proves unworkable: **derive the convention from the
+     engine's own code at runtime.** CE holds the console object, so it holds the vtable; `GetInt` is the entry
+     whose body reads `[this+0x50]` and `[this+0x60]`, and its shift/mask constants *are* the convention for that
+     build. Decode those and write to match, failing closed when the shape is not recognised. That is the only
+     approach that holds from UE 4.27 through 5.6 without per-title guesswork, since `FConsoleVariableBitRef` has
+     been stable across that whole range.
+- Practical exposure meanwhile: **vignette only**, plus legacy-path grain. Grain (modern), motion blur and
+  chromatic aberration are carried by `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`, all
+  verified changing a value on both engine versions.
+
 - An object matching no shape, or matching one shape at two offsets, is left untouched and its first 0x80 bytes are
   dumped (rate-limited to 6 per session). That is deliberate: guessing a layout is what produced the ShowFlag writes,
   and the dump is what lets the next run identify a per-title layout instead of re-deriving it from a refusal.

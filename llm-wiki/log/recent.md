@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-16 - Show flag force bits: one bit proven safe on two engine versions, effect still unproven
+
+- **Handoff note.** The `ShowFlag.*` force bits are the only open part of the UE5 override work. The full state,
+  measured bit maps for 5.4.4 and 5.6.1, what is proven, and the ordered next steps now live in one block in
+  `graphics-overrides-and-frame-pacing.md` ("`ShowFlag.*` force bits - state of knowledge"). Read that before
+  touching it rather than reconstructing it from these entries.
+- 0.1.6134 drives exactly **one** bit, `ShowFlag.Vignette`, recorded and restored, compare-exchange on the shared
+  word. Validated on Talos 5.4.4 (`20260816_205827`, 32/32 verified) and Industria 2 Demo 5.6.1
+  (`20260816_210946`, 34/34 verified after the game's own load-time writes were re-asserted). **No visual
+  regression on either.** So the four-bit write that killed lighting in 0.1.6128 was not a uniform off-by-one -
+  bit 13 alone is harmless, and the culprit is one of Grain/MotionBlur/SceneColorFringe.
+- Still unproven: whether the write *disables* vignette. Neither title visibly uses vignette or grain, so
+  "inert" and "correct but invisible" look identical. Needs a title that shows the effect.
+- Two findings that close off the alternatives: UE ships **no vignette CVar at all** (whole-binary literal
+  enumeration - only the show flag name and its localization key), and `r.Tonemapper.Quality` does remove vignette
+  but only as part of a cumulative ladder that takes grain and the rest with it. **User decision: tonemapper
+  quality must not be reduced for this.** A test already asserts the spec table never contains it; that assertion
+  is load-bearing, not incidental.
+- Also corrected: the masks are read through the console object's own pointer, never RIP-relative, which is why a
+  full `.text` scan finds no apply site. An earlier reading of that absence as "compiled out of Shipping" was wrong.
+- Cross-version data worth keeping: mask geometry and bit indices both differ by engine version (48 B/384 flags in
+  5.4.4 vs 64 B/512 in 5.6.1; GI 12 vs 14, Vignette 13 vs 15). CE reads both per object, so nothing assumes them.
+
 ### 2026-08-16 - The bit map measurement lands, and the last unreachable CVar turns out to be mistyped
 
 - `20260816_201740` (0.1.6131, Talos): lighting is back, 31/40 installed, **verified 31/31, re-asserted 0,
