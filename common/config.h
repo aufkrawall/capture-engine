@@ -213,6 +213,10 @@ struct GraphicsConfig {
     // both r.MaxAnisotropy and r.VT.MaxAnisotropy. 0 leaves the engine alone, 1..16
     // is the AF level (1 disables anisotropic filtering).
     int internalAnisotropicFiltering = 0;
+    // UE's own texture mip bias (r.MipMapLODBias): negative sharpens, positive
+    // blurs, and 0 is a real setting rather than "off". Anything outside UE's
+    // accepted -15..15 range means the engine is left alone.
+    float internalTextureMipBias = 1000.0f;
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;

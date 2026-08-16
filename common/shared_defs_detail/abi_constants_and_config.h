@@ -55,16 +55,20 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
 // Version 38: Added latched recording-health telemetry and finalization-result notifications
 // Version 39: Added persistent UE5 CVar override policy and tonemapper sharpening fields
+// Version 41: Added UE5 internal texture mip bias (r.MipMapLODBias)
 // Version 40: Added UE5 internal fps limiter (t.MaxFPS) and internal anisotropic
 // filtering (r.MaxAnisotropy / r.VT.MaxAnisotropy) CVar override fields
-static constexpr uint32_t SHARED_MEMORY_VERSION = 40;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 41;
 
 // IPC Constants - base names, actual names are generated with process ID for
-// uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_40_";
+// uniqueness. The embedded number must be bumped together with
+// SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
+// against an older layout from ever opening this mapping (ABI 34). Forgetting it
+// is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_41_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_40";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_41";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -447,7 +451,24 @@ struct SharedGraphicsConfig {
     // 0 leaves UE's internal AF CVars alone, 1..16 applies the same level to
     // r.MaxAnisotropy and r.VT.MaxAnisotropy (1 disables anisotropic filtering).
     int32_t internalAnisotropicFiltering;
+    // UE's own texture mip bias (r.MipMapLODBias, a float CVar whose engine help
+    // documents the range -15.0 to 15.0). Negative sharpens, positive blurs.
+    // 0 is a meaningful value, so "leave the engine alone" cannot be 0: any value
+    // outside the accepted range means untouched, and the host publishes
+    // kUE5TextureMipBiasDisabled for it.
+    float internalTextureMipBias;
 };
+
+// Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
+// setting. A host that predates this field publishes 0, which would otherwise
+// read back as an explicit "no bias" override rather than "untouched" - the
+// version bump above is what keeps such a host from being talked to at all.
+inline constexpr float kUE5TextureMipBiasDisabled = 1000.0f;
+inline constexpr float kUE5TextureMipBiasLimit = 15.0f;
+
+constexpr bool IsUE5TextureMipBiasRequested(float bias) noexcept {
+    return bias >= -kUE5TextureMipBiasLimit && bias <= kUE5TextureMipBiasLimit;
+}
 
 static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
                   offsetof(SharedGraphicsConfig, msaaSamples) + 32,
@@ -470,7 +491,10 @@ static_assert(offsetof(SharedGraphicsConfig, internalFpsLimit) ==
 static_assert(offsetof(SharedGraphicsConfig, internalAnisotropicFiltering) ==
                   offsetof(SharedGraphicsConfig, internalFpsLimit) + sizeof(float),
               "UE5 internal AF level must follow the fps limit field");
-static_assert(sizeof(SharedGraphicsConfig) == 376,
+static_assert(offsetof(SharedGraphicsConfig, internalTextureMipBias) ==
+                  offsetof(SharedGraphicsConfig, internalAnisotropicFiltering) + sizeof(int32_t),
+              "UE5 texture mip bias must follow the internal AF level");
+static_assert(sizeof(SharedGraphicsConfig) == 380,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

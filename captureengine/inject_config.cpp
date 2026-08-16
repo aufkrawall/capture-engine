@@ -37,6 +37,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.tonemapperSharpen = config.graphics.tonemapperSharpen;
     graphics.internalFpsLimit = config.graphics.internalFpsLimit;
     graphics.internalAnisotropicFiltering = config.graphics.internalAnisotropicFiltering;
+    graphics.internalTextureMipBias = config.graphics.internalTextureMipBias;
     graphics.prerenderLimit = config.graphics.cpuPrerenderLimit;
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
@@ -106,7 +107,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(graphics.disablePostProcessingEffects) << 12) ^
         (std::hash<float>{}(graphics.tonemapperSharpen) << 13) ^
         (std::hash<float>{}(graphics.internalFpsLimit) << 14) ^
-        (static_cast<uint64_t>(graphics.internalAnisotropicFiltering) << 15);
+        (static_cast<uint64_t>(graphics.internalAnisotropicFiltering) << 15) ^
+        (std::hash<float>{}(graphics.internalTextureMipBias) << 16);
 
     if (summaryHash != configSummaryHash) {
         LogInfo(
@@ -114,7 +116,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d ue5RROptimal=%d "
-            "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d",
+            "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
+            "ue5InternalTextureMipBias=%.2f",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
@@ -126,7 +129,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.dlssSharpening, graphics.dlssSRPreset, graphics.forceRayReconstruction ? 1 : 0,
             graphics.rayReconstructionOptimalSettings ? 1 : 0,
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
-            graphics.internalFpsLimit, graphics.internalAnisotropicFiltering);
+            graphics.internalFpsLimit, graphics.internalAnisotropicFiltering,
+            graphics.internalTextureMipBias);
         configSummaryHash = summaryHash;
     }
 }

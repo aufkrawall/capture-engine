@@ -521,6 +521,17 @@ internal_fps_limit=default
 ; forces sampler states. off or 1x disables anisotropic filtering, then 2x, 4x,
 ; 8x, or 16x select the level. default leaves the engine alone.
 internal_anisotropic_filtering=default
+;
+; Overrides UE5's own texture mip bias (r.MipMapLODBias), which shifts which
+; mip level all 2D textures sample from. Negative values sharpen (at the cost of
+; aliasing and shimmer), positive values blur. UE accepts -15.0 to 15.0, and
+; fractional values are accepted because the CVar is a float.
+; This is separate from the general [Graphics] mip_bias / mip_mapping overrides,
+; which act on API sampler state: this one changes what the engine itself asks
+; for, so it also affects which mips texture streaming loads.
+; default leaves the engine alone. Note that 0 is a real setting here (no bias),
+; not a synonym for default.
+internal_texture_mip_bias=default
 
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.

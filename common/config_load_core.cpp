@@ -324,6 +324,27 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         config.graphics.internalAnisotropicFiltering = afLevel;
     }
 
+    // UE's own texture mip bias. Unlike every other numeric UE5 knob here, 0 is a
+    // real value ("no bias") rather than "off", so the untouched state is a
+    // sentinel outside UE's accepted range instead of zero or a negative value.
+    std::string internalTextureMipBias =
+        reader.GetStr("UE5", "internal_texture_mip_bias", "default");
+    std::transform(internalTextureMipBias.begin(), internalTextureMipBias.end(),
+                   internalTextureMipBias.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::replace(internalTextureMipBias.begin(), internalTextureMipBias.end(), ',', '.');
+    config.graphics.internalTextureMipBias = kUE5TextureMipBiasDisabled;
+    if (internalTextureMipBias != "default") {
+        float parsedMipBias = 0.0f;
+        if (!ce::TryParseFiniteFloat(internalTextureMipBias, parsedMipBias) ||
+            !IsUE5TextureMipBiasRequested(parsedMipBias)) {
+            LogInvalidConfigBoundary("UE5", "internal_texture_mip_bias", internalTextureMipBias,
+                                     "default");
+        } else {
+            config.graphics.internalTextureMipBias = parsedMipBias;
+        }
+    }
+
     // DLSS Presets
     config.graphics.dlssPresetDLAA =
         reader.GetStrCompat("DLSS", "dlss_preset_dlaa", "Graphics", "dlss_preset_dlaa", "default");

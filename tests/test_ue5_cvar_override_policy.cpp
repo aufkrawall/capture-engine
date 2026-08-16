@@ -186,3 +186,45 @@ TEST(UE5CVarOverridePolicyTest, InternalOverridesAreIndependentlySelectable) {
     settings.internalAnisotropicFiltering = 0;
     EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
 }
+
+// UE's texture mip bias is the one numeric UE5 knob where 0 is a real setting
+// ("no bias") rather than "leave the engine alone", so the untouched state is a
+// sentinel outside UE's accepted -15..15 range. It is also a float: the Talos
+// 5.4.4 registration passes its default in xmm2, and typing it as an int would
+// write denormal garbage into the engine's global.
+TEST(UE5CVarOverridePolicyTest, InternalTextureMipBiasIsAFloatWithZeroAsARealValue) {
+    const auto* spec = FindSpec("r.MipMapLODBias");
+    ASSERT_NE(spec, nullptr);
+    EXPECT_EQ(spec->type, ce::ue5_cvar::ValueType::Float);
+    EXPECT_EQ(spec->activation, ce::ue5_cvar::Activation::InternalTextureMipBias);
+
+    const ce::ue5_cvar::Settings defaults;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, defaults).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(defaults));
+
+    ce::ue5_cvar::Settings settings;
+    settings.internalTextureMipBias = 0.0f;
+    auto resolved = ce::ue5_cvar::Resolve(*spec, settings);
+    ASSERT_TRUE(resolved.enabled) << "0 must be applied, not treated as unset";
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 0.0f);
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+
+    for (float bias : {-15.0f, -1.5f, -1.0f, 1.0f, 15.0f}) {
+        settings.internalTextureMipBias = bias;
+        resolved = ce::ue5_cvar::Resolve(*spec, settings);
+        ASSERT_TRUE(resolved.enabled) << bias;
+        EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), bias);
+    }
+
+    for (float outside : {-15.001f, 15.001f, ce::ue5_cvar::kTextureMipBiasDisabled}) {
+        settings.internalTextureMipBias = outside;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, settings).enabled) << outside;
+    }
+}
+
+// The two positional indices are the reason new specs get appended rather than
+// inserted; this pins them so a future entry cannot silently retarget them.
+TEST(UE5CVarOverridePolicyTest, PositionalSpecIndicesStillNameTheirCVars) {
+    EXPECT_STREQ(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex].name, "r.NGX.DLSS.DenoiserMode");
+    EXPECT_STREQ(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kTonemapperSharpenIndex].name, "r.Tonemapper.Sharpen");
+}

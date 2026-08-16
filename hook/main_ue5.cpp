@@ -28,6 +28,7 @@ ce::ue5_cvar::Settings MakeSettings(const GraphicsConfig& config) {
       config.tonemapperSharpen,
       config.internalFpsLimit,
       config.internalAnisotropicFiltering,
+      config.internalTextureMipBias,
   };
 }
 
@@ -39,7 +40,9 @@ bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settin
              std::bit_cast<uint32_t>(right.tonemapperSharpen) &&
          std::bit_cast<uint32_t>(left.internalFpsLimit) ==
              std::bit_cast<uint32_t>(right.internalFpsLimit) &&
-         left.internalAnisotropicFiltering == right.internalAnisotropicFiltering;
+         left.internalAnisotropicFiltering == right.internalAnisotropicFiltering &&
+         std::bit_cast<uint32_t>(left.internalTextureMipBias) ==
+             std::bit_cast<uint32_t>(right.internalTextureMipBias);
 }
 
 void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
@@ -143,12 +146,13 @@ void RefreshOverrides(const GraphicsConfig& config) {
     detail::ResetConsoleRegistry();
     HookLogImportant(
         "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
-        "internalFpsLimit=%.3f internalAF=%d; "
+        "internalFpsLimit=%.3f internalAF=%d internalTextureMipBias=%.3f; "
         "installing persistent in-memory CVar shadows without changing Engine.ini",
         settings.forceRayReconstruction ? 1 : 0,
         settings.rayReconstructionOptimalSettings ? 1 : 0,
         settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen,
-        settings.internalFpsLimit, settings.internalAnisotropicFiltering);
+        settings.internalFpsLimit, settings.internalAnisotropicFiltering,
+        settings.internalTextureMipBias);
   }
 
   detail::ForgetUnloadedOverrides();

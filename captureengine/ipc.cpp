@@ -188,6 +188,7 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.tonemapperSharpen = src.tonemapperSharpen;
         dst.internalFpsLimit = src.internalFpsLimit;
         dst.internalAnisotropicFiltering = src.internalAnisotropicFiltering;
+        dst.internalTextureMipBias = src.internalTextureMipBias;
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;

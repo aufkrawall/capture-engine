@@ -21,7 +21,20 @@ enum class Activation : uint8_t {
     TonemapperSharpen,
     InternalFpsLimit,
     InternalAnisotropicFiltering,
+    InternalTextureMipBias,
 };
+
+// UE's own texture mip bias is a float CVar whose engine help documents the
+// range -15.0 to 15.0 (verified in the Talos 5.4.4 binary, where the
+// registration passes its default in xmm2 - a float, not an int). Negative
+// sharpens, positive blurs, and 0 is a real setting rather than "off", so the
+// untouched state has to be a sentinel outside the accepted range.
+inline constexpr float kTextureMipBiasLimit = 15.0f;
+inline constexpr float kTextureMipBiasDisabled = 1000.0f;
+
+constexpr bool IsTextureMipBiasRequested(float bias) noexcept {
+    return bias >= -kTextureMipBiasLimit && bias <= kTextureMipBiasLimit;
+}
 
 struct Settings {
     bool forceRayReconstruction = false;
@@ -34,6 +47,9 @@ struct Settings {
     // 0 leaves UE's internal AF CVars alone, 1..16 applies the same level to
     // r.MaxAnisotropy and r.VT.MaxAnisotropy (1 disables anisotropic filtering).
     int32_t internalAnisotropicFiltering = 0;
+    // Anything outside -15..15 leaves r.MipMapLODBias alone; a value inside it
+    // (including 0) is applied.
+    float internalTextureMipBias = kTextureMipBiasDisabled;
 };
 
 struct Spec {
@@ -125,6 +141,10 @@ inline constexpr std::array kSpecs{
     Spec{"t.MaxFPS", ValueType::Float, Activation::InternalFpsLimit, 0.0},
     Spec{"r.MaxAnisotropy", ValueType::Int32, Activation::InternalAnisotropicFiltering, 16.0},
     Spec{"r.VT.MaxAnisotropy", ValueType::Int32, Activation::InternalAnisotropicFiltering, 16.0},
+    // Appended last on purpose: kDenoiserModeIndex and kTonemapperSharpenIndex
+    // are positional, so a new entry anywhere earlier would silently retarget
+    // them. Float type confirmed from the engine's own registration.
+    Spec{"r.MipMapLODBias", ValueType::Float, Activation::InternalTextureMipBias, 0.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -161,6 +181,10 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             enabled = settings.internalAnisotropicFiltering != 0;
             value = settings.internalAnisotropicFiltering;
             break;
+        case Activation::InternalTextureMipBias:
+            enabled = IsTextureMipBiasRequested(settings.internalTextureMipBias);
+            value = enabled ? settings.internalTextureMipBias : 0.0;
+            break;
     }
     return {enabled, ValueBits(spec.type, value)};
 }
@@ -168,7 +192,8 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
 inline bool AnyEnabled(const Settings& settings) noexcept {
     return settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings ||
            settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
-           settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0;
+           settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0 ||
+           IsTextureMipBiasRequested(settings.internalTextureMipBias);
 }
 
 // UE registers the show flag console variables as `FConsoleVariableBitRef` -
