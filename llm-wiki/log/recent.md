@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-08-16 - `ShowFlag.*` was never a value variable: four UE5 overrides had been writing the wrong structure
+
+- Follow-up to the 7-minute Talos run (`20260816_014003`, 35/40 installed, verified 35/35, re-asserted 0). The
+  four `ShowFlag.*` entries counted as installed were the ones with no evidence behind them, and the `prevLocal`
+  diagnostic added for exactly that question answered it: all four objects reported the **identical**
+  `object+0x58` qword `0x00007FF73B3A16F0` (`20260816_161158`), an address inside the exe's writable data.
+- A per-variable `{game, render}` shadow pair cannot be identical across four different variables. These are
+  `FConsoleVariableBitRef` - UE registers show flags as one bit in two process-wide force masks, so the first two
+  qwords are `{Force0MaskPtr, Force1MaskPtr}`. CE's fixed `ref+0x50` model read `*Force0MaskPtr` (an all-clear
+  mask, which is where the long-standing `prevValue=0` came from), decided it was a plausible value, and
+  CAS-replaced the mask pointer with CE's 8-byte shadow. The engine then read CE's storage as the mask: the write
+  reached nothing, and the object lost its route to the real mask. Inert in every title and engine version so far.
+- **Fix (0.1.6128):** classify before writing. `hook/common/ue5_console_layout.h` decides between reference
+  pointer / inline pair / bit reference from what the caller read, `hook/main_ue5_layout.cpp` does the reading and
+  owns the three install modes, and an object matching nothing (or one shape twice) is left untouched with its
+  first 0x80 bytes dumped. The reference shape is now accepted only when the shadow pair actually mirrors the
+  global the pointer addresses - the check the ShowFlag objects fail.
+- Bit writes are compare-exchange on the containing word so neighbouring show flags survive, restore puts back only
+  CE's bit, and verification reads both force bits straight out of the engine's masks. Two gates keep the bit path
+  off everything else: `ShowFlag.` names only, and commit only once a second flag confirms the same mask pair with
+  a different bit index.
+- Also fixed: a mid-session configuration change that newly requested CVars could never resolve them, because the
+  registry resolver stays closed once it has finished with the previous request set (`ReopenConsoleRegistry`).
+- **Open:** whether a Shipping build consults the force masks at all (these flags are `SHOWFLAG_FIXED_IN_SHIPPING`
+  in UE). Practically that only exposes vignette. Also open: `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated`
+  in Talos, which now refuses with a byte dump instead of a bare "layout does not match" line - the next Talos run
+  should identify it outright.
+
 ### 2026-08-16 - Steam's overlay stopped working next to CE's: entry ownership was decided by a race CE now always wins
 
 - Crashes gone (0.1.6122 confirmed on hardware), but the Steam overlay no longer rendered in Cyberpunk

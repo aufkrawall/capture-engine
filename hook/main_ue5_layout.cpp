@@ -1,0 +1,373 @@
+// Probing a UE console object for the layout it actually has, and driving it
+// through that layout. Used by the console-registry resolver, where no static
+// `FAutoConsoleVariable` wrapper exists to identify the object.
+//
+// Before this unit existed, the registry path assumed one shape - a data
+// pointer at `object+0x50` - and wrote through it whenever the pointed dword
+// happened to be a plausible value. UE's `ShowFlag.*` variables are
+// `FConsoleVariableBitRef`, whose first two qwords are the two force masks
+// every show flag shares, so the assumption held for exactly as long as a mask
+// read zero. All four ShowFlag overrides in the 20260816_161158 Talos session
+// installed that way and none of them did anything: the redirect replaced the
+// engine's mask pointer with CE's eight-byte shadow, which the engine's
+// `GetInt()` then read as an all-clear mask.
+#include "main_ue5_internal.h"
+
+namespace UE5::detail {
+namespace {
+
+// A bit reference is only committed once a second show flag reports the same
+// mask pair. UE registers every show flag against the same two masks, so
+// agreement across two independently resolved objects is proof of the shape;
+// one object alone is just two adjacent pointers.
+constexpr std::size_t kBitReferenceConfirmations = 2;
+
+struct BitReferenceCandidate {
+  bool present = false;
+  HMODULE owner = nullptr;
+  uintptr_t object = 0;
+  uintptr_t forceZeroMask = 0;
+  uintptr_t forceOneMask = 0;
+  uint32_t bitNumber = 0;
+};
+
+std::array<BitReferenceCandidate, kCVarCount> g_bitReferenceCandidates{};
+std::atomic<uint32_t> g_layoutDumpLogs{0};
+
+HMODULE OwningModule(uintptr_t address) {
+  HMODULE module = nullptr;
+  if (!address ||
+      !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCSTR>(address), &module)) {
+    return nullptr;
+  }
+  return module;
+}
+
+ce::ue5_layout::ObjectProbe ReadProbe(uintptr_t consoleObject, std::size_t offset) {
+  ce::ue5_layout::ObjectProbe probe;
+  probe.offset = offset;
+  ReadValue(reinterpret_cast<const void*>(consoleObject + offset), probe.firstQword);
+  ReadValue(reinterpret_cast<const void*>(consoleObject + offset + sizeof(uint64_t)), probe.secondQword);
+  probe.bitNumberRead = ReadValue(
+      reinterpret_cast<const void*>(consoleObject + offset + sizeof(uint64_t) * 2), probe.bitNumber);
+
+  const auto first = static_cast<uintptr_t>(probe.firstQword);
+  const auto second = static_cast<uintptr_t>(probe.secondQword);
+  probe.firstTargetWritable = IsWritableRange(reinterpret_cast<const void*>(first), sizeof(uint32_t));
+  probe.secondTargetWritable = IsWritableRange(reinterpret_cast<const void*>(second), sizeof(uint32_t));
+  if (probe.firstTargetWritable)
+    probe.pointedValueRead = ReadValue(reinterpret_cast<const void*>(first), probe.pointedValue);
+  if (probe.firstTargetWritable && probe.secondTargetWritable) {
+    HMODULE firstModule = OwningModule(first);
+    probe.pointersShareModuleData = firstModule != nullptr && firstModule == OwningModule(second);
+  }
+  return probe;
+}
+
+// Logged when nothing matched, because the bytes are the only thing that can
+// explain a per-title layout CE has not seen. Rate-limited: the resolver retries
+// once a second, and an unrecognised object stays unrecognised.
+void LogUnrecognisedObject(const char* name, uintptr_t consoleObject, const char* origin,
+                           bool ambiguous) {
+  if (g_layoutDumpLogs.fetch_add(1, std::memory_order_relaxed) >= 6)
+    return;
+  uintptr_t words[16] = {};
+  for (std::size_t index = 0; index < std::size(words); ++index)
+    ReadValue(reinterpret_cast<const void*>(consoleObject + index * sizeof(uintptr_t)), words[index]);
+  HookLogImportant(
+      "UE5 overrides: %s found via %s at %p carries %s console-variable layout; leaving game memory "
+      "unchanged. obj[0x00..0x78]=0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX "
+      "0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX 0x%llX",
+      name, origin, reinterpret_cast<void*>(consoleObject),
+      ambiguous ? "an ambiguous" : "no recognised", static_cast<unsigned long long>(words[0]),
+      static_cast<unsigned long long>(words[1]), static_cast<unsigned long long>(words[2]),
+      static_cast<unsigned long long>(words[3]), static_cast<unsigned long long>(words[4]),
+      static_cast<unsigned long long>(words[5]), static_cast<unsigned long long>(words[6]),
+      static_cast<unsigned long long>(words[7]), static_cast<unsigned long long>(words[8]),
+      static_cast<unsigned long long>(words[9]), static_cast<unsigned long long>(words[10]),
+      static_cast<unsigned long long>(words[11]), static_cast<unsigned long long>(words[12]),
+      static_cast<unsigned long long>(words[13]), static_cast<unsigned long long>(words[14]),
+      static_cast<unsigned long long>(words[15]));
+}
+
+void LogConsoleObjectInstall(std::size_t specIndex, const char* mode, const char* origin,
+                             uintptr_t consoleObject, std::size_t valueOffset, uint32_t previousBits,
+                             bool writeThrough) {
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  const uint32_t bits = g_desired[specIndex].bits;
+  if (spec.type == ce::ue5_cvar::ValueType::Float) {
+    HookLogImportant("UE5 overrides: persistent %s=%.3f installed via %s (%s) "
+                     "(object=%p valueOffset=0x%zX prevValue=%.3f writeThrough=%d)",
+                     spec.name, std::bit_cast<float>(bits), origin, mode,
+                     reinterpret_cast<void*>(consoleObject), valueOffset,
+                     std::bit_cast<float>(previousBits), writeThrough ? 1 : 0);
+    return;
+  }
+  HookLogImportant("UE5 overrides: persistent %s=%d installed via %s (%s) "
+                   "(object=%p valueOffset=0x%zX prevValue=%d writeThrough=%d)",
+                   spec.name, static_cast<int32_t>(bits), origin, mode,
+                   reinterpret_cast<void*>(consoleObject), valueOffset,
+                   static_cast<int32_t>(previousBits), writeThrough ? 1 : 0);
+}
+
+bool InstallReferencePointer(std::size_t specIndex, HMODULE owner, uintptr_t consoleObject,
+                             std::size_t valueOffset, const char* origin) {
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  const uintptr_t pointerSlot = consoleObject + valueOffset;
+  uintptr_t dataPointer = 0;
+  uint32_t value = 0;
+  if (!ReadValue(reinterpret_cast<const void*>(pointerSlot), dataPointer) ||
+      !ReadValue(reinterpret_cast<const void*>(dataPointer), value)) {
+    return false;
+  }
+  if (!IsWritableRange(reinterpret_cast<void*>(pointerSlot), sizeof(uint32_t) * 4)) {
+    HookLogImportant("UE5 overrides: %s value storage found via %s is not writable; leaving it unchanged",
+                     spec.name, origin);
+    return false;
+  }
+  ForcedConsoleVariableData* forcedData = GetOrCreateForcedData(specIndex);
+  if (!forcedData) {
+    HookLogImportant("UE5 overrides: unable to allocate process-lifetime storage for %s (error=%lu)",
+                     spec.name, GetLastError());
+    return false;
+  }
+  ce::ue5_redirect::Observed observed{};
+  observed.dataPointer = reinterpret_cast<const void*>(dataPointer);
+  observed.pointedValue = value;
+  ReadValue(reinterpret_cast<const void*>(pointerSlot + sizeof(void*)), observed.localGame);
+  ReadValue(reinterpret_cast<const void*>(pointerSlot + sizeof(void*) + sizeof(uint32_t)),
+            observed.localRender);
+  observed.pointedStorageWritable = IsWritableRange(reinterpret_cast<void*>(dataPointer), sizeof(uint32_t));
+  const ce::ue5_redirect::Plan plan = ce::ue5_redirect::MakePlan(observed);
+  if (!ce::ue5_redirect::CanInstall(plan)) {
+    HookLogImportant("UE5 overrides: %s data pointer from %s cannot be recorded for restore; "
+                     "leaving game memory unchanged",
+                     spec.name, origin);
+    return false;
+  }
+
+  void* previous = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(pointerSlot),
+                                                     forcedData, reinterpret_cast<void*>(dataPointer));
+  if (previous != reinterpret_cast<void*>(dataPointer)) {
+    HookLogImportant("UE5 overrides: refused changed %s data pointer from %s (expected=%p observed=%p)",
+                     spec.name, origin, reinterpret_cast<void*>(dataPointer), previous);
+    return false;
+  }
+
+  OverrideState& state = g_overrides[specIndex];
+  state = {};
+  state.module = owner;
+  state.object = consoleObject;
+  state.dataShadowAddress = pointerSlot;
+  state.dataShadowPointerRedirect = true;
+  state.registryResolved = true;
+  ApplyRestorePlan(state, plan, g_desired[specIndex].bits);
+  UpdateForcedData(specIndex, g_desired[specIndex].bits);
+  g_activeModules[specIndex].store(owner, std::memory_order_release);
+  g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
+  LogConsoleObjectInstall(specIndex, "reference redirect", origin, consoleObject, valueOffset, value,
+                          state.dataPointerValueWritten);
+  return true;
+}
+
+bool InstallInlinePair(std::size_t specIndex, HMODULE owner, uintptr_t consoleObject,
+                       std::size_t valueOffset, const char* origin) {
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  const uintptr_t pairAddress = consoleObject + valueOffset;
+  if (!IsWritableRange(reinterpret_cast<void*>(pairAddress), sizeof(uint32_t) * 2)) {
+    HookLogImportant("UE5 overrides: %s inline value pair found via %s is not writable; leaving it unchanged",
+                     spec.name, origin);
+    return false;
+  }
+  uint32_t game = 0;
+  uint32_t render = 0;
+  if (!ReadValue(reinterpret_cast<const void*>(pairAddress), game) ||
+      !ReadValue(reinterpret_cast<const void*>(pairAddress + sizeof(uint32_t)), render)) {
+    return false;
+  }
+  if (!GetOrCreateForcedData(specIndex)) {
+    HookLogImportant("UE5 overrides: unable to allocate process-lifetime storage for %s (error=%lu)",
+                     spec.name, GetLastError());
+    return false;
+  }
+  OverrideState& state = g_overrides[specIndex];
+  state = {};
+  state.module = owner;
+  state.object = consoleObject;
+  state.dataShadowAddress = pairAddress;
+  state.dataShadowPointerRedirect = false;
+  state.originalDataShadowGameBits = game;
+  state.originalDataShadowRenderBits = render;
+  state.registryResolved = true;
+  UpdateForcedData(specIndex, g_desired[specIndex].bits);
+  g_activeModules[specIndex].store(owner, std::memory_order_release);
+  g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
+  LogConsoleObjectInstall(specIndex, "inline pair write", origin, consoleObject, valueOffset, game, true);
+  return true;
+}
+
+bool InstallBitReference(std::size_t specIndex, const BitReferenceCandidate& candidate,
+                         const char* origin) {
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  const uint32_t desired = g_desired[specIndex].bits;
+  if (!ce::ue5_layout::IsExpressibleBitValue(desired)) {
+    HookLogImportant("UE5 overrides: %s is a show flag force bit and cannot express %d; "
+                     "leaving game memory unchanged",
+                     spec.name, static_cast<int32_t>(desired));
+    return false;
+  }
+  const std::size_t byteIndex = ce::ue5_layout::BitByteIndex(candidate.bitNumber);
+  const uint8_t mask = ce::ue5_layout::BitMask(candidate.bitNumber);
+  const uintptr_t forceZeroByte = candidate.forceZeroMask + byteIndex;
+  const uintptr_t forceOneByte = candidate.forceOneMask + byteIndex;
+  bool zeroBit = false;
+  bool oneBit = false;
+  if (!ReadForceMaskBit(forceZeroByte, mask, zeroBit) || !ReadForceMaskBit(forceOneByte, mask, oneBit)) {
+    HookLogImportant("UE5 overrides: %s force-mask byte %zu is not writable (masks=%p/%p bit=%u); "
+                     "leaving game memory unchanged",
+                     spec.name, byteIndex, reinterpret_cast<void*>(candidate.forceZeroMask),
+                     reinterpret_cast<void*>(candidate.forceOneMask), candidate.bitNumber);
+    return false;
+  }
+
+  OverrideState& state = g_overrides[specIndex];
+  state = {};
+  state.module = candidate.owner;
+  state.object = candidate.object;
+  state.bitReference = true;
+  state.forceZeroByte = forceZeroByte;
+  state.forceOneByte = forceOneByte;
+  state.bitMask = mask;
+  state.originalForceZeroBit = zeroBit;
+  state.originalForceOneBit = oneBit;
+  state.registryResolved = true;
+  UpdateForcedData(specIndex, desired);
+  g_activeModules[specIndex].store(candidate.owner, std::memory_order_release);
+  g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
+  // The mask addresses are logged because the force-0/force-1 roles come from
+  // `FConsoleVariableBitRef`'s member order, and these two lines are what lets a
+  // validation run confirm that reading rather than infer it.
+  HookLogImportant(
+      "UE5 overrides: persistent %s=%d installed via %s as a show flag force bit "
+      "(object=%p force0=%p force1=%p bit=%u byte=%zu prevForce0=%d prevForce1=%d)",
+      spec.name, static_cast<int32_t>(desired), origin, reinterpret_cast<void*>(candidate.object),
+      reinterpret_cast<void*>(candidate.forceZeroMask), reinterpret_cast<void*>(candidate.forceOneMask),
+      candidate.bitNumber, byteIndex, zeroBit ? 1 : 0, oneBit ? 1 : 0);
+  return true;
+}
+
+}  // namespace
+
+void UpdateForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool set) {
+  // The masks are byte arrays, so the bit CE owns shares its 32-bit word with
+  // other show flags. A compare-exchange on the containing word is what keeps a
+  // concurrent engine-side update to a neighbouring flag from being lost.
+  const uintptr_t wordAddress = byteAddress & ~uintptr_t{3};
+  const unsigned shift = static_cast<unsigned>((byteAddress - wordAddress) * 8);
+  // Built in the unsigned type first: the top bit of the word is reachable
+  // (shift 24 on a 0x80 mask), and shifting into the sign bit of the signed
+  // interlocked type directly is the kind of conversion worth spelling out.
+  const uint32_t shiftedMask = static_cast<uint32_t>(mask) << shift;
+  const LONG bits = static_cast<LONG>(shiftedMask);
+  if (!IsWritableRange(reinterpret_cast<void*>(wordAddress), sizeof(LONG)))
+    return;
+  auto* word = reinterpret_cast<volatile LONG*>(wordAddress);
+  LONG observed = *word;
+  for (;;) {
+    const LONG wanted = set ? (observed | bits) : (observed & ~bits);
+    if (wanted == observed)
+      return;
+    const LONG previous = InterlockedCompareExchange(word, wanted, observed);
+    if (previous == observed)
+      return;
+    observed = previous;
+  }
+}
+
+bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set) {
+  const uintptr_t wordAddress = byteAddress & ~uintptr_t{3};
+  uint8_t value = 0;
+  if (!IsWritableRange(reinterpret_cast<void*>(wordAddress), sizeof(LONG)) ||
+      !ReadValue(reinterpret_cast<const void*>(byteAddress), value)) {
+    return false;
+  }
+  set = (value & mask) != 0;
+  return true;
+}
+
+void ResetBitReferenceCandidates() {
+  g_bitReferenceCandidates.fill({});
+  g_layoutDumpLogs.store(0, std::memory_order_relaxed);
+}
+
+ConsoleObjectOutcome InstallConsoleObjectOverride(std::size_t specIndex, HMODULE owner,
+                                                  uintptr_t consoleObject, const char* origin) {
+  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+  std::array<ce::ue5_layout::ObjectProbe, std::size(ce::ue5_layout::kValueOffsets)> probes{};
+  for (std::size_t index = 0; index < probes.size(); ++index)
+    probes[index] = ReadProbe(consoleObject, ce::ue5_layout::kValueOffsets[index]);
+
+  const ce::ue5_layout::Selection selection = ce::ue5_layout::SelectLayout(
+      probes.data(), probes.size(), specIndex, ce::ue5_cvar::IsShowFlagSpec(specIndex));
+  switch (selection.kind) {
+    case ce::ue5_layout::Kind::BitReference: {
+      const ce::ue5_layout::ObjectProbe* probe = nullptr;
+      for (const ce::ue5_layout::ObjectProbe& item : probes) {
+        if (item.offset == selection.offset)
+          probe = &item;
+      }
+      if (!probe)
+        return ConsoleObjectOutcome::Refused;
+      BitReferenceCandidate& candidate = g_bitReferenceCandidates[specIndex];
+      candidate.present = true;
+      candidate.owner = owner;
+      candidate.object = consoleObject;
+      // `FConsoleVariableBitRef` declares Force0MaskPtr before Force1MaskPtr, so
+      // the member at the lower offset is the force-to-0 mask.
+      candidate.forceZeroMask = static_cast<uintptr_t>(probe->firstQword);
+      candidate.forceOneMask = static_cast<uintptr_t>(probe->secondQword);
+      candidate.bitNumber = probe->bitNumber;
+      return ConsoleObjectOutcome::BitReferencePending;
+    }
+    case ce::ue5_layout::Kind::ReferencePointer:
+      return InstallReferencePointer(specIndex, owner, consoleObject, selection.offset, origin)
+                 ? ConsoleObjectOutcome::Installed
+                 : ConsoleObjectOutcome::Refused;
+    case ce::ue5_layout::Kind::InlinePair:
+      return InstallInlinePair(specIndex, owner, consoleObject, selection.offset, origin)
+                 ? ConsoleObjectOutcome::Installed
+                 : ConsoleObjectOutcome::Refused;
+    case ce::ue5_layout::Kind::None:
+      break;
+  }
+  LogUnrecognisedObject(spec.name, consoleObject, origin, selection.ambiguous);
+  return ConsoleObjectOutcome::Refused;
+}
+
+std::size_t CommitConfirmedBitReferences(const char* origin) {
+  std::size_t installed = 0;
+  for (std::size_t index = 0; index < kCVarCount; ++index) {
+    const BitReferenceCandidate& candidate = g_bitReferenceCandidates[index];
+    if (!candidate.present || g_activeModules[index].load(std::memory_order_acquire))
+      continue;
+    std::size_t agreeing = 0;
+    for (std::size_t other = 0; other < kCVarCount; ++other) {
+      const BitReferenceCandidate& peer = g_bitReferenceCandidates[other];
+      // Distinct bit numbers as well as distinct specs: two records of the same
+      // flag would agree trivially and prove nothing about the mask pair.
+      if (peer.present && peer.forceZeroMask == candidate.forceZeroMask &&
+          peer.forceOneMask == candidate.forceOneMask &&
+          (other == index || peer.bitNumber != candidate.bitNumber)) {
+        ++agreeing;
+      }
+    }
+    if (agreeing < kBitReferenceConfirmations)
+      continue;
+    if (InstallBitReference(index, candidate, origin))
+      ++installed;
+  }
+  return installed;
+}
+
+}  // namespace UE5::detail

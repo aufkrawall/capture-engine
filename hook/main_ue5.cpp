@@ -57,6 +57,10 @@ void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
   if (newlyEnabled) {
     detail::g_fullRescanRequested.store(true, std::memory_order_release);
     detail::g_missingSummaryLogged = false;
+    // Names UE composes at runtime are only reachable through the registry, and
+    // the resolver stays closed once it has finished with the previous request
+    // set. Without this, a bundle enabled mid-session never gets looked up.
+    detail::ReopenConsoleRegistry();
   }
 }
 

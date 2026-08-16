@@ -368,12 +368,20 @@ std::size_t ResolveMissingInRegion(const Region& region, std::size_t valueOffset
               reinterpret_cast<void*>(object));
           continue;
         }
-        if (InstallConsoleObjectRedirect(index, owner, object, "console registry")) {
-          ++installed;
-        } else {
-          // The object was located; its layout is simply not one CE can drive.
-          // That verdict cannot change later, so stop re-attempting it.
-          g_registryRefused[index] = true;
+        switch (InstallConsoleObjectOverride(index, owner, object, "console registry")) {
+          case ConsoleObjectOutcome::Installed:
+            ++installed;
+            break;
+          case ConsoleObjectOutcome::BitReferencePending:
+            // Recorded, not written: a show flag force bit is only committed
+            // once a second flag confirms the same mask pair, which may be a
+            // later element in this same pass or a later pass entirely.
+            break;
+          case ConsoleObjectOutcome::Refused:
+            // The object was located; its layout is simply not one CE can
+            // drive. That verdict cannot change later, so stop re-attempting.
+            g_registryRefused[index] = true;
+            break;
         }
       }
     }
@@ -463,6 +471,22 @@ void ResetConsoleRegistry() {
   g_resolveRegionCursor = 0;
   g_allocationExpansionRefused = false;
   g_registryRefused.fill(false);
+  ResetBitReferenceCandidates();
+}
+
+void ReopenConsoleRegistry() {
+  // A configuration change can request names that were never asked for before,
+  // and the resolver had closed for good on the previous set: `g_exhausted`
+  // survives until the whole feature is switched off, so enabling (say) the
+  // post-processing bundle later in a session left its ShowFlag names
+  // permanently unresolved. Only the "stop looking" state is cleared - the
+  // located map, the sweep coverage, and the per-name layout refusals are facts
+  // about this title that a new request does not change, and keeping them is
+  // what stops a re-open from re-sweeping gigabytes or re-logging refusals.
+  if (!g_exhausted && g_resolveAttempts == 0)
+    return;
+  g_exhausted = false;
+  g_resolveAttempts = 0;
 }
 
 bool ResolveMissingThroughConsoleRegistry() {
@@ -564,9 +588,12 @@ bool ResolveMissingThroughConsoleRegistry() {
     return false;
   }
 
-  const std::size_t installed =
+  std::size_t installed =
       ResolveMissingAcrossRegions(g_map.regions, g_map.valueOffset, missing, GetModuleHandleW(nullptr),
                                   GetTickCount64() + kResolveBudgetMs);
+  // Show flag force bits are written only after the pass that found them, once
+  // enough of them agree on the mask pair to prove the layout.
+  installed += CommitConfirmedBitReferences("console registry");
   if (installed) {
     HookLogImportant("UE5 overrides: console registry resolved %zu of %zu remaining CVar(s)",
                      installed, missing.size());

@@ -332,8 +332,9 @@ Primary sources:
   ordinary heap FString next to its object. CE does not hard-code that map's layout: it takes CVars the module scan
   already installed as **anchors**, walks committed private RW regions for a qword equal to a known object, and only
   accepts an element whose neighbouring FString also decodes to that CVar's name. That proves the key-to-value
-  distance, after which the same allocation is re-read for the missing names and the resolved object goes through the
-  ordinary `ref+0x50` redirect (`InstallConsoleObjectRedirect`, logged as `installed via console registry`).
+  distance, after which the same allocation is re-read for the missing names and the resolved object is **probed for
+  its layout** before anything is written (`InstallConsoleObjectOverride` in `hook/main_ue5_layout.cpp`, logged as
+  `installed via console registry`).
   Constraints that keep it safe: every read is `ReadProcessMemory` rather than a raw dereference (a live game frees
   heap regions mid-walk, and the kernel-checked copy fails instead of raising); and it never runs before an anchor
   exists, so it can only ever add to what the scan proved. **The walk must not stop at the first confirmed
@@ -373,18 +374,48 @@ Primary sources:
   confirmed anchors and region set included) rather than producing silent misses. The cursor only moves forward:
   memory committed below it after CE swept there is new memory, and element storage that *moves* is caught by the
   anchor re-check instead.
+- **`ShowFlag.*` is `FConsoleVariableBitRef`, not a variable holding a value - and until 2026-08-16 CE drove it as
+  one, which made all four show flag overrides inert.** A bit-ref's value is a single bit in two process-wide force
+  masks: its first two qwords are `{Force0MaskPtr, Force1MaskPtr}` and its third field is the bit index, so the
+  fixed `ref+0x50` model read `*Force0MaskPtr` (an all-clear mask, hence the long-standing `prevValue=0` in every
+  title and engine version) and then CAS-replaced the mask pointer with CE's eight-byte shadow. The engine's own
+  `GetInt()`/`Set()` then consulted CE's storage instead of the mask, so the write reached nothing the renderer
+  reads *and* removed the object's only route to the real mask. The proof is in the install log itself: the
+  20260816_161158 Talos session reported the identical `object+0x58` qword `0x00007FF73B3A16F0` - an address inside
+  the exe's writable data - for all four ShowFlag objects. A per-variable `{game, render}` shadow pair cannot be
+  identical across four different variables; a shared mask pointer is exactly that.
+  CE now classifies the object before writing (`hook/common/ue5_console_layout.h`, unit-tested in
+  `tests/test_ue5_console_layout.cpp`) across three shapes: **reference pointer** (`FConsoleVariableRef<T>`,
+  accepted only when the shadow pair actually mirrors the global the pointer addresses - the check the ShowFlag
+  objects fail), **inline pair** (`FConsoleVariable<T>`, only at the proven `+0x50` value offset because zeroed
+  padding satisfies it), and **bit reference**. Bit-ref writes set/clear CE's own bit with a compare-exchange on
+  the containing word, so the other show flags sharing the byte are untouched; restore puts back only that bit.
+  Two independent gates keep the bit path off everything else: it is offered only to `ShowFlag.` names
+  (`ce::ue5_cvar::IsShowFlagSpec`), and a candidate is committed only once a *second* show flag independently
+  reports the same mask pair with a different bit index (`CommitConfirmedBitReferences`). Force-0/force-1 roles come
+  from `FConsoleVariableBitRef`'s member order; both mask addresses are logged at install so a run can confirm that
+  reading rather than infer it. **Open question:** whether a Shipping build consults the force masks at all - the
+  objects are registered in `Talos1-Win64-Shipping.exe`, but the show flags CE targets are `SHOWFLAG_FIXED_IN_SHIPPING`
+  in UE. Practically this only exposes vignette: grain, motion blur and chromatic aberration are already carried by
+  `r.FilmGrain`, `r.MotionBlurQuality` and `r.SceneColorFringeQuality`.
+- An object matching no shape, or matching one shape at two offsets, is left untouched and its first 0x80 bytes are
+  dumped (rate-limited to 6 per session). That is deliberate: guessing a layout is what produced the ShowFlag writes,
+  and the dump is what lets the next run identify a per-title layout instead of re-deriving it from a refusal.
 - Observed coverage: Industria 2 Demo (UE 5.6.1, session 20260815_214219) installs **38/40** requested CVars and
-  verifies 38/38, including all four `ShowFlag.*` through the registry; Talos Reawakened (UE 5.4.4) installs 35/40.
-  The remaining entries are the version-conditional/absent names above plus
-  `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos (per-title layout variance; its `ref+0x50` points
-  into `.pdata`, so the data-pointer validation correctly refuses it). Industria 2 also exercised drift recovery:
-  two Lumen CVars were rewritten by the game ~30 s in and were re-asserted automatically.
-- **Stale-risk / unverified:** all four `ShowFlag.*` installs report `prevValue=0` in *both* titles and both engine
-  versions. UE registers these as `TAutoConsoleVariable<int32>` whose documented default is 2 ("obey the
-  game/editor setting"), so a pre-write value of 0 is either a genuine game-side force-off or CE reading a slot
-  that is not the one the renderer consults; writing 0 over 0 changes nothing either way. These go through the
-  data-pointer path, which has always mirrored, so they are unaffected by the Ref-redirect defect above - but they
-  still have **no end-to-end evidence** comparable to the RR bundle's `Feature 13 evaluation succeeded`. Note that
+  verifies 38/38; Talos Reawakened (UE 5.4.4) installs 35/40. Note that the four `ShowFlag.*` counted as "installed"
+  in every session before 0.1.6128 were the inert bit-ref writes described above. The remaining entries are the
+  version-conditional/absent names plus `r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated` in Talos, whose
+  registry-resolved object carries an `object+0x50` pointer (`0x00007FF73B2AF42C`) whose dword is not a plausible
+  value for it, so validation refuses it; the layout dump is expected to identify it on the next Talos run.
+  Industria 2 also exercised drift recovery: two Lumen CVars were rewritten by the game ~30 s in and were
+  re-asserted automatically.
+- A configuration change that newly requests CVars re-opens the registry resolver (`ReopenConsoleRegistry`). The
+  resolver otherwise stays closed for the rest of the session once it has finished with the previous request set,
+  so enabling e.g. the post-processing bundle mid-session left its runtime-composed names permanently unresolved.
+  Only the "stop looking" state is cleared: the located map, sweep coverage, and per-name layout refusals are facts
+  about the title that a new request does not change.
+- **Stale-risk / unverified:** the show flag force bits have **no end-to-end evidence** comparable to the RR
+  bundle's `Feature 13 evaluation succeeded`, and neither did the redirect they replace. Note that
   chromatic aberration turned off only once the *Ref-redirect* path started mirroring, which is evidence that
   `r.SceneColorFringeQuality` (not `ShowFlag.SceneColorFringe`) is what actually gates the effect in UE 5.6. Talos in-game (session 20260815_191332) is the
   end-to-end proof for the RR bundle: `r.NGX.DLSS.DenoiserMode=1` installed as a Ref redirect and NGX then logged
@@ -400,7 +431,9 @@ Primary sources:
   rescan requested. A value that drifted means a game-side `Set()` reached storage CE owns: the configured value is
   re-asserted rather than reinstalled. Reporting is per-override capped at three and only lifts after 60 consecutive
   clean passes, so a constantly rewritten CVar stays quiet while a rare regression is still logged; the summary line
-  is emitted only when the counts change.
+  is emitted only when the counts change. The bit-reference mode is the one branch whose verification is entirely
+  about game memory: it reads both force bits straight back out of the engine's masks, with no CE-owned shadow that
+  could agree with CE's own configured value.
 - The same machinery overrides `t.MaxFPS`, `r.MaxAnisotropy`, and `r.VT.MaxAnisotropy` (shared-memory ABI 40 added
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are
@@ -418,15 +451,25 @@ Primary sources:
   `DX12Hook::ServicePendingPresentHooks` retries from the hook thread's service pass. Invariant, unit-tested:
   the postponement never outlasts the deferral condition, so a swapchain that pre-dates injection cannot be
   left without Present hooks.
-- The UE5 override code is five units: `main_ue5.cpp` (policy/lifecycle), `main_ue5_scan.cpp` (literal and candidate
-  discovery), `main_ue5_install.cpp` (install/refresh/verify/restore), `main_ue5_memory.cpp` (process-memory and PE
-  primitives), and `main_ue5_registry.cpp` (console-registry resolution), with shared declarations in
-  `main_ue5_internal.h`. The split happened when `main_ue5_scan.cpp` had grown to 869 lines, past the 800-line
-  ceiling, without being recorded in `tools/file_size_baseline.json` - lint would have failed on the next run.
+- The UE5 override code is six units: `main_ue5.cpp` (policy/lifecycle), `main_ue5_scan.cpp` (literal and candidate
+  discovery), `main_ue5_install.cpp` (install/refresh/verify/restore), `main_ue5_layout.cpp` (console-object layout
+  probing and the three console-object install modes), `main_ue5_memory.cpp` (process-memory and PE primitives), and
+  `main_ue5_registry.cpp` (console-registry resolution), with shared declarations in `main_ue5_internal.h`. The
+  original split happened when `main_ue5_scan.cpp` had grown to 869 lines, past the 800-line ceiling, without being
+  recorded in `tools/file_size_baseline.json` - lint would have failed on the next run.
 - Post-processing removal uses `r.Tonemapper.Sharpen`, `r.FilmGrain`, `r.Tonemapper.GrainQuantization`,
   `r.MotionBlurQuality`, `r.SceneColorFringeQuality`, and matching `ShowFlag.*` CVars including vignette. It does not
   force `r.Tonemapper.Quality` down and does not disable `ShowFlag.PostProcessMaterial`: custom materials have no
   generic semantic label distinguishing sharpen from gameplay/damage/underwater/accessibility effects.
+- **Film grain coverage is complete at the name level**; the gap was never a missing CVar. UE 5.1+ gates the whole
+  film grain pass on `r.FilmGrain` (verified live in Talos: `1 -> 0`), `ShowFlag.Grain` gates it as a show flag, and
+  `r.Tonemapper.GrainQuantization` is the UE4-era equivalent - kept because the layout machinery works on UE4 titles
+  too, at the cost of one "literal not found" line on UE5. The remaining `r.FilmGrain.*` CVars
+  (`SequenceLength`, `CacheTextureConstants`, `Texture`) shape grain rather than disable it, and per-volume
+  `FilmGrainIntensity` is already gated by `r.FilmGrain`. What was actually broken was `ShowFlag.Grain` being an
+  inert bit-ref write; adding further names would not have fixed it. Do not add a guessed CVar name here:
+  `r.MegaLights.DownsampleMode` and `r.Tonemapper.GrainQuantization` each cost a permanent unresolved entry, and
+  a name that exists in no engine version cannot be distinguished from one CE simply failed to reach.
 - The policy deliberately does not spoof `SuperSamplingDenoising.Available`,
   `SuperSamplingDenoising.FeatureInitResult`, or `GetFeatureRequirements(Feature 13)`. It cannot add missing
   albedo/specular/normal/depth/motion-vector inputs, enable a disabled temporal upscaler, retrofit an older NVIDIA UE

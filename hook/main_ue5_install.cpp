@@ -3,7 +3,6 @@
 #include "main_ue5_internal.h"
 
 namespace UE5::detail {
-namespace {
 
 ForcedConsoleVariableData* GetOrCreateForcedData(std::size_t specIndex) {
   ForcedConsoleVariableData* existing = g_forcedData[specIndex].load(std::memory_order_acquire);
@@ -23,6 +22,8 @@ ForcedConsoleVariableData* GetOrCreateForcedData(std::size_t specIndex) {
   // prevents a stale-read UAF when the injected hook shuts down.
   return allocated;
 }
+
+namespace {
 
 // The dword next to a data-pointer value is not a second shadow: only the
 // value itself is layout-validated, so it is logged as raw neighbouring
@@ -103,6 +104,8 @@ void RestoreReferencePair(OverrideState& state) {
   InterlockedExchange(pair + 1, static_cast<LONG>(state.originalReferenceRenderBits));
 }
 
+}  // namespace
+
 // Commits the recorded undo information, then mirrors CE's value into the
 // storage the data pointer addressed. Shared by both redirect install paths so
 // neither can forget part of the contract.
@@ -114,15 +117,22 @@ void ApplyRestorePlan(OverrideState& state, const ce::ue5_redirect::Plan& plan, 
   state.dataPointerValueWritten = plan.writeThrough && WriteThroughOriginalStorage(state, bits);
 }
 
-}  // namespace
-
 void UpdateForcedData(std::size_t specIndex, uint32_t bits) {
+  OverrideState& state = g_overrides[specIndex];
+  if (state.bitReference) {
+    // A force bit has no CE-owned storage to point anything at: the value lives
+    // entirely in the engine's masks. Force-1 wins over force-0 in
+    // `FConsoleVariableBitRef`, so asserting a value means owning both bits
+    // rather than only setting the one that matches.
+    UpdateForceMaskBit(state.forceOneByte, state.bitMask, bits == 1);
+    UpdateForceMaskBit(state.forceZeroByte, state.bitMask, bits == 0);
+    return;
+  }
   ForcedConsoleVariableData* data = g_forcedData[specIndex].load(std::memory_order_acquire);
   if (!data)
     return;
   InterlockedExchange(&data->gameThreadBits, static_cast<LONG>(bits));
   InterlockedExchange(&data->renderThreadBits, static_cast<LONG>(bits));
-  OverrideState& state = g_overrides[specIndex];
   if (state.dataShadowAddress) {
     if (state.dataShadowPointerRedirect) {
       // Game-thread reads use the local fallback pair; keep it mirrored.
@@ -248,99 +258,11 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
   return true;
 }
 
-bool InstallConsoleObjectRedirect(std::size_t specIndex, HMODULE owner, uintptr_t consoleObject,
-                                  const char* origin) {
-  const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
-  const uintptr_t pointerSlot = consoleObject + kRefDataPointerOffset;
-  uintptr_t dataPointer = 0;
-  uint32_t value = 0;
-  if (!ReadValue(reinterpret_cast<const void*>(pointerSlot), dataPointer) ||
-      !ReadValue(reinterpret_cast<const void*>(dataPointer), value) ||
-      !ce::ue5_cvar::IsPlausibleShadowValue(specIndex, value)) {
-    HookLogImportant(
-        "UE5 overrides: %s found via %s but its value storage does not match the known console "
-        "variable layout (object=%p dataPointer=%p); leaving game memory unchanged",
-        spec.name, origin, reinterpret_cast<void*>(consoleObject), reinterpret_cast<void*>(dataPointer));
-    return false;
-  }
-  if (!IsWritableRange(reinterpret_cast<void*>(pointerSlot), sizeof(uint32_t) * 4)) {
-    HookLogImportant("UE5 overrides: %s value storage found via %s is not writable; leaving it unchanged",
-                     spec.name, origin);
-    return false;
-  }
-  ForcedConsoleVariableData* forcedData = GetOrCreateForcedData(specIndex);
-  if (!forcedData) {
-    HookLogImportant("UE5 overrides: unable to allocate process-lifetime storage for %s (error=%lu)",
-                     spec.name, GetLastError());
-    return false;
-  }
-  ce::ue5_redirect::Observed observed{};
-  observed.dataPointer = reinterpret_cast<const void*>(dataPointer);
-  observed.pointedValue = value;
-  ReadValue(reinterpret_cast<const void*>(pointerSlot + sizeof(void*)), observed.localGame);
-  ReadValue(reinterpret_cast<const void*>(pointerSlot + sizeof(void*) + sizeof(uint32_t)),
-            observed.localRender);
-  observed.pointedStorageWritable =
-      IsWritableRange(reinterpret_cast<void*>(dataPointer), sizeof(uint32_t));
-  const ce::ue5_redirect::Plan plan = ce::ue5_redirect::MakePlan(observed);
-  if (!ce::ue5_redirect::CanInstall(plan)) {
-    HookLogImportant("UE5 overrides: %s data pointer from %s cannot be recorded for restore; "
-                     "leaving game memory unchanged",
-                     spec.name, origin);
-    return false;
-  }
-
-  void* previous = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(pointerSlot),
-                                                     forcedData, reinterpret_cast<void*>(dataPointer));
-  if (previous != reinterpret_cast<void*>(dataPointer)) {
-    HookLogImportant("UE5 overrides: refused changed %s data pointer from %s (expected=%p observed=%p)",
-                     spec.name, origin, reinterpret_cast<void*>(dataPointer), previous);
-    return false;
-  }
-
-  OverrideState& state = g_overrides[specIndex];
-  state = {};
-  state.module = owner;
-  state.object = consoleObject;
-  state.dataShadowAddress = pointerSlot;
-  state.dataShadowPointerRedirect = true;
-  state.registryResolved = true;
-  ApplyRestorePlan(state, plan, g_desired[specIndex].bits);
-  UpdateForcedData(specIndex, g_desired[specIndex].bits);
-  g_activeModules[specIndex].store(owner, std::memory_order_release);
-  g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
-
-  // The local fallback pair is logged alongside the pointed value because the
-  // two disagreeing is the only in-process signal that CE wrote the slot the
-  // engine does not read. It is the open question for the `ShowFlag.*` CVars:
-  // they report prevValue=0 in every title and engine version seen so far, and
-  // UE documents these as defaulting to 2 ("obey the game setting"). A local
-  // pair reading 2 next to a pointed value of 0 would say the pointed storage
-  // is not the one being consulted; both reading 0 says the game really had
-  // them off and CE's write is a no-op with nothing to fix.
-  if (spec.type == ce::ue5_cvar::ValueType::Float) {
-    HookLogImportant("UE5 overrides: persistent %s=%.3f installed via %s (object=%p prevValue=%.3f "
-                     "prevLocal=%.3f/%.3f writeThrough=%d)",
-                     spec.name, std::bit_cast<float>(g_desired[specIndex].bits), origin,
-                     reinterpret_cast<void*>(consoleObject), std::bit_cast<float>(value),
-                     std::bit_cast<float>(observed.localGame), std::bit_cast<float>(observed.localRender),
-                     state.dataPointerValueWritten ? 1 : 0);
-  } else {
-    HookLogImportant("UE5 overrides: persistent %s=%d installed via %s (object=%p prevValue=%d "
-                     "prevLocal=%d/%d writeThrough=%d)",
-                     spec.name, static_cast<int32_t>(g_desired[specIndex].bits), origin,
-                     reinterpret_cast<void*>(consoleObject), static_cast<int32_t>(value),
-                     static_cast<int32_t>(observed.localGame), static_cast<int32_t>(observed.localRender),
-                     state.dataPointerValueWritten ? 1 : 0);
-  }
-  return true;
-}
-
 VerificationCounts VerifyOverrides() {
   VerificationCounts counts;
   for (std::size_t index = 0; index < kCVarCount; ++index) {
     OverrideState& state = g_overrides[index];
-    if (!g_desired[index].enabled || (!state.referenceField && !state.dataShadowAddress))
+    if (!g_desired[index].enabled || !IsOverrideInstalled(state))
       continue;
     if (!g_activeModules[index].load(std::memory_order_acquire))
       continue;
@@ -349,6 +271,55 @@ VerificationCounts VerifyOverrides() {
     const uint32_t expected = g_desired[index].bits;
     const char* failure = nullptr;
     bool lostRedirect = false;
+
+    // A force bit is read straight back out of the engine's own mask - there is
+    // no CE-owned shadow to agree with itself here, so this is the one mode
+    // whose verification is entirely about game memory.
+    if (state.bitReference) {
+      bool zeroBit = false;
+      bool oneBit = false;
+      if (!ReadForceMaskBit(state.forceZeroByte, state.bitMask, zeroBit) ||
+          !ReadForceMaskBit(state.forceOneByte, state.bitMask, oneBit)) {
+        if (state.driftReports < 3) {
+          ++state.driftReports;
+          HookLogImportant("UE5 overrides: %s force-mask bit could not be read back",
+                           ce::ue5_cvar::kSpecs[index].name);
+        }
+        state.cleanVerifications = 0;
+        continue;
+      }
+      if (zeroBit == (expected == 0) && oneBit == (expected == 1)) {
+        ++counts.verified;
+        if (++state.cleanVerifications >= kDriftReportResetPasses) {
+          state.cleanVerifications = 0;
+          state.driftReports = 0;
+        }
+        continue;
+      }
+      if (state.driftReports < 3) {
+        ++state.driftReports;
+        HookLogImportant("UE5 overrides: %s force bit drifted (force0=%d force1=%d expected=%d); "
+                         "re-asserting the configured value",
+                         ce::ue5_cvar::kSpecs[index].name, zeroBit ? 1 : 0, oneBit ? 1 : 0,
+                         static_cast<int32_t>(expected));
+      }
+      // Same widening scale the value modes use: a show flag the game re-forces
+      // every pass is contested, not held, and that has to stay visible after
+      // the three-line drift cap without becoming a per-second log.
+      ++state.reassertCount;
+      if (state.reassertCount == 10 || state.reassertCount == 100 || state.reassertCount == 1000 ||
+          (state.reassertCount % 5000) == 0) {
+        HookLogImportant(
+            "UE5 overrides: %s force bit re-asserted %u time(s) — the game keeps rewriting the show "
+            "flag masks, so it is contested rather than held (force0=%d force1=%d expected=%d)",
+            ce::ue5_cvar::kSpecs[index].name, state.reassertCount, zeroBit ? 1 : 0, oneBit ? 1 : 0,
+            static_cast<int32_t>(expected));
+      }
+      UpdateForcedData(index, expected);
+      ++counts.reasserted;
+      state.cleanVerifications = 0;
+      continue;
+    }
 
     if (state.referenceField || state.dataShadowPointerRedirect) {
       const void* slot = state.dataShadowAddress
@@ -472,7 +443,7 @@ void ForgetUnloadedOverrides() {
   for (std::size_t index = 0; index < kCVarCount; ++index) {
     if (!g_activeModuleUnloaded[index].exchange(false, std::memory_order_acq_rel))
       continue;
-    if (g_overrides[index].referenceField || g_overrides[index].dataShadowAddress) {
+    if (IsOverrideInstalled(g_overrides[index])) {
       HookLogImportant("UE5 overrides: module owning %s unloaded; retired stale override and awaiting reload",
                        ce::ue5_cvar::kSpecs[index].name);
       g_overrides[index] = {};
@@ -484,8 +455,20 @@ void ForgetUnloadedOverrides() {
 
 void RestoreOverride(std::size_t specIndex, const char* reason) {
   OverrideState& state = g_overrides[specIndex];
-  if (!state.referenceField && !state.dataShadowAddress)
+  if (!IsOverrideInstalled(state))
     return;
+  if (state.bitReference) {
+    // Only CE's own bit goes back to what it was. Writing the whole byte would
+    // undo whatever the game did to the other show flags sharing it.
+    UpdateForceMaskBit(state.forceZeroByte, state.bitMask, state.originalForceZeroBit);
+    UpdateForceMaskBit(state.forceOneByte, state.bitMask, state.originalForceOneBit);
+    HookLogImportant("UE5 overrides: restored the game's %s show flag force bit (%s)",
+                     ce::ue5_cvar::kSpecs[specIndex].name, reason);
+    g_activeModules[specIndex].store(nullptr, std::memory_order_release);
+    g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
+    state = {};
+    return;
+  }
   if (state.dataShadowAddress) {
     if (state.dataShadowPointerRedirect) {
       // Put the game's value back before the pointer, so no read observes the

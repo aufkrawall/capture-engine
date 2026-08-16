@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace ce::ue5_cvar {
 
@@ -160,6 +161,17 @@ inline bool AnyEnabled(const Settings& settings) noexcept {
     return settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings ||
            settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
            settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0;
+}
+
+// UE registers the show flag console variables as `FConsoleVariableBitRef` -
+// one bit in two process-wide force masks - rather than as a variable owning a
+// value. They are the only names in this table with that layout, so the bit
+// handling stays confined to them instead of being offered to every object.
+inline constexpr char kShowFlagPrefix[] = "ShowFlag.";
+
+inline bool IsShowFlagSpec(std::size_t specIndex) noexcept {
+    return specIndex < kSpecs.size() && kSpecs[specIndex].name &&
+           std::strncmp(kSpecs[specIndex].name, kShowFlagPrefix, sizeof(kShowFlagPrefix) - 1) == 0;
 }
 
 inline bool IsPlausibleShadowValue(std::size_t specIndex, uint32_t bits) noexcept {

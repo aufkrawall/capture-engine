@@ -2,6 +2,7 @@
 
 #include "main_internal.h"
 
+#include "common/ue5_console_layout.h"
 #include "common/ue5_cvar_override_policy.h"
 #include "common/ue5_redirect_plan.h"
 #include "common/ue5_rr_override_policy.h"
@@ -107,6 +108,16 @@ struct OverrideState {
   bool dataPointerValueWritten = false;
   bool dataShadowPointerRedirect = false;
   bool registryResolved = false;
+  // Bit-reference mode (`FConsoleVariableBitRef`, i.e. UE's `ShowFlag.*`). The
+  // variable owns no value of its own: it is one bit in each of two masks the
+  // engine shares across every show flag, so CE owns exactly that bit and
+  // leaves every other bit in those bytes to the game.
+  bool bitReference = false;
+  uintptr_t forceZeroByte = 0;
+  uintptr_t forceOneByte = 0;
+  uint8_t bitMask = 0;
+  bool originalForceZeroBit = false;
+  bool originalForceOneBit = false;
   // Ref-redirect mode only. Repointing the wrapper's `Ref` covers reads that go
   // back through the wrapper (`TAutoConsoleVariable::GetValueOnRenderThread`),
   // but UE's renderer routinely caches the `TConsoleVariableData<T>*` itself
@@ -198,16 +209,48 @@ bool ReadValue(const void* pointer, T& value) {
 
 void ClearPendingModules();
 void UpdateForcedData(std::size_t specIndex, uint32_t bits);
+// Process-lifetime shadow storage for one override, allocated on first use.
+ForcedConsoleVariableData* GetOrCreateForcedData(std::size_t specIndex);
+// Commits the recorded undo information for a data-pointer redirect, then
+// mirrors CE's value into the storage the original pointer addressed.
+void ApplyRestorePlan(OverrideState& state, const ce::ue5_redirect::Plan& plan, uint32_t bits);
 void RestoreOverride(std::size_t specIndex, const char* reason);
 void RestoreAllOverrides(const char* reason);
 void ForgetUnloadedOverrides();
 bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
                     std::size_t validatedCandidates, ULONGLONG scanElapsedMs);
-// Installs the data-pointer redirect straight onto an IConsoleObject whose
-// address came from somewhere other than the module scan (today: UE's console
-// registry), where no static FAutoConsoleVariable wrapper is involved.
-bool InstallConsoleObjectRedirect(std::size_t specIndex, HMODULE owner, uintptr_t consoleObject,
-                                  const char* origin);
+
+// True once any of the three modes owns storage for this override.
+inline bool IsOverrideInstalled(const OverrideState& state) {
+  return state.referenceField != nullptr || state.dataShadowAddress != 0 || state.bitReference;
+}
+
+// Sets or clears one bit of a UE force mask without disturbing the other flags
+// sharing the byte. Exposed for the installer and the verifier.
+void UpdateForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool set);
+bool ReadForceMaskBit(uintptr_t byteAddress, uint8_t mask, bool& set);
+
+// Drives an IConsoleObject whose address came from somewhere other than the
+// module scan (today: UE's console registry), where no static
+// FAutoConsoleVariable wrapper exists to identify the layout. The object is
+// probed first and only written through the layout it proves to have; an
+// unrecognised object is left untouched and reported.
+//
+// A bit-reference object is not installed here: it is recorded as a candidate
+// and only committed once a second show flag confirms the same mask pair, so a
+// pair of adjacent module pointers can never be mistaken for one.
+enum class ConsoleObjectOutcome : uint8_t {
+  Installed,
+  BitReferencePending,
+  Refused,
+};
+
+ConsoleObjectOutcome InstallConsoleObjectOverride(std::size_t specIndex, HMODULE owner,
+                                                  uintptr_t consoleObject, const char* origin);
+// Installs every recorded bit-reference candidate whose mask pair a second
+// candidate independently confirms. Returns how many were installed.
+std::size_t CommitConfirmedBitReferences(const char* origin);
+void ResetBitReferenceCandidates();
 bool ScanAllLoadedModules();
 bool ScanPendingModules();
 
@@ -221,5 +264,8 @@ VerificationCounts VerifyOverrides();
 // exactly once an already-installed override anchors the registry.
 bool ResolveMissingThroughConsoleRegistry();
 void ResetConsoleRegistry();
+// Lets a newly requested CVar be looked for again after the resolver had
+// concluded, without discarding the map it already located.
+void ReopenConsoleRegistry();
 
 }  // namespace UE5::detail
