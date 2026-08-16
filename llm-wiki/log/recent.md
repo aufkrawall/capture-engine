@@ -1,6 +1,36 @@
 # llm-wiki Log
 
-### 2026-08-16 - Absence is proved from the map's allocation, not the whole heap; overlay flickers on FG toggle
+### 2026-08-16 - Heuristic FSR outvoted an authoritative FFX OFF and hid the overlay; FG-toggle "flicker" was a metric bug
+
+- **Overlay lost entirely in `dx12_fg_switch_test` under Steam once FG was switched off** (`20260816_021557`,
+  build 0.1.6113). The app disabled frame generation through `ffxConfigure`; CE saw it
+  (`Frame Generation configure transition DISABLED` → `FG: FSR FG API DEACTIVATED`) and `SetFSRFGActive(false)`
+  cleared the heuristic latch. **5 ms later** `FG: Heuristic FSR FG ACTIVATED` re-latched it from queue/present
+  shape alone, and routing stayed `runtime=FSR_FG fsrFG=1 path=scQueue(FSR-FG)` for the whole session - so CE kept
+  composing into AMD's UI resource, which nothing consumes with FG off. Overlay never reached the screen again.
+- Fix: an observed `ffxConfigure` that changes the enabled state latches an authoritative-off state
+  (`FGCompatibility::NotifyAuthoritativeFSRFGApiTransition`), and `UpdateHeuristicFSRFGState` refuses to activate
+  while it holds (`ShouldSuppressHeuristicFSRAfterAuthoritativeApiOff`). Released by an authoritative on - a later
+  enabled configure, or `ffxCreateContext` via `SetFSRFGActive(true)` - so re-enable and context-recreate are never
+  held off. Deliberately **not** inferred from `SetFSRFGActive(false)`: several callers clear that heuristically
+  (stale-latch recovery after a real-frame streak, `dx12_hook_process.cpp`), and a heuristic clear must not read as
+  the game saying FG is off. A title whose FFX transitions CE never observes is unaffected.
+- **The FG-transition "overlay flicker" from `20260816_014003` was not a dropout.** 201 uncovered presents in the
+  toggle window matched exactly 201 `PostSL keep-alive render after explicit Streamline OFF` submits, all
+  `completed=1` — the overlay was drawn every time. `DX12_TryRenderExactPostSLOffKeepAliveBeforePresent` ran
+  `PostSLOverlayRenderGated` without claiming the draw for the enclosing present, so the callback accounted itself
+  *and* `DX12_ProcessFrameExternal` accounted the same physical present, the second time with the draw already
+  consumed. One present, one covered plus one uncovered entry, alternating. The attribution mechanism and its
+  policy comment already described this exact failure; it was only applied to the in-ProcessFrame fallback submit,
+  not the pre-routing one. Fixed in 8fa10cee — accounting only, no change to when or where the overlay is drawn.
+  **Diagnostic signature worth remembering: alternating single-present uncovered streaks (`missed=1`,
+  `longestStreak=1`) with submits logged `completed=1` means double-accounting, not a blank.**
+- UE5 diagnostics: the console-registry install line now logs the local fallback pair beside the pointed value
+  (the only in-process signal that CE wrote a slot the engine does not read - the open `ShowFlag.*` question), and
+  a CVar the game keeps rewriting is now reported on a widening scale instead of falling silent after the
+  three-report drift cap.
+
+### 2026-08-16 - Absence is proved from the map's allocation, not the whole heap
 
 - Talos `20260816_014003` (7 min, build 0.1.6111) was the first session long enough to reach both terminal states,
   and it showed the whole-heap completeness criterion was simply wrong. The sweep read **3698 MB across 32 passes,
@@ -20,18 +50,12 @@
   game lives). In `20260816_014003` the game exited at 01:47:11 and the controller followed at 01:47:35 - the
   opposite order, and process teardown makes restore moot anyway. To exercise it: close CaptureEngine while the
   game keeps running, or toggle the profile's `ue5.*` keys off mid-session.
-- **New defect, not yet fixed: the overlay is uncovered on every other present during FG transitions.** Same
-  session, window `01:40:52.714`-`01:40:57.279`, bracketing the DLSS-FG DEACTIVATED/ACTIVATED churn: **201 of ~403
-  presents carried no overlay draw and no inherited FG composition**, in a strict alternation (`longestStreak=1`,
-  `missed=1` each time, 106 streaks). `source=ProcessFrameExternal` on every interrupted present,
-  `source=PostSL` on every restoring one - i.e. presents arrive alternately through the external path and the
-  PostSL path during the transition, and only PostSL carries the draw while the pre-SL route is skipped
-  (`skip=1`, "Preserving active PostSL while pre-SL draw is skipped"). At ~135 fps that is ~4.6 s of half-rate
-  overlay, which reads as flicker and violates "must not be visibly hidden during FG transitions". Outside the
-  window it is clean: `uncovered` stays at 201 for the remaining ~45,000 presents, `render%=100%`. Suspected
-  direction: the pre-SL keep-alive (`dx12_hook_g_PostSLExplicitOffKeepAlive` in
-  `dx12_hook_process_session_draw_main.cpp`) is not engaging for this transition shape, so the skip decision is
-  made against a PostSL-active flag that does not hold for externally-sourced presents.
+- **201 "uncovered" presents during the FG-transition window** (`01:40:52.714`-`01:40:57.279`), in a strict
+  alternation (`missed=1`, `longestStreak=1`, 106 logged streaks), `source=ProcessFrameExternal` on every
+  interrupted present and `source=PostSL` on every restoring one. Read as a half-rate overlay at the time.
+  **Superseded: this was a coverage double-accounting artifact, not a dropout — see the 2026-08-16 entry above.**
+  The suspicion recorded here (pre-SL keep-alive not engaging) was wrong; the keep-alive was submitting on every
+  one of those presents.
 - Otherwise the session was clean: 54,176 frames, avg 136 fps, `render%=100%`, RR rendering, no device removal,
   no access violations, `verified 35/35 re-asserted=0` (Talos does not rewrite its CVars, unlike Industria).
 
