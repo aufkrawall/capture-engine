@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-08-16 - No overlay at all under Steam: late injection left `WasD3D12DeviceCreated()` false forever
+
+- `dx12_fg_switch_test` launched through Steam with FG off showed **no overlay at all** (`20260816_023850`,
+  build 0.1.6117). Present hooks were never installed, so there was nothing to draw with.
+- CE injected **after** the app had created its D3D12 device, so the `D3D12CreateDevice` hook never fired:
+  `Detected D3D12 runtime presence. Initializing DX12 hook instance... (deviceCreated=0)`. With Steam loaded,
+  `DX12Hook::Init` deferred the eager temp-swapchain Present hook install, and the postponed install then waited
+  on `WasD3D12DeviceCreated()` — which had already happened and could never be observed again. Postponement never
+  released; session ran 7 s with no `Present hooks installed` line.
+- `WasD3D12DeviceCreated()` is asked "does the game's D3D12 device exist" but only ever answered "did CE observe
+  `D3D12CreateDevice`". Those differ for the entire life of a late-injected process. A command queue handed to
+  `CreateSwapChainFor*` cannot exist without its device, so CE already held the proof at
+  `CaptureAndHookD3D12QueueFromFactoryDevice` and simply never recorded it. Now marked there, **before** the
+  FG-runtime skip and the invisible-window bypass, both of which return early and would swallow it.
+  `PublishD3D12UseFromPresentedSwapchain` cannot cover this — it runs from ProcessFrame, which needs the very
+  Present hooks that are missing.
+- Contributing factor worth knowing: the app's swapchain was created for a not-yet-shown window, so
+  `ShouldBypassInvisibleWindowCreateSwapchainSideEffects` skipped the Present refresh that would otherwise have
+  installed hooks from the game's real swapchain. Both routes to Present hooks were therefore blocked at once.
+  **Stale-risk:** that bypass decides from `IsWindowVisible` at creation time and never re-evaluates, which is a
+  transient property for the common create-hidden-then-`ShowWindow` pattern. Not changed here.
+- **Process note:** the earlier FSR-heuristic fix (6ce3718d) was chased from the *first* log (`20260816_021557`)
+  and is a real defect, but it was **not** this report's cause. The user's scenario was "all FG off"; that first
+  log happened to contain an FSR enable/disable cycle and was misread as the reproduction.
+
 ### 2026-08-16 - Heuristic FSR outvoted an authoritative FFX OFF and hid the overlay; FG-toggle "flicker" was a metric bug
 
 - **Overlay lost entirely in `dx12_fg_switch_test` under Steam once FG was switched off** (`20260816_021557`,
