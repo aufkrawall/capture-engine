@@ -33,6 +33,17 @@ Session `20260817_052857` (Black Myth: Wukong, DLSS FG, Steam overlay loaded). F
 - Worth remembering for future dump reading: `GetExitCodeProcess` stops returning `STILL_ACTIVE` as soon as
   `RtlExitUserProcess` starts, so `[Inject] Tracked injected process exited ... exit=0x00000000` can be logged
   while the main thread is still running DLL detach — and an AV timestamped *after* it is not a contradiction.
+- **Validated** on `20260817_055930` (user-confirmed clean exit): no dumps, no `0x0000071A`, no teardown freeze.
+- Follow-up that turned out **not** to be a CE bug: Steam's overlay never drew in that session. It is missing
+  without CE injected too — Steam ships the Wukong *Benchmark Tool* as a Tool, and the overlay is disabled for
+  those. `gameoverlayrenderer64.dll` still loads (so `steam_overlay_loaded=1` and the leave-the-entry mode engages
+  exactly as designed), which makes the state look identical to the Cyberpunk `20260816_154722` regression. The
+  distinguishing evidence is the same in both, so it cannot separate them: `foreignJumpVisibleNow=0`,
+  `g_externalOverlayHook=0`, per-frame `cmdLists=2` (game + CE, no third submitter). CE's own topology was
+  healthy — entry left pristine, deep body hooks on `Present`/`Present1` at +14,
+  `[OVERLAY LAYER] ... BELOW the foreign Present chain`, and the pre-fix session `20260817_052857` logged byte-for-byte
+  the same decisions. **Before treating "Steam's overlay is missing" as a coexistence regression, check the app
+  without CE injected first.**
 
 ### 2026-08-16 - Display gamma override, and a general "only safe in this engine state" guard
 
