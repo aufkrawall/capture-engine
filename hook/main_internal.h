@@ -106,6 +106,8 @@ struct ChildInjectParams;
 
 #include <mutex>
 
+#include <new>
+
 #include <string>
 
 #include <string_view>
@@ -255,6 +257,11 @@ std::string QuoteCommandLineArgument(const std::string& value);
 std::filesystem::path GetInstalledCaptureEnginePath();
 
 ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(const char* source, const char* dumpHint);
+
+// Publishes the external-helper capture and foreign-overlay presence to the
+// shared crash handler so its dump worker never has to run an in-process dbghelp
+// module walk through a foreign overlay's loader/version hooks.
+void RegisterCrashDumpEnvironmentHooksForHook();
 
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess, PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord, void* callerAddress = nullptr);
 
@@ -477,10 +484,10 @@ extern DX8Hook *g_DX8Hook;
 
 extern OpenGLHook *g_OpenGLHook;
 
-// Global Local Config
+// Global Local Config. Constructed once by EnsureLocalConfigAllocated and never
+// destroyed, so the pointer stays valid for every hook entry point that can
+// still run while the process tears down.
 extern AppConfig *g_pLocalConfig;
-
-extern std::unique_ptr<AppConfig> g_LocalConfigOwner;
 
 extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
 

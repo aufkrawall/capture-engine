@@ -351,6 +351,47 @@ TEST(InjectLifecycleSourceTest, DynamicDetachDoesNoLoaderLockCleanup) {
     EXPECT_EQ(detach.find("InputManager::Get().Shutdown()"), std::string::npos);
 }
 
+TEST(InjectLifecycleSourceTest, ProcessExitLatchesTheRuntimeDormantBeforeTeardownReleasesState) {
+    // Black Myth: Wukong exit crash (session 20260817_052857). Process exit takes
+    // the lpReserved != NULL detach branch, which only set g_ProcessTerminating,
+    // so HookIsShuttingDown() stayed false for the rest of LdrShutdownProcess.
+    // The loader hooks therefore kept resolving redirects while this module's
+    // globals were being destroyed, and HookedLoadLibraryExW faulted in
+    // GetRedirectedPath on the released g_pLocalConfig.
+    const std::string source = ReadSource("hook/main_dllmain.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t atExit = source.find("std::atexit(");
+    ASSERT_NE(atExit, std::string::npos);
+    const size_t atExitEnd = source.find("});", atExit);
+    ASSERT_NE(atExitEnd, std::string::npos);
+    const std::string atExitHandler = source.substr(atExit, atExitEnd - atExit);
+    EXPECT_NE(atExitHandler.find("g_ProcessTerminating.store(true"), std::string::npos);
+    EXPECT_NE(atExitHandler.find("RequestHookShutdown()"), std::string::npos);
+
+    const size_t processExitDetach = source.find("if (lpReserved != NULL)");
+    ASSERT_NE(processExitDetach, std::string::npos);
+    const size_t processExitDetachEnd = source.find("return TRUE;", processExitDetach);
+    ASSERT_NE(processExitDetachEnd, std::string::npos);
+    const std::string processExitBranch = source.substr(processExitDetach, processExitDetachEnd - processExitDetach);
+    EXPECT_NE(processExitBranch.find("g_ProcessTerminating.store(true"), std::string::npos);
+    EXPECT_NE(processExitBranch.find("RequestHookShutdown()"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, LocalConfigOutlivesEveryHookEntryPoint) {
+    // The config backs GetRedirectedPath, the graphics overrides and the log
+    // level, and hooks stay callable until the process dies. Owning it through a
+    // destructible global left g_pLocalConfig dangling during teardown, so it now
+    // lives in this module's own storage and is never destroyed.
+    const std::string source = ReadSource("hook/main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("g_LocalConfigStorage"), std::string::npos);
+    EXPECT_NE(source.find("::new (static_cast<void *>(g_LocalConfigStorage)) AppConfig()"), std::string::npos);
+    EXPECT_EQ(source.find("std::unique_ptr<AppConfig>"), std::string::npos);
+    EXPECT_EQ(source.find("make_unique<AppConfig>"), std::string::npos);
+}
+
 TEST(InjectLifecycleSourceTest, VulkanProcAddressesRemainStableWhileDormant) {
     const std::string source = ReadSource("hook/vulkan_layer/layer_main.cpp");
     const std::string lifecycle = ReadSource("hook/vulkan_layer/layer_ipc.cpp");

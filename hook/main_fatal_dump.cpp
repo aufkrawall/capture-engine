@@ -253,6 +253,27 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   return ExternalPreTerminationDumpResult::kFailed;
 }
 
+// Crash-handler services for the injected case. The VEH dump worker cannot use
+// an in-process dbghelp walk while a foreign overlay hooks the loader/version
+// APIs (that is the ~62 s all-threads-suspended freeze from session
+// 20260817_052857), so hand it the same external helper the fatal-exit path
+// already prefers, plus the overlay presence it has to decide on.
+bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint) {
+  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint) ==
+         ExternalPreTerminationDumpResult::kCaptured;
+}
+
+bool IsForeignOverlayLoadedForCrashHandler() {
+  return ce::overlay_compat::IsThirdPartyOverlayLoaded();
+}
+
+void RegisterCrashDumpEnvironmentHooksForHook() {
+  CrashDumpEnvironmentHooks hooks;
+  hooks.captureWithExternalHelper = &CaptureCrashDumpWithExternalHelperForCrashHandler;
+  hooks.foreignOverlayLoaded = &IsForeignOverlayLoadedForCrashHandler;
+  RegisterCrashDumpEnvironmentHooks(hooks);
+}
+
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess,
                                        PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord,
                                        void* callerAddress ) {

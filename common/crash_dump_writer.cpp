@@ -49,6 +49,30 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     char tempDumpPath[MAX_PATH];
     snprintf(tempDumpPath, sizeof(tempDumpPath), "%s\\%s", dumpDir.c_str(), tempDumpFileName.c_str());
 
+    // An in-process dump makes dbghelp read every loaded module's version
+    // resource with all other threads suspended. Through a foreign overlay's
+    // loader/version hooks that walk takes minutes, which the user experiences
+    // as the game freezing (session 20260817_052857: 61.6 s per MiniDumpNormal
+    // with the Steam overlay loaded). The external helper writes the same dump
+    // from outside without suspending anything.
+    const bool foreignOverlayLoaded = IsForeignOverlayLoadedForCrashDump();
+    if (ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(foreignOverlayLoaded,
+                                                                   HasExternalCrashDumpCapture())) {
+        TraceCrash("Foreign overlay loaded - capturing crash dump with the external helper first");
+        if (CaptureCrashDumpWithExternalHelper(dumpFileName)) {
+            TraceCrash("External helper captured the crash dump");
+            g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
+            return 0;
+        }
+        TraceCrash("External helper crash dump failed");
+    }
+
+    if (!ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(foreignOverlayLoaded)) {
+        TraceCrash("Skipping in-process crash dump - dbghelp module enumeration can hang against foreign overlay "
+                   "hooks and would suspend every thread meanwhile");
+        return 0;
+    }
+
     TraceCrash("Creating in-progress dump file...");
     TraceCrash(tempDumpPath);
     TraceCrash("Final dump path after successful write:");
@@ -316,6 +340,15 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // truly unhandled, the top-level UEF path will re-enter with forceDump=true
     // and write the dump there.
     if (!forceDump && (code == 0xE06D7363 || code == 0x20474343)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Everything the filter reasons about explicitly has now had its say. What
+    // remains is decided by NTSTATUS severity: a first-chance exception below
+    // error severity was raised deliberately by a caller that handles it, and
+    // dumping it stalls the whole process for the duration of the dump. If it is
+    // truly unhandled, the top-level filter re-enters with forceDump.
+    if (!ce::crash_dump_policy::ShouldTreatFirstChanceExceptionAsCrash(code, forceDump)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 

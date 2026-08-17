@@ -34,6 +34,22 @@ using CrashExecutionFaultHandler = LONG (*)(EXCEPTION_POINTERS* pExceptionPointe
                                             ULONG_PTR faultAddr);
 void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
 
+// Optional hook-module services for the crash-dump worker. The injected hook
+// runs inside a host process it does not own, where an in-process dbghelp dump
+// has to walk the module list through whatever foreign overlays have hooked the
+// loader and version APIs. Registering these lets the worker capture the dump
+// from a separate helper process instead, so the host's threads are never
+// suspended for the length of that walk. Both members are optional; a nullptr
+// member means "unknown/unavailable" and keeps the plain in-process behaviour.
+struct CrashDumpEnvironmentHooks {
+    // Writes a dump of THIS process from an external helper process under
+    // `dumpFileNameHint`. Returns true only when a dump was actually written.
+    bool (*captureWithExternalHelper)(const char* dumpFileNameHint) = nullptr;
+    // True when a third-party overlay module is loaded in this process.
+    bool (*foreignOverlayLoaded)() = nullptr;
+};
+void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks);
+
 // Writes an additional CE-owned dump for externally handled crashes when we still
 // have a live process handle and want a session-local artifact with CE's naming.
 bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,

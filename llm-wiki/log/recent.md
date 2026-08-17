@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-08-17 - Wukong exit crash: three separate bugs behind one "crashes on close"
+
+Session `20260817_052857` (Black Myth: Wukong, DLSS FG, Steam overlay loaded). Fixed in 0.1.6143.
+
+- **The crash: a use-after-free of `g_pLocalConfig` during `LdrShutdownProcess`.** `crash.log` names the address;
+  it resolves to `GetRedirectedPath+0x282`, `movzx eax,[r12+4B0h]` where `r12 = g_pLocalConfig` — and
+  `AppConfig::graphics` (+0x180) `+ GraphicsConfig::streamlineDllPath` (+0x330) is exactly 0x4B0, i.e. the
+  `.empty()` on line 208 of `main_redirect.cpp`. So the pointer, not the string, was dead.
+- Why it was dead: the exit path took `DllMain(DETACH, lpReserved != NULL)`, which set only `g_ProcessTerminating`
+  and returned. `RequestHookShutdown()` was called **only** on the dynamic-unload branch, so `HookIsShuttingDown()`
+  stayed false for the rest of teardown even though the five loader hooks already had the guard. Our own static
+  destructors then ran (`PerfLogger: Shutdown` in `hook_debug.log` is the timestamp for that), and ~1 s later
+  something still loading DLLs from its own detach path came through `HookedLoadLibraryEx*`.
+- Fix, three layers: latch `RequestHookShutdown()` in the process-exit detach branch **and** in the attach-time
+  `atexit` handler (LIFO puts it ahead of this module's globals, so ordering between the two is irrelevant), and
+  give the config module storage that is never destroyed. The general rule: **anything CE owns for the process
+  lifetime must outlive static destruction**, because a pinned image's hooks stay callable after the CRT is done.
+- **The 2-minute hang: a benign exception classified as a crash.** CEF's exit-time
+  `WTSUnRegisterSessionNotification` cancels an async RPC wait and rpcrt4 raises `RPC_S_CALL_CANCELLED`
+  (`0x0000071A`). The VEH's "dump everything not known-benign" policy dumped it — twice, ~62 s each — and then
+  had no dump budget left for the real AV. The filter now classifies by NTSTATUS severity: below error severity
+  only the explicitly listed codes (breakpoint, UE5 `ensure`, the COM/DXGI set with their existing thresholds)
+  are dump-worthy. Nothing is lost — an unhandled exception still re-enters via the top-level filter with
+  `forceDump`.
+- **Why a `MiniDumpNormal` took 61.6 s at all** (twice, to the millisecond — a fixed cost, not a lock): dbghelp
+  reads every module's version resource, and with the Steam overlay loaded each query round-trips through its
+  loader hooks while every other thread is suspended. This is the same hazard `crash_dump_policy.h` already
+  documented for the fatal-exit path (`20260813_222058`) — it just had never been applied to the VEH worker. The
+  worker now prefers the external `captureengine.exe --dump-helper` process and refuses the in-process fallback
+  when a foreign overlay is loaded; the hook publishes both via `RegisterCrashDumpEnvironmentHooks`.
+- Worth remembering for future dump reading: `GetExitCodeProcess` stops returning `STILL_ACTIVE` as soon as
+  `RtlExitUserProcess` starts, so `[Inject] Tracked injected process exited ... exit=0x00000000` can be logged
+  while the main thread is still running DLL detach — and an AV timestamped *after* it is not a contradiction.
+
 ### 2026-08-16 - Display gamma override, and a general "only safe in this engine state" guard
 
 - `[UE5] display_gamma=default|srgb|1.0..3.0` (0.1.6139, shared ABI 42). Motivated by Talos shipping a

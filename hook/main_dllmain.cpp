@@ -15,7 +15,16 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // runs BEFORE global destructors. This lets CachedOverlayRenderer::Shutdown()
     // and similar destructors skip GPU resource Release() calls during process
     // exit, preventing crashes in nvwgf2umx when the D3D12 device is already torn down.
-    std::atexit([]() { g_ProcessTerminating.store(true, std::memory_order_release); });
+    //
+    // The same ordering makes this the earliest point at which CE's own state
+    // starts disappearing, so latch the runtime dormant here as well: from here
+    // on every hook entry point that consults HookIsShuttingDown() forwards
+    // straight to its original, and none of them can read a global that this
+    // module's (or the CRT's) teardown has already released.
+    std::atexit([]() {
+      g_ProcessTerminating.store(true, std::memory_order_release);
+      RequestHookShutdown();
+    });
 
     char fullPath[MAX_PATH] = {0};
     char *fileName = (char *)"unknown";
@@ -87,6 +96,11 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // Install crash handler for all non-service processes
     // (Injection delay in captureengine prevents D3D12 init crashes)
     if (!IsServiceProcess(fileName)) {
+      // Publish the external dump helper before the handler can ever fire: a
+      // crash dump written from inside a host process that carries foreign
+      // overlay hooks suspends every thread for as long as dbghelp needs to
+      // walk the module list through them.
+      RegisterCrashDumpEnvironmentHooksForHook();
       InstallCrashHandler();
       if (HMODULE hDbgHelp = GetModuleHandleA("dbghelp.dll")) {
         TryInstallMiniDumpWriteDumpHookForModule(hDbgHelp, "dbghelp.dll");
@@ -219,6 +233,17 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // preventing crashes when external DLLs (like opengl32.dll) call into
       // our code during their atexit destructors
       g_ProcessTerminating.store(true, std::memory_order_release);
+      // Process exit runs the rest of LdrShutdownProcess after this call: this
+      // module's globals get destroyed, then the CRT tears its heap down, while
+      // CE's hooks stay installed and other modules' detach routines keep
+      // calling through them (version.dll resolves resource-only images with
+      // LoadLibraryExW, foreign overlays load and probe modules from their own
+      // detach paths). Latching the runtime dormant here is a lock-free atomic
+      // store and makes every guarded entry point an exact pass-through for the
+      // remainder of teardown. Without it, HookedLoadLibraryEx* still resolved
+      // redirects and faulted on the already-released config
+      // (session 20260817_052857).
+      RequestHookShutdown();
       return TRUE;
     }
 

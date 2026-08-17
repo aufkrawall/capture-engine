@@ -6,6 +6,7 @@
 #include <string>
 
 #include "../common/crash_handler.h"
+#include "../common/crash_handler_internal.h"
 #include "../hook/common/freeze_watchdog.h"
 #include "source_fragment_reader.h"
 
@@ -15,6 +16,19 @@ constexpr ULONG_PTR kSyntheticExecuteFault = 0x12345000;
 int g_HandlerCallCount = 0;
 ULONG_PTR g_LastAccessType = 0;
 ULONG_PTR g_LastFaultAddr = 0;
+
+int g_ExternalCaptureCallCount = 0;
+std::string g_LastExternalCaptureHint;
+
+bool RecordExternalCapture(const char* dumpFileNameHint) {
+    ++g_ExternalCaptureCallCount;
+    g_LastExternalCaptureHint = dumpFileNameHint ? dumpFileNameHint : "";
+    return true;
+}
+
+bool ForeignOverlayLoadedStub() {
+    return true;
+}
 
 LONG RecoverSyntheticExecuteFault(EXCEPTION_POINTERS* exceptionPointers, ULONG_PTR accessType, ULONG_PTR faultAddr) {
     ++g_HandlerCallCount;
@@ -101,6 +115,37 @@ TEST(CrashHandlerTest, RegisteredExecutionFaultHandlerIgnoresReadWriteAccessViol
     RegisterCrashExecutionFaultHandler(nullptr);
     EXPECT_EQ(result, EXCEPTION_CONTINUE_SEARCH);
     EXPECT_EQ(g_HandlerCallCount, 0);
+}
+
+TEST(CrashHandlerTest, CrashDumpEnvironmentHooksAreOptionalAndAnswerConservatively) {
+    // Nothing registered (captureengine's own processes): the dump worker keeps
+    // its plain in-process path and must never believe an overlay is loaded or a
+    // helper is available.
+    RegisterCrashDumpEnvironmentHooks(CrashDumpEnvironmentHooks{});
+    EXPECT_FALSE(HasExternalCrashDumpCapture());
+    EXPECT_FALSE(IsForeignOverlayLoadedForCrashDump());
+    EXPECT_FALSE(CaptureCrashDumpWithExternalHelper("crash_test.dmp"));
+
+    g_ExternalCaptureCallCount = 0;
+    g_LastExternalCaptureHint.clear();
+    CrashDumpEnvironmentHooks hooks;
+    hooks.captureWithExternalHelper = &RecordExternalCapture;
+    hooks.foreignOverlayLoaded = &ForeignOverlayLoadedStub;
+    RegisterCrashDumpEnvironmentHooks(hooks);
+
+    EXPECT_TRUE(HasExternalCrashDumpCapture());
+    EXPECT_TRUE(IsForeignOverlayLoadedForCrashDump());
+    EXPECT_TRUE(CaptureCrashDumpWithExternalHelper("crash_test.dmp"));
+    EXPECT_EQ(g_ExternalCaptureCallCount, 1);
+    EXPECT_EQ(g_LastExternalCaptureHint, "crash_test.dmp");
+
+    // An empty hint would make the helper write an unnamed artifact; refuse it
+    // instead of launching the helper.
+    EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(""));
+    EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(nullptr));
+    EXPECT_EQ(g_ExternalCaptureCallCount, 1);
+
+    RegisterCrashDumpEnvironmentHooks(CrashDumpEnvironmentHooks{});
 }
 
 TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings) {

@@ -180,6 +180,67 @@ TEST(CrashDumpPolicyTest, InProcessDumpFallbackRefusedWithForeignOverlayLoaded) 
     EXPECT_FALSE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
 }
 
+TEST(CrashDumpPolicyTest, FirstChanceExceptionsBelowErrorSeverityAreNotCrashes) {
+    // Black Myth: Wukong exit (session 20260817_052857): CEF cancels its session
+    // notification wait while shutting down and rpcrt4 raises
+    // RPC_S_CALL_CANCELLED (0x0000071A) through RaiseException. RPC handles it
+    // itself. CE classified it as a crash twice, froze the exiting game for
+    // ~62 s per dump, and then had no dump budget left for the real access
+    // violation that followed.
+    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x0000071AUL, false));
+    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x406D1388UL, false));  // thread naming
+    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x40010006UL, false));  // OutputDebugString
+    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x000006BAUL, false));  // RPC_S_SERVER_UNAVAILABLE win32
+
+    // Real faults keep their dump.
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_ACCESS_VIOLATION, false));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_STACK_OVERFLOW, false));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_ILLEGAL_INSTRUCTION, false));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(policy::kFailFastExceptionExitCode, false));
+
+    // Every code the exception filter reasons about explicitly must survive the
+    // severity gate, so its own counting/threshold rules still decide.
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_BREAKPOINT, false));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(policy::kUe5EnsureExceptionCode, false));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80010108UL, false));  // RPC_E_DISCONNECTED
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80004002UL, false));  // E_NOINTERFACE
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80004005UL, false));  // E_FAIL
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x800706baUL, false));  // RPC_S_SERVER_UNAVAILABLE
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x8876086aUL, false));  // DXGI_ERROR_DEVICE_RESET
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0006UL, false));  // DXGI_ERROR_DEVICE_HUNG
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0007UL, false));  // DXGI_ERROR_DEVICE_REMOVED
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0020UL, false));  // DXGI_ERROR_ACCESS_LOST
+
+    // The top-level unhandled filter re-enters with forceDump, so an exception
+    // that really did terminate the process is never lost to this gate.
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x0000071AUL, true));
+    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x406D1388UL, true));
+}
+
+TEST(CrashDumpPolicyTest, ExceptionSeverityClassificationFollowsNtstatusBits) {
+    EXPECT_TRUE(policy::IsErrorSeverityExceptionCode(0xC0000005UL));
+    EXPECT_TRUE(policy::IsErrorSeverityExceptionCode(0xE06D7363UL));  // MSVC C++ EH
+    EXPECT_FALSE(policy::IsErrorSeverityExceptionCode(0x0000071AUL));
+    EXPECT_FALSE(policy::IsErrorSeverityExceptionCode(0x40010006UL));
+    EXPECT_FALSE(policy::IsErrorSeverityExceptionCode(0x80000003UL));
+    EXPECT_FALSE(policy::IsErrorSeverityExceptionCode(0UL));
+}
+
+TEST(CrashDumpPolicyTest, CrashDumpsPreferTheExternalHelperWithForeignOverlaysLoaded) {
+    // Same hazard as the pre-termination fallback, on the vectored-handler path:
+    // an in-process dbghelp module walk goes through the foreign overlay's
+    // loader/version hooks while every other thread stays suspended.
+    EXPECT_TRUE(policy::ShouldPreferExternalCrashDumpHelper(true, true));
+    EXPECT_FALSE(policy::ShouldPreferExternalCrashDumpHelper(true, false));
+    EXPECT_FALSE(policy::ShouldPreferExternalCrashDumpHelper(false, true));
+
+    // With no overlay loaded the in-process worker stays the direct path, and
+    // with one loaded but no helper registered a missing dump beats a frozen
+    // game.
+    EXPECT_TRUE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(false));
+    EXPECT_FALSE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
+}
+
 TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
     EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(false, false));
     EXPECT_TRUE(policy::ShouldSkipBreakpointExceptionDump(false, true));

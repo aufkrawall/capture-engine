@@ -26,6 +26,8 @@ std::atomic<bool> g_DumpSuccessfullyWritten{false};
 std::atomic<bool> g_ForceUnhandledDump{false};
 static std::atomic<bool> g_CrashTraceActive{false};
 static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
+static std::atomic<bool (*)(const char*)> g_ExternalCrashDumpCapture{nullptr};
+static std::atomic<bool (*)()> g_ForeignOverlayLoadedQuery{nullptr};
 static std::mutex g_TraceCrashMutex;
 std::atomic<int> g_VEHCallCount{0};
 std::atomic<int> g_RPCDisconnectedExceptionCount{0};
@@ -471,6 +473,25 @@ void SetCrashProcessName(const char* name) {
 
 void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler) {
     g_ExecutionFaultHandler.store(handler, std::memory_order_release);
+}
+
+void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks) {
+    g_ExternalCrashDumpCapture.store(hooks.captureWithExternalHelper, std::memory_order_release);
+    g_ForeignOverlayLoadedQuery.store(hooks.foreignOverlayLoaded, std::memory_order_release);
+}
+
+bool HasExternalCrashDumpCapture() {
+    return g_ExternalCrashDumpCapture.load(std::memory_order_acquire) != nullptr;
+}
+
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint) {
+    auto capture = g_ExternalCrashDumpCapture.load(std::memory_order_acquire);
+    return capture && dumpFileNameHint && dumpFileNameHint[0] && capture(dumpFileNameHint);
+}
+
+bool IsForeignOverlayLoadedForCrashDump() {
+    auto query = g_ForeignOverlayLoadedQuery.load(std::memory_order_acquire);
+    return query && query();
 }
 
 LONG DispatchCrashExecutionFaultHandlerForTesting(EXCEPTION_POINTERS* pExceptionPointers) {

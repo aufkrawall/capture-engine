@@ -336,6 +336,73 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     return frameGenerationRuntimeActiveOrRecent && exitCode != 0;
 }
 
+// UE5's ensure() macro raises this continuable code; the filter answers it with
+// its own fast assert dump instead of the worker path.
+inline constexpr DWORD kUe5EnsureExceptionCode = 0x00004000;
+
+// Every Windows exception code carries NTSTATUS severity in its top two bits.
+// Only severity 0b11 (error) codes are faults that terminate a thread when
+// nobody handles them. Severity 0b00 (success), 0b01 (informational) and 0b10
+// (warning) codes are raised deliberately through RaiseException by a caller
+// that also handles them.
+inline constexpr bool IsErrorSeverityExceptionCode(DWORD code) {
+    return (code & 0xC0000000UL) == 0xC0000000UL;
+}
+
+// The non-error-severity codes CE deliberately still classifies as dump-worthy.
+// Each one is either a real termination path that Windows encodes below error
+// severity, or a COM/DXGI failure whose own counting/logging rule lives in the
+// exception filter.
+inline constexpr bool IsDumpWorthyNonErrorSeverityExceptionCode(DWORD code) {
+    switch (code) {
+        case static_cast<DWORD>(EXCEPTION_BREAKPOINT):  // can terminate without ExitProcess
+        case kUe5EnsureExceptionCode:                   // answered by the quick assert dump
+        case 0x80010108UL:                              // RPC_E_DISCONNECTED
+        case 0x80004002UL:                              // E_NOINTERFACE
+        case 0x80004005UL:                              // E_FAIL
+        case 0x800706baUL:                              // RPC_S_SERVER_UNAVAILABLE
+        case 0x8876086aUL:                              // DXGI_ERROR_DEVICE_RESET
+        case 0x887a0006UL:                              // DXGI_ERROR_DEVICE_HUNG
+        case 0x887a0007UL:                              // DXGI_ERROR_DEVICE_REMOVED
+        case 0x887a0020UL:                              // DXGI_ERROR_ACCESS_LOST
+            return true;
+        default:
+            return false;
+    }
+}
+
+// First-chance classification for the vectored handler. The handler sees EVERY
+// exception raised anywhere in the host process, most of which the raiser
+// handles itself, and writing a dump for one costs the whole process a
+// multi-second stall (every thread is suspended for the duration of an
+// in-process MiniDumpWriteDump). Black Myth: Wukong raises RPC_S_CALL_CANCELLED
+// (0x0000071A) from rpcrt4 while CEF cancels its session-notification wait on
+// exit; CE classified that benign cancellation as a crash twice, froze the
+// exiting game for ~62 s each time, and consumed the one-dump budget so the
+// real access violation that followed got no dump at all
+// (session 20260817_052857).
+//
+// An exception that nobody handles still reaches the top-level unhandled filter,
+// which re-enters with forceDump so genuinely fatal cases are never lost.
+inline bool ShouldTreatFirstChanceExceptionAsCrash(DWORD code, bool forceDump) {
+    if (forceDump) {
+        return true;
+    }
+    return IsErrorSeverityExceptionCode(code) || IsDumpWorthyNonErrorSeverityExceptionCode(code);
+}
+
+// The crash-dump worker runs inside the crashing process, and dbghelp reads the
+// version resource of every loaded module while it writes the module list. A
+// foreign overlay that hooks the loader/version APIs turns that walk into a
+// minutes-long serialized round trip with every other thread suspended
+// (session 20260817_052857: 61.6 s for a single MiniDumpNormal with the Steam
+// overlay loaded, matching the 20260813_222058 in-process dump freeze). The
+// external helper process has no overlay loaded and does not suspend the game,
+// so prefer it whenever a foreign overlay is present.
+inline bool ShouldPreferExternalCrashDumpHelper(bool foreignOverlayLoaded, bool externalHelperAvailable) {
+    return foreignOverlayLoaded && externalHelperAvailable;
+}
+
 inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {
     // Without a debugger, an unhandled STATUS_BREAKPOINT can terminate the
     // process without reaching ExitProcess/NtTerminateProcess hooks. Capture it
