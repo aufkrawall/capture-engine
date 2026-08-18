@@ -60,11 +60,13 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     const bool screenshotRequested = screenshotRequestId != 0;
     const bool screenshotWantsOverlay =
         screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
-    if (screenshotRequested && !screenshotWantsOverlay) {
+    const bool screenshotUsePostSL =
+        screenshotRequested && PostSLOwnsThisFramesOverlayDraw(screenshotOverlayCfg);
+    if (screenshotRequested && !screenshotWantsOverlay && !screenshotUsePostSL) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);
-    if (screenshotWantsOverlay && !ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg)) {
+    if (screenshotWantsOverlay && !screenshotUsePostSL) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     sc3->Release();
@@ -705,9 +707,11 @@ const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm
 const bool screenshotRequested = screenshotRequestId != 0;
 const bool screenshotWantsOverlay =
     screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
-const bool screenshotUsePostSL =
-    screenshotWantsOverlay && ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg);
-if (screenshotRequested && !screenshotWantsOverlay) {
+// PostSL draws the overlay earlier in this same Present, so when it owns the
+// draw both screenshot variants are taken there - by the time this runs, the
+// overlay is already in the backbuffer and an overlay-free copy is impossible.
+const bool screenshotUsePostSL = screenshotRequested && PostSLOwnsThisFramesOverlayDraw(screenshotOverlayCfg);
+if (screenshotRequested && !screenshotWantsOverlay && !screenshotUsePostSL) {
     const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
     CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     if (diagnostics) {

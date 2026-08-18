@@ -537,7 +537,7 @@ bool IsDX12ObserverOnlyModeActive(SharedMemoryLayout* shm);
 bool IsDX12ObserverPolicyOnlyModeActive(SharedMemoryLayout* shm);
 bool IsDX12ObserverStartupPresentOnlyModeActive(SharedMemoryLayout* shm);
 void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow = false);
-bool ShouldUseConfirmedPostSLForOverlayIncludedWork(const OverlayConfig& cfg);
+bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg);
 void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLayout* shm, uint64_t requestId, ID3D12CommandQueue* queueOverride = nullptr);
 void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx, UINT currentBackBufferIdx);
 

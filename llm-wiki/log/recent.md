@@ -1,5 +1,42 @@
 # llm-wiki Log
 
+### 2026-08-18 - Screenshots on the present thread: a hard freeze, then the overlay in an overlay-free shot
+
+Two defects on the same path, both in Gothic 1 Remake under DLSS MSFG 4x. Fixed in 0.1.6150.
+
+- **The freeze** (session `20260818_172155`, `screenshot_include_overlay=false`). `SaveDX12TextureAsScreenshotRaw`
+  ended in `WaitForSingleObject(fenceEvent, INFINITE)` after submitting the backbuffer copy. That runs on the
+  present path, and under DLSS FG the copy goes on the game's own swapchain queue - which the runtime only drains
+  once its presenter thread makes progress, and that thread cannot progress while the present call it drives sits
+  blocked in our hook. Render thread wedged at 17:23:34.4, watchdog fired 30 s later. The same wait had already
+  been visible as a **1.8 s stall** on the earlier successful shot at 17:22:58; it just had not closed the ring yet.
+  Exactly the boundary the FFX work recorded in 2026-07 ("never do blocking work on the presenter thread"), DLSS-G
+  edition.
+- **Fix:** record, submit, `Signal`, hand the resources to the screenshot worker, return. The worker waits in
+  1 s slices, checks `GetDeviceRemovedReason()` between them so a dead device cannot park it, and **strands rather
+  than releases** resources a live GPU may still be reading. The producer reserves the worker's single slot
+  *before* recording any GPU work, so a submitted copy can never be stranded by a busy queue - the only other exits
+  would be the blocking wait we just removed or a use-after-free. Worker queue and task moved to
+  `hook/common/screenshot_worker.{h,cpp}`; the Vulkan layer links an explicit source list and needed it added.
+- **Then the overlay showed up anyway** (session `20260818_205615`, build 0.1.6148: `Saved (hook)`, no freeze, no
+  GDI fallback - but the overlay was in the picture). The overlay-free capture sat at the top of
+  `DX12_ProcessFrameExternal`, which is early enough only when `ProcessFrame` draws the overlay. Under FG it does
+  not: `postSLCallback=1 postSLActive=1 skip=1`, and `DetourPresent` runs `ExecuteStartupRouting` - **which invokes
+  the PostSL overlay draw** - before `ExecutePresentCore` reaches `ProcessFrame`. So the "pre-overlay" capture was
+  post-overlay.
+- **Fix:** whoever draws the overlay owns the ordering for both screenshot variants. `PostSLOwnsThisFramesOverlayDraw()`
+  (renamed from `ShouldUseConfirmedPostSLForOverlayIncludedWork` - it was never only about the included case) now
+  routes *both* into the PostSL submit chunk: overlay-free immediately ahead of the overlay list on the same queue,
+  overlay-included after it. `ProcessFrame` yields both when that predicate holds.
+- The chunk has **sixteen mutually exclusive submit branches** across four possible queues, so the capture is
+  inserted before each rather than hoisted (hoisting would either duplicate the branch selection or guess the
+  queue). `ScreenshotPresentThreadPolicyTest.EveryPostSLOverlaySubmitCopiesTheOverlayFreeFrameFirst` parses the
+  file and fails if any submit is not immediately preceded by the capture call *for that same queue*, which is what
+  keeps the arrangement from drifting.
+- Unrelated diagnostics gap found on the way: `UpdateSharedMemoryFromConfig`'s summary hash omitted every overlay
+  boolean, so flipping `screenshot_include_overlay` live published a new config and logged **nothing**. The
+  publication line is the only record that a setting reached the hook; the four booleans are in the hash now.
+
 ### 2026-08-18 - One overlay-toggle press wiped the active profile: UE5, DLSS and graphics overrides all died
 
 Session `20260818_164520` (Gothic 1 Remake, `G1R-Win64-Shipping.exe`, DLSS MFG 4x, `[Profile.gothicremake]`).

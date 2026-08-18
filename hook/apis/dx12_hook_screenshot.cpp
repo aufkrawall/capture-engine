@@ -1,7 +1,11 @@
 #include "dx12_hook_internal.h"
 
 
-bool ShouldUseConfirmedPostSLForOverlayIncludedWork(const OverlayConfig& cfg) {
+// True while the PostSL callback draws the overlay for this Present. That
+// callback runs before ProcessFrame in the same Present, so it owns the ordering
+// for both screenshot variants: the overlay-free copy has to be submitted ahead
+// of the overlay list there, and the overlay-included copy after it.
+bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg) {
 return cfg.showOverlay && dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) &&
        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
 }

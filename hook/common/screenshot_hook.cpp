@@ -1,10 +1,12 @@
-// Screenshot capture utilities shared by the injected graphics backends.
-// GPU readback remains synchronous, but mapped pixels are copied before the
-// render thread returns and all filesystem work is serialized on one worker.
+// Screenshot capture utilities shared by the injected graphics backends. The
+// D3D12 backbuffer readback is submitted here and collected by the worker, so no
+// present-path thread ever waits on the GPU; every other backend copies its
+// mapped pixels before the render thread returns.
 
 #include "screenshot_hook.h"
 
 #include "hook_common.h"
+#include "screenshot_worker.h"
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -12,39 +14,15 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <condition_variable>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <new>
 #include <string>
-#include <thread>
 #include <utility>
-#include <vector>
 
 namespace {
 
 constexpr uint32_t kMaximumScreenshotDimension = 16384;
-
-struct ScreenshotTask {
-    SharedMemoryLayout* sharedMemory = nullptr;
-    uint64_t requestId = 0;
-    ScreenshotRawHeaderV2 header{};
-    std::vector<uint8_t> pixels;
-    std::wstring partPath;
-    std::wstring readyPath;
-    char completionEventName[128]{};
-};
-
-size_t BoundedStringLength(const char* text, size_t capacity) {
-    if (!text)
-        return capacity;
-    for (size_t i = 0; i < capacity; ++i) {
-        if (text[i] == '\0')
-            return i;
-    }
-    return capacity;
-}
 
 bool Utf8ToWide(const char* text, size_t length, std::wstring& result) {
     result.clear();
@@ -120,168 +98,6 @@ bool ValidatePixelLayout(uint32_t width, uint32_t height, uint32_t rowPitch, Scr
            payloadSize <= std::numeric_limits<uint64_t>::max() - sizeof(ScreenshotRawHeaderV2);
 }
 
-bool WriteAll(HANDLE file, const void* data, uint64_t size) {
-    const auto* cursor = static_cast<const uint8_t*>(data);
-    while (size != 0) {
-        const DWORD chunk = static_cast<DWORD>(std::min<uint64_t>(size, 16ULL * 1024ULL * 1024ULL));
-        DWORD written = 0;
-        if (!WriteFile(file, cursor, chunk, &written, nullptr) || written != chunk)
-            return false;
-        cursor += written;
-        size -= written;
-    }
-    return true;
-}
-
-void SignalCompletionEvent(const char* eventName) {
-    const size_t length = BoundedStringLength(eventName, 128);
-    if (length == 0 || length == 128)
-        return;
-    HANDLE event = OpenEventA(EVENT_MODIFY_STATE, FALSE, eventName);
-    if (event) {
-        SetEvent(event);
-        CloseHandle(event);
-    }
-}
-
-void CompleteScreenshotRequestForEvent(SharedMemoryLayout* sharedMemory, uint64_t requestId,
-                                       ScreenshotRequestStatus status, uint32_t error,
-                                       ScreenshotPayloadKind payloadKind, const char* eventName) {
-    if (!sharedMemory || requestId == 0 ||
-        sharedMemory->runtimeState.screenshotRequestId.load(std::memory_order_acquire) != requestId) {
-        return;
-    }
-
-    sharedMemory->runtimeState.screenshotError.store(error, std::memory_order_relaxed);
-    sharedMemory->runtimeState.screenshotPayloadKind.store(static_cast<uint32_t>(payloadKind),
-                                                           std::memory_order_relaxed);
-    sharedMemory->runtimeState.screenshotStatus.store(static_cast<uint32_t>(status), std::memory_order_release);
-    sharedMemory->runtimeState.screenshotCompletedRequestId.store(requestId, std::memory_order_release);
-    SignalCompletionEvent(eventName);
-}
-
-bool WriteTaskPayload(const ScreenshotTask& task, uint32_t& error) {
-    error = ERROR_SUCCESS;
-    HANDLE file = CreateFileW(task.partPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        error = GetLastError();
-        return false;
-    }
-
-    bool success = WriteAll(file, &task.header, sizeof(task.header)) &&
-                   WriteAll(file, task.pixels.data(), task.header.payloadSize);
-    if (success && !FlushFileBuffers(file)) {
-        error = GetLastError();
-        success = false;
-    }
-    if (!CloseHandle(file)) {
-        if (success)
-            error = GetLastError();
-        success = false;
-    }
-    if (!success) {
-        if (error == ERROR_SUCCESS)
-            error = ERROR_WRITE_FAULT;
-        DeleteFileW(task.partPath.c_str());
-        return false;
-    }
-
-    if (!MoveFileExW(task.partPath.c_str(), task.readyPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        error = GetLastError();
-        DeleteFileW(task.partPath.c_str());
-        return false;
-    }
-    return true;
-}
-
-class ScreenshotWorkerQueue {
-public:
-    ScreenshotWorkerQueue() : thread_(&ScreenshotWorkerQueue::Run, this) {}
-
-    ~ScreenshotWorkerQueue() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        condition_.notify_one();
-        if (thread_.joinable())
-            thread_.join();
-    }
-
-    bool Enqueue(ScreenshotTask&& task) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (stopping_ || occupied_)
-            return false;
-        occupied_ = true;
-        task_ = std::move(task);
-        condition_.notify_one();
-        return true;
-    }
-
-private:
-    void Run() {
-        for (;;) {
-            ScreenshotTask task;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                condition_.wait(lock, [&]() { return stopping_ || !task_.pixels.empty(); });
-                if (stopping_ && task_.pixels.empty())
-                    return;
-                task = std::move(task_);
-            }
-
-            uint32_t error = ERROR_SUCCESS;
-            const bool success = WriteTaskPayload(task, error);
-            const uint64_t currentRequestId =
-                task.sharedMemory->runtimeState.screenshotRequestId.load(std::memory_order_acquire);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                occupied_ = false;
-                task_ = {};
-            }
-            if (currentRequestId != task.requestId) {
-                DeleteFileW(task.partPath.c_str());
-                DeleteFileW(task.readyPath.c_str());
-                if (currentRequestId == 0) {
-                    uint32_t writing = static_cast<uint32_t>(ScreenshotRequestStatus::Writing);
-                    task.sharedMemory->runtimeState.screenshotStatus.compare_exchange_strong(
-                        writing, static_cast<uint32_t>(ScreenshotRequestStatus::Idle), std::memory_order_acq_rel,
-                        std::memory_order_acquire);
-                }
-            } else {
-                CompleteScreenshotRequestForEvent(
-                    task.sharedMemory, task.requestId,
-                    success ? ScreenshotRequestStatus::Succeeded : ScreenshotRequestStatus::Failed, error,
-                    success ? ScreenshotPayloadKind::RawV2 : ScreenshotPayloadKind::None, task.completionEventName);
-            }
-        }
-    }
-
-    std::mutex mutex_;
-    std::condition_variable condition_;
-    std::thread thread_;
-    ScreenshotTask task_;
-    bool occupied_ = false;
-    bool stopping_ = false;
-};
-
-std::mutex g_workerMutex;
-ScreenshotWorkerQueue* g_worker = nullptr;
-
-bool EnqueueOnWorker(ScreenshotTask&& task) {
-    std::lock_guard<std::mutex> lock(g_workerMutex);
-    if (!g_worker) {
-        try {
-            g_worker = new ScreenshotWorkerQueue();
-        } catch (...) {
-            g_worker = nullptr;
-            return false;
-        }
-    }
-    return g_worker->Enqueue(std::move(task));
-}
-
 bool GetD3D11PixelDescription(DXGI_FORMAT format, ce::presentation_color::Encoding presentationEncoding,
                               ScreenshotPixelFormat& pixelFormat,
                               ScreenshotColorEncoding& colorEncoding) {
@@ -345,7 +161,7 @@ void CompleteScreenshotRequest(SharedMemoryLayout* sharedMemory, uint64_t reques
         sharedMemory->runtimeState.screenshotCompletedRequestId.load(std::memory_order_acquire) == requestId)
         return;
     char eventName[128]{};
-    const size_t length = BoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
+    const size_t length = ScreenshotBoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
                                               sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
     if (length < sizeof(eventName)) {
         std::copy_n(sharedMemory->runtimeState.screenshotCompletionEventName, length, eventName);
@@ -353,19 +169,22 @@ void CompleteScreenshotRequest(SharedMemoryLayout* sharedMemory, uint64_t reques
     CompleteScreenshotRequestForEvent(sharedMemory, requestId, status, error, payloadKind, eventName);
 }
 
-bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, const uint8_t* pixels, uint32_t width,
-                           uint32_t height, uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
-                           ScreenshotColorEncoding colorEncoding) {
-    if (!sharedMemory || requestId == 0 || !pixels || GetPendingScreenshotRequestId(sharedMemory) != requestId) {
+// Resolves the destination paths and header for a request and claims it by
+// moving its status to Writing. Pixels arrive afterwards - from the caller for
+// the synchronous backends, from the worker for the submitted D3D12 copy - so
+// both share one description of what is being written.
+static bool BuildScreenshotTask(SharedMemoryLayout* sharedMemory, uint64_t requestId, uint32_t width, uint32_t height,
+                                uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
+                                ScreenshotColorEncoding colorEncoding, ScreenshotTask& task) {
+    if (!sharedMemory || requestId == 0 || GetPendingScreenshotRequestId(sharedMemory) != requestId)
         return false;
-    }
 
     uint64_t payloadSize = 0;
-    const size_t pathLength = BoundedStringLength(sharedMemory->runtimeState.screenshotPath,
-                                                  sizeof(sharedMemory->runtimeState.screenshotPath));
-    const size_t eventLength = BoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
-                                                   sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
-    ScreenshotTask task;
+    const size_t pathLength = ScreenshotBoundedStringLength(sharedMemory->runtimeState.screenshotPath,
+                                                            sizeof(sharedMemory->runtimeState.screenshotPath));
+    const size_t eventLength =
+        ScreenshotBoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
+                                      sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
     try {
         if (!ValidatePixelLayout(width, height, rowPitch, pixelFormat, colorEncoding, payloadSize) || pathLength == 0 ||
             pathLength == sizeof(sharedMemory->runtimeState.screenshotPath) || eventLength == 0 ||
@@ -387,25 +206,38 @@ bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId,
         return false;
     }
 
+    task.sharedMemory = sharedMemory;
+    task.requestId = requestId;
+    task.header.pixelFormat = static_cast<uint32_t>(pixelFormat);
+    task.header.colorEncoding = static_cast<uint32_t>(colorEncoding);
+    task.header.width = width;
+    task.header.height = height;
+    task.header.rowPitch = rowPitch;
+    task.header.payloadSize = payloadSize;
+    task.header.totalSize = sizeof(ScreenshotRawHeaderV2) + payloadSize;
+    task.header.requestId = requestId;
+    std::copy_n(sharedMemory->runtimeState.screenshotCompletionEventName, eventLength, task.completionEventName);
+    return true;
+}
+
+bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, const uint8_t* pixels, uint32_t width,
+                           uint32_t height, uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
+                           ScreenshotColorEncoding colorEncoding) {
+    if (!pixels)
+        return false;
+
+    ScreenshotTask task;
+    if (!BuildScreenshotTask(sharedMemory, requestId, width, height, rowPitch, pixelFormat, colorEncoding, task))
+        return false;
+
     try {
-        task.sharedMemory = sharedMemory;
-        task.requestId = requestId;
-        task.header.pixelFormat = static_cast<uint32_t>(pixelFormat);
-        task.header.colorEncoding = static_cast<uint32_t>(colorEncoding);
-        task.header.width = width;
-        task.header.height = height;
-        task.header.rowPitch = rowPitch;
-        task.header.payloadSize = payloadSize;
-        task.header.totalSize = sizeof(ScreenshotRawHeaderV2) + payloadSize;
-        task.header.requestId = requestId;
-        std::copy_n(sharedMemory->runtimeState.screenshotCompletionEventName, eventLength, task.completionEventName);
-        task.pixels.assign(pixels, pixels + static_cast<size_t>(payloadSize));
+        task.pixels.assign(pixels, pixels + static_cast<size_t>(task.header.payloadSize));
     } catch (...) {
         CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_NOT_ENOUGH_MEMORY);
         return false;
     }
 
-    if (!EnqueueOnWorker(std::move(task))) {
+    if (!EnqueueScreenshotTask(std::move(task))) {
         CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Busy, ERROR_BUSY);
         return false;
     }
@@ -521,22 +353,41 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    ID3D12Resource* readback = nullptr;
-    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback));
-    if (FAILED(hr))
-        return false;
-    ID3D12CommandAllocator* allocator = nullptr;
-    hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
-    if (FAILED(hr)) {
-        readback->Release();
+    // Claim the worker before recording anything. Once the copy is submitted it
+    // has to be collected somewhere, and the only alternatives - waiting here or
+    // releasing resources the GPU still reads - are a freeze and a
+    // use-after-free respectively.
+    if (!ReserveScreenshotWorkerSlot()) {
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Busy, ERROR_BUSY);
         return false;
     }
-    ID3D12GraphicsCommandList* commandList = nullptr;
-    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr, IID_PPV_ARGS(&commandList));
+
+    ScreenshotTask task;
+    if (!BuildScreenshotTask(sharedMemory, requestId, static_cast<uint32_t>(sourceDesc.Width), sourceDesc.Height,
+                             footprint.Footprint.RowPitch, pixelFormat, colorEncoding, task)) {
+        ReleaseScreenshotWorkerSlot();
+        return false;
+    }
+
+    ScreenshotDx12Readback readback;
+    readback.device = device;
+    readback.bufferSize = bufferSize;
+    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                 IID_PPV_ARGS(&readback.buffer));
+    if (SUCCEEDED(hr))
+        hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&readback.allocator));
+    if (SUCCEEDED(hr)) {
+        hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, readback.allocator, nullptr,
+                                       IID_PPV_ARGS(&readback.commandList));
+    }
+    if (SUCCEEDED(hr))
+        hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&readback.fence));
     if (FAILED(hr)) {
-        allocator->Release();
-        readback->Release();
+        // Nothing was submitted yet, so releasing here cannot race the GPU.
+        ReleaseScreenshotDx12Readback(readback);
+        ReleaseScreenshotWorkerSlot();
+        HookLog("[Screenshot] D3D12 readback resource creation failed: hr=0x%08X", static_cast<unsigned>(hr));
         return false;
     }
 
@@ -546,73 +397,44 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    commandList->ResourceBarrier(1, &barrier);
+    readback.commandList->ResourceBarrier(1, &barrier);
 
     D3D12_TEXTURE_COPY_LOCATION source{};
     source.pResource = backBuffer;
     source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     D3D12_TEXTURE_COPY_LOCATION destination{};
-    destination.pResource = readback;
+    destination.pResource = readback.buffer;
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     destination.PlacedFootprint = footprint;
-    commandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    readback.commandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
 
     std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-    commandList->ResourceBarrier(1, &barrier);
-    hr = commandList->Close();
+    readback.commandList->ResourceBarrier(1, &barrier);
+    hr = readback.commandList->Close();
     if (FAILED(hr)) {
-        commandList->Release();
-        allocator->Release();
-        readback->Release();
+        ReleaseScreenshotDx12Readback(readback);
+        ReleaseScreenshotWorkerSlot();
+        HookLog("[Screenshot] D3D12 readback command list close failed: hr=0x%08X", static_cast<unsigned>(hr));
         return false;
     }
-    ID3D12CommandList* lists[] = {commandList};
+
+    // The copy rides the queue the caller already presents on, so it is ordered
+    // against the game's own work without any cross-queue wait - adding one here
+    // would inject CE into a frame-generation runtime's scheduling.
+    ID3D12CommandList* lists[] = {readback.commandList};
     queue->ExecuteCommandLists(1, lists);
-
-    ID3D12Fence* fence = nullptr;
-    hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-    HANDLE fenceEvent = nullptr;
-    if (SUCCEEDED(hr))
-        fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (FAILED(hr) || !fenceEvent || FAILED(queue->Signal(fence, 1)) ||
-        FAILED(fence->SetEventOnCompletion(1, fenceEvent)) ||
-        WaitForSingleObject(fenceEvent, INFINITE) != WAIT_OBJECT_0) {
-        if (fenceEvent)
-            CloseHandle(fenceEvent);
-        if (fence)
-            fence->Release();
-        commandList->Release();
-        allocator->Release();
-        readback->Release();
+    readback.fenceValue = 1;
+    if (FAILED(queue->Signal(readback.fence, readback.fenceValue))) {
+        // The signal never reached the queue, but the copy did. The resources
+        // stay alive rather than being released under in-flight GPU work.
+        readback.Disown();
+        ReleaseScreenshotWorkerSlot();
+        HookLog("[Screenshot] D3D12 readback fence signal failed; abandoning the request");
         return false;
     }
-    CloseHandle(fenceEvent);
+    readback.submitted = true;
 
-    void* mapped = nullptr;
-    const D3D12_RANGE readRange{0, static_cast<SIZE_T>(bufferSize)};
-    hr = readback->Map(0, &readRange, &mapped);
-    bool queued = false;
-    if (SUCCEEDED(hr) && mapped) {
-        queued = QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mapped),
-                                       static_cast<uint32_t>(sourceDesc.Width), sourceDesc.Height,
-                                       footprint.Footprint.RowPitch, pixelFormat, colorEncoding);
-        const D3D12_RANGE writtenRange{0, 0};
-        readback->Unmap(0, &writtenRange);
-    }
-
-    fence->Release();
-    commandList->Release();
-    allocator->Release();
-    readback->Release();
-    return queued;
-}
-
-void ShutdownScreenshotWorker() {
-    ScreenshotWorkerQueue* worker = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_workerMutex);
-        worker = g_worker;
-        g_worker = nullptr;
-    }
-    delete worker;
+    task.readback = std::move(readback);
+    SubmitReservedScreenshotTask(std::move(task));
+    return true;
 }

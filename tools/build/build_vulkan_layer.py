@@ -66,6 +66,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter_render_frame.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "cached_overlay_renderer.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "screenshot_hook.cpp"),
+        # Owns the screenshot task queue screenshot_hook.cpp hands work to.
+        os.path.join(PROJECT_ROOT, "hook", "common", "screenshot_worker.cpp"),
     ]
 
     # Shared layer-specific flags (include paths, defines)

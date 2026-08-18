@@ -103,6 +103,13 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(config.logLevel) << 7) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.observerPolicyOnly) << 8) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.observerStartupPresentOnly) << 9) ^
+        // The publication summary is the only record that a setting reached the
+        // hook. Leaving the overlay booleans out of the hash made a live
+        // screenshot_include_overlay change publish completely silently.
+        (static_cast<uint64_t>(sharedMemory->overlayConfig.showOverlay) << 18) ^
+        (static_cast<uint64_t>(sharedMemory->overlayConfig.observerOnly) << 19) ^
+        (static_cast<uint64_t>(sharedMemory->overlayConfig.captureIncludeOverlay) << 20) ^
+        (static_cast<uint64_t>(sharedMemory->overlayConfig.screenshotIncludeOverlay) << 21) ^
         (static_cast<uint64_t>(graphics.forceRayReconstruction) << 10) ^
         (static_cast<uint64_t>(graphics.rayReconstructionOptimalSettings) << 11) ^
         (static_cast<uint64_t>(graphics.disablePostProcessingEffects) << 12) ^

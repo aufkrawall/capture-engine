@@ -346,7 +346,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
     captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
     captureUsePostSL = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
-                                  ShouldUseConfirmedPostSLForOverlayIncludedWork(captureOverlayCfg);
+                                  PostSLOwnsThisFramesOverlayDraw(captureOverlayCfg);
     captureAfterOverlay = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
                                      !captureUsePostSL && !holdFocusLossBackbufferWork;
     captureBeforeOverlay =

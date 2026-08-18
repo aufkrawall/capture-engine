@@ -46,7 +46,7 @@ Primary sources:
 - `build.py.md`
   - Supported build/gate flags, clean binary packages plus FFmpeg/libiconv corresponding source, content-addressed lint/sanitizer reuse, Windows/Linux toolchain policy, dependency provenance, exact-commit strict-clean stable releases with pinned Actions and scoped tokens, public artifact attestations, privacy-sanitized assets and immediate self-hosted log deletion, operational notes, and MinGW pitfalls. Last verified 2026-08-08.
 - `screenshots.md`
-  - Shared ABI 38 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, and explicit result notifications. Last verified 2026-08-01.
+  - Shared ABI 38 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, explicit result notifications, the asynchronous D3D12 readback that keeps every wait off the present thread, and the PostSL-ordered overlay-free/overlay-included capture. Last verified 2026-08-18.
 - `process-ipc.md`
   - Restricted private child channels, accept-before-finalize disposable media stops with media-owned completion notification, recording-health publication, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI 38 publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-08-01.
 - `repo-map.md`
