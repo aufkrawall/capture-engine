@@ -207,7 +207,7 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
 
     const size_t controllerMain = source.find("int ControllerMain(HINSTANCE hInstance)");
     const size_t trayCreation = source.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
-    const size_t vulkanRegistration = source.find("ScopedVulkanRegistration vulkanReg", controllerMain);
+    const size_t vulkanRegistration = source.find("VulkanLayerResidency vulkanReg", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);
     ASSERT_NE(trayCreation, std::string::npos);
     ASSERT_NE(vulkanRegistration, std::string::npos);

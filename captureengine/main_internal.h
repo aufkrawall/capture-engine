@@ -1,7 +1,5 @@
 #pragma once
 
-struct ScopedVulkanRegistration;
-
 // clang-format off
 #include <windows.h>
 
@@ -47,6 +45,8 @@ struct ScopedVulkanRegistration;
 #include "dump_helper.h"
 
 #include "injection.h"
+
+#include "main_vulkan_residency.h"
 
 #include "process_loopback_worker_host.h"
 
@@ -747,54 +747,3 @@ inline bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeou
     CloseProcessHandle(main_g_hMediaProcess);
     return stopAccepted;
 }
-
-inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan() {
-    std::filesystem::path baseDir;
-    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
-        LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
-        return {};
-    }
-
-    return ce::vulkan_layer::BuildRegistrationPlan(baseDir, ce::vulkan_layer::RegistrationMode::Auto,
-                                                   ce::vulkan_layer::IsCurrentProcessElevated());
-}
-
-// RAII wrapper for exact registration ownership. Startup repairs superseded CE
-// entries only in registry scopes already writable by this process; the retained
-// plan then lets teardown remove only this instance's exact registrations.
-class ScopedVulkanRegistration {
-public:
-    ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan()) {
-        ce::vulkan_layer::LogRegistrationPlan(plan_);
-        if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
-            LogWarn("[Controller] Vulkan layer registration repair was incomplete");
-        }
-        active_ = ce::vulkan_layer::ApplyRegistrationPlan(plan_, true);
-        if (!active_) {
-            LogError("[Controller] Vulkan layer registration failed");
-        }
-    }
-    ~ScopedVulkanRegistration() {
-        Unregister();
-    }
-
-    bool IsActive() const {
-        return active_;
-    }
-
-    void Unregister() {
-        std::call_once(unregistrationOnce_, [this]() {
-            if (!ce::vulkan_layer::ApplyRegistrationPlan(plan_, false)) {
-                LogError("[Controller] Vulkan layer unregistration failed");
-            }
-        });
-    }
-
-private:
-    ce::vulkan_layer::RegistrationPlan plan_;
-    std::once_flag unregistrationOnce_;
-    bool active_ = false;
-};
-
-// Global pointer for emergency unregistration
-inline ScopedVulkanRegistration* main_g_VulkanReg = nullptr;

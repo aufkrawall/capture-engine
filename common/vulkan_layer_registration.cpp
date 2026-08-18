@@ -237,6 +237,25 @@ std::vector<RegistryLocation> BuildRepairLocations(const RegistrationPlan& plan)
     return locations;
 }
 
+// The exact value names this instance keeps registered at one location. Pruning
+// everything else (instead of deleting all owned entries and rewriting them)
+// keeps the live registration continuously present: the Vulkan loader reads
+// ImplicitLayers inside vkCreateInstance, so a delete/rewrite window would drop
+// the layer from any title that happened to start during it.
+std::vector<std::wstring> BuildRetainedEntriesForLocation(const RegistrationPlan& plan,
+                                                          const RegistryLocation& location) {
+    std::vector<std::wstring> retained;
+    for (const RegistryTarget& target : plan.installTargets) {
+        if (target.root != location.root || target.view != location.view) {
+            continue;
+        }
+        for (const LayerManifest& manifest : target.manifests) {
+            retained.push_back(manifest.manifestPath.wstring());
+        }
+    }
+    return retained;
+}
+
 std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
     std::vector<RegistryTarget> targets;
 
@@ -520,6 +539,30 @@ std::string PathToUtf8ForLogging(const std::filesystem::path& path) {
     return PathToUtf8(path);
 }
 
+std::vector<std::wstring> SelectStaleOwnedEntries(const std::vector<std::wstring>& existingValueNames,
+                                                  const std::vector<std::wstring>& retainedValueNames) {
+    std::vector<std::wstring> retainedLower;
+    retainedLower.reserve(retainedValueNames.size());
+    for (const std::wstring& retained : retainedValueNames) {
+        retainedLower.push_back(ToLower(retained));
+    }
+
+    std::vector<std::wstring> stale;
+    for (const std::wstring& existing : existingValueNames) {
+        // Only CE's own manifests are ever eligible. A foreign implicit layer
+        // must survive untouched even when it sits in the same registry key.
+        if (!IsOwnedManifestPath(std::filesystem::path(existing))) {
+            continue;
+        }
+        const std::wstring existingLower = ToLower(existing);
+        if (std::find(retainedLower.begin(), retainedLower.end(), existingLower) != retainedLower.end()) {
+            continue;
+        }
+        stale.push_back(existing);
+    }
+    return stale;
+}
+
 bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
     bool success = true;
     for (const RegistryLocation& location : BuildRepairLocations(plan)) {
@@ -535,10 +578,9 @@ bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
             continue;
         }
 
-        for (const std::wstring& valueName : EnumerateRegistryValueNames(key.Get())) {
-            if (!IsOwnedManifestPath(std::filesystem::path(valueName))) {
-                continue;
-            }
+        const std::vector<std::wstring> retained = BuildRetainedEntriesForLocation(plan, location);
+        for (const std::wstring& valueName :
+             SelectStaleOwnedEntries(EnumerateRegistryValueNames(key.Get()), retained)) {
             success &= DeleteRegistryValue(key.Get(), valueName, "superseded CE manifest", location);
         }
     }

@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-08-18 - Vulkan late inject never had a layer: the registration was ephemeral
+
+"Late inject does not work in Strange Brigade Vulkan, our overlay does not appear." Session
+`20260818_224257` (build 0.1.6154). Root cause found and fixed in 0.1.6156, validated end to end.
+
+- **Proof the layer was simply absent.** The failing session directory has `captureengine.log`,
+  `hook_debug.log`, `inject.log` - and no `vulkan_layer.log`, no `vulkan_layer_early.log`. Every
+  working (early-inject) Strange Brigade Vulkan session has all three: `20260818_224029`,
+  `sbvkfreeze`, `sbvkfalsefreezealert`. The hook DLL injected fine and installed DXGI/D3D12/D3D9/
+  OpenGL hooks; `DX11 check #N` reported `vulkan=0` on every poll and `renderLoopObserved=0`.
+- **Why.** `ScopedVulkanRegistration` (then in `main_internal.h`, commented "Ephemeral Registration
+  (RAII)") registered the implicit layer at controller startup and unregistered it at shutdown. The
+  Vulkan loader builds a process's layer chain once, inside `vkCreateInstance`. A title launched
+  while CE was not running therefore never got `VK_LAYER_CE_overlay.dll` into its chain, and nothing
+  the injector does afterwards can add one - CE's Vulkan present/overlay path lives in that layer
+  DLL, not in the hook. Vulkan late injection was structurally impossible, not merely broken.
+- **Fix.** `captureengine/main_vulkan_residency.h` (split out of `main_internal.h`, which hit the
+  800-line ceiling) makes the registration resident: register + self-heal at startup, never
+  unregister. `RepairOwnedRegistrations` now prunes only superseded CE entries and retains the live
+  ones, removing the old delete-then-rewrite window during which a starting title would miss the
+  layer. `SelectStaleOwnedEntries` is the pure, tested policy; foreign layers (Steam/OBS/RTSS/EOS)
+  are never eligible.
+- **Second bug, found while tracing the wake path.** `CheckAndInstallHooks` latched its Vulkan
+  decision permanently (`!s_checkedForVulkan || s_vulkanActive`). The resident layer wakes only after
+  CE signals its reactivation event, which lands after the hook thread weighed D3D evidence - and
+  Strange Brigade Vulkan has `d3d12.dll` loaded, so the latch would stick at "not Vulkan" and the
+  DXGI present path would fight the layer for the whole process. The gate now also re-opens on
+  `vulkanLayerOwned`. Ownership only: re-opening on `vulkan-1.dll` presence would bring back the
+  RoboCop DX12 regression.
+- **Validated on hardware.** With zero CaptureEngine processes running, `vulkan_test.exe` loads
+  `VK_LAYER_CE_overlay.dll` (impossible before the fix). Starting CE second: `vulkan_layer.log`
+  appears, `Layer IPC: Connected to Host PID`, `Vulkan layer reactivated`, `InitializeOverlay`
+  completes, and `RenderOverlay BeginFrame 3840x2160` runs per present. Hook side reports
+  `vulkan=1` and `Vulkan layer ownership established, skipping D3D/DXGI hooks`. Zero layer errors.
+- **Known remaining boundary (unchanged by this fix).** A device created while the layer was in
+  passthrough has `captureInteropEnabled=false`, so *inject video capture* after a late wake still
+  needs device/swapchain recreation; the overlay does not. Broadening external-memory extension
+  injection to every Vulkan device system-wide was deliberately not done here - that is a
+  much larger blast radius against the DLSS-FG/FSR-FG constraints.
+
 ### 2026-08-18 - The freeze dump was the freeze: Strange Brigade Vulkan
 
 Reported as "Strange Brigade Vulkan randomly froze on start (it usually works)". It is CE's bug, and the

@@ -4,9 +4,6 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
         ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
         LogInfo("[Controller] Console event %lu received. Cleaning up...", ctrlType);
-        if (main_g_VulkanReg) {
-            main_g_VulkanReg->Unregister();
-        }
         main_g_Running = false;
         return TRUE;
     }
@@ -33,11 +30,12 @@ int ControllerMain(HINSTANCE hInstance) {
     PrimeStartupCursor();
     PumpStartupMessages();
 
-    // Ephemeral Registration (RAII)
+    // Resident registration: intentionally outlives this process so a Vulkan
+    // title started before CaptureEngine still carries the layer and can be
+    // injected late.
     const int64_t vulkanRegStartUs = Log_GetQpcUs();
-    ScopedVulkanRegistration vulkanReg;
+    VulkanLayerResidency vulkanReg;
     const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
-    main_g_VulkanReg = &vulkanReg;
     if (!vulkanReg.IsActive()) {
         LogWarn(
             "[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
@@ -311,11 +309,6 @@ int ControllerMain(HINSTANCE hInstance) {
     }
 
     ShutdownChildProcesses();
-
-    // Complete exact unregistration before invalidating the console handler's
-    // non-owning pointer. The destructor is idempotent through call_once.
-    vulkanReg.Unregister();
-    main_g_VulkanReg = nullptr;
 
     // Now remove tray icon after shutdown is complete
     if (tray) {

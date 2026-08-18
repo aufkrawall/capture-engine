@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "source_fragment_reader.h"
 
@@ -175,22 +176,79 @@ TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritabl
     EXPECT_LT(apply, exactUnregister);
 }
 
-TEST(VulkanLayerRegistrationSourceTest, ControllerRetainsOneExactPlanThroughUnregistration) {
+// The Vulkan loader composes a process's layer chain once, inside
+// vkCreateInstance. A controller that unregisters its implicit layer on exit
+// therefore makes Vulkan late injection structurally impossible: a title started
+// while CaptureEngine is not running never carries the layer, and no later
+// injection can add one. Session logs/20260818_224257 recorded exactly that
+// failure for Strange Brigade Vulkan. Registration must outlive the controller.
+TEST(VulkanLayerRegistrationSourceTest, ControllerKeepsLayerRegistrationResidentAcrossShutdown) {
+    const std::filesystem::path residencySource =
+        std::filesystem::current_path() / "captureengine" / "main_vulkan_residency.h";
+    const std::string residency = ce::test_source::ReadFile(residencySource);
+    ASSERT_FALSE(residency.empty()) << residencySource.string();
+
+    EXPECT_NE(residency.find("VulkanLayerResidency() : plan_("), std::string::npos);
+    EXPECT_NE(residency.find("BuildControllerVulkanRegistrationPlan())"), std::string::npos);
+    const size_t repair = residency.find("RepairOwnedRegistrations(plan_)");
+    const size_t apply = residency.find("ApplyRegistrationPlan(plan_, true)");
+    ASSERT_NE(repair, std::string::npos);
+    ASSERT_NE(apply, std::string::npos);
+    EXPECT_LT(repair, apply);
+
+    // The owner must have no teardown path at all: no destructor, no unregister
+    // call, nothing that can put ApplyRegistrationPlan into uninstall mode.
+    EXPECT_EQ(residency.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
+    EXPECT_EQ(residency.find("~VulkanLayerResidency"), std::string::npos);
+
     const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "main.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty()) << source.string();
 
-    EXPECT_NE(text.find("ScopedVulkanRegistration() : plan_("), std::string::npos);
-    EXPECT_NE(text.find("BuildControllerVulkanRegistrationPlan())"), std::string::npos);
-    const size_t repair = text.find("RepairOwnedRegistrations(plan_)");
-    const size_t apply = text.find("ApplyRegistrationPlan(plan_, true)");
-    ASSERT_NE(repair, std::string::npos);
-    ASSERT_NE(apply, std::string::npos);
-    EXPECT_LT(repair, apply);
-    EXPECT_NE(text.find("ApplyRegistrationPlan(plan_, true)"), std::string::npos);
-    EXPECT_NE(text.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
-    EXPECT_NE(text.find("std::call_once(unregistrationOnce_"), std::string::npos);
-    EXPECT_NE(text.find("vulkanReg.Unregister();"), std::string::npos);
-    EXPECT_NE(text.find("g_VulkanReg->Unregister()"), std::string::npos);
+    // Neither the console handler nor the normal shutdown sequence may drop it.
+    EXPECT_NE(text.find("VulkanLayerResidency vulkanReg"), std::string::npos);
+    EXPECT_EQ(text.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
+    EXPECT_EQ(text.find("vulkanReg.Unregister();"), std::string::npos);
+    EXPECT_EQ(text.find("g_VulkanReg->Unregister()"), std::string::npos);
     EXPECT_EQ(text.find("Registry_ManageImplicitLayer"), std::string::npos);
+}
+
+TEST(VulkanLayerRegistrationTest, StaleEntrySelectionPrunesSupersededOwnedManifestsOnly) {
+    const std::vector<std::wstring> existing = {
+        L"C:\\Old\\Install\\VK_LAYER_CE_overlay.json",
+        L"C:\\Current\\VK_LAYER_CE_overlay.json",
+        L"C:\\Legacy\\VK_LAYER_CAPTURE_overlay.json",
+        L"C:\\Old\\Install\\VK_LAYER_CE_overlay_x86.json",
+    };
+    const std::vector<std::wstring> retained = {L"C:\\Current\\VK_LAYER_CE_overlay.json"};
+
+    const auto stale = ce::vulkan_layer::SelectStaleOwnedEntries(existing, retained);
+    ASSERT_EQ(stale.size(), 3u);
+    EXPECT_EQ(stale[0], L"C:\\Old\\Install\\VK_LAYER_CE_overlay.json");
+    EXPECT_EQ(stale[1], L"C:\\Legacy\\VK_LAYER_CAPTURE_overlay.json");
+    EXPECT_EQ(stale[2], L"C:\\Old\\Install\\VK_LAYER_CE_overlay_x86.json");
+}
+
+// Resident registration means CE prunes this key on every start rather than on
+// exit, so a bug here would silently disable Steam's, OBS's, RTSS's, or EOS's
+// Vulkan overlay on the user's machine. Foreign manifests are never eligible.
+TEST(VulkanLayerRegistrationTest, StaleEntrySelectionNeverTouchesForeignImplicitLayers) {
+    const std::vector<std::wstring> existing = {
+        L"C:\\Program Files (x86)\\Steam\\SteamOverlayVulkanLayer64.json",
+        L"C:\\Program Files (x86)\\Steam\\SteamFossilizeVulkanLayer64.json",
+        L"C:\\ProgramData\\obs-studio-hook\\obs-vulkan64.json",
+        L"C:\\Program Files (x86)\\RivaTuner Statistics Server\\Vulkan\\RTSSVkLayer64.json",
+        L"C:\\Program Files (x86)\\Epic Games\\Epic Online Services\\EOSOverlayVkLayer-Win64.json",
+    };
+
+    EXPECT_TRUE(ce::vulkan_layer::SelectStaleOwnedEntries(existing, {}).empty());
+}
+
+TEST(VulkanLayerRegistrationTest, StaleEntrySelectionRetainsLiveEntryCaseInsensitively) {
+    const std::vector<std::wstring> existing = {L"C:\\Current\\vk_layer_ce_overlay.json"};
+    const std::vector<std::wstring> retained = {L"C:\\CURRENT\\VK_LAYER_CE_overlay.json"};
+
+    // Retaining the live entry instead of deleting and rewriting it is what keeps
+    // the registration continuously readable by a concurrent vkCreateInstance.
+    EXPECT_TRUE(ce::vulkan_layer::SelectStaleOwnedEntries(existing, retained).empty());
 }

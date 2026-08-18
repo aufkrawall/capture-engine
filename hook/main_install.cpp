@@ -30,14 +30,22 @@ void CheckAndInstallHooks() {
   // presence (DX9/DX8/DDraw), then we must not stay locked in Vulkan mode.
   static bool s_checkedForVulkan = false;
   static bool s_vulkanActive = false;
-  if (!s_checkedForVulkan || s_vulkanActive) {
+  // Layer ownership is authoritative and can arrive long after the first check.
+  // On late injection the resident Vulkan layer only wakes once CaptureEngine
+  // signals its per-PID reactivation event, which normally lands after this hook
+  // thread has already weighed D3D evidence. Latching "not Vulkan" before that
+  // would leave the DXGI present/resize path doing CE work for the rest of the
+  // process while the layer owns presentation. Only ownership may re-open the
+  // decision: re-opening on mere vulkan-1.dll presence would bring back the
+  // RoboCop DX12 regression this latch exists to prevent.
+  bool vulkanLayerOwned = false;
+  if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+    uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+    vulkanLayerOwned = sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
+                       (lastVulkan != 0 && (GetTickCount64() - lastVulkan) < 2000);
+  }
+  if (!s_checkedForVulkan || s_vulkanActive || vulkanLayerOwned) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-    bool vulkanLayerOwned = false;
-    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
-      uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-      vulkanLayerOwned = sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
-                         (lastVulkan != 0 && (GetTickCount64() - lastVulkan) < 2000);
-    }
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                            (GetModuleHandleA("d3d8.dll") != nullptr) ||
                            (GetModuleHandleA("ddraw.dll") != nullptr);
@@ -55,7 +63,13 @@ void CheckAndInstallHooks() {
             hVulkan != nullptr, vulkanLayerOwned, d3dUsageEvidence);
     if (vulkanLayerOwned) {
       if (!s_vulkanActive) {
-        EarlyLog("CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks");
+        // On late injection this fires after D3D evidence already latched, so
+        // record whether hooks were installed in the meantime: that is the
+        // difference between a clean Vulkan process and one where the DXGI/D3D
+        // paths must now stand down for the layer.
+        EarlyLog("CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks "
+                 "(previouslyLatchedD3D=%d dx12Hook=%d dx11Hook=%d)",
+                 s_checkedForVulkan ? 1 : 0, g_DX12Hook ? 1 : 0, g_DX11Hook ? 1 : 0);
       }
       s_vulkanActive = true;
       s_checkedForVulkan = true;

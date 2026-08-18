@@ -123,6 +123,35 @@ TEST(VulkanRendererPolicySourceTest, HookInstallPublishesTheSharedDecision) {
     EXPECT_LT(decision, publish);
 }
 
+// Late injection wakes the resident Vulkan layer only after CaptureEngine
+// signals its per-PID reactivation event, which lands after the hook thread has
+// already weighed D3D evidence. If the "not Vulkan" decision latched
+// permanently, the DXGI present/resize path would keep doing CE work for the
+// rest of the process while the layer owns presentation. Layer ownership — and
+// only layer ownership — must re-open the evaluation; re-opening on plain
+// vulkan-1.dll presence would restore the RoboCop DX12 regression.
+TEST(VulkanRendererPolicySourceTest, LayerOwnershipReopensTheLatchedVulkanDecision) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "main_install.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    const std::string source = ce::test_source::ReadFile(installSource);
+    ASSERT_FALSE(source.empty());
+
+    const size_t ownershipRead = source.find("vulkanLayerOwned =");
+    const size_t gate = source.find("if (!s_checkedForVulkan || s_vulkanActive || vulkanLayerOwned)");
+    ASSERT_NE(ownershipRead, std::string::npos);
+    ASSERT_NE(gate, std::string::npos)
+        << "the latch must re-open on established Vulkan layer ownership";
+    // Ownership has to be sampled before the gate, otherwise the gate can only
+    // ever observe the previous tick's value.
+    EXPECT_LT(ownershipRead, gate);
+
+    // Module presence must stay inside the gate, never a re-entry condition.
+    const size_t moduleProbe = source.find("GetModuleHandleW(L\"vulkan-1.dll\")");
+    ASSERT_NE(moduleProbe, std::string::npos);
+    EXPECT_LT(gate, moduleProbe);
+}
+
 TEST(VulkanRendererPolicySourceTest, PresentGateConsultsSharedFlagNotModulePresence) {
     namespace fs = std::filesystem;
     const fs::path sharedSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";

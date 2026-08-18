@@ -64,6 +64,15 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
 std::string PathToUtf8ForLogging(const std::filesystem::path& path);
 
 void LogRegistrationPlan(const RegistrationPlan& plan);
+
+// Owned entries at one registry location that must be pruned: every value whose
+// file name is a CaptureEngine layer manifest that this instance is not about to
+// keep. Retained names are compared case-insensitively because they are Windows
+// paths. Foreign implicit layers (Steam, OBS, RTSS, EOS, ...) are never returned,
+// so pruning can never disturb another overlay's registration.
+std::vector<std::wstring> SelectStaleOwnedEntries(const std::vector<std::wstring>& existingValueNames,
+                                                  const std::vector<std::wstring>& retainedValueNames);
+
 bool RepairOwnedRegistrations(const RegistrationPlan& plan);
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install);
 bool IsRegistrationActive(const RegistrationPlan& plan);
