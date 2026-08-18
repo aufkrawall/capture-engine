@@ -126,6 +126,44 @@ static void EarlyLog(const char* fmt, ...) {
     va_end(args);
 }
 
+// A resident layer whose layout no longer matches the running CaptureEngine can
+// reach none of the usual diagnostics: the whitelist, the session logs path, and
+// the debug-logging flag all live behind a discovery mapping it must not parse.
+// Write one line next to the layer image instead, so the failure names itself
+// rather than presenting as "the overlay simply never appeared".
+void LayerReportIncompatibleDiscovery(const DiscoveryInfo* discovery) {
+    if (!discovery)
+        return;
+    // Only the compatibility prefix may be read here; its offsets are fixed.
+    if (discovery->GetMagic() != DISCOVERY_MAGIC)
+        return;
+    if (discovery->GetAbiSignature() == SHARED_MEMORY_ABI_SIGNATURE)
+        return;
+
+    static std::atomic<bool> reported{false};
+    if (reported.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    const std::string logsDir = GetLayerDllDirectory() + "\\logs";
+    CreateDirectoryA(logsDir.c_str(), nullptr);
+    const std::string logPath = logsDir + "\\vulkan_layer_incompatible.log";
+    FILE* file = fopen(logPath.c_str(), "a");
+    if (!file)
+        return;
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char processPath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, processPath, sizeof(processPath));
+    fprintf(file,
+            "[%04d-%02d-%02d %02d:%02d:%02d.%03d] Resident CE Vulkan layer build %u (layout 0x%08X) cannot attach to "
+            "CaptureEngine build %u (layout 0x%08X) in '%s'. This title was started against a different CaptureEngine "
+            "layout; restart it to load the current layer.\n",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+            static_cast<unsigned>(GetCurrentBuildNumber()), SHARED_MEMORY_ABI_SIGNATURE,
+            static_cast<unsigned>(discovery->GetBuildNumber()), discovery->GetAbiSignature(), processPath);
+    fclose(file);
+}
+
 static bool IsExecutableFunctionPointer(const void* ptr) {
     if (!ptr)
         return false;
@@ -324,10 +362,7 @@ static bool PerformEarlyWhitelistCheck() {
     }
 
     g_LayerState.whitelisted = false;
-    if (pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->GetBuildNumber() != GetCurrentBuildNumber()) {
-        EarlyLog("Stale layer build %u does not match active CaptureEngine build %u - layer dormant",
-                 static_cast<unsigned>(GetCurrentBuildNumber()), static_cast<unsigned>(pDisc->GetBuildNumber()));
-    }
+    LayerReportIncompatibleDiscovery(pDisc);
     if (ValidateDiscoveryInfo(pDisc)) {
         const char* pw = pDisc->processWhitelist;
         const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);

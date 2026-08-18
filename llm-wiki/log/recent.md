@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-08-18 - Vulkan late inject, part 2: the resident layer was rejected on build number
+
+Resident registration (0.1.6156) put the layer back into the process, and late inject still showed no
+overlay. Session `20260818_231619`. Second root cause, fixed in 0.1.6162.
+
+- **Same symptom, different cause.** Again no `vulkan_layer*.log`. But this time the layer *was*
+  loaded: the 23:07 build reported `VK_LAYER_CE_overlay.dll is locked by another process` and renamed
+  it, so a live Vulkan process held the 0.1.6154 image. The game had been started against an older
+  CaptureEngine and kept that layer mapped.
+- **Why it stayed dormant.** `ValidateDiscoveryInfo` required `GetBuildNumber() == GetCurrentBuildNumber()`.
+  A resident layer from any other build therefore failed discovery validation outright - and because
+  `IsLayerProcessWhitelistedByCurrentHost()` *and* `IsLayerDebugLoggingEnabled()` both gate on that
+  same call, it could not read the whitelist, could not reach the host, and could not resolve
+  `logsPath` to log a single line. Silent, and indistinguishable from "the layer was never loaded".
+- **Reproduced deliberately** before fixing: started `vulkan_test.exe` against layer 6156, rebuilt CE
+  to 6157, started CE. Hook injected, `perf_metrics` written, `DX11 check #1: vulkan=0`, and no
+  `vulkan_layer.log` - the user's exact signature.
+- **Fix.** `DiscoveryInfo` now carries `abiSignature` at offset 12 and validation checks the compiled
+  layout instead of build identity; `buildNumber` is diagnostics only. The first 16 bytes are a
+  cross-build contract with asserted offsets, and `ComputeSharedMemoryAbiSignature` now covers
+  `sizeof(DiscoveryInfo)` plus the `processWhitelist`/`logsPath` offsets, so a reader that trusts the
+  signature may safely parse the rest. `SHARED_MEMORY_VERSION` 42 -> 43 renames every mapping and
+  event, which is what stops an already-running older inject process from handing us its smaller
+  discovery section. **Consequence for future work: a semantic change to these shared fields must now
+  bump `SHARED_MEMORY_VERSION`; the build number no longer separates builds.**
+- **Silent failure is now impossible.** `LayerReportIncompatibleDiscovery` writes one line to
+  `<layer dll dir>\logs\vulkan_layer_incompatible.log` naming both builds and both signatures when the
+  magic matches but the layout does not. It is the only diagnostic that can run in that state.
+- **Validated on hardware.** Layer build 6160 resident in a running Vulkan app, CE host 6161 started
+  afterwards: `Layer IPC: Connected to Host PID`, `Vulkan layer reactivated`,
+  `[InjectLifecycle] Late-initialized Vulkan swapchain`, `RenderOverlay: BeginFrame 3840x2160`,
+  hook-side `vulkan=1` and `Vulkan layer ownership established`. Zero layer errors, and no
+  incompatibility report (layouts matched, as they should across a plain rebuild).
+
 ### 2026-08-18 - Vulkan late inject never had a layer: the registration was ephemeral
 
 "Late inject does not work in Strange Brigade Vulkan, our overlay does not appear." Session

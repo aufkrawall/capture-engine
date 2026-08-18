@@ -361,6 +361,7 @@ int InjectProcessMain(const AppConfig& config) {
         pDiscovery->SetMagic(0);
         pDiscovery->SetInjectPid(0);
         pDiscovery->SetBuildNumber(GetCurrentBuildNumber());
+        pDiscovery->SetAbiSignature(0);
         memset(pDiscovery->processWhitelist, 0, sizeof(pDiscovery->processWhitelist));
         memset(pDiscovery->logsPath, 0, sizeof(pDiscovery->logsPath));
         LogInfo("[Inject] Reusing stale discovery mapping retained by another process (previous PID %u)",
@@ -465,7 +466,10 @@ int InjectProcessMain(const AppConfig& config) {
 
     // Publish discovery only after ValidateSharedMemory() can succeed. This
     // prevents consumers from observing a partially initialized frame/log ring.
+    // The signature is what consumers gate on, so it must be in place before the
+    // magic makes the mapping visible to them.
     pDiscovery->SetBuildNumber(GetCurrentBuildNumber());
+    pDiscovery->SetAbiSignature(SHARED_MEMORY_ABI_SIGNATURE);
     pDiscovery->SetInjectPid(GetCurrentProcessId());
     pDiscovery->SetMagic(DISCOVERY_MAGIC);
     LogInfo("[Inject] Shared memory initialized: version=%u size=%zu abi=0x%08X mapping=%ls", SHARED_MEMORY_VERSION,

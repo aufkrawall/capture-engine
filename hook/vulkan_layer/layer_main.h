@@ -21,6 +21,12 @@
 #include "../common/shared_defs.h"
 #include "vulkan_layer.h"
 
+// One-shot report that a CaptureEngine discovery mapping was found but its
+// layout is incompatible with this resident layer image. Nothing else can report
+// this: every normal log path is gated on a *valid* discovery mapping, so an
+// incompatible layer would otherwise sit dormant and produce no output at all.
+void LayerReportIncompatibleDiscovery(const DiscoveryInfo* discovery);
+
 // Forward declarations of IPC functions
 bool LayerIPC_Init();
 void LayerIPC_Shutdown();

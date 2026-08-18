@@ -60,17 +60,21 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 41: Added UE5 internal texture mip bias (r.MipMapLODBias)
 // Version 40: Added UE5 internal fps limiter (t.MaxFPS) and internal anisotropic
 // filtering (r.MaxAnisotropy / r.VT.MaxAnisotropy) CVar override fields
-static constexpr uint32_t SHARED_MEMORY_VERSION = 42;
+// Version 43: Added DiscoveryInfo::abiSignature so discovery compatibility is
+//             judged on the compiled layout instead of exact build identity.
+//             The rename is what keeps an already-running older inject process
+//             from handing us its smaller discovery section.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 43;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_42_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_43_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_42";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_43";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -101,11 +105,26 @@ inline int StreamlineGeneratedFramesToDLSSFGMultiplier(uint32_t generatedFrames)
     return (generatedFrames >= 1 && generatedFrames <= 3) ? static_cast<int>(generatedFrames + 1) : 0;
 }
 
-// Discovery structure - small shared memory to help hook find inject process
+// Discovery structure - small shared memory to help hook find inject process.
+//
+// The first 16 bytes are the compatibility prefix and their offsets must never
+// move: the resident Vulkan layer is the one CE component that legitimately
+// outlives its host and is later re-attached by a *different* CaptureEngine
+// build, so it has to be able to read this prefix out of a mapping published by
+// a build it knows nothing about. Everything after the prefix may only be parsed
+// once `ValidateDiscoveryInfo` has confirmed the layout matches.
 struct DiscoveryInfo {
-    std::atomic<uint32_t> injectPid{0};  // PID of inject process
-    std::atomic<uint32_t> magic{0};      // Magic number (0xCE12CAFE)
+    std::atomic<uint32_t> injectPid{0};  // Offset 0:  PID of inject process
+    std::atomic<uint32_t> magic{0};      // Offset 4:  Magic number (0xCE12CAFE)
+    // Offset 8: publishing build, diagnostics only. It must NOT gate
+    // compatibility: builds with an identical layout interoperate, and requiring
+    // equality here permanently strands a resident layer whenever CaptureEngine
+    // is rebuilt or updated while a Vulkan title is running.
     std::atomic<uint32_t> buildNumber{GetCurrentBuildNumber()};
+    // Offset 12: compiled layout fingerprint, set by the host. This is the real
+    // compatibility gate; it covers this struct's layout as well as the shared
+    // memory layout (see ComputeSharedMemoryAbiSignature).
+    std::atomic<uint32_t> abiSignature{0};
 
     // Whitelist Cache - Null-separated strings, double-null terminated
     char processWhitelist[1024]{};
@@ -132,13 +151,23 @@ struct DiscoveryInfo {
     void SetBuildNumber(uint32_t val) {
         buildNumber.store(val, std::memory_order_release);
     }
+    uint32_t GetAbiSignature() const {
+        return abiSignature.load(std::memory_order_acquire);
+    }
+    void SetAbiSignature(uint32_t val) {
+        abiSignature.store(val, std::memory_order_release);
+    }
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
 
-inline bool ValidateDiscoveryInfo(const DiscoveryInfo* discovery) {
-    return discovery && discovery->GetMagic() == DISCOVERY_MAGIC &&
-           discovery->GetBuildNumber() == GetCurrentBuildNumber();
-}
+static_assert(offsetof(DiscoveryInfo, injectPid) == 0, "DiscoveryInfo::injectPid must stay at offset 0");
+static_assert(offsetof(DiscoveryInfo, magic) == 4, "DiscoveryInfo::magic must stay at offset 4");
+static_assert(offsetof(DiscoveryInfo, buildNumber) == 8, "DiscoveryInfo::buildNumber must stay at offset 8");
+static_assert(offsetof(DiscoveryInfo, abiSignature) == 12, "DiscoveryInfo::abiSignature must stay at offset 12");
+
+// ValidateDiscoveryInfo lives in abi_signature_and_helpers.h because it needs
+// SHARED_MEMORY_ABI_SIGNATURE, which cannot be computed until SharedMemoryLayout
+// is complete.
 
 // Generate a version-isolated IPC name. An older DLL must fail to open the
 // mapping instead of interpreting a newer in-process ABI.

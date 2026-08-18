@@ -130,6 +130,9 @@ static bool IsLayerProcessWhitelistedByCurrentHost() {
         return false;
     auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
     bool whitelisted = false;
+    // A host that appeared after this layer loaded may be an incompatible build;
+    // that is exactly the late-injection wake path, so report it from here too.
+    LayerReportIncompatibleDiscovery(info);
     if (ValidateDiscoveryInfo(info)) {
         const char* entry = info->processWhitelist;
         const char* end = entry + sizeof(info->processWhitelist);

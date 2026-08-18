@@ -60,6 +60,12 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::LogBuffer));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::LogBuffer, writeIndex));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::LogBuffer, readIndex));
+    // DiscoveryInfo is read across the build boundary by a resident Vulkan layer,
+    // so its layout is part of the compatibility contract: a reader that trusts
+    // this signature then parses processWhitelist/logsPath at these offsets.
+    hash = MixSharedMemoryAbiValue(hash, sizeof(DiscoveryInfo));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, processWhitelist));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, logsPath));
     return hash;
 }
 #if defined(__clang__)
@@ -139,6 +145,26 @@ inline bool ValidateSharedMemory(const SharedMemoryLayout* shm) {
         return false;
     }
     return true;
+}
+
+// Compatibility gate for the discovery mapping.
+//
+// This is judged on the compiled layout fingerprint, never on build identity.
+// The resident Vulkan layer is deliberately allowed to outlive its host and be
+// re-attached by a later CaptureEngine process, so requiring an exact build
+// match here silently strands it: it cannot read the whitelist, cannot reach the
+// host, and cannot even resolve a logs path to say why. That is what made Vulkan
+// late injection fail with no diagnostic whenever CaptureEngine was rebuilt or
+// updated while a Vulkan title was running (session logs/20260818_231619).
+//
+// Because the signature covers DiscoveryInfo's own layout as well as the shared
+// memory layout, a reader that accepts it may safely parse the rest of the
+// struct. Any semantic change to fields this struct carries must therefore bump
+// SHARED_MEMORY_VERSION (which also renames the mappings), not rely on the build
+// number to keep builds apart.
+inline bool ValidateDiscoveryInfo(const DiscoveryInfo* discovery) {
+    return discovery && discovery->GetMagic() == DISCOVERY_MAGIC &&
+           discovery->GetAbiSignature() == SHARED_MEMORY_ABI_SIGNATURE;
 }
 
 #pragma pack(pop)

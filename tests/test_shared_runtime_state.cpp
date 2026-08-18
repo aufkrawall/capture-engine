@@ -208,32 +208,72 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_42_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_42"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_43_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_43"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_42"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_42_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_42_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_42_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_42_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_43"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_43_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_43_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_43_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_43_1234ABCD"), 0);
 }
 
-TEST(SharedDefsTest, DiscoveryRequiresExactPublishedBuildIdentity) {
+// Discovery compatibility is judged on the compiled layout, never on build
+// identity. The resident Vulkan layer legitimately outlives its host and is
+// re-attached by a later CaptureEngine build; gating on the build number
+// stranded it silently every time CaptureEngine was rebuilt or updated while a
+// Vulkan title was running (session logs/20260818_231619 - no vulkan_layer.log
+// at all, because the layer could not even resolve a logs path to complain).
+TEST(SharedDefsTest, DiscoveryAcceptsAnyBuildWithAMatchingLayoutSignature) {
     DiscoveryInfo discovery;
     EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
 
     discovery.SetInjectPid(1234);
     discovery.SetMagic(DISCOVERY_MAGIC);
+    discovery.SetAbiSignature(SHARED_MEMORY_ABI_SIGNATURE);
     EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
 
+    // A different publishing build with the same layout must still be usable.
     discovery.SetBuildNumber(GetCurrentBuildNumber() ^ 1u);
-    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+    EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
     discovery.SetBuildNumber(GetCurrentBuildNumber());
     EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
 
+    // A different layout must be rejected even at the same build number.
+    discovery.SetAbiSignature(SHARED_MEMORY_ABI_SIGNATURE ^ 1u);
+    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+    discovery.SetAbiSignature(SHARED_MEMORY_ABI_SIGNATURE);
+    EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
+
+    // An unsigned mapping (host cleared it, or a pre-signature build published
+    // it) is never trusted.
+    discovery.SetAbiSignature(0);
+    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+
+    discovery.SetAbiSignature(SHARED_MEMORY_ABI_SIGNATURE);
     discovery.SetMagic(0);
     EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+}
+
+// The layer reads this prefix out of a mapping published by a build it knows
+// nothing about, so these offsets are a cross-build contract.
+TEST(SharedDefsTest, DiscoveryCompatibilityPrefixKeepsStableOffsets) {
+    EXPECT_EQ(offsetof(DiscoveryInfo, injectPid), 0u);
+    EXPECT_EQ(offsetof(DiscoveryInfo, magic), 4u);
+    EXPECT_EQ(offsetof(DiscoveryInfo, buildNumber), 8u);
+    EXPECT_EQ(offsetof(DiscoveryInfo, abiSignature), 12u);
+}
+
+// A DiscoveryInfo layout change must move the signature, otherwise a reader that
+// trusted it would parse the whitelist and logs path at the wrong offsets.
+TEST(SharedDefsTest, AbiSignatureCoversDiscoveryLayout) {
+    uint32_t withoutDiscovery = 2166136261u;
+    withoutDiscovery = MixSharedMemoryAbiValue(withoutDiscovery, SHARED_MEMORY_VERSION);
+    EXPECT_NE(SHARED_MEMORY_ABI_SIGNATURE, withoutDiscovery);
+
+    uint32_t rolled = MixSharedMemoryAbiValue(0u, sizeof(DiscoveryInfo));
+    EXPECT_NE(rolled, MixSharedMemoryAbiValue(0u, sizeof(DiscoveryInfo) + 4u));
 }
 
 TEST(SharedDefsTest, CapturePipelinePhaseStringCoversKnownAndUnknownValues) {
