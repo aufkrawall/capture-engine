@@ -34,7 +34,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, stable fail-closed monitor selection, best-effort fullscreen-focus WGC/DXGI blackout, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-08-09.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, stable fail-closed monitor selection, best-effort fullscreen-focus WGC/DXGI blackout, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, the single target-resolved shared-memory config publication that the runtime overlay-visibility toggle rides on, validation rules, and maintenance invariants. Last verified 2026-08-18.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts including secondary DX12 renderer synchronization, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
 - `handoff-dx12-32bit-crash.md`

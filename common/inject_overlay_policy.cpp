@@ -28,3 +28,35 @@ bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorC
 bool ShouldSuppressPseudoOverlayForInjectOverlayHandoff(bool injectOverlayPending, bool injectOverlayActive) {
     return injectOverlayPending || injectOverlayActive;
 }
+
+bool ResolveOverlayVisibility(const OverlayVisibilityOverride& runtimeOverride, bool configuredShowOverlay) {
+    return runtimeOverride.active ? runtimeOverride.showOverlay : configuredShowOverlay;
+}
+
+OverlayVisibilityOverride ToggleOverlayVisibility(const OverlayVisibilityOverride& runtimeOverride,
+                                                  bool configuredShowOverlay) {
+    OverlayVisibilityOverride toggled;
+    toggled.active = true;
+    toggled.showOverlay = !ResolveOverlayVisibility(runtimeOverride, configuredShowOverlay);
+    return toggled;
+}
+
+std::string ResolveActiveTargetProcessName(const std::string& lastPublishedTargetProcessName,
+                                           const std::string& hookSourceProcessName) {
+    return lastPublishedTargetProcessName.empty() ? hookSourceProcessName : lastPublishedTargetProcessName;
+}
+
+AppConfig ResolveTargetConfig(const std::string& configPath, const AppConfig& baseConfig,
+                              const std::string& targetProcessName) {
+    AppConfig resolved = baseConfig;
+    // An empty target name makes LoadConfig fall back to this process' own image
+    // name, which would resolve a profile that has nothing to do with any target.
+    if (!targetProcessName.empty()) {
+        LoadConfig(configPath, resolved, targetProcessName);
+    }
+    return resolved;
+}
+
+void ApplyOverlayVisibility(const OverlayVisibilityOverride& runtimeOverride, AppConfig& config) {
+    config.overlay.showOverlay = ResolveOverlayVisibility(runtimeOverride, config.overlay.showOverlay);
+}

@@ -7,7 +7,9 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <new>
+#include <string>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/inject_overlay_policy.h"
@@ -23,6 +25,32 @@
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_Running{true};
+
+// Everything the inject process publishes into shared memory goes through the
+// helpers below, under this state's mutex. Two reasons it has to be serialized:
+// the overlay-config seqlock tolerates exactly one writer, and delayed-injection
+// worker threads publish for freshly injected targets while the main loop is
+// servicing IPC commands and hook-source changes.
+struct PublicationState {
+    std::mutex mutex;
+    // Config path and loaded base config the publications derive from. Held here
+    // so worker-thread publications never read the main loop's own copies.
+    std::string configPath;
+    AppConfig baseConfig;
+    // Target whose [Profile.*] section the published config must resolve
+    // against. Empty means no injected target has been identified yet.
+    std::string targetProcess;
+    // Runtime overlay visibility from the toggle hotkey. Kept beside the config
+    // instead of written into it, so republishing never has to reconstruct it.
+    OverlayVisibilityOverride overlayVisibility;
+};
+
+// Constructed on first use: the AppConfig defaults allocate, which must not run
+// during static initialization.
+static PublicationState& Publication() {
+    static PublicationState state;
+    return state;
+}
 
 static const char* InjectOverlayRuntimeFlagName(CaptureRuntimeFlags flag) {
     switch (flag) {
@@ -68,6 +96,13 @@ static bool IsProcessAlive(uint32_t processId) {
 static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory) {
     if (!sharedMemory)
         return;
+    {
+        // The target died, so its profile must stop deciding what later
+        // publications resolve against.
+        PublicationState& publication = Publication();
+        std::lock_guard<std::mutex> lock(publication.mutex);
+        publication.targetProcess.clear();
+    }
     sharedMemory->SetSourcePid(0);
     sharedMemory->SetLuidSourcePid(0);
     sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
@@ -103,24 +138,68 @@ std::string GetProcessNameFromPID(DWORD pid) {
     return identity.imageName;
 }
 
-static AppConfig ResolveActiveTargetConfig(const std::string& configPath, SharedMemoryLayout* pSharedMem,
-                                           const AppConfig& baseConfig) {
-    AppConfig activeConfig = baseConfig;
-    if (!pSharedMem) {
-        return activeConfig;
+// Records the config file as the state every later publication derives from.
+// The overlay toggle deliberately does not come through here: it is a runtime
+// override, and a reload means the file is the declared state again.
+static void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig) {
+    PublicationState& publication = Publication();
+    std::lock_guard<std::mutex> lock(publication.mutex);
+    publication.configPath = configPath;
+    publication.baseConfig = baseConfig;
+    publication.overlayVisibility = {};
+}
+
+// The active target's config as the file declares it, without the runtime
+// overlay override. Resolving against that target's profile is the whole point:
+// publishing a config that skipped it strips the target's graphics, DLSS and UE5
+// overrides out of shared memory, and the injected hook then restores its
+// installed CVar shadows as "configuration disabled" while the game runs on.
+static AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::string& targetProcessOut) {
+    std::string hookSourceProcess;
+    if (sharedMemory) {
+        const uint32_t sourcePid = sharedMemory->GetSourcePid();
+        if (sourcePid != 0) {
+            hookSourceProcess = GetProcessNameFromPID(sourcePid);
+        }
     }
 
-    const uint32_t sourcePid = pSharedMem->GetSourcePid();
-    if (sourcePid == 0) {
-        return activeConfig;
-    }
+    const PublicationState& publication = Publication();
+    targetProcessOut = ResolveActiveTargetProcessName(publication.targetProcess, hookSourceProcess);
+    return ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
+}
 
-    const std::string processName = GetProcessNameFromPID(sourcePid);
-    if (!processName.empty()) {
-        LoadConfig(configPath, activeConfig, processName);
-    }
+static void PublishConfigLocked(SharedMemoryLayout* sharedMemory, const AppConfig& resolved,
+                                const std::string& targetProcess, const char* reason) {
+    LogDebug("[Inject] Publishing config: target=%s overlayOverride=%d overlayVisible=%d source=%s",
+             targetProcess.empty() ? "<none>" : targetProcess.c_str(),
+             Publication().overlayVisibility.active ? 1 : 0, resolved.overlay.showOverlay ? 1 : 0,
+             reason ? reason : "unknown");
+    UpdateSharedMemoryFromConfig(sharedMemory, resolved);
+}
 
-    return activeConfig;
+static void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* reason) {
+    std::string targetProcess;
+    AppConfig resolved = ResolveActiveConfigLocked(sharedMemory, targetProcess);
+    ApplyOverlayVisibility(Publication().overlayVisibility, resolved);
+    PublishConfigLocked(sharedMemory, resolved, targetProcess, reason);
+}
+
+static void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {
+    std::lock_guard<std::mutex> lock(Publication().mutex);
+    PublishResolvedConfigLocked(sharedMemory, reason);
+}
+
+// Publication for a target the caller already identified. Recording the name is
+// what keeps a later hotkey toggle or config reload resolving the same profile,
+// including in the window before that target's hook publishes its source PID.
+static void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
+                                           const char* reason) {
+    PublicationState& publication = Publication();
+    std::lock_guard<std::mutex> lock(publication.mutex);
+    if (!targetProcessName.empty()) {
+        publication.targetProcess = targetProcessName;
+    }
+    PublishResolvedConfigLocked(sharedMemory, reason);
 }
 
 static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {
@@ -353,13 +432,10 @@ int InjectProcessMain(const AppConfig& config) {
     pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(currentConfig.fpsLimiter.generalLimiterMode));
     pSharedMem->fpsLimiter.SetCaptureFps(currentConfig.video.fps);
 
-    // Copy overlay config (seqlock for consistency with hook readers)
-    pSharedMem->BeginWriteOverlayConfig();
-    pSharedMem->overlayConfig = currentConfig.overlay;
-    pSharedMem->EndWriteOverlayConfig();
-
-    // Copy graphics overrides
-    UpdateSharedMemoryFromConfig(pSharedMem, currentConfig);
+    // Copy graphics overrides and the overlay config (the publication helper
+    // owns the overlay-config seqlock write, so there is one writer for it).
+    SetPublicationBaseConfig(configPath, currentConfig);
+    PublishResolvedConfig(pSharedMem, "startup");
 
     // Create FPS limiter events (named for cross-process access)
     wchar_t releaseEventName[64];
@@ -420,12 +496,8 @@ int InjectProcessMain(const AppConfig& config) {
             SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
                                         "configureInjector:onInject");
 
-            // Load fresh config with process-specific overrides
-            AppConfig targetConfig;
-            LoadConfig(configPath, targetConfig, processName);
-
-            // Update Shared Memory with new values
-            UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
+            // Update shared memory with this target's profile applied
+            PublishResolvedConfigForTarget(pSharedMem, processName, "injector:onInject");
         });
     };
 
@@ -512,10 +584,30 @@ int InjectProcessMain(const AppConfig& config) {
                         // Runtime overlay visibility override. Only this process
                         // writes overlayConfig, so the seqlock stays single-writer;
                         // the controller forwards the hotkey intent over IPC.
-                        currentConfig.overlay.showOverlay = !currentConfig.overlay.showOverlay;
-                        UpdateSharedMemoryFromConfig(pSharedMem, currentConfig);
+                        //
+                        // The toggle arms an override next to the config instead
+                        // of editing the config, and republishes the active
+                        // target's resolved config. Flipping the loaded base
+                        // config and republishing that used to strip the running
+                        // target's profile, so one hotkey press dropped its
+                        // graphics, DLSS and UE5 overrides mid-session.
+                        bool overlayVisible = false;
+                        {
+                            PublicationState& publication = Publication();
+                            std::lock_guard<std::mutex> lock(publication.mutex);
+                            std::string targetProcess;
+                            AppConfig resolved = ResolveActiveConfigLocked(pSharedMem, targetProcess);
+                            // Flip what the target actually shows, so a profile
+                            // that overrides [Overlay] enabled cannot turn the
+                            // first press into a no-op.
+                            publication.overlayVisibility = ToggleOverlayVisibility(publication.overlayVisibility,
+                                                                                    resolved.overlay.showOverlay);
+                            overlayVisible = publication.overlayVisibility.showOverlay;
+                            ApplyOverlayVisibility(publication.overlayVisibility, resolved);
+                            PublishConfigLocked(pSharedMem, resolved, targetProcess, "hotkey:toggle-overlay");
+                        }
                         LogInfo("[Inject] Overlay %s via controller hotkey",
-                                currentConfig.overlay.showOverlay ? "enabled" : "disabled");
+                                overlayVisible ? "enabled" : "disabled");
                         ipc.SendResponse(ProcessResponse::Ack);
                         break;
                     }
@@ -535,8 +627,8 @@ int InjectProcessMain(const AppConfig& config) {
                             PopulateWhitelistCache(pDiscovery, currentConfig);
                         }
 
-                        AppConfig activeConfig = ResolveActiveTargetConfig(configPath, pSharedMem, currentConfig);
-                        UpdateSharedMemoryFromConfig(pSharedMem, activeConfig);
+                        SetPublicationBaseConfig(configPath, currentConfig);
+                        PublishResolvedConfig(pSharedMem, "command:reload-config");
 
                         if (injector) {
                             injector->UpdateConfig(injectorState.config);
@@ -605,17 +697,13 @@ int InjectProcessMain(const AppConfig& config) {
                     "overrides...",
                     procName.c_str(), currentSourcePid);
 
-                // Reload config for this process
-                AppConfig targetConfig;
-                LoadConfig(configPath, targetConfig, procName);
-
                 // The hook is live now, so hide the controller-side layered pseudo
                 // overlay immediately before the regular injector state poll runs.
                 SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
                                             "sourcePid:hook-detected");
 
-                // Update Shared Memory
-                UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
+                // Update shared memory with this process' profile applied
+                PublishResolvedConfigForTarget(pSharedMem, procName, "sourcePid:hook-detected");
             }
         }
 

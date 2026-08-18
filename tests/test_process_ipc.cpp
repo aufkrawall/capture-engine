@@ -312,13 +312,31 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     EXPECT_NE(controllerSource.find("SendCommand(ProcessCommand::ToggleOverlay, nullptr, &response)"),
               std::string::npos);
 
-    // The inject process flips the shared-memory overlay flag and acknowledges.
+    // The inject process arms a runtime visibility override, republishes the
+    // active target's resolved config and acknowledges. Flipping the loaded base
+    // config and publishing that instead stripped the running target's profile,
+    // so a single overlay toggle dropped its graphics, DLSS and UE5 overrides.
     const size_t toggleCase = injectSource.find("case ProcessCommand::ToggleOverlay:");
     ASSERT_NE(toggleCase, std::string::npos);
-    EXPECT_NE(injectSource.find("currentConfig.overlay.showOverlay = !currentConfig.overlay.showOverlay",
-                                toggleCase),
-              std::string::npos);
-    EXPECT_NE(injectSource.find("ProcessResponse::Ack", toggleCase), std::string::npos);
+    const size_t toggleEnd = injectSource.find("case ProcessCommand::ReloadConfig:", toggleCase);
+    ASSERT_NE(toggleEnd, std::string::npos);
+    const std::string toggleBlock = injectSource.substr(toggleCase, toggleEnd - toggleCase);
+    EXPECT_NE(toggleBlock.find("ResolveActiveConfigLocked(pSharedMem, targetProcess)"), std::string::npos);
+    EXPECT_NE(toggleBlock.find("ToggleOverlayVisibility(publication.overlayVisibility"), std::string::npos);
+    EXPECT_NE(toggleBlock.find("ApplyOverlayVisibility(publication.overlayVisibility, resolved)"), std::string::npos);
+    EXPECT_NE(toggleBlock.find("PublishConfigLocked(pSharedMem, resolved"), std::string::npos);
+    EXPECT_EQ(toggleBlock.find("currentConfig"), std::string::npos)
+        << "publishing the base config here drops the active target's profile overrides";
+    EXPECT_NE(toggleBlock.find("ProcessResponse::Ack"), std::string::npos);
+
+    // One publication path for the whole process. A second direct call is
+    // exactly how an unresolved base config reached shared memory.
+    size_t publications = 0;
+    for (size_t at = injectSource.find("UpdateSharedMemoryFromConfig("); at != std::string::npos;
+         at = injectSource.find("UpdateSharedMemoryFromConfig(", at + 1)) {
+        ++publications;
+    }
+    EXPECT_EQ(publications, 1u) << "every shared-memory config publication must resolve the active target first";
 
     // The config template exposes the renamed hotkey and no longer carries the
     // dead toggle_fps key.
