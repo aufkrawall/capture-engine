@@ -5,6 +5,7 @@
 #include <iterator>
 #include <string>
 
+#include "../common/crash_dump_policy.h"
 #include "../common/crash_handler.h"
 #include "../common/crash_handler_internal.h"
 #include "../hook/common/freeze_watchdog.h"
@@ -351,4 +352,74 @@ TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentati
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, true, false, false));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false, true));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(true, false, false, false));
+}
+
+// Strange Brigade Vulkan 20260818_190149: the watchdog was armed on the DX12
+// hook-install worker thread, the game presented through the CE Vulkan layer,
+// and the heartbeat therefore never moved. Thirty seconds later it declared
+// "Render thread frozen" while the game was still rendering at 144 FPS.
+TEST(FreezeWatchdogPolicyTest, NeverAssertsAFreezeBeforeAnyPresentWasObserved) {
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(false, false, false, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(true, false, false, false));
+}
+
+TEST(FreezeWatchdogPolicyTest, PresentingEvidenceWithoutHeartbeatStillAllowsFreezeAssertions) {
+    // A Present stuck inside CE's own hook, a removed device, and an FG runtime
+    // that owns presentation each prove a D3D render loop exists, so a hang
+    // that starts before the first heartbeat still has to be dumpable.
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(false, true, false, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(false, false, true, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(false, false, false, true));
+}
+
+TEST(FreezeWatchdogPolicyTest, CrossApiPresentLivenessSuppressesOnlyWhileFresh) {
+    constexpr uint64_t kMaxAgeMs = 30000;
+    EXPECT_TRUE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 100000, kMaxAgeMs));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 130000, kMaxAgeMs));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 130001, kMaxAgeMs));
+    // Never published (dormant or absent layer) is not liveness evidence, and a
+    // tick from the future must not be read as an enormous age either.
+    EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(0, 130000, kMaxAgeMs));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 99999, kMaxAgeMs));
+}
+
+// The Vulkan layer is a separate DLL: when it detaches or drops its IPC
+// connection it just stops publishing presents, which looks exactly like a
+// frozen Vulkan render loop. Its evidence therefore has to expire with it,
+// otherwise a dormant layer recreates the very false positive this gate exists
+// to prevent. A D3D present path proved itself from inside this module and
+// cannot vanish that way.
+TEST(FreezeWatchdogPolicyTest, VulkanLayerEvidenceExpiresWithTheLayer) {
+    EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, true, true));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, true, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(true, true, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(true, false, false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, false, true));
+}
+
+TEST(FreezeWatchdogPolicyTest, HeartbeatsArmFreezeAssertionsAndAdoptTheRenderThread) {
+    FreezeWatchdog watchdog;
+    EXPECT_FALSE(watchdog.HasObservedRenderLoop());
+    EXPECT_EQ(watchdog.GetMonitoredThreadId(), 0u);
+
+    watchdog.HeartbeatFromHelperThread();
+    EXPECT_TRUE(watchdog.HasObservedRenderLoop());
+    // Helper heartbeats prove liveness but must not claim to be the render thread.
+    EXPECT_EQ(watchdog.GetMonitoredThreadId(), 0u);
+
+    watchdog.Heartbeat();
+    EXPECT_EQ(watchdog.GetMonitoredThreadId(), GetCurrentThreadId());
+}
+
+// The freeze dump used to be written in-process with every thread suspended.
+// Under a foreign overlay's loader/version hooks that walk takes ~60 s
+// (20260817_052857), so the dump froze the game far longer than the freeze it
+// claimed to document — including when the freeze claim itself was wrong.
+TEST(FreezeWatchdogPolicyTest, FreezeDumpPrefersTheExternalHelperUnderAForeignOverlay) {
+    EXPECT_TRUE(ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(true, true));
+    EXPECT_FALSE(ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(false, true));
+    EXPECT_FALSE(ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(true, false));
+    // Helper unavailable plus foreign overlay: no dump beats a hung game thread.
+    EXPECT_FALSE(ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
+    EXPECT_TRUE(ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(false));
 }

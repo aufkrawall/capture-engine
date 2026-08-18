@@ -50,6 +50,14 @@ struct CrashDumpEnvironmentHooks {
 };
 void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks);
 
+// Registered CrashDumpEnvironmentHooks accessors, for every dump producer that
+// has to make the same in-process-versus-helper decision (the crash worker and
+// the freeze watchdog). Each answers conservatively (false) when the hook
+// module registered nothing.
+bool HasExternalCrashDumpCapture();
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint);
+bool IsForeignOverlayLoadedForCrashDump();
+
 // Writes an additional CE-owned dump for externally handled crashes when we still
 // have a live process handle and want a session-local artifact with CE's naming.
 bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,

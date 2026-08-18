@@ -35,11 +35,8 @@ std::string& CrashDumpDirectoryStorage();
 // handler; returns EXCEPTION_CONTINUE_SEARCH when nobody claims it.
 LONG DispatchCrashExecutionFaultHandler(EXCEPTION_POINTERS* pExceptionPointers);
 
-// Registered CrashDumpEnvironmentHooks accessors. Each answers conservatively
-// (false) when the hook module registered nothing.
-bool HasExternalCrashDumpCapture();
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint);
-bool IsForeignOverlayLoadedForCrashDump();
+// The registered CrashDumpEnvironmentHooks accessors now live in the public
+// crash_handler.h, because the freeze watchdog needs the same decision.
 
 // Renames a finished .inprogress dump to its final name, falling back to a copy.
 // Sets *preservedTempDump when the temporary file had to be left in place.

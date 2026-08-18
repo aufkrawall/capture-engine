@@ -106,7 +106,12 @@ void DX12Hook::Init() {
     // Start freeze detection watchdog with dynamic timeout based on game engine
     // The watchdog auto-detects UE5, DLSS FG and uses extended timeouts
     double timeout = g_RenderWatchdog.GetRecommendedTimeout();
-    g_RenderWatchdog.SetMonitoredThread(GetCurrentThreadId());
+    // Deliberately do NOT claim this thread as the monitored render thread:
+    // Init() runs on the hook-install worker, which never presents. The real
+    // present thread adopts itself on its first heartbeat (and DX12's source
+    // Present re-publishes it), so until then the watchdog has no render thread
+    // and must not pretend otherwise — logs and dump targets used to name this
+    // worker thread instead.
     g_RenderWatchdog.SetPreferredThreadProvider(&DX12_GetGamePresentThreadId);
     g_RenderWatchdog.Start(timeout);
     HookLog("DX12: Freeze watchdog started (%.0f second timeout)", timeout);

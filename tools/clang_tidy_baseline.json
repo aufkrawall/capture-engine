@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 613,
+    "entries": 614,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -305,6 +305,7 @@
       "hook/common/fg_session_state_log.cpp",
       "hook/common/fg_session_state_names.cpp",
       "hook/common/freeze_watchdog.cpp",
+      "hook/common/freeze_watchdog_dump.cpp",
       "hook/common/hook_common.cpp",
       "hook/common/input_manager.cpp",
       "hook/common/ipc_client.cpp",

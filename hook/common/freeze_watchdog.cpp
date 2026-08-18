@@ -1,45 +1,19 @@
+// Freeze detection for FreezeWatchdog: heartbeat bookkeeping, the liveness
+// evidence a freeze claim needs, engine-dependent timeouts, and the watchdog
+// thread. Writing the dump itself lives in freeze_watchdog_dump.cpp.
+
 #include "freeze_watchdog.h"
 #include <tlhelp32.h>
 #include <algorithm>
 #include <chrono>
-#include <cstring>
-#include <ctime>
 #include <filesystem>
-#include <iomanip>
-#include <iterator>
-#include <sstream>
-#include "crash_dump_policy.h"
-#include "crash_handler.h"
+#include <string>
 #include "../../common/secure_dll_loading.h"
 #include "dxgi_shared.h"
 #include "fg_detection.h"
 #include "hook_common.h"
 
 FreezeWatchdog g_RenderWatchdog;
-
-// Defined in dx12_hook.cpp. Emits DRED breadcrumbs + page-fault info if the D3D12
-// device is removed/hung, so a device-hung freeze dump is accompanied by the exact
-// faulting GPU op. No-op for non-DX12 or healthy-device freezes.
-extern void DX12_DumpDredIfDeviceRemoved(const char* reason);
-
-// Defined in dx12_hook.cpp. Reads CE's overlay GPU breadcrumb markers and reports the last GPU op CE's
-// overlay command list reached — works even for a pure hang (no device removal). Pinpoints whether a
-// native-FSR ffxQuery wedge is CE's GPU work stalling the queue or a fence/CPU deadlock after CE's list.
-extern void DX12_LogOverlayGpuBreadcrumbs(const char* reason);
-
-static std::string GetLogsDirectory() {
-    std::string cached = GetCrashDumpDirectory();
-    if (!cached.empty())
-        return cached;
-
-    char pathBuffer[MAX_PATH] = {};
-    if (BuildLogFilePathForModuleAddress((const void*)&GetLogsDirectory, "freeze_watchdog.tmp", pathBuffer,
-                                         sizeof(pathBuffer))) {
-        return std::filesystem::path(pathBuffer).parent_path().string();
-    }
-
-    return ".\\logs";
-}
 
 static uint64_t GetCurrentMicros() {
     auto now = std::chrono::steady_clock::now();
@@ -211,6 +185,7 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     startupTime_.store(now);
     lastDumpRequestMicros_.store(0, std::memory_order_release);
     dumpCapturedForCurrentRun_.store(false, std::memory_order_release);
+    loggedMissingRenderLoop_.store(false, std::memory_order_release);
 
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n", finalTimeout,
@@ -236,7 +211,28 @@ void FreezeWatchdog::Stop() {
 
 void FreezeWatchdog::Heartbeat() {
     const DWORD heartbeatTid = GetCurrentThreadId();
-    const DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    if (monitoredTid == 0) {
+        // Heartbeat() is the "I am presenting" entry point, so its first caller
+        // establishes the thread a freeze dump has to capture — the watchdog is
+        // otherwise armed from a hook-install worker thread that never presents,
+        // which named the wrong thread in every log line and dump target.
+        // Adopt only while no frame-generation runtime owns presentation:
+        // Streamline and FFX both present from their own workers, and one of
+        // those must never be mistaken for the game's render thread. DX12's
+        // provenance-checked source Present keeps republishing the real one.
+        const bool fgRuntimePresenting =
+            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire) ||
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        DWORD expected = 0;
+        if (!fgRuntimePresenting && monitoredThreadId_.compare_exchange_strong(expected, heartbeatTid,
+                                                                              std::memory_order_acq_rel,
+                                                                              std::memory_order_acquire)) {
+            HookLogImportant("FreezeWatchdog: Adopted render thread tid=%lu from the first present heartbeat",
+                             heartbeatTid);
+        }
+        monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    }
     if (monitoredTid != 0 && monitoredTid != heartbeatTid) {
         static std::atomic<int> s_threadSwitchLogCount{0};
         if (s_threadSwitchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
@@ -244,10 +240,83 @@ void FreezeWatchdog::Heartbeat() {
                     monitoredTid);
         }
     }
+    NoteRenderLoopObserved(RenderLoopSource::D3DPresent);
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
 
 void FreezeWatchdog::HeartbeatFromHelperThread() {
+    NoteRenderLoopObserved(RenderLoopSource::D3DPresent);
+    lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
+}
+
+void FreezeWatchdog::NoteRenderLoopObserved(RenderLoopSource source) {
+    std::atomic<bool>& sourceObserved =
+        source == RenderLoopSource::VulkanLayerPresent ? vulkanLayerRenderLoopObserved_ : d3dRenderLoopObserved_;
+    sourceObserved.store(true, std::memory_order_release);
+    if (!renderLoopObserved_.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant("FreezeWatchdog: Render loop observed via %s - freeze assertions armed (monitoredTid=%lu)",
+                         source == RenderLoopSource::VulkanLayerPresent ? "the Vulkan layer" : "a D3D present",
+                         monitoredThreadId_.load(std::memory_order_acquire));
+    }
+}
+
+bool FreezeWatchdog::HasLiveRenderLoopEvidence() const {
+    bool vulkanLayerStillActive = false;
+    if (vulkanLayerRenderLoopObserved_.load(std::memory_order_acquire)) {
+        const SharedMemoryLayout* sharedMemory = GetHookSharedMemory();
+        vulkanLayerStillActive =
+            sharedMemory && sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+    }
+    return ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(
+        d3dRenderLoopObserved_.load(std::memory_order_acquire),
+        vulkanLayerRenderLoopObserved_.load(std::memory_order_acquire), vulkanLayerStillActive);
+}
+
+// The CE Vulkan layer presents from a separate DLL and cannot call Heartbeat(),
+// so it publishes every present into shared memory instead. Folding that into
+// the ordinary heartbeat keeps one liveness currency: elapsed time, the freeze
+// gate and the dump's target thread then all mean the same thing whether the
+// game presents through D3D or through the layer.
+//
+// The old code instead special-cased "vulkan-1.dll loaded && d3d12.dll not
+// loaded" inside IsFrozen(). A Vulkan game defeats that the moment anything
+// pulls d3d12.dll into the process — CE's own DX12 interop does — which is how
+// Strange Brigade `20260818_190149` got a freeze dump at 144 FPS.
+void FreezeWatchdog::PollCrossApiPresentLiveness() {
+    const SharedMemoryLayout* sharedMemory = GetHookSharedMemory();
+    if (!sharedMemory) {
+        return;
+    }
+    if (!sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const uint64_t lastPresentTick = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+    // Same 2 s recency window the hook-install Vulkan-ownership check uses, and
+    // four watchdog polls wide, so the heartbeat tracks the layer's real present
+    // rate instead of the poll rate. A stale tick deliberately produces no
+    // heartbeat: that is a Vulkan render loop that stopped, which is the one
+    // case where this watchdog should still be allowed to fire.
+    if (!ce::freeze_watchdog_policy::IsObservedPresentRecent(lastPresentTick, GetTickCount64(),
+                                                             kCrossApiPresentMaxAgeMs)) {
+        return;
+    }
+
+    // Claim the dump's target thread only while no D3D present path owns it.
+    // DXVK titles present through both the layer and CE's DXGI wrapper, and the
+    // two run on different threads; whichever proves itself first keeps the
+    // claim instead of the two overwriting each other every poll. Refreshing a
+    // claim this poll already owns still tracks Vulkan swapchain recreation.
+    const DWORD presentThreadId = sharedMemory->runtimeState.vulkanPresentThreadId.load(std::memory_order_acquire);
+    const DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    if (presentThreadId != 0 && presentThreadId != monitoredTid &&
+        (monitoredTid == 0 || monitoredThreadFromVulkanLayer_.load(std::memory_order_acquire))) {
+        monitoredThreadId_.store(presentThreadId, std::memory_order_release);
+        monitoredThreadFromVulkanLayer_.store(true, std::memory_order_release);
+        HookLogImportant("FreezeWatchdog: Monitoring the Vulkan layer's present thread tid=%lu (was %lu)",
+                         presentThreadId, monitoredTid);
+    }
+    NoteRenderLoopObserved(RenderLoopSource::VulkanLayerPresent);
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
 
@@ -267,13 +336,6 @@ bool FreezeWatchdog::IsFrozen() const {
         return false;
     }
 
-    // Vulkan / DXVK paths can pause or bypass the DXGI/D3D heartbeat patterns
-    // used by this watchdog. Skip freeze assertions in those cases — BUT only
-    // when D3D12 is NOT also loaded (UE5 loads vulkan-1.dll even for DX12).
-    if ((GetModuleHandleW(L"vulkan-1.dll") || GetModuleHandleW(L"winevulkan.dll")) && !GetModuleHandleW(L"d3d12.dll")) {
-        return false;
-    }
-
     bool inPresentCall = DXGIShared::g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) > 0;
 
     // Alt+Tab/minimized games can legitimately stop presenting for a while.
@@ -284,6 +346,23 @@ bool FreezeWatchdog::IsFrozen() const {
     const bool processForeground = IsProcessInForeground(processId_);
     const bool forceMonitor = forceMonitor_.load(std::memory_order_relaxed);
     const bool runtimePresentationMonitor = runtimePresentationMonitor_.load(std::memory_order_relaxed);
+
+    // Never claim "render thread frozen" without ever having seen that render
+    // thread. The watchdog is armed before any present is observed, so without
+    // this gate the elapsed timer measures the wrong thing entirely for every
+    // game whose presents do not pass through CE's D3D hooks.
+    if (!ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(HasLiveRenderLoopEvidence(), inPresentCall,
+                                                                    forceMonitor, runtimePresentationMonitor)) {
+        if (elapsed > timeoutSeconds_.load() && !loggedMissingRenderLoop_.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "FreezeWatchdog: Not asserting a freeze after %.1fs — CE has never observed a present on this "
+                "process's render loop (monitoredTid=%lu). The game most likely renders through an API CE does not "
+                "present for; a hang here would be indistinguishable from a healthy frame.",
+                elapsed, monitoredThreadId_.load(std::memory_order_acquire));
+        }
+        return false;
+    }
+
     if (ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(
             processForeground, forceMonitor, inPresentCall, runtimePresentationMonitor)) {
         return false;
@@ -396,57 +475,6 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
     CreateMinidumpWithThreadContext(reason, targetTid);
 }
 
-bool FreezeWatchdog::CaptureThreadContext(DWORD threadId, CONTEXT& ctx) {
-    HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, threadId);
-    if (!hThread) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to open thread %lu, error=%lu\n", threadId, GetLastError());
-        OutputDebugStringA(msg);
-        return false;
-    }
-
-    DWORD suspendResult = SuspendThread(hThread);
-    if (suspendResult == (DWORD)-1) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to suspend thread %lu\n", threadId);
-        OutputDebugStringA(msg);
-        CloseHandle(hThread);
-        return false;
-    }
-
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.ContextFlags = CONTEXT_FULL;
-
-    BOOL gotContext = GetThreadContext(hThread, &ctx);
-    ResumeThread(hThread);
-    CloseHandle(hThread);
-
-    if (!gotContext) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to get context for thread %lu\n", threadId);
-        OutputDebugStringA(msg);
-        return false;
-    }
-
-    OutputDebugStringA("[FreezeWatchdog] Successfully captured thread context\n");
-    return true;
-}
-
-void FreezeWatchdog::CreateFreezeExceptionRecord(EXCEPTION_RECORD& record, const std::string& reason) {
-    memset(&record, 0, sizeof(record));
-    record.ExceptionCode = 0xE0000001;  // Custom freeze detection code
-    record.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
-    record.ExceptionAddress = nullptr;
-
-    // Store first 14 chars of reason in exception information for debugging
-    uintptr_t reasonInfo[EXCEPTION_MAXIMUM_PARAMETERS] = {0};
-    size_t copyLen = std::min(reason.size(), sizeof(reasonInfo) - 1);
-    memcpy(reasonInfo, reason.c_str(), copyLen);
-
-    record.NumberParameters = 1;
-    record.ExceptionInformation[0] = reasonInfo[0];
-}
-
 void FreezeWatchdog::WatchdogThread() {
     const auto checkInterval = std::chrono::milliseconds(500);
     constexpr double kDialogDumpDelaySeconds = 5.0;
@@ -491,6 +519,11 @@ void FreezeWatchdog::WatchdogThread() {
             }
         }
 
+        // Present paths that cannot reach Heartbeat() themselves (the Vulkan
+        // layer DLL) publish their liveness into shared memory; fold it in
+        // before any elapsed time is derived from the heartbeat.
+        PollCrossApiPresentLiveness();
+
         uint64_t now = GetCurrentMicros();
         uint64_t lastBeat = lastHeartbeat_.load(std::memory_order_acquire);
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
@@ -530,17 +563,19 @@ void FreezeWatchdog::WatchdogThread() {
         if (now - lastLogTime > 10'000'000) {
             lastLogTime = now;
             char logMsg[256];
+            const int renderLoopObserved = renderLoopObserved_.load(std::memory_order_acquire) ? 1 : 0;
             snprintf(logMsg, sizeof(logMsg),
                      "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu, "
-                     "runtimePresentation=%d\n",
+                     "runtimePresentation=%d, renderLoopObserved=%d\n",
                      elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
-                     dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
+                     dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
+                     renderLoopObserved);
             OutputDebugStringA(logMsg);
             HookLog(
                 "FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
-                "runtimePresentation=%d",
+                "runtimePresentation=%d renderLoopObserved=%d",
                 elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId,
-                runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
+                runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0, renderLoopObserved);
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {
@@ -609,158 +644,4 @@ void FreezeWatchdog::WatchdogThread() {
     }
 
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread exiting\n");
-}
-
-void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId) {
-    OutputDebugStringA("[FreezeWatchdog] Creating minidump with thread context...\n");
-
-    if (!pMiniDumpWriteDump_) {
-        OutputDebugStringA("[FreezeWatchdog] MiniDumpWriteDump not available\n");
-        return;
-    }
-
-    std::string logsDir = GetLogsDirectory();
-    std::filesystem::path logPath(logsDir);
-    if (!std::filesystem::exists(logPath)) {
-        std::filesystem::create_directories(logPath);
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    const auto totalMilliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    const auto millisecondPart = static_cast<int>(totalMilliseconds % 1000);
-    std::tm local_tm;
-    localtime_s(&local_tm, &time_t_now);
-
-    std::stringstream fileNameStream;
-    fileNameStream << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_" << std::setw(3)
-                   << std::setfill('0') << millisecondPart << ".dmp";
-    const std::string dumpFileName = fileNameStream.str();
-    const std::filesystem::path dumpPathFs = std::filesystem::path(logsDir) / dumpFileName;
-    const std::filesystem::path tempDumpPathFs =
-        std::filesystem::path(logsDir) / ce::crash_dump_policy::BuildInProgressDumpFileName(dumpFileName.c_str());
-    std::string dumpPath = dumpPathFs.string();
-    std::string tempDumpPath = tempDumpPathFs.string();
-
-    char logMsg[512];
-    snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Dump path: %s\n", dumpPath.c_str());
-    OutputDebugStringA(logMsg);
-    HookLogImportant("FreezeWatchdog: Writing dump to %s via in-progress path %s", dumpPath.c_str(),
-                     tempDumpPath.c_str());
-
-    // If this freeze is a removed/hung D3D12 device, record DRED breadcrumbs +
-    // page-fault info into the hook log alongside the dump.
-    DX12_DumpDredIfDeviceRemoved("freeze watchdog dump");
-    // Also read CE's overlay GPU breadcrumbs (works for a pure hang too) so a native-FSR ffxQuery wedge is
-    // attributable to CE's overlay GPU op vs a fence/CPU deadlock after CE's list completed.
-    DX12_LogOverlayGpuBreadcrumbs("freeze watchdog dump");
-
-    DeleteFileA(tempDumpPath.c_str());
-    HANDLE hFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-
-    if (hFile == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Failed to create dump file, error=%lu\n", err);
-        OutputDebugStringA(logMsg);
-    }
-
-    if (hFile == INVALID_HANDLE_VALUE) {
-        return;
-    }
-
-    HANDLE hProcess = GetCurrentProcess();
-    DWORD processId = GetCurrentProcessId();
-
-    // Try to capture context from monitored thread
-    CONTEXT threadCtx = {};
-    EXCEPTION_RECORD exceptionRecord = {};
-    EXCEPTION_POINTERS exceptionPointers = {&exceptionRecord, &threadCtx};
-
-    DWORD monitoredTid = preferredThreadId ? preferredThreadId : monitoredThreadId_.load();
-    HookLogImportant("FreezeWatchdog: Capturing dump for reason '%s' (targetTid=%lu)", reason.c_str(), monitoredTid);
-    bool hasContext = false;
-
-    if (monitoredTid != 0) {
-        hasContext = CaptureThreadContext(monitoredTid, threadCtx);
-        if (hasContext) {
-            CreateFreezeExceptionRecord(exceptionRecord, reason);
-        }
-    }
-
-    MINIDUMP_EXCEPTION_INFORMATION mei = {};
-    mei.ThreadId = monitoredTid ? monitoredTid : GetCurrentThreadId();
-    mei.ExceptionPointers = hasContext ? &exceptionPointers : nullptr;
-    mei.ClientPointers = FALSE;
-
-    struct DumpAttempt {
-        MINIDUMP_TYPE type;
-        const char* label;
-    };
-
-    const DumpAttempt attempts[] = {
-        {ce::crash_dump_policy::kRichFreezeDumpType, "rich-primary"},
-        {ce::crash_dump_policy::kCompatibilityFreezeDumpType, "compat-primary"},
-        {ce::crash_dump_policy::kMinimalDumpType, "fallback-normal"},
-    };
-
-    BOOL success = FALSE;
-    DWORD err = ERROR_SUCCESS;
-    for (size_t i = 0; i < std::size(attempts); ++i) {
-        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, std::size(attempts), attempts[i].label);
-        success = pMiniDumpWriteDump_(hProcess, processId, hFile, attempts[i].type,
-                                      mei.ExceptionPointers ? &mei : nullptr, nullptr, nullptr);
-        if (success) {
-            break;
-        }
-
-        err = GetLastError();
-        HookLogImportant("FreezeWatchdog: Dump attempt failed (%s, error=%lu)", attempts[i].label, err);
-        if (i + 1 < std::size(attempts)) {
-            SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
-            SetEndOfFile(hFile);
-        }
-    }
-
-    CloseHandle(hFile);
-
-    LARGE_INTEGER dumpSize = {};
-    const bool hasNonEmptyDump =
-        success && GetFileAttributesA(tempDumpPath.c_str()) != INVALID_FILE_ATTRIBUTES && [&]() {
-            HANDLE sizeFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                          FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (sizeFile == INVALID_HANDLE_VALUE) {
-                return false;
-            }
-            const bool ok = GetFileSizeEx(sizeFile, &dumpSize) && dumpSize.QuadPart > 0;
-            CloseHandle(sizeFile);
-            return ok;
-        }();
-
-    if (hasNonEmptyDump && MoveFileExA(tempDumpPath.c_str(), dumpPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] SUCCESS: Dump created: %s\n", dumpPath.c_str());
-        OutputDebugStringA(logMsg);
-        HookLogImportant("FreezeWatchdog: Dump created at %s", dumpPath.c_str());
-    } else {
-        if (success && hasNonEmptyDump) {
-            err = GetLastError();
-            if (CopyFileA(tempDumpPath.c_str(), dumpPath.c_str(), FALSE)) {
-                DeleteFileA(tempDumpPath.c_str());
-                snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] SUCCESS: Dump copied after move failure: %s\n",
-                         dumpPath.c_str());
-                OutputDebugStringA(logMsg);
-                HookLogImportant("FreezeWatchdog: Dump created at %s via CopyFile fallback", dumpPath.c_str());
-                return;
-            }
-            HookLogImportant(
-                "FreezeWatchdog: Failed to promote non-empty dump to %s (moveErr=%lu copyErr=%lu); preserving %s",
-                dumpPath.c_str(), err, GetLastError(), tempDumpPath.c_str());
-            return;
-        }
-        DeleteFileA(tempDumpPath.c_str());
-        snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
-        OutputDebugStringA(logMsg);
-        HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);
-    }
 }

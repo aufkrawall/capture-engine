@@ -1,5 +1,62 @@
 # llm-wiki Log
 
+### 2026-08-18 - The freeze dump was the freeze: Strange Brigade Vulkan
+
+Reported as "Strange Brigade Vulkan randomly froze on start (it usually works)". It is CE's bug, and the
+freeze detection was the bug - the game never froze. Session `20260818_190149` (build 0.1.6146), fixed in
+0.1.6151.
+
+- **Proof it was a false positive.** `perf_metrics_18680.csv` frame 3232 sits at `qpc_us=153871037` with
+  `qpc_delta_us=6943` (144 FPS); the watchdog's own dump line reports `nowMs=153875`. The largest inter-frame
+  gap in the entire 23.7 s session is 655 ms, at frame 3, during startup. The game was rendering normally
+  4 ms before the dump started, and what the user experienced as the freeze was the dump.
+- **Why it fired.** `DX12Hook::Init()` runs on the hook-install worker thread and armed the watchdog with
+  `SetMonitoredThread(GetCurrentThreadId())` - tid 0x1304, a thread that installs hooks and never presents.
+  The heartbeat is fed only from CE's D3D/DXGI present paths, and this game presents through the CE Vulkan
+  layer, so it never moved: `elapsed=0.7s / 10.7s / 20.7s` then `Render thread frozen for 30 seconds`, exactly
+  30.0 s after `FreezeWatchdog: Started`. The timer was measuring "CE never saw a present".
+- **Why the Vulkan escape hatch did not save it.** `IsFrozen()` bailed out for `vulkan-1.dll` loaded **and**
+  `d3d12.dll` **not** loaded. `d3d12.dll` is loaded in this process (`skipReason=d3d12.dll (DX12 game)` at
+  19:03:28) - CE's own DX12 interop pulls it in for the layer's shared fence. A module-presence guess cannot
+  answer "who renders here".
+- **Why it looks random.** `CheckAndInstallHooks` latches the renderer decision on its first evaluation and
+  `if (!s_checkedForVulkan || s_vulkanActive)` never revisits it once D3D is chosen. Whether `vulkan-1.dll` or
+  `d3d12.dll` wins that race at injection time decides whether the watchdog is ever started. The latch itself
+  is left alone: re-evaluating it is a hook-installation policy change with real overlay-regression risk, and
+  the watchdog has to be correct regardless of which branch it lands in.
+- **Fix 1 - evidence before accusation.** `ShouldAssertRenderThreadFreeze(renderLoopObserved, presentInFlight,
+  forceMonitor, runtimePresentationMonitor)`: no timeout dump until CE has actually observed the render loop.
+  Coverage for hangs that start before the first heartbeat is kept by the three no-heartbeat signals (a Present
+  stuck in CE's hook, a removed device, an FG runtime owning presentation), and the dialog detector and explicit
+  `RequestImmediateDump` sites are untouched.
+- **Fix 2 - one liveness currency.** The Vulkan layer lives in another DLL and cannot call `Heartbeat()`, so it
+  publishes `vulkanPresentTick` / `vulkanPresentThreadId`. `PollCrossApiPresentLiveness()` folds a present newer
+  than 2 s into the ordinary heartbeat on each 500 ms poll, and claims the dump's target thread only while no
+  D3D path owns it (DXVK presents through both). Elapsed time, the freeze gate and the dump target now mean the
+  same thing on either API - and a Vulkan-only title gets real freeze detection, which it never had.
+- **Fix 3 - the dump must not be the freeze.** The watchdog wrote an in-process `MiniDumpWriteDump` with every
+  thread suspended while dbghelp reads each module's version resource through the Steam overlay's hooks. The
+  crash worker already refuses that (20260817_052857: 61.6 s per `MiniDumpNormal`); the freeze path had not been
+  taught the same lesson. It now takes the external helper first via `ShouldPreferExternalCrashDumpHelper` and
+  skips the in-process fallback under a foreign overlay. The user killed the process mid-dump, which is why only
+  a 0-byte `.dmp.inprogress` survives.
+- **Fix 4 - stop naming the wrong thread.** `Init()` no longer claims the worker thread. `Heartbeat()` adopts its
+  caller as the render thread, but only while no FG runtime owns presentation, so a Streamline/FFX presenter
+  worker is never mistaken for the game's thread; DX12's provenance-checked source Present still outranks it.
+  `expectedPresentThreadId` consumers read 0 (permissive) instead of a wrong tid until then.
+- **The layer's evidence expires with the layer.** A latched "Vulkan presents were observed" flag would have
+  reintroduced the same bug from the other end: the layer is another DLL, and a detach or IPC drop stops the
+  tick in a way that is indistinguishable from a frozen Vulkan loop. `HasLiveRenderLoopEvidence` re-reads
+  `vulkanLayerActive` on every check, so only a D3D heartbeat - proved from inside the hook module - is
+  permanent.
+- Tests: `FreezeWatchdogPolicyTest.NeverAssertsAFreezeBeforeAnyPresentWasObserved`,
+  `PresentingEvidenceWithoutHeartbeatStillAllowsFreezeAssertions`, `CrossApiPresentLivenessSuppressesOnlyWhileFresh`,
+  `HeartbeatsArmFreezeAssertionsAndAdoptTheRenderThread`, `VulkanLayerEvidenceExpiresWithTheLayer`,
+  `FreezeDumpPrefersTheExternalHelperUnderAForeignOverlay`.
+- Open: no hardware run yet on either a Vulkan title (the new detection path) or a DX12 title (that freeze
+  detection still fires normally). The watchdog is still only *started* from `DX12Hook::Init()`, so a Vulkan game
+  that wins the renderer-latch race has no watchdog at all - inconsistent, not harmful, and untouched here.
+
 ### 2026-08-18 - Screenshots on the present thread: a hard freeze, then the overlay in an overlay-free shot
 
 Two defects on the same path, both in Gothic 1 Remake under DLSS MSFG 4x. Fixed in 0.1.6150.
