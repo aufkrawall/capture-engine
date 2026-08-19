@@ -52,6 +52,21 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
         delete it->second;
         m_Devices.erase(it);
     }
+    // A VkQueue dies with its device and its handle value can come back on the
+    // next one. Leaving the queue maps populated would let a stale entry answer
+    // a lookup for a queue CE never saw created.
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - erase-by-value, order-independent
+    for (auto queueIt = m_Queues.begin(); queueIt != m_Queues.end();) {
+        if (queueIt->second != device) {
+            ++queueIt;
+            continue;
+        }
+        m_QueueFamilies.erase(queueIt->first);
+        m_QueueFlags.erase(queueIt->first);
+        queueIt = m_Queues.erase(queueIt);
+    }
+    m_DeviceLastSubmitThreadIds.erase(device);
+    m_DeviceLastGraphicsSubmitQueues.erase(device);
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
@@ -169,6 +184,12 @@ VkQueue VulkanLayerState::FindGameGraphicsQueue(VkDevice device) {
     return best;
 }
 
+VkQueue VulkanLayerState::FindLastGameGraphicsSubmitQueue(VkDevice device) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_DeviceLastGraphicsSubmitQueues.find(device);
+    return (it != m_DeviceLastGraphicsSubmitQueues.end()) ? it->second : VK_NULL_HANDLE;
+}
+
 void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto queueIt = m_Queues.find(queue);
@@ -176,6 +197,13 @@ void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
         return;
     }
     m_DeviceLastSubmitThreadIds[queueIt->second] = GetCurrentThreadId();
+    // Only the game reaches this: CE's own overlay, capture, screenshot and
+    // prerender submissions call the dispatch pointer directly and never come
+    // through the layer's vkQueueSubmit wrappers.
+    auto flagsIt = m_QueueFlags.find(queue);
+    if (flagsIt != m_QueueFlags.end() && (flagsIt->second & VK_QUEUE_GRAPHICS_BIT) != 0) {
+        m_DeviceLastGraphicsSubmitQueues[queueIt->second] = queue;
+    }
 }
 
 uint32_t VulkanLayerState::GetLastSubmitThreadId(VkDevice device) {

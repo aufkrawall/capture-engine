@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-08-19 - "Present from compute" cost frame rate only with CE injected: the overlay had its own graphics queue
+
+Session `20260819_140614` (build 0.1.6170). Turning DOOM Eternal's "present from compute" **on** costs frame
+rate with the CE overlay injected; without CE it costs nothing. Fixed in 0.1.6171 - real-game validation
+pending, and it needs an **uncapped** run: this session was `fps_limit=140` and the game sat at the cap in
+every segment, so the CSV cannot show the delta.
+
+- **What the session does prove.** Four segments (PfC on / off / on / off, each boundary a swapchain
+  recreate at t=18.5/58.3/107.0 s). CE's CPU time inside `vkQueuePresentKHR` is *identical* in all four:
+  `total_us - fps_limit_wait_us` = 172/178/180/168 us, `overlay_us` 63-88 us, `fence_wait_us` 1-3 us. So the
+  cost is not on the CPU, and the fix must be GPU-side.
+- **The only thing that differs is which queue the overlay submit lands on.** The overlay records against
+  queue family 0 in *both* configurations (`RecreateOverlayCommandResources` never fires across the toggle).
+  With PfC off the present queue is the game's own graphics queue and `ResolveOverlaySubmitTarget` returns
+  it - in-order, no cross-queue semaphore, no context switch. With PfC on the present queue is family 2, so
+  the overlay went to CE's *reserved* queue: family 0, index 1.
+- **Root cause: a second graphics VkQueue is not free on NVIDIA.** The whole graphics family is one hardware
+  engine, so two queues means two channel context switches per frame - drain the pipe, switch, drain, switch
+  back - plus two cross-queue semaphore hops, every one of them in front of the present. And the overlay can
+  never overlap with anything anyway: it waits on exactly the semaphores the present was going to wait on and
+  the present then waits on it, so it is on the critical path by construction. The 0.1.6168 reasoning
+  ("CE owns it outright, so the overlay runs beside the game's graphics work") was wrong for that reason.
+- **Fix: prefer the game's own graphics queue, keep the reserved queue as the fallback.**
+  `FindLastGameGraphicsSubmitQueue` names the queue that produced the image the overlay draws over (CE's own
+  submits bypass the layer's `vkQueueSubmit` wrappers, so they never pollute it). The reserved queue is now
+  used only when `asyncPresentDetected` is true - the game submits from a thread other than the one it
+  presents on, so appending to its queue could land the overlay behind a whole frame of the game's work.
+  DOOM is *not* that case even with PfC on: zero `Async present detected` lines in the session, and the FPS
+  limiter ran in every segment (it stands down on async present).
+- **Two supporting fixes.** The borrow is published on the first resolve even when that resolve picks the
+  reserved queue, because a swapchain recreate re-arms the evidence and a later present can move onto the
+  borrowed queue - the publication is what makes the game's own submits take CE's lock, so it has to be in
+  place first. And `ForgetBorrowedOverlaySubmitQueue` now clears it in `vkDestroyDevice` (before
+  `UnregisterDevice`, while the queue-to-device mapping is still live); nothing cleared it before, so a
+  second device would have inherited a dangling `VkQueue` as the lock's identity. `UnregisterDevice` also
+  purges that device's queue/flags/family/last-submit entries, which leaked and could answer a lookup for a
+  recycled handle.
+- **Still on the table, not addressed here:** CE spends ~175 us of CPU per present in this title at trace
+  log level, ~80 us of it inside `RenderOverlay`. That is the same in both configurations, so it is not the
+  reported regression, but it is not cheap either at high frame rates. The overlay render pass also uses the
+  full 3840x2160 `renderArea` rather than the overlay's bounding box.
+
 ### 2026-08-19 - DOOM Eternal, two independent bugs: `backbuffer_count` broke the game's acquire, and CE's own stderr froze it
 
 Sessions `20260819_033816` (crash, "present from compute" toggled off) and `20260819_034454` (freeze), both

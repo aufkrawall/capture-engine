@@ -409,7 +409,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 int32_t fenceWaitUs = 0;
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
-                                                     currentWaitSemaphoreCount, overlayDone, &fenceWaitUs);
+                                                     currentWaitSemaphoreCount, overlayDone, asyncPresentDetected,
+                                                     &fenceWaitUs);
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
                 perfMetrics.fenceWaitUs = fenceWaitUs;
                 if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {

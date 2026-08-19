@@ -12,25 +12,43 @@
 // frames and then "Overlay skipped on non-graphics present queue family 2" for
 // the rest of the run.
 //
-// Submitting elsewhere costs nothing: the overlay already signals a semaphore
-// that the rewritten present waits on, and semaphores are queue-agnostic. The
-// only question is which graphics queue CE may use, and the answer must never
-// be "the game's queue, unsynchronized" - VkQueue is externally synchronized,
-// and a game that presents from five threads submits from several more.
+// Which graphics queue CE may use is the only question, and the answer must
+// never be "the game's queue, unsynchronized" - VkQueue is externally
+// synchronized, and a game that presents from several threads submits from
+// several more.
+//
+// **The overlay is never parallel work.** It waits on exactly the semaphores
+// the present was already going to wait on, and the rewritten present then waits
+// on the overlay. It therefore sits on the present's critical path by
+// construction, and a queue of its own cannot make it overlap with anything -
+// it can only add synchronization. That matters most on NVIDIA, where every
+// VkQueue in the graphics family shares one hardware engine: two queues means
+// two channel context switches per frame (drain the pipe, switch, drain, switch
+// back) plus two cross-queue semaphore hops, all of them delaying the present.
+// DOOM Eternal session `20260819_140614` is the symptom: turning the game's
+// "present from compute" on costs frame rate with CE injected and costs nothing
+// without it, while CE's CPU time inside the present is identical either way
+// (~175 us) - the difference is entirely which queue the overlay submit lands
+// on, since the overlay records against queue family 0 in both configurations.
+//
+// So the preference order is "join the game's own graphics timeline", and CE's
+// reserved queue is the fallback for the one case where joining it is unsafe:
 //
 //   1. The present queue itself, when it supports graphics. Unchanged behaviour
-//      for every title that works today.
-//   2. A queue CE reserved for itself at vkCreateDevice by asking for one more
-//      queue than the game did in a graphics family. CE owns it outright, so
-//      the overlay submit runs concurrently with the game's own graphics work
-//      instead of queueing behind it: no added latency, no serialization.
-//   3. A graphics queue borrowed from the game, with every submission to that
+//      for every title that works today - and note this is already the game's
+//      own queue, which is why that path never had a penalty.
+//   2. A graphics queue borrowed from the game, with every submission to that
 //      one queue - the game's and CE's - serialized through a lock CE holds
-//      across the down-call. AMD exposes exactly one graphics queue, so a game
-//      there can leave no queue to reserve; borrowing is what keeps the overlay
-//      alive on that hardware. Ordering is safe because CE's submit only ever
-//      waits on the semaphores the present was already going to wait on, which
-//      are signalled by work submitted before it.
+//      across the down-call. In-order behind the work it depends on: no
+//      cross-queue semaphore, no engine context switch. This is also the only
+//      option on hardware that exposes a single graphics queue (AMD).
+//   3. A queue CE reserved for itself at vkCreateDevice by asking for one more
+//      queue than the game did in a graphics family. Used when CE has evidence
+//      the game acquires or submits from a thread other than the one it
+//      presents on: CE is then inside the present while the game may already be
+//      submitting the next frame, so appending the overlay to the game's queue
+//      could land it behind a whole frame of work and delay this present by
+//      that much. Paying two context switches beats paying a frame.
 
 namespace ce::overlay_submit_queue_policy {
 
@@ -45,15 +63,30 @@ enum class OverlaySubmitQueue : uint32_t {
     kBorrowedQueue = 3,
 };
 
-inline OverlaySubmitQueue ChooseOverlaySubmitQueue(bool presentQueueSupportsGraphics, bool reservedQueueAvailable,
-                                                   bool borrowedQueueAvailable) {
-    if (presentQueueSupportsGraphics) {
+struct SubmitQueueAvailability {
+    bool presentQueueSupportsGraphics = false;
+    bool reservedQueueAvailable = false;
+    bool borrowedQueueAvailable = false;
+    // True when CE has evidence that the game acquires or submits from a thread
+    // other than the one it presents on - the same evidence the layer already
+    // uses to stand its limiters down. While that is true, the game can be
+    // submitting the next frame's work concurrently with this present hook, so
+    // CE's overlay is no longer guaranteed to be the next thing on the game's
+    // queue.
+    bool gameSubmitsConcurrently = false;
+};
+
+inline OverlaySubmitQueue ChooseOverlaySubmitQueue(const SubmitQueueAvailability& availability) {
+    if (availability.presentQueueSupportsGraphics) {
         return OverlaySubmitQueue::kPresentQueue;
     }
-    if (reservedQueueAvailable) {
+    if (availability.borrowedQueueAvailable && !availability.gameSubmitsConcurrently) {
+        return OverlaySubmitQueue::kBorrowedQueue;
+    }
+    if (availability.reservedQueueAvailable) {
         return OverlaySubmitQueue::kReservedQueue;
     }
-    if (borrowedQueueAvailable) {
+    if (availability.borrowedQueueAvailable) {
         return OverlaySubmitQueue::kBorrowedQueue;
     }
     return OverlaySubmitQueue::kNone;

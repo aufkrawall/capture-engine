@@ -158,9 +158,12 @@ bool BuildOverlayQueueReservation(InstanceDispatch* instanceDispatch, VkPhysical
 }
 
 // Resolve which graphics queue the overlay's render pass belongs on for a
-// present that arrived on `presentQueue`.
+// present that arrived on `presentQueue`. `gameSubmitsConcurrently` is the
+// layer's async-present evidence: while it is false the game submits and
+// presents on one thread, so nothing of the game's can slip onto its graphics
+// queue between the frame CE is overlaying and CE's own submit.
 OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* disp, VkQueue presentQueue,
-                                               uint32_t presentQueueFamily) {
+                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently) {
     OverlaySubmitTarget target;
     if (VulkanLayerState::Get().QueueSupportsGraphics(presentQueue)) {
         target.queue = presentQueue;
@@ -170,21 +173,38 @@ OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* 
     }
 
     const VkQueue reserved = disp ? disp->overlayQueue : VK_NULL_HANDLE;
-    VkQueue borrowed = VK_NULL_HANDLE;
-    if (reserved == VK_NULL_HANDLE) {
-        borrowed = g_BorrowedOverlayQueue.load(std::memory_order_acquire);
+    // The borrow candidate is resolved even when a reserved queue exists, and it
+    // is published even on a call that then picks the reserved queue. The tier
+    // is evidence-driven and a swapchain recreate re-arms that evidence, so a
+    // process can move onto the borrowed queue at any later present - and the
+    // publication must already be in place by then, because it is what makes the
+    // game's own submissions take CE's lock. Publishing it early costs the game
+    // one uncontended mutex per submit and buys a queue CE can never race.
+    VkQueue borrowed = g_BorrowedOverlayQueue.load(std::memory_order_acquire);
+    if (borrowed == VK_NULL_HANDLE) {
+        // Prefer the exact queue the game last submitted graphics work on -
+        // that is the queue that produced the image the overlay draws over, so
+        // appending to it is in-order rather than another cross-queue wait.
+        borrowed = VulkanLayerState::Get().FindLastGameGraphicsSubmitQueue(device);
         if (borrowed == VK_NULL_HANDLE) {
             borrowed = VulkanLayerState::Get().FindGameGraphicsQueue(device);
-            if (borrowed != VK_NULL_HANDLE) {
-                // Published before the first borrowed submit, so no game
-                // submission can race the decision to serialize this queue.
-                SetBorrowedOverlaySubmitQueue(borrowed);
-            }
+        }
+        if (borrowed != VK_NULL_HANDLE) {
+            // Published before the first borrowed submit, so no game submission
+            // can race the decision to serialize this queue. The choice is made
+            // once and never revised, so the lock's identity stays stable for
+            // the lifetime of the device.
+            SetBorrowedOverlaySubmitQueue(borrowed);
         }
     }
 
-    switch (ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue(false, reserved != VK_NULL_HANDLE,
-                                                                     borrowed != VK_NULL_HANDLE)) {
+    ce::overlay_submit_queue_policy::SubmitQueueAvailability availability;
+    availability.presentQueueSupportsGraphics = false;
+    availability.reservedQueueAvailable = reserved != VK_NULL_HANDLE;
+    availability.borrowedQueueAvailable = borrowed != VK_NULL_HANDLE;
+    availability.gameSubmitsConcurrently = gameSubmitsConcurrently;
+
+    switch (ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue(availability)) {
         case ce::overlay_submit_queue_policy::OverlaySubmitQueue::kReservedQueue:
             target.queue = reserved;
             target.queueFamilyIndex = disp->overlayQueueFamilyIndex;
@@ -211,14 +231,32 @@ OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* 
     }
     target.valid = true;
 
+    // The tier is the whole performance story on a compute-only present family,
+    // so it has to be readable from the log without a profiler: "borrowed" is
+    // the in-order path, "reserved" costs two engine context switches per frame
+    // and is only chosen because the game presents asynchronously.
     static std::atomic<int> s_offPresentQueueLogCount{0};
     const int logNum = s_offPresentQueueLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (logNum <= 3 || (logNum % 10000) == 0) {
         LayerLog(
             "Vulkan Layer: Present queue family %u has no graphics support - submitting the overlay on the %s "
-            "graphics queue %p (family %u, use #%d)",
+            "graphics queue %p (family %u, gameSubmitsConcurrently=%d, use #%d)",
             presentQueueFamily, target.borrowed ? "borrowed" : "reserved", (void*)target.queue,
-            target.queueFamilyIndex, logNum);
+            target.queueFamilyIndex, gameSubmitsConcurrently ? 1 : 0, logNum);
     }
     return target;
+}
+
+// A borrowed queue belongs to one device. Nothing else clears the publication,
+// so a device teardown has to, or the next device inherits a dangling VkQueue
+// as the handle CE serializes its submissions against.
+void ForgetBorrowedOverlaySubmitQueue(VkDevice device) {
+    const VkQueue borrowed = g_BorrowedOverlayQueue.load(std::memory_order_acquire);
+    if (borrowed == VK_NULL_HANDLE)
+        return;
+    if (VulkanLayerState::Get().GetVkDeviceFromQueue(borrowed) != device)
+        return;
+    std::lock_guard<std::mutex> lock(BorrowedQueueSubmissionLock());
+    g_BorrowedOverlayQueue.store(VK_NULL_HANDLE, std::memory_order_release);
+    LayerLog("Vulkan Layer: Released the borrowed overlay submit queue with its device %p", (void*)device);
 }

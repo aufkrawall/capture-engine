@@ -11,7 +11,8 @@
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
-                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs) {
+                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
+                   int32_t* fenceWaitUs) {
     // Early out if overlay is disabled (use seqlock for consistent read)
     if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
         return false;
@@ -50,7 +51,8 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     // family without VK_QUEUE_GRAPHICS_BIT - DOOM Eternal presents from a
     // compute-only family once its real render loop starts - so resolve which
     // graphics queue this submit belongs on before touching any resources.
-    const OverlaySubmitTarget submitTarget = ResolveOverlaySubmitTarget(device, disp, queue, queueFamilyIndex);
+    const OverlaySubmitTarget submitTarget =
+        ResolveOverlaySubmitTarget(device, disp, queue, queueFamilyIndex, gameSubmitsConcurrently);
     if (!submitTarget.valid) {
         return false;
     }

@@ -196,6 +196,12 @@ public:
     // used as the last resort for overlay submission, on hardware that exposes
     // a single graphics queue and therefore leaves CE nothing to reserve.
     VkQueue FindGameGraphicsQueue(VkDevice device);
+    // The graphics-capable queue the game itself most recently submitted to on
+    // this device - i.e. the queue that produced the image the overlay is about
+    // to draw over. Appending the overlay there is in-order; anywhere else is a
+    // cross-queue wait. CE's own submissions bypass the layer's wrappers, so
+    // they never appear here.
+    VkQueue FindLastGameGraphicsSubmitQueue(VkDevice device);
     void NoteQueueSubmit(VkQueue queue);
     uint32_t GetLastSubmitThreadId(VkDevice device);
 
@@ -264,6 +270,7 @@ private:
     std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
     std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
     std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
+    std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
 
     // Generation counter to invalidate TLS swapchain caches on unregister
     std::atomic<uint64_t> m_SwapchainGeneration{0};
@@ -335,7 +342,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                        uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
-                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs = nullptr);
+                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
+                   int32_t* fenceWaitUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
@@ -375,7 +383,8 @@ struct OverlaySubmitTarget {
 };
 
 OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* disp, VkQueue presentQueue,
-                                               uint32_t presentQueueFamily);
+                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently);
+void ForgetBorrowedOverlaySubmitQueue(VkDevice device);
 VkQueue GetBorrowedOverlaySubmitQueue();
 void SetBorrowedOverlaySubmitQueue(VkQueue queue);
 bool ShouldSerializeQueueSubmission(VkQueue queue);

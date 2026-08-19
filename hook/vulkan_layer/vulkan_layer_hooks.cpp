@@ -589,6 +589,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 }
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+    // Before UnregisterDevice: the queue-to-device mapping the release check
+    // needs is still live at this point.
+    ForgetBorrowedOverlaySubmitQueue(device);
     CleanupOverlay(device);
     CleanupCapture(device);
     CleanupPrerenderFences(device);

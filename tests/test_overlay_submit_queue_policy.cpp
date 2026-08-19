@@ -25,6 +25,16 @@ using ce::overlay_submit_queue_policy::OverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueueIndex;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueuePriority;
 using ce::overlay_submit_queue_policy::ShouldSerializeSubmissionsOnQueue;
+using ce::overlay_submit_queue_policy::SubmitQueueAvailability;
+
+SubmitQueueAvailability Availability(bool presentGraphics, bool reserved, bool borrowed, bool concurrent) {
+    SubmitQueueAvailability availability;
+    availability.presentQueueSupportsGraphics = presentGraphics;
+    availability.reservedQueueAvailable = reserved;
+    availability.borrowedQueueAvailable = borrowed;
+    availability.gameSubmitsConcurrently = concurrent;
+    return availability;
+}
 
 std::string ReadProjectSource(const char* relativePath) {
     namespace fs = std::filesystem;
@@ -37,34 +47,44 @@ std::string ReadProjectSource(const char* relativePath) {
 }  // namespace
 
 TEST(OverlaySubmitQueuePolicyTest, GraphicsPresentQueueKeepsTheExistingPath) {
-    // Every title that works today must keep submitting exactly where it did.
-    EXPECT_EQ(ChooseOverlaySubmitQueue(/*presentQueueSupportsGraphics=*/true, /*reservedQueueAvailable=*/true,
-                                       /*borrowedQueueAvailable=*/true),
-              OverlaySubmitQueue::kPresentQueue);
-    EXPECT_EQ(ChooseOverlaySubmitQueue(/*presentQueueSupportsGraphics=*/true, /*reservedQueueAvailable=*/false,
-                                       /*borrowedQueueAvailable=*/false),
-              OverlaySubmitQueue::kPresentQueue);
+    // Every title that works today must keep submitting exactly where it did -
+    // and that queue is the game's own, which is why it never cost frame rate.
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(true, true, true, false)), OverlaySubmitQueue::kPresentQueue);
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(true, false, false, true)), OverlaySubmitQueue::kPresentQueue);
 }
 
-TEST(OverlaySubmitQueuePolicyTest, ComputeOnlyPresentQueueUsesTheReservedQueue) {
-    // The DOOM Eternal case: present family has no graphics bit, CE reserved a
-    // queue of its own at device creation.
-    EXPECT_EQ(ChooseOverlaySubmitQueue(/*presentQueueSupportsGraphics=*/false, /*reservedQueueAvailable=*/true,
-                                       /*borrowedQueueAvailable=*/true),
-              OverlaySubmitQueue::kReservedQueue)
-        << "a queue CE owns outright must win over borrowing the game's";
+// DOOM Eternal session `20260819_140614`: "present from compute" on costs frame
+// rate with CE injected and nothing without it. The overlay is on the present's
+// critical path by construction, so a second queue can only add cross-queue
+// waits and - on NVIDIA, where the whole graphics family is one engine - two
+// channel context switches per frame.
+TEST(OverlaySubmitQueuePolicyTest, ComputeOnlyPresentQueueJoinsTheGamesGraphicsQueue) {
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, true, true, false)), OverlaySubmitQueue::kBorrowedQueue)
+        << "in-order on the game's own queue beats a queue of CE's own that the present must then wait for";
+}
+
+TEST(OverlaySubmitQueuePolicyTest, AsyncSubmittingGamesGetCesOwnQueue) {
+    // When the game submits from a thread other than the one it presents on, it
+    // can be queueing the next frame while CE is inside this present: appending
+    // there could put a whole frame of the game's work ahead of the overlay the
+    // present has to wait for. Two context switches beat a frame.
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, true, true, true)), OverlaySubmitQueue::kReservedQueue);
 }
 
 TEST(OverlaySubmitQueuePolicyTest, SingleGraphicsQueueHardwareBorrows) {
     // AMD exposes one graphics queue, so a game that creates it leaves nothing
     // to reserve. Borrowing under CE's submission lock is what keeps the
-    // overlay alive there instead of silently disappearing.
-    EXPECT_EQ(ChooseOverlaySubmitQueue(/*presentQueueSupportsGraphics=*/false, /*reservedQueueAvailable=*/false,
-                                       /*borrowedQueueAvailable=*/true),
-              OverlaySubmitQueue::kBorrowedQueue);
-    EXPECT_EQ(ChooseOverlaySubmitQueue(/*presentQueueSupportsGraphics=*/false, /*reservedQueueAvailable=*/false,
-                                       /*borrowedQueueAvailable=*/false),
-              OverlaySubmitQueue::kNone);
+    // overlay alive there instead of silently disappearing - even for a game
+    // that submits concurrently, where borrowing is the only option left.
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, false, true, false)), OverlaySubmitQueue::kBorrowedQueue);
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, false, true, true)), OverlaySubmitQueue::kBorrowedQueue);
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, false, false, false)), OverlaySubmitQueue::kNone);
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, false, false, true)), OverlaySubmitQueue::kNone);
+}
+
+TEST(OverlaySubmitQueuePolicyTest, ReservedQueueStillCoversAConcurrentGameWithNoBorrowCandidate) {
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, true, false, true)), OverlaySubmitQueue::kReservedQueue);
+    EXPECT_EQ(ChooseOverlaySubmitQueue(Availability(false, true, false, false)), OverlaySubmitQueue::kReservedQueue);
 }
 
 TEST(OverlaySubmitQueuePolicyTest, ReservationNeverExceedsWhatTheFamilyExposes) {
@@ -136,6 +156,27 @@ TEST(OverlaySubmitQueuePolicySourceTest, BorrowedQueueSubmissionsAreSerialized) 
     ASSERT_FALSE(queueOwner.empty());
     EXPECT_NE(queueOwner.find("SetBorrowedOverlaySubmitQueue(borrowed)"), std::string::npos)
         << "the borrow must be published before the first borrowed submit, not after";
+    EXPECT_NE(queueOwner.find("FindLastGameGraphicsSubmitQueue(device)"), std::string::npos)
+        << "the borrow candidate must be the queue that produced the frame, so the overlay is in-order behind it";
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, TheBorrowedQueuePublicationDiesWithItsDevice) {
+    // Nothing else clears the publication, so a device teardown must - otherwise
+    // the next device inherits a dangling VkQueue as the handle CE serializes
+    // every game submission against.
+    const std::string queueOwner = ReadProjectSource("hook/vulkan_layer/layer_overlay_queue.cpp");
+    ASSERT_FALSE(queueOwner.empty());
+    EXPECT_NE(queueOwner.find("void ForgetBorrowedOverlaySubmitQueue(VkDevice device)"), std::string::npos);
+
+    const std::string hooks = ReadProjectSource("hook/vulkan_layer/vulkan_layer_hooks.cpp");
+    ASSERT_FALSE(hooks.empty());
+    const size_t destroy = hooks.find("Capture_vkDestroyDevice(VkDevice device");
+    ASSERT_NE(destroy, std::string::npos);
+    const size_t forget = hooks.find("ForgetBorrowedOverlaySubmitQueue(device)", destroy);
+    const size_t unregister = hooks.find("UnregisterDevice(device)", destroy);
+    ASSERT_NE(forget, std::string::npos);
+    ASSERT_NE(unregister, std::string::npos);
+    EXPECT_LT(forget, unregister) << "the release check needs the queue-to-device mapping to still be live";
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, DeviceCreateFallsBackWhenTheReservationIsRejected) {

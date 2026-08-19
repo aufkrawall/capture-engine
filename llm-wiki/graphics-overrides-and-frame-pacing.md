@@ -128,18 +128,30 @@ Primary sources:
 - **The overlay is a render pass, so it needs `VK_QUEUE_GRAPHICS_BIT` - and the queue a game presents from
   need not have it.** DOOM Eternal (idTech 7) presents from queue family 2, compute + transfer only, once its
   real render loop starts. `ResolveOverlaySubmitTarget` (`hook/vulkan_layer/layer_overlay_queue.cpp`) picks
-  the present queue when it is graphics-capable, else a queue CE reserved for itself at `vkCreateDevice`,
-  else one of the game's graphics queues under `ScopedBorrowedQueueSubmission`. Rules and reasoning live in
-  `hook/vulkan_layer/overlay_submit_queue_policy.h`.
-- Submitting elsewhere is free: the overlay already signals a semaphore the rewritten present waits on, and
-  semaphores are queue-agnostic. The reserved queue is the preferred tier precisely because CE owns it
-  outright - the overlay submit runs beside the game's graphics work rather than queueing behind it, so it
-  adds no latency and no serialization.
+  the present queue when it is graphics-capable, else the game's own graphics queue under
+  `ScopedBorrowedQueueSubmission`, else a queue CE reserved for itself at `vkCreateDevice`. Rules and
+  reasoning live in `hook/vulkan_layer/overlay_submit_queue_policy.h`.
+- **The overlay is never parallel work, so a queue of CE's own cannot make it overlap with anything.** It
+  waits on exactly the semaphores the present was going to wait on and the rewritten present then waits on
+  it, so it is on the critical path by construction. A second queue can only add synchronization - and on
+  NVIDIA the whole graphics family is one hardware engine, so it adds two channel context switches per frame
+  (drain, switch, drain, switch back) plus two cross-queue semaphore hops, all in front of the present.
+  Joining the queue the game rendered on is in-order instead: `FindLastGameGraphicsSubmitQueue` names it
+  exactly (CE's own submits bypass the layer's `vkQueueSubmit` wrappers, so they never pollute that tracking).
+- The reserved queue is the fallback for the one unsafe case: `asyncPresentDetected`, i.e. the game acquires
+  or submits from a thread other than the one it presents on. CE is then inside the present while the game
+  may already be queueing the next frame, so appending there could put a whole frame of its work ahead of the
+  overlay the present must wait for. Two context switches beat a frame.
+- The borrow is published on the first resolve even when that resolve picks the reserved queue: a swapchain
+  recreate re-arms the evidence, so a later present can move onto the borrowed queue, and the publication is
+  what makes the game's own submits take CE's lock. `ForgetBorrowedOverlaySubmitQueue` clears it in
+  `vkDestroyDevice` before `UnregisterDevice`, so the next device cannot inherit a dangling `VkQueue` as the
+  lock's identity.
 - CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
   entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
   the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one
   past the game's own, so the game can never receive it from `vkGetDeviceQueue`.
-- Borrowing is the last resort for hardware that exposes a single graphics queue (AMD). `VkQueue` is
+- Borrowing is also the only option on hardware that exposes a single graphics queue (AMD). `VkQueue` is
   externally synchronized, so every submission to the borrowed queue - the layer's `vkQueueSubmit`,
   `vkQueueSubmit2`, `vkQueueSubmit2KHR` wrappers, the capture/screenshot submits and the prerender marker
   ring - passes through one lock. `ShouldSerializeQueueSubmission` makes that a single relaxed atomic load
