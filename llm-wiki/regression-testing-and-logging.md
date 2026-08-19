@@ -407,6 +407,11 @@ For a multi-recording session, select the immutable recording ID or exact media 
 - Legacy standalone `.dbg` files are not produced; `.pdb` is now the intended Windows symbol format in this repo.
 
 ## Logging Guidance
+- **A log sink inside an injected DLL must be one CE owns.** Never write to the host process's `stdout`/`stderr`:
+  they belong to the game, and an inherited pipe with no live reader blocks `WriteFile` forever, freezing whichever
+  game thread happened to log (DOOM Eternal `20260819_034454` — the present thread, wedged in `NtWriteFile` inside
+  `FpsLimiter::Apply`, with every other layer thread stacked behind it on the CRT stream lock).
+  `VulkanSwapchainImagePolicySourceTest.LayerNeverWritesToTheHostStandardStreams` enforces this for the layer.
 - Prefer logs that make transition and ownership changes reconstructible later.
 - Keep logs specific enough to compare traces across regressions.
 - Rate-limit logs in per-frame paths so diagnosis stays useful instead of turning into noise.

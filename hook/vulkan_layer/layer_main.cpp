@@ -92,37 +92,37 @@ static bool IsLayerDebugLoggingEnabled() {
     return debugLoggingEnabled;
 }
 
+// The layer never writes to the host process's stdout/stderr. Those streams
+// belong to the game, not to CE, and an injected DLL cannot know what is on the
+// other end of them. DOOM Eternal session `20260819_034454` is the failure that
+// proves it: the game's stderr was an inherited pipe nobody drained, the pipe
+// buffer filled, and one `fprintf(stderr, ...)` carrying an FPS-limiter stats
+// line left the game's present thread parked in NtWriteFile forever - a hard
+// game freeze caused entirely by CE diagnostics. Every line already reaches
+// vulkan_layer_early.log / vulkan_layer.log, OutputDebugString, and the IPC log,
+// so staying out of the host's streams loses no diagnostic.
 static void EarlyLog(const char* fmt, ...) {
+    if (!IsLayerDebugLoggingEnabled())
+        return;
+
+    // One initialization, not a check-then-assign: EarlyLog runs on several
+    // threads before the IPC log exists, and two of them racing on the same
+    // std::string is a data race, not a harmless duplicate assignment.
+    static const std::string logPath = GetSessionLogsDirectory() + "\\vulkan_layer_early.log";
+
+    FILE* earlyLog = fopen(logPath.c_str(), "a");
+    if (!earlyLog)
+        return;
+
     va_list args;
     va_start(args, fmt);
-    va_list argsCopy;
-    va_copy(argsCopy, args);
-
-    if (IsLayerDebugLoggingEnabled()) {
-        static std::string logPath;
-        if (logPath.empty()) {
-            logPath = GetSessionLogsDirectory() + "\\vulkan_layer_early.log";
-        }
-
-        FILE* earlyLog = fopen(logPath.c_str(), "a");
-        if (earlyLog) {
-            SYSTEMTIME st;
-            GetLocalTime(&st);
-            fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", st.wHour, st.wMinute, st.wSecond,
-                    st.wMilliseconds);
-            vfprintf(earlyLog, fmt, argsCopy);
-            fprintf(earlyLog, "\n");
-            fflush(earlyLog);
-            fclose(earlyLog);
-        }
-    }
-    va_end(argsCopy);
-
-    // Also try stderr (for console apps)
-    fprintf(stderr, "[VulkanLayer-Init] ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    fflush(stderr);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    vfprintf(earlyLog, fmt, args);
+    fprintf(earlyLog, "\n");
+    fflush(earlyLog);
+    fclose(earlyLog);
     va_end(args);
 }
 
@@ -224,8 +224,6 @@ static void InitLayerLogFile() {
         fprintf(g_LogFile, "\n=== Layer DLL Loaded ===\n");
         fflush(g_LogFile);
     }
-    fprintf(stderr, "[VulkanLayer] InitLayerLogFile called\n");
-    fflush(stderr);
 }
 
 // Logging implementation
@@ -246,9 +244,7 @@ void LayerLog(const char* fmt, ...) {
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
 
-    // Also to stderr
-    fprintf(stderr, "[VulkanLayer] %s\n", buf);
-    fflush(stderr);
+    // Deliberately no write to the host process's stdout/stderr - see EarlyLog.
 
     // Also to log file
     if (g_LogFile) {

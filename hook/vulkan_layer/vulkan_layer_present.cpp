@@ -79,13 +79,50 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
             }
         }
 
-        // Backbuffer count override
-        int32_t bbCount = VulkanLayerState::Get().GetBackbufferCount();
-        if (bbCount >= 2 && bbCount != (int32_t)pCreateInfo->minImageCount) {
-            modifiedCI.minImageCount = (uint32_t)bbCount;
+        // Backbuffer count override. The application's own minImageCount is the
+        // floor, never a suggestion: it declares how many images the game keeps
+        // acquired, and taking images away below it breaks blocking
+        // vkAcquireNextImageKHR (see vulkan_swapchain_image_policy.h).
+        ce::vulkan_swapchain_image_policy::Input imagePolicyInput = {};
+        imagePolicyInput.configuredBackbufferCount = VulkanLayerState::Get().GetBackbufferCount();
+        imagePolicyInput.applicationMinImageCount = pCreateInfo->minImageCount;
+        if (imagePolicyInput.configuredBackbufferCount >= 2) {
+            VkPhysicalDevice physDev = disp->physicalDevice;
+            VkInstance inst = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev);
+            InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(inst);
+            if (instDisp && instDisp->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR) {
+                // Deliberately not value-initialized: VkSurfaceTransformFlagBitsKHR
+                // has no zero enumerator, and the driver fills every field CE
+                // reads before the success return this is guarded on.
+                VkSurfaceCapabilitiesKHR caps;
+                if (instDisp->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDev, pCreateInfo->surface, &caps) ==
+                    VK_SUCCESS) {
+                    imagePolicyInput.surfaceCapabilitiesKnown = true;
+                    imagePolicyInput.surfaceMinImageCount = caps.minImageCount;
+                    imagePolicyInput.surfaceMaxImageCount = caps.maxImageCount;
+                }
+            }
+        }
+        const ce::vulkan_swapchain_image_policy::Decision imagePolicy =
+            ce::vulkan_swapchain_image_policy::Decide(imagePolicyInput);
+        if (imagePolicy.overrideApplied) {
+            modifiedCI.minImageCount = imagePolicy.minImageCount;
             modified = true;
-            LayerLog("Vulkan Layer: Overriding minImageCount %u -> %u", pCreateInfo->minImageCount,
-                     modifiedCI.minImageCount);
+            LayerLog("Vulkan Layer: Overriding minImageCount %u -> %u (configured=%d surfaceMin=%u surfaceMax=%u%s)",
+                     pCreateInfo->minImageCount, modifiedCI.minImageCount,
+                     imagePolicyInput.configuredBackbufferCount, imagePolicyInput.surfaceMinImageCount,
+                     imagePolicyInput.surfaceMaxImageCount,
+                     imagePolicy.clampedToSurfaceMaximum ? " clamped-to-surface-maximum" : "");
+        } else if (imagePolicy.reductionSkipped) {
+            LayerLog(
+                "Vulkan Layer: minImageCount override skipped configured=%d game=%u (a reduction would take away the "
+                "acquire headroom the game declared; keeping the game's count)",
+                imagePolicyInput.configuredBackbufferCount, pCreateInfo->minImageCount);
+        } else if (imagePolicy.skippedUnknownCapabilities) {
+            LayerLog(
+                "Vulkan Layer: minImageCount override skipped configured=%d game=%u - surface capabilities "
+                "unavailable, so the request cannot be validated against the surface maximum",
+                imagePolicyInput.configuredBackbufferCount, pCreateInfo->minImageCount);
         }
     }
 
@@ -124,6 +161,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->images.resize(count);
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, sd->images.data());
         sd->imageCount = count;
+        // Once per swapchain, not per frame: the acquire headroom a game has is
+        // `count - surfaceCaps.minImageCount`, so a session that fails inside
+        // vkAcquireNextImageKHR has to be able to prove from the log whether CE
+        // asked the driver for a different count than the game did.
+        LayerLog("Vulkan Layer: Swapchain %p images=%u (game asked minImageCount=%u, CE requested %u)", *pSwapchain,
+                 count, pCreateInfo->minImageCount, pFinalCI->minImageCount);
 
         sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);

@@ -1,5 +1,49 @@
 # llm-wiki Log
 
+### 2026-08-19 - DOOM Eternal, two independent bugs: `backbuffer_count` broke the game's acquire, and CE's own stderr froze it
+
+Sessions `20260819_033816` (crash, "present from compute" toggled off) and `20260819_034454` (freeze), both
+build 0.1.6168. Fixed in 0.1.6169. Neither bug had anything to do with the other; both were CE's fault.
+
+- **Crash: `vkAcquireNextImageKHR failed with error (VK_NOT_READY)`.** The dump has no CE frame at all - an
+  `int3` at `DOOMEternalx64vk+0x1d09535` in a `Default Worker` job thread, immediately after
+  `call FatalError(fmt, VkResultToString(res))`. Recovering the two arguments off the stack named the failure
+  exactly: format string `"vkAcquireNextImageKHR failed with error (%s)"`, argument `"VK_NOT_READY"`. The
+  acquire is called with `timeout = UINT64_MAX`, so `VK_NOT_READY` can only mean the app exceeded the number
+  of images it may hold: with `imageCount == surfaceCaps.minImageCount == 2` that number is zero, and the
+  game holds two.
+  - Root cause: `Capture_vkCreateSwapchainKHR` applied `[Graphics] backbuffer_count=2` unconditionally,
+    logging `Overriding minImageCount 3 -> 2` 148 ms before the crash. The game asks for 3 with "present from
+    compute" off and 2 with it on - which is why only the off configuration crashed and why it looked like an
+    async-present bug.
+  - Fix: `ce::vulkan_swapchain_image_policy::Decide` - the app's `minImageCount` is a floor CE may raise and
+    never lower, plus surface min/max clamping and a declined override when capabilities are unavailable. It
+    is the Vulkan analogue of the flip-model rule `ApplyDX11BackbufferCountOverride` has had all along. See
+    `graphics-overrides-and-frame-pacing.md`, "Vulkan swapchain image count".
+  - Every swapchain create now logs `images=%u (game asked minImageCount=%u, CE requested %u)`.
+- **Freeze: the game's present thread parked in `NtWriteFile` forever, inside CE's logger.** The manual dump
+  shows thread `0x212c` at `NtWriteFile <- ucrtbase!_acrt_stdio_flush_nolock <- fprintf <- LayerLog <-
+  HookLog <- FpsLimiter::Apply <- Capture_vkQueuePresentKHR`, and the 194-byte buffer being written decodes
+  to `[VulkanLayer] [Hook] FPS Limiter: Local timer stats (14880 frames)...` - i.e. the `fprintf(stderr, ...)`
+  line, not the `vulkan_layer.log` one (that format starts with a timestamp). `vulkan_layer.log`'s last entry
+  is frame *14760*, the previous stats line: the write that hung is the very next one. The layer's metrics
+  thread was piled up behind it in `RtlEnterCriticalSection` on the same CRT stream lock, while the hook
+  DLL's own logger kept writing `hook_debug.log` for another 110 s.
+  - Root cause: `LayerLog`/`EarlyLog` mirrored every line to the *host process's* `stderr`. DOOM Eternal is
+    launched through `idTechLauncher.exe`; its `stderr` is an inherited pipe with no live reader, so once
+    ~4 KB accumulated, `WriteFile` blocked and never returned. An injected DLL owns none of the host's
+    standard streams and cannot know what is on the other end of them.
+  - Fix: the layer writes to `vulkan_layer_early.log`, `vulkan_layer.log`, `OutputDebugString`, and the IPC
+    log only. `VulkanSwapchainImagePolicySourceTest.LayerNeverWritesToTheHostStandardStreams` scans
+    `hook/vulkan_layer/*.{cpp,h}` (comments stripped) so it cannot come back.
+  - Also removed a check-then-assign data race on `EarlyLog`'s cached log path while rewriting it.
+- **Not a factor, ruled out:** the reserved overlay queue (with "present from compute" off the present queue
+  *is* graphics-capable, so `ResolveOverlaySubmitTarget` returns it and the path is bit-for-bit the pre-0.1.6168
+  one), CE's DXGI pacing (`ApplyPresentFrameLatencyOverrides: skipping` proves it stood down), and the
+  co-loaded Steam / OBS overlays.
+- **Pending:** real-game validation of both fixes on DOOM Eternal, in both "present from compute" states and
+  across toggles, with `backbuffer_count=2` still set.
+
 ### 2026-08-19 - DOOM Eternal overlay vanished after 239 frames: the game presents from a compute-only queue
 
 Session `20260819_030710` (build 0.1.6164, the build that fixed the startup hang). The overlay drew for

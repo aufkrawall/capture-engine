@@ -31,7 +31,7 @@ Primary sources:
   out-of-range inputs normalize to `-1`.
 - `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's
   allocation remains physical-count preserving and uses waitable-swapchain maximum latency `N-1` as the equivalent
-  present depth.
+  present depth. On Vulkan the same rule is mandatory rather than prudent - see "Vulkan swapchain image count" below.
 - DLSS preset input is exactly one trimmed `A-Z` character or `default`. Sharpening is exactly `default`, `off`, or a
   finite full-string value in `0.0-1.0`.
 - `dlss_fg_preset=default|A-Z` overrides the DLSS **frame generation** render preset. It parses exactly like the SR/RR
@@ -148,6 +148,33 @@ Primary sources:
 - Open boundary: CE's swapchain-image barriers use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family ownership
   transfer, matching what a game itself does when it renders on one family and presents on another.
   `vkCreateSwapchainKHR` logs the requested `sharingMode` so a real run can say which case a title is in.
+
+## Vulkan swapchain image count (`backbuffer_count`)
+
+- **The application's `VkSwapchainCreateInfoKHR::minImageCount` is a floor CE may raise and must never lower.**
+  It is not a preference: a Vulkan swapchain is an explicit-acquire chain, and the spec only guarantees forward
+  progress for a blocking `vkAcquireNextImageKHR` while
+  `acquiredImages <= imageCount - VkSurfaceCapabilitiesKHR::minImageCount`. The count a game requests is the
+  declaration of how deep its acquire pipeline is, so removing images removes headroom the game has no way to
+  detect - it queries the actual count, sizes its rings to it, and then trips over the acquire limit.
+- `ce::vulkan_swapchain_image_policy::Decide` (`hook/vulkan_layer/vulkan_swapchain_image_policy.h`) owns the whole
+  decision and `Capture_vkCreateSwapchainKHR` is its only caller: raise to the configured count, clamp up to
+  `surfaceCaps.minImageCount`, clamp down to `surfaceCaps.maxImageCount` but never below the game's own request,
+  and decline the override entirely when the surface capabilities cannot be queried (an over-maximum request fails
+  swapchain creation outright, which is a harder failure than skipping the override).
+- This is the same rule `ApplyDX11BackbufferCountOverride` already applies on the D3D flip model
+  (`hook/apis/dx11_hook_helpers.cpp`, "BufferCount override skipped ... (flip model)"). D3D recovers the latency
+  intent through the waitable object; on Vulkan the equivalent knob is `cpu_prerender_limit`, which the layer
+  applies on the game's own queue.
+- Every `vkCreateSwapchainKHR` logs `images=%u (game asked minImageCount=%u, CE requested %u)`, so a session that
+  fails inside `vkAcquireNextImageKHR` can prove from the log alone whether CE changed the count.
+- **DOOM Eternal (session `20260819_033816`, fixed in 0.1.6169)** is the failure that proved it. With "present from
+  compute" **off** the game requests 3 images and keeps 2 acquired; `backbuffer_count=2` forced 3 -> 2, NVIDIA's WSI
+  answered the second blocking acquire with `VK_NOT_READY` rather than deadlocking, and idTech's own error path
+  fatal-errored with `vkAcquireNextImageKHR failed with error (VK_NOT_READY)` (an `int3` in a
+  `Default Worker` job thread, no CE frame anywhere on the stack). With "present from compute" **on** the same game
+  requests 2, the override was a no-op, and the session ran fine - which is why the crash presented as an
+  async-present problem rather than an image-count one.
 
 ## Queue-depth and limiter invariants
 
@@ -734,6 +761,13 @@ mode is a visibly broken frame in the user's game.
 
 ## Diagnostics and stale-risk
 
+- **CE never writes diagnostics to the host process's `stdout`/`stderr`.** Those streams belong to the game, and an
+  injected DLL cannot know what is on the other end. DOOM Eternal session `20260819_034454` froze the game outright:
+  its `stderr` was an inherited pipe nobody drained, the pipe buffer filled, and one `fprintf(stderr, ...)` carrying
+  an FPS-limiter stats line left the present thread parked in `NtWriteFile` forever while every other layer thread
+  piled up behind the CRT stream lock. `VulkanSwapchainImagePolicySourceTest.LayerNeverWritesToTheHostStandardStreams`
+  scans `hook/vulkan_layer/*.{cpp,h}` so it cannot come back; the layer's sinks are `vulkan_layer_early.log`,
+  `vulkan_layer.log`, `OutputDebugString`, and the IPC log.
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate
   limited. The limiter's periodic stats report waited/late/reset frames, whole capture-grid slots skipped while
   preserving phase, and actual wait time. The Vulkan perf CSV populates `fps_limit_wait_us` per present (it was
