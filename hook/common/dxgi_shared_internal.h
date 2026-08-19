@@ -321,6 +321,10 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain);
 }
 
 namespace DXGIShared {
+bool WaitFlipQueuePacingObject(HANDLE waitable, const char* context);
+}
+
+namespace DXGIShared {
 void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
 }
 

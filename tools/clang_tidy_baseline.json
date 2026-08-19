@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 616,
+    "entries": 618,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -295,6 +295,7 @@
       "hook/common/dxgi_shared_present.cpp",
       "hook/common/dxgi_shared_present1.cpp",
       "hook/common/dxgi_shared_present_core.cpp",
+      "hook/common/dxgi_shared_present_pacing.cpp",
       "hook/common/dxgi_shared_present_routing.cpp",
       "hook/common/dxgi_shared_resize.cpp",
       "hook/common/dxgi_shared_steam.cpp",
@@ -594,6 +595,7 @@
       "tests/test_overlay_system.cpp",
       "tests/test_path_utils.cpp",
       "tests/test_performance_metrics.cpp",
+      "tests/test_present_pacing_policy.cpp",
       "tests/test_process_identity.cpp",
       "tests/test_process_ipc.cpp",
       "tests/test_process_loopback_protocol.cpp",

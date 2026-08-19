@@ -34,21 +34,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    // Inline wait for DWM flip queue room (no separate function call)
-    {
-        const auto& gfx = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-            IDXGISwapChain2* pSC2 = nullptr;
-            HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
-            if (SUCCEEDED(hrQI) && pSC2) {
-                HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
-                if (hWaitable && hWaitable != INVALID_HANDLE_VALUE) {
-                    WaitForSingleObject(hWaitable, 16);
-                }
-                pSC2->Release();
-            }
-        }
-    }
+    // Wait for DWM flip queue room. This used to be an inlined copy of
+    // WaitBackbufferFrameLatency with its own 16 ms ceiling, which sits below a
+    // healthy wait and therefore silently escaped the pacing whenever the game
+    // was GPU- or vblank-bound - and which skipped the presentation-ownership
+    // rule the shared implementation enforces.
+    WaitBackbufferFrameLatency(pSwapChain);
 
     // Multi-overlay foreign chain, CE intercepting BELOW it: control reached DetourPresent
     // through the deep body hook, so Steam and RTSS have already drawn above us and the frame

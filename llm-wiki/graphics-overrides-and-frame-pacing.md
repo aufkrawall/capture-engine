@@ -139,6 +139,22 @@ Primary sources:
   changes so a previously signaled fence is never resubmitted.
 - Flip-model latency waitables are requested at creation whenever `backbuffer_count` is active. Wrapped DXGI waits at
   the post-Present/next-frame boundary so simulation/render work cannot begin behind a full vsync queue.
+- **CE's D3D presentation policy applies only while CE owns presentation.** `WaitBackbufferFrameLatency`,
+  `ApplyPresentFrameLatencyOverrides`, the create-time descriptor override, and the resize-time override are all gated
+  on `DXGIShared::IsVulkanActive()` - the same evidence-based decision `CheckAndInstallHooks` already publishes. When
+  the CE Vulkan layer owns presentation, every DXGI swapchain CE can reach is the graphics runtime's WSI transport
+  behind `VkSwapchainKHR`: the ICD creates it, presents it from a driver-owned thread, and *joins that thread inside
+  `vkDestroySwapchainKHR`*. Blocking it there deadlocks the game, and the layer has already applied vsync mode, image
+  count, and prerender depth on the real Vulkan swapchain, so the D3D-side copy is a second application of the same
+  setting on an object CE does not own. See `llm-wiki/log/recent.md` 2026-08-19 (DOOM Eternal).
+- **The flip-queue pacing wait is bounded and retires itself.** One implementation
+  (`DXGIShared::WaitFlipQueuePacingObject`, `hook/common/dxgi_shared_present_pacing.cpp`) serves every transport; the
+  Present path's inlined 16 ms copy and `CWrapDXGISwapChain::WaitFrameLatency`'s `INFINITE` copy are gone. The ceiling
+  is `ce::present_pacing_policy::kFlipQueuePacingWaitCeilingMs` (1000 ms), chosen to sit far *above* the slowest
+  healthy wait (24 Hz x 6 queued frames is ~250 ms) so it cannot silently escape while GPU- or vblank-bound, and far
+  below anything a player would call a freeze. A wait that misses the ceiling latches pacing off process-wide rather
+  than paying the ceiling on every later present. Both halves matter: commit ccbdeac5 fixed the freeze with a 16 ms
+  ceiling that broke the pacing, and dd30a5b6 restored the pacing by restoring the freeze.
 - The timer limiter uses a rational QPC/Bresenham grid, never emits a short catch-up interval after a missed deadline,
   and arms a high-resolution timer before the deadline. Capture-sync late recovery advances by whole rational-grid slots
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;

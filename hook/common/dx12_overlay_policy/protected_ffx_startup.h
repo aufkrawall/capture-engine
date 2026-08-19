@@ -115,12 +115,21 @@ inline bool ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress
 }
 
 inline bool ShouldApplySwapchainDescriptorOverridesForCreate(bool callerFromThirdPartyOverlay,
-                                                             bool authoritativeFrameGenerationRuntimeCreator) {
+                                                             bool authoritativeFrameGenerationRuntimeCreator,
+                                                             bool vulkanLayerOwnsPresentation = false) {
     // Runtime FG components treat swapchain creation as part of their own
     // startup handshake. Preserve their descriptor byte-for-byte; even
     // "safe" CE additions such as the waitable-object flag can change that
     // handshake before the runtime has accepted its configure packet.
-    return !callerFromThirdPartyOverlay && !authoritativeFrameGenerationRuntimeCreator;
+    //
+    // A Vulkan title's DXGI swapchain is the same kind of foreign object: the
+    // ICD creates it as the transport behind VkSwapchainKHR, presents it from a
+    // driver-owned thread, and joins that thread inside vkDestroySwapchainKHR.
+    // CE's Vulkan layer already applies vsync mode, image count, and prerender
+    // depth on the real Vulkan swapchain, so mutating the transport descriptor
+    // is a second application of the same setting on an object CE does not own.
+    return !callerFromThirdPartyOverlay && !authoritativeFrameGenerationRuntimeCreator &&
+           !vulkanLayerOwnsPresentation;
 }
 
 inline bool ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(bool runtimeOwnsSwapchain,

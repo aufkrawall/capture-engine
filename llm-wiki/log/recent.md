@@ -1,5 +1,54 @@
 # llm-wiki Log
 
+### 2026-08-19 - DOOM Eternal Vulkan startup hang: CE's flip-queue pacing wait blocked NVIDIA's WSI presenter thread
+
+Session `20260819_020933` (build 0.1.6163). A real deadlock, not a freeze-watchdog false positive - the
+watchdog was right, and its dump contained the whole answer. Fixed in the same session.
+
+- **The three-thread cycle, straight out of `crash_external_...FREEZE...dmp`.** Thread `0x2164`
+  (`nvoglv64` presenter, under `gameoverlayrenderer64`) sat in
+  `capture_hook_x64!DXGIShared::WaitBackbufferFrameLatency` -> `WaitForSingleObject(..., INFINITE)` on the
+  frame-latency semaphore (handle `0x1d44`, `GrantedAccess=0x100000` - a DXGI waitable object) of swapchain
+  `000001B5B77EB710`. Thread `0x5BE0` (window thread) was inside `Capture_vkDestroySwapchainKHR` ->
+  `nvoglv64` -> `GetExitCodeThread`, joining exactly that presenter thread (`0x103`/`STILL_ACTIVE` in the
+  args). Thread `0x5A90` (render thread) was in `SendMessage` to the window thread. One presented frame in
+  `perf_metrics_20848.csv`, then nothing.
+- **Why CE was there at all.** NVIDIA's Vulkan ICD implements `VkSwapchainKHR` on a DXGI flip swapchain.
+  `hook_debug.log` shows `DetourCreateSwapChainForHwndGlobal ... caller=<DriverStore>/nvoglv64.dll
+  BufferCount=2 SwapEffect=4`, CE adding `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` for the profile's
+  `backbuffer_count=2`, and `ApplyPresentFrameLatencyOverrides: SetMaximumFrameLatency(1)` on the ICD's
+  chain. Both ran on a swapchain CE does not own.
+- **CE had already decided not to do this.** At `02:19:13.785`, 11.5 s before the create:
+  `CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks` and
+  `DXGIShared: Vulkan active (evidence-based), DXGI hooks will pass through`. The "pass-through" was not
+  one: `DetourPresent1` calls `ApplyPresentFrameLatencyOverrides` *before* its `IsVulkanActive()` gate, and
+  the gate returns through `CallOriginalPresent1`, which calls `WaitBackbufferFrameLatency` on the way out.
+  The create/resize descriptor overrides had no such gate at all.
+- **The wait was a re-regression.** Commit ccbdeac5 (2026-05-15) fixed this identical freeze by replacing
+  `INFINITE` with a 16 ms ceiling; commit dd30a5b6 (2026-07-12) reverted it to `INFINITE` because 16 ms sits
+  *below* a healthy wait and silently escaped the pacing whenever the game was GPU- or vblank-bound. Both
+  are true, which is why the fix needed both halves.
+- **Fix.** New `hook/common/present_pacing_policy.h` + `hook/common/dxgi_shared_present_pacing.cpp`
+  (`ResolvePresentFrameLatencyOverride`, `WaitBackbufferFrameLatency`, `ApplyPresentFrameLatencyOverrides`
+  moved out of the 778-line `dxgi_shared.cpp`). (1) All four presentation-policy sites now honour
+  `IsVulkanActive()`; the create-time rule rides on the existing
+  `ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate`, which already preserved FG
+  runtimes' descriptors byte-for-byte for the same reason. (2) One pacing-wait implementation,
+  `DXGIShared::WaitFlipQueuePacingObject`, replaces three copies (shared `INFINITE`,
+  `CallOriginalPresent`'s inlined 16 ms, `CWrapDXGISwapChain::WaitFrameLatency`'s `INFINITE`); ceiling
+  1000 ms, above the slowest healthy wait and below any freeze, and a miss latches pacing off process-wide.
+- **Dump targeting, also fixed.** The watchdog dumped with `targetTid=0` (`Heartbeat()` adopts a render
+  thread, `HeartbeatFromHelperThread()` - what the DXGI path calls - deliberately does not), so
+  `!analyze -hang` named the idle main thread and the deadlock was invisible until `~*kv`. A present that
+  never returned *is* a thread stuck inside CE's hook: `ResolveFreezeDumpTargetThread` +
+  `DXGIShared::GetThreadStuckInsideCePresentHook()` now name it.
+- **The watchdog itself needed no change.** It armed on a real D3D present, its Vulkan cross-API liveness
+  poll correctly found no recent tick, and it fired at 26 s because the alt-tab dropped the process out of
+  the foreground while a present was in flight (`inFlightTimeout = min(timeout, 15 s)`). Every step was
+  correct.
+- **Open.** Real-game DOOM Eternal / Strange Brigade Vulkan launch validation, plus a D3D title with
+  `backbuffer_count` set to confirm the pacing still paces.
+
 ### 2026-08-19 - Strange Brigade DX12 close crash: our diagnostic probe double-freed OptiScaler's chain
 
 `STATUS_HEAP_CORRUPTION` (`0xC0000374`) on game exit with OptiScaler, Special K, ReShade and the Steam

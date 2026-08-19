@@ -42,6 +42,20 @@ inline bool ShouldAssertRenderThreadFreeze(bool renderLoopHeartbeatObserved, boo
     return renderLoopHeartbeatObserved || presentInFlight || forceMonitor || runtimePresentationMonitor;
 }
 
+// Which thread a freeze dump must capture when nothing has claimed the
+// monitored render thread. A present that is still in flight is a thread stuck
+// inside CE's own hook, so its stack is the freeze - DOOM Eternal
+// `20260819_020933` dumped with targetTid=0 and !analyze -hang named the idle
+// main thread while the real deadlock sat in CE's flip-queue pacing wait on the
+// Vulkan runtime's presenter thread.
+inline DWORD ResolveFreezeDumpTargetThread(DWORD resolvedThreadId, bool presentInFlight,
+                                           DWORD presentHookThreadId) {
+    if (resolvedThreadId != 0) {
+        return resolvedThreadId;
+    }
+    return presentInFlight ? presentHookThreadId : 0;
+}
+
 // Liveness published by a present path that cannot call Heartbeat() itself -
 // currently the Vulkan layer's `runtimeState.vulkanPresentTick`, which lives in
 // a separate DLL. A tick that is never published, or one from the future, is

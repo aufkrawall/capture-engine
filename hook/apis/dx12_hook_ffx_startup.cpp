@@ -232,7 +232,8 @@ return deferRefresh;
 bool ShouldApplySwapchainDescriptorOverridesForCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
 return ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(
     captureEvidence.callerFromThirdPartyOverlay,
-    captureEvidence.authoritativeFFXRuntimeCreator || captureEvidence.authoritativeStreamlineRuntimeCreator);
+    captureEvidence.authoritativeFFXRuntimeCreator || captureEvidence.authoritativeStreamlineRuntimeCreator,
+    DXGIShared::IsVulkanActive());
 }
 
 
@@ -254,7 +255,9 @@ ReleaseStreamlineStartupActivationSwapchain("DX12: authoritative FFX swapchain c
 
 
 void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate(const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence, UINT bufferCount, UINT flags, DXGI_SWAP_EFFECT swapEffect) {
-if (!captureEvidence.authoritativeFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator) {
+const bool vulkanLayerOwnsPresentation = DXGIShared::IsVulkanActive();
+if (!captureEvidence.authoritativeFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator &&
+    !vulkanLayerOwnsPresentation) {
     return;
 }
 
@@ -263,10 +266,11 @@ const int logCount = s_runtimeDescriptorPassthroughLogCount.fetch_add(1, std::me
 if (logCount < 20 || (logCount % 128) == 0) {
     HookLogImportant(
         "%s: Preserving swapchain descriptor for authoritative FG runtime create "
-        "(ffx=%d officialFFX=%d streamline=%d caller=%s BufferCount=%u Flags=0x%X SwapEffect=%d count=%d)",
+        "(ffx=%d officialFFX=%d streamline=%d vulkanWSI=%d caller=%s BufferCount=%u Flags=0x%X SwapEffect=%d "
+        "count=%d)",
         context && context[0] ? context : "CreateSwapChain", captureEvidence.authoritativeFFXRuntimeCreator ? 1 : 0,
         captureEvidence.officialAMDFFXRuntimeCreator ? 1 : 0,
-        captureEvidence.authoritativeStreamlineRuntimeCreator ? 1 : 0,
+        captureEvidence.authoritativeStreamlineRuntimeCreator ? 1 : 0, vulkanLayerOwnsPresentation ? 1 : 0,
         captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack", bufferCount, flags,
         static_cast<int>(swapEffect), logCount + 1);
 }

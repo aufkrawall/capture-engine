@@ -397,6 +397,22 @@ TEST(FreezeWatchdogPolicyTest, VulkanLayerEvidenceExpiresWithTheLayer) {
     EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, false, true));
 }
 
+// A freeze dump that names no thread is a freeze dump that hides its own cause.
+// DOOM Eternal `20260819_020933` had no monitored render thread (the DXGI
+// heartbeat came from a helper-thread path that deliberately does not adopt),
+// so the dump targeted tid 0 and !analyze -hang reported the idle main thread
+// while the actual deadlock sat in CE's flip-queue pacing wait on the Vulkan
+// runtime's presenter thread.
+TEST(FreezeWatchdogPolicyTest, DumpTargetsTheThreadStuckInsideCePresentHook) {
+    // A thread that already claimed the render loop keeps the claim.
+    EXPECT_EQ(ce::freeze_watchdog_policy::ResolveFreezeDumpTargetThread(0x1234, true, 0x2164), 0x1234u);
+    // Otherwise the present that never returned names the target.
+    EXPECT_EQ(ce::freeze_watchdog_policy::ResolveFreezeDumpTargetThread(0, true, 0x2164), 0x2164u);
+    // No present in flight is no evidence, and must not invent a target.
+    EXPECT_EQ(ce::freeze_watchdog_policy::ResolveFreezeDumpTargetThread(0, false, 0x2164), 0u);
+    EXPECT_EQ(ce::freeze_watchdog_policy::ResolveFreezeDumpTargetThread(0, true, 0), 0u);
+}
+
 TEST(FreezeWatchdogPolicyTest, HeartbeatsArmFreezeAssertionsAndAdoptTheRenderThread) {
     FreezeWatchdog watchdog;
     EXPECT_FALSE(watchdog.HasObservedRenderLoop());

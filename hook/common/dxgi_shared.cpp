@@ -297,6 +297,22 @@ void ReleasePresent() {
 }
 
 namespace DXGIShared {
+// The thread that currently owns CE's Present scope, reported only while a
+// Present is actually in flight. When the freeze watchdog has no monitored
+// render thread it still has this: a present that never returned is stuck
+// somewhere inside CE's own hook, and that thread's stack is the one a freeze
+// dump has to contain. DOOM Eternal `20260819_020933` dumped with targetTid=0
+// and named the idle main thread instead of the presenter thread CE was
+// blocking, which is what made the deadlock invisible in !analyze -hang.
+DWORD GetThreadStuckInsideCePresentHook() {
+    if (g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) <= 0) {
+        return 0;
+    }
+    return dxgi_shared_g_presentThreadId.load(std::memory_order_acquire);
+}
+}
+
+namespace DXGIShared {
 thread_local unsigned dxgi_shared_s_wrapperSetColorSpaceForwardDepth = 0;
 }
 
@@ -421,134 +437,6 @@ namespace DXGIShared {
 bool IsVulkanPrimary() {
     // VK_LAYER_CE_overlay handles Vulkan separately
     return false;
-}
-}
-
-namespace DXGIShared {
-UINT ResolvePresentFrameLatencyOverride(const char** sourceOut) {
-    const auto& cfg = GetActiveGraphicsConfig();
-
-    if (cfg.frameLatency > 0) {
-        if (sourceOut)
-            *sourceOut = "frame_latency";
-        return static_cast<UINT>(cfg.frameLatency);
-    }
-    if (cfg.cpuPrerenderLimit > 0) {
-        if (sourceOut)
-            *sourceOut = "cpu_prerender_limit";
-        return static_cast<UINT>(cfg.cpuPrerenderLimit);
-    }
-    if (HasBackbufferCountOverride(cfg.backbufferCount)) {
-        if (sourceOut)
-            *sourceOut = "backbuffer_count-equivalent-depth";
-        return static_cast<UINT>(cfg.backbufferCount - 1);
-    }
-
-    if (sourceOut)
-        *sourceOut = nullptr;
-    return 0;
-}
-}
-
-namespace DXGIShared {
-// Wait for DWM flip queue room when backbuffer_count override is active.
-// Uses DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT (applied at
-// creation) to pace presents so the effective vsync queue depth matches
-// the override count, without changing the physical BufferCount.
-void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
-    const auto& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
-        static int s_logCount = 0;
-        if (s_logCount++ < 3)
-            HookLog("WaitBackbufferFrameLatency: no override (count=%d)", gfx.backbufferCount);
-        return;
-    }
-
-    IDXGISwapChain2* pSC2 = nullptr;
-    HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
-    if (FAILED(hrQI) || !pSC2) {
-        static int s_logCount = 0;
-        if (s_logCount++ < 5)
-            HookLog("WaitBackbufferFrameLatency: IDXGISwapChain2 QI failed hr=0x%08X", hrQI);
-        return;
-    }
-
-    HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
-    if (!hWaitable || hWaitable == INVALID_HANDLE_VALUE) {
-        static int s_logCount = 0;
-        if (s_logCount++ < 5)
-            HookLog("WaitBackbufferFrameLatency: GetFrameLatencyWaitableObject returned invalid handle");
-        pSC2->Release();
-        return;
-    }
-
-    DWORD waitResult = WaitForSingleObject(hWaitable, INFINITE);
-    if (waitResult == WAIT_OBJECT_0) {
-        static int s_logCount = 0;
-        if (s_logCount++ < 3)
-            HookLog("WaitBackbufferFrameLatency: wait succeeded");
-    } else {
-        static std::atomic<int> s_waitFailLogCount{0};
-        if (s_waitFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10)
-            HookLogImportant("WaitBackbufferFrameLatency: wait failed result=%lu error=%lu", waitResult,
-                             GetLastError());
-    }
-    pSC2->Release();
-}
-}
-
-namespace DXGIShared {
-// Apply user-configured present-queue latency overrides to an existing swapchain.
-// NOTE: backbuffer_count is handled at swapchain creation and resize time.
-void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain)
-        return;
-
-    const char* source = nullptr;
-    UINT requested = ResolvePresentFrameLatencyOverride(&source);
-    if (requested > 16)
-        requested = 16;
-
-    static std::mutex s_latencyOverrideMutex;
-    static uint64_t s_lastSwapchain = 0;
-    static UINT s_lastRequested = 0;
-
-    const uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
-
-    if (requested == 0) {
-        return;
-    }
-
-    IDXGISwapChain2* sc2 = nullptr;
-    if (FAILED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2)) || !sc2) {
-        static std::atomic<int> s_qiFailLogCount{0};
-        if (requested > 0 && s_qiFailLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLogImportant("ApplyPresentFrameLatencyOverrides: IDXGISwapChain2 unavailable for %s",
-                             source ? source : "override");
-        }
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(s_latencyOverrideMutex);
-
-    if (s_lastSwapchain == scKey && s_lastRequested == requested) {
-        sc2->Release();
-        return;
-    }
-
-    HRESULT hr = sc2->SetMaximumFrameLatency(requested);
-    if (SUCCEEDED(hr)) {
-        HookLogImportant("ApplyPresentFrameLatencyOverrides: SetMaximumFrameLatency(%u) OK (%s)", requested,
-                         source ? source : "override");
-    } else {
-        HookLogImportant("ApplyPresentFrameLatencyOverrides: SetMaximumFrameLatency(%u) failed hr=0x%08X (%s)",
-                         requested, hr, source ? source : "override");
-    }
-
-    s_lastSwapchain = scKey;
-    s_lastRequested = requested;
-
-    sc2->Release();
 }
 }
 

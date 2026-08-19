@@ -453,6 +453,17 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
     if (targetTid == 0) {
         targetTid = monitoredThreadId_.load(std::memory_order_acquire);
     }
+    if (targetTid == 0) {
+        const DWORD presentHookThreadId = DXGIShared::GetThreadStuckInsideCePresentHook();
+        targetTid = ce::freeze_watchdog_policy::ResolveFreezeDumpTargetThread(
+            targetTid, presentHookThreadId != 0, presentHookThreadId);
+        if (targetTid != 0) {
+            HookLogImportant(
+                "FreezeWatchdog: No monitored render thread — targeting tid=%lu, the thread still inside "
+                "CE's Present hook",
+                targetTid);
+        }
+    }
 
     HookLogImportant("FreezeWatchdog: Immediate dump requested (%s, targetTid=%lu)", reason.c_str(), targetTid);
     if (freezeCallback_) {

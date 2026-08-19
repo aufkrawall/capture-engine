@@ -1,21 +1,19 @@
 #include "dxgi_swapchain_wrap_internal.h"
+#include "../common/present_pacing_policy.h"
 
 
 void CWrapDXGISwapChain::WaitFrameLatency() {
     const auto& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount))
+    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(HasBackbufferCountOverride(gfx.backbufferCount),
+                                                               DXGIShared::IsVulkanActive(),
+                                                               /*pacingLatchedOff=*/false))
         return;
 
-    HANDLE waitable = EnsureFrameLatencyWaitable("backbuffer pacing");
-    if (waitable && waitable != INVALID_HANDLE_VALUE) {
-        DWORD waitResult = WaitForSingleObject(waitable, INFINITE);
-        if (waitResult != WAIT_OBJECT_0) {
-            static std::atomic<int> s_waitFailLogCount{0};
-            if (s_waitFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                WrapperLog("WaitFrameLatency: wait failed result=%lu error=%lu", waitResult, GetLastError());
-            }
-        }
-    }
+    // The wait itself, its ceiling, and the latch that retires a waitable object
+    // which stopped signalling all live in one place; this wrapper used to carry
+    // its own INFINITE copy.
+    DXGIShared::WaitFlipQueuePacingObject(EnsureFrameLatencyWaitable("backbuffer pacing"),
+                                          "CWrapDXGISwapChain::WaitFrameLatency");
 }
 
 HANDLE CWrapDXGISwapChain::EnsureFrameLatencyWaitable(const char* reason) {

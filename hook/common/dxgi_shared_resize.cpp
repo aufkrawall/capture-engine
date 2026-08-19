@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_pacing_policy.h"
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
@@ -17,7 +18,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     // this ensures our buffer count is applied even if CreateSwapChain override was missed.
     {
         const auto& cfg = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(cfg.backbufferCount)) {
+        // Same presentation-ownership rule as the pacing wait: while the CE
+        // Vulkan layer owns presentation this swapchain is the Vulkan runtime's
+        // transport, and the resize below must forward the runtime's own
+        // BufferCount and flags byte-for-byte.
+        if (ce::present_pacing_policy::ShouldApplyCePresentationPolicy(IsVulkanActive()) &&
+            HasBackbufferCountOverride(cfg.backbufferCount)) {
             UINT requested = static_cast<UINT>(cfg.backbufferCount);
             if (requested > 0 && requested != BufferCount) {
                 // Check swap effect for flip-model safety
@@ -137,7 +143,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     // Apply backbuffer count override from config
     {
         const auto& cfg = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(cfg.backbufferCount)) {
+        // Same presentation-ownership rule as the pacing wait: while the CE
+        // Vulkan layer owns presentation this swapchain is the Vulkan runtime's
+        // transport, and the resize below must forward the runtime's own
+        // BufferCount and flags byte-for-byte.
+        if (ce::present_pacing_policy::ShouldApplyCePresentationPolicy(IsVulkanActive()) &&
+            HasBackbufferCountOverride(cfg.backbufferCount)) {
             UINT requested = static_cast<UINT>(cfg.backbufferCount);
             if (requested > 0 && requested != BufferCount) {
                 DXGI_SWAP_CHAIN_DESC scDesc = {};
