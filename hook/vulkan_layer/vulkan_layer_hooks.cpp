@@ -20,6 +20,10 @@ void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance, P
     dispatch->fp_vkDestroyInstance = (PFN_vkDestroyInstance)gipa(instance, "vkDestroyInstance");
     dispatch->fp_vkEnumeratePhysicalDevices =
         (PFN_vkEnumeratePhysicalDevices)gipa(instance, "vkEnumeratePhysicalDevices");
+    dispatch->fp_vkEnumeratePhysicalDeviceGroups =
+        (PFN_vkEnumeratePhysicalDeviceGroups)gipa(instance, "vkEnumeratePhysicalDeviceGroups");
+    dispatch->fp_vkEnumeratePhysicalDeviceGroupsKHR =
+        (PFN_vkEnumeratePhysicalDeviceGroups)gipa(instance, "vkEnumeratePhysicalDeviceGroupsKHR");
     dispatch->fp_vkGetPhysicalDeviceProperties =
         (PFN_vkGetPhysicalDeviceProperties)gipa(instance, "vkGetPhysicalDeviceProperties");
     dispatch->fp_vkGetPhysicalDeviceProperties2 =
@@ -302,8 +306,15 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(VkInstance instance, const 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount,
                                                                   VkPhysicalDevice* pPhysicalDevices) {
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
-    if (!disp || !disp->fp_vkEnumeratePhysicalDevices)
-        return VK_ERROR_INITIALIZATION_FAILED;
+    if (!disp || !disp->fp_vkEnumeratePhysicalDevices) {
+        // CE has no chain to forward to, so it also has no business reporting a
+        // failure the application would not otherwise have seen. Reporting zero
+        // devices is the only honest answer this layer can give here.
+        LayerLog("Vulkan Layer: [Warn] vkEnumeratePhysicalDevices with no dispatch for instance %p", (void*)instance);
+        if (pPhysicalDeviceCount)
+            *pPhysicalDeviceCount = 0;
+        return VK_SUCCESS;
+    }
 
     VkResult res = disp->fp_vkEnumeratePhysicalDevices(instance, pPhysicalDeviceCount, pPhysicalDevices);
 
@@ -314,6 +325,78 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance ins
     }
 
     return res;
+}
+
+// vkEnumeratePhysicalDeviceGroups is the other way an application can obtain
+// VkPhysicalDevice handles, and a Vulkan 1.1 engine with multi-GPU support may
+// use it exclusively (Red Dead Redemption 2 does). Every handle it produces has
+// to reach the ownership map, otherwise vkCreateDevice below cannot find the
+// instance whose chain it must call into.
+namespace {
+
+void TrackPhysicalDeviceGroups(VkInstance instance, uint32_t groupCount,
+                               const VkPhysicalDeviceGroupProperties* pGroups) {
+    if (!pGroups)
+        return;
+    uint32_t tracked = 0;
+    for (uint32_t group = 0; group < groupCount; ++group) {
+        const uint32_t deviceCount = pGroups[group].physicalDeviceCount > VK_MAX_DEVICE_GROUP_SIZE
+                                         ? static_cast<uint32_t>(VK_MAX_DEVICE_GROUP_SIZE)
+                                         : pGroups[group].physicalDeviceCount;
+        for (uint32_t index = 0; index < deviceCount; ++index) {
+            VkPhysicalDevice physicalDevice = pGroups[group].physicalDevices[index];
+            if (physicalDevice == VK_NULL_HANDLE)
+                continue;
+            VulkanLayerState::Get().TrackPhysicalDevice(physicalDevice, instance);
+            ++tracked;
+        }
+    }
+    if (tracked > 0) {
+        LayerLog("Vulkan Layer: Tracked %u physical device(s) from %u device group(s) on instance %p", tracked,
+                 groupCount, (void*)instance);
+    }
+}
+
+VkResult EnumeratePhysicalDeviceGroupsCommon(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount,
+                                             VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties,
+                                             bool khrAlias) {
+    InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
+    PFN_vkEnumeratePhysicalDeviceGroups next =
+        disp ? (khrAlias ? disp->fp_vkEnumeratePhysicalDeviceGroupsKHR : disp->fp_vkEnumeratePhysicalDeviceGroups)
+             : nullptr;
+    if (!next && disp) {
+        // The loader aliases the two entry points, so either pointer answers.
+        next = khrAlias ? disp->fp_vkEnumeratePhysicalDeviceGroups : disp->fp_vkEnumeratePhysicalDeviceGroupsKHR;
+    }
+    if (!next) {
+        LayerLog("Vulkan Layer: [Warn] vkEnumeratePhysicalDeviceGroups%s with no dispatch for instance %p",
+                 khrAlias ? "KHR" : "", (void*)instance);
+        if (pPhysicalDeviceGroupCount)
+            *pPhysicalDeviceGroupCount = 0;
+        return VK_SUCCESS;
+    }
+
+    VkResult res = next(instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+    if (res >= VK_SUCCESS && pPhysicalDeviceGroupProperties && pPhysicalDeviceGroupCount) {
+        TrackPhysicalDeviceGroups(instance, *pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+    }
+    return res;
+}
+
+}  // namespace
+
+VKAPI_ATTR VkResult VKAPI_CALL
+Capture_vkEnumeratePhysicalDeviceGroups(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount,
+                                        VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties) {
+    return EnumeratePhysicalDeviceGroupsCommon(instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties,
+                                               false);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+Capture_vkEnumeratePhysicalDeviceGroupsKHR(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount,
+                                           VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties) {
+    return EnumeratePhysicalDeviceGroupsCommon(instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties,
+                                               true);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice,
@@ -339,12 +422,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         "enabledExtensionCount=%u, enabledLayerCount=%u",
         pCreateInfo->queueCreateInfoCount, pCreateInfo->enabledExtensionCount, pCreateInfo->enabledLayerCount);
 
-    VkInstance instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physicalDevice);
+    const auto owner = VulkanLayerState::Get().ResolveInstanceForPhysicalDevice(physicalDevice);
+    VkInstance instance = owner.instance;
     if (instance == VK_NULL_HANDLE) {
-        LayerLog("Vulkan Layer: [Error] Could not find instance for physical device %p", physicalDevice);
-        return VK_ERROR_INITIALIZATION_FAILED;
+        LayerLog("Vulkan Layer: [Warn] No instance known for physical device %p; creating the device untouched",
+                 (void*)physicalDevice);
+    } else {
+        LayerLog("Vulkan Layer: Found instance %p for physical device %p (%s)", (void*)instance, (void*)physicalDevice,
+                 ce::vulkan_instance_registry::ToString(owner.resolution));
     }
-    LayerLog("Vulkan Layer: Found instance %p for physical device %p", (void*)instance, (void*)physicalDevice);
 
     VkLayerDeviceCreateInfo* chain_info = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
     LayerLog("Vulkan Layer: Searching for VK_LAYER_LINK_INFO in device pNext chain...");
@@ -370,6 +456,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
     PFN_vkCreateDevice create_fn = (PFN_vkCreateDevice)gipa(instance, "vkCreateDevice");
+    if (!create_fn && instance != VK_NULL_HANDLE) {
+        create_fn = (PFN_vkCreateDevice)gipa(VK_NULL_HANDLE, "vkCreateDevice");
+    }
     if (!create_fn) {
         LayerLog(
             "Vulkan Layer: [Error] Failed to get next vkCreateDevice from "
@@ -377,6 +466,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             instance);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+
+    // An unresolvable instance means CE cannot query the physical device or
+    // reserve its overlay queue, but it must still not be the reason the game
+    // fails to create a device: hand the application's own request straight to
+    // the next link.
+    const bool passthroughOnly = instance == VK_NULL_HANDLE;
 
     VkResult result = VK_SUCCESS;
     bool captureInteropEnabled = false;
@@ -389,7 +484,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     std::vector<VkDeviceQueueCreateInfo> overlayQueueCreateInfos;
     std::vector<float> overlayQueuePriorities;
 
-    if (!g_LayerState.whitelisted) {
+    if (!g_LayerState.whitelisted || passthroughOnly) {
         // Passthrough: call next layer directly without modification
         result = create_fn(physicalDevice, pCreateInfo, pAllocator, pDevice);
     } else {

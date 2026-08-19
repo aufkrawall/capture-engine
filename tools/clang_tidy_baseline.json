@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 622,
+    "entries": 623,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -643,6 +643,7 @@
       "tests/test_video_metadata.cpp",
       "tests/test_vulkan_fg_build_policy.cpp",
       "tests/test_vulkan_fg_policy.cpp",
+      "tests/test_vulkan_instance_registry.cpp",
       "tests/test_vulkan_layer_registration.cpp",
       "tests/test_vulkan_renderer_policy.cpp",
       "tests/test_vulkan_sampler_policy_source.cpp",

@@ -23,6 +23,7 @@ VulkanLayerState::VulkanLayerState()
 void VulkanLayerState::RegisterInstance(VkInstance instance, InstanceDispatch* dispatch) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Instances[instance] = dispatch;
+    m_InstanceRegistry.AddInstance(instance, ce::vulkan_instance_registry::DispatchKey(instance));
 }
 
 void VulkanLayerState::UnregisterInstance(VkInstance instance) {
@@ -32,17 +33,30 @@ void VulkanLayerState::UnregisterInstance(VkInstance instance) {
         delete it->second;
         m_Instances.erase(it);
     }
+    m_InstanceRegistry.RemoveInstance(instance);
 }
 
 InstanceDispatch* VulkanLayerState::GetInstanceDispatch(VkInstance instance) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Instances.find(instance);
-    return (it != m_Instances.end()) ? it->second : nullptr;
+    if (it != m_Instances.end())
+        return it->second;
+    // The handle is not one CE recorded. Resolving it through the loader
+    // dispatch key still reaches the right chain, and returning nullptr here
+    // would make vkGetInstanceProcAddr report functions as unsupported.
+    const auto lookup = m_InstanceRegistry.ResolveInstance(instance);
+    if (lookup.instance == nullptr)
+        return nullptr;
+    auto resolved = m_Instances.find(static_cast<VkInstance>(lookup.instance));
+    return (resolved != m_Instances.end()) ? resolved->second : nullptr;
 }
 
 void VulkanLayerState::RegisterDevice(VkDevice device, DeviceDispatch* dispatch) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Devices[device] = dispatch;
+    const void* key = ce::vulkan_instance_registry::DispatchKey(device);
+    if (key != nullptr)
+        m_DevicesByDispatchKey[key] = device;
 }
 
 void VulkanLayerState::UnregisterDevice(VkDevice device) {
@@ -67,6 +81,10 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
     }
     m_DeviceLastSubmitThreadIds.erase(device);
     m_DeviceLastGraphicsSubmitQueues.erase(device);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - erase-by-value, order-independent
+    for (auto keyIt = m_DevicesByDispatchKey.begin(); keyIt != m_DevicesByDispatchKey.end();) {
+        keyIt = (keyIt->second == device) ? m_DevicesByDispatchKey.erase(keyIt) : std::next(keyIt);
+    }
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
@@ -74,7 +92,22 @@ DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
     auto it = m_Devices.find(device);
     if (it != m_Devices.end())
         return it->second;
-    return nullptr;
+    return ResolveDispatchByKey(device);
+}
+
+// Last resort for a dispatchable device-level handle CE never recorded. The
+// loader stamps a VkQueue with its VkDevice's dispatch table pointer, so the
+// device's own key answers for its queues too - and forwarding down the right
+// chain always beats failing a call the application made correctly.
+DeviceDispatch* VulkanLayerState::ResolveDispatchByKey(const void* dispatchableHandle) {
+    const void* key = ce::vulkan_instance_registry::DispatchKey(dispatchableHandle);
+    if (key == nullptr)
+        return nullptr;
+    auto keyIt = m_DevicesByDispatchKey.find(key);
+    if (keyIt == m_DevicesByDispatchKey.end())
+        return nullptr;
+    auto devIt = m_Devices.find(keyIt->second);
+    return (devIt != m_Devices.end()) ? devIt->second : nullptr;
 }
 
 void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t familyIndex) {
@@ -86,9 +119,9 @@ void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t fa
     auto deviceIt = m_Devices.find(device);
     if (deviceIt != m_Devices.end() && deviceIt->second) {
         VkPhysicalDevice physicalDevice = deviceIt->second->physicalDevice;
-        auto physToInstanceIt = m_PhysDevToInstance.find(physicalDevice);
-        if (physToInstanceIt != m_PhysDevToInstance.end()) {
-            auto instanceIt = m_Instances.find(physToInstanceIt->second);
+        const auto owner = m_InstanceRegistry.ResolveByPhysicalDevice(physicalDevice);
+        if (owner.instance != nullptr) {
+            auto instanceIt = m_Instances.find(static_cast<VkInstance>(owner.instance));
             if (instanceIt != m_Instances.end() && instanceIt->second &&
                 instanceIt->second->fp_vkGetPhysicalDeviceQueueFamilyProperties) {
                 uint32_t queueFamilyCount = 0;
@@ -115,7 +148,7 @@ DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
         if (itDev != m_Devices.end())
             return itDev->second;
     }
-    return nullptr;
+    return ResolveDispatchByKey(queue);
 }
 
 VkDevice VulkanLayerState::GetVkDeviceFromQueue(VkQueue queue) {
@@ -315,13 +348,22 @@ HWND VulkanLayerState::GetSurfaceWindow(VkSurfaceKHR surface) {
 
 void VulkanLayerState::TrackPhysicalDevice(VkPhysicalDevice pd, VkInstance inst) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    m_PhysDevToInstance[pd] = inst;
+    m_InstanceRegistry.AddPhysicalDevice(pd, inst);
 }
 
 VkInstance VulkanLayerState::GetInstanceFromPhysicalDevice(VkPhysicalDevice pd) {
+    return ResolveInstanceForPhysicalDevice(pd).instance;
+}
+
+// Ownership plus how it was established, so a caller can log that it fell back
+// on the loader dispatch key instead of a handle CE itself enumerated.
+VulkanLayerState::PhysicalDeviceOwner VulkanLayerState::ResolveInstanceForPhysicalDevice(VkPhysicalDevice pd) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    auto it = m_PhysDevToInstance.find(pd);
-    return (it != m_PhysDevToInstance.end()) ? it->second : VK_NULL_HANDLE;
+    const auto lookup = m_InstanceRegistry.ResolveByPhysicalDevice(pd);
+    PhysicalDeviceOwner owner;
+    owner.instance = static_cast<VkInstance>(lookup.instance);
+    owner.resolution = lookup.resolution;
+    return owner;
 }
 
 void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {

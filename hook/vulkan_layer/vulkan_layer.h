@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "vulkan_instance_registry.h"
+
 struct SharedMemoryLayout;
 
 // Reentrancy guard shared with other hooks
@@ -26,6 +28,11 @@ struct InstanceDispatch {
     PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr = nullptr;
     PFN_vkDestroyInstance fp_vkDestroyInstance = nullptr;
     PFN_vkEnumeratePhysicalDevices fp_vkEnumeratePhysicalDevices = nullptr;
+    // A Vulkan 1.1 application may take its physical devices from the device
+    // group enumeration only, so both entry points have to feed the ownership
+    // map that vkCreateDevice depends on.
+    PFN_vkEnumeratePhysicalDeviceGroups fp_vkEnumeratePhysicalDeviceGroups = nullptr;
+    PFN_vkEnumeratePhysicalDeviceGroups fp_vkEnumeratePhysicalDeviceGroupsKHR = nullptr;
     PFN_vkGetPhysicalDeviceProperties fp_vkGetPhysicalDeviceProperties = nullptr;
     PFN_vkGetPhysicalDeviceProperties2 fp_vkGetPhysicalDeviceProperties2 = nullptr;
     PFN_vkGetPhysicalDeviceFeatures fp_vkGetPhysicalDeviceFeatures = nullptr;
@@ -236,6 +243,12 @@ public:
     void TrackPhysicalDevice(VkPhysicalDevice pd, VkInstance inst);
     VkInstance GetInstanceFromPhysicalDevice(VkPhysicalDevice pd);
 
+    struct PhysicalDeviceOwner {
+        VkInstance instance = VK_NULL_HANDLE;
+        ce::vulkan_instance_registry::Resolution resolution = ce::vulkan_instance_registry::Resolution::kNone;
+    };
+    PhysicalDeviceOwner ResolveInstanceForPhysicalDevice(VkPhysicalDevice pd);
+
     bool IsOverlayEnabled() const {
         return m_OverlayEnabled;
     }
@@ -280,6 +293,7 @@ public:
 
 private:
     VulkanLayerState();
+    DeviceDispatch* ResolveDispatchByKey(const void* dispatchableHandle);
     mutable std::recursive_mutex m_Lock;
     std::unordered_map<VkInstance, InstanceDispatch*> m_Instances;
     std::unordered_map<VkDevice, DeviceDispatch*> m_Devices;
@@ -288,7 +302,14 @@ private:
     std::unordered_map<VkQueue, uint32_t> m_QueueFlags;
     std::unordered_map<VkSwapchainKHR, SwapchainData*> m_Swapchains;
     std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
-    std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
+    // Instance/physical-device ownership, including the loader dispatch-key
+    // fallback that answers for handles no enumeration hook of ours produced.
+    ce::vulkan_instance_registry::Registry m_InstanceRegistry;
+    // A VkQueue carries its VkDevice's dispatch table pointer, but only once
+    // the loader's trampoline has stamped it - which happens after the layer
+    // chain returned from vkGetDeviceQueue. So the key is recorded per device
+    // and consulted at lookup time, never captured from a fresh queue handle.
+    std::unordered_map<const void*, VkDevice> m_DevicesByDispatchKey;
     std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
     std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
     std::atomic<bool> m_LearnPresentTopology{true};
@@ -321,6 +342,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount,
                                                                   VkPhysicalDevice* pPhysicalDevices);
+VKAPI_ATTR VkResult VKAPI_CALL
+Capture_vkEnumeratePhysicalDeviceGroups(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount,
+                                        VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties);
+VKAPI_ATTR VkResult VKAPI_CALL
+Capture_vkEnumeratePhysicalDeviceGroupsKHR(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount,
+                                           VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice,
                                                       const VkDeviceCreateInfo* pCreateInfo,
                                                       const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);

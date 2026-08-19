@@ -409,9 +409,18 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
     if (strcmp(pName, "vkCreateDevice") == 0) {
         return (PFN_vkVoidFunction)Capture_vkCreateDevice;
     }
-    // Always intercept EnumeratePhysicalDevices to track instance-PD mapping
+    // Always intercept EnumeratePhysicalDevices to track instance-PD mapping.
+    // The device-group entry points produce the same handles and must be
+    // tracked too: a multi-GPU-aware Vulkan 1.1 title may use only those, and
+    // vkCreateDevice needs the owning instance for whichever route was taken.
     if (strcmp(pName, "vkEnumeratePhysicalDevices") == 0) {
         return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDevices;
+    }
+    if (strcmp(pName, "vkEnumeratePhysicalDeviceGroups") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDeviceGroups;
+    }
+    if (strcmp(pName, "vkEnumeratePhysicalDeviceGroupsKHR") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDeviceGroupsKHR;
     }
 
     if (strcmp(pName, "vkEnumerateInstanceLayerProperties") == 0 ||
