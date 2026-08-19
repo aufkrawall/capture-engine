@@ -176,6 +176,7 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         state.submitted[currentIndex] = false;
     }
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    ScopedBorrowedQueueSubmission prerenderSubmissionGuard(queue);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Prerender: marker submit failed result=%d queue=%p", static_cast<int>(submitResult), queue);

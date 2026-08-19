@@ -337,6 +337,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         return false;
     }
 
+    ScopedBorrowedQueueSubmission captureSubmissionGuard(queue);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submit, fence);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Capture queue submit failed (index=%u result=%d); Present wait chain unchanged",
@@ -620,6 +621,7 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages.data();
     }
+    ScopedBorrowedQueueSubmission screenshotSubmissionGuard(queue);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
     if (submitResult != VK_SUCCESS) {
         disp->fp_vkDestroyFence(device, fence, nullptr);

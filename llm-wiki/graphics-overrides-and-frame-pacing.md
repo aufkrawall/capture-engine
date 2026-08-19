@@ -123,6 +123,32 @@ Primary sources:
   `GL_NEAREST_MIPMAP_NEAREST`. It verifies actual mip storage and device limits at those mutation boundaries. CPU
   prerender sync rings remain owned per HGLRC.
 
+## Overlay submission queue (Vulkan)
+
+- **The overlay is a render pass, so it needs `VK_QUEUE_GRAPHICS_BIT` - and the queue a game presents from
+  need not have it.** DOOM Eternal (idTech 7) presents from queue family 2, compute + transfer only, once its
+  real render loop starts. `ResolveOverlaySubmitTarget` (`hook/vulkan_layer/layer_overlay_queue.cpp`) picks
+  the present queue when it is graphics-capable, else a queue CE reserved for itself at `vkCreateDevice`,
+  else one of the game's graphics queues under `ScopedBorrowedQueueSubmission`. Rules and reasoning live in
+  `hook/vulkan_layer/overlay_submit_queue_policy.h`.
+- Submitting elsewhere is free: the overlay already signals a semaphore the rewritten present waits on, and
+  semaphores are queue-agnostic. The reserved queue is the preferred tier precisely because CE owns it
+  outright - the overlay submit runs beside the game's graphics work rather than queueing behind it, so it
+  adds no latency and no serialization.
+- CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
+  entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
+  the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one
+  past the game's own, so the game can never receive it from `vkGetDeviceQueue`.
+- Borrowing is the last resort for hardware that exposes a single graphics queue (AMD). `VkQueue` is
+  externally synchronized, so every submission to the borrowed queue - the layer's `vkQueueSubmit`,
+  `vkQueueSubmit2`, `vkQueueSubmit2KHR` wrappers, the capture/screenshot submits and the prerender marker
+  ring - passes through one lock. `ShouldSerializeQueueSubmission` makes that a single relaxed atomic load
+  for every other queue in the process. Lock order is always overlay state -> borrowed queue.
+- Capture and screenshots need only `VK_QUEUE_TRANSFER_BIT` and keep using the present queue.
+- Open boundary: CE's swapchain-image barriers use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family ownership
+  transfer, matching what a game itself does when it renders on one family and presents on another.
+  `vkCreateSwapchainKHR` logs the requested `sharingMode` so a real run can say which case a title is in.
+
 ## Queue-depth and limiter invariants
 
 - D3D10 limit zero uses a native event query; D3D10 limits 1-6 use DXGI maximum frame latency. D3D11 query rings and

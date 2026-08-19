@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 618,
+    "entries": 621,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -354,6 +354,8 @@
       "hook/vulkan_layer/layer_ipc.cpp",
       "hook/vulkan_layer/layer_main.cpp",
       "hook/vulkan_layer/layer_overlay.cpp",
+      "hook/vulkan_layer/layer_overlay_queue.cpp",
+      "hook/vulkan_layer/layer_overlay_render.cpp",
       "hook/vulkan_layer/vulkan_layer.cpp",
       "hook/vulkan_layer/vulkan_layer_hooks.cpp",
       "hook/vulkan_layer/vulkan_layer_present.cpp",
@@ -592,6 +594,7 @@
       "tests/test_nv_lod_spread_override.cpp",
       "tests/test_overlay_compat.cpp",
       "tests/test_overlay_fg_status_publication.cpp",
+      "tests/test_overlay_submit_queue_policy.cpp",
       "tests/test_overlay_system.cpp",
       "tests/test_path_utils.cpp",
       "tests/test_performance_metrics.cpp",

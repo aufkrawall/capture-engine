@@ -1,5 +1,50 @@
 # llm-wiki Log
 
+### 2026-08-19 - DOOM Eternal overlay vanished after 239 frames: the game presents from a compute-only queue
+
+Session `20260819_030710` (build 0.1.6164, the build that fixed the startup hang). The overlay drew for
+239 frames and then never again. Fixed in 0.1.6168.
+
+- **What the log says, verbatim.** `Vulkan Layer: Overlay skipped on non-graphics present queue family 2`,
+  five times from five different thread ids inside 15 ms, starting `03:07:34.452`. `perf_metrics_8696.csv`
+  agrees exactly: `overlay_us` is 47-270 us up to frame 239 and 0-1 us for all 2800 frames after it - the
+  early-out, every present, for the rest of the run.
+- **Root cause.** idTech 7 presents from queue family 2, which on NVIDIA is compute + transfer with no
+  `VK_QUEUE_GRAPHICS_BIT`, once the real render loop starts (the first ~240 frames go out on the graphics
+  queue). The overlay is a render pass, so `RenderOverlay` recorded and submitted on whatever queue the
+  present arrived on and simply gave up when that queue had no graphics support. Capture and screenshots
+  were unaffected: they only need `VK_QUEUE_TRANSFER_BIT`, which family 2 has.
+- **Fix: submit the overlay on a graphics queue instead of on the present queue.** Nothing else has to
+  change - the overlay already signals a semaphore the rewritten present waits on, and semaphores are
+  queue-agnostic. `ResolveOverlaySubmitTarget` picks, in order:
+  1. the present queue, when it supports graphics (every title that worked before is bit-for-bit unchanged);
+  2. a queue CE reserved for itself in `vkCreateDevice` by asking for one more queue than the game did in a
+     graphics family (`BuildOverlayQueueReservation`). CE owns it outright, so the overlay submit runs
+     beside the game's graphics work instead of queueing behind it: no serialization, no added latency;
+  3. one of the game's own graphics queues, with every submission to that one queue - the game's and CE's -
+     serialized through `ScopedBorrowedQueueSubmission`. AMD exposes a single graphics queue, so a game
+     there can leave nothing to reserve, and borrowing is what keeps the overlay alive on that hardware.
+- **Invariants that make the reservation safe.** CE never asks for more queues than the family exposes
+  (that fails `vkCreateDevice` outright), never widens a protected queue-create entry, never requests a
+  priority above the highest the game asked for, and falls back to the game's unmodified queue request and
+  retries if the driver rejects the create anyway. The reserved index is one past the game's own, so the
+  game can never receive CE's queue from `vkGetDeviceQueue`.
+- **The borrow lock costs nothing when it is not in use.** `ShouldSerializeQueueSubmission` is one relaxed
+  atomic load against a handle that stays `VK_NULL_HANDLE` unless tier 3 actually engaged, and the borrowed
+  queue is published before the first borrowed submit so no game submission can race the decision. Lock
+  order is always overlay-state -> borrowed-queue; the game's submit path takes only the latter.
+- **Also fixed in passing.** The overlay backend's own init/upload queue was the game's graphics queue 0,
+  submitted to from the layer with no external synchronization at all. It now prefers CE's reserved queue.
+- **Known boundary (unverified).** CE's barriers use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family
+  ownership transfer, which is exactly what the game itself does across the same boundary when it renders
+  on one family and presents on another. A strict reading of the spec would want a release/acquire pair for
+  an EXCLUSIVE swapchain whose last writer is the present family; doing it would cost two extra present-queue
+  submits per frame on the critical path. `vkCreateSwapchainKHR` now logs `sharingMode=` so a real run can
+  say which case a title is in. If a title ever shows corruption here, the lever is a CONCURRENT swapchain,
+  not a per-frame transfer.
+- **Open.** Real-game validation on DOOM Eternal (overlay present and stable at 138 fps, no stutter), plus
+  a graphics-queue-presenting title to confirm tier 1 is unchanged.
+
 ### 2026-08-19 - DOOM Eternal Vulkan startup hang: CE's flip-queue pacing wait blocked NVIDIA's WSI presenter thread
 
 Session `20260819_020933` (build 0.1.6163). A real deadlock, not a freeze-watchdog false positive - the

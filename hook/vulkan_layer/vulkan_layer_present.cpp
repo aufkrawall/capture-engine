@@ -103,7 +103,14 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     }
 
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
-    LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d", res);
+    // The sharing mode decides whether CE may write the swapchain image from a
+    // queue family other than the presenting one without an ownership transfer.
+    // EXCLUSIVE is fine as long as CE uses the family the game rendered on,
+    // which is what the reserved overlay queue guarantees; record it so a real
+    // run can prove which case a title is in.
+    LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (sharingMode=%s familyCount=%u)", res,
+             pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
+             pCreateInfo->queueFamilyIndexCount);
     if (res == VK_SUCCESS) {
         auto* sd = new SwapchainData();
         sd->swapchain = *pSwapchain;

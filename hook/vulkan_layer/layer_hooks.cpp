@@ -44,6 +44,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
             return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
+        ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
     }
 
@@ -63,6 +64,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
     if (fence != VK_NULL_HANDLE) {}
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
+    ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
 
@@ -75,6 +77,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
             return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
+        ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
     }
 
@@ -94,6 +97,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
     if (fence != VK_NULL_HANDLE) {}
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
+    ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
 }
 
@@ -104,6 +108,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
         if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
             return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
         VulkanLayerState::Get().NoteQueueSubmit(queue);
+        ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
     }
 
@@ -120,6 +125,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
         return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
+    ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }
 

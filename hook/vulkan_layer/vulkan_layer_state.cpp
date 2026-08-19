@@ -133,6 +133,42 @@ bool VulkanLayerState::QueueSupportsTransfer(VkQueue queue) {
     return (flags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0;
 }
 
+VkQueue VulkanLayerState::FindGameGraphicsQueue(VkDevice device) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    DeviceDispatch* dispatch = nullptr;
+    auto deviceIt = m_Devices.find(device);
+    if (deviceIt != m_Devices.end()) {
+        dispatch = deviceIt->second;
+    }
+    // Deterministic pick: lowest queue family index, then lowest handle, so the
+    // borrow decision is stable across runs and across the maps' iteration
+    // order. CE's own reserved queue is never a borrow candidate.
+    VkQueue best = VK_NULL_HANDLE;
+    uint32_t bestFamily = VK_QUEUE_FAMILY_IGNORED;
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - selection is order-independent by construction
+    for (const auto& entry : m_Queues) {
+        if (entry.second != device || entry.first == VK_NULL_HANDLE) {
+            continue;
+        }
+        if (dispatch && entry.first == dispatch->overlayQueue) {
+            continue;
+        }
+        auto flagsIt = m_QueueFlags.find(entry.first);
+        if (flagsIt == m_QueueFlags.end() || (flagsIt->second & VK_QUEUE_GRAPHICS_BIT) == 0) {
+            continue;
+        }
+        auto familyIt = m_QueueFamilies.find(entry.first);
+        const uint32_t family = (familyIt != m_QueueFamilies.end()) ? familyIt->second : VK_QUEUE_FAMILY_IGNORED;
+        if (best == VK_NULL_HANDLE || family < bestFamily ||
+            (family == bestFamily && reinterpret_cast<uintptr_t>(entry.first) <
+                                         reinterpret_cast<uintptr_t>(best))) {
+            best = entry.first;
+            bestFamily = family;
+        }
+    }
+    return best;
+}
+
 void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto queueIt = m_Queues.find(queue);

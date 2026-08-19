@@ -34,6 +34,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "vulkan_layer_present.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),
         os.path.join(layer_dir, "layer_overlay.cpp"),
+        os.path.join(layer_dir, "layer_overlay_queue.cpp"),
+        os.path.join(layer_dir, "layer_overlay_render.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_capture_d3d11_interop.cpp"),
         os.path.join(layer_dir, "layer_capture_textures.cpp"),

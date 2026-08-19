@@ -378,6 +378,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     bool samplerAnisotropyEnabled = false;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
+    // Must outlive the vkCreateDevice call below: modifiedCreateInfo points at
+    // them when CE reserves its own overlay submission queue.
+    OverlayQueueReservation overlayQueueReservation;
+    std::vector<VkDeviceQueueCreateInfo> overlayQueueCreateInfos;
+    std::vector<float> overlayQueuePriorities;
 
     if (!g_LayerState.whitelisted) {
         // Passthrough: call next layer directly without modification
@@ -525,8 +530,29 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                 appSpecifiedTimeline ? (appAlreadyEnabledTimeline ? 1 : 0) : -1);
         }
 
+        // The overlay is a render pass, so it needs a graphics-capable queue.
+        // A game that presents from a compute-only queue (DOOM Eternal presents
+        // from queue family 2) leaves CE nowhere to submit unless it asked for
+        // a queue of its own here, while the device is still being created.
+        if (BuildOverlayQueueReservation(instanceDispatch, physicalDevice, *pCreateInfo, overlayQueueCreateInfos,
+                                         overlayQueuePriorities, overlayQueueReservation)) {
+            modifiedCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(overlayQueueCreateInfos.size());
+            modifiedCreateInfo.pQueueCreateInfos = overlayQueueCreateInfos.data();
+        }
+
         LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
         result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        if (result != VK_SUCCESS && overlayQueueReservation.reserved) {
+            // Never let CE's extra queue be the reason a game fails to start.
+            LayerLog(
+                "Vulkan Layer: vkCreateDevice failed with the reserved overlay queue (result=%d); retrying with "
+                "the game's own queue request",
+                result);
+            overlayQueueReservation = OverlayQueueReservation{};
+            modifiedCreateInfo.queueCreateInfoCount = pCreateInfo->queueCreateInfoCount;
+            modifiedCreateInfo.pQueueCreateInfos = pCreateInfo->pQueueCreateInfos;
+            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        }
     }
 
     LayerLog("Vulkan Layer: next vkCreateDevice returned %d", result);
@@ -541,6 +567,22 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
+
+    if (overlayQueueReservation.reserved && dispatch->fp_vkGetDeviceQueue) {
+        dispatch->fp_vkGetDeviceQueue(*pDevice, overlayQueueReservation.queueFamilyIndex,
+                                      overlayQueueReservation.queueIndex, &dispatch->overlayQueue);
+        if (dispatch->overlayQueue != VK_NULL_HANDLE) {
+            dispatch->overlayQueueFamilyIndex = overlayQueueReservation.queueFamilyIndex;
+            VulkanLayerState::Get().RegisterQueue(dispatch->overlayQueue, *pDevice,
+                                                  overlayQueueReservation.queueFamilyIndex);
+            LayerLog("Vulkan Layer: Overlay submit queue ready (queue=%p family=%u index=%u)",
+                     (void*)dispatch->overlayQueue, overlayQueueReservation.queueFamilyIndex,
+                     overlayQueueReservation.queueIndex);
+        } else {
+            LayerLog("Vulkan Layer: [Warning] Reserved overlay queue family=%u index=%u could not be fetched",
+                     overlayQueueReservation.queueFamilyIndex, overlayQueueReservation.queueIndex);
+        }
+    }
 
     LayerLog("Vulkan Layer: Capture_vkCreateDevice END - success, device=%p", (void*)*pDevice);
     return VK_SUCCESS;

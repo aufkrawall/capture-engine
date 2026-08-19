@@ -6,22 +6,11 @@
  * while content rendering is delegated to OverlayAdapter.
  */
 
-#include <chrono>
-#include <string>
-#include <vector>
-#include "../common/custom_overlay_vk.h"  // For VulkanBackend access
-#include "../common/dxgi_shared.h"
-#include "../common/ipc_client.h"
-#include "../common/overlay_adapter.h"
-#include "../common/overlay_metrics_publisher.h"
-#include "../common/perf_logger.h"
-#include "../common/performance_metrics.h"
-#include "../common/system_metrics.h"
-#include "layer_main.h"
-#include "vulkan_layer.h"
-#include "vulkan_presentation_color.h"
+#include "layer_overlay_internal.h"
 
-#include "../common/input_manager.h"
+#include "../common/dxgi_shared.h"
+#include "../common/system_metrics.h"
+#include "vulkan_presentation_color.h"
 
 // Detect if a DLL is loaded from outside System32 (i.e. a DXVK replacement).
 // NOTE: IsDllFromProject() from layer_main.h provides a more reliable version-
@@ -43,38 +32,10 @@ static const char* DetectTranslatedGraphicsAPIName() {
     return DXGIShared::SelectTranslatedGraphicsAPIName(hasDxvkD3D11, hasDxvkD3D9, hasVkd3dD3D12, hasDX10);
 }
 
-namespace {
+std::mutex g_OverlayMutex;
+std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 
-// Overlay state per device - manages Vulkan frame resources
-struct OverlayState {
-    bool initialized = false;
-    VkDevice device = VK_NULL_HANDLE;
-    VkInstance instance = VK_NULL_HANDLE;
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> commandBuffers;
-    std::vector<VkFence> fences;
-    std::vector<VkSemaphore> semaphores;
-    std::vector<VkSemaphore> preSignaledSemaphores;  // Always-signaled semaphores for skipped frames
-    std::vector<VkFramebuffer> framebuffers;
-    std::vector<VkImageView> imageViews;
-    std::vector<VkImage> swapchainImages;
-    VkExtent2D extent = {0, 0};
-    VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
-    VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    PerformanceMetrics* metrics = nullptr;
-    bool needsWindowHook = false;
-    uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-    // OverlayAdapter for content rendering
-    OverlayAdapter* overlayAdapter = nullptr;
-};
-
-static std::mutex g_OverlayMutex;
-static std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
-
-static void SyncOverlayActiveFlagLocked() {
+void SyncOverlayActiveFlagLocked() {
     bool overlayActive = false;
     // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - only existence of any initialized state matters
     for (const auto& entry : g_OverlayStates) {
@@ -85,8 +46,6 @@ static void SyncOverlayActiveFlagLocked() {
     }
     LayerIPC_SetOverlayActive(overlayActive);
 }
-
-}  // anonymous namespace
 
 // Find graphics queue family index
 static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDispatch* instDisp) {
@@ -104,7 +63,7 @@ static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDis
     return 0;  // Fallback to 0 if not found
 }
 
-static bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex) {
+bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex) {
     if (!disp || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED || state.commandBuffers.empty()) {
         return false;
     }
@@ -285,10 +244,16 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
     }
 
-    // Find graphics queue family
-    uint32_t graphicsQueueFamily = FindGraphicsQueueFamily(state.physicalDevice, instDisp);
+    // Find graphics queue family. Prefer the family CE reserved its own queue
+    // in, so the command pool built here is already the one the per-present
+    // submit will use even when the game presents from a non-graphics queue.
+    uint32_t graphicsQueueFamily = (disp->overlayQueue != VK_NULL_HANDLE &&
+                                    disp->overlayQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED)
+                                       ? disp->overlayQueueFamilyIndex
+                                       : FindGraphicsQueueFamily(state.physicalDevice, instDisp);
     state.queueFamilyIndex = graphicsQueueFamily;
-    LayerLog("Vulkan Layer: InitializeOverlay - Using graphics queue family %d", graphicsQueueFamily);
+    LayerLog("Vulkan Layer: InitializeOverlay - Using graphics queue family %d (reservedOverlayQueue=%d)",
+             graphicsQueueFamily, disp->overlayQueue != VK_NULL_HANDLE ? 1 : 0);
 
     // Create render pass (load existing content, don't clear)
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
@@ -381,14 +346,20 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog("Vulkan Layer: InitializeOverlay - Creating OverlayAdapter...");
     state.overlayAdapter = new OverlayAdapter();
 
-    // Get queue for Vulkan backend
-    VkQueue queue = VK_NULL_HANDLE;
-    disp->fp_vkGetDeviceQueue(device, graphicsQueueFamily, 0, &queue);
+    // Get queue for Vulkan backend. CE's reserved queue is the only graphics
+    // queue CE owns outright; the game's queue 0 is externally synchronized by
+    // the game and must not be submitted to from the layer.
+    VkQueue queue = disp->overlayQueue;
+    uint32_t backendQueueFamily = disp->overlayQueueFamilyIndex;
+    if (queue == VK_NULL_HANDLE) {
+        disp->fp_vkGetDeviceQueue(device, graphicsQueueFamily, 0, &queue);
+        backendQueueFamily = graphicsQueueFamily;
+    }
 
     // Initialize with dispatch tables
     LayerLog("Vulkan Layer: InitializeOverlay - Calling InitVulkan...");
     bool initResult =
-        state.overlayAdapter->InitVulkan(device, disp->physicalDevice, queue, graphicsQueueFamily, disp, instDisp);
+        state.overlayAdapter->InitVulkan(device, disp->physicalDevice, queue, backendQueueFamily, disp, instDisp);
     LayerLog("Vulkan Layer: InitializeOverlay - InitVulkan returned %d", initResult);
     if (!initResult) {
         LayerLog("Vulkan Layer: [Error] Failed to initialize OverlayAdapter");
@@ -563,217 +534,4 @@ void CleanupOverlay(VkDevice device) {
     g_OverlayStates.erase(it);
     SyncOverlayActiveFlagLocked();
     LayerLog("Vulkan Layer: CleanupOverlay complete");
-}
-
-// Render overlay using OverlayAdapter
-// fenceWaitUs returns the time spent waiting for fence (previous frame sync)
-bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
-                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs) {
-    // Early out if overlay is disabled (use seqlock for consistent read)
-    if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
-        return false;
-    }
-
-    // PERFORMANCE: Use try_lock to avoid blocking the render thread
-    if (!g_OverlayMutex.try_lock()) {
-        static std::atomic<int> s_skipCount{0};
-        int skips = ++s_skipCount;
-        if (skips <= 5) {
-            LayerLog("Vulkan Layer: Overlay mutex busy, skipping frame (imageIndex=%u)", imageIndex);
-        }
-        return false;
-    }
-    // RAII unlock when we exit
-    std::lock_guard<std::mutex> lock(g_OverlayMutex, std::adopt_lock);
-    auto it = g_OverlayStates.find(device);
-    if (it == g_OverlayStates.end() || !it->second.initialized)
-        return false;
-
-    OverlayState& state = it->second;
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-    if (!disp)
-        return false;
-
-    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-        static std::atomic<int> s_unknownQueueLogCount{0};
-        if (s_unknownQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            LayerLog("Vulkan Layer: Overlay skipped because present queue family is unknown");
-        }
-        return false;
-    }
-
-    if (!VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
-        static std::atomic<int> s_nonGraphicsQueueLogCount{0};
-        if (s_nonGraphicsQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            LayerLog("Vulkan Layer: Overlay skipped on non-graphics present queue family %u", queueFamilyIndex);
-        }
-        return false;
-    }
-
-    if ((state.commandPool == VK_NULL_HANDLE || state.queueFamilyIndex != queueFamilyIndex) &&
-        !RecreateOverlayCommandResources(state, disp, queueFamilyIndex)) {
-        return false;
-    }
-
-    // Deferred window hook
-    if (state.needsWindowHook) {
-        HWND hwnd = GetForegroundWindow();
-        if (hwnd) {
-            DWORD foregroundPid = 0;
-            GetWindowThreadProcessId(hwnd, &foregroundPid);
-            if (foregroundPid == GetCurrentProcessId()) {
-                InputManager::Get().HookWindow(hwnd);
-                state.needsWindowHook = false;
-                LayerLog("Vulkan Layer: Deferred window hook successful (hwnd=%p)", hwnd);
-            }
-        }
-    }
-
-    // Update metrics
-    if (state.metrics) {
-        state.metrics->Update(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-        ce::overlay_metrics::PublishDetectedOverlayFGMetrics(state.metrics, "Vulkan::RenderOverlay");
-    }
-
-    // FENCE WAIT: Wait for GPU to be ready for this buffer
-    // Unlike DX12's value-based fences, Vulkan binary semaphores cannot be reused
-    // until consumed. We MUST wait for the previous overlay work to complete
-    // before we can safely signal the semaphore again.
-    //
-    // This is the only reliable way to prevent flickering with binary semaphores.
-    // The wait time is typically minimal since we use triple buffering.
-    VkFence fence = state.fences[imageIndex];
-    int64_t fenceStartUs = PerfLogger::GetQpcUs();
-
-    // Wait for GPU with a reasonable timeout (16ms = ~1 frame at 60fps)
-    // This ensures overlay appears every frame (no flickering)
-    constexpr uint64_t FENCE_TIMEOUT_NS = 16000000;  // 16ms
-    VkResult fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
-
-    int64_t fenceEndUs = PerfLogger::GetQpcUs();
-    if (fenceWaitUs) {
-        *fenceWaitUs = static_cast<int32_t>(fenceEndUs - fenceStartUs);
-    }
-
-    if (fenceResult == VK_TIMEOUT) {
-        // Skip this overlay frame instead of force-resetting/reusing an in-flight
-        // command buffer, which can cause transient glyph artifacts.
-        static std::atomic<int> s_timeoutCount{0};
-        int timeouts = ++s_timeoutCount;
-        if (timeouts <= 5) {
-            LayerLog("Vulkan Layer: Fence wait timeout after %d us (buffer %u, timeout=%d)",
-                     static_cast<int>(fenceEndUs - fenceStartUs), imageIndex, timeouts);
-        }
-        return false;
-    } else if (fenceResult != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
-        return false;
-    } else {
-        // Success - reset fence for this frame's work
-        disp->fp_vkResetFences(device, 1, &fence);
-    }
-
-    // Record command buffer
-    VkCommandBuffer cmd = state.commandBuffers[imageIndex];
-    disp->fp_vkResetCommandBuffer(cmd, 0);
-
-    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
-        return false;
-
-    // CRITICAL: Transition image preserving existing content
-    // The game has already rendered to this image, so we must preserve it.
-    // Use PRESENT_SRC_KHR as oldLayout since that's what Present expects.
-    // The render pass will load existing content (VK_ATTACHMENT_LOAD_OP_LOAD).
-    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;  // Previous read for Present
-    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = state.swapchainImages[imageIndex];
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                                  &barrier);
-
-    // Begin render pass
-    VkRenderPassBeginInfo rpBeginInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rpBeginInfo.renderPass = state.renderPass;
-    rpBeginInfo.framebuffer = state.framebuffers[imageIndex];
-    rpBeginInfo.renderArea.extent = state.extent;
-    disp->fp_vkCmdBeginRenderPass(cmd, &rpBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-    // Set render context for VulkanBackend and render via OverlayAdapter
-    if (state.overlayAdapter && state.overlayAdapter->IsInitialized()) {
-        // Verify backend type before casting
-        if (state.overlayAdapter->GetBackendType() != OverlayBackendType::Vulkan) {
-            LayerLog("Vulkan Layer: [Error] Backend type mismatch in RenderOverlay");
-        } else {
-            auto* vkBackend = static_cast<CustomOverlay::VulkanBackend*>(state.overlayAdapter->GetBackend());
-            if (vkBackend) {
-                vkBackend->SetRenderContext(cmd, state.renderPass, state.framebuffers[imageIndex], state.extent);
-                // RenderOverlay will check if pipeline is ready
-                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                state.overlayAdapter->RenderOverlay(state.extent.width, state.extent.height);
-            } else {
-                LayerLog("Vulkan Layer: [Error] Vulkan backend is null");
-            }
-        }
-    } else {
-        LayerLog("Vulkan Layer: [Warning] OverlayAdapter not ready, skipping render");
-    }
-
-    // End render pass
-    disp->fp_vkCmdEndRenderPass(cmd);
-
-    // Transition to present
-    VkImageMemoryBarrier presentBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    presentBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    presentBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    presentBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    presentBarrier.image = state.swapchainImages[imageIndex];
-    presentBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &presentBarrier);
-
-    disp->fp_vkEndCommandBuffer(cmd);
-
-    // Submit
-    VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-
-    std::vector<VkPipelineStageFlags> waitStages;
-    if (waitSemaphores && waitSemaphoreCount > 0) {
-        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages.data();
-    }
-
-    if (signalSemaphore != VK_NULL_HANDLE) {
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &signalSemaphore;
-    }
-
-    VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
-    if (submitResult != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
-        return false;
-    }
-    return true;
 }

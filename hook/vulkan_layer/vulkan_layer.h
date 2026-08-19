@@ -48,6 +48,11 @@ struct InstanceDispatch {
 struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    // Graphics queue CE asked for on top of the game's own at device creation,
+    // so the overlay has somewhere to submit when the game presents from a
+    // non-graphics queue. VK_NULL_HANDLE when no spare queue existed.
+    VkQueue overlayQueue = VK_NULL_HANDLE;
+    uint32_t overlayQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bool captureInteropEnabled = false;
     bool samplerAnisotropyEnabled = false;
     float maxSamplerAnisotropy = 1.0f;
@@ -187,6 +192,10 @@ public:
     uint32_t GetQueueFlags(VkQueue queue);
     bool QueueSupportsGraphics(VkQueue queue);
     bool QueueSupportsTransfer(VkQueue queue);
+    // Any graphics-capable queue the game itself fetched on this device. Only
+    // used as the last resort for overlay submission, on hardware that exposes
+    // a single graphics queue and therefore leaves CE nothing to reserve.
+    VkQueue FindGameGraphicsQueue(VkDevice device);
     void NoteQueueSubmit(VkQueue queue);
     uint32_t GetLastSubmitThreadId(VkDevice device);
 
@@ -344,3 +353,54 @@ bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue 
                           uint32_t height, VkFormat format, VkColorSpaceKHR colorSpace,
                           const VkSemaphore* waitSemaphores,
                           uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId);
+
+// Overlay submission queue ownership (layer_overlay_queue.cpp). The overlay is
+// a render pass, so it needs a graphics-capable queue even when the game
+// presents from a compute-only one; see overlay_submit_queue_policy.h.
+struct OverlayQueueReservation {
+    bool reserved = false;
+    uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t queueIndex = 0;
+};
+
+bool BuildOverlayQueueReservation(InstanceDispatch* instanceDispatch, VkPhysicalDevice physicalDevice,
+                                  const VkDeviceCreateInfo& createInfo,
+                                  std::vector<VkDeviceQueueCreateInfo>& queueCreateInfos,
+                                  std::vector<float>& widenedPriorities, OverlayQueueReservation& reservation);
+struct OverlaySubmitTarget {
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bool borrowed = false;
+    bool valid = false;
+};
+
+OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* disp, VkQueue presentQueue,
+                                               uint32_t presentQueueFamily);
+VkQueue GetBorrowedOverlaySubmitQueue();
+void SetBorrowedOverlaySubmitQueue(VkQueue queue);
+bool ShouldSerializeQueueSubmission(VkQueue queue);
+void LockBorrowedQueueSubmission();
+void UnlockBorrowedQueueSubmission();
+
+// VkQueue is externally synchronized. CE submits on a queue the game owns only
+// as the last-resort overlay path (hardware with a single graphics queue), and
+// only that one queue pays for the lock; every other submission in the process
+// keeps the uncontended path.
+class ScopedBorrowedQueueSubmission {
+public:
+    explicit ScopedBorrowedQueueSubmission(VkQueue queue) : locked_(ShouldSerializeQueueSubmission(queue)) {
+        if (locked_) {
+            LockBorrowedQueueSubmission();
+        }
+    }
+    ~ScopedBorrowedQueueSubmission() {
+        if (locked_) {
+            UnlockBorrowedQueueSubmission();
+        }
+    }
+    ScopedBorrowedQueueSubmission(const ScopedBorrowedQueueSubmission&) = delete;
+    ScopedBorrowedQueueSubmission& operator=(const ScopedBorrowedQueueSubmission&) = delete;
+
+private:
+    bool locked_;
+};
