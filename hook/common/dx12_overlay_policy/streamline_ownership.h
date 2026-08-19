@@ -245,6 +245,32 @@ inline bool ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(
     return !wrapperReleasing && realSwapchainAvailable;
 }
 
+// Must the wrapper destructor hold its own reference on the real swapchain across teardown?
+//
+// The destructor's post-destruction diagnostics (residual refcount, vtable-slot owners, lifetime
+// attribution) run AFTER CE released every reference it owned — and those releases routinely drop
+// the last reference: with a ReShade/OptiScaler-style proxy the chain's refcount equals exactly the
+// wrapper's promoted-interface references. Probing the chain afterwards is a use-after-free that no
+// runtime check can catch: a freed heap block stays MEM_COMMIT and keeps a plausible vtable, so the
+// probe's AddRef succeeds on the corpse and its Release destroys the object a SECOND time
+// (session 20260819_000437: OptiScaler's proxy destructor re-ran out of CWrapDXGISwapChain's
+// destructor and freed already-freed pointers -> STATUS_HEAP_CORRUPTION 0xC0000374 on game close).
+//
+// The fix is ownership, not detection: take one reference while CE provably still holds one, keep
+// it across the whole teardown so every diagnostic runs against a chain that cannot die, and drop
+// it last — its own Release return value IS the residual foreign-reference count. When CE holds no
+// reference at destructor entry there is nothing to take and nothing may be touched.
+inline bool ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor(
+    bool realSwapchainAvailable, bool streamlineRuntimeNonRetaining, bool holdsPromotedReference,
+    bool releasesBaseReference) {
+    if (!realSwapchainAvailable || streamlineRuntimeNonRetaining) {
+        // The non-retaining Streamline-runtime wrapper only borrows the runtime's creation
+        // reference; it must not add one, and it never runs the post-destruction probe.
+        return false;
+    }
+    return holdsPromotedReference || releasesBaseReference;
+}
+
 inline bool ShouldStartDX12FocusLossOverlayCooldown(bool previousGameForeground, bool currentGameForeground) {
     (void)previousGameForeground;
     (void)currentGameForeground;

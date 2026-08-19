@@ -1,5 +1,40 @@
 # llm-wiki Log
 
+### 2026-08-19 - Strange Brigade DX12 close crash: our diagnostic probe double-freed OptiScaler's chain
+
+`STATUS_HEAP_CORRUPTION` (`0xC0000374`) on game exit with OptiScaler, Special K, ReShade and the Steam
+overlay all injected. Session `sbdx12crashonclose` (build 0.1.6162). Ours, not theirs. Fixed in 0.1.6163.
+
+- **The stack named it exactly.** `StrangeBrigade_DX12` -> `CWrapDXGISwapChain::Release` ->
+  `~CWrapDXGISwapChain` (`dxgi_swapchain_wrap_lifetime.cpp:251`) -> `OptiScaler` -> `ucrtbase!free_base`
+  -> `RtlFreeHeap` -> `RtlpHeapHandleError`. Line 251 was the `Release()` of the destructor's
+  "post-destruction real refcount" probe.
+- **Why it was fatal.** `hook_debug.log` shows `Deleting wrapper (real refs=4, wrapper refs=0)`, then the
+  four promoted `IDXGISwapChain1..4` releases, then `Skipping real swapchain final wrapper release`. Those
+  four *were* the chain's last references (an OptiScaler/ReShade-style proxy's refcount equals exactly
+  CE's promoted refs), so the chain died mid-destructor. The probe then ran `AddRef` on the freed proxy —
+  which succeeded, because a freed heap block stays `MEM_COMMIT` and keeps a plausible vtable, so neither
+  the `VirtualQuery` check nor `ScopedAvGuard` (AV-only) saw anything wrong — and the paired `Release` ran
+  OptiScaler's destructor a second time, freeing pointers it had already freed. The
+  `post-destruction real refcount=` line never appears in the log: it crashed one call earlier.
+- **The comment on `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor` already described
+  this exact failure** for ReShade (session `20260813_012613`) and fixed the extra *base* release. The
+  probe kept doing the same thing to the same corpse.
+- **Fix is ownership, not detection.** The destructor takes one diagnostic reference before releasing
+  anything (`ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor`: only when a promoted
+  reference is held or the base release will run, never for the non-retaining Streamline wrapper), runs
+  refcount/vtable/attribution diagnostics under it, then drops it last — and that `Release` return value
+  is the authoritative residual pin count, recorded in the new `hook/common/swapchain_liveness.h` ledger.
+  Nothing dereferences the chain afterwards.
+- **Second instance of the same bug, also fixed.** `LogAccessDeniedSwapchainPinDiagnostics` probed the
+  `dx12_hook_s_hwndSwapchainMap` pointers the same way. Those are raw by design (pinning is what causes
+  the `E_ACCESSDENIED` it diagnoses) and *nothing* removes them when a chain dies, so it was probing
+  corpses on the recovery path. It now reads the ledger and never dereferences a tracked pointer;
+  `TrackSwapchainHwnd` drops a stale note when a live chain reuses an address.
+- **No behaviour change for the overlay.** The chain still dies inside the same destructor, a few
+  instructions later; CE takes and returns exactly one extra reference on a thread that already owns one.
+- **Not validated on hardware yet** - needs a Strange Brigade DX12 close with the same tool stack.
+
 ### 2026-08-18 - Vulkan late inject, part 2: the resident layer was rejected on build number
 
 Resident registration (0.1.6156) put the layer back into the process, and late inject still showed no

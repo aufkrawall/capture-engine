@@ -116,6 +116,22 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
   exist: hidden-chain policy deliberately skips Present-hook refresh, so adding a retaining proxy there is an
   inconsistent side effect that can pin the future main chain. Visible incomplete-deep, non-DX12, overlay-free, and
   dedicated non-retaining Streamline runtime fallbacks remain unchanged.
+- **A refcount probe is never a liveness test (0.1.6163).** CE may only call a virtual method on a real
+  swapchain while it holds a reference to it. `VirtualQuery` + `ScopedAvGuard` cannot substitute: a freed
+  heap block stays `MEM_COMMIT`, its first quadword still resolves to real vtable code, so a "net-zero"
+  `AddRef`/`Release` probe *succeeds* on a corpse and its `Release` runs the object's destructor a second
+  time. Against a proxy chain that is a double free — session `20260819_000437` (Strange Brigade DX12
+  with OptiScaler, Special K, ReShade and the Steam overlay) died with `STATUS_HEAP_CORRUPTION`
+  (`0xC0000374`) at close, in `~CWrapDXGISwapChain` -> `OptiScaler` -> `free` -> `RtlFreeHeap`, because
+  the destructor's promoted `IDXGISwapChain1..4` releases had just dropped the chain's last reference
+  (`real refs=4` in `SwapChain: Deleting wrapper`) and the post-destruction probe then resurrected it.
+  The destructor now takes one diagnostic reference *before* any release
+  (`ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor`), runs every post-destruction
+  diagnostic under it, and drops it last — that `Release` return value is the residual foreign-pin count.
+  The E_ACCESSDENIED pin diagnostics stopped probing tracked pointers entirely (they are raw by design and
+  nothing removes them when a chain dies) and read `hook/common/swapchain_liveness.h`, the ledger the
+  destructor writes, instead. Markers: `post-destruction real refcount=`, `post-destruction refcount probe
+  skipped`, `residualRefsAtCeRelease=`.
 - Internal D3D10/11 hook-discovery swapchains are thread-locally excluded from the DX12 global factory detour. RTSS's
   D3D11On12 startup had caused CE's temp D3D11 chain to enter DX12 wrapping/tracking and retain a foreign reference.
   The thread-local scope preserves concurrent real game creates, while first proven D3D12 Present publishes API-use

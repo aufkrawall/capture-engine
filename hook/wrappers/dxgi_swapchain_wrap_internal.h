@@ -37,10 +37,15 @@ struct ScopedResizeGuard;
 
 #include "../common/dxgi_shared.h"
 
+#include "../common/swapchain_liveness.h"
+
 #include "../common/overlay_compat.h"
 
-// Defined in dxgi_swapchain_wrap_diagnostics.cpp. Diagnostic-only, rate-limited, net-zero
-// (the refcount probe takes one temporary AddRef/Release).
+// Defined in dxgi_swapchain_wrap_diagnostics.cpp. Diagnostic-only and rate-limited. CALLER
+// CONTRACT: the caller must hold a reference on realChain for the duration of the call. The
+// refcount probe inside is net-zero on a LIVE object only; nothing can make it safe on a released
+// one, because a freed COM object's heap block stays committed and keeps a plausible vtable (see
+// hook/common/swapchain_liveness.h).
 void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stage);
 
 // Defined in dxgi_swapchain_wrap_attribution.cpp. Diagnostic-only AddRef/Release vtable forwarding

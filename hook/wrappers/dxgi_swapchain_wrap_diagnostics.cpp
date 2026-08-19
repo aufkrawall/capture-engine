@@ -30,12 +30,18 @@ const char* ModuleBaseNameOfCodeAddress(const void* address, char* buffer, size_
 
 }  // namespace
 
-// Diagnostic-only attribution of the real chain's lifetime state. Both call sites are rate-limited
-// and read-only (the refcount probe is net-zero AddRef/Release). The vtable-slot ownership shows
+// Diagnostic-only attribution of the real chain's lifetime state. The vtable-slot ownership shows
 // whether a foreign overlay hooked AddRef/Release/Present/ResizeBuffers on the chain — the missing
 // piece for attributing the E_ACCESSDENIED pin (session 20260813_222058: 4 foreign refs remained
 // after the game and CE released everything, and the replacement create never traverses a handler
 // that releases them).
+//
+// CALLER CONTRACT: hold a reference on realChain across the call. Both call sites do — the create
+// site owns the chain, and the wrapper destructor holds its diagnostic reference. The AddRef/Release
+// pair below is net-zero only on a LIVE object; on a released one it destroys the object a second
+// time, and no runtime check can tell the two apart, because a freed heap block stays committed with
+// a plausible vtable (session 20260819_000437, see hook/common/swapchain_liveness.h). The
+// VirtualQuery below therefore only rejects wholly unmapped garbage; it is NOT a liveness test.
 void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stage) {
     if (!realChain || !stage) {
         return;

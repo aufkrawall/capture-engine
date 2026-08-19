@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 
 #include "../common/dx12_factory_slot_policy.h"
+#include "../common/swapchain_liveness.h"
 #include "../wrappers/dxgi_swapchain_wrap_internal.h"
 
 namespace {
@@ -11,10 +12,15 @@ namespace {
 // foreign chain's result and can continue.
 thread_local bool s_forwardingAccessDeniedCreateThroughEntryChain = false;
 
-// Diagnostic-only: report the live state of the swapchains CE still tracks for a HWND when DXGI keeps
-// answering E_ACCESSDENIED. The tracked pointers are raw and may be stale; the AV guard keeps the probe
-// from faulting on a freed object. The AddRef/Release pair is net-zero for a live object and reveals how
-// many references (foreign or CE) still pin the old chain.
+// Diagnostic-only: report what CE knows about the swapchains it still tracks for a HWND when DXGI
+// keeps answering E_ACCESSDENIED. The tracked pointers are raw (CE must not pin a chain it wants
+// DXGI to replace) and nothing removes them when a chain dies, so some of them are corpses. They are
+// therefore NEVER dereferenced here: an AddRef/Release "probe" cannot be made safe on a released COM
+// object — the freed heap block stays MEM_COMMIT with a plausible vtable, so the probe resurrects it
+// and its Release destroys it a second time (session 20260819_000437: exactly that pattern in the
+// wrapper destructor re-ran OptiScaler's proxy destructor -> STATUS_HEAP_CORRUPTION on game close).
+// Instead this reports the ledger note the wrapper destructor recorded when CE dropped its last
+// reference, which is the only sound observation of the residual pin count that exists.
 void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
     static std::atomic<int> s_pinDiagnosticsLogCount{0};
     const int logCount = s_pinDiagnosticsLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -41,24 +47,16 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
         return;
     }
     for (IDXGISwapChain* chain : chains) {
-        MEMORY_BASIC_INFORMATION info = {};
-        const bool objectCommitted =
-            VirtualQuery(reinterpret_cast<const void*>(chain), &info, sizeof(info)) != 0 &&
-            info.State == MEM_COMMIT && (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
-                                                         PAGE_EXECUTE_READWRITE)) != 0;
-        ULONG refs = 0;
-        if (objectCommitted) {
-            // Guarded AddRef/Release probe: net-zero for a live object, reveals how many references
-            // (foreign or CE) still pin the old chain, and cannot fault on a stale tracked pointer.
-            ScopedAvGuard guard;
-            refs = chain->AddRef();
-            if (refs > 0) {
-                chain->Release();
-            }
+        const ce::swapchain_liveness::LivenessNote note = ce::swapchain_liveness::Query(chain);
+        char residualRefs[32] = "unknown";
+        if (note.known) {
+            snprintf(residualRefs, sizeof(residualRefs), "%lu", note.residualRefsAtCeRelease);
         }
         HookLogImportant(
-            "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p committed=%d refs=%u retained=%d",
-            logCount + 1, stage ? stage : "pre-cleanup", hWnd, (void*)chain, objectCommitted ? 1 : 0, refs,
+            "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p ceReleasedLastRef=%d "
+            "residualRefsAtCeRelease=%s retained=%d (raw tracked pointer, never probed)",
+            logCount + 1, stage ? stage : "pre-cleanup", hWnd, (void*)chain,
+            note.ceReleasedLastOwnedReference ? 1 : 0, residualRefs,
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
     }
 }
@@ -375,12 +373,16 @@ for (auto it = dx12_hook_s_hwndSwapchainMap.begin(); it != dx12_hook_s_hwndSwapc
 
 
 // Track a swapchain's HWND association (called from ProcessFrame and deep hook).
-// NO AddRef — raw pointer tracking only. Pointers may become stale when the
-// game destroys the swapchain, which is fine because we only use them for
-// reactive E_ACCESSDENIED recovery with SEH protection.
+// NO AddRef — raw pointer tracking only, because pinning the chain is exactly what makes DXGI
+// refuse the replacement create. Pointers therefore go stale when the chain is destroyed; the
+// recovery path treats them as identities to clean up, never as objects to call into.
 void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd) {
 if (!hWnd || !pSwapChain)
     return;
+// This address holds a LIVE chain right now, so any ledger note for it describes a different,
+// already-dead object that happened to sit at the same address. Drop it rather than let the
+// diagnostics attribute a dead chain's residual pin count to this one.
+ce::swapchain_liveness::ForgetNote(pSwapChain);
 std::lock_guard<std::mutex> lock(dx12_hook_s_hwndSwapchainMutex);
 auto& vec = dx12_hook_s_hwndSwapchainMap[hWnd];
 for (auto* sc : vec) {

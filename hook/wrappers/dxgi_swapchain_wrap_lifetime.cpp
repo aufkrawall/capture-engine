@@ -177,6 +177,27 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     m_pReal2 = nullptr;
     m_pReal3 = nullptr;
     m_pReal4 = nullptr;
+    // Take one diagnostic reference of our own BEFORE releasing anything CE owns. The releases
+    // below routinely drop the last reference on the real chain (with a ReShade/OptiScaler-style
+    // proxy its refcount equals exactly the promoted-interface references), and everything the
+    // destructor still wants to report — residual refcount, vtable-slot owners, lifetime
+    // attribution — would then run against freed memory. That is unguardable: a freed heap block
+    // stays MEM_COMMIT with a plausible vtable, so an AddRef/Release "probe" resurrects the corpse
+    // and destroys it a second time (session 20260819_000437: OptiScaler's proxy destructor re-ran
+    // from here and freed already-freed pointers, STATUS_HEAP_CORRUPTION on game close). This
+    // reference keeps the chain provably alive until the destructor is done with it, and its own
+    // Release at the very end reports the references that still pin the chain.
+    const bool holdDiagnosticReference =
+        ce::dx12_overlay_policy::ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor(
+            pRealToFree != nullptr, m_StreamlineRuntimeNonRetaining,
+            pReal1ToFree != nullptr || pReal2ToFree != nullptr || pReal3ToFree != nullptr ||
+                pReal4ToFree != nullptr,
+            ce::dx12_overlay_policy::ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor(
+                wrapperReleasing, pRealToFree != nullptr, m_StreamlineRuntimeNonRetaining));
+    if (holdDiagnosticReference) {
+        ScopedAvGuard guard;
+        pRealToFree->AddRef();
+    }
     // Release interface references (nulled above, so no thread can see them)
     if (pReal4ToFree && !m_StreamlineRuntimeNonRetaining) {
         WrapperLog("SwapChain: Releasing promoted IDXGISwapChain4 (wrapper=%p real4=%p)", this, pReal4ToFree);
@@ -231,35 +252,46 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     // everything CE owns. A foreign overlay tracking the swapchain (RTSS/Steam per-swapchain Present
     // bookkeeping) keeps refs CE cannot release; DXGI's per-HWND flip-model rule then fails the
     // replacement create with E_ACCESSDENIED (session 20260813_211734: 3 foreign refs remained after the
-    // game and CE released everything). The guarded probe is net-zero and diagnostic-only.
-    if (pRealToFree && !m_StreamlineRuntimeNonRetaining) {
+    // game and CE released everything). Every read below happens while the diagnostic reference taken
+    // above is still held, so the chain cannot be freed underneath them.
+    if (holdDiagnosticReference) {
         static std::atomic<int> s_postDestructionProbeLogCount{0};
         const int probeLogCount = s_postDestructionProbeLogCount.fetch_add(1, std::memory_order_relaxed);
         if (probeLogCount < 12 || (probeLogCount % 256) == 0) {
-            ULONG liveRefs = 0;
-            MEMORY_BASIC_INFORMATION probeInfo = {};
-            const bool objectCommitted =
-                VirtualQuery(reinterpret_cast<const void*>(pRealToFree), &probeInfo, sizeof(probeInfo)) != 0 &&
-                probeInfo.State == MEM_COMMIT &&
-                (probeInfo.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) !=
-                    0;
-            if (objectCommitted) {
+            ULONG refsIncludingDiagnostic = 0;
+            {
                 ScopedAvGuard guard;
-                liveRefs = pRealToFree->AddRef();
-                if (liveRefs > 0) {
-                    pRealToFree->Release();
-                    --liveRefs;  // Remove the probe's own temporary reference from the reported count.
-                }
+                pRealToFree->AddRef();
+                refsIncludingDiagnostic = pRealToFree->Release();
             }
+            // The probe pair is net-zero, so what is left is the foreign references plus the one
+            // diagnostic reference this destructor still holds. Discount that one, so the reported
+            // number keeps its old meaning: references CE does not own.
+            const ULONG liveRefs = refsIncludingDiagnostic > 0 ? refsIncludingDiagnostic - 1 : 0;
             WrapperLog(
-                "SwapChain: post-destruction real refcount=%u committed=%d (CE tracked=%d) wrapper=%p real=%p — "
+                "SwapChain: post-destruction real refcount=%u (CE tracked=%d) wrapper=%p real=%p — "
                 "nonzero means foreign refs still pin this chain",
-                liveRefs, objectCommitted ? 1 : 0, m_RealSwapchainRefs.load(), this, pRealToFree);
+                liveRefs, m_RealSwapchainRefs.load(), this, pRealToFree);
             if (liveRefs > 0) {
                 LogSwapChainLifetimeDiagnostics(pRealToFree, "post-destruction");
             }
             FinishSwapchainLifetimeAttribution(pRealToFree);
         }
+        // Drop the diagnostic reference LAST. Its return value is the authoritative residual count,
+        // and it is the only sound observation anyone will ever get about this chain: afterwards CE
+        // owns nothing, the chain may already be freed, and the raw pointer must never be
+        // dereferenced again — not by a refcount probe, not by a vtable read.
+        ULONG residualRefs = 0;
+        {
+            ScopedAvGuard guard;
+            residualRefs = pRealToFree->Release();
+        }
+        ce::swapchain_liveness::NoteCeReleasedLastOwnedReference(pRealToFree, residualRefs);
+    } else if (pRealToFree && !m_StreamlineRuntimeNonRetaining) {
+        WrapperLog(
+            "SwapChain: post-destruction refcount probe skipped (wrapper=%p real=%p) - CE holds no "
+            "reference on the real chain, so any probe could touch freed memory",
+            this, pRealToFree);
     }
 }
 

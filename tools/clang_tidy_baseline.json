@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 614,
+    "entries": 616,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -320,6 +320,7 @@
       "hook/common/performance_metrics.cpp",
       "hook/common/screenshot_hook.cpp",
       "hook/common/screenshot_worker.cpp",
+      "hook/common/swapchain_liveness.cpp",
       "hook/common/system_metrics.cpp",
       "hook/common/system_metrics_gpu.cpp",
       "hook/main.cpp",
@@ -621,6 +622,7 @@
       "tests/test_streamline_runtime_policy_part2.cpp",
       "tests/test_strict_integer_parse.cpp",
       "tests/test_stubs.cpp",
+      "tests/test_swapchain_probe_lifetime.cpp",
       "tests/test_third_party_load_policy.cpp",
       "tests/test_thread_wait.cpp",
       "tests/test_tray_source.cpp",
