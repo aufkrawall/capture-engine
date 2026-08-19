@@ -211,6 +211,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         }
 
         VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
+        // A new swapchain generation is exactly when a game's present topology
+        // can change - DOOM Eternal's "present from compute" toggle recreates
+        // the swapchain - so re-arm the one-shot identification for it.
+        VulkanLayerState::Get().ArmPresentTopologyLearning();
         LayerLog("Vulkan Layer: Swapchain registration complete");
     }
     LayerLog("Vulkan Layer: vkCreateSwapchainKHR returning: %d", res);
@@ -355,12 +359,35 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }
 
-    if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
-    perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
-    perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
-    perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
-    perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
+    // One line per swapchain generation, naming the queue family that signals
+    // what this present waits on. CE's overlay is a render pass, so it always
+    // lands on a graphics queue; if the game's own pre-present work is already
+    // there, CE adds nothing but an in-order submit, and if it is on another
+    // engine CE has inserted a cross-engine round trip that the game never had.
+    // That single fact decides whether an overlay cost is a scheduling problem
+    // or a workload problem, and it cannot be recovered from a frame-time graph.
+    if (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 && VulkanLayerState::Get().IsLearningPresentTopology()) {
+        const VkQueue signalQueue = VulkanLayerState::Get().GetSemaphoreSignalQueue(pPresentInfo->pWaitSemaphores[0]);
+        if (signalQueue != VK_NULL_HANDLE) {
+            const uint32_t signalFamily = VulkanLayerState::Get().GetQueueFamilyIndex(signalQueue);
+            const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+            LayerLog(
+                "Vulkan Layer: Present topology - present queue family=%u, wait semaphore signalled by queue %p "
+                "(family=%u, graphics=%d), waitSemaphoreCount=%u",
+                presentFamily, (void*)signalQueue, signalFamily,
+                VulkanLayerState::Get().QueueSupportsGraphics(signalQueue) ? 1 : 0,
+                pPresentInfo->waitSemaphoreCount);
+            VulkanLayerState::Get().FinishPresentTopologyLearning();
+        }
     }
+
+    // NOTE: the overlay's own FPS/percentile statistics are sampled *after* the
+    // present down-call, not here. They feed the perf CSV and nothing else, and
+    // every microsecond spent in this hook before the down-call is a microsecond
+    // the present is late by. That is invisible on a swapchain with spare
+    // images and fully visible on one without - DOOM Eternal asks for two images
+    // with "present from compute" on and three with it off, which is why CE's
+    // per-present CPU showed up as a frame-rate difference between the two.
 
     const VkSemaphore* currentWaitSemaphores =
         (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores : nullptr;
@@ -407,10 +434,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 // Measure ONLY the actual CPU overhead of overlay work.
                 // Fence wait is tracked separately (it's GPU sync, not our overhead).
                 int32_t fenceWaitUs = 0;
+                int32_t overlayGpuUs = 0;
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
                                                      currentWaitSemaphoreCount, overlayDone, asyncPresentDetected,
-                                                     &fenceWaitUs);
+                                                     &fenceWaitUs, &overlayGpuUs);
+                perfMetrics.overlayGpuUs = overlayGpuUs;
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
                 perfMetrics.fenceWaitUs = fenceWaitUs;
                 if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {
@@ -512,10 +541,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    // The three-way split of the hook's wall time. CE's work before the
+    // down-call delays the present itself; its work after the down-call delays
+    // the game's next frame. Both are on the game's thread, so a swapchain with
+    // no spare image pays for each of them in frame time, and a session that
+    // reports a frame-rate cost has to be able to say which one it is paying.
+    const int64_t presentCallStartUs = PerfLogger::GetQpcUs();
+    perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);
+
     VkResult res = VK_SUCCESS;
     if (disp && disp->fp_vkQueuePresentKHR) {
         res = disp->fp_vkQueuePresentKHR(queue, (pPresentInfo && modified) ? &presentInfoCopy : pPresentInfo);
     }
+    const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
+    perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
 
     if (isFirstHook)
         g_InPresentHook = false;
@@ -523,9 +562,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (shm)
         shm->runtimeState.vulkanPresentThreadId.store(0, std::memory_order_release);
 
-    // Log performance metrics
+    // Log performance metrics. The overlay's percentile statistics are sampled
+    // here rather than before the down-call: each of them scans up to five
+    // seconds of frame history, and they exist only to fill this CSV row.
     if (PerfLogger::Get().IsEnabled()) {
-        perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetrics.qpcUs);
+        if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
+            perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
+            perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
+            perfMetrics.sourcePoint1PctLowTimes100 =
+                static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
+            perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
+        }
+        const int64_t endUs = PerfLogger::GetQpcUs();
+        perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);
+        perfMetrics.totalUs = static_cast<int32_t>(endUs - perfMetrics.qpcUs);
         PerfLogger::Get().LogFrame(perfMetrics);
     }
 

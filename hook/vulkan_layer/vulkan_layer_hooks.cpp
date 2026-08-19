@@ -59,6 +59,11 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkQueueSubmit2 = (PFN_vkQueueSubmit2)gdpa(device, "vkQueueSubmit2");
     dispatch->fp_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2KHR)gdpa(device, "vkQueueSubmit2KHR");
     dispatch->fp_vkQueueWaitIdle = (PFN_vkQueueWaitIdle)gdpa(device, "vkQueueWaitIdle");
+    dispatch->fp_vkCreateQueryPool = (PFN_vkCreateQueryPool)gdpa(device, "vkCreateQueryPool");
+    dispatch->fp_vkDestroyQueryPool = (PFN_vkDestroyQueryPool)gdpa(device, "vkDestroyQueryPool");
+    dispatch->fp_vkCmdResetQueryPool = (PFN_vkCmdResetQueryPool)gdpa(device, "vkCmdResetQueryPool");
+    dispatch->fp_vkCmdWriteTimestamp = (PFN_vkCmdWriteTimestamp)gdpa(device, "vkCmdWriteTimestamp");
+    dispatch->fp_vkGetQueryPoolResults = (PFN_vkGetQueryPoolResults)gdpa(device, "vkGetQueryPoolResults");
     dispatch->fp_vkDeviceWaitIdle = (PFN_vkDeviceWaitIdle)gdpa(device, "vkDeviceWaitIdle");
     dispatch->fp_vkAllocateMemory = (PFN_vkAllocateMemory)gdpa(device, "vkAllocateMemory");
     dispatch->fp_vkFreeMemory = (PFN_vkFreeMemory)gdpa(device, "vkFreeMemory");

@@ -44,6 +44,16 @@ struct OverlayState {
     bool needsWindowHook = false;
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
+    // GPU-side cost of the overlay's own command buffer. Two timestamps per
+    // image index, read back without blocking after the fence for that index
+    // has already been waited on, so the result is last time this image came
+    // round. CPU timings alone cannot tell an expensive overlay from an
+    // expensively scheduled one.
+    VkQueryPool timestampPool = VK_NULL_HANDLE;
+    float timestampPeriodNs = 0.0f;
+    std::vector<bool> timestampWritten;
+    int32_t lastOverlayGpuUs = 0;
+
     // OverlayAdapter for content rendering
     OverlayAdapter* overlayAdapter = nullptr;
 };

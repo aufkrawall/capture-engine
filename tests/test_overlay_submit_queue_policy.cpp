@@ -187,3 +187,72 @@ TEST(OverlaySubmitQueuePolicySourceTest, DeviceCreateFallsBackWhenTheReservation
     EXPECT_NE(hooks.find("retrying with", reservation), std::string::npos)
         << "CE's extra queue must never be the reason a game fails to create its device";
 }
+
+// DOOM Eternal session `20260819_143521`: with the overlay on the game's own
+// graphics queue, "present from compute" still cost ~385 us per frame (median
+// frame time 8666 us on the two-image swapchain versus 8281 us on the
+// three-image one) while CE's CPU time inside the hook was identical, 230 us
+// versus 226 us. A swapchain with a spare image absorbs whatever CE adds to the
+// present path; one without pays for it in frame time. So everything CE does
+// before the present down-call has to earn its place there.
+TEST(OverlaySubmitQueuePolicySourceTest, DiagnosticsOnlyWorkRunsAfterThePresentDownCall) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    ASSERT_FALSE(present.empty());
+
+    const size_t downCall = present.find("fp_vkQueuePresentKHR(queue, (pPresentInfo && modified)");
+    ASSERT_NE(downCall, std::string::npos);
+    // Each of these scans up to five seconds of frame history and feeds nothing
+    // but the perf CSV row.
+    for (const char* sample : {"Get1PercentLowFPS()", "Get01PercentLowFPS()", "GetWindowStdDev()"}) {
+        const size_t at = present.find(sample);
+        ASSERT_NE(at, std::string::npos) << sample;
+        EXPECT_GT(at, downCall) << sample << " must be sampled after the present, not in front of it";
+    }
+    // The split that makes a future regression measurable instead of arguable.
+    EXPECT_NE(present.find("perfMetrics.prePresentUs"), std::string::npos);
+    EXPECT_NE(present.find("perfMetrics.presentCallUs"), std::string::npos);
+    EXPECT_NE(present.find("perfMetrics.postPresentUs"), std::string::npos);
+}
+
+// The overlay render pass declares PRESENT_SRC_KHR as both its initial and its
+// final layout, so it performs exactly one transition each way. The explicit
+// barriers that used to bracket it added a third, and a fourth that was invalid
+// outright: it named COLOR_ATTACHMENT_OPTIMAL as the old layout for an image the
+// render pass had already handed back in PRESENT_SRC_KHR.
+TEST(OverlaySubmitQueuePolicySourceTest, TheRenderPassOwnsBothLayoutTransitions) {
+    const std::string init = ReadProjectSource("hook/vulkan_layer/layer_overlay.cpp");
+    ASSERT_FALSE(init.empty());
+    EXPECT_NE(init.find("attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR"), std::string::npos);
+    EXPECT_NE(init.find("attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR"), std::string::npos);
+    EXPECT_NE(init.find("dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL"), std::string::npos)
+        << "dropping the trailing barrier requires the outgoing subpass dependency that replaced it";
+
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    ASSERT_FALSE(render.empty());
+    EXPECT_EQ(render.find("fp_vkCmdPipelineBarrier"), std::string::npos)
+        << "the render pass performs the layout transitions; an explicit barrier here duplicates or contradicts them";
+}
+
+// Which queue signals what a present waits on decides whether CE's overlay - a
+// render pass, so always on a graphics queue - inserts a cross-engine round trip
+// the game never had. It is not recoverable from a frame-time graph, so the
+// layer states it once per swapchain generation.
+TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapchainGeneration) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    ASSERT_FALSE(present.empty());
+    EXPECT_NE(present.find("Present topology - present queue family"), std::string::npos);
+    EXPECT_NE(present.find("ArmPresentTopologyLearning()"), std::string::npos)
+        << "a swapchain recreate is exactly when a game's present topology can change";
+    EXPECT_NE(present.find("FinishPresentTopologyLearning()"), std::string::npos)
+        << "learning must stop once the answer is known, so the steady state pays only an atomic load";
+
+    const std::string hooks = ReadProjectSource("hook/vulkan_layer/layer_hooks.cpp");
+    ASSERT_FALSE(hooks.empty());
+    size_t noteCount = 0;
+    for (size_t pos = hooks.find("NotePresentTopologySignals"); pos != std::string::npos;
+         pos = hooks.find("NotePresentTopologySignals", pos + 1)) {
+        ++noteCount;
+    }
+    // Two definitions plus both paths of each of the three submit wrappers.
+    EXPECT_EQ(noteCount, 8u);
+}

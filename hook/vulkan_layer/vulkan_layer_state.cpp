@@ -206,6 +206,48 @@ void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
     }
 }
 
+void VulkanLayerState::ArmPresentTopologyLearning() {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    m_SignalSemaphoreQueues.clear();
+    m_LearnPresentTopology.store(true, std::memory_order_relaxed);
+}
+
+void VulkanLayerState::NoteSignalSemaphores(VkQueue queue, const VkSemaphore* semaphores, uint32_t count) {
+    if (!semaphores || count == 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
+        return;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (semaphores[i] != VK_NULL_HANDLE)
+            m_SignalSemaphoreQueues[semaphores[i]] = queue;
+    }
+}
+
+void VulkanLayerState::NoteSignalSemaphores2(VkQueue queue, const VkSemaphoreSubmitInfo* semaphores, uint32_t count) {
+    if (!semaphores || count == 0)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
+        return;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (semaphores[i].semaphore != VK_NULL_HANDLE)
+            m_SignalSemaphoreQueues[semaphores[i].semaphore] = queue;
+    }
+}
+
+VkQueue VulkanLayerState::GetSemaphoreSignalQueue(VkSemaphore semaphore) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_SignalSemaphoreQueues.find(semaphore);
+    return (it != m_SignalSemaphoreQueues.end()) ? it->second : VK_NULL_HANDLE;
+}
+
+void VulkanLayerState::FinishPresentTopologyLearning() {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    m_LearnPresentTopology.store(false, std::memory_order_relaxed);
+    m_SignalSemaphoreQueues.clear();
+}
+
 uint32_t VulkanLayerState::GetLastSubmitThreadId(VkDevice device) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_DeviceLastSubmitThreadIds.find(device);

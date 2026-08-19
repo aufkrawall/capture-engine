@@ -147,6 +147,16 @@ Primary sources:
   what makes the game's own submits take CE's lock. `ForgetBorrowedOverlaySubmitQueue` clears it in
   `vkDestroyDevice` before `UnregisterDevice`, so the next device cannot inherit a dangling `VkQueue` as the
   lock's identity.
+- **The right queue is necessary but not sufficient.** CE's hook work before the down-call delays the
+  present and its work after delays the game's next frame; a swapchain with a spare image absorbs both, one
+  without pays them in frame time. That is why identical CE cost is invisible in a game's three-image
+  configuration and a frame-rate loss in its two-image one. Diagnostics-only work therefore never runs before
+  the down-call, and `pre_present_us` / `present_call_us` / `post_present_us` / `overlay_gpu_us` in the perf
+  CSV make a regression there measurable rather than arguable.
+- Once per swapchain generation the layer logs `Present topology - present queue family=... wait semaphore
+  signalled by queue ...`. Graphics-signalled means CE only appends to the game's timeline;
+  compute-signalled means CE's render pass forced a compute -> graphics -> compute round trip the game never
+  had, and only moving the composite onto the present queue as a compute dispatch can remove it.
 - CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
   entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
   the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one
@@ -180,13 +190,12 @@ Primary sources:
   applies on the game's own queue.
 - Every `vkCreateSwapchainKHR` logs `images=%u (game asked minImageCount=%u, CE requested %u)`, so a session that
   fails inside `vkAcquireNextImageKHR` can prove from the log alone whether CE changed the count.
-- **DOOM Eternal (session `20260819_033816`, fixed in 0.1.6169)** is the failure that proved it. With "present from
-  compute" **off** the game requests 3 images and keeps 2 acquired; `backbuffer_count=2` forced 3 -> 2, NVIDIA's WSI
-  answered the second blocking acquire with `VK_NOT_READY` rather than deadlocking, and idTech's own error path
-  fatal-errored with `vkAcquireNextImageKHR failed with error (VK_NOT_READY)` (an `int3` in a
-  `Default Worker` job thread, no CE frame anywhere on the stack). With "present from compute" **on** the same game
-  requests 2, the override was a no-op, and the session ran fine - which is why the crash presented as an
-  async-present problem rather than an image-count one.
+- **DOOM Eternal (session `20260819_033816`, fixed in 0.1.6169)** proved it. With "present from compute" **off** the
+  game requests 3 images and keeps 2 acquired; `backbuffer_count=2` forced 3 -> 2, NVIDIA's WSI answered the second
+  blocking acquire with `VK_NOT_READY` rather than deadlocking, and idTech fatal-errored with
+  `vkAcquireNextImageKHR failed with error (VK_NOT_READY)` - an `int3` in a `Default Worker` job thread, no CE frame
+  on the stack. With it **on** the game requests 2, the override was a no-op and the session ran fine, which is why
+  the crash presented as an async-present problem rather than an image-count one.
 
 ## Queue-depth and limiter invariants
 

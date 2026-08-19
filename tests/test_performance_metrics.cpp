@@ -131,6 +131,34 @@ TEST_F(PerformanceMetricsTest, LowPercentilesUseWorstFrameTimesWithoutHeapSortDe
     EXPECT_GT(metrics.Get01PercentLowFPS(), 0.0f);
 }
 
+// The percentile scratch buffer is a reused thread-local (it is 32 KB, and
+// zero-initializing it per call happened inside a present hook). Reuse is only
+// safe while nothing reads past the sample count, so prove that a short history
+// cannot see the tail of a longer one computed earlier on the same thread.
+TEST_F(PerformanceMetricsTest, PercentileScratchReuseCannotLeakAnEarlierHistory) {
+    int64_t t = 1000000;
+    PerformanceMetrics slow;
+    slow.Update(t);
+    for (int i = 0; i < 400; ++i) {
+        t += 100000;  // 100 ms frames: a very slow history to leave behind
+        slow.Update(t);
+    }
+    const float slowLow = slow.Get1PercentLowFPS();
+    ASSERT_GT(slowLow, 0.0f);
+    EXPECT_NEAR(slowLow, 10.0f, 1.0f);
+
+    PerformanceMetrics fast;
+    int64_t f = 1000000;
+    fast.Update(f);
+    for (int i = 0; i < 120; ++i) {
+        f += 5000;  // 5 ms frames throughout: nothing here is slower than 200 FPS
+        fast.Update(f);
+    }
+    const float fastLow = fast.Get1PercentLowFPS();
+    EXPECT_NEAR(fastLow, 200.0f, 10.0f) << "a leaked 100 ms sample from the previous history would show up here";
+    EXPECT_GT(fastLow, 100.0f);
+}
+
 TEST_F(PerformanceMetricsTest, FGMetricsResetClearsActiveStateAndLabel) {
     metrics.SetFGMetrics(120.0f, 60.0f, 2, 1);
 

@@ -12,7 +12,7 @@
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
-                   int32_t* fenceWaitUs) {
+                   int32_t* fenceWaitUs, int32_t* overlayGpuUs) {
     // Early out if overlay is disabled (use seqlock for consistent read)
     if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
         return false;
@@ -125,6 +125,25 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         disp->fp_vkResetFences(device, 1, &fence);
     }
 
+    // The fence above already proves the previous submission for this image
+    // index retired, so the timestamp pair it wrote is readable without ever
+    // blocking. Report it as this frame's overlay GPU cost: it is the same
+    // command buffer doing the same work, one trip round the swapchain ago.
+    if (state.timestampPool != VK_NULL_HANDLE && imageIndex < state.timestampWritten.size() &&
+        state.timestampWritten[imageIndex] && disp->fp_vkGetQueryPoolResults) {
+        uint64_t stamps[2] = {0, 0};
+        const VkResult queryResult =
+            disp->fp_vkGetQueryPoolResults(device, state.timestampPool, imageIndex * 2, 2, sizeof(stamps), stamps,
+                                           sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+        if (queryResult == VK_SUCCESS && stamps[1] > stamps[0]) {
+            const double elapsedNs = static_cast<double>(stamps[1] - stamps[0]) * state.timestampPeriodNs;
+            state.lastOverlayGpuUs = static_cast<int32_t>(elapsedNs / 1000.0);
+        }
+    }
+    if (overlayGpuUs) {
+        *overlayGpuUs = state.lastOverlayGpuUs;
+    }
+
     // Record command buffer
     VkCommandBuffer cmd = state.commandBuffers[imageIndex];
     disp->fp_vkResetCommandBuffer(cmd, 0);
@@ -135,27 +154,20 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
         return false;
 
-    // CRITICAL: Transition image preserving existing content
-    // The game has already rendered to this image, so we must preserve it.
-    // Use PRESENT_SRC_KHR as oldLayout since that's what Present expects.
-    // The render pass will load existing content (VK_ATTACHMENT_LOAD_OP_LOAD).
-    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;  // Previous read for Present
-    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = state.swapchainImages[imageIndex];
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    const bool writeTimestamps = state.timestampPool != VK_NULL_HANDLE && disp->fp_vkCmdResetQueryPool &&
+                                 disp->fp_vkCmdWriteTimestamp && imageIndex < state.timestampWritten.size();
+    if (writeTimestamps) {
+        disp->fp_vkCmdResetQueryPool(cmd, state.timestampPool, imageIndex * 2, 2);
+        disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool, imageIndex * 2);
+    }
 
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                                  &barrier);
+    // No explicit layout barriers around the render pass. It declares
+    // PRESENT_SRC_KHR as both the initial and the final layout and moves the
+    // image to COLOR_ATTACHMENT_OPTIMAL for its subpass, so it performs exactly
+    // one transition each way. The pair of barriers that used to sit here
+    // performed a third transition and a fourth that was invalid outright: it
+    // named COLOR_ATTACHMENT_OPTIMAL as the old layout for an image the render
+    // pass had already handed back in PRESENT_SRC_KHR.
 
     // Begin render pass
     VkRenderPassBeginInfo rpBeginInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -184,20 +196,15 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         LayerLog("Vulkan Layer: [Warning] OverlayAdapter not ready, skipping render");
     }
 
-    // End render pass
+    // End render pass. Its finalLayout already hands the image back in
+    // PRESENT_SRC_KHR and its outgoing subpass dependency already makes the
+    // overlay's writes available, so nothing follows it here.
     disp->fp_vkCmdEndRenderPass(cmd);
 
-    // Transition to present
-    VkImageMemoryBarrier presentBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    presentBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    presentBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    presentBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    presentBarrier.image = state.swapchainImages[imageIndex];
-    presentBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &presentBarrier);
+    if (writeTimestamps) {
+        disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, state.timestampPool,
+                                     imageIndex * 2 + 1);
+    }
 
     disp->fp_vkEndCommandBuffer(cmd);
 
@@ -230,6 +237,9 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
         return false;
+    }
+    if (writeTimestamps) {
+        state.timestampWritten[imageIndex] = true;
     }
     return true;
 }

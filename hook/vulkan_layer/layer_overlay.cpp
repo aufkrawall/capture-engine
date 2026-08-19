@@ -144,6 +144,13 @@ static void CleanupOverlayState(OverlayState& state, VkDevice device, DeviceDisp
         if (state.renderPass != VK_NULL_HANDLE) {
             disp->fp_vkDestroyRenderPass(device, state.renderPass, nullptr);
         }
+
+        // Cleanup the overlay GPU-timing query pool
+        if (state.timestampPool != VK_NULL_HANDLE && disp->fp_vkDestroyQueryPool) {
+            disp->fp_vkDestroyQueryPool(device, state.timestampPool, nullptr);
+        }
+        state.timestampPool = VK_NULL_HANDLE;
+        state.timestampWritten.clear();
     }
 
     // Cleanup adapter and metrics
@@ -264,7 +271,15 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // The render pass owns both transitions. CE receives the image in
+    // PRESENT_SRC_KHR (the game put it there for the present CE is intercepting)
+    // and must hand it back in PRESENT_SRC_KHR, and the attachment reference
+    // below moves it to COLOR_ATTACHMENT_OPTIMAL for the subpass. Declaring
+    // COLOR_ATTACHMENT_OPTIMAL as the initial layout instead forced an explicit
+    // barrier in front of every render pass and left a second, invalid one
+    // behind it: that trailing barrier named COLOR_ATTACHMENT_OPTIMAL as the old
+    // layout for an image the render pass had already moved to PRESENT_SRC_KHR.
+    attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     LayerLog(
@@ -278,22 +293,33 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorRef;
 
-    // Add subpass dependencies for proper synchronization
-    VkSubpassDependency dependency = {};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // Subpass dependencies now carry what the two explicit barriers used to.
+    // The incoming edge orders the PRESENT_SRC -> COLOR_ATTACHMENT_OPTIMAL
+    // transition after the semaphore wait's stage (visibility of the game's
+    // rendering is already guaranteed by the semaphore itself, hence srcAccess
+    // 0); the outgoing edge makes the overlay's writes available before the
+    // transition back to PRESENT_SRC_KHR that the present consumes.
+    VkSubpassDependency dependencies[2] = {};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].srcAccessMask = 0;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstAccessMask = 0;
 
     VkRenderPassCreateInfo rpInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     rpInfo.attachmentCount = 1;
     rpInfo.pAttachments = &attachment;
     rpInfo.subpassCount = 1;
     rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
+    rpInfo.dependencyCount = 2;
+    rpInfo.pDependencies = dependencies;
 
     LayerLog("Vulkan Layer: InitializeOverlay - Creating render pass...");
     if (disp->fp_vkCreateRenderPass(device, &rpInfo, nullptr, &state.renderPass) != VK_SUCCESS) {
@@ -334,6 +360,31 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
     }
+
+    // Timestamp pair per image index. Optional by construction: a device or a
+    // queue family without usable timestamps just reports 0 for overlay GPU time
+    // and everything else keeps working.
+    state.timestampWritten.assign(imageCount, false);
+    state.lastOverlayGpuUs = 0;
+    state.timestampPeriodNs = 0.0f;
+    if (disp->fp_vkCreateQueryPool && disp->fp_vkCmdWriteTimestamp && disp->fp_vkCmdResetQueryPool &&
+        disp->fp_vkGetQueryPoolResults && instDisp && instDisp->fp_vkGetPhysicalDeviceProperties) {
+        VkPhysicalDeviceProperties props = {};
+        instDisp->fp_vkGetPhysicalDeviceProperties(disp->physicalDevice, &props);
+        if (props.limits.timestampPeriod > 0.0f) {
+            VkQueryPoolCreateInfo queryInfo = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            queryInfo.queryCount = imageCount * 2;
+            if (disp->fp_vkCreateQueryPool(device, &queryInfo, nullptr, &state.timestampPool) == VK_SUCCESS) {
+                state.timestampPeriodNs = props.limits.timestampPeriod;
+            } else {
+                state.timestampPool = VK_NULL_HANDLE;
+            }
+        }
+    }
+    LayerLog("Vulkan Layer: InitializeOverlay - Overlay GPU timing %s (timestampPeriod=%.3fns)",
+             state.timestampPool != VK_NULL_HANDLE ? "enabled" : "unavailable",
+             static_cast<double>(state.timestampPeriodNs));
 
     LayerLog("Vulkan Layer: InitializeOverlay - Creating command pool (queueFamily=%d)...", graphicsQueueFamily);
     if (!RecreateOverlayCommandResources(state, disp, graphicsQueueFamily)) {

@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-08-19 - Async present, round two: the queue was not the whole cost, and the hook could not say what was
+
+Session `20260819_143521` (build 0.1.6172, uncapped). The overlay now goes on the game's own graphics queue
+(`gameSubmitsConcurrently=0` in the log), and "present from compute" **still** costs frame rate. Partial
+fixes plus the instrumentation that closes the question shipped in 0.1.6173; measurement pending.
+
+- **The measurement, this time conclusive.** `source_frame_index` is the swapchain image index + 1, so the
+  CSV names its own configuration: images {1,2} up to t=33 s (present from compute ON), {1,2,3} after
+  (OFF). Same in-game scene in both: median frame time **8666 us with PfC on** versus **8281 us off**
+  = 385 us/frame, 114 fps versus 120 fps, which is exactly what the user reports. CE's CPU inside the hook
+  is identical, 230 us versus 226 us, and `overlay_us` is 68 us in both.
+- **Why the image count is the whole asymmetry.** Everything CE does before the present down-call delays the
+  present, and everything after it delays the game's next frame. A three-image swapchain has a spare image
+  to absorb that; a two-image one does not, so the same CE cost is invisible in one configuration and
+  lands on the frame time in the other. DOOM asks for 2 images with PfC on and 3 with it off. So this is not
+  "async present is slow" - it is "CE's per-present cost has nowhere to hide when the game runs tight".
+- **Removed from the pre-present path.** The overlay's own FPS/percentile statistics were sampled *before*
+  the down-call and feed nothing but the CSV row; they now run after it. `ComputeWorstPercentileFPS` also
+  value-initialized a `std::array<float, 8192>` - 32 KB memset - on every one of its two calls per present,
+  before overwriting the part it uses; the scratch is now a reused thread-local. The DXVK wrapper probes
+  (`IsDXVKD3D9WrapperLoaded`, `IsDXVKD3D11WrapperLoaded`) ran 2-3 times per present and their expensive half
+  is a version-resource read off disk; they now cache against the HMODULE, so a late load, an unload and a
+  reload all still re-evaluate.
+- **Removed from the GPU path.** The overlay render pass declared `initialLayout = COLOR_ATTACHMENT_OPTIMAL`
+  and `finalLayout = PRESENT_SRC_KHR`, and `RenderOverlay` bracketed it with two explicit barriers. That was
+  three transitions of a 3840x2160 image per frame, and the trailing one was **invalid**: it named
+  COLOR_ATTACHMENT_OPTIMAL as the old layout for an image the render pass had already moved to PRESENT_SRC.
+  The render pass now declares PRESENT_SRC_KHR at both ends and carries the synchronization in two subpass
+  dependencies; both barriers are gone.
+- **Instrumentation, because the remaining cost cannot be guessed at again.** `total_us` used to be one
+  number covering CE's work *and* the driver's present call. The CSV now splits it into `pre_present_us`,
+  `present_call_us` and `post_present_us`, and adds `overlay_gpu_us` from a timestamp pair around the
+  overlay's own command buffer (read back after the fence for that image index, so it never blocks; optional,
+  0 when the device has no usable timestamps). Column consumers use `csv.DictReader`, so new columns are safe.
+- **The one fact that decides the remaining architecture question**, logged once per swapchain generation:
+  `Present topology - present queue family=%u, wait semaphore signalled by queue %p (family=%u, graphics=%d)`.
+  If the game's pre-present work is already on a graphics queue, CE only appends to it. If it is on the
+  compute queue, then CE's overlay - a render pass, so unavoidably graphics - has inserted a
+  compute -> graphics -> compute round trip into a path that had none, and no amount of CPU tuning will fix
+  it: the composite would have to move to the present queue as a compute dispatch. The learning window is
+  armed per swapchain generation and closes on the first answer, so the steady state pays one relaxed
+  atomic load per submit.
+
 ### 2026-08-19 - "Present from compute" cost frame rate only with CE injected: the overlay had its own graphics queue
 
 Session `20260819_140614` (build 0.1.6170). Turning DOOM Eternal's "present from compute" **on** costs frame

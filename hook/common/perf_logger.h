@@ -27,7 +27,10 @@ struct FrameMetrics {
     int32_t d3d11UploadUs = 0;     // UpdateSubresource CPU→GPU upload
     int32_t stagingDepth = 0;      // Current staging pipeline occupancy
     int32_t stagingDropped = 0;    // Frames dropped due to full pipeline
-    int32_t presentCallUs = 0;     // Actual D3D9/DXGI Present call time
+    int32_t presentCallUs = 0;     // Actual D3D9/DXGI/Vulkan present down-call time
+    int32_t prePresentUs = 0;      // CE work inside the hook before the present down-call
+    int32_t postPresentUs = 0;     // CE work inside the hook after the present down-call
+    int32_t overlayGpuUs = 0;      // GPU time of the overlay's own command buffer
     uint32_t sourceFrameIndex = 0;
     uint32_t sourceCapturePhase = 0;
     uint32_t sourceEncoderQueueDepth = 0;

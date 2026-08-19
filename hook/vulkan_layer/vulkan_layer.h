@@ -114,6 +114,11 @@ struct DeviceDispatch {
     PFN_vkDestroyFence fp_vkDestroyFence = nullptr;
     PFN_vkWaitForFences fp_vkWaitForFences = nullptr;
     PFN_vkResetFences fp_vkResetFences = nullptr;
+    PFN_vkCreateQueryPool fp_vkCreateQueryPool = nullptr;
+    PFN_vkDestroyQueryPool fp_vkDestroyQueryPool = nullptr;
+    PFN_vkCmdResetQueryPool fp_vkCmdResetQueryPool = nullptr;
+    PFN_vkCmdWriteTimestamp fp_vkCmdWriteTimestamp = nullptr;
+    PFN_vkGetQueryPoolResults fp_vkGetQueryPoolResults = nullptr;
     PFN_vkCreateSemaphore fp_vkCreateSemaphore = nullptr;
     PFN_vkDestroySemaphore fp_vkDestroySemaphore = nullptr;
     PFN_vkCreateSwapchainKHR fp_vkCreateSwapchainKHR = nullptr;
@@ -205,6 +210,21 @@ public:
     void NoteQueueSubmit(VkQueue queue);
     uint32_t GetLastSubmitThreadId(VkDevice device);
 
+    // One-shot present-topology learning. Which queue signals the semaphores a
+    // present waits on decides whether CE's overlay - a render pass, so always
+    // on a graphics queue - inserts a cross-engine round trip into a path that
+    // had none. The map is only written while learning is armed, so the steady
+    // state costs one relaxed atomic load per submit; a swapchain recreate
+    // re-arms it, which is exactly when a game's present topology can change.
+    bool IsLearningPresentTopology() const {
+        return m_LearnPresentTopology.load(std::memory_order_relaxed);
+    }
+    void ArmPresentTopologyLearning();
+    void NoteSignalSemaphores(VkQueue queue, const VkSemaphore* semaphores, uint32_t count);
+    void NoteSignalSemaphores2(VkQueue queue, const VkSemaphoreSubmitInfo* semaphores, uint32_t count);
+    VkQueue GetSemaphoreSignalQueue(VkSemaphore semaphore);
+    void FinishPresentTopologyLearning();
+
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
     void UnregisterSwapchain(VkSwapchainKHR swapchain);
     SwapchainData* GetSwapchainData(VkSwapchainKHR swapchain);
@@ -271,6 +291,8 @@ private:
     std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
     std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
     std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
+    std::atomic<bool> m_LearnPresentTopology{true};
+    std::unordered_map<VkSemaphore, VkQueue> m_SignalSemaphoreQueues;
 
     // Generation counter to invalidate TLS swapchain caches on unregister
     std::atomic<uint64_t> m_SwapchainGeneration{0};
@@ -343,7 +365,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
-                   int32_t* fenceWaitUs = nullptr);
+                   int32_t* fenceWaitUs = nullptr, int32_t* overlayGpuUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,

@@ -77,7 +77,8 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
                 "cmdlist_reset_us,render_us,execute_us,"
                 "stretch_rect_us,readback_submit_us,query_wait_us,"
                 "lock_rect_us,d3d11_upload_us,staging_depth,staging_dropped,"
-                "present_call_us,source_frame_index,capture_phase,encoder_queue_depth,mux_queue_kb,"
+                "present_call_us,pre_present_us,post_present_us,overlay_gpu_us,"
+                "source_frame_index,capture_phase,encoder_queue_depth,mux_queue_kb,"
                 "overload_flags,source_1pct_low_x100,source_0_1pct_low_x100,source_frametime_stddev_us,"
                 "source_current_fps_x100,api,qpc_delta_us\n");
         fflush(file_);
@@ -126,12 +127,15 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     }
 
     fprintf(file_,
-            "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s,%lld\n",
+            "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,"
+            "%s,"
+            "%lld\n",
             (unsigned long long)frameNum, (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs,
             metrics.captureUs, metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
             metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs, metrics.executeUs, metrics.stretchRectUs,
             metrics.readbackSubmitUs, metrics.queryWaitUs, metrics.lockRectUs, metrics.d3d11UploadUs,
-            metrics.stagingDepth, metrics.stagingDropped, metrics.presentCallUs, metrics.sourceFrameIndex,
+            metrics.stagingDepth, metrics.stagingDropped, metrics.presentCallUs, metrics.prePresentUs,
+            metrics.postPresentUs, metrics.overlayGpuUs, metrics.sourceFrameIndex,
             metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth, metrics.sourceMuxQueueKb,
             metrics.sourceOverloadFlags, metrics.source1PctLowTimes100, metrics.sourcePoint1PctLowTimes100,
             metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api, (long long)qpcDeltaUs);

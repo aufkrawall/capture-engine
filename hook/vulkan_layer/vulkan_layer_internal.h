@@ -80,15 +80,40 @@ inline std::mutex vulkan_layer_g_FrameLimitMutex;
 
 inline std::unordered_map<VkQueue, FrameLimitState> vulkan_layer_g_FrameLimitStates;
 
+// Both wrapper probes are read on the present path, and the expensive half of
+// `IsDllFromProject` is a version-resource read off disk. The answer can only
+// change when the module behind the name changes, so cache it against the
+// HMODULE: `GetModuleHandleA` is the cheap half and it catches a late load, an
+// unload and a reload alike. One atomic word holds both, because an HMODULE is
+// page-aligned and therefore has bit 0 free; that keeps the pair impossible to
+// tear, which two separate atomics would not.
+inline constexpr uintptr_t kWrapperProbeNotEvaluated = ~static_cast<uintptr_t>(0);
+
+inline bool IsDllFromProjectCached(const char* dllName, const char* versionNeedle,
+                                   std::atomic<uintptr_t>& cachedState) {
+    const HMODULE module = GetModuleHandleA(dllName);
+    const uintptr_t moduleBits = reinterpret_cast<uintptr_t>(module);
+    const uintptr_t cached = cachedState.load(std::memory_order_acquire);
+    if (cached != kWrapperProbeNotEvaluated && (cached & ~static_cast<uintptr_t>(1)) == moduleBits) {
+        return (cached & 1u) != 0;
+    }
+    const bool answer = module != nullptr && IsDllFromProject(dllName, versionNeedle);
+    cachedState.store(moduleBits | (answer ? 1u : 0u), std::memory_order_release);
+    return answer;
+}
+
+inline std::atomic<uintptr_t> vulkan_layer_g_DXVKD3D9ProbeState{kWrapperProbeNotEvaluated};
+inline std::atomic<uintptr_t> vulkan_layer_g_DXVKD3D11ProbeState{kWrapperProbeNotEvaluated};
+
 inline bool IsDXVKD3D9WrapperLoaded() {
-    return IsDllFromProject("d3d9.dll", "dxvk");
+    return IsDllFromProjectCached("d3d9.dll", "dxvk", vulkan_layer_g_DXVKD3D9ProbeState);
 }
 
 // Returns true when d3d11.dll is a DXVK wrapper (outside System32, version info contains "dxvk").
 // Used alongside IsDXVKD3D9WrapperLoaded() to distinguish pure DX9-DXVK games
 // (only d3d9 from DXVK) from DX10/11-DXVK games where d3d9.dll is also present.
 inline bool IsDXVKD3D11WrapperLoaded() {
-    return IsDllFromProject("d3d11.dll", "dxvk");
+    return IsDllFromProjectCached("d3d11.dll", "dxvk", vulkan_layer_g_DXVKD3D11ProbeState);
 }
 
 inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {

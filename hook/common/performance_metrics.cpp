@@ -5,7 +5,11 @@ namespace {
 constexpr int64_t kDuplicateFrameThresholdUs = 100;
 
 float ComputeWorstPercentileFPS(const float* history, int historyIdx, float percentile, int minSamples) {
-    std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes{};
+    // Not value-initialized and not on the stack: HISTORY_SIZE floats is 32 KB,
+    // so `{}` was memset-ing 32 KB per call before writing over the part it
+    // actually uses, and this runs from a present hook. Only [0, count) is ever
+    // read. Thread-local because two render threads may sample concurrently.
+    static thread_local std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes;
     int count = 0;
     float totalMs = 0.0f;
 
