@@ -1,5 +1,89 @@
 #include "streamline_hook_internal.h"
 
+#include "../common/streamline_api_generation.h"
+#include "streamline_hook_v1.h"
+
+namespace {
+
+using ce::streamline_api::Generation;
+
+std::atomic<int> g_streamlineApiGeneration{static_cast<int>(Generation::Unknown)};
+std::atomic<bool> g_abiSensitiveDynamicHooksRegistered{false};
+
+bool ExportsAnyOf(HMODULE module, const char* const* names, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (GetProcAddress(module, names[i]) != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Decide, once, which Streamline generation this process speaks, from the module that owns
+// the public API. Only a module that actually exports the ABI-sensitive entry points can
+// answer: sl.common exports neither, so it must not be allowed to vote.
+Generation ResolveStreamlineGeneration(HMODULE module, const char* moduleBaseName) {
+    const int cached = g_streamlineApiGeneration.load(std::memory_order_acquire);
+    if (cached != static_cast<int>(Generation::Unknown)) {
+        return static_cast<Generation>(cached);
+    }
+    if (!module || (GetProcAddress(module, "slSetTag") == nullptr &&
+                    GetProcAddress(module, "slEvaluateFeature") == nullptr)) {
+        return Generation::Unknown;
+    }
+
+    const bool sawV2 =
+        ExportsAnyOf(module, ce::streamline_api::kV2OnlyExports, ce::streamline_api::kV2OnlyExportCount);
+    const bool sawV1 =
+        ExportsAnyOf(module, ce::streamline_api::kV1OnlyExports, ce::streamline_api::kV1OnlyExportCount);
+    const Generation generation = ce::streamline_api::Classify(sawV2, sawV1);
+
+    int expected = static_cast<int>(Generation::Unknown);
+    if (g_streamlineApiGeneration.compare_exchange_strong(expected, static_cast<int>(generation),
+                                                          std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: %s speaks %s (2.x-only exports=%d 1.x-only exports=%d) - CE installs only the "
+            "hooks whose signatures match that generation",
+            moduleBaseName ? moduleBaseName : "the Streamline module", ce::streamline_api::Describe(generation),
+            sawV2 ? 1 : 0, sawV1 ? 1 : 0);
+        if (generation == Generation::Unknown) {
+            HookLogImportant(
+                "Streamline Hook: slSetTag/slEvaluateFeature stay unhooked because their calling convention "
+                "cannot be established - CE never guesses a foreign ABI, and a guess here truncates the "
+                "caller's command list pointer");
+        }
+        return generation;
+    }
+    return static_cast<Generation>(g_streamlineApiGeneration.load(std::memory_order_acquire));
+}
+
+// The dynamic (GetProcAddress-time) routes for the two ABI-sensitive exports can only be
+// registered once the generation is known, because the detour differs per generation.
+void RegisterAbiSensitiveDynamicHooksOnce(Generation generation) {
+    if (generation == Generation::Unknown) {
+        return;
+    }
+    if (g_abiSensitiveDynamicHooksRegistered.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    void* setTagDetour = generation == Generation::V1
+                             ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetTagV1)
+                             : reinterpret_cast<void*>(Hooked_slSetTag);
+    void* evaluateDetour = generation == Generation::V1
+                               ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slEvaluateFeatureV1)
+                               : reinterpret_cast<void*>(Hooked_slEvaluateFeature);
+    IATHook::RegisterDynamicHookFiltered("slSetTag", setTagDetour,
+                                         reinterpret_cast<void**>(&streamline_hook_g_Original_slSetTag),
+                                         IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slEvaluateFeature", evaluateDetour,
+                                         reinterpret_cast<void**>(&streamline_hook_g_Original_slEvaluateFeature),
+                                         IsStreamlineCoreDynamicHookModule);
+    HookLogImportant("Streamline Hook: registered the %s slSetTag/slEvaluateFeature dynamic routes",
+                     ce::streamline_api::Describe(generation));
+}
+
+}  // namespace
+
 
 void RegisterDynamicHooksOnce() {
 
@@ -17,14 +101,12 @@ void RegisterDynamicHooksOnce() {
     IATHook::RegisterDynamicHookFiltered("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                                          reinterpret_cast<void**>(&streamline_hook_g_Original_slSetD3DDevice),
                                          IsStreamlineCoreDynamicHookModule);
-    IATHook::RegisterDynamicHookFiltered("slSetTag", reinterpret_cast<void*>(Hooked_slSetTag),
-                                         reinterpret_cast<void**>(&streamline_hook_g_Original_slSetTag),
-                                         IsStreamlineCoreDynamicHookModule);
+    // slSetTag and slEvaluateFeature are deliberately absent here: their signatures differ
+    // between Streamline generations, so they are registered by
+    // RegisterAbiSensitiveDynamicHooksOnce as soon as the generation is known.
+    // slSetTagForFrame exists only in 2.x, so its name can never resolve on a 1.x process.
     IATHook::RegisterDynamicHookFiltered("slSetTagForFrame", reinterpret_cast<void*>(Hooked_slSetTagForFrame),
                                          reinterpret_cast<void**>(&streamline_hook_g_Original_slSetTagForFrame),
-                                         IsStreamlineCoreDynamicHookModule);
-    IATHook::RegisterDynamicHookFiltered("slEvaluateFeature", reinterpret_cast<void*>(Hooked_slEvaluateFeature),
-                                         reinterpret_cast<void**>(&streamline_hook_g_Original_slEvaluateFeature),
                                          IsStreamlineCoreDynamicHookModule);
     IATHook::RegisterDynamicHookFiltered("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                                          reinterpret_cast<void**>(&streamline_hook_g_Original_slDLSSGSetOptions),
@@ -60,6 +142,14 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     RegisterDynamicHooksOnce();
 
     const char* moduleBaseName = GetModuleBaseName(moduleNameOrPath);
+    // Establish the ABI before anything is patched. slSetTag and slEvaluateFeature are the
+    // only exports whose signature changed between Streamline generations, and installing
+    // the wrong one truncates the caller's arguments on the way back into Streamline.
+    const Generation generation = ResolveStreamlineGeneration(module, moduleBaseName);
+    RegisterAbiSensitiveDynamicHooksOnce(generation);
+    const bool mayHookV2Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V2);
+    const bool mayHookV1Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V1);
+    const bool mayHookAbiSensitive = mayHookV1Abi || mayHookV2Abi;
     const bool shouldHookCoreExports = ShouldHookStreamlineCoreExports(moduleBaseName);
     const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
     const auto originalGetFeatureFunction =
@@ -199,13 +289,15 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slSetD3DDevice, streamline_hook_g_SLSetD3DDeviceHooked, streamline_hook_g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
 
-        if (shouldHookCoreExports && originalSetTag) {
+        if (shouldHookCoreExports && originalSetTag && mayHookAbiSensitive) {
             if (!streamline_hook_g_Original_slSetTag) {
                 streamline_hook_g_Original_slSetTag = originalSetTag;
             }
 
+            void* setTagDetour = mayHookV1Abi ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetTagV1)
+                                              : reinterpret_cast<void*>(Hooked_slSetTag);
             hookedAnything |=
-                InstallInlineHookOnce(reinterpret_cast<void*>(originalSetTag), reinterpret_cast<void*>(Hooked_slSetTag),
+                InstallInlineHookOnce(reinterpret_cast<void*>(originalSetTag), setTagDetour,
                                       streamline_hook_g_Original_slSetTag, streamline_hook_g_SLSetTagHooked, streamline_hook_g_SLSetTagTarget, "slSetTag");
         }
 
@@ -219,15 +311,29 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slSetTagForFrame, streamline_hook_g_SLSetTagForFrameHooked, streamline_hook_g_SLSetTagForFrameTarget, "slSetTagForFrame");
         }
 
-        if (shouldHookCoreExports && originalEvaluateFeature) {
+        if (shouldHookCoreExports && originalEvaluateFeature && mayHookAbiSensitive) {
             if (!streamline_hook_g_Original_slEvaluateFeature) {
                 streamline_hook_g_Original_slEvaluateFeature = originalEvaluateFeature;
             }
 
+            void* evaluateDetour = mayHookV1Abi
+                                       ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slEvaluateFeatureV1)
+                                       : reinterpret_cast<void*>(Hooked_slEvaluateFeature);
             hookedAnything |=
-                InstallInlineHookOnce(reinterpret_cast<void*>(originalEvaluateFeature),
-                                      reinterpret_cast<void*>(Hooked_slEvaluateFeature), streamline_hook_g_Original_slEvaluateFeature,
+                InstallInlineHookOnce(reinterpret_cast<void*>(originalEvaluateFeature), evaluateDetour,
+                                      streamline_hook_g_Original_slEvaluateFeature,
                                       streamline_hook_g_SLEvaluateFeatureHooked, streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature");
+        }
+
+        if (shouldHookCoreExports && (originalSetTag || originalEvaluateFeature) && !mayHookAbiSensitive) {
+            static std::atomic<bool> s_refusalLogged{false};
+            if (!s_refusalLogged.exchange(true, std::memory_order_acq_rel)) {
+                HookLogImportant(
+                    "Streamline Hook: leaving slSetTag/slEvaluateFeature unhooked on %s - CE has no hook whose "
+                    "calling convention matches %s. Overlay, capture and every generation-independent Streamline "
+                    "hook are unaffected",
+                    moduleBaseName, ce::streamline_api::Describe(generation));
+            }
         }
 
         if (shouldHookCoreExports && moduleBit != 0 &&
@@ -245,17 +351,23 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice",
                                             reinterpret_cast<void*>(Hooked_slSetD3DDevice), &dummy);
             }
-            if (originalSetTag) {
-                IATHook::PatchIATAllModules(moduleBaseName, "slSetTag", reinterpret_cast<void*>(Hooked_slSetTag),
+            if (originalSetTag && mayHookAbiSensitive) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slSetTag",
+                                            mayHookV1Abi
+                                                ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetTagV1)
+                                                : reinterpret_cast<void*>(Hooked_slSetTag),
                                             &dummy);
             }
             if (originalSetTagForFrame) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetTagForFrame",
                                             reinterpret_cast<void*>(Hooked_slSetTagForFrame), &dummy);
             }
-            if (originalEvaluateFeature) {
-                IATHook::PatchIATAllModules(moduleBaseName, "slEvaluateFeature",
-                                            reinterpret_cast<void*>(Hooked_slEvaluateFeature), &dummy);
+            if (originalEvaluateFeature && mayHookAbiSensitive) {
+                IATHook::PatchIATAllModules(
+                    moduleBaseName, "slEvaluateFeature",
+                    mayHookV1Abi ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slEvaluateFeatureV1)
+                                 : reinterpret_cast<void*>(Hooked_slEvaluateFeature),
+                    &dummy);
             }
             streamline_hook_g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
         }

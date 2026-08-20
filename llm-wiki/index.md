@@ -30,6 +30,7 @@ Primary sources:
 - Read `current.md` next for a compact current-state summary and routing.
 - Read `log/recent.md` after that when you need the recent historical genesis for a changing area. For older entries, consult the relevant `log/archive-YYYY-Www*.md` file.
 - For build and tooling questions, read `build.py.md` and `codestyle.md`.
+- Streamline API generation (1.x vs 2.x) is an ABI precondition for hooking `slSetTag`/`slEvaluateFeature` and for `streamline_dll_path`; see `frame-generation/guardrails.md`.
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog

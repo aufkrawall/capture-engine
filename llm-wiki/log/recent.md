@@ -1,5 +1,69 @@
 # llm-wiki Log
 
+### 2026-08-20 - CE installed Streamline 2.x hooks on a Streamline 1.x interposer
+
+With the executable renamed past the driver refusal (see the entry below), The Witcher 3 started
+and then died loading a save: `0xC0000005` reading `0x11C5F6F0` in `sl.common+0x2379D`
+(`mov rax,[rdi]`), session `20260820_221409`. The stack is
+`123.exe -> capture_hook_x64!Hooked_slEvaluateFeature -> sl_interposer!slEvaluateFeature+0x23c ->
+sl_common`. Without CE injected the same save loads.
+
+**Root cause.** `sl.interposer.dll` in The Witcher 3 is **1.5.6**, and Streamline 1.x and 2.x share
+export names but not signatures:
+
+| | 1.x | 2.x |
+| --- | --- | --- |
+| `slSetTag` | `(const Resource*, BufferType, uint32_t id, const Extent*) -> bool` | `(const ViewportHandle&, const ResourceTag*, uint32_t, CommandBuffer*) -> Result` |
+| `slEvaluateFeature` | `(CommandBuffer*, Feature, uint32_t frameIndex, uint32_t id) -> bool` | `(Feature, const FrameToken&, const BaseStructure**, uint32_t, CommandBuffer*) -> Result` |
+
+CE mirrored the 2.x shapes and installed them unconditionally. On 1.x the evaluate hook therefore
+took the game's `ID3D12GraphicsCommandList*` out of RCX into its `uint32_t feature` parameter and
+handed the truncated 32-bit half straight back to Streamline as the command buffer - `0x11C5F6F0`
+is the low half of a live command list. The 1.x prologue proves the shape:
+`mov esi,r9d / mov r14d,r8d / mov edi,edx / mov r15,rcx`, forwarded verbatim at `+0x22d`, returning
+`bool` in AL. `slSetTag` was the same bug one arming away: it walks `tags[i]` out of what 1.x passes
+as a small `BufferType` enum, and only survived because DLSS-G never armed the UI-tag path.
+
+**Fix (0.1.6192).** `hook/common/streamline_api_generation.h` classifies the interposer from
+generation-exclusive exports - 1.x has `slSetFeatureConstants`, `slGetFeatureSettings`,
+`slSetFeatureEnabled`, `slIsFeatureEnabled`, `slGetFeatureConfiguration`; 2.x has `slSetTagForFrame`,
+`slGetNewFrameToken`, `slGetFeatureRequirements`, `slSetD3DDevice`, `slGetFeatureFunction`,
+`slIsFeatureLoaded`. `slSetTag` and `slEvaluateFeature` may never classify anything, because they are
+in both. Both markers present, or neither, is `Unknown` and installs nothing ABI-sensitive; CE never
+guesses a foreign calling convention. The classification gates the inline hooks, the IAT patches and
+the GetProcAddress-time dynamic routes, which is why the two ABI-sensitive dynamic registrations
+moved out of `RegisterDynamicHooksOnce` into `RegisterAbiSensitiveDynamicHooksOnce`.
+
+`hook/apis/streamline_hook_v1.cpp` restores the capability rather than only removing the crash:
+1.x-shaped `slSetTag`/`slEvaluateFeature` hooks that forward their arguments verbatim and return
+`bool`. Because 1.x `slSetTag` carries no command buffer, the UI record is deferred to the next
+`slEvaluateFeature`, which supplies one and still runs before the present DLSS-G consumes.
+1.x also has no `slSetD3DDevice`, so the 2.x route's "Streamline accepted a D3D12 device" signal
+never fires; the first evaluate whose command buffer answers as an `ID3D12GraphicsCommandList`
+proves the same thing and arms the same `BeginPreactivationStandby(2)`.
+
+**The 1.x `sl::Resource` layout is proven per resource, never assumed:** 48 bytes committed and
+readable, `type == eResourceTypeTex2d`, `native` non-null and pointer-aligned with a readable vtable
+whose first slot is executable, `state` a subset of the defined `D3D12_RESOURCE_STATES` bits, and
+finally a real `QueryInterface` to `ID3D12Resource` with a `TEXTURE2D` desc. A mislaid offset
+produces "no record", never a barrier from a garbage state. `eBufferTypeUIColorAndAlpha` is 23 in
+1.5.6's own name table, the same value as 2.x, so the constant carries over.
+
+Both 1.x hooks are on the game's hot path, so both early-out on
+`dx12_streamline_ui_overlay::IsFrameTagTrackingActive()` (new, the same atomic `OnFrameTag` reads
+first) plus a `g_hasPending` flag: while the bootstrap is dormant the steady state costs two atomic
+loads and no `VirtualQuery`, `QueryInterface` or held reference. The remembered texture is adopted
+from the `QueryInterface` that proved it and released by the very next evaluate.
+
+**`streamline_dll_path` cannot upgrade a 1.x title to 2.x, and now says so.** A 1.x game imports the
+five 1.x-only exports above; a 2.x interposer exports none of them, so the loader kills the process
+before its first frame, and the names that do survive carry the truncating signature mismatch.
+`StreamlineOverrideGenerationMatches` compares the replacement file's `VS_FIXEDFILEINFO` major
+against the loaded interposer's - the one property the whole sl.* set shares, plugins included - and
+refuses a mismatch on both redirect routes with a log that names the generation-independent
+alternative (`dlss_sr_dll_path` / `dlss_fg_dll_path`, the NGX runtimes). Unknown on either side keeps
+the historical behavior rather than breaking a working setup on an unreadable version resource.
+
 ### 2026-08-20 - The Witcher 3 does not start because the NVIDIA driver refuses that executable name
 
 Not a CE bug, and provable in two seconds. Sessions `20260820_211008` (CE injected) and the game's own

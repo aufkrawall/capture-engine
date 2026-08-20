@@ -1,6 +1,8 @@
 #include "main_internal.h"
 
 #include "../common/module_enumeration.h"
+#include "common/dll_utils.h"
+#include "common/streamline_api_generation.h"
 
 #include <atomic>
 
@@ -82,6 +84,29 @@ std::string BuildOverridePath(const std::string &overridePath, const std::string
   return filename;
 }
 
+// Streamline generation of the interposer this process is actually running, taken from the
+// loaded module's own file so it is available before CE has hooked anything.
+ce::streamline_api::Generation LiveStreamlineGeneration() {
+  static std::atomic<int> cached{-1};
+  const int seen = cached.load(std::memory_order_acquire);
+  if (seen >= 0) {
+    return static_cast<ce::streamline_api::Generation>(seen);
+  }
+  ce::streamline_api::Generation generation = ce::streamline_api::Generation::Unknown;
+  if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
+    char path[MAX_PATH] = {};
+    if (GetModuleFileNameA(interposer, path, MAX_PATH) != 0) {
+      generation = ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(path));
+    }
+  }
+  if (generation == ce::streamline_api::Generation::Unknown) {
+    // Not resolvable yet. Do not cache "unknown" - the interposer may simply not be loaded.
+    return generation;
+  }
+  cached.store(static_cast<int>(generation), std::memory_order_release);
+  return generation;
+}
+
 // Gate for every sl.* redirect: CE may only place override plugins while it owns
 // the Streamline core. Once the core is foreign, the remaining plugins must stay
 // with the distribution the runtime already chose.
@@ -104,6 +129,41 @@ bool StreamlineOverrideRedirectAllowed(const char *targetDllName) {
         "Streamline override redirect refused for %s: the runtime already resolved a foreign sl.common core, so "
         "overriding this plugin alone would mix Streamline versions in one runtime",
         targetDllName ? targetDllName : "an sl.* plugin");
+  }
+  return false;
+}
+
+// Refuse an sl.* substitution that would mix Streamline generations.
+//
+// A game linked against Streamline 1.x cannot be upgraded to 2.x by replacing DLLs. It
+// imports `slSetFeatureConstants`, `slGetFeatureSettings`, `slSetFeatureEnabled`,
+// `slIsFeatureEnabled` and `slGetFeatureConfiguration`, none of which a 2.x interposer
+// exports, so the loader fails the import and the process dies before its first frame; and
+// where the names do survive, `slSetTag` and `slEvaluateFeature` have entirely different
+// signatures, so every surviving call truncates its own arguments. Handing the game a
+// mismatched plugin is the same trap one module deeper. The upgrade that does work on a
+// 1.x title is the NGX runtime - `dlss_sr_dll_path` / `dlss_fg_dll_path` - which is
+// generation-independent.
+bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const char *filename) {
+  if (finalPath.empty()) {
+    return true;
+  }
+  const ce::streamline_api::Generation process = LiveStreamlineGeneration();
+  const ce::streamline_api::Generation replacement =
+      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(finalPath.c_str()));
+  if (ce::streamline_api::MayRedirectStreamlineModuleAcrossGenerations(process, replacement)) {
+    return true;
+  }
+  static std::atomic<uint32_t> mismatchLogs{0};
+  const uint32_t logIndex = mismatchLogs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant(
+        "Streamline override redirect refused for %s: this process runs %s but %s is %s. Streamline generations "
+        "are not interchangeable - the 1.x-only exports a 1.x game imports do not exist in 2.x, and slSetTag / "
+        "slEvaluateFeature have different signatures in each. Upgrade the NGX runtimes instead "
+        "(dlss_sr_dll_path / dlss_fg_dll_path), which are generation-independent",
+        filename ? filename : "an sl.* module", ce::streamline_api::Describe(process), finalPath.c_str(),
+        ce::streamline_api::Describe(replacement));
   }
   return false;
 }
@@ -220,6 +280,9 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
           if (RedirectWouldDuplicateLoadedModule(modelFinal)) {
             return "";
           }
+          if (!StreamlineOverrideGenerationMatches(modelFinal, modelDllName)) {
+            return "";
+          }
           HookLog("Redirecting %s (NGX model %s) to: %s", filename.c_str(), segmentBuf,
                   modelFinal.c_str());
           return modelFinal;
@@ -271,6 +334,10 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
       }
 
       if (RedirectWouldDuplicateLoadedModule(finalPath)) {
+        return "";
+      }
+
+      if (isStreamlineMatch && !StreamlineOverrideGenerationMatches(finalPath, filename.c_str())) {
         return "";
       }
 

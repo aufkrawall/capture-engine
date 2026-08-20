@@ -592,6 +592,16 @@ dlss_debug_overlay=default
 dlss_sr_dll_path=
 dlss_rr_dll_path=
 dlss_fg_dll_path=
+; streamline_dll_path substitutes the sl.* plugin set only WITHIN one Streamline API
+; generation, and CaptureEngine refuses a substitution that would cross generations.
+; Streamline 1.x and 2.x are not interchangeable: a 1.x game (The Witcher 3 ships
+; sl.interposer 1.5.6) imports slSetFeatureConstants, slGetFeatureSettings,
+; slSetFeatureEnabled, slIsFeatureEnabled and slGetFeatureConfiguration, none of which a
+; 2.x interposer exports, so the loader would kill the process before its first frame;
+; and slSetTag / slEvaluateFeature have completely different signatures in each. A 1.x
+; title therefore cannot be "upgraded" to Streamline 2.x by pointing this at a newer SDK.
+; What does upgrade such a title is the NGX runtime, which is generation-independent: use
+; dlss_sr_dll_path (nvngx_dlss.dll) and dlss_fg_dll_path (nvngx_dlssg.dll) above.
 streamline_dll_path=
 
 [ThirdParty]

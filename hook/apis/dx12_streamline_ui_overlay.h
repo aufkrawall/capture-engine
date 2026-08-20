@@ -41,6 +41,12 @@ void EndActivation(const char* reason);
 bool OnFrameTag(const void* frameToken);
 bool TryRecordBootstrap(const RecordRequest& request);
 
+// The same atomic OnFrameTag consults first, exposed so a caller that has to inspect
+// resources BEFORE it can produce a frame token (Streamline 1.x tags carry no command
+// buffer, so the record is deferred to the next evaluate) can skip that work entirely
+// while the bootstrap is dormant. Never a substitute for OnFrameTag's own decision.
+bool IsFrameTagTrackingActive();
+
 // The DX12 ECL detour brackets the real app submission with these calls. BeforeSubmit arms
 // visible-output coverage before a wrapped queue can re-enter Present; AfterSubmit signals the
 // exact submission queue so upload/descriptor slots are never reused without completion proof.

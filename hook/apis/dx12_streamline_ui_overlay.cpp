@@ -636,6 +636,10 @@ bool HasActiveCoverage() {
     return g_ActiveCoverage.load(std::memory_order_acquire);
 }
 
+bool IsFrameTagTrackingActive() {
+    return g_FrameTagTrackingActive.load(std::memory_order_acquire);
+}
+
 void Shutdown(const char* reason) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
     g_PreactivationStandbyEnabled = false;

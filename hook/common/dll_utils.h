@@ -6,7 +6,34 @@
 // No Vulkan or graphics API dependencies — safe to include from any context.
 
 #include <windows.h>
+#include <cstdint>
 #include <string>
+
+// Major field of the file's VS_FIXEDFILEINFO version, or 0 when the file has no
+// version resource. Streamline's own DLLs carry their API generation there -
+// sl.interposer 1.5.6 reports 1, a 2.x distribution reports 2 - which is the one
+// property every module in the set shares, plugins included.
+static inline uint32_t DllFileMajorVersion(const char* dllPath) {
+    if (!dllPath || !dllPath[0]) {
+        return 0;
+    }
+    DWORD dummy = 0;
+    const DWORD verSize = GetFileVersionInfoSizeA(dllPath, &dummy);
+    if (verSize == 0) {
+        return 0;
+    }
+    std::string buf(verSize, '\0');
+    if (!GetFileVersionInfoA(dllPath, 0, verSize, &buf[0])) {
+        return 0;
+    }
+    VS_FIXEDFILEINFO* fixed = nullptr;
+    UINT fixedLen = 0;
+    if (!VerQueryValueA(buf.data(), "\\", reinterpret_cast<void**>(&fixed), &fixedLen) || !fixed ||
+        fixedLen < sizeof(VS_FIXEDFILEINFO)) {
+        return 0;
+    }
+    return static_cast<uint32_t>(HIWORD(fixed->dwFileVersionMS));
+}
 
 // Returns true if any version-resource string field of the DLL at dllPath
 // contains needle (case-insensitive). Used to fingerprint DXVK ("dxvk") and
