@@ -2,6 +2,7 @@
 
 #include "../../common/log_meter.h"
 #include "../common/dx12_factory_slot_policy.h"
+#include "dx12_device_creation_report.h"
 
 namespace {
 
@@ -279,13 +280,32 @@ if (FAILED(factoryHr) || !pFactory) {
     return;
 }
 
+// A device-creation failure that is terminal stays terminal: DXGI_ERROR_UNSUPPORTED does
+// not become S_OK later in the process, and every retry maps and unmaps the vendor UMD
+// inside the game's startup for ~48 ms. Witcher 3 session 20260820_211008 paid that thirty
+// times in five seconds and logged the same HRESULT thirty times with it. The budget lets
+// a genuinely early failure retry and then stops.
+if (!ce::dx12_device_creation_report::ShouldAttemptTempDeviceCreation()) {
+    pFactory->Release();
+    return;
+}
+
 ID3D12Device* pDevice = nullptr;
 HRESULT deviceHr = pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice));
+ce::dx12_device_creation_report::NoteTempDeviceCreationResult(deviceHr);
 if (FAILED(deviceHr) || !pDevice) {
     HookLogImportant(
         "DX12: Temp-swapchain bootstrap: D3D12CreateDevice failed (hr=0x%08X) - Present hooks now depend on "
         "intercepting the game's own CreateSwapChainForHwnd",
         (unsigned)deviceHr);
+    // The bare HRESULT cannot distinguish a foreign entry patch, a runtime that refuses
+    // every adapter, and an adapter that simply cannot reach the requested level. Emit the
+    // evidence for all three once, while the process is still alive to be asked.
+    ce::dx12_device_creation_report::ReportDeviceCreationFailure(
+        SUCCEEDED(deviceHr) ? E_FAIL : deviceHr, "temp-swapchain bootstrap");
+    if (pDevice) {
+        pDevice->Release();
+    }
     pFactory->Release();
     return;
 }

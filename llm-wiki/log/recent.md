@@ -1,5 +1,67 @@
 # llm-wiki Log
 
+### 2026-08-20 - The Witcher 3 does not start because the NVIDIA driver refuses that executable name
+
+Not a CE bug, and provable in two seconds. Sessions `20260820_211008` (CE injected) and the game's own
+`%LOCALAPPDATA%\REDEngine\ReportQueue\Witcher3_20260820_184315322` (CE **not** injected - no
+`capture_hook_x64` in the module list) hold the *identical* failure: an unhandled C++ exception
+`0xE06D7363`, throwinfo `witcher3+0x311e8d8`, message `... HRESULT of 0x887A0004`, exception object
+carrying `DXGI_ERROR_UNSUPPORTED` at `+0x10`.
+
+**What the game does** (disassembled from `witcher3.exe` 4.0.103190, function at `+0x7f7b40`): create a
+factory, walk `IDXGIFactory1::EnumAdapters1`, skip any adapter with `DXGI_ADAPTER_FLAG_SOFTWARE`, and probe
+each remaining one with `D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_ID3D12Device, nullptr)`
+(`+0x7f7bf0`). The first that answers wins. If none does, the selected-adapter slot stays null and the final
+`D3D12CreateDevice(nullptr, 11_0, ..., &device)` at `+0x7f7c3f` throws on failure. Both calls go through
+`sl.interposer.dll!D3D12CreateDevice`. The "Microsoft Basic Render Driver" description sitting in the
+throwing frame is the last *skipped* adapter's leftover `DXGI_ADAPTER_DESC1`, not the failing one.
+
+**Root cause.** The NVIDIA driver (32.0.16.1088) refuses to create any hardware D3D device for a process
+whose executable is named `witcher3.exe`. A byte-identical probe binary in the same folder:
+
+| name | `D3D12CreateDevice(default, 11_0)` | `D3D11CreateDevice(hardware)` |
+| --- | --- | --- |
+| `witcher3.exe` / `Witcher3.exe`, any directory | `0x887A0004` | `0x887A0004` |
+| `witcher3x.exe`, `Cyberpunk2077.exe`, `RDR2.exe`, `GTA5_Enhanced.exe`, anything else | `S_OK` | `S_OK` (FL 11_1, RTX 5070) |
+
+DXGI still enumerates and describes the RTX 5070 correctly in the refused process; only device creation
+fails, and it fails for **both** runtimes, which puts the refusal below D3D11/D3D12 in the display driver.
+`nvldumdx.dll` maps and unmaps once per attempt and `nvwgf2umx` is never reached. Setting name matching is
+case-insensitive and path-independent. NvAPI DRS enumeration (7893 profiles) finds the predefined profile
+`The Witcher 3` owning `witcher3.exe` with all 34 settings at their predefined values and **no** user
+profile for it anywhere, so this is the driver's own shipped per-application behavior, not a user override.
+The Witcher-3-only settings in that profile are `0x0043C7A2`, `0x00CC0F79`, `0x1085DA8A`, `0x10AD7F3B`,
+`0x10D5C2DB` plus a block of opaque `0x70xxxxxx` per-game driver workarounds; which one does it is not
+observable from outside the driver.
+
+**Consequences for CE.** CE's own `D3D12CreateDevice(nullptr, FL 11_0)` in the temp-swapchain bootstrap was
+refused the same way and logged `hr=0x887A0004` thirty times in five seconds - each attempt a real ~48 ms
+driver load. Two changes came out of this:
+
+- `hook/common/d3d12_device_creation_policy.h` + `hook/apis/dx12_device_creation_report.cpp`: a failing
+  device creation now emits one report - entry-byte integrity and jump-target owner for
+  `D3D12CreateDevice` / `D3D12GetInterface` / `D3D12EnableExperimentalFeatures` / `CreateDXGIFactory1` /
+  `CreateDXGIFactory2`, the loaded `D3D12Core.dll` and any declared Agility SDK, the non-Windows modules in
+  the process, an adapter x feature-level matrix probed with a null `ppDevice` (so it creates nothing), the
+  same call repeated past a foreign entry patch when one exists, and a verdict. `DisplayDriverRefusesThisProcess`
+  is the verdict this session earned: DXGI describes the hardware adapter but D3D11 *and* D3D12 both fail on
+  it. The D3D11 cross-check only runs once D3D12 has already refused every hardware adapter.
+- Terminal creation failures (`DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SDK_COMPONENT_MISSING`, `E_NOINTERFACE`,
+  `E_INVALIDARG`) are retried three times and then abandoned. They do not become success later in the
+  process, and the retry storm was pure cost inside the game's startup.
+
+**Ruled out along the way,** all by standalone reproduction on the same machine: RTSS (`RTSSHooks64.dll` is
+in every failing run, but loading it into a clean probe changes nothing and patches no export),
+`sl.interposer.dll`, the game's Agility SDK 1.600 in `bind_dx12\D3D12\` (declared but silently declined -
+the OS `C:\Windows\System32\D3D12Core.dll` 10.0.26100.8972 is what loads, in the probe and in the game
+alike), `D3D12EnableExperimentalFeatures`, a forced debug layer (no such registry state), and game-file
+tampering (every DLL in `bind_dx12` carries a valid CD PROJEKT / NVIDIA / Intel / Microsoft signature).
+WARP is the only adapter on this machine that fails anything in a healthy process, and only at FL 12_2 -
+which the game never asks for, because it skips software adapters.
+
+**Fixes available to the user,** none of them CE's: roll back or clean-install the NVIDIA driver; move
+`witcher3.exe` into a *user* DRS profile so the predefined one stops applying; or rename the executable.
+
 ### 2026-08-20 - The Witcher 3 crashed on start because CE hooked a d3d11.dll it did not own
 
 Both renderers crashed within a second of the DX11 hook install, in two places that turned out to be one

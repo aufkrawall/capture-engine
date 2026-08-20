@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-08-17
+Last cross-checked: 2026-08-20
 
 Primary sources:
 - `captureengine/injection.cpp`
@@ -17,7 +17,11 @@ Primary sources:
 - `hook/main_host_lifecycle.cpp`
 - `hook/common/ipc_client.cpp`
 - `hook/vulkan_layer/layer_ipc.cpp`
+- `hook/apis/dx12_device_creation_report.cpp`
+- `hook/apis/dx12_hook_hook_install.cpp`
+- `hook/common/d3d12_device_creation_policy.h`
 - `hook/wrappers/inline_hook.cpp`
+- `tests/test_d3d12_device_creation_policy.cpp`
 - `tests/test_crash_handler.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_capture_coordinator_source.cpp`
@@ -105,6 +109,8 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - Inline-hook trampolines in a CFG-enabled x64 host begin on a `PAGE_TARGETS_INVALID` page, are built without write/execute overlap, sealed RX with `PAGE_TARGETS_NO_UPDATE`, and register only their aligned entrypoint. MinGW's Kernel32 import library lacks `SetProcessValidCallTargets`, so the exact export is resolved from already-loaded KernelBase/Kernel32 and invoked through one x64 `guard(nocf)` bootstrap wrapper. Do not turn that into a general unchecked-call helper or widen its use: the exception exists only because a normal dynamically resolved call is CFG-checked before it can register the new target. Session `20260716_013421` and a debugger reproduction proved the old indirect call fast-failed with subcode 10 in `InlineHook::FinalizeExecutableTrampoline` before hook initialization.
 - Windows export suppression also makes some dynamically resolved system exports invalid guarded indirect-call targets even when their address is genuine. `IATHook::DetourGetProcAddress` therefore reaches the real API through the hook DLL's deliberately unpatched static `GetProcAddress` import, never a cached self-resolved function pointer. Supplied session `20260716_021732` and CDB sessions `20260716_022257`/`20260716_022313` put the resulting `FAST_FAIL_GUARD_ICALL_CHECK_FAILURE` in the old detour call while NVIDIA and Vulkan components initialized.
 - Fatal-dump hook bootstrap is transactional with respect to callable originals: each surviving termination/fail-fast trampoline is atomically published before its inline target patch becomes live and before any IAT route can reach it. Fatal IAT patching is limited to application modules; modules anywhere under the Windows directory retain their original imports so forwarded system implementations cannot recurse through CE. Fallback calls use the hook DLL's own unpatched static Kernel32/ntdll imports, including a direct static `RtlExitUserProcess` fallback rather than the recursively equivalent `ExitProcess`. The bootstrap never publishes a raw dynamically resolved OS export as a callable original. Live exception-raising primitives (`RaiseException`, `RtlRaiseException`, `RtlRaiseStatus`, and `Nt`/`ZwRaiseException`) remain byte-identical to avoid a process-wide patch race; VEH plus application-import/dynamic interception retain diagnostic coverage. CDB sessions `20260716_023403`/`20260716_023432` proved the old ordering could route `OutputDebugStringA` through a suppressed exception export and fast-fail; all seven dumps in supplied session `20260716_025345` proved the old Rtl fallback recursively re-entered normal shutdown until `0xC00000FD`.
+- **A failing `D3D12CreateDevice` gets a report, not a repeated HRESULT.** `hook/common/d3d12_device_creation_policy.h` classifies and `hook/apis/dx12_device_creation_report.cpp` gathers: entry bytes plus jump-target owning module for `D3D12CreateDevice`, `D3D12GetInterface`, `D3D12EnableExperimentalFeatures`, `CreateDXGIFactory1`, `CreateDXGIFactory2`; the loaded `D3D12Core.dll` path and any Agility SDK the host exe declares; the non-Windows modules in the process; an adapter x feature-level matrix; the failing call repeated past a foreign entry patch when one exists; and a verdict. The matrix probes with a **null `ppDevice`**, which makes D3D12 answer `S_FALSE` without building a device, so the report costs no driver load per cell. The D3D11 cross-check runs only after D3D12 has already refused every hardware adapter, because that is the only case where its answer changes the verdict — DXGI describing a hardware adapter that both D3D11 and D3D12 refuse is `DisplayDriverRefusesThisProcess`, a per-application driver decision no application or overlay can work around (The Witcher 3, 2026-08-20: the NVIDIA driver refuses any process named `witcher3.exe`; see `log/recent.md`). A foreign entry patch is only *blamed* when the bypass succeeds where the patched entry failed; both failing proves the patch innocent.
+- **Terminal device-creation failures are retried three times, then abandoned.** `DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SDK_COMPONENT_MISSING`, `E_NOINTERFACE` and `E_INVALIDARG` describe a decision, not a moment; nothing later in the process turns them into success. Session `20260820_211008` paid ~48 ms and one `nvldumdx.dll` map/unmap per attempt, thirty times in five seconds, inside the game's startup. Transient failures (`DXGI_ERROR_DEVICE_REMOVED` and anything else) still retry without limit.
 
 ## Working Guidance
 - For DX12 games, prefer bootstrap-aware injection over eager process-start injection.
@@ -119,6 +125,8 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - Preserve the one-call CFG registration bootstrap boundary when changing trampoline allocation or API resolution. The host CFG policy and the hook DLL's own CFG instrumentation must remain enabled; never solve a bootstrap failure by disabling x64 test-app CFG or marking whole trampoline pages valid.
 - Preserve static-import fallbacks, publish every callable trampoline before activating its inline patch, and only then patch application-module imports to its hook. Do not patch Windows-directory module imports, translate the Rtl exit fallback into `ExitProcess`, cache dynamically resolved Kernel32/ntdll exports for guarded indirect calls, or inline-patch live exception-dispatch primitives during process-wide bootstrap.
 - Do not treat the current polling sleeps as permission to add more timing bandaids. Existing polling is part of bootstrap orchestration; it is not a general-purpose fix for overlay or FG correctness bugs.
+- When D3D12 device creation fails, read the `DX12 device-creation report:` block before suspecting CE. It names the entry-patch owner, the per-adapter feature-level answers, and whether the display driver is refusing the process outright. If the verdict is `DisplayDriverRefusesThisProcess`, reproduce it with a trivial probe binary renamed to the game's executable: a per-application driver refusal follows the name, not the code.
+- Do not re-add an unbounded retry around device creation. If a new failure mode genuinely needs retrying, classify its HRESULT in `IsTerminalCreationFailure` instead of widening the budget.
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because injection timing, resident lifecycle, and hook bootstrap are coupled to runtime behavior and can drift when wrapper or startup logic changes.
