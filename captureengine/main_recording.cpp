@@ -550,19 +550,22 @@ bool CompleteControllerStartup() {
     LogInfo("[Controller] Registering hotkeys...");
     const int64_t hotkeyStartUs = Log_GetQpcUs();
 
-    RegisterHotKey(NULL, HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop.GetModifiers(), main_g_Config.hotkeyStartStop.vkey);
-    if (main_g_Config.hotkeyScreenshot.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot.GetModifiers(),
-                       main_g_Config.hotkeyScreenshot.vkey);
-    }
-    if (main_g_Config.hotkeyAudioOnly.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly.GetModifiers(),
-                       main_g_Config.hotkeyAudioOnly.vkey);
-    }
-    if (main_g_Config.hotkeyToggleOverlay.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay.GetModifiers(),
-                       main_g_Config.hotkeyToggleOverlay.vkey);
-    }
+    main_g_HotkeyOwnership.record =
+        RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
+    main_g_HotkeyOwnership.screenshot =
+        RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot, "screenshot");
+    main_g_HotkeyOwnership.audioOnly =
+        RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly, "audio-only");
+    main_g_HotkeyOwnership.toggleOverlay =
+        RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay, "overlay toggle");
+
+    // RegisterHotKey stops being delivered to anyone while a foreground
+    // application registers its raw-input keyboard with RIDEV_NOHOTKEYS, so the
+    // same hotkeys are also recognized on a low-level keyboard hook. This runs
+    // on the controller thread, which is the thread RegisterHotKey posts to and
+    // therefore the thread the hook has to post to as well.
+    PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
+    StartHotkeyInputHook(GetCurrentThreadId());
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
     SyncPseudoOverlayConfiguration("startup");

@@ -44,6 +44,8 @@
 
 #include "dump_helper.h"
 
+#include "hotkey_input_hook.h"
+
 #include "injection.h"
 
 #include "main_vulkan_residency.h"
@@ -73,14 +75,8 @@ extern int LoggerProcessMain(const AppConfig& config);
 
 extern int SensorProcessMain(const AppConfig& config);
 
-// Hotkey IDs
-#define HOTKEY_ID_RECORD 1
-
-#define HOTKEY_ID_SCREENSHOT 2
-
-#define HOTKEY_ID_AUDIO_ONLY 3
-
-#define HOTKEY_ID_TOGGLE_OVERLAY 4
+// Hotkey IDs live in common/hotkey_matcher.h so the RegisterHotKey
+// registration and the low-level keyboard path cannot drift apart.
 
 void LaunchGameSuspended(const std::string& path);
 
@@ -97,6 +93,8 @@ void ToggleRecording();
 void ToggleAudioOnlyRecording();
 
 void ToggleOverlay();
+
+void DispatchHotkey(int hotkeyId);
 
 void ShutdownChildProcesses();
 
@@ -158,7 +156,16 @@ inline TrayIcon* main_g_Tray = nullptr;
 
 inline std::unique_ptr<PseudoOverlay> main_g_PseudoOverlay;
 
+// Hotkeys whose combination this process actually holds. Both delivery paths
+// consult it, so neither serves a combination another application owns.
+inline HotkeyOwnership main_g_HotkeyOwnership;
+
 inline constexpr UINT main_kMsgCompleteControllerStartup = WM_APP + 1;
+
+// A hotkey the low-level keyboard hook recognized and consumed. It is a message
+// of its own rather than a synthesized WM_HOTKEY so the logs stay honest about
+// which delivery path served a press.
+inline constexpr UINT main_kMsgHotkeyFromInputHook = WM_APP + 2;
 
 namespace {
 struct ControllerStartupTimingState {

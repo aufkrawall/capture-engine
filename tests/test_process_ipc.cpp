@@ -305,8 +305,15 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
 
     // The controller registers the hotkey, dispatches it in the message loop and
     // forwards the intent to the inject client over the authenticated channel.
+    // Both delivery paths reach the same dispatch: RegisterHotKey posts
+    // WM_HOTKEY, and the low-level keyboard hook posts its own message for the
+    // applications that suppress hotkey processing outright.
     EXPECT_NE(controllerSource.find("HOTKEY_ID_TOGGLE_OVERLAY"), std::string::npos);
-    const size_t dispatch = controllerSource.find("msg.wParam == HOTKEY_ID_TOGGLE_OVERLAY");
+    const size_t loopDispatch =
+        controllerSource.find("msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook");
+    ASSERT_NE(loopDispatch, std::string::npos);
+    EXPECT_NE(controllerSource.find("DispatchHotkey(static_cast<int>(msg.wParam))", loopDispatch), std::string::npos);
+    const size_t dispatch = controllerSource.find("hotkeyId == HOTKEY_ID_TOGGLE_OVERLAY");
     ASSERT_NE(dispatch, std::string::npos);
     EXPECT_NE(controllerSource.find("ToggleOverlay();", dispatch), std::string::npos);
     EXPECT_NE(controllerSource.find("SendCommand(ProcessCommand::ToggleOverlay, nullptr, &response)"),

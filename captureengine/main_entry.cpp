@@ -10,6 +10,69 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     return FALSE;
 }
 
+// Acts on one hotkey, whichever path delivered it. RegisterHotKey posts
+// WM_HOTKEY; the low-level keyboard hook posts main_kMsgHotkeyFromInputHook for
+// the applications that suppress hotkey processing entirely. Exactly one of the
+// two ever fires for a press, because the hook consumes the key it matched.
+void DispatchHotkey(int hotkeyId) {
+    if (hotkeyId == HOTKEY_ID_RECORD) {
+        ToggleRecording();
+        return;
+    }
+    if (hotkeyId == HOTKEY_ID_AUDIO_ONLY) {
+        ToggleAudioOnlyRecording();
+        return;
+    }
+    if (hotkeyId == HOTKEY_ID_TOGGLE_OVERLAY) {
+        ToggleOverlay();
+        return;
+    }
+    if (hotkeyId != HOTKEY_ID_SCREENSHOT)
+        return;
+
+    if (main_g_PseudoOverlay)
+        main_g_PseudoOverlay->BeginScreenshotCapture();
+    const bool screenshotSaved = TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
+    if (main_g_PseudoOverlay) {
+        main_g_PseudoOverlay->EndScreenshotCapture();
+        main_g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
+    }
+    // Show the same result in the inject overlay (hooked game).
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc)
+        return;
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (!ValidateDiscoveryInfo(pDisc)) {
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+        return;
+    }
+    uint32_t injPid = pDisc->GetInjectPid();
+    UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+    if (injPid == 0)
+        return;
+    wchar_t shmName[64];
+    GenerateSharedMemName(shmName, 64, injPid);
+    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+    if (!hShm)
+        return;
+    auto* pShm =
+        (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+    if (pShm && ValidateSharedMemory(pShm)) {
+        const OverlayNotificationType notification =
+            screenshotSaved ? OverlayNotificationType::ScreenshotSaved : OverlayNotificationType::ScreenshotFailed;
+        pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification), std::memory_order_release);
+        pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
+    } else if (pShm) {
+        LogError("[Controller] Screenshot notification rejected incompatible inject shared memory ABI");
+    }
+    if (pShm)
+        UnmapViewOfFile(pShm);
+    CloseHandle(hShm);
+}
+
 // Controller main function
 int ControllerMain(HINSTANCE hInstance) {
     const int64_t controllerStartUs = Log_GetQpcUs();
@@ -86,12 +149,15 @@ int ControllerMain(HINSTANCE hInstance) {
         int msgTimers = 0;
         int msgOthers = 0;
         int msgHotkeys = 0;
+        int msgHookHotkeys = 0;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             msgCount++;
             if (msg.message == WM_TIMER)
                 msgTimers++;
             else if (msg.message == WM_HOTKEY)
                 msgHotkeys++;
+            else if (msg.message == main_kMsgHotkeyFromInputHook)
+                msgHookHotkeys++;
             else if (msg.message != WM_QUIT && msg.message != main_kMsgCompleteControllerStartup)
                 msgOthers++;
             if (msg.message == WM_QUIT) {
@@ -105,62 +171,8 @@ int ControllerMain(HINSTANCE hInstance) {
                 }
                 continue;
             }
-            if (msg.message == WM_HOTKEY) {
-                if (msg.wParam == HOTKEY_ID_RECORD) {
-                    ToggleRecording();
-                } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
-                    ToggleAudioOnlyRecording();
-                } else if (msg.wParam == HOTKEY_ID_TOGGLE_OVERLAY) {
-                    ToggleOverlay();
-                } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
-                    if (main_g_PseudoOverlay)
-                        main_g_PseudoOverlay->BeginScreenshotCapture();
-                    const bool screenshotSaved =
-                        TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
-                    if (main_g_PseudoOverlay) {
-                        main_g_PseudoOverlay->EndScreenshotCapture();
-                        main_g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
-                    }
-                    // Show the same result in the inject overlay (hooked game).
-                    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-                    if (hDisc) {
-                        DiscoveryInfo* pDisc =
-                            (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-                        if (ValidateDiscoveryInfo(pDisc)) {
-                            uint32_t injPid = pDisc->GetInjectPid();
-                            UnmapViewOfFile(pDisc);
-                            CloseHandle(hDisc);
-                            if (injPid != 0) {
-                                wchar_t shmName[64];
-                                GenerateSharedMemName(shmName, 64, injPid);
-                                HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-                                if (hShm) {
-                                    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(
-                                        hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-                                    if (pShm && ValidateSharedMemory(pShm)) {
-                                        const OverlayNotificationType notification =
-                                            screenshotSaved ? OverlayNotificationType::ScreenshotSaved
-                                                            : OverlayNotificationType::ScreenshotFailed;
-                                        pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification),
-                                                                                 std::memory_order_release);
-                                        pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
-                                                                                    std::memory_order_release);
-                                    } else if (pShm) {
-                                        LogError("[Controller] Screenshot notification rejected incompatible "
-                                                 "inject shared memory ABI");
-                                    }
-                                    if (pShm)
-                                        UnmapViewOfFile(pShm);
-                                    CloseHandle(hShm);
-                                }
-                            }
-                        } else {
-                            if (pDisc)
-                                UnmapViewOfFile(pDisc);
-                            CloseHandle(hDisc);
-                        }
-                    }
-                }
+            if (msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook) {
+                DispatchHotkey(static_cast<int>(msg.wParam));
                 continue;
             }
             TranslateMessage(&msg);
@@ -205,42 +217,35 @@ int ControllerMain(HINSTANCE hInstance) {
 
                     if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-                        if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop.GetModifiers(),
-                                            main_g_Config.hotkeyStartStop.vkey)) {
-                            LogError("[Controller] Failed to re-register recording hotkey");
-                        }
+                        main_g_HotkeyOwnership.record =
+                            RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
                     }
 
                     if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-                        if (main_g_Config.hotkeyScreenshot.vkey != 0) {
-                            if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot.GetModifiers(),
-                                                main_g_Config.hotkeyScreenshot.vkey)) {
-                                LogError("[Controller] Failed to re-register screenshot hotkey");
-                            }
-                        }
+                        main_g_HotkeyOwnership.screenshot =
+                            RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot,
+                                                     "screenshot");
                     }
 
                     if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-                        if (main_g_Config.hotkeyAudioOnly.vkey != 0) {
-                            if (!RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly.GetModifiers(),
-                                                main_g_Config.hotkeyAudioOnly.vkey)) {
-                                LogError("[Controller] Failed to re-register audio-only hotkey");
-                            }
-                        }
+                        main_g_HotkeyOwnership.audioOnly =
+                            RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly,
+                                                     "audio-only");
                     }
 
                     if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, main_g_Config.hotkeyToggleOverlay)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
-                        if (main_g_Config.hotkeyToggleOverlay.vkey != 0) {
-                            if (!RegisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY,
-                                                main_g_Config.hotkeyToggleOverlay.GetModifiers(),
-                                                main_g_Config.hotkeyToggleOverlay.vkey)) {
-                                LogError("[Controller] Failed to re-register overlay toggle hotkey");
-                            }
-                        }
+                        main_g_HotkeyOwnership.toggleOverlay =
+                            RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay,
+                                                     "overlay toggle");
                     }
+
+                    // The keyboard-hook path recognizes the same hotkeys, so it
+                    // has to follow every reload, including one that only
+                    // disabled a hotkey.
+                    PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
 
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
@@ -279,8 +284,9 @@ int ControllerMain(HINSTANCE hInstance) {
             const int64_t configUs = preWaitUs - postHealthUs;
             LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld",
                      (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs);
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d)",
-                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys);
+            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d hkHook=%d hook=%d)",
+                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys,
+                     msgHookHotkeys, IsHotkeyInputHookActive() ? 1 : 0);
             if (waitMs == 0) {
                 LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu", (unsigned long long)iterCount,
                          (unsigned long)(GetTickCount() - lastConfigCheck));
@@ -291,8 +297,10 @@ int ControllerMain(HINSTANCE hInstance) {
     }
 
     // Unregister hotkeys first
+    StopHotkeyInputHook();
     UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
     UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
+    UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
     UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
 
     // Keep tray icon alive during shutdown (animation already started by
