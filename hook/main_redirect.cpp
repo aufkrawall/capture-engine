@@ -160,8 +160,10 @@ bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const cha
     HookLogImportant(
         "Streamline override redirect refused for %s: this process runs %s but %s is %s. Streamline generations "
         "are not interchangeable - the 1.x-only exports a 1.x game imports do not exist in 2.x, and slSetTag / "
-        "slEvaluateFeature have different signatures in each. Upgrade the NGX runtimes instead "
-        "(dlss_sr_dll_path / dlss_fg_dll_path), which are generation-independent",
+        "slEvaluateFeature have different signatures in each, so a path override cannot upgrade one to the other. "
+        "Changing generation needs a translation shim that exports the old API and calls the new one, installed "
+        "ahead of the game's own import. Within one generation this override works; across generations, upgrade "
+        "the NGX runtimes instead (dlss_sr_dll_path / dlss_fg_dll_path), which are generation-independent",
         filename ? filename : "an sl.* module", ce::streamline_api::Describe(process), finalPath.c_str(),
         ce::streamline_api::Describe(replacement));
   }

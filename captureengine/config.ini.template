@@ -600,8 +600,15 @@ dlss_fg_dll_path=
 ; 2.x interposer exports, so the loader would kill the process before its first frame;
 ; and slSetTag / slEvaluateFeature have completely different signatures in each. A 1.x
 ; title therefore cannot be "upgraded" to Streamline 2.x by pointing this at a newer SDK.
-; What does upgrade such a title is the NGX runtime, which is generation-independent: use
-; dlss_sr_dll_path (nvngx_dlss.dll) and dlss_fg_dll_path (nvngx_dlssg.dll) above.
+; Changing generation at all needs a translation shim that exports the old API and calls
+; the new one, installed ahead of the game's own import - that is what the third-party
+; Witcher 3 MFG bridges do (they patch the executable's import to their own bridge DLL and
+; keep Streamline 2.x in a side folder). CaptureEngine cooperates with such a bridge: it
+; matches Streamline modules by base name regardless of folder, so the bridged 2.x runtime
+; is detected and hooked normally, and this override then works within that 2.x set.
+; Without a bridge, what does upgrade a 1.x title is the NGX runtime, which is
+; generation-independent: use dlss_sr_dll_path (nvngx_dlss.dll) and dlss_fg_dll_path
+; (nvngx_dlssg.dll) above.
 streamline_dll_path=
 
 [ThirdParty]
