@@ -1,5 +1,6 @@
 #include "dx11_hook_internal.h"
 
+#include "../common/module_pin.h"
 #include "../wrappers/inline_hook_policy.h"
 
 // Global Deferred Release Queue for D3D11 resources
@@ -22,6 +23,30 @@ public:
         DX12_EndInternalDXGISwapchainProbe();
     }
 };
+
+// Read the first two bytes of a create function's entry so the caller can tell
+// whether an entry patch has to be bypassed.
+//
+// The address does not necessarily belong to the module this Init pinned:
+// oD3D11CreateDeviceAndSwapChain is shared with wrapper_hooks.cpp, and a
+// loader-injected proxy (ReShade, OptiScaler, Special K) can own the entry CE
+// ends up inspecting. Pin whatever image owns it, then refuse the probe outright
+// when the bytes are not readable executable memory - dereferencing a code
+// pointer whose owner CE never resolved is what faulted on the unmapped
+// d3d11!D3D11CreateDeviceAndSwapChain in the Witcher 3 sessions.
+bool TryReadCreateEntryBytes(const void* entry, uint8_t* entryBytesOut, const char* what) {
+    if (!entry)
+        return false;
+    ce::module_pin::PinOwnerOfAddress(entry);
+    if (!ce::module_pin::IsReadableCode(entry, 2)) {
+        HookLogImportant(
+            "DX11: %s entry at %p is not readable executable memory - skipping the entry-patch bypass probe", what,
+            entry);
+        return false;
+    }
+    memcpy(entryBytesOut, entry, 2);
+    return true;
+}
 }  // namespace
 
 thread_local unsigned g_D3D11InternalIdentityProbeDepth = 0;
@@ -283,8 +308,13 @@ void DX11Hook::Init() {
     }
 
     // D3D11CreateDeviceAndSwapChain hook is now handled by IAT patching in
-    // iat_hook.cpp The InitializeD3D11Hooks() function sets up the IAT hook
-    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+    // iat_hook.cpp The InitializeD3D11Hooks() function sets up the IAT hook.
+    // Pinned: everything below resolves, inline-patches and calls into this
+    // image, and the patch plus the saved originals are never withdrawn, so the
+    // module must not be able to unload underneath them. CheckAndInstallHooks
+    // already pinned it before committing; this keeps the invariant local to the
+    // code that depends on it (see common/module_pin.h).
+    HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
     if (hD3D11) {
         // Initialize IAT hooks now that d3d11.dll is loaded
         // This may have been called before d3d11.dll was loaded at startup
@@ -312,7 +342,7 @@ void DX11Hook::Init() {
 
     // 2. Hook D3D10 entry points
     // D3D10 hooking is handled by IAT in iat_hook.cpp / wrapper_hooks.cpp
-    HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
+    HMODULE hD3D10 = ce::module_pin::PinByName("d3d10.dll");
     if (hD3D10) {
         HookLog("DX11: D3D10 hooks should be active via IAT.");
     }
@@ -340,8 +370,9 @@ void DX11Hook::Init() {
             // Same genuine-object rule as the D3D11 temp path below: foreign
             // hooks wrap device creation, and the temp probe must operate on
             // the real d3d10 object.
-            const uint8_t* d3d10Entry = reinterpret_cast<const uint8_t*>(pD3D10CD);
-            if (ce::inline_hook_policy::IsPrependChainableEntryJump(d3d10Entry[0], d3d10Entry[1], true)) {
+            uint8_t d3d10Entry[2] = {};
+            if (TryReadCreateEntryBytes(reinterpret_cast<const void*>(pD3D10CD), d3d10Entry, "D3D10CreateDevice") &&
+                ce::inline_hook_policy::IsPrependChainableEntryJump(d3d10Entry[0], d3d10Entry[1], true)) {
                 void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pD3D10CD));
                 if (bypass) {
                     HookLogImportant(
@@ -435,8 +466,10 @@ void DX11Hook::Init() {
             // 20260813_024327). The entry may hold CE's own detour or a
             // foreign prepend; either way a bypass trampoline resumes in the
             // real function body, exactly like the temp-DXGI-factory path.
-            const uint8_t* tempCreateEntry = reinterpret_cast<const uint8_t*>(pTempCreate);
-            if (ce::inline_hook_policy::IsPrependChainableEntryJump(tempCreateEntry[0], tempCreateEntry[1], true)) {
+            uint8_t tempCreateEntry[2] = {};
+            if (TryReadCreateEntryBytes(reinterpret_cast<const void*>(pTempCreate), tempCreateEntry,
+                                        "D3D11CreateDeviceAndSwapChain") &&
+                ce::inline_hook_policy::IsPrependChainableEntryJump(tempCreateEntry[0], tempCreateEntry[1], true)) {
                 void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pTempCreate));
                 if (bypass) {
                     HookLogImportant(

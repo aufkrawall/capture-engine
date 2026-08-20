@@ -267,12 +267,25 @@ if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pCr
     }
 }
 
+// These three failures used to return in silence, which made a dead Present-hook
+// bootstrap indistinguishable from one that never ran: Witcher 3 session
+// 20260820_142322 logged "Installing Present hooks eagerly" and then nothing at
+// all for 65 ms. Report the HRESULT - a failing temp device is a first-order
+// event about the process's D3D12 state, not a detail.
 IDXGIFactory2* pFactory = nullptr;
-if (FAILED(pCreateFactory(IID_PPV_ARGS(&pFactory))) || !pFactory)
+HRESULT factoryHr = pCreateFactory(IID_PPV_ARGS(&pFactory));
+if (FAILED(factoryHr) || !pFactory) {
+    HookLogImportant("DX12: Temp-swapchain bootstrap: CreateDXGIFactory1 failed (hr=0x%08X)", (unsigned)factoryHr);
     return;
+}
 
 ID3D12Device* pDevice = nullptr;
-if (FAILED(pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice))) || !pDevice) {
+HRESULT deviceHr = pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice));
+if (FAILED(deviceHr) || !pDevice) {
+    HookLogImportant(
+        "DX12: Temp-swapchain bootstrap: D3D12CreateDevice failed (hr=0x%08X) - Present hooks now depend on "
+        "intercepting the game's own CreateSwapChainForHwnd",
+        (unsigned)deviceHr);
     pFactory->Release();
     return;
 }
@@ -284,7 +297,9 @@ DX12_HookDeviceVTable(pDevice);
 D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 ID3D12CommandQueue* pQueue = nullptr;
-if (FAILED(pDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&pQueue))) || !pQueue) {
+HRESULT queueHr = pDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&pQueue));
+if (FAILED(queueHr) || !pQueue) {
+    HookLogImportant("DX12: Temp-swapchain bootstrap: CreateCommandQueue failed (hr=0x%08X)", (unsigned)queueHr);
     pDevice->Release();
     pFactory->Release();
     return;

@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 626,
+    "entries": 629,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -312,6 +312,7 @@
       "hook/common/hook_common.cpp",
       "hook/common/input_manager.cpp",
       "hook/common/ipc_client.cpp",
+      "hook/common/module_pin.cpp",
       "hook/common/ngx_fg_preset_override.cpp",
       "hook/common/nv_lod_spread_override.cpp",
       "hook/common/overlay_adapter.cpp",
@@ -537,6 +538,7 @@
       "tests/test_dx12_fg_transition_sequences.cpp",
       "tests/test_dx12_process_frame_diagnostics.cpp",
       "tests/test_dx12_sampler_policy.cpp",
+      "tests/test_dx12_temp_swapchain_diagnostics.cpp",
       "tests/test_dx12_upload_slot_guard.cpp",
       "tests/test_dxgi_shared.cpp",
       "tests/test_dxgi_shared_access_denied_dump.cpp",
@@ -589,6 +591,7 @@
       "tests/test_logger_service_policy.cpp",
       "tests/test_mip_mapping_policy.cpp",
       "tests/test_module_enumeration.cpp",
+      "tests/test_module_pin.cpp",
       "tests/test_monitor_selection.cpp",
       "tests/test_mux_invariants.cpp",
       "tests/test_ngx_feature_lifecycle.cpp",

@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../common/hook_common.h"
+#include "../common/module_pin.h"
 
 namespace InlineHook {
 
@@ -573,6 +574,15 @@ void* CreateBypassTrampoline(void* target) {
         return nullptr;
 
     std::lock_guard<std::mutex> lock(g_hookMutex);
+
+    // The target is a foreign entry point CE was handed, not necessarily one it
+    // resolved itself, so refuse one whose bytes cannot be read at all. Same
+    // rule as InstallImpl: validate, do not pin - a Streamline/NGX/FFX plugin
+    // reaching here must keep its own unload lifecycle.
+    if (!ce::module_pin::IsReadableCode(target, 2)) {
+        HookLog("BypassTrampoline: %p is not readable executable memory - refusing to probe its entry", target);
+        return nullptr;
+    }
 
     const uint8_t* code = (const uint8_t*)target;
 #ifdef _WIN64

@@ -7,6 +7,7 @@
 
 #include "custom_hook.h"
 #include "../common/hook_common.h"
+#include "../common/module_pin.h"
 #include "iat_hook.h"
 #include "vtable_hook.h"
 
@@ -201,8 +202,10 @@ Status HookExport(const char* moduleName, const char* functionName, void* detour
         return Status::ErrorInvalidParameter;
     }
 
-    // Get module
-    HMODULE hMod = GetModuleHandleA(moduleName);
+    // Get module. Pinned, because the procAddr resolved from it is stored in
+    // *original and registered with RegisterDynamicHook, so game code can call
+    // through it for the rest of the process (see common/module_pin.h).
+    HMODULE hMod = ce::module_pin::PinByName(moduleName);
     if (!hMod) {
         HookLog("CustomHook: Module not found: %s", moduleName);
         return Status::ErrorModuleNotFound;

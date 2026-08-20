@@ -20,6 +20,7 @@
 #include "../apis/dx12_sampler_hooks.h"
 #include "../apis/lod_helper.h"
 #include "../common/module_enumeration.h"
+#include "../common/module_pin.h"
 #include "../common/ngx_fg_preset_override.h"
 #include "../common/overlay_compat.h"
 #include "../common/sampler_override_utils.h"
@@ -58,8 +59,11 @@ bool InitializeDXGIHooks() {
     WrapperLog("IAT: Initializing DXGI hooks...");
     bool success = true;
 
-    // Get dxgi.dll - if not loaded, we'll hook when it loads
-    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    // Get dxgi.dll - if not loaded, we'll hook when it loads.
+    // Pinned: the export addresses cached below outlive this call and are
+    // handed to game code through the GetProcAddress detour, so the image
+    // must not be able to unload under them (see common/module_pin.h).
+    HMODULE hDXGI = ce::module_pin::PinByName("dxgi.dll");
 
     if (hDXGI) {
         // Get original functions from dxgi.dll
@@ -102,7 +106,7 @@ bool InitializeDXGIHooks() {
 bool InitializeD3D12Hooks() {
     WrapperLog("IAT: Initializing D3D12 hooks...");
 
-    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+    HMODULE hD3D12 = ce::module_pin::PinByName("d3d12.dll");
     if (!hD3D12) {
         WrapperLog("IAT: d3d12.dll not loaded");
         return false;
@@ -205,7 +209,7 @@ bool InitializeD3D11Hooks() {
         WrapperLog("IAT: Initializing D3D11 hooks...");
     }
 
-    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+    HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
 
     if (hD3D11) {
         // Get original D3D11CreateDeviceAndSwapChain
@@ -258,7 +262,7 @@ bool InitializeD3D10Hooks() {
         WrapperLog("IAT: Initializing D3D10 hooks...");
     }
 
-    HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
+    HMODULE hD3D10 = ce::module_pin::PinByName("d3d10.dll");
 
     if (hD3D10) {
         ::oD3D10CreateDevice = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
@@ -276,7 +280,7 @@ bool InitializeD3D10Hooks() {
                             (void**)&::oD3D10CreateDeviceAndSwapChain);
 
         // D3D10.1
-        HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
+        HMODULE hD3D10_1 = ce::module_pin::PinByName("d3d10_1.dll");
         if (hD3D10_1) {
             ::oD3D10CreateDevice1 = (PFN_D3D10CreateDevice1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
             ::oD3D10CreateDeviceAndSwapChain1 =
@@ -306,7 +310,7 @@ bool InitializeD3D9Hooks() {
         WrapperLog("IAT: Initializing D3D9 hooks...");
     }
 
-    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
+    HMODULE hD3D9 = ce::module_pin::PinByName("d3d9.dll");
 
     if (hD3D9) {
         // Get original functions
@@ -350,7 +354,7 @@ bool InitializeDDrawHooks() {
         WrapperLog("IAT: Initializing DirectDraw hooks...");
     }
 
-    HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
+    HMODULE hDDraw = ce::module_pin::PinByName("ddraw.dll");
     if (!hDDraw) {
         if (logScan) {
             WrapperLog("IAT: ddraw.dll not loaded");

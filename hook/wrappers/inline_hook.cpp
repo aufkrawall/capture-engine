@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include "../common/hook_common.h"
+#include "../common/module_pin.h"
 #include "../common/overlay_compat.h"
 #include "../../common/log_meter.h"
 
@@ -225,6 +226,17 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     }
 
     LogDirect("=== Install called: target=%p, detour=%p", target, detour);
+
+    // Never decode a prolog that cannot be read. Targets arrive from every hook
+    // family, including Streamline/NGX/FFX plugins that the FG paths genuinely
+    // load and unload, so this deliberately validates rather than pins: pinning
+    // is reserved for the named D3D/DXGI runtime modules whose export addresses
+    // CE caches for the process lifetime (see common/module_pin.h).
+    if (!ce::module_pin::IsReadableCode(target, PATCH_SIZE)) {
+        LogDirect("FAILED: target %p is not readable executable memory", target);
+        HookLogImportant("InlineHook: Refused target %p - not readable executable memory", target);
+        return false;
+    }
 
 #ifdef _WIN64
     bool is64bit = true;

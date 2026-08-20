@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "common/module_pin.h"
 #include "common/vulkan_renderer_policy.h"
 
 void CloseCheckHooksEvent() {
@@ -244,19 +245,40 @@ void CheckAndInstallHooks() {
           dx11CondAll ? "INSTALL" : "skip");
     }
     if (dx11CondAll) {
-      HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
-              "D3D12 API called: %d, LegacyD3D loaded: %d)",
-              d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
-              legacyD3DLoaded ? 1 : 0);
-      g_DX11Hook = new DX11Hook();
-      LARGE_INTEGER _t1, _t2, _freq;
-      QueryPerformanceFrequency(&_freq);
-      QueryPerformanceCounter(&_t1);
-      g_DX11Hook->Init();
-      QueryPerformanceCounter(&_t2);
-      // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-      double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
-      HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
+      // The presence test above only proves the module was loaded a moment ago.
+      // DX11Hook::Init resolves, inline-patches and calls into these images, so
+      // take a permanent reference before committing: a transient probe load
+      // (Witcher 3 startup, sessions 20260820_023643 / _031021) released
+      // d3d11.dll about a second after CE saw it, which faulted CE first on the
+      // unmapped export entry and then inside D3D11CreateDeviceAndSwapChain
+      // while d3d11's detach tore the NVIDIA UMD adapter cache down underneath
+      // it. See common/module_pin.h. Pin each present module, not the first one
+      // found, so a D3D10-only process is covered too.
+      const bool pinnedD3D11 = ce::module_pin::PinByName("d3d11.dll") != nullptr;
+      const bool pinnedD3D10 = ce::module_pin::PinByName("d3d10.dll") != nullptr;
+      const bool pinnedD3D10_1 = ce::module_pin::PinByName("d3d10_1.dll") != nullptr;
+      if (!pinnedD3D11 && !pinnedD3D10 && !pinnedD3D10_1) {
+        // Every candidate went away between the presence check and here, so
+        // there is nothing to hook yet. Leave g_DX11Hook unset: the next
+        // hook-thread tick re-evaluates instead of latching a no-op install.
+        HookLogImportant(
+            "DX11: d3d11/d3d10 unloaded between the presence check and the "
+            "install commit - not installing, retrying on the next tick");
+      } else {
+        HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
+                "D3D12 API called: %d, LegacyD3D loaded: %d)",
+                d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
+                legacyD3DLoaded ? 1 : 0);
+        g_DX11Hook = new DX11Hook();
+        LARGE_INTEGER _t1, _t2, _freq;
+        QueryPerformanceFrequency(&_freq);
+        QueryPerformanceCounter(&_t1);
+        g_DX11Hook->Init();
+        QueryPerformanceCounter(&_t2);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+        HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
+      }
     }
   }
 
