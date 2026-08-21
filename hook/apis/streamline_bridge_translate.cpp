@@ -8,6 +8,7 @@
 
 #include "../common/hook_common.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_bridge_v1_abi.h"
 
 // Streamline is a 64-bit runtime: there is no 32-bit sl.interposer, and the build already
 // skips the FG SDK runtimes for x86. The hook DLL is built for both, so the translation
@@ -20,114 +21,10 @@
 #include "sl_consts.h"
 #include "sl_dlss.h"
 #include "sl_dlss_g.h"
+#include "sl_reflex.h"
 
 namespace ce::streamline_bridge {
 namespace {
-
-// ---------------------------------------------------------------------------
-// The 1.x side, mirrored
-// ---------------------------------------------------------------------------
-//
-// No public 1.5.6 header exists, so these are mirrors. Each one is either corroborated by
-// two independent header sources or measured from a real session - never inferred.
-
-// `sl1::Constants`. Identical in upstream v1.1.1 and OptiScaler's vendored SL1 set, which
-// is what makes it trustworthy across the 1.x line. Unlike 2.x it has NO BaseStructure
-// header, and it carries `notRenderingGameFrames`, which 2.x dropped.
-struct V1Float2 {
-    float x, y;
-};
-struct V1Float3 {
-    float x, y, z;
-};
-struct V1Float4 {
-    float x, y, z, w;
-};
-struct V1Float4x4 {
-    V1Float4 row[4];
-};
-
-struct V1Constants {
-    V1Float4x4 cameraViewToClip;
-    V1Float4x4 clipToCameraView;
-    V1Float4x4 clipToLensClip;
-    V1Float4x4 clipToPrevClip;
-    V1Float4x4 prevClipToClip;
-    V1Float2 jitterOffset;
-    V1Float2 mvecScale;
-    V1Float2 cameraPinholeOffset;
-    V1Float3 cameraPos;
-    V1Float3 cameraUp;
-    V1Float3 cameraRight;
-    V1Float3 cameraFwd;
-    float cameraNear;
-    float cameraFar;
-    float cameraFOV;
-    float cameraAspectRatio;
-    float motionVectorsInvalidValue;
-    uint32_t depthInverted;
-    uint32_t cameraMotionIncluded;
-    uint32_t motionVectors3D;
-    uint32_t reset;
-    uint32_t notRenderingGameFrames;  // no 2.x equivalent - dropped in translation
-    uint32_t orthographicProjection;
-    uint32_t motionVectorsDilated;
-    uint32_t motionVectorsJittered;
-    void* ext;
-};
-static_assert(sizeof(V1Constants) == 456, "1.x sl::Constants is 456 bytes on x64");
-static_assert(offsetof(V1Constants, jitterOffset) == 320, "");
-static_assert(offsetof(V1Constants, cameraNear) == 392, "");
-static_assert(offsetof(V1Constants, depthInverted) == 412, "");
-
-// `sl1::Resource`. Measured layout already encoded in streamline_api_generation.h and
-// independently confirmed by OptiScaler's header; note `type` is a 1-byte enum, not a dword.
-struct V1Resource {
-    uint8_t type;
-    void* native;
-    void* memory;
-    void* view;
-    uint32_t state;
-    void* ext;
-};
-static_assert(offsetof(V1Resource, native) == 8, "");
-static_assert(offsetof(V1Resource, state) == 32, "");
-
-// `sl1::Extent`. Same shape as 2.x; only ever consumed when the game supplies one.
-struct V1Extent {
-    uint32_t top, left, width, height;
-};
-
-// `sl1::DLSSConstants`, measured from The Witcher 3 session `20260821_042540`: mode@0
-// (1 and 4 both observed), outputWidth@4 (3840), outputHeight@8 (2160), sharpness@12 (0.0),
-// preExposure@16 (1.0), exposureScale@20 (1.0), colorBuffersHDR@24 (1). The same leading
-// run of fields as 2.x `DLSSOptions`, which is why this translates almost verbatim.
-struct V1DLSSConstants {
-    uint32_t mode;
-    uint32_t outputWidth;
-    uint32_t outputHeight;
-    float sharpness;
-    float preExposure;
-    float exposureScale;
-    uint32_t colorBuffersHDR;
-};
-
-// `sl1::DLSSSettings`. Only the first three fields are written back: that is exactly what
-// the game's own 1.5.6 runtime filled in the measured capture (1920, 1080, 0.35, then
-// zeroes), so replicating more would be inventing behaviour the real runtime did not have.
-struct V1DLSSSettings {
-    uint32_t optimalRenderWidth;
-    uint32_t optimalRenderHeight;
-    float optimalSharpness;
-};
-
-// `sl1::DLSSGConstants`. mode@0 measured going 0 -> 1 exactly 68 ms before
-// `DLSS FG ACTIVATED` in the same session, which is what identifies it. The dword at +4 was
-// constantly 1 across every capture, matching 2.x `numFramesToGenerate`'s default of 1.
-struct V1DLSSGConstants {
-    uint32_t mode;
-    uint32_t numFramesToGenerate;
-};
 
 // ---------------------------------------------------------------------------
 // Resolved 2.x entry points
@@ -171,6 +68,7 @@ std::atomic<uint32_t> g_probedEpoch{0};
 PFun_slDLSSSetOptions* g_slDLSSSetOptions = nullptr;
 PFun_slDLSSGetOptimalSettings* g_slDLSSGetOptimalSettings = nullptr;
 PFun_slDLSSGSetOptions* g_slDLSSGSetOptions = nullptr;
+PFun_slReflexSetOptions* g_slReflexSetOptions = nullptr;
 
 // Feature entry points exist only once a device is set - `slGetFeatureFunction` says so in
 // the SDK header itself - so they are resolved from the calls that need them rather than at
@@ -203,6 +101,10 @@ void ResolveFeatureFunctions() {
         g_slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions",
                                reinterpret_cast<void*&>(g_slDLSSGSetOptions));
     }
+    if (!g_slReflexSetOptions) {
+        g_slGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions",
+                               reinterpret_cast<void*&>(g_slReflexSetOptions));
+    }
     // Logged once the set is complete, and once more if it is still incomplete after the
     // runtime has become usable - reporting every failed attempt would be noise, because
     // failing before the device exists is the expected case this is polling for.
@@ -211,11 +113,12 @@ void ResolveFeatureFunctions() {
         !logged.exchange(true, std::memory_order_relaxed)) {
         HookLogImportant(
             "Streamline bridge: feature entry points %s - slDLSSSetOptions=%p slDLSSGetOptimalSettings=%p "
-            "slDLSSGSetOptions=%p",
-            (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions) ? "resolved"
-                                                                                     : "PARTIALLY resolved",
+            "slDLSSGSetOptions=%p slReflexSetOptions=%p",
+            (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions && g_slReflexSetOptions)
+                ? "resolved"
+                : "PARTIALLY resolved",
             reinterpret_cast<void*>(g_slDLSSSetOptions), reinterpret_cast<void*>(g_slDLSSGetOptimalSettings),
-            reinterpret_cast<void*>(g_slDLSSGSetOptions));
+            reinterpret_cast<void*>(g_slDLSSGSetOptions), reinterpret_cast<void*>(g_slReflexSetOptions));
     }
 }
 
@@ -603,11 +506,39 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         return ResultOk(g_slDLSSGSetOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch);
     }
 
-    // Reflex is driven through slReflexSetOptions in 2.x and is not part of what the bridge
-    // has measured; refusing leaves the game's latency behaviour to Reflex's own defaults
-    // rather than configuring it from a layout CE has not verified.
+    // Reflex. 1.x configures it through slSetFeatureConstants; 2.x through slReflexSetOptions.
+    //
+    // This is not optional for the feature the bridge exists to deliver: DLSS-G does not engage
+    // with Reflex off, so refusing this call - which is what the bridge did at first - would
+    // leave frame generation configured and inert. Only `mode` is carried, because only `mode`
+    // was measured; see V1ReflexConstants for why the rest of that capture is stack, not struct.
+    if (feature1x == kV1FeatureReflex) {
+        if (!g_slReflexSetOptions) {
+            static std::atomic<bool> latch{false};
+            RefuseOnce(latch, "slSetFeatureConstants(Reflex)", "the 2.x runtime has no slReflexSetOptions yet");
+            return false;
+        }
+        const auto& in = *static_cast<const V1ReflexConstants*>(constants1x);
+        // eOff / eLowLatency / eLowLatencyWithBoost, identical in both generations. Anything
+        // outside that is refused rather than cast into an enum it does not belong to.
+        if (in.mode > static_cast<uint32_t>(sl::ReflexMode::eLowLatencyWithBoost)) {
+            static std::atomic<bool> latch{false};
+            RefuseOnce(latch, "slSetFeatureConstants(Reflex)", "the 1.x Reflex mode is outside the known range");
+            return false;
+        }
+        sl::ReflexOptions options{};
+        options.mode = static_cast<sl::ReflexMode>(in.mode);
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: first Reflex options translated - mode=%u", in.mode);
+        }
+        static std::atomic<bool> latch{false};
+        return ResultOk(g_slReflexSetOptions(options), "slReflexSetOptions", latch);
+    }
+
     static std::atomic<bool> latch{false};
-    RefuseOnce(latch, "slSetFeatureConstants", "only DLSS and DLSS-G constants have a verified 1.x layout");
+    RefuseOnce(latch, "slSetFeatureConstants",
+               "only DLSS, DLSS-G and Reflex constants have a verified 1.x layout");
     return false;
 }
 

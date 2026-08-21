@@ -38,6 +38,20 @@ boundary is a real state transition - it is what reaching the render loop looks 
 Streamline finishes bringing DLSS-G's context up around the swapchain - so it converges without a
 timer.
 
+**Reflex now translates too, and a phantom field went with it.** DLSS-G does not engage with
+Reflex off, so refusing `slSetFeatureConstants(Reflex)` - which the bridge did from the start -
+would have left frame generation configured and inert. Re-reading the measured payload from
+`20260821_042540` shows the 1.x `ReflexConstants` is 8 bytes: `mode`@0 = 1, +4 always 0, and
+from +8 the captures disagree with bytes that read `00 46 00 00 f6 7f 00 00` - a `0x00007ff6....`
+module address straddling +8 and +12, i.e. a caller's saved pointer. The earlier "frameLimitUs@12
+= 565" was that stack tail, which is precisely what the probe's own documentation warns about and
+what was not heeded the first time. **A field that is only ever non-zero in captures where it
+disagrees with itself is not a field.** Only `mode` is carried; the rest keeps 2.x defaults.
+
+The mirrored 1.x structures moved to `streamline_bridge_v1_abi.h` - a different kind of claim
+from the code that calls a documented 2.x API, and the translation unit had reached the size
+ceiling anyway.
+
 Corrections to the previous entry, from the same log: `featuresToLoad` **is** honoured (`Ignoring
 plugin 'sl.deepdvc' since it is was not requested by the host`) - what was observed earlier was
 Streamline probing each plugin's config and unloading what it does not need. And the

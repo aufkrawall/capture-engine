@@ -15,6 +15,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Runtime (import takeover, fallback, 1.x quiesce) | `hook/apis/streamline_bridge.{h,cpp}` |
 | 2.x bring-up (load by full path, `slInit`, inventory) | `hook/apis/streamline_bridge_runtime.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
+| The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
 | Tests | `tests/test_streamline_bridge_policy.cpp` |
@@ -380,8 +381,19 @@ Measured from The Witcher 3 session `20260821_042540` (4x FG active, 4968 frames
 | --- | --- | --- |
 | `DLSSConstants` | `mode`@0, `outputWidth`@4, `outputHeight`@8, `sharpness`@12, `preExposure`@16, `exposureScale`@20, `colorBuffersHDR`@24 | 1 and 4; 3840; 2160; 0.0; 1.0; 1.0; 1 |
 | `DLSSSettings` (out) | `optimalRenderWidth`@0, `optimalRenderHeight`@4, `optimalSharpness`@8 | 1920; 1080; 0.35, then zeroes |
-| `ReflexConstants` | `mode`@0, `frameLimitUs`@12 | 1; 565 |
+| `ReflexConstants` | `mode`@0 **only**; the struct is 8 bytes | 1 (and +4 always 0) |
 | `DLSSGConstants` | `mode`@0 (**0 = off, 1 = on**), `numFramesToGenerate`@4 (unconfirmed) | 0 -> 1, 68 ms before `DLSS FG ACTIVATED`; +4 constantly 1 |
+
+**`ReflexConstants` had a phantom field, and it is worth knowing how.** An earlier reading of
+this table recorded `frameLimitUs`@12 with a value of 565. Re-reading the same capture shows
+the struct is 8 bytes: every record has `mode`@0 = 1 and +4 = 0, and from +8 the captures
+disagree, with the disagreeing bytes reading `00 46 00 00 f6 7f 00 00` - a `0x00007ff6....`
+module address straddling +8 and +12. That is a caller's saved pointer on the stack, not data.
+The probe's own documentation warns about exactly this ("a long tail of unstable values usually
+means the 96-byte dump ran past the end of the struct"), and the warning was not heeded the
+first time. **A field that is only ever non-zero in captures where it disagrees with itself is
+not a field.** Only `mode` is translated; 2.x's `frameLimitUs`, `useMarkersToOptimize`,
+`virtualKey` and `idThread` keep their defaults.
 
 `DLSSConstants`' leading run is the same as 2.x `DLSSOptions`, which is why that translation
 is nearly a field copy. `DLSSSettings` sits exactly 24 bytes below the IN struct in the
@@ -447,9 +459,11 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - **The `20260821_161620` startup C++ exception did not recur** in `20260821_163534`, which
   reached the render loop. It remains unexplained rather than fixed; if it returns, `sl.log`
   is now there to say whether Streamline was involved.
-- **Reflex is still refused.** 1.x drives it through `slSetFeatureConstants`; 2.x through
-  `slReflexSetOptions`. DLSS-G depends on Reflex, so if frame generation comes up but behaves
-  badly, this is the first suspect.
+- **Reflex now translates, but only `mode`.** 1.x drives it through `slSetFeatureConstants`,
+  2.x through `slReflexSetOptions`. This is not optional - DLSS-G does not engage with Reflex
+  off, so refusing the call would have left frame generation configured and inert - but the
+  frame-limit and marker fields keep 2.x defaults because they were never measured. If FG comes
+  up but latency behaves oddly, this is where to look.
 - **`slShutdown` on a 1.x runtime that has only been `slInit`ed is expected to unload its
   plugins, but that is not verified.** The inventory line printed straight after the call is
   there to settle it: if `sl.common.dll` is still listed from the game's folder afterwards,
@@ -458,9 +472,6 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - `DLSSGConstants` beyond `mode` is unconfirmed. `+4` is mapped to `numFramesToGenerate`
   because it was constantly 1 and 2.x defaults to 1 - plausible, not proven, and it is the
   field `dlss_fg_factor` interacts with.
-- **Reflex is deliberately unconfigured**: 1.x drives it through `slSetFeatureConstants`,
-  2.x through `slReflexSetOptions`, and that mapping is unverified. DLSS-G depends on Reflex,
-  so this is a prime suspect if FG does not engage.
 - The `slSetTag` deferral (1.x carries no command buffer, so tags flush at the next
   `slEvaluateFeature`) is the same pattern the unbridged 1.x overlay route uses, but has not
   been exercised through the bridge.
@@ -470,7 +481,7 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-21 (build 0.1.6219; ABI measurements from The Witcher 3 sessions
+Last verified 2026-08-21 (build 0.1.6220; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).
