@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-22 - Streamline bridge: native device handoff and NGX project identity
+
+Witcher 3 `20260821_234606` isolated two bridge failures. V2's interposer returned
+`DXGI_ERROR_DEVICE_RESET` for the game's later real-device request, which made the title throw;
+and V2 turned a zero application ID into its production temporary ID, disabling all NGX-backed
+features.
+
+- Bridge `D3D12CreateDevice` no longer forwards to the V2 interposer. It creates through
+  Microsoft's `d3d12.dll`, unwraps a factory-adapter proxy with `slGetNativeInterface` when
+  necessary (balancing that call's AddRef), and explicitly hands each distinct native device to
+  V2. Explicit devices supersede one another; queue-derived discovery remains fallback-only.
+- Since late activation cannot observe the game's original 1.x `slInit` application ID, CE gives
+  V2 a deterministic project identity from the host path plus host version. This avoids both a
+  game table and embedding the local path in the identity sent to NVIDIA.
+- Regression coverage pins the stable project-ID format and source-level absence of V2-targeted
+  device creation. Focused `StreamlineBridgePolicyTest.*` passes; runtime confirmation in
+  Witcher 3 is still manual.
+
 ### 2026-08-21 - Inject-overlay DPI: nearest display truth, not game-window awareness
 
 RoboCop `20260821_224340` initialized the DX12 overlay at `dpiScale=1.00` on a 150% display. Its first

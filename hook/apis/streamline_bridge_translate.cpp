@@ -132,7 +132,7 @@ void RefuseOnce(std::atomic<bool>& latch, const char* what, const char* why) {
 
 std::mutex g_deviceMutex;
 void* g_lastDeviceHandedOver = nullptr;  // guarded by g_deviceMutex
-bool g_haveInterposedDevice = false;     // guarded by g_deviceMutex
+bool g_haveExplicitDevice = false;       // guarded by g_deviceMutex
 
 void BumpReadinessEpoch() { g_readinessEpoch.fetch_add(1, std::memory_order_relaxed); }
 
@@ -276,7 +276,7 @@ bool ResolveTranslationTargets(void* v2InterposerModule) {
 
 bool V2RuntimeHasDevice() { return g_runtimeUsable.load(std::memory_order_acquire); }
 
-bool SetV2RuntimeDevice(void* d3d12Device, bool interposed) {
+bool SetV2RuntimeDevice(void* d3d12Device, bool explicitHandoff) {
     if (!d3d12Device) {
         return false;
     }
@@ -295,19 +295,20 @@ bool SetV2RuntimeDevice(void* d3d12Device, bool interposed) {
         // `slSetD3DDevice` is documented as NOT thread safe, and CE reaches here from two
         // independent discovery routes, so exactly one caller may be inside it.
         std::lock_guard<std::mutex> lock(g_deviceMutex);
-        // Never let the queue-derived native device overwrite one the interposer handed out.
-        const bool superseded = !interposed && g_haveInterposedDevice;
+        // Never let the queue-derived fallback overwrite an explicitly selected device.
+        const bool superseded = !explicitHandoff && g_haveExplicitDevice;
         if (!superseded && g_lastDeviceHandedOver != d3d12Device && g_slSetD3DDevice) {
             result = g_slSetD3DDevice(d3d12Device);
             g_lastDeviceHandedOver = d3d12Device;
-            g_haveInterposedDevice = g_haveInterposedDevice || interposed;
+            g_haveExplicitDevice = g_haveExplicitDevice || explicitHandoff;
             attempted = true;
         }
     }
     if (attempted) {
         HookLogImportant(
             "Streamline bridge: handed %s device %p to the 2.x runtime (slSetD3DDevice sl::Result=%d)",
-            interposed ? "the interposer's" : "the game's queue-derived", d3d12Device, static_cast<int>(result));
+            explicitHandoff ? "an explicitly handed" : "the game's queue-derived", d3d12Device,
+            static_cast<int>(result));
         BumpReadinessEpoch();
     }
     return TryBecomeUsable();

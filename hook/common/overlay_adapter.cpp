@@ -35,7 +35,7 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
             monitorDpiX > 0) {
             HookLogImportant("[Overlay] Windows effective DPI: hwnd=%p monitor=%p dpi=%u scale=%.2f", hwnd,
                              static_cast<void*>(monitor), static_cast<unsigned>(monitorDpiX),
-                             ce::pseudo_overlay::ResolveOverlayDpi(monitorDpiX, 96u) / 96.0f);
+                             static_cast<float>(ce::pseudo_overlay::ResolveOverlayDpi(monitorDpiX, 96u)) / 96.0f);
             return static_cast<float>(monitorDpiX) / 96.0f;
         }
     }
@@ -47,7 +47,9 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
         ReleaseDC(hwnd, hdc);
         if (dpiX > 0) {
             HookLogImportant("[Overlay] Windows legacy system DPI: hwnd=%p dpi=%d scale=%.2f", hwnd, dpiX,
-                             ce::pseudo_overlay::ResolveOverlayDpi(0u, static_cast<uint32_t>(dpiX)) / 96.0f);
+                             static_cast<float>(ce::pseudo_overlay::ResolveOverlayDpi(
+                                 0u, static_cast<uint32_t>(dpiX))) /
+                                 96.0f);
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             return dpiX / 96.0f;
         }

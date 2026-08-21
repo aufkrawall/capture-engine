@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <set>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "../hook/apis/streamline_bridge_policy.h"
@@ -21,6 +24,13 @@ bridge::ActivationInputs UpgradeableProcess() {
     inputs.gameAlreadyInitializedStreamline = false;
     inputs.gameAlreadyCreatedDeviceOrFactory = false;
     return inputs;
+}
+
+std::string ReadProjectSource(const std::filesystem::path& relativePath) {
+    std::ifstream stream(std::filesystem::current_path() / relativePath);
+    std::ostringstream text;
+    text << stream.rdbuf();
+    return text.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +233,40 @@ TEST(StreamlineBridgePolicyTest, DerivesTheSdkVersionFromWhicheverRuntimeIsStage
     // anywhere to keep updated.
     EXPECT_EQ(bridge::StreamlineSdkVersion(2, 20, 3) & 0xffffull, bridge::kStreamlineSdkVersionMagic);
     EXPECT_EQ(bridge::StreamlineSdkVersion(2, 20, 3) >> 48, 2ull);
+}
+
+TEST(StreamlineBridgePolicyTest, ProvidesAStableProjectIdentityWhenNoAppIdIsObservable) {
+    // A bridge usually activates after the game's own slInit, so the game's application ID
+    // cannot be captured. NGX's other accepted identity is a stable project description.
+    const std::string first = bridge::StreamlineProjectId("C:\\Games\\Example\\example.exe");
+    const std::string second = bridge::StreamlineProjectId("C:\\Games\\Example\\example.exe");
+    const std::string other = bridge::StreamlineProjectId("C:\\Games\\Other\\other.exe");
+
+    ASSERT_EQ(first.size(), 36u);
+    EXPECT_EQ(first, second);
+    EXPECT_NE(first, other);
+    EXPECT_EQ(first[8], '-');
+    EXPECT_EQ(first[13], '-');
+    EXPECT_EQ(first[18], '-');
+    EXPECT_EQ(first[23], '-');
+
+    const std::string version = bridge::StreamlineEngineVersion(4, 31, 2, 0);
+    EXPECT_EQ(version, "4.31.2.0");
+}
+
+TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitlyToStreamline) {
+    // Session 20260821_234606: the first proxied device succeeded, but the later real-device
+    // request through the 2.x interposer returned DXGI_ERROR_DEVICE_RESET and the title threw
+    // a C++ exception. Native creation is the documented route for an explicit
+    // `slSetD3DDevice` handoff and keeps Microsoft's HRESULT semantics intact.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
+    EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
+    EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
+    EXPECT_EQ(source.find("reinterpret_cast<PFN_D3D12CreateDevice>(V2Target(\"D3D12CreateDevice\"))"),
+              std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

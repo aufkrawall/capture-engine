@@ -37,16 +37,14 @@ bool ResolveTranslationTargets(void* v2InterposerModule);
 // Handing over only the first device therefore gives Streamline the one that is about to die
 // and never the one the game renders with.
 //
-// `interposed` marks a device that came out of the 2.x interposer's own `D3D12CreateDevice`,
-// which is the one Streamline wants: it is Streamline's proxy, at the moment the SDK
-// documents the call for. CE's other route derives a device from the game's command queue,
-// which is the NATIVE device and arrives later - the right answer only for a title whose
-// device Streamline never interposed at all. So an interposed device, once seen, wins; the
-// queue-derived one is a fallback rather than a competing opinion.
+// `explicitHandoff` marks a device CE selected for Streamline: either a native device it
+// created on the game's behalf or one discovered through an interposer. CE's other route
+// derives a device from the game's command queue and is only a fallback, so an explicit
+// handoff wins and each distinct explicit device supersedes the previous one.
 //
 // Returns whether the runtime is usable AFTERWARDS, which is a separate question - see
 // V2RuntimeHasDevice.
-bool SetV2RuntimeDevice(void* d3d12Device, bool interposed);
+bool SetV2RuntimeDevice(void* d3d12Device, bool explicitHandoff);
 
 // Whether the 2.x runtime's feature contexts are up, so its device-dependent entry points can
 // actually be called.

@@ -106,6 +106,20 @@ bool InitializeV2Runtime(HMODULE v2Interposer, const std::string& runtimeDir) {
     const wchar_t* paths[] = {widePath.c_str()};
     const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
 
+    // NGX requires either a valid NVIDIA application ID or a stable project identity. CE
+    // usually activates after the game's own slInit, so the game's application ID is not
+    // observable; derive a stable project identity from the host executable instead. The
+    // strings only have to live through slInit - Streamline copies them into its own state.
+    char hostPath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, hostPath, MAX_PATH);
+    uint32_t hostMajor = 0, hostMinor = 0, hostPatch = 0;
+    const bool haveHostVersion =
+        DllFileVersionParts(hostPath, &hostMajor, &hostMinor, &hostPatch);
+    const std::string engineVersion = haveHostVersion
+                                          ? StreamlineEngineVersion(hostMajor, hostMinor, hostPatch, 0)
+                                          : std::string("unknown");
+    const std::string projectId = StreamlineProjectId(hostPath);
+
     uint32_t logLevel = 0;
     const std::wstring logDir = StreamlineLogDirectory(&logLevel);
 
@@ -117,6 +131,10 @@ bool InitializeV2Runtime(HMODULE v2Interposer, const std::string& runtimeDir) {
     prefs.numFeaturesToLoad = static_cast<uint32_t>(sizeof(features) / sizeof(features[0]));
     prefs.logLevel = static_cast<sl::LogLevel>(logLevel);
     prefs.renderAPI = sl::RenderAPI::eD3D12;
+    if (hostPath[0] != '\0') {
+        prefs.engineVersion = engineVersion.c_str();
+        prefs.projectId = projectId.c_str();
+    }
     if (!logDir.empty()) {
         prefs.pathToLogsAndData = logDir.c_str();
     }

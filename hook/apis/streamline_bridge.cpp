@@ -213,10 +213,9 @@ void* TranslatedThunk(const char* name) {
 // ---------------------------------------------------------------------------
 //
 // These are Microsoft's signatures, not NVIDIA's, and the 1.x and 2.x interposers re-export
-// them identically so Streamline can interpose device and factory creation. They forward to
-// the 2.x runtime unchanged - that is what puts the game's device behind the 2.x
-// interposer. If the 2.x runtime turns out not to export one, the original 1.x slot value
-// is used, which is exactly what the call would have reached without the bridge.
+// them identically so Streamline can interpose device creation. Factories forward to the
+// 2.x runtime unchanged. Device creation is deliberately different: CE creates a NATIVE
+// device from Microsoft's d3d12.dll and hands that to Streamline explicitly.
 
 using PFN_CreateDXGIFactory = HRESULT(WINAPI*)(REFIID, void**);
 using PFN_CreateDXGIFactory2 = HRESULT(WINAPI*)(UINT, REFIID, void**);
@@ -226,41 +225,94 @@ using PFN_D3D12GetDebugInterface = HRESULT(WINAPI*)(REFIID, void**);
 using PFN_D3D12SerializeVersionedRootSignature = HRESULT(WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*,
                                                                   ID3DBlob**, ID3DBlob**);
 
-// The device and factory routes are the ones that decide whether frame generation can work
-// at all: the 2.x runtime can only drive a device its own interposer created. Recording that
-// they came through is what turns "did CE arrive before the game made its device?" - a
+// Creates the device with Microsoft's entry point rather than the 2.x interposer's. The
+// interposer turned this title's later real-device request into DXGI_ERROR_DEVICE_RESET
+// (`sl.log`, 20260821_234606), while the game expects the ordinary D3D12 result. A native
+// device is also the documented input to `slSetD3DDevice`, so Streamline still receives
+// exactly the device the game will use.
+//
+// A factory proxy may hand its adapter proxy back as `adapter`. `slGetNativeInterface`
+// returns an AddRef'd base interface for proxies and also AddRefs a non-proxy, so the
+// caller always balances one successful unwrap with one Release.
+HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
+                                    void** ppDevice) {
+    HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
+    if (!d3d12) {
+        d3d12 = LoadLibraryW(L"d3d12.dll");
+    }
+    if (!d3d12) {
+        static std::atomic<bool> loadLogged{false};
+        if (!loadLogged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: cannot load d3d12.dll for native D3D12CreateDevice (error=%lu)",
+                             GetLastError());
+        }
+        return DXGI_ERROR_UNSUPPORTED;
+    }
+    auto create = reinterpret_cast<PFN_D3D12CreateDevice>(GetProcAddress(d3d12, "D3D12CreateDevice"));
+    if (!create) {
+        return DXGI_ERROR_UNSUPPORTED;
+    }
+
+    IUnknown* adapterForCreate = adapter;
+    bool releaseAdapter = false;
+    if (adapter && g_v2Interposer) {
+        auto getNative = reinterpret_cast<int (*)(void*, void**)>(GetProcAddress(g_v2Interposer,
+                                                                                 "slGetNativeInterface"));
+        void* native = nullptr;
+        if (getNative && getNative(adapter, &native) == 0 && native) {
+            adapterForCreate = static_cast<IUnknown*>(native);
+            releaseAdapter = true;
+        }
+    }
+
+    const HRESULT hr = create(adapterForCreate, minimumFeatureLevel, riid, ppDevice);
+    if (releaseAdapter) {
+        adapterForCreate->Release();
+    }
+    if (FAILED(hr)) {
+        static std::atomic<uint32_t> loggedHr{0};
+        const uint32_t encoded = static_cast<uint32_t>(hr);
+        if (loggedHr.exchange(encoded, std::memory_order_relaxed) != encoded) {
+            HookLogImportant("Streamline bridge: native D3D12CreateDevice failed (hr=0x%08X)", encoded);
+        }
+    }
+    return hr;
+}
+
+// The device and factory routes decide whether frame generation can work at all. Recording
+// that they came through is what turns "did CE arrive before the game made its device?" - a
 // question CE cannot answer in advance, because it never saw the process before injection -
 // into a fact the log states outright.
-// `reached2x` is not decoration. If the runtime failed to come up, this call is on its way
-// to the 1.x export the slot used to hold, and recording it as an interposed creation would
+// `reachedBridge` is not decoration. If the runtime failed to come up, this call is on its way
+// to the 1.x export the slot used to hold, and recording it as a bridged creation would
 // both state something false in the log and suppress the warning that exists to catch a
 // runtime with no device.
-void NoteInterposedCreation(const char* what, bool reached2x, std::atomic<bool>& latch) {
-    if (!reached2x) {
+void NoteBridgedCreation(const char* what, bool reachedBridge, std::atomic<bool>& latch) {
+    if (!reachedBridge) {
         return;
     }
     if (!latch.exchange(true, std::memory_order_relaxed)) {
-        HookLogImportant("Streamline bridge: the game's %s reached the CE-owned 2.x runtime", what);
+        HookLogImportant("Streamline bridge: the game's %s was routed by the Streamline bridge", what);
     }
 }
 
 HRESULT WINAPI Bridged_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     static std::atomic<bool> noted{false};
-    NoteInterposedCreation("CreateDXGIFactory", BridgeCallReady(), noted);
+    NoteBridgedCreation("CreateDXGIFactory", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(V2Target("CreateDXGIFactory"));
     return fn ? fn(riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     static std::atomic<bool> noted{false};
-    NoteInterposedCreation("CreateDXGIFactory1", BridgeCallReady(), noted);
+    NoteBridgedCreation("CreateDXGIFactory1", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(V2Target("CreateDXGIFactory1"));
     return fn ? fn(riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_CreateDXGIFactory2(UINT flags, REFIID riid, void** ppFactory) {
     static std::atomic<bool> noted{false};
-    NoteInterposedCreation("CreateDXGIFactory2", BridgeCallReady(), noted);
+    NoteBridgedCreation("CreateDXGIFactory2", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory2>(V2Target("CreateDXGIFactory2"));
     return fn ? fn(flags, riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
@@ -275,19 +327,17 @@ HRESULT WINAPI Bridged_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL mi
                                          void** ppDevice) {
     static std::atomic<bool> noted{false};
     const bool ready = BridgeCallReady();
-    NoteInterposedCreation("D3D12CreateDevice", ready, noted);
-    auto fn = reinterpret_cast<PFN_D3D12CreateDevice>(V2Target("D3D12CreateDevice"));
-    if (!fn) {
-        return DXGI_ERROR_UNSUPPORTED;
+    NoteBridgedCreation("D3D12CreateDevice", ready, noted);
+    if (ppDevice) {
+        *ppDevice = nullptr;
     }
-    const HRESULT hr = fn(adapter, minimumFeatureLevel, riid, ppDevice);
-    // Hand it over even though the 2.x interposer just created it. That the interposer
-    // created a device does not mean its plugin manager has one: Streamline's own log shows
-    // this title's first device released at ref count 0 four hundred milliseconds later, and
-    // the manager afterwards asking for `slSetD3DDevice` by name. SetV2RuntimeDevice sends
-    // each distinct device once, so the throwaway and then the real one both arrive.
+    const HRESULT hr = CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel, riid, ppDevice);
+    // A native device is an explicit handoff, not an inference. Streamline's own log shows
+    // this title's first device released at ref count 0 four hundred milliseconds later and
+    // its real render device arriving afterwards. SetV2RuntimeDevice sends each distinct
+    // explicit device once, so both reach the 2.x plugin manager in order.
     if (ready && SUCCEEDED(hr) && ppDevice && *ppDevice) {
-        SetV2RuntimeDevice(*ppDevice, /*interposed=*/true);
+        SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true);
     }
     return hr;
 }
@@ -466,7 +516,7 @@ void NotifyD3D12Device(void* device) {
     if (!EnsureRuntimeReady()) {
         return;
     }
-    SetV2RuntimeDevice(device, /*interposed=*/false);
+    SetV2RuntimeDevice(device, /*explicitHandoff=*/false);
 }
 
 void TryActivate() {

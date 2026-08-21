@@ -250,6 +250,38 @@ it is was not requested by the host`), so the earlier suspicion about the whole 
 loaded was wrong - what was observed was Streamline probing each plugin's config and unloading
 what it does not need.
 
+## The fourth bridged run: two production-runtime assumptions failed
+
+Session `20260821_234606` (0.1.6224) had verbose `sl.log` for the first time. CE handed the
+first interposed device to Streamline successfully, but when the title asked for its real render
+device roughly eight seconds later the forwarded V2 call returned:
+
+```text
+d3d12.cpp:76[D3D12CreateDevice] D3D12CreateDevice failed with error code 887a0007
+```
+
+The game treated that failure as fatal and threw an unhandled C++ exception (`0xE06D7363`)
+about a second later. Earlier in the same log Streamline also said why DLSS-G could never have
+engaged:
+
+```text
+Please provide correct application id when calling slInit - NGX based features will be disabled
+Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+```
+
+Both are bridge defects rather than capture-engine interference:
+
+- **V2 interposer creation is not required.** The bridge had treated every `D3D12CreateDevice`
+  import as a pass-through into V2, coupling ordinary D3D12 semantics to Streamline's proxy
+  implementation. CE now calls Microsoft's `d3d12.dll`, uses `slGetNativeInterface` only to
+  unwrap an adapter proxy, and explicitly hands every distinct resulting device to V2 with
+  `slSetD3DDevice` - the SDK's supported manual-device route.
+- **Zero application ID becomes a temporary ID in production.** V2 replaced zero with
+  `kTemporaryAppId` (`100721531` in the log) and refused NGX. A late bridge cannot observe the
+  game's original `slInit` application ID, so it supplies the other accepted identity: a stable
+  project ID derived from the host executable path plus the host version. No title table exists,
+  and the path itself does not leave the process.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -290,9 +322,9 @@ what it does not need.
 - **Readiness is asked, never inferred.** The only signal is `slGetFeatureFunction` succeeding.
   Both inferences that were tried - "slSetD3DDevice returned eOk" and "the interposer created
   the device" - produced the same null call.
-- **The first device a title creates may be a throwaway.** Hand over every distinct one; the
-  interposer's own supersedes the queue-derived native device, and a later interposed device
-  supersedes an earlier one.
+- **The first device a title creates may be a throwaway.** Hand over every distinct one.
+  Explicitly selected native/interposer devices supersede each other; queue-derived discovery is
+  only a fallback and never overwrites an explicit handoff.
 - **The probe is event-driven, not polled and not once-only.** Once per epoch, where an epoch is
   a device handed over or the game's frame index moving; nothing at all once the answer is yes.
 - **A module the bridge routed around gets no hooks.** With two generations resident and one

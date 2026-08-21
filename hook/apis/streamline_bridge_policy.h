@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 #include "../common/streamline_api_generation.h"
 
@@ -343,6 +345,34 @@ inline constexpr uint64_t kStreamlineSdkVersionMagic = 0xfedcull;
 inline constexpr uint64_t StreamlineSdkVersion(uint32_t major, uint32_t minor, uint32_t patch) {
     return (static_cast<uint64_t>(major) << 48) | (static_cast<uint64_t>(minor) << 32) |
            (static_cast<uint64_t>(patch) << 16) | kStreamlineSdkVersionMagic;
+}
+
+// NGX accepts a stable project identity instead of an NVIDIA application ID. A bridge can
+// arrive only after the game's own slInit, so the game's app identity is not observable; a
+// deterministic hash of the host executable supplies the required stability without
+// hard-coding a title or exposing its path.
+inline std::string StreamlineProjectId(const std::string& hostExecutablePath) {
+    uint64_t left = 0xcbf29ce484222325ull;
+    uint64_t right = 0x9e3779b97f4a7c15ull;
+    for (unsigned char value : hostExecutablePath) {
+        left = (left ^ value) * 0x100000001b3ull;
+        right = (right ^ value) * 0xff51afd7ed558ccdull;
+    }
+
+    char text[37] = {};
+    std::snprintf(text, sizeof(text), "%08x-%04x-%04x-%04x-%012llx",
+                  static_cast<unsigned>((left >> 32) & 0xffffffffu),
+                  static_cast<unsigned>((left >> 16) & 0xffffu), static_cast<unsigned>(left & 0xffffu),
+                  static_cast<unsigned>((right >> 48) & 0xffffu),
+                  static_cast<unsigned long long>(right & 0xffffffffffffull));
+    return text;
+}
+
+inline std::string StreamlineEngineVersion(uint32_t major, uint32_t minor, uint32_t patch,
+                                           uint32_t build) {
+    char text[64] = {};
+    std::snprintf(text, sizeof(text), "%u.%u.%u.%u", major, minor, patch, build);
+    return text;
 }
 
 // Nothing here pins a Streamline minor version, deliberately.
