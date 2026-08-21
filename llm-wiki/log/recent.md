@@ -1,5 +1,55 @@
 # llm-wiki Log
 
+### 2026-08-21 - The first bridged measurement: DLSS_G is 1000 in Streamline 1.5.6, not 5
+
+The passive recorder paid for itself on its first run. The Witcher 3 session
+`20260821_041255` (build 0.1.6200, unbridged, all other overrides on) produced seven
+`Streamline 1.x probe:` records, and one of them overturns an inference this workstream had
+already written into the translation table.
+
+**`eFeatureDLSS_G` is 1000 in 1.5.6, the same value 2.x uses.** The earlier value, 5, came
+from reading sl.interposer 1.5.6's feature-name table positionally - DLSS, NRD, NIS, Reflex,
+Debug, DLSS_G, Common - but that table is in declaration order, not value order. The game
+settles it: it calls `slSetFeatureConstants` with feature **1000**, immediately after its
+Reflex constants, which is exactly how a title brings DLSS-G up. Shipped as inferred, the
+bridge would have translated a value the game never sends while refusing the one it does,
+and frame generation would never have been configured at all. An ordered string table is
+evidence of membership, never of value.
+
+The feature map is therefore near-identity: DLSS 0, NIS 2, Reflex 3, DLSS_G 1000, Common
+UINT_MAX all carry over unchanged. Only three values still refuse - 1.x Debug 4 (2.x
+`kFeaturePCL`), 5 (nothing in 1.5.6, `kFeatureDeepDVC` in 2.x) and NRD 1 (removed).
+
+**Layouts recovered from the same run**, all previously unpublished:
+- `sl::DLSSConstants` - `mode` @0 (1 and 4 both seen), `outputWidth` @4 (3840), `outputHeight`
+  @8 (2160), `sharpness` @12 (0.0), `preExposure` @16 (1.0), `exposureScale` @20 (1.0),
+  `colorBuffersHDR` @24 (1). Field-for-field the public v1.1.1 layout, so that header is
+  usable for the DLSS side after all.
+- `sl::DLSSSettings` (OUT) - `optimalRenderWidth` @0 (1920), `optimalRenderHeight` @4 (1080),
+  `optimalSharpness` @8 (0.35), then three zeroed `uint32`s. It sits exactly 24 bytes below
+  the IN struct in the caller's frame, which pins its size at 24.
+- `sl::ReflexConstants` - `mode` @0 (1 = low latency), `frameLimitUs` @12 (565).
+- `sl::DLSSGConstants` - `mode` @0, `1` @4, captured with mode reading 0.
+
+**The DLSS-G capture reading "off" was a defect in the recorder, not in the session.** That run
+had frame generation genuinely active - `Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0xB, 4x
+multiplier)` at `04:13:35`, 1832 frames of perf metrics, SR preset M applied. The probe recorded
+only the FIRST sighting per (call, feature), which landed at `04:13:15` during setup, twenty
+seconds before FG came up; every later call carrying the enabled mode was discarded by CE's own
+throttle. The captured struct therefore described "off" for a session that ran 4x frame generation
+throughout.
+
+Fixed by recording on **content change** rather than first sighting: a layout is static but its
+values are the evidence, a field that differs between captures is by definition a live field, and
+the off->on transition is what identifies the mode field at all. A per-slot cap keeps a genuinely
+per-frame field (frame index, timestamp) from flooding, and the heartbeat still covers slot
+collisions. Worth remembering as a general rule for this kind of probe: throttling by *sighting*
+discards exactly the state transitions the probe exists to observe; throttle by *value* instead.
+
+Also confirmed live in that session: the per-module generation gate (`sl.interposer.dll
+speaks Streamline 1.x`), and `dlss_fg_dll_path` redirecting `nvngx_dlssg.dll` to the user's
+own folder while `streamline_upgrade` was off.
+
 ### 2026-08-21 - streamline_upgrade: CE takes a 1.x game's Streamline imports over
 
 Second step of the generation bridge, on top of the feasibility result below. `streamline_upgrade=on`
@@ -88,7 +138,8 @@ path.
 
 Three findings that constrain the implementation, all recorded in
 `frame-generation/guardrails.md`: the feature enum is **not** identity across generations
-(1.x `eFeatureDLSS_G` 5 vs 2.x `kFeatureDLSS_G` 1000; 1.x `eFeatureDebug` 4 collides with 2.x
+(believed then to be 1.x `eFeatureDLSS_G` 5 vs 2.x 1000 - corrected to identity by measurement,
+see the newest entry above; 1.x `eFeatureDebug` 4 does collide with 2.x
 `kFeaturePCL` 4) while `BufferType` **is** identity across every value 1.x can emit; SL1's
 `VS_FIXEDFILEINFO` reads `1.0.0.0` against a StringFileInfo of `1.5.6.0`, so generation gating via
 `DllFileMajorVersion()` is sound but minor-version pinning needs the string table; and 2.x's default

@@ -42,7 +42,18 @@ inline constexpr uint32_t kV1FeatureNRD = 1;
 inline constexpr uint32_t kV1FeatureNIS = 2;
 inline constexpr uint32_t kV1FeatureReflex = 3;
 inline constexpr uint32_t kV1FeatureDebug = 4;
-inline constexpr uint32_t kV1FeatureDLSS_G = 5;
+// 1000, NOT 5 - and this one was measured after being inferred wrong.
+//
+// sl.interposer 1.5.6's feature-name table lists DLSS, NRD, NIS, Reflex, Debug, DLSS_G,
+// Common in that order, and reading position as value put DLSS_G at 5. It does not: the
+// table is in declaration order, and 1.x already assigns DLSS-G the same out-of-line 1000
+// that 2.x uses. The Witcher 3 settles it - session `20260821_041255` records the game
+// calling `slSetFeatureConstants` with feature 1000, immediately after the Reflex
+// constants, which is exactly how a title brings DLSS-G up.
+//
+// Left as it was, this would have translated a value the game never sends while refusing
+// the one it does, and frame generation would simply never have been configured.
+inline constexpr uint32_t kV1FeatureDLSS_G = 1000;
 inline constexpr uint32_t kV1FeatureCommon = UINT32_MAX;
 
 inline constexpr uint32_t kV2FeatureDLSS = 0;
@@ -56,13 +67,15 @@ inline constexpr uint32_t kV2FeatureCommon = UINT32_MAX;
 // Translates a 1.x feature id to its 2.x equivalent. False means "no faithful mapping
 // exists" and the call must be refused rather than guessed at.
 //
-// The two traps this exists for, both of which would corrupt silently if a caller passed
-// the value through unchanged:
-//   * 1.x eFeatureDLSS_G is 5, but 2.x reserves 5 for kFeatureDeepDVC and puts DLSS-G at
-//     1000. An untranslated 5 drives an unrelated feature rather than frame generation.
-//   * 1.x eFeatureDebug is 4, which in 2.x is kFeaturePCL. Same collision, opposite
-//     direction, and 1.x's debug feature has no 2.x counterpart at all.
-// NRD (1.x value 1) was removed from Streamline; 2.x spells the slot kFeatureNRD_INVALID.
+// Measurement turned this table into an identity map for everything The Witcher 3 actually
+// uses - DLSS 0, Reflex 3 and DLSS-G 1000 all keep their values - which is a much smaller
+// translation than the generations' reputation suggests. What still has to be refused is
+// the handful of values whose meaning genuinely differs:
+//   * 1.x eFeatureDebug is 4, which in 2.x is kFeaturePCL. Forwarding it drives NVIDIA's
+//     PCL marker feature from a debug request; 1.x's debug feature has no 2.x counterpart.
+//   * 5 means nothing in 1.5.6 but is kFeatureDeepDVC in 2.x, so a stray 5 must never be
+//     passed through as if it did.
+//   * NRD (1) was removed from Streamline entirely; 2.x spells the slot kFeatureNRD_INVALID.
 inline bool TranslateV1FeatureToV2(uint32_t v1Feature, uint32_t* outV2Feature) {
     uint32_t mapped = 0;
     switch (v1Feature) {
@@ -81,9 +94,9 @@ inline bool TranslateV1FeatureToV2(uint32_t v1Feature, uint32_t* outV2Feature) {
         case kV1FeatureCommon:
             mapped = kV2FeatureCommon;
             break;
-        case kV1FeatureNRD:   // removed in 2.x
-        case kV1FeatureDebug: // collides with kFeaturePCL, no 2.x equivalent
-        default:
+        case kV1FeatureNRD:    // removed in 2.x
+        case kV1FeatureDebug:  // collides with kFeaturePCL, no 2.x equivalent
+        default:               // includes 5, which is kFeatureDeepDVC in 2.x and unused in 1.5.6
             return false;
     }
     if (outV2Feature) {

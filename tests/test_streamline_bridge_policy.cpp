@@ -27,16 +27,22 @@ bridge::ActivationInputs UpgradeableProcess() {
 // Feature translation
 // ---------------------------------------------------------------------------
 
-TEST(StreamlineBridgePolicyTest, TranslatesFrameGenerationOffItsCollidingValue) {
-    // The whole reason this table exists. 1.x eFeatureDLSS_G is 5; 2.x reserves 5 for
-    // kFeatureDeepDVC and puts DLSS-G at 1000. Passing 5 through unchanged would silently
-    // drive an unrelated feature instead of frame generation.
+TEST(StreamlineBridgePolicyTest, FrameGenerationKeepsTheValueTheGameActuallySends) {
+    // Measured, after being inferred wrong. sl.interposer 1.5.6's name table lists DLSS_G
+    // sixth, and reading position as value put it at 5; The Witcher 3 session
+    // 20260821_041255 records the game passing feature 1000 to slSetFeatureConstants right
+    // after the Reflex constants. 1.x already uses the same out-of-line 1000 as 2.x, so
+    // DLSS-G is an identity mapping and 5 is not a 1.x feature at all.
+    EXPECT_EQ(bridge::kV1FeatureDLSS_G, 1000u);
     uint32_t mapped = 0;
     ASSERT_TRUE(bridge::TranslateV1FeatureToV2(bridge::kV1FeatureDLSS_G, &mapped));
     EXPECT_EQ(mapped, bridge::kV2FeatureDLSS_G);
     EXPECT_EQ(mapped, 1000u);
-    EXPECT_NE(mapped, bridge::kV1FeatureDLSS_G) << "an identity mapping here selects DeepDVC";
-    EXPECT_NE(mapped, bridge::kV2FeatureDeepDVC);
+
+    // 5 is kFeatureDeepDVC in 2.x and means nothing in 1.5.6, so it must never translate.
+    uint32_t stray = 0xFFFFFFFEu;
+    EXPECT_FALSE(bridge::TranslateV1FeatureToV2(bridge::kV2FeatureDeepDVC, &stray));
+    EXPECT_EQ(stray, 0xFFFFFFFEu);
 }
 
 TEST(StreamlineBridgePolicyTest, TranslatesTheFeaturesThatKeptTheirValues) {
@@ -64,13 +70,14 @@ TEST(StreamlineBridgePolicyTest, RefusesFeaturesWithNoFaithful2xMapping) {
 
     // Nothing outside the 1.5.6 table is guessed at.
     EXPECT_FALSE(bridge::TranslateV1FeatureToV2(6, &mapped));
-    EXPECT_FALSE(bridge::TranslateV1FeatureToV2(1000, &mapped));
+    EXPECT_FALSE(bridge::TranslateV1FeatureToV2(999, &mapped));
+    EXPECT_FALSE(bridge::TranslateV1FeatureToV2(1001, &mapped));
     EXPECT_EQ(mapped, 0xFFFFFFFEu) << "a refused translation must not write an output";
 }
 
 TEST(StreamlineBridgePolicyTest, FeatureTranslationNeverCollapsesTwoFeaturesOntoOne) {
     std::set<uint32_t> produced;
-    for (uint32_t v1 = 0; v1 <= 8; ++v1) {
+    for (uint32_t v1 : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 1000u, UINT32_MAX}) {
         uint32_t mapped = 0;
         if (bridge::TranslateV1FeatureToV2(v1, &mapped)) {
             EXPECT_TRUE(produced.insert(mapped).second)
