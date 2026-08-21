@@ -281,15 +281,13 @@ HRESULT WINAPI Bridged_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL mi
         return DXGI_ERROR_UNSUPPORTED;
     }
     const HRESULT hr = fn(adapter, minimumFeatureLevel, riid, ppDevice);
-    // The 2.x interposer created this device, so it already has it. Deliberately NOT
-    // followed by slSetD3DDevice: Streamline offers interposed creation OR that call for a
-    // host that made its own device, and doing both binds the same device twice through a
-    // path documented as "NOT thread safe and should be called IMMEDIATELY after main device
-    // is created" - from inside the creation CE is currently returning from. CE also has its
-    // own inline hook on that export while bridged, so the redundant call re-enters CE's
-    // Streamline layer mid-creation as well.
+    // Hand it over even though the 2.x interposer just created it. That the interposer
+    // created a device does not mean its plugin manager has one: Streamline's own log shows
+    // this title's first device released at ref count 0 four hundred milliseconds later, and
+    // the manager afterwards asking for `slSetD3DDevice` by name. SetV2RuntimeDevice sends
+    // each distinct device once, so the throwaway and then the real one both arrive.
     if (ready && SUCCEEDED(hr) && ppDevice && *ppDevice) {
-        NoteV2RuntimeOwnsDevice("created by the 2.x interposer through the bridge");
+        SetV2RuntimeDevice(*ppDevice, /*interposed=*/true);
     }
     return hr;
 }
@@ -468,7 +466,7 @@ void NotifyD3D12Device(void* device) {
     if (!EnsureRuntimeReady()) {
         return;
     }
-    SetV2RuntimeDevice(device);
+    SetV2RuntimeDevice(device, /*interposed=*/false);
 }
 
 void TryActivate() {

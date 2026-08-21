@@ -141,9 +141,33 @@ PFun_slIsFeatureSupported* g_slIsFeatureSupported = nullptr;
 PFun_slGetFeatureFunction* g_slGetFeatureFunction = nullptr;
 PFun_slSetD3DDevice* g_slSetD3DDevice = nullptr;
 
-// Set once the 2.x runtime has been handed a device. Everything device-dependent is held
-// back until then; see V2CallRequiresDevice for why that is a crash, not a courtesy.
-std::atomic<bool> g_deviceSet{false};
+// Readiness, and how it is established.
+//
+// `g_runtimeUsable` is the gate every device-dependent translation reads, and it is set by
+// exactly one thing: Streamline answering `slGetFeatureFunction`. Nothing else may set it.
+//
+// That rule is the lesson of session `20260821_163534`, which crashed the same way as the
+// first bridged run - `Bridged_slSetConstants -> sl_interposer!slSetConstants+0x49 -> 0x0` -
+// while the code believed the runtime was ready. It believed that because the game's
+// `D3D12CreateDevice` had come through the bridge and been marked as proof. It was not proof:
+// Streamline's own log shows that device was a probe the game threw away 400 ms later -
+//     d3d12Device.cpp:396[Release] Destroyed D3D12Device proxy ... ref count 0
+// - after which the plugin manager had no device at all and said so, repeatedly:
+//     pluginManager.cpp:1331[initializePlugins] D3D or VK API hook is activated without
+//     device being created, did you forget to call `slSetD3DDevice`
+// while `slGetFeatureFunction` returned nothing for every feature. The runtime was telling
+// CE the truth the whole time; CE had stopped asking because it had assumed an answer.
+//
+// So: a device is an *action* CE takes, never a conclusion CE draws.
+std::atomic<bool> g_runtimeUsable{false};
+
+// Asking Streamline is cheap but not free, and the gate sits in front of per-frame calls, so
+// the probe is driven by events rather than repeated blindly. The epoch is bumped by the
+// things that can actually change the answer: a device handed over, and a new frame - which
+// is what a game reaching its render loop looks like, and is when Streamline finishes
+// bringing plugins up around the swapchain. Not a timer, and not once-only.
+std::atomic<uint32_t> g_readinessEpoch{1};
+std::atomic<uint32_t> g_probedEpoch{0};
 PFun_slDLSSSetOptions* g_slDLSSSetOptions = nullptr;
 PFun_slDLSSGetOptimalSettings* g_slDLSSGetOptimalSettings = nullptr;
 PFun_slDLSSGSetOptions* g_slDLSSGSetOptions = nullptr;
@@ -164,11 +188,6 @@ void ResolveFeatureFunctions() {
     if (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions) {
         return;
     }
-    // Asking before the device is set does not fail politely - it returns nothing, and the
-    // caller that latched the answer would refuse DLSS for the rest of the process.
-    if (!g_deviceSet.load(std::memory_order_acquire)) {
-        return;
-    }
     std::lock_guard<std::mutex> lock(g_featureFunctionMutex);
     if (!g_slGetFeatureFunction) {
         return;
@@ -184,11 +203,12 @@ void ResolveFeatureFunctions() {
         g_slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions",
                                reinterpret_cast<void*&>(g_slDLSSGSetOptions));
     }
-    // Logged whether or not the set is complete. Reporting only the complete case hides the
-    // interesting failure - one plugin missing from the staged folder looks exactly like the
-    // runtime having no device, and those need different fixes.
+    // Logged once the set is complete, and once more if it is still incomplete after the
+    // runtime has become usable - reporting every failed attempt would be noise, because
+    // failing before the device exists is the expected case this is polling for.
     static std::atomic<bool> logged{false};
-    if (!logged.exchange(true, std::memory_order_relaxed)) {
+    if ((g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions) &&
+        !logged.exchange(true, std::memory_order_relaxed)) {
         HookLogImportant(
             "Streamline bridge: feature entry points %s - slDLSSSetOptions=%p slDLSSGetOptimalSettings=%p "
             "slDLSSGSetOptions=%p",
@@ -208,73 +228,50 @@ void RefuseOnce(std::atomic<bool>& latch, const char* what, const char* why) {
 }
 
 std::mutex g_deviceMutex;
+void* g_lastDeviceHandedOver = nullptr;  // guarded by g_deviceMutex
+bool g_haveInterposedDevice = false;     // guarded by g_deviceMutex
 
-// A secondary, POSITIVE-ONLY signal that the runtime has a device.
+void BumpReadinessEpoch() { g_readinessEpoch.fetch_add(1, std::memory_order_relaxed); }
+
+// Asks Streamline whether the feature contexts exist yet, at most once per epoch.
 //
-// `slGetFeatureFunction` is documented as usable only after the device is set, so a success
-// here proves one is bound. A failure proves nothing - it also fails when the DLSS plugin
-// has not finished coming up - which is why this may never veto a direct answer. It did
-// exactly that once: session `20260821_161620` logged
-//     slSetD3DDevice(...) returned sl::Result=0 and the runtime still reports no device
-// and held every device-dependent call back on a runtime that had just accepted the device.
-bool RuntimeReportsADevice() {
-    if (!g_slGetFeatureFunction) {
-        return false;
-    }
-    void* probe = nullptr;
-    return g_slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", probe) == sl::Result::eOk && probe;
-}
-
-void MarkDeviceBound(const char* how) {
-    if (g_deviceSet.exchange(true, std::memory_order_acq_rel)) {
-        return;
-    }
-    HookLogImportant(
-        "Streamline bridge: the CE-owned 2.x runtime has the game's device (%s) - DLSS, DLSS-G and the "
-        "tag/constant path are live from here",
-        how);
-}
-
-// Latches "the runtime has a device" the moment it becomes true, from wherever it became
-// true. Cheap while false (one Streamline lookup), and never asked again once true.
-//
-// This is what keeps the gate from being a timing assumption rather than a fact: CE does not
-// have to know which route bound the device, it asks before refusing.
-bool AdoptRuntimeDeviceIfBound() {
-    if (g_deviceSet.load(std::memory_order_acquire)) {
+// `slGetFeatureFunction` succeeding is not a proxy for readiness, it IS readiness: it returns
+// a pointer out of the very plugin context whose absence makes `slSetConstants` jump through
+// null. The SDK header says as much - "can only be used AFTER device is set" - and it is the
+// same question the runtime answers in its own log when the answer is no.
+bool TryBecomeUsable() {
+    if (g_runtimeUsable.load(std::memory_order_acquire)) {
         return true;
     }
-    std::lock_guard<std::mutex> lock(g_deviceMutex);
-    if (g_deviceSet.load(std::memory_order_acquire)) {
-        return true;
+    const uint32_t epoch = g_readinessEpoch.load(std::memory_order_relaxed);
+    if (g_probedEpoch.exchange(epoch, std::memory_order_acq_rel) == epoch) {
+        return false;  // nothing has changed since the last time this was asked
     }
-    if (!RuntimeReportsADevice()) {
-        return false;
-    }
-    MarkDeviceBound("its own feature lookup answers");
     ResolveFeatureFunctions();
+    if (!g_slDLSSSetOptions) {
+        return false;
+    }
+    if (!g_runtimeUsable.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline bridge: the 2.x runtime answered slGetFeatureFunction - its feature contexts are up and "
+            "the tag/constant/evaluate path is live from here");
+    }
     return true;
 }
 
 // The single point every device-dependent translation passes through.
 //
 // One latch per call site would be neater to read but wrong to use: this is the invariant
-// that a crashed session established, and it is worth one line naming the call that was
-// held back and one when the runtime finally becomes usable.
+// that two crashed sessions established, and it is worth one line naming the call that was
+// held back.
 bool DeviceReadyFor(V2Call call, std::atomic<bool>& latch) {
-    // A plain atomic read, deliberately. An earlier version asked the runtime here, which
-    // would have put a `slGetFeatureFunction` - CE inline-hooks that export on the bridged
-    // interposer, so it re-enters CE's own Streamline layer - in front of every tag and
-    // constant call, on the render thread, for as long as the device was missing. Every
-    // route that can bind the device latches the flag itself, so there is nothing this could
-    // learn that it has not already been told.
-    if (!V2CallRequiresDevice(call) || g_deviceSet.load(std::memory_order_acquire)) {
+    if (!V2CallRequiresDevice(call) || TryBecomeUsable()) {
         return true;
     }
     if (!latch.exchange(true, std::memory_order_relaxed)) {
         HookLogImportant(
-            "Streamline bridge: holding %s back - the 2.x runtime has no device yet. Forwarding it now would "
-            "jump through a plugin pointer Streamline has not bound, which is a null call, not an error",
+            "Streamline bridge: holding %s back - the 2.x runtime has no feature context yet. Forwarding it now "
+            "would jump through a plugin pointer Streamline has not bound, which is a null call, not an error",
             DescribeV2Call(call));
     }
     return false;
@@ -374,53 +371,43 @@ bool ResolveTranslationTargets(void* v2InterposerModule) {
     return complete;
 }
 
-bool V2RuntimeHasDevice() { return g_deviceSet.load(std::memory_order_acquire); }
+bool V2RuntimeHasDevice() { return g_runtimeUsable.load(std::memory_order_acquire); }
 
-void NoteV2RuntimeOwnsDevice(const char* how) { MarkDeviceBound(how); }
-
-bool SetV2RuntimeDevice(void* d3d12Device) {
+bool SetV2RuntimeDevice(void* d3d12Device, bool interposed) {
     if (!d3d12Device) {
         return false;
     }
-    if (g_deviceSet.load(std::memory_order_acquire)) {
-        return true;
-    }
-
+    // Hand over every DISTINCT device CE learns of, not just the first.
+    //
+    // The first one is routinely a throwaway: The Witcher 3 creates a device, has Streamline
+    // proxy it, and releases it 400 ms later - `Destroyed D3D12Device proxy ... ref count 0`
+    // in Streamline's own log - long before the device it actually renders with exists. Code
+    // that hands over only the first device gives Streamline the one that is about to die and
+    // never the one that matters, which is precisely how `20260821_163534` ended up with a
+    // runtime whose plugin manager kept asking, by name, for the call CE had already decided
+    // it had made.
     sl::Result result = sl::Result::eErrorNotInitialized;
+    bool attempted = false;
     {
         // `slSetD3DDevice` is documented as NOT thread safe, and CE reaches here from two
         // independent discovery routes, so exactly one caller may be inside it.
         std::lock_guard<std::mutex> lock(g_deviceMutex);
-        if (g_deviceSet.load(std::memory_order_acquire)) {
-            return true;
+        // Never let the queue-derived native device overwrite one the interposer handed out.
+        const bool superseded = !interposed && g_haveInterposedDevice;
+        if (!superseded && g_lastDeviceHandedOver != d3d12Device && g_slSetD3DDevice) {
+            result = g_slSetD3DDevice(d3d12Device);
+            g_lastDeviceHandedOver = d3d12Device;
+            g_haveInterposedDevice = g_haveInterposedDevice || interposed;
+            attempted = true;
         }
-        if (!g_slSetD3DDevice) {
-            return false;
-        }
-        result = g_slSetD3DDevice(d3d12Device);
     }
-
-    if (result == sl::Result::eOk) {
-        MarkDeviceBound("handed over with slSetD3DDevice");
-        ResolveFeatureFunctions();
-        return true;
-    }
-
-    // An error is not automatically a failure - a runtime that already had the device can
-    // reject a second one - so ask before refusing. But an eOk is taken at face value: the
-    // runtime accepting the device is the runtime saying it has it.
-    if (AdoptRuntimeDeviceIfBound()) {
-        return true;
-    }
-
-    static std::atomic<bool> latch{false};
-    if (!latch.exchange(true, std::memory_order_relaxed)) {
+    if (attempted) {
         HookLogImportant(
-            "Streamline bridge: slSetD3DDevice(%p) returned sl::Result=%d and the runtime still reports no "
-            "device - device-dependent calls stay held back rather than jumping through an unbound plugin",
-            d3d12Device, static_cast<int>(result));
+            "Streamline bridge: handed %s device %p to the 2.x runtime (slSetD3DDevice sl::Result=%d)",
+            interposed ? "the interposer's" : "the game's queue-derived", d3d12Device, static_cast<int>(result));
+        BumpReadinessEpoch();
     }
-    return false;
+    return TryBecomeUsable();
 }
 
 // The game's own slInit. CE has already initialised the 2.x runtime with the pinned plugin
@@ -519,6 +506,16 @@ bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, c
 bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_t id) {
     if (!constants1x || !g_slSetConstants) {
         return false;
+    }
+    // A frame boundary is the other thing that can change the readiness answer: Streamline
+    // finishes bringing DLSS-G's context up around swapchain creation and the first presents,
+    // which CE observes here as the game's frame index moving. Re-asking once per frame while
+    // the answer is no converges without a timer and stops entirely once it is yes.
+    {
+        static std::atomic<uint32_t> lastFrame{UINT32_MAX};
+        if (lastFrame.exchange(frameIndex, std::memory_order_relaxed) != frameIndex) {
+            BumpReadinessEpoch();
+        }
     }
     static std::atomic<bool> deviceLatch{false};
     if (!DeviceReadyFor(V2Call::SetConstants, deviceLatch)) {
@@ -745,8 +742,7 @@ void RefuseOn32Bit(const char* call) {
 }  // namespace
 
 bool ResolveTranslationTargets(void*) { return false; }
-void NoteV2RuntimeOwnsDevice(const char*) {}
-bool SetV2RuntimeDevice(void*) { return false; }
+bool SetV2RuntimeDevice(void*, bool) { return false; }
 bool V2RuntimeHasDevice() { return false; }
 bool TranslateInit(const void*, int) { RefuseOn32Bit("slInit"); return false; }
 bool TranslateShutdown() { return false; }

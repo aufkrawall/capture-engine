@@ -27,28 +27,33 @@ namespace ce::streamline_bridge {
 // translation needs, and the bridge must not activate.
 bool ResolveTranslationTargets(void* v2InterposerModule);
 
-// Records that the 2.x interposer created the game's device itself, so it already has it.
+// Hands a D3D12 device to the CE-owned 2.x runtime. Call it for every device CE learns of,
+// from any route; each distinct one is passed on, and the same pointer is never re-sent.
 //
-// This is the ordinary path and it must NOT be followed by `slSetD3DDevice`. Streamline
-// offers device creation through the interposer OR `slSetD3DDevice` for a host that made its
-// own - one or the other, not both - and calling it a second time on a device the interposer
-// just bound is a state change made into somebody else's runtime for no reason.
-void NoteV2RuntimeOwnsDevice(const char* how);
+// Streamline asks for this by name when it is missing - "D3D or VK API hook is activated
+// without device being created, did you forget to call `slSetD3DDevice`" - and it needs it
+// even when its own interposer created the device, because the FIRST device a title creates
+// is routinely a capability probe it releases moments later. The Witcher 3 does exactly that.
+// Handing over only the first device therefore gives Streamline the one that is about to die
+// and never the one the game renders with.
+//
+// `interposed` marks a device that came out of the 2.x interposer's own `D3D12CreateDevice`,
+// which is the one Streamline wants: it is Streamline's proxy, at the moment the SDK
+// documents the call for. CE's other route derives a device from the game's command queue,
+// which is the NATIVE device and arrives later - the right answer only for a title whose
+// device Streamline never interposed at all. So an interposed device, once seen, wins; the
+// queue-derived one is a fallback rather than a competing opinion.
+//
+// Returns whether the runtime is usable AFTERWARDS, which is a separate question - see
+// V2RuntimeHasDevice.
+bool SetV2RuntimeDevice(void* d3d12Device, bool interposed);
 
-// Hands the game's D3D12 device to the CE-owned 2.x runtime, for the case where the runtime
-// did NOT create it - an Agility SDK title makes its device through
-// `ID3D12DeviceFactory::CreateDevice`, which Streamline does not interpose at all.
+// Whether the 2.x runtime's feature contexts are up, so its device-dependent entry points can
+// actually be called.
 //
-// Not optional in that case, and not merely an optimisation: most of Streamline 2.x's
-// exported entry points forward through a plugin pointer the manager binds only once the
-// device is known, and before that they jump to null rather than returning an error - see
-// V2CallRequiresDevice in the policy header for the crash that established this. Until the
-// runtime has a device, every device-dependent translation is refused.
-//
-// Idempotent, and safe to call from more than one discovery route: the first device wins.
-bool SetV2RuntimeDevice(void* d3d12Device);
-
-// Whether the 2.x runtime has a device and its device-dependent entry points are callable.
+// This is Streamline's own answer via `slGetFeatureFunction`, never CE's inference from
+// having created or handed over a device. Both of those were tried and both produced the same
+// crash: a `slSetConstants` that jumps through a plugin pointer the manager never bound.
 bool V2RuntimeHasDevice();
 
 // The eight 1.x entry points, in the shapes 1.5.6 actually uses. Each returns `bool` in AL.

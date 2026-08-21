@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-08-21 - sl.log answers it: the game's first D3D12 device is a throwaway
+
+`20260821_163534` (0.1.6215) reached the render loop and the swapchain, then crashed in the same
+place as the first bridged run - `Bridged_slSetConstants -> sl_interposer!slSetConstants+0x49 ->
+0x0`. Streamline's own log, added the run before, names the cause outright:
+
+```
+d3d12Device.cpp:396[Release]   Destroyed D3D12Device proxy ... ref count 0
+pluginManager.cpp:1331[initializePlugins] D3D or VK API hook is activated without device being
+                               created, did you forget to call `slSetD3DDevice`
+sl.cpp:1115[slGetFeatureFunction] 'kFeatureDLSS_G' has not been initialized yet.
+```
+
+**The Witcher 3's first D3D12 device is a capability probe it throws away.** Created through the
+bridge at +1.9 s, proxied by Streamline, released at +2.3 s at ref count 0; the device it actually
+renders with arrives seven seconds later. CE had marked the runtime ready on that first device, so
+when the real one came through `SetV2RuntimeDevice` early-returned "already done",
+`slSetD3DDevice` was never called with it, and the gate that exists to prevent this exact crash
+waved the call through because CE had told it a lie.
+
+Two rules, both generalising past this title:
+
+- **Readiness is Streamline answering `slGetFeatureFunction`, never anything CE infers.** Not "we
+  called slSetD3DDevice", not "the interposer created a device" - both were tried, both produced
+  the same null call. `slGetFeatureFunction` returns a pointer out of the very plugin context
+  whose absence makes `slSetConstants` jump through null, so it is not a proxy for the condition,
+  it is the condition.
+- **Hand over every distinct device, not the first.** A device is an action CE takes, never a
+  conclusion CE draws. The interposer's device (Streamline's proxy, at the documented moment)
+  wins over CE's queue-derived native one, and a later interposed device supersedes an earlier -
+  which is what a throwaway probe requires.
+
+The probe is event-driven: an epoch bumped when a device is handed over and when the game's frame
+index moves, at most one `slGetFeatureFunction` per epoch, none once the answer is yes. A frame
+boundary is a real state transition - it is what reaching the render loop looks like, and when
+Streamline finishes bringing DLSS-G's context up around the swapchain - so it converges without a
+timer.
+
+Corrections to the previous entry, from the same log: `featuresToLoad` **is** honoured (`Ignoring
+plugin 'sl.deepdvc' since it is was not requested by the host`) - what was observed earlier was
+Streamline probing each plugin's config and unloading what it does not need. And the
+`20260821_161620` startup C++ exception did not recur; unexplained rather than fixed.
+
 ### 2026-08-21 - Second bridged run: the device reaches 2.x, and CE was binding it twice
 
 `20260821_161620` (0.1.6212) confirmed both fixes from the previous entry and gave the cleanest

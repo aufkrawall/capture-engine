@@ -204,6 +204,51 @@ Two changes exist to settle it next time:
   reverse of how the declaration reads) and re-verifying it field by field is work that recurs
   every time the staged SDK moves. The header is on the hook DLL's include path anyway.
 
+## The third bridged run: `sl.log` answered it in one line
+
+`20260821_163534` (0.1.6215) is where Streamline's own log paid for itself. The startup C++
+exception did not recur - that run reached the render loop, created its swapchain, and crashed
+in the same place as the first: `Bridged_slSetConstants -> sl_interposer!slSetConstants+0x49 ->
+0x0`. This time the cause is in NVIDIA's words:
+
+```
+d3d12Device.cpp:396[Release]   Destroyed D3D12Device proxy 0x... - native device 0x... ref count 0
+pluginManager.cpp:1331[initializePlugins] D3D or VK API hook is activated without device being
+                               created, did you forget to call `slSetD3DDevice`
+sl.cpp:1115[slGetFeatureFunction] 'kFeatureDLSS_G' has not been initialized yet.
+```
+
+**The game's first D3D12 device is a capability probe it throws away.** The Witcher 3 creates a
+device through the bridge at +1.9 s, Streamline proxies it, and the game releases it at +2.3 s -
+`ref count 0`. The device it actually renders with is created seven seconds later. CE had marked
+the runtime ready on that first device, so when the real one arrived `SetV2RuntimeDevice`
+early-returned "already done", `slSetD3DDevice` was never called with it, Streamline's plugin
+manager spent the rest of the session asking for that call by name, and the gate that exists to
+prevent exactly this crash waved the call through because CE had told it a lie.
+
+Two rules came out of it, and they generalise past this title:
+
+- **Readiness is Streamline answering `slGetFeatureFunction`, never anything CE infers.** Not
+  "we called `slSetD3DDevice`", not "the interposer created a device". Both were tried; both
+  produced the same null call. `slGetFeatureFunction` returns a pointer out of the very plugin
+  context whose absence makes `slSetConstants` jump through null, so it is not a proxy for the
+  condition, it *is* the condition.
+- **Hand over every distinct device, not the first one.** A device is an action CE takes, never
+  a conclusion CE draws. The interposer's own device wins over CE's queue-derived one - it is
+  Streamline's proxy, at the moment the SDK documents the call for - but a later interposed
+  device supersedes an earlier one, which is what a throwaway probe requires.
+
+The readiness probe is event-driven rather than polled: an epoch counter bumped when a device is
+handed over and when the game's frame index moves, with at most one `slGetFeatureFunction` per
+epoch and none at all once the answer is yes. A frame boundary is a real state transition - it is
+what a game reaching its render loop looks like, and it is when Streamline finishes bringing
+DLSS-G's context up around the swapchain - so this converges without a timer.
+
+Also settled by that log: `featuresToLoad` **is** honoured (`Ignoring plugin 'sl.deepdvc' since
+it is was not requested by the host`), so the earlier suspicion about the whole plugin set being
+loaded was wrong - what was observed was Streamline probing each plugin's config and unloading
+what it does not need.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -238,17 +283,17 @@ Two changes exist to settle it next time:
   versions" range was written and removed: it can only go stale.
 - **Anything unverified is refused, never approximated.** A refusal costs one feature; a
   guess corrupts frame generation silently, and no test in this repo can catch that.
-- **No device, no call.** Most 2.x exports jump through an unbound plugin pointer before the
-  device is bound, so every device-dependent translation is refused until it is. This is a
-  crash, not a courtesy - see above. The gate itself is a plain atomic read: an earlier version
-  asked the runtime on every call, which put a `slGetFeatureFunction` - CE inline-hooks that
-  export on the bridged interposer - in front of every tag and constant, on the render thread.
-- **Bind the device once, through one mechanism.** Interposed creation or `slSetD3DDevice`,
-  never both. Which one applies is knowable: if the game's device creation came through the
-  bridge's slot, the interposer already has it.
-- **A readiness probe may confirm, never veto.** `slGetFeatureFunction` succeeding proves a
-  device is bound; it failing proves nothing, because it also fails while a plugin is still
-  coming up.
+- **No feature context, no call.** Most 2.x exports jump through a plugin pointer the manager
+  binds late, so every device-dependent translation is refused until Streamline says the
+  context exists. This is a crash, not a courtesy - it happened twice.
+- **Readiness is asked, never inferred.** The only signal is `slGetFeatureFunction` succeeding.
+  Both inferences that were tried - "slSetD3DDevice returned eOk" and "the interposer created
+  the device" - produced the same null call.
+- **The first device a title creates may be a throwaway.** Hand over every distinct one; the
+  interposer's own supersedes the queue-derived native device, and a later interposed device
+  supersedes an earlier one.
+- **The probe is event-driven, not polled and not once-only.** Once per epoch, where an epoch is
+  a device handed over or the game's frame index moving; nothing at all once the answer is yes.
 - **A module the bridge routed around gets no hooks.** With two generations resident and one
   forward pointer per symbol, hooking the inert one costs the live one its hook.
 - **What CE cannot check in advance, it reports after the fact.** Whether the game created
@@ -395,20 +440,16 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 
 ## Open questions / stale-risk
 
-- **Partly validated.** The takeover, the 2.x bring-up, the 1.x quiesce, `slIsFeatureSupported`
-  and the device reaching the 2.x interposer are all proven. Nothing past `slSetConstants` has
-  ever executed successfully, so the tag/constant/evaluate path and DLSS-G itself are untried.
-- **The `20260821_161620` startup exception is unattributed**, and the throw site is not
-  recoverable from that dump. Next run: read `sl.log` in the session directory first. If it
-  shows a healthy Streamline, the next thing to bisect is CE's own inline hooks on the bridged
-  2.x interposer - they moved there in 0.1.6212 and are the other behaviour change of that
-  build.
-- **Streamline loads every plugin in the staged folder regardless of `featuresToLoad`**
-  (`sl.deepdvc`, `sl.directsr`, `sl.dlss_d`, `sl.nis`, and `nvngx_dlssd` at 40 MB), taking about
-  3.7 s inside the game's first bridged call. Consistent with SL2 probing each plugin's config
-  and unloading the ones it does not need - successive plugins were observed loading at the same
-  base address - but not confirmed, and it is worth knowing whether a leaner staged folder
-  shortens that stall.
+- **Partly validated.** The takeover, the 2.x bring-up, the 1.x quiesce, `slIsFeatureSupported`,
+  the swapchain and the render loop are all proven. Nothing past `slSetConstants` has ever
+  executed successfully, so the tag/constant/evaluate path and DLSS-G itself remain untried -
+  the device fix is what should let them run for the first time.
+- **The `20260821_161620` startup C++ exception did not recur** in `20260821_163534`, which
+  reached the render loop. It remains unexplained rather than fixed; if it returns, `sl.log`
+  is now there to say whether Streamline was involved.
+- **Reflex is still refused.** 1.x drives it through `slSetFeatureConstants`; 2.x through
+  `slReflexSetOptions`. DLSS-G depends on Reflex, so if frame generation comes up but behaves
+  badly, this is the first suspect.
 - **`slShutdown` on a 1.x runtime that has only been `slInit`ed is expected to unload its
   plugins, but that is not verified.** The inventory line printed straight after the call is
   there to settle it: if `sl.common.dll` is still listed from the game's folder afterwards,
@@ -429,6 +470,7 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-21 (build 0.1.6215; ABI measurements from The Witcher 3 sessions
+Last verified 2026-08-21 (build 0.1.6219; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
-`20260821_151924`, the bridged runs from `20260821_155250` and `20260821_161620`).
+`20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
+`20260821_163534`).

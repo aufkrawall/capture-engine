@@ -230,13 +230,20 @@ TEST(StreamlineBridgePolicyTest, DerivesTheSdkVersionFromWhicheverRuntimeIsStage
 // ---------------------------------------------------------------------------
 
 TEST(StreamlineBridgePolicyTest, EveryDeviceDependentCallIsHeldBackUntilTheDeviceIsSet) {
-    // The regression this pins is a crash, not a misbehaviour. Session `20260821_155250`:
+    // The regression this pins is a crash, not a misbehaviour, and it happened twice with the
+    // same stack - `20260821_155250` and again `20260821_163534`:
     //     0xC0000005 at 0x0000000000000000, RIP=0
     //     capture_hook_x64!Bridged_slSetConstants -> sl_interposer!slSetConstants+0x49 -> 0x0
-    // The bridge had taken the imports over and initialised its 2.x runtime, and forwarded
-    // the game's slSetConstants into it before any device was set. Streamline's exports
-    // forward through a plugin pointer the manager binds at slSetD3DDevice; before that they
-    // do not return an error, they jump to null.
+    // Streamline's exports forward through a plugin pointer the manager binds once the device
+    // is set; before that they do not return an error, they jump to null.
+    //
+    // The second occurrence is the instructive one: the gate was in place and let the call
+    // through anyway, because readiness had been INFERRED from the game's D3D12CreateDevice
+    // arriving through the bridge. Streamline's own log shows why that inference is invalid -
+    // that device was a probe released at ref count 0 four hundred milliseconds later, and the
+    // plugin manager then spent the rest of the session asking for `slSetD3DDevice` by name.
+    // Readiness is only ever Streamline answering `slGetFeatureFunction`; a device is an
+    // action CE takes, never a conclusion CE draws.
     EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::SetConstants));
     EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::SetTag));
     EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::EvaluateFeature));
