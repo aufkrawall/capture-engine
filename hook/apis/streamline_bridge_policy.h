@@ -282,6 +282,23 @@ inline const char* Describe(ActivationDecision decision) {
     return "unrecognized bridge activation decision";
 }
 
+// Which generation is authoritative for decisions that cannot be made per module.
+//
+// A process normally runs one Streamline distribution, so "the first module CE classified"
+// answers for the whole process. The bridge breaks that on purpose: it leaves the game's
+// 1.x interposer resident and adds a CE-owned 2.x runtime, and the 1.x one is loaded from
+// process start so it is almost always classified first. Since every Streamline call the
+// game makes now reaches CE's thunks and then the 2.x runtime, that runtime is the one a
+// process-wide route has to match.
+//
+// This is only for genuinely process-wide decisions. Anything that installs an
+// ABI-sensitive hook on a specific module must use THAT module's generation - with two
+// generations resident, applying this answer to the 1.x module would install 2.x-shaped
+// hooks on it, which is the argument truncation the whole generation gate exists to stop.
+inline Generation AuthoritativeProcessGeneration(bool bridgeActive, Generation firstSeenGeneration) {
+    return bridgeActive ? Generation::V2 : firstSeenGeneration;
+}
+
 // While the bridge owns the process's Streamline, the ordinary path-substitution redirect
 // must stand down for the whole sl.* family.
 //

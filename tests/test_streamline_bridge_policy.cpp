@@ -247,6 +247,39 @@ TEST(StreamlineBridgePolicyTest, EveryDecisionExplainsItself) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Which generation answers for the whole process
+// ---------------------------------------------------------------------------
+
+TEST(StreamlineBridgePolicyTest, TheBridgedRuntimeAnswersForTheProcess) {
+    // The 1.x interposer is loaded from process start, so it is almost always classified
+    // first - but once bridged, every Streamline call the game makes reaches CE's thunks and
+    // then the 2.x runtime. First-seen must not win.
+    EXPECT_EQ(bridge::AuthoritativeProcessGeneration(/*bridgeActive=*/true, Generation::V1), Generation::V2);
+    EXPECT_EQ(bridge::AuthoritativeProcessGeneration(true, Generation::Unknown), Generation::V2);
+    EXPECT_EQ(bridge::AuthoritativeProcessGeneration(true, Generation::V2), Generation::V2);
+}
+
+TEST(StreamlineBridgePolicyTest, WithoutABridgeTheFirstSeenGenerationStillAnswers) {
+    // Unbridged processes must behave exactly as before: one distribution, one answer.
+    for (Generation g : {Generation::Unknown, Generation::V1, Generation::V2}) {
+        EXPECT_EQ(bridge::AuthoritativeProcessGeneration(/*bridgeActive=*/false, g), g);
+    }
+}
+
+TEST(StreamlineBridgePolicyTest, TheProcessWideAnswerMustNeverDecideAPerModuleAbiHook) {
+    // This is why ClassifyModuleGeneration exists and why the install path stopped caching
+    // one generation for every module. In a bridged process the authoritative answer is V2,
+    // and applying it to the still-resident 1.x interposer would authorise precisely the
+    // 2.x-shaped hooks on a 1.x module that truncate the caller's command-list pointer -
+    // the Witcher 3 crash the generation gate was written for.
+    const Generation processWide = bridge::AuthoritativeProcessGeneration(/*bridgeActive=*/true, Generation::V1);
+    EXPECT_TRUE(ce::streamline_api::MayInstallAbiSensitiveHook(processWide, Generation::V2))
+        << "the process-wide answer would authorise a 2.x hook";
+    EXPECT_FALSE(ce::streamline_api::MayInstallAbiSensitiveHook(Generation::V1, Generation::V2))
+        << "the 1.x module's own generation is the answer that must be used";
+}
+
 TEST(StreamlineBridgePolicyTest, AnActiveBridgeStandsTheOrdinaryRedirectDown) {
     // Both mechanisms want the same configured folder for opposite purposes. Letting the
     // path substitution also fire would rewrite the game's own 1.x plugin loads into the

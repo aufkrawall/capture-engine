@@ -1,6 +1,8 @@
 #include "streamline_hook_internal.h"
 
 #include "../common/streamline_api_generation.h"
+#include "streamline_bridge.h"
+#include "streamline_bridge_policy.h"
 #include "streamline_hook_v1.h"
 
 namespace {
@@ -19,42 +21,65 @@ bool ExportsAnyOf(HMODULE module, const char* const* names, size_t count) {
     return false;
 }
 
-// Decide, once, which Streamline generation this process speaks, from the module that owns
-// the public API. Only a module that actually exports the ABI-sensitive entry points can
-// answer: sl.common exports neither, so it must not be allowed to vote.
-Generation ResolveStreamlineGeneration(HMODULE module, const char* moduleBaseName) {
-    const int cached = g_streamlineApiGeneration.load(std::memory_order_acquire);
-    if (cached != static_cast<int>(Generation::Unknown)) {
-        return static_cast<Generation>(cached);
-    }
+// Which Streamline generation THIS module speaks. Deliberately not cached across modules.
+//
+// A process normally runs exactly one Streamline distribution, so a single latched answer
+// used to be enough. `streamline_upgrade` breaks that assumption on purpose: the bridge
+// leaves the game's 1.x interposer resident and adds a CE-owned 2.x runtime, so both
+// generations are loaded at once. A process-wide latch would then let whichever module CE
+// happened to see first decide the ABI for both - and installing the 2.x-shaped hooks on a
+// 1.x module is exactly the argument truncation that killed The Witcher 3
+// (`20260820_221409`). Only a module that actually exports the ABI-sensitive entry points
+// can answer for itself: sl.common exports neither, so it never votes.
+Generation ClassifyModuleGeneration(HMODULE module) {
     if (!module || (GetProcAddress(module, "slSetTag") == nullptr &&
                     GetProcAddress(module, "slEvaluateFeature") == nullptr)) {
         return Generation::Unknown;
     }
-
     const bool sawV2 =
         ExportsAnyOf(module, ce::streamline_api::kV2OnlyExports, ce::streamline_api::kV2OnlyExportCount);
     const bool sawV1 =
         ExportsAnyOf(module, ce::streamline_api::kV1OnlyExports, ce::streamline_api::kV1OnlyExportCount);
-    const Generation generation = ce::streamline_api::Classify(sawV2, sawV1);
+    return ce::streamline_api::Classify(sawV2, sawV1);
+}
 
-    int expected = static_cast<int>(Generation::Unknown);
-    if (g_streamlineApiGeneration.compare_exchange_strong(expected, static_cast<int>(generation),
-                                                          std::memory_order_acq_rel)) {
+// The per-module answer, logged once per generation so a bridged process shows both.
+Generation ResolveStreamlineGeneration(HMODULE module, const char* moduleBaseName) {
+    const Generation generation = ClassifyModuleGeneration(module);
+    if (generation == Generation::Unknown && module == nullptr) {
+        return generation;
+    }
+
+    static std::atomic<uint32_t> loggedGenerations{0};
+    const uint32_t bit = 1u << static_cast<uint32_t>(generation);
+    if ((loggedGenerations.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
         HookLogImportant(
-            "Streamline Hook: %s speaks %s (2.x-only exports=%d 1.x-only exports=%d) - CE installs only the "
-            "hooks whose signatures match that generation",
-            moduleBaseName ? moduleBaseName : "the Streamline module", ce::streamline_api::Describe(generation),
-            sawV2 ? 1 : 0, sawV1 ? 1 : 0);
+            "Streamline Hook: %s speaks %s - CE installs only the hooks whose signatures match that module's "
+            "generation",
+            moduleBaseName ? moduleBaseName : "the Streamline module", ce::streamline_api::Describe(generation));
         if (generation == Generation::Unknown) {
             HookLogImportant(
                 "Streamline Hook: slSetTag/slEvaluateFeature stay unhooked because their calling convention "
                 "cannot be established - CE never guesses a foreign ABI, and a guess here truncates the "
                 "caller's command list pointer");
         }
-        return generation;
     }
-    return static_cast<Generation>(g_streamlineApiGeneration.load(std::memory_order_acquire));
+    return generation;
+}
+
+// The generation every PROCESS-WIDE decision uses. Today that is the single
+// GetProcAddress-time route per ABI-sensitive symbol, which cannot be per-module because it
+// is keyed on the symbol name alone.
+//
+// With the bridge active the game's Streamline calls all reach CE's thunks and then the 2.x
+// runtime, so that runtime is authoritative even though the 1.x interposer is still resident
+// and was almost certainly classified first.
+Generation AuthoritativeStreamlineGeneration(Generation moduleGeneration) {
+    int expected = static_cast<int>(Generation::Unknown);
+    g_streamlineApiGeneration.compare_exchange_strong(expected, static_cast<int>(moduleGeneration),
+                                                      std::memory_order_acq_rel);
+    const auto firstSeen = static_cast<Generation>(g_streamlineApiGeneration.load(std::memory_order_acquire));
+    return ce::streamline_bridge::AuthoritativeProcessGeneration(ce::streamline_bridge::IsActive(), firstSeen);
 }
 
 // The dynamic (GetProcAddress-time) routes for the two ABI-sensitive exports can only be
@@ -146,7 +171,9 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     // only exports whose signature changed between Streamline generations, and installing
     // the wrong one truncates the caller's arguments on the way back into Streamline.
     const Generation generation = ResolveStreamlineGeneration(module, moduleBaseName);
-    RegisterAbiSensitiveDynamicHooksOnce(generation);
+    // The dynamic route is keyed on the symbol name alone, so it takes the process-wide
+    // answer; the inline/IAT hooks below are per module and must take this module's own.
+    RegisterAbiSensitiveDynamicHooksOnce(AuthoritativeStreamlineGeneration(generation));
     const bool mayHookV2Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V2);
     const bool mayHookV1Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V1);
     const bool mayHookAbiSensitive = mayHookV1Abi || mayHookV2Abi;

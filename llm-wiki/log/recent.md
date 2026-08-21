@@ -32,8 +32,18 @@ v1.1.1 and whose `Resource` independently confirms the offsets CE already encode
 DLSS-G and must not be trusted for the feature enum. Details and the per-source trust levels are in
 `frame-generation/guardrails.md`.
 
-Still open: the actual 1.x->2.x call translation, and making `ResolveStreamlineGeneration` treat the
-bridged runtime as authoritative when both generations are resident. The translation map for
+**Follow-up in the same session: the generation latch had to go.** Taking the imports over means two
+Streamline generations are resident at once, which broke an assumption
+`ResolveStreamlineGeneration` was built on - it latched the first module exporting
+`slSetTag`/`slEvaluateFeature` and answered with it for every module afterwards. In a bridged process
+the 1.x interposer is loaded from process start and is classified first, so the latch would either
+authorise 1.x hooks on the 2.x runtime or, once the bridge made V2 authoritative, authorise
+**2.x-shaped hooks on the still-resident 1.x interposer** - the exact truncation that started this
+whole workstream. `ClassifyModuleGeneration` is now per module and uncached and drives the inline/IAT
+hook decisions; only the GetProcAddress route, which is keyed on the symbol name alone and cannot be
+per module, takes a process-wide answer from `AuthoritativeProcessGeneration`.
+
+Still open: the actual 1.x->2.x call translation. The translation map for
 `Constants` is now known (prepend the 2.x `BaseStructure`; copy `cameraViewToClip`..`reset`
 verbatim; **drop** 1.x `notRenderingGameFrames`, which has no 2.x field; keep the three motion-vector
 / projection Booleans; leave 2.x `minRelativeLinearDepthObjectSeparation` at its 40.0f default rather
