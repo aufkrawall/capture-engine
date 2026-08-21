@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 635,
+    "entries": 636,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -270,6 +270,7 @@
       "hook/apis/streamline_hook_startup.cpp",
       "hook/apis/streamline_hook_state.cpp",
       "hook/apis/streamline_hook_v1.cpp",
+      "hook/apis/streamline_v1_feature_probe.cpp",
       "hook/capture/shared_capture.cpp",
       "hook/capture/shared_capture_d3d12.cpp",
       "hook/common/cached_overlay_renderer.cpp",

@@ -4,6 +4,7 @@
 #include "streamline_bridge.h"
 #include "streamline_bridge_policy.h"
 #include "streamline_hook_v1.h"
+#include "streamline_v1_feature_probe.h"
 
 namespace {
 
@@ -350,6 +351,37 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 InstallInlineHookOnce(reinterpret_cast<void*>(originalEvaluateFeature), evaluateDetour,
                                       streamline_hook_g_Original_slEvaluateFeature,
                                       streamline_hook_g_SLEvaluateFeatureHooked, streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature");
+        }
+
+        // The two 1.x calls whose payload layout is unpublished. Recorded on the way
+        // through and forwarded unchanged, so an ordinary session with the game's own
+        // Streamline working normally produces the layouts the generation bridge needs.
+        // Both exports exist only in 1.x, and the V1 gate is applied anyway.
+        if (shouldHookCoreExports && mayHookV1Abi) {
+            if (auto* originalSetFeatureConstants = reinterpret_cast<ce::streamline_v1::PFN_slSetFeatureConstantsV1>(
+                    GetProcAddress(module, "slSetFeatureConstants"))) {
+                if (!ce::streamline_v1::g_Original_slSetFeatureConstantsV1) {
+                    ce::streamline_v1::g_Original_slSetFeatureConstantsV1 = originalSetFeatureConstants;
+                }
+                hookedAnything |= InstallInlineHookOnce(
+                    reinterpret_cast<void*>(originalSetFeatureConstants),
+                    reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetFeatureConstantsV1),
+                    ce::streamline_v1::g_Original_slSetFeatureConstantsV1,
+                    ce::streamline_v1::g_SetFeatureConstantsV1Hooked,
+                    ce::streamline_v1::g_SetFeatureConstantsV1Target, "slSetFeatureConstants");
+            }
+            if (auto* originalGetFeatureSettings = reinterpret_cast<ce::streamline_v1::PFN_slGetFeatureSettingsV1>(
+                    GetProcAddress(module, "slGetFeatureSettings"))) {
+                if (!ce::streamline_v1::g_Original_slGetFeatureSettingsV1) {
+                    ce::streamline_v1::g_Original_slGetFeatureSettingsV1 = originalGetFeatureSettings;
+                }
+                hookedAnything |= InstallInlineHookOnce(
+                    reinterpret_cast<void*>(originalGetFeatureSettings),
+                    reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slGetFeatureSettingsV1),
+                    ce::streamline_v1::g_Original_slGetFeatureSettingsV1,
+                    ce::streamline_v1::g_GetFeatureSettingsV1Hooked,
+                    ce::streamline_v1::g_GetFeatureSettingsV1Target, "slGetFeatureSettings");
+            }
         }
 
         if (shouldHookCoreExports && (originalSetTag || originalEvaluateFeature) && !mayHookAbiSensitive) {

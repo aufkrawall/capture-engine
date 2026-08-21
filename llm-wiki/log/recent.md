@@ -43,6 +43,14 @@ whole workstream. `ClassifyModuleGeneration` is now per module and uncached and 
 hook decisions; only the GetProcAddress route, which is keyed on the symbol name alone and cannot be
 per module, takes a process-wide answer from `AuthoritativeProcessGeneration`.
 
+**How to actually take that measurement: run UNBRIDGED.** The recorder lives in
+`hook/apis/streamline_v1_feature_probe.{h,cpp}` and hooks the two 1.x calls, records the payload and
+then forwards unchanged, so the game keeps driving its own Streamline exactly as it would without CE.
+That is deliberate: with `streamline_upgrade=on` the bridge refuses `slInit`, the game concludes
+Streamline is unavailable, and it never reaches `slSetFeatureConstants` at all - a bridged run would
+capture nothing. The productive session is therefore a normal one with DLSS and FG genuinely working,
+which is also the run in which the recorded constants are valid rather than degraded.
+
 **The remaining blocker is an unpublished ABI, so CE now measures it instead.** Translating
 `slSetFeatureConstants` / `slGetFeatureSettings` needs the 1.x per-feature structs
 (`sl::DLSSConstants`, `sl::DLSSGConstants`, `sl::DLSSGSettings`) as they stand in 1.5.6. Those are

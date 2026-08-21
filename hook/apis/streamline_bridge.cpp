@@ -16,6 +16,7 @@
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_v1_feature_probe.h"
 
 // `g_pLocalConfig` (AppConfig*) comes from hook_common.h.
 
@@ -111,69 +112,15 @@ CE_SL_BRIDGE_REFUSE(slEvaluateFeature)
 // game turns the missing layout from an unavailable document into a measurement: the size
 // the game passes, the feature it names, and the leading bytes are exactly what identifies
 // the mode field and the struct's shape.
-bool ReadableBytes(const void* address, size_t wanted) {
-    if (!address || wanted == 0) {
-        return false;
-    }
-    MEMORY_BASIC_INFORMATION info{};
-    if (VirtualQuery(address, &info, sizeof(info)) != sizeof(info)) {
-        return false;
-    }
-    if (info.State != MEM_COMMIT) {
-        return false;
-    }
-    constexpr DWORD kNoRead = PAGE_NOACCESS | PAGE_GUARD;
-    if ((info.Protect & kNoRead) != 0 || info.Protect == 0) {
-        return false;
-    }
-    const auto base = static_cast<const uint8_t*>(info.BaseAddress);
-    const auto start = static_cast<const uint8_t*>(address);
-    const size_t remaining = info.RegionSize - static_cast<size_t>(start - base);
-    return remaining >= wanted;
-}
-
-// Bounded, guarded, and rate-limited: a diagnostic that reads somebody else's struct must
-// never be the thing that faults, and must never become hot-path noise.
-void RecordOpaqueFeaturePayload(const char* call, uint32_t v1Feature, const void* payload) {
-    static std::atomic<uint32_t> recorded{0};
-    const uint32_t index = recorded.fetch_add(1, std::memory_order_relaxed);
-    if (index >= 12 && (index % 8192) != 0) {
-        return;
-    }
-
-    constexpr size_t kDumpBytes = 64;
-    if (!ReadableBytes(payload, kDumpBytes)) {
-        HookLogImportant("Streamline bridge: %s(%s) payload=%p is not readable - nothing recorded", call,
-                         DescribeV1Feature(v1Feature), payload);
-        return;
-    }
-
-    const auto* bytes = static_cast<const uint8_t*>(payload);
-    char hex[kDumpBytes * 3 + 1] = {};
-    for (size_t i = 0; i < kDumpBytes; ++i) {
-        static const char kDigits[] = "0123456789abcdef";
-        hex[i * 3 + 0] = kDigits[bytes[i] >> 4];
-        hex[i * 3 + 1] = kDigits[bytes[i] & 0xF];
-        hex[i * 3 + 2] = ' ';
-    }
-    uint32_t leadingDword = 0;
-    memcpy(&leadingDword, bytes, sizeof(leadingDword));
-    HookLogImportant(
-        "Streamline bridge: %s(%s) refused - the 1.x layout for this struct is not published for sl.interposer "
-        "1.5.6, and CE will not guess a foreign ABI. Recording it instead so one run yields the layout. "
-        "leading uint32=%u first %zu bytes: %s",
-        call, DescribeV1Feature(v1Feature), leadingDword, kDumpBytes, hex);
-}
-
 // 1.x: bool slSetFeatureConstants(Feature, const void* consts, uint32_t frameIndex, uint32_t id)
 bool Bridged_slSetFeatureConstants(uint32_t feature, const void* consts, uint32_t, uint32_t) {
-    RecordOpaqueFeaturePayload("slSetFeatureConstants", feature, consts);
+    ce::streamline_v1::RecordOpaqueFeaturePayload("slSetFeatureConstants", feature, consts);
     return false;
 }
 
 // 1.x: bool slGetFeatureSettings(Feature, const void* consts, void* settings)
 bool Bridged_slGetFeatureSettings(uint32_t feature, const void* consts, void*) {
-    RecordOpaqueFeaturePayload("slGetFeatureSettings", feature, consts);
+    ce::streamline_v1::RecordOpaqueFeaturePayload("slGetFeatureSettings", feature, consts);
     return false;
 }
 
