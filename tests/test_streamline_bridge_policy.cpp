@@ -79,6 +79,24 @@ TEST(StreamlineBridgePolicyTest, FeatureTranslationNeverCollapsesTwoFeaturesOnto
     }
 }
 
+TEST(StreamlineBridgePolicyTest, NamesEach1xFeatureDistinctlyForDiagnostics) {
+    // These strings identify which call a refusal or a recorded payload belongs to, so the
+    // two colliding values must not describe themselves as each other.
+    EXPECT_STREQ(bridge::DescribeV1Feature(bridge::kV1FeatureDLSS_G), "DLSS-G");
+    EXPECT_STREQ(bridge::DescribeV1Feature(bridge::kV1FeatureDebug), "Debug");
+    EXPECT_STREQ(bridge::DescribeV1Feature(bridge::kV1FeatureDLSS), "DLSS");
+    EXPECT_STREQ(bridge::DescribeV1Feature(bridge::kV1FeatureCommon), "Common");
+
+    std::set<std::string> names;
+    for (uint32_t f : {bridge::kV1FeatureDLSS, bridge::kV1FeatureNRD, bridge::kV1FeatureNIS,
+                       bridge::kV1FeatureReflex, bridge::kV1FeatureDebug, bridge::kV1FeatureDLSS_G,
+                       bridge::kV1FeatureCommon}) {
+        EXPECT_TRUE(names.insert(bridge::DescribeV1Feature(f)).second) << "duplicate name for feature " << f;
+    }
+    // An unmapped value must be reported as unknown, never folded into a neighbour.
+    EXPECT_STREQ(bridge::DescribeV1Feature(77), "an unrecognized 1.x feature");
+}
+
 // ---------------------------------------------------------------------------
 // Buffer type translation
 // ---------------------------------------------------------------------------
@@ -182,6 +200,22 @@ TEST(StreamlineBridgePolicyTest, AsksStreamlineForAFactoryProxyBecauseCeIsInject
 
 TEST(StreamlineBridgePolicyTest, KeepsTheSdkDefaultsItHasNoReasonToChange) {
     EXPECT_NE(bridge::BridgePreferenceFlags() & bridge::kPrefDisableCLStateTracking, 0u);
+}
+
+TEST(StreamlineBridgePolicyTest, DerivesTheSdkVersionFromWhicheverRuntimeIsStaged) {
+    // The staged runtime is expected to be updated, so no version may be hard-coded: CE
+    // declares itself as the SDK it actually found. Hard-coding one would mis-declare CE to
+    // every other folder the user points it at.
+    EXPECT_EQ(bridge::StreamlineSdkVersion(2, 11, 1),
+              (2ull << 48) | (11ull << 32) | (1ull << 16) | bridge::kStreamlineSdkVersionMagic);
+    EXPECT_EQ(bridge::StreamlineSdkVersion(2, 12, 0),
+              (2ull << 48) | (12ull << 32) | (0ull << 16) | bridge::kStreamlineSdkVersionMagic);
+    EXPECT_NE(bridge::StreamlineSdkVersion(2, 12, 0), bridge::StreamlineSdkVersion(2, 11, 1));
+
+    // A version nobody has seen yet must still produce a well-formed value, with no table
+    // anywhere to keep updated.
+    EXPECT_EQ(bridge::StreamlineSdkVersion(2, 20, 3) & 0xffffull, bridge::kStreamlineSdkVersionMagic);
+    EXPECT_EQ(bridge::StreamlineSdkVersion(2, 20, 3) >> 48, 2ull);
 }
 
 // ---------------------------------------------------------------------------

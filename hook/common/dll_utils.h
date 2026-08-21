@@ -35,6 +35,48 @@ static inline uint32_t DllFileMajorVersion(const char* dllPath) {
     return static_cast<uint32_t>(HIWORD(fixed->dwFileVersionMS));
 }
 
+// Full VS_FIXEDFILEINFO file version, as major/minor/build. False when the file
+// carries no version resource.
+//
+// Streamline 2.x populates all three (2.11.1 reports 2/11/1, 2.12.0 reports
+// 2/12/0), which is what lets a caller reconstruct that distribution's own
+// `sl::kSDKVersion` instead of hard-coding one version's value and mis-declaring
+// itself to every other. Note that 1.x does NOT populate minor/build - The
+// Witcher 3's sl.interposer reports 1/0/0 against a StringFileInfo of 1.5.6.0 -
+// so this is sound for generation and for 2.x versions, but never for pinning a
+// specific 1.x minor.
+static inline bool DllFileVersionParts(const char* dllPath, uint32_t* outMajor, uint32_t* outMinor,
+                                       uint32_t* outBuild) {
+    if (!dllPath || !dllPath[0]) {
+        return false;
+    }
+    DWORD dummy = 0;
+    const DWORD verSize = GetFileVersionInfoSizeA(dllPath, &dummy);
+    if (verSize == 0) {
+        return false;
+    }
+    std::string buf(verSize, '\0');
+    if (!GetFileVersionInfoA(dllPath, 0, verSize, &buf[0])) {
+        return false;
+    }
+    VS_FIXEDFILEINFO* fixed = nullptr;
+    UINT fixedLen = 0;
+    if (!VerQueryValueA(buf.data(), "\\", reinterpret_cast<void**>(&fixed), &fixedLen) || !fixed ||
+        fixedLen < sizeof(VS_FIXEDFILEINFO)) {
+        return false;
+    }
+    if (outMajor) {
+        *outMajor = static_cast<uint32_t>(HIWORD(fixed->dwFileVersionMS));
+    }
+    if (outMinor) {
+        *outMinor = static_cast<uint32_t>(LOWORD(fixed->dwFileVersionMS));
+    }
+    if (outBuild) {
+        *outBuild = static_cast<uint32_t>(HIWORD(fixed->dwFileVersionLS));
+    }
+    return true;
+}
+
 // Returns true if any version-resource string field of the DLL at dllPath
 // contains needle (case-insensitive). Used to fingerprint DXVK ("dxvk") and
 // VKD3D-Proton ("vkd3d") beyond a mere path check.

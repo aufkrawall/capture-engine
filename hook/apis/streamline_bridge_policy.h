@@ -92,6 +92,30 @@ inline bool TranslateV1FeatureToV2(uint32_t v1Feature, uint32_t* outV2Feature) {
     return true;
 }
 
+// Names the 1.x feature a call carries, for diagnostics. Unknown values are reported as
+// such rather than folded into a neighbour - the two collisions above are exactly why.
+inline const char* DescribeV1Feature(uint32_t v1Feature) {
+    switch (v1Feature) {
+        case kV1FeatureDLSS:
+            return "DLSS";
+        case kV1FeatureNRD:
+            return "NRD";
+        case kV1FeatureNIS:
+            return "NIS";
+        case kV1FeatureReflex:
+            return "Reflex";
+        case kV1FeatureDebug:
+            return "Debug";
+        case kV1FeatureDLSS_G:
+            return "DLSS-G";
+        case kV1FeatureCommon:
+            return "Common";
+        default:
+            break;
+    }
+    return "an unrecognized 1.x feature";
+}
+
 // ---------------------------------------------------------------------------
 // Buffer type translation
 // ---------------------------------------------------------------------------
@@ -209,6 +233,33 @@ inline constexpr uint64_t BridgePreferenceFlags() {
     return (kPrefSdkDefault & ~(kPrefAllowOTA | kPrefLoadDownloadedPlugins)) | kPrefUseDXGIFactoryProxy;
 }
 
+// `sl::kSDKVersion` for a given 2.x distribution.
+//
+// The host declares which SDK it was built against; Streamline uses that for compatibility
+// decisions. CE is not built against any single one - it drives whichever runtime the
+// profile staged - so the value has to be reconstructed from that runtime rather than
+// frozen at one version. Hard-coding 2.11.1 would mis-declare CE to a 2.12.0 folder, which
+// is exactly the "point it at the latest DLLs" case this feature exists for.
+inline constexpr uint64_t kStreamlineSdkVersionMagic = 0xfedcull;
+
+inline constexpr uint64_t StreamlineSdkVersion(uint32_t major, uint32_t minor, uint32_t patch) {
+    return (static_cast<uint64_t>(major) << 48) | (static_cast<uint64_t>(minor) << 32) |
+           (static_cast<uint64_t>(patch) << 16) | kStreamlineSdkVersionMagic;
+}
+
+// Nothing here pins a Streamline minor version, deliberately.
+//
+// The staged runtime is expected to change - that is the point of pointing CE at a folder -
+// so every version-dependent value is read from the runtime that is actually present. The
+// `Preferences` mirror stays valid across those updates without a version table because
+// Streamline's structures are self-describing: each carries its own type GUID and a
+// `structVersion`, and a host that declares version 1 is promising only that it filled the
+// version-1 fields. Later SDKs append fields behind a higher version and keep reading a
+// version-1 struct exactly as before, which is what that field is for. A layout change that
+// this scheme could not absorb would be a new struct type, and Streamline rejects that
+// itself - `slInit` returns a failing `sl::Result`, which CE logs together with the version
+// it read. That is a real check against the runtime in hand, whereas a hard-coded range of
+// "known good" versions would only ever go stale.
 // ---------------------------------------------------------------------------
 // Activation
 // ---------------------------------------------------------------------------

@@ -614,15 +614,31 @@ streamline_dll_path=
 ; streamline_upgrade=on stops treating streamline_dll_path as a DLL substitution and runs
 ; that folder's Streamline 2.x runtime as a SECOND, CaptureEngine-owned runtime beside the
 ; game's own 1.x one, then repoints the game's sl.interposer import slots at CaptureEngine
-; so 1.x calls can be translated to 2.x. That is what makes DLSS-G / multi-frame generation
-; reachable in a title that shipped Streamline 1.x. Nothing on disk is renamed or patched -
-; unlike the third-party bridges above, the takeover happens in memory and disappears with
-; the process - and the game's own 1.x runtime stays loaded and untouched.
+; so 1.x calls can be translated to 2.x - the groundwork for making DLSS-G / multi-frame
+; generation reachable in a title that shipped Streamline 1.x. Nothing on disk is renamed or
+; patched - unlike the third-party bridges above, the takeover happens in memory and
+; disappears with the process - and the game's own 1.x runtime stays loaded and untouched.
+; STATUS: the takeover works, but the call translation is NOT implemented yet, so a bridged
+; game currently starts and renders WITHOUT Streamline features rather than with frame
+; generation. Two of the calls carry per-feature structs (sl::DLSSConstants,
+; sl::DLSSGConstants) whose 1.x layouts NVIDIA has never published for sl.interposer 1.5.6 -
+; there is no 1.x release at all and the public 1.x tags stop at v1.1.1, which predates
+; DLSS-G. CaptureEngine refuses those calls rather than guessing a foreign ABI, and records
+; what the game passes so the layout can be measured from a single run. Turning this on today
+; is therefore only useful for validating the takeover itself.
 ; Requirements: streamline_dll_path must point at a COMPLETE 2.x plugin set (sl.interposer,
 ; sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl and the matching nvngx_* runtimes); a
 ; folder missing sl.dlss.dll cannot serve a game that also upscales. The plugin set is
-; pinned, with Streamline's over-the-air plugin updates turned off, so the runtime you
-; staged is the runtime that runs.
+; pinned to that folder, with Streamline's over-the-air plugin updates turned off, so the
+; runtime you staged is the runtime that runs. No Streamline version is hard-coded anywhere:
+; CaptureEngine reads the version out of the folder you point it at and declares itself to
+; Streamline as that version, so replacing the DLLs with a newer set needs no config change
+; and no CaptureEngine update.
+; Keep dlss_sr_dll_path / dlss_fg_dll_path on the SAME folder as streamline_dll_path when
+; using this. Those overrides keep working (they are NGX runtimes, not sl.* plugins, and the
+; stand-down below never touches them), but a bridged Streamline resolves its own nvngx_*
+; snippets out of the folder it was pinned to - so pointing them elsewhere makes load order
+; decide which copy wins. CaptureEngine logs it when they disagree.
 ; CaptureEngine refuses to activate unless the process really is 1.x, the configured folder
 ; really is 2.x, and it got control before the game drove its own Streamline. A refusal
 ; leaves the process exactly as it was: half-bridged is worse than not bridged, so this is

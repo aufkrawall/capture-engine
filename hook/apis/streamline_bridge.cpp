@@ -6,11 +6,13 @@
 #include <dxgi1_6.h>
 
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "../../common/config.h"
 #include "../common/dll_utils.h"
+#include "../common/graphics_runtime_module_policy.h"
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "streamline_bridge_policy.h"
@@ -86,11 +88,94 @@ CE_SL_BRIDGE_REFUSE(slShutdown)
 CE_SL_BRIDGE_REFUSE(slIsFeatureSupported)
 CE_SL_BRIDGE_REFUSE(slSetTag)
 CE_SL_BRIDGE_REFUSE(slSetConstants)
-CE_SL_BRIDGE_REFUSE(slSetFeatureConstants)
-CE_SL_BRIDGE_REFUSE(slGetFeatureSettings)
 CE_SL_BRIDGE_REFUSE(slEvaluateFeature)
 
 #undef CE_SL_BRIDGE_REFUSE
+
+// The two calls whose 1.x payload layout is not public, and what CE does about it.
+//
+// `slSetFeatureConstants` and `slGetFeatureSettings` carry an opaque per-feature struct -
+// `sl::DLSSConstants`, `sl::DLSSGConstants`, `sl::DLSSGSettings`. Translating either one
+// needs those layouts as they stood in the interposer the game actually ships, and for
+// 1.5.6 they are unpublished: NVIDIA's repository has no 1.x release at all and its 1.x
+// tags stop at v1.1.1, which predates DLSS-G entirely. sl.dlss_g 1.5.6 proves the types
+// exist (it carries `sl::DLSSGSettings::status` and `numFramesToGenerate` in its own
+// diagnostics) but not their offsets.
+//
+// Guessing them is the one thing CE must not do here. A wrong field in a feature-constants
+// struct is not a crash, it is silently wrong frame generation - and a guessed Streamline
+// ABI is precisely what put a truncated command-list pointer into sl.common and killed The
+// Witcher 3 in `20260820_221409`.
+//
+// So the call is refused, and the payload is RECORDED instead. One real run of a bridged
+// game turns the missing layout from an unavailable document into a measurement: the size
+// the game passes, the feature it names, and the leading bytes are exactly what identifies
+// the mode field and the struct's shape.
+bool ReadableBytes(const void* address, size_t wanted) {
+    if (!address || wanted == 0) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(address, &info, sizeof(info)) != sizeof(info)) {
+        return false;
+    }
+    if (info.State != MEM_COMMIT) {
+        return false;
+    }
+    constexpr DWORD kNoRead = PAGE_NOACCESS | PAGE_GUARD;
+    if ((info.Protect & kNoRead) != 0 || info.Protect == 0) {
+        return false;
+    }
+    const auto base = static_cast<const uint8_t*>(info.BaseAddress);
+    const auto start = static_cast<const uint8_t*>(address);
+    const size_t remaining = info.RegionSize - static_cast<size_t>(start - base);
+    return remaining >= wanted;
+}
+
+// Bounded, guarded, and rate-limited: a diagnostic that reads somebody else's struct must
+// never be the thing that faults, and must never become hot-path noise.
+void RecordOpaqueFeaturePayload(const char* call, uint32_t v1Feature, const void* payload) {
+    static std::atomic<uint32_t> recorded{0};
+    const uint32_t index = recorded.fetch_add(1, std::memory_order_relaxed);
+    if (index >= 12 && (index % 8192) != 0) {
+        return;
+    }
+
+    constexpr size_t kDumpBytes = 64;
+    if (!ReadableBytes(payload, kDumpBytes)) {
+        HookLogImportant("Streamline bridge: %s(%s) payload=%p is not readable - nothing recorded", call,
+                         DescribeV1Feature(v1Feature), payload);
+        return;
+    }
+
+    const auto* bytes = static_cast<const uint8_t*>(payload);
+    char hex[kDumpBytes * 3 + 1] = {};
+    for (size_t i = 0; i < kDumpBytes; ++i) {
+        static const char kDigits[] = "0123456789abcdef";
+        hex[i * 3 + 0] = kDigits[bytes[i] >> 4];
+        hex[i * 3 + 1] = kDigits[bytes[i] & 0xF];
+        hex[i * 3 + 2] = ' ';
+    }
+    uint32_t leadingDword = 0;
+    memcpy(&leadingDword, bytes, sizeof(leadingDword));
+    HookLogImportant(
+        "Streamline bridge: %s(%s) refused - the 1.x layout for this struct is not published for sl.interposer "
+        "1.5.6, and CE will not guess a foreign ABI. Recording it instead so one run yields the layout. "
+        "leading uint32=%u first %zu bytes: %s",
+        call, DescribeV1Feature(v1Feature), leadingDword, kDumpBytes, hex);
+}
+
+// 1.x: bool slSetFeatureConstants(Feature, const void* consts, uint32_t frameIndex, uint32_t id)
+bool Bridged_slSetFeatureConstants(uint32_t feature, const void* consts, uint32_t, uint32_t) {
+    RecordOpaqueFeaturePayload("slSetFeatureConstants", feature, consts);
+    return false;
+}
+
+// 1.x: bool slGetFeatureSettings(Feature, const void* consts, void* settings)
+bool Bridged_slGetFeatureSettings(uint32_t feature, const void* consts, void*) {
+    RecordOpaqueFeaturePayload("slGetFeatureSettings", feature, consts);
+    return false;
+}
 
 void* TranslatedThunk(const char* name) {
     if (NamesEqual(name, "slInit")) return reinterpret_cast<void*>(&Bridged_slInit);
@@ -314,18 +399,26 @@ bool InitializeV2Runtime(const std::string& runtimeDir) {
     prefs.featuresToLoad = features;
     prefs.numFeaturesToLoad = static_cast<uint32_t>(sizeof(features) / sizeof(features[0]));
 
-    // sl::kSDKVersion for 2.11.1: (major << 48) | (minor << 32) | (patch << 16) | 0xfedc.
-    const uint64_t sdkVersion = (uint64_t(2) << 48) | (uint64_t(11) << 32) | (uint64_t(1) << 16) | 0xfedcull;
-    const int result = slInit(&prefs, sdkVersion);
-    if (result != 0) {
-        HookLogImportant(
-            "Streamline bridge: the 2.x runtime refused to initialise (sl::Result=%d) with plugins from %s - "
-            "not bridging, the game keeps its own Streamline",
-            result, runtimeDir.c_str());
+    // Declare the SDK version this runtime actually is, not one CE was built against.
+    uint32_t major = 0, minor = 0, patch = 0;
+    const std::string interposerPath = runtimeDir + "\\sl.interposer.dll";
+    if (!DllFileVersionParts(interposerPath.c_str(), &major, &minor, &patch) || major != 2) {
+        HookLogImportant("Streamline bridge: cannot read a 2.x version from %s - not bridging",
+                         interposerPath.c_str());
         return false;
     }
-    HookLogImportant("Streamline bridge: 2.x runtime initialised with plugins pinned to %s (OTA off)",
-                     runtimeDir.c_str());
+    const int result = slInit(&prefs, StreamlineSdkVersion(major, minor, patch));
+    if (result != 0) {
+        HookLogImportant(
+            "Streamline bridge: Streamline %u.%u.%u refused to initialise (sl::Result=%d) with plugins from %s - "
+            "not bridging, the game keeps its own Streamline",
+            major, minor, patch, result, runtimeDir.c_str());
+        return false;
+    }
+    HookLogImportant(
+        "Streamline bridge: Streamline %u.%u.%u initialised with plugins pinned to %s (OTA off, DXGI factory "
+        "proxy on)",
+        major, minor, patch, runtimeDir.c_str());
     return true;
 }
 
@@ -422,6 +515,33 @@ void TryActivate() {
             "Streamline");
         g_slots = nullptr;
         return;
+    }
+
+    // The NGX runtimes are a separate override family and keep working while bridged:
+    // `dlss_sr_dll_path` / `dlss_fg_dll_path` are not sl.* names, so the stand-down above
+    // never touches them. They do have to agree with the Streamline folder, though - a
+    // bridged runtime resolves its own NGX snippets out of the plugin folder it was pinned
+    // to, and a name already loaded from there wins over a later preload from somewhere
+    // else. Same folder is the configuration that behaves; anything else is worth saying
+    // out loud rather than silently preferring one of them.
+    {
+        const auto& gfx = g_pLocalConfig->graphics;
+        for (const auto& [key, path] : {std::pair<const char*, const std::string&>{"dlss_sr_dll_path",
+                                                                                   gfx.dlssSrDllPath},
+                                        {"dlss_fg_dll_path", gfx.dlssFgDllPath},
+                                        {"dlss_rr_dll_path", gfx.dlssRrDllPath}}) {
+            if (path.empty()) {
+                continue;
+            }
+            if (!ce::graphics_runtime::EqualsModulePathIgnoreCase(TrimTrailingSeparator(path).c_str(),
+                                                                  runtimeDir.c_str())) {
+                HookLogImportant(
+                    "Streamline bridge: %s points at %s but the bridged runtime loads its NGX snippets from %s. "
+                    "Whichever registers a given nvngx_* name first wins; point both at the same folder to make "
+                    "the choice explicit",
+                    key, path.c_str(), runtimeDir.c_str());
+            }
+        }
     }
 
     g_active.store(true, std::memory_order_release);

@@ -43,6 +43,17 @@ whole workstream. `ClassifyModuleGeneration` is now per module and uncached and 
 hook decisions; only the GetProcAddress route, which is keyed on the symbol name alone and cannot be
 per module, takes a process-wide answer from `AuthoritativeProcessGeneration`.
 
+**The remaining blocker is an unpublished ABI, so CE now measures it instead.** Translating
+`slSetFeatureConstants` / `slGetFeatureSettings` needs the 1.x per-feature structs
+(`sl::DLSSConstants`, `sl::DLSSGConstants`, `sl::DLSSGSettings`) as they stand in 1.5.6. Those are
+not public: NVIDIA's repository has **no 1.x release at all** and its 1.x tags stop at **v1.1.1**,
+which predates DLSS-G entirely; OptiScaler's vendored SL1 headers predate it too. sl.dlss_g 1.5.6
+proves the types exist (its own diagnostics name `sl::DLSSGSettings::status` and
+`numFramesToGenerate`) but not their offsets. Guessing them would be silently wrong frame generation
+rather than a crash, which is the one failure mode no test here can catch - so both calls refuse and
+instead record the feature, the leading `uint32`, and a guarded 64-byte prefix of the payload,
+rate-limited. One real bridged run turns the missing layout into a measurement.
+
 Still open: the actual 1.x->2.x call translation. The translation map for
 `Constants` is now known (prepend the 2.x `BaseStructure`; copy `cameraViewToClip`..`reset`
 verbatim; **drop** 1.x `notRenderingGameFrames`, which has no 2.x field; keep the three motion-vector
