@@ -175,6 +175,23 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     // The dynamic route is keyed on the symbol name alone, so it takes the process-wide
     // answer; the inline/IAT hooks below are per module and must take this module's own.
     RegisterAbiSensitiveDynamicHooksOnce(AuthoritativeStreamlineGeneration(generation));
+
+    // A module the generation bridge has routed around gets no hooks at all. Its exports are
+    // unreachable - every import slot that led to them now leads to CE - so hooking it only
+    // occupies CE's single forward pointer per symbol and makes the hook on the runtime that
+    // IS being called get refused as a duplicate. See StreamlineModuleSupersededByBridge.
+    if (ce::streamline_bridge::StreamlineModuleSupersededByBridge(ce::streamline_bridge::IsActive(), generation)) {
+        static std::atomic<uint32_t> loggedModules{0};
+        const uint32_t bit = GetModuleMaskBit(moduleBaseName);
+        if (bit != 0 && (loggedModules.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
+            HookLogImportant(
+                "Streamline Hook: leaving %s unhooked - the generation bridge routed every call away from this "
+                "1.x module, and hooking it would take CE's forward pointer away from the 2.x runtime that is "
+                "actually being called",
+                moduleBaseName ? moduleBaseName : "a Streamline 1.x module");
+        }
+        return false;
+    }
     const bool mayHookV2Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V2);
     const bool mayHookV1Abi = ce::streamline_api::MayInstallAbiSensitiveHook(generation, Generation::V1);
     const bool mayHookAbiSensitive = mayHookV1Abi || mayHookV2Abi;

@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,8 @@
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_bridge_runtime.h"
+#include "streamline_bridge_translate.h"
 #include "streamline_v1_feature_probe.h"
 
 // `g_pLocalConfig` (AppConfig*) comes from hook_common.h.
@@ -29,10 +32,11 @@ namespace api = ce::streamline_api;
 // resolving to the 1.x module that already holds these base names.
 std::atomic<bool> g_active{false};
 HMODULE g_v2Interposer = nullptr;
+std::string* g_runtimeDir = nullptr;
 
 // One entry per import slot the bridge takes over. `original` is what the slot held before
-// - the 1.x interposer's own export - and is the fallback whenever the 2.x runtime turns
-// out not to provide the symbol, so a takeover can never make a call disappear.
+// - the 1.x interposer's own export - and is both the fallback whenever the 2.x runtime
+// turns out not to provide the symbol and the handle CE shuts the 1.x runtime down with.
 struct BridgedSlot {
     const char* name = nullptr;
     void* original = nullptr;
@@ -40,88 +44,156 @@ struct BridgedSlot {
 };
 std::vector<BridgedSlot>* g_slots = nullptr;
 
-void* V2Target(const char* name) {
+// Bring-up state. The import slots are taken over BEFORE the 2.x runtime is loaded, so a
+// game call that arrives in between has to be able to wait for it - see EnsureRuntimeReady.
+std::once_flag g_bringUpOnce;
+std::atomic<bool> g_runtimeReady{false};
+std::atomic<bool> g_runtimeFailed{false};
+
+// Set when the game had already run its own `slInit` before CE could take the imports over.
+// The 1.x runtime is then shut back down, but only from a call the GAME makes, never from
+// CE's hook thread - see MaybeQuiesceLegacyRuntime.
+std::atomic<bool> g_quiescePending{false};
+
+BridgedSlot* FindSlot(const char* name) {
     if (!g_slots) {
         return nullptr;
     }
-    for (const BridgedSlot& slot : *g_slots) {
+    for (BridgedSlot& slot : *g_slots) {
         if (NamesEqual(slot.name, name)) {
-            return slot.v2Target ? slot.v2Target : slot.original;
+            return &slot;
         }
     }
     return nullptr;
 }
 
-// Rate-limited so a per-frame call from a game that ignores the failure cannot flood the
-// log, while the first few remain visible for diagnosis.
-bool ShouldLogCall(std::atomic<uint32_t>& counter) {
-    const uint32_t index = counter.fetch_add(1, std::memory_order_relaxed);
-    return index < 4 || (index % 4096) == 0;
+// The 1.x export a slot held before the takeover. Calling it is what the call would have
+// done unbridged, which is the only honest fallback when the 2.x runtime cannot serve it.
+void* V1Original(const char* name) {
+    const BridgedSlot* slot = FindSlot(name);
+    return slot ? slot->original : nullptr;
+}
+
+bool EnsureRuntimeReady();
+void MaybeQuiesceLegacyRuntime();
+
+void* V2Target(const char* name) {
+    const BridgedSlot* slot = FindSlot(name);
+    if (!slot) {
+        return nullptr;
+    }
+    return slot->v2Target ? slot->v2Target : slot->original;
+}
+
+// Every bridged entry point starts here: on a late start the game's own 1.x runtime is
+// shut down first, on the game's own thread rather than concurrently with whatever it is
+// doing, and only then is the 2.x runtime guaranteed up (or known to have failed).
+//
+// That order is load-bearing. Both runtimes' plugins carry the same base names -
+// `sl.dlss_g.dll`, `sl.common.dll` - and CE's own Streamline hooks are keyed on those
+// names, so bringing 2.x up while the 1.x set is still resident leaves two images competing
+// for one identity, with `GetModuleHandleW` answering the 1.x one. Shutting 1.x down first
+// means the 2.x plugins load into a process where those names are free, and CE's existing
+// unload handling re-installs its hooks against the fresh images.
+bool BridgeCallReady() {
+    MaybeQuiesceLegacyRuntime();
+    return EnsureRuntimeReady();
 }
 
 // ---------------------------------------------------------------------------
 // Translated 1.x entry points
 // ---------------------------------------------------------------------------
-//
-// M2 stage: the bridge owns these slots but does not translate them yet, so each one
-// refuses politely and the game falls back to running without Streamline features. Every
-// 1.x entry point here returns `bool` in AL (not the 2.x `sl::Result` in EAX), so the
-// refusal has to be `false` and not a zeroed 32-bit result.
-//
-// Arguments are deliberately untyped: nothing reads them at this stage, and on x64 the
-// first four integer/pointer arguments arrive in the same registers regardless of their
-// declared types, so a uniform four-argument shape is call-compatible with each of the 1.x
-// prototypes without asserting a layout CE has not verified.
-#define CE_SL_BRIDGE_REFUSE(exportName)                                                         \
-    bool Bridged_##exportName(void*, void*, void*, void*) {                                     \
-        static std::atomic<uint32_t> calls{0};                                                  \
-        if (ShouldLogCall(calls)) {                                                             \
-            HookLogImportant(                                                                   \
-                "Streamline bridge: refusing %s - the 1.x -> 2.x translation for this call is " \
-                "not implemented yet, so the game runs without Streamline features",            \
-                #exportName);                                                                   \
-        }                                                                                       \
-        return false;                                                                           \
+
+// The 1.x entry points, in the shapes 1.5.6 uses, each handing off to the translation.
+// Verified by disassembly of sl.interposer 1.5.6 and by OptiScaler's vendored SL1 headers:
+//   slInit                 (const Preferences&, int applicationId)                 -> bool
+//   slShutdown             ()                                                      -> bool
+//   slIsFeatureSupported   (Feature, uint32_t* adapterBitMask)                      -> bool
+//   slSetTag               (const Resource*, BufferType, uint32_t id, const Extent*)-> bool
+//   slSetConstants         (const Constants&, uint32_t frameIndex, uint32_t id)     -> bool
+//   slEvaluateFeature      (CommandBuffer*, Feature, uint32_t frameIndex, uint32_t) -> bool
+using PFN_V1_slInit = bool (*)(const void*, int);
+using PFN_V1_slShutdown = bool (*)();
+using PFN_V1_slIsFeatureSupported = bool (*)(uint32_t, uint32_t*);
+using PFN_V1_slSetTag = bool (*)(const void*, uint32_t, uint32_t, const void*);
+using PFN_V1_slSetConstants = bool (*)(const void*, uint32_t, uint32_t);
+using PFN_V1_slSetFeatureConstants = bool (*)(uint32_t, const void*, uint32_t, uint32_t);
+using PFN_V1_slGetFeatureSettings = bool (*)(uint32_t, const void*, void*);
+using PFN_V1_slEvaluateFeature = bool (*)(void*, uint32_t, uint32_t, uint32_t);
+
+// The fallback is not a courtesy, it is what keeps the takeover honest. The slots are
+// repointed before the 2.x runtime is loaded, so "the runtime failed to come up" has to
+// mean the process behaves exactly as it would have unbridged - every call reaching the 1.x
+// export the slot used to hold - rather than a process with a hole where Streamline was.
+template <typename Fn, typename... Args>
+bool ForwardToV1(const char* name, Args... args) {
+    auto original = reinterpret_cast<Fn>(V1Original(name));
+    return original ? original(args...) : false;
+}
+
+bool Bridged_slInit(const void* preferences, int applicationId) {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slInit>("slInit", preferences, applicationId);
     }
+    return TranslateInit(preferences, applicationId);
+}
+bool Bridged_slShutdown() {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slShutdown>("slShutdown");
+    }
+    return TranslateShutdown();
+}
+bool Bridged_slIsFeatureSupported(uint32_t feature, uint32_t* adapterBitMask) {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slIsFeatureSupported>("slIsFeatureSupported", feature, adapterBitMask);
+    }
+    return TranslateIsFeatureSupported(feature, adapterBitMask);
+}
+bool Bridged_slSetTag(const void* resource, uint32_t bufferType, uint32_t id, const void* extent) {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slSetTag>("slSetTag", resource, bufferType, id, extent);
+    }
+    return TranslateSetTag(resource, bufferType, id, extent);
+}
+bool Bridged_slSetConstants(const void* constants, uint32_t frameIndex, uint32_t id) {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slSetConstants>("slSetConstants", constants, frameIndex, id);
+    }
+    return TranslateSetConstants(constants, frameIndex, id);
+}
+bool Bridged_slEvaluateFeature(void* commandBuffer, uint32_t feature, uint32_t frameIndex, uint32_t id) {
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slEvaluateFeature>("slEvaluateFeature", commandBuffer, feature, frameIndex, id);
+    }
+    return TranslateEvaluateFeature(commandBuffer, feature, frameIndex, id);
+}
 
-CE_SL_BRIDGE_REFUSE(slInit)
-CE_SL_BRIDGE_REFUSE(slShutdown)
-CE_SL_BRIDGE_REFUSE(slIsFeatureSupported)
-CE_SL_BRIDGE_REFUSE(slSetTag)
-CE_SL_BRIDGE_REFUSE(slSetConstants)
-CE_SL_BRIDGE_REFUSE(slEvaluateFeature)
-
-#undef CE_SL_BRIDGE_REFUSE
-
-// The two calls whose 1.x payload layout is not public, and what CE does about it.
+// The two calls whose 1.x payload layout was never published.
 //
-// `slSetFeatureConstants` and `slGetFeatureSettings` carry an opaque per-feature struct -
-// `sl::DLSSConstants`, `sl::DLSSGConstants`, `sl::DLSSGSettings`. Translating either one
-// needs those layouts as they stood in the interposer the game actually ships, and for
-// 1.5.6 they are unpublished: NVIDIA's repository has no 1.x release at all and its 1.x
-// tags stop at v1.1.1, which predates DLSS-G entirely. sl.dlss_g 1.5.6 proves the types
-// exist (it carries `sl::DLSSGSettings::status` and `numFramesToGenerate` in its own
-// diagnostics) but not their offsets.
-//
-// Guessing them is the one thing CE must not do here. A wrong field in a feature-constants
-// struct is not a crash, it is silently wrong frame generation - and a guessed Streamline
-// ABI is precisely what put a truncated command-list pointer into sl.common and killed The
-// Witcher 3 in `20260820_221409`.
-//
-// So the call is refused, and the payload is RECORDED instead. One real run of a bridged
-// game turns the missing layout from an unavailable document into a measurement: the size
-// the game passes, the feature it names, and the leading bytes are exactly what identifies
-// the mode field and the struct's shape.
+// `slSetFeatureConstants` and `slGetFeatureSettings` carry an opaque per-feature struct.
+// NVIDIA published no 1.x release and its public 1.x tags stop before DLSS-G existed, so
+// these layouts were MEASURED from a real session by CE's own probe rather than inferred
+// (`streamline_v1_feature_probe.cpp`; The Witcher 3 `20260821_042540`). The probe stays in
+// the path: a title whose constants differ from the measured shape is how a wrong
+// assumption surfaces, and the translation refuses anything it has not verified.
 // 1.x: bool slSetFeatureConstants(Feature, const void* consts, uint32_t frameIndex, uint32_t id)
-bool Bridged_slSetFeatureConstants(uint32_t feature, const void* consts, uint32_t, uint32_t) {
+// The payload is still recorded on the way through: the layouts these translate against
+// were measured, and a future title's constants are how a wrong assumption gets caught.
+bool Bridged_slSetFeatureConstants(uint32_t feature, const void* consts, uint32_t frameIndex, uint32_t id) {
     ce::streamline_v1::RecordOpaqueFeaturePayload("slSetFeatureConstants", feature, consts);
-    return false;
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slSetFeatureConstants>("slSetFeatureConstants", feature, consts, frameIndex, id);
+    }
+    return TranslateSetFeatureConstants(feature, consts, frameIndex, id);
 }
 
 // 1.x: bool slGetFeatureSettings(Feature, const void* consts, void* settings)
-bool Bridged_slGetFeatureSettings(uint32_t feature, const void* consts, void*) {
+bool Bridged_slGetFeatureSettings(uint32_t feature, const void* consts, void* settings) {
     ce::streamline_v1::RecordOpaqueFeaturePayload("slGetFeatureSettings", feature, consts);
-    return false;
+    if (!BridgeCallReady()) {
+        return ForwardToV1<PFN_V1_slGetFeatureSettings>("slGetFeatureSettings", feature, consts, settings);
+    }
+    return TranslateGetFeatureSettings(feature, consts, settings);
 }
 
 void* TranslatedThunk(const char* name) {
@@ -154,39 +226,83 @@ using PFN_D3D12GetDebugInterface = HRESULT(WINAPI*)(REFIID, void**);
 using PFN_D3D12SerializeVersionedRootSignature = HRESULT(WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*,
                                                                   ID3DBlob**, ID3DBlob**);
 
+// The device and factory routes are the ones that decide whether frame generation can work
+// at all: the 2.x runtime can only drive a device its own interposer created. Recording that
+// they came through is what turns "did CE arrive before the game made its device?" - a
+// question CE cannot answer in advance, because it never saw the process before injection -
+// into a fact the log states outright.
+// `reached2x` is not decoration. If the runtime failed to come up, this call is on its way
+// to the 1.x export the slot used to hold, and recording it as an interposed creation would
+// both state something false in the log and suppress the warning that exists to catch a
+// runtime with no device.
+void NoteInterposedCreation(const char* what, bool reached2x, std::atomic<bool>& latch) {
+    if (!reached2x) {
+        return;
+    }
+    if (!latch.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant("Streamline bridge: the game's %s reached the CE-owned 2.x runtime", what);
+    }
+}
+
 HRESULT WINAPI Bridged_CreateDXGIFactory(REFIID riid, void** ppFactory) {
+    static std::atomic<bool> noted{false};
+    NoteInterposedCreation("CreateDXGIFactory", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(V2Target("CreateDXGIFactory"));
     return fn ? fn(riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+    static std::atomic<bool> noted{false};
+    NoteInterposedCreation("CreateDXGIFactory1", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(V2Target("CreateDXGIFactory1"));
     return fn ? fn(riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_CreateDXGIFactory2(UINT flags, REFIID riid, void** ppFactory) {
+    static std::atomic<bool> noted{false};
+    NoteInterposedCreation("CreateDXGIFactory2", BridgeCallReady(), noted);
     auto fn = reinterpret_cast<PFN_CreateDXGIFactory2>(V2Target("CreateDXGIFactory2"));
     return fn ? fn(flags, riid, ppFactory) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_DXGIGetDebugInterface1(UINT flags, REFIID riid, void** pDebug) {
+    BridgeCallReady();
     auto fn = reinterpret_cast<PFN_DXGIGetDebugInterface1>(V2Target("DXGIGetDebugInterface1"));
     return fn ? fn(flags, riid, pDebug) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
                                          void** ppDevice) {
+    static std::atomic<bool> noted{false};
+    const bool ready = BridgeCallReady();
+    NoteInterposedCreation("D3D12CreateDevice", ready, noted);
     auto fn = reinterpret_cast<PFN_D3D12CreateDevice>(V2Target("D3D12CreateDevice"));
-    return fn ? fn(adapter, minimumFeatureLevel, riid, ppDevice) : DXGI_ERROR_UNSUPPORTED;
+    if (!fn) {
+        return DXGI_ERROR_UNSUPPORTED;
+    }
+    const HRESULT hr = fn(adapter, minimumFeatureLevel, riid, ppDevice);
+    // The 2.x interposer created this device, so it already has it. Deliberately NOT
+    // followed by slSetD3DDevice: Streamline offers interposed creation OR that call for a
+    // host that made its own device, and doing both binds the same device twice through a
+    // path documented as "NOT thread safe and should be called IMMEDIATELY after main device
+    // is created" - from inside the creation CE is currently returning from. CE also has its
+    // own inline hook on that export while bridged, so the redundant call re-enters CE's
+    // Streamline layer mid-creation as well.
+    if (ready && SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        NoteV2RuntimeOwnsDevice("created by the 2.x interposer through the bridge");
+    }
+    return hr;
 }
 
 HRESULT WINAPI Bridged_D3D12GetDebugInterface(REFIID riid, void** ppDebug) {
+    BridgeCallReady();
     auto fn = reinterpret_cast<PFN_D3D12GetDebugInterface>(V2Target("D3D12GetDebugInterface"));
     return fn ? fn(riid, ppDebug) : DXGI_ERROR_UNSUPPORTED;
 }
 
 HRESULT WINAPI Bridged_D3D12SerializeVersionedRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* desc,
                                                             ID3DBlob** blob, ID3DBlob** error) {
+    BridgeCallReady();
     auto fn = reinterpret_cast<PFN_D3D12SerializeVersionedRootSignature>(
         V2Target("D3D12SerializeVersionedRootSignature"));
     return fn ? fn(desc, blob, error) : E_NOTIMPL;
@@ -216,49 +332,46 @@ std::string TrimTrailingSeparator(const std::string& path) {
     return out;
 }
 
-// The generation of the interposer the game itself is running. Read off the loaded module's
-// own file so it is available before CE has hooked anything.
-api::Generation ProcessGeneration() {
-    HMODULE interposer = GetModuleHandleA("sl.interposer.dll");
-    if (!interposer) {
-        return api::Generation::Unknown;
-    }
-    char path[MAX_PATH] = {};
-    if (GetModuleFileNameA(interposer, path, MAX_PATH) == 0) {
-        return api::Generation::Unknown;
-    }
-    return api::GenerationFromMajorVersion(DllFileMajorVersion(path));
-}
-
 // Whether the game has already brought its own 1.x runtime up.
 //
-// Streamline 1.x loads its plugins from inside `slInit` - before that call only the
-// statically imported interposer is resident. A loaded `sl.common.dll` is therefore proof
-// that the game already initialised the runtime CE would be replacing, and the bridge must
-// decline rather than take half the surface over. The signal is deliberately conservative:
-// something else having loaded that module is also a reason not to bridge.
+// Streamline 1.x loads its core from inside `slInit` - before that call only the statically
+// imported interposer is resident. A loaded `sl.common.dll` is therefore proof that the game
+// already initialised the runtime CE is taking over from. That is a reason to shut that
+// runtime back down after the takeover, not a reason to refuse it; see DecideActivation.
 bool GameAlreadyInitializedStreamline() { return GetModuleHandleA("sl.common.dll") != nullptr; }
 
-// Confirms the module CE just loaded really speaks 2.x, from its exports rather than only
-// its file version. The version resource says which generation NVIDIA stamped; the export
-// markers say which API the image actually presents, and the bridge is about to bind to
-// that API.
-bool ExportsLookLike2x(HMODULE module) {
-    bool anyV2 = false;
-    for (size_t i = 0; i < api::kV2OnlyExportCount; ++i) {
-        if (GetProcAddress(module, api::kV2OnlyExports[i])) {
-            anyV2 = true;
-            break;
-        }
+// Shuts the game's own 1.x runtime back down after the takeover.
+//
+// Only ever called from a call the GAME makes. That is what makes it safe rather than
+// racy: reaching one of CE's thunks proves the game has returned from whatever 1.x call it
+// was in, so nothing is inside that runtime while it is being torn down. Doing the same
+// thing from CE's hook thread would be a genuine race against an `slInit` that may still be
+// running, and no amount of ordering on CE's side could rule that out.
+//
+// The shutdown goes through the export pointer saved while repointing the slot, so it
+// reaches the 1.x runtime rather than the thunk that now stands in front of it.
+void MaybeQuiesceLegacyRuntime() {
+    // The load is the fast path - this sits in front of every bridged call, including the
+    // per-frame ones - and the exchange is what makes exactly one caller do the work.
+    if (!g_quiescePending.load(std::memory_order_acquire)) {
+        return;
     }
-    bool anyV1 = false;
-    for (size_t i = 0; i < api::kV1OnlyExportCount; ++i) {
-        if (GetProcAddress(module, api::kV1OnlyExports[i])) {
-            anyV1 = true;
-            break;
-        }
+    if (!g_quiescePending.exchange(false, std::memory_order_acq_rel)) {
+        return;
     }
-    return api::Classify(anyV2, anyV1) == api::Generation::V2;
+    auto shutdown = reinterpret_cast<bool (*)()>(V1Original("slShutdown"));
+    if (!shutdown) {
+        HookLogImportant(
+            "Streamline bridge: the game's 1.x runtime is up but its slShutdown slot was never captured, so it "
+            "stays loaded beside the CE-owned 2.x one");
+        return;
+    }
+    const bool ok = shutdown();
+    HookLogImportant(
+        "Streamline bridge: shut the game's own 1.x Streamline runtime down (returned %s) - the 2.x runtime CE "
+        "owns is now the only initialised one in this process",
+        ok ? "true" : "false");
+    LogStreamlineModuleInventory("after quiescing the 1.x runtime");
 }
 
 // Repoints every module that imports from sl.interposer.dll at CE's thunks.
@@ -268,6 +381,16 @@ bool ExportsLookLike2x(HMODULE module) {
 // this works without touching anything on disk: nothing is renamed or patched, and the
 // takeover disappears with the process.
 size_t TakeOverImports() {
+    // Resolve every original BEFORE the first slot is repointed. The slot value and the
+    // interposer's export are the same address, so reading it from the module is equivalent
+    // to reading the slot - and unlike the out-parameter of the patch itself, it is already
+    // stored by the time a thunk can possibly be entered. Taking the originals afterwards
+    // leaves a window in which a call reaching a repointed slot finds no fallback.
+    HMODULE v1Interposer = GetModuleHandleA("sl.interposer.dll");
+    for (BridgedSlot& slot : *g_slots) {
+        slot.original = v1Interposer ? reinterpret_cast<void*>(GetProcAddress(v1Interposer, slot.name)) : nullptr;
+    }
+
     size_t patched = 0;
     for (BridgedSlot& slot : *g_slots) {
         void* thunk = IsTranslatedV1Export(slot.name) ? TranslatedThunk(slot.name) : PassThroughThunk(slot.name);
@@ -276,102 +399,77 @@ size_t TakeOverImports() {
         }
         void* original = nullptr;
         if (IATHook::PatchIATAllModules("sl.interposer.dll", slot.name, thunk, &original)) {
-            slot.original = original;
+            if (original) {
+                slot.original = original;
+            }
             ++patched;
         }
     }
     return patched;
 }
 
-// Brings the 2.x runtime up with the preferences the bridge pins. Returns false without
-// leaving anything taken over, so a failure here is simply "no bridge".
-bool InitializeV2Runtime(const std::string& runtimeDir) {
-    // sl::Preferences 2.11.1. The hook DLL cannot include sl.h - the SDK include path is
-    // wired for the FG test apps only - so this mirrors the SDK layout, which makes it a
-    // claim about somebody else's ABI. A wrong field here is a silent mis-init rather than
-    // a crash, so it was MEASURED against the real header rather than read off it:
-    // sizeof and all 18 field offsets compared equal, and the struct GUID matched
-    // (scratchpad sl_prefs_layout.cpp, 2026-08-21). Note the BaseStructure header order -
-    // `next` leads at offset 0 and `structType` follows at 8, which is the opposite of what
-    // the declaration reads like.
-    struct SlPreferences {
-        void* next = nullptr;                                          // 0
-        uint8_t structType[16] = {0x65, 0x09, 0xa1, 0x1c, 0x8e, 0xbf,  // 8
-                                  0x2b, 0x43, 0x8d, 0xa1, 0x67, 0x16, 0xd8, 0x79, 0xfb, 0x14};
-        uint32_t structVersion = 1;  // 24
-        uint32_t pad0 = 0;
-        bool showConsole = false;
-        uint32_t logLevel = 1;  // eDefault
-        const wchar_t** pathsToPlugins = nullptr;
-        uint32_t numPathsToPlugins = 0;
-        const wchar_t* pathToLogsAndData = nullptr;
-        void* allocateCallback = nullptr;
-        void* releaseCallback = nullptr;
-        void* logMessageCallback = nullptr;
-        uint64_t flags = 0;
-        const uint32_t* featuresToLoad = nullptr;
-        uint32_t numFeaturesToLoad = 0;
-        uint32_t applicationId = 0;
-        uint32_t engine = 0;  // eCustom
-        const char* engineVersion = nullptr;
-        const char* projectId = nullptr;
-        uint32_t renderAPI = 1;  // eD3D12
-    };
-
-    auto slInit = reinterpret_cast<int (*)(const void*, uint64_t)>(GetProcAddress(g_v2Interposer, "slInit"));
-    if (!slInit) {
-        HookLogImportant("Streamline bridge: the 2.x runtime exports no slInit - not bridging");
+// Loads and initialises the CE-owned 2.x runtime, once, whichever thread gets here first.
+//
+// This deliberately runs AFTER the import slots have been repointed, which is the opposite
+// of the obvious order and is the point of the whole restructure. Bringing the runtime up
+// costs a LoadLibrary plus an `slInit` that maps sl.common and every pinned plugin - a few
+// hundred milliseconds - and the two recorded sessions show the game reaching its own
+// Streamline inside exactly that budget. Doing the expensive part first means racing the
+// game for it; doing the cheap in-memory takeover first means the game cannot get past CE
+// at all, and a call that arrives mid-bring-up simply waits here for it. `std::call_once`
+// gives that for nothing: the first caller performs it, everyone else blocks until it is
+// done, and no thread ever observes a half-built runtime.
+//
+// A failure is a complete, coherent end state rather than a hole: every thunk then forwards
+// to the 1.x export its slot used to hold, which is what the call would have done unbridged.
+bool EnsureRuntimeReady() {
+    if (g_runtimeReady.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (g_runtimeFailed.load(std::memory_order_acquire)) {
         return false;
     }
-
-    const std::wstring widePath = [&] {
-        const int len = MultiByteToWideChar(CP_UTF8, 0, runtimeDir.c_str(), -1, nullptr, 0);
-        std::wstring out(len > 0 ? static_cast<size_t>(len) : 0, L'\0');
-        if (len > 0) {
-            MultiByteToWideChar(CP_UTF8, 0, runtimeDir.c_str(), -1, out.data(), len);
+    std::call_once(g_bringUpOnce, [] {
+        g_v2Interposer = LoadAndInitializeV2Runtime(*g_runtimeDir);
+        if (!g_v2Interposer || !ResolveTranslationTargets(g_v2Interposer)) {
+            g_runtimeFailed.store(true, std::memory_order_release);
+            return;
         }
-        while (!out.empty() && out.back() == L'\0') {
-            out.pop_back();
+
+        // Resolve the forwarded DXGI/D3D12 slots now that the module exists. A missing one
+        // keeps the 1.x export the slot already held, which is exactly the call the game
+        // would otherwise have made.
+        for (BridgedSlot& slot : *g_slots) {
+            if (!IsPassThroughExport(slot.name)) {
+                continue;
+            }
+            slot.v2Target = reinterpret_cast<void*>(GetProcAddress(g_v2Interposer, slot.name));
+            if (!slot.v2Target) {
+                HookLogImportant(
+                    "Streamline bridge: the 2.x runtime does not export %s - that slot keeps forwarding to the "
+                    "game's own interposer",
+                    slot.name);
+            }
         }
-        return out;
-    }();
 
-    const wchar_t* paths[] = {widePath.c_str()};
-    const uint32_t features[] = {kV2FeatureDLSS, kV2FeatureDLSS_G, kV2FeatureReflex, kV2FeaturePCL};
-
-    SlPreferences prefs;
-    prefs.pathsToPlugins = paths;
-    prefs.numPathsToPlugins = 1;
-    prefs.flags = BridgePreferenceFlags();
-    prefs.featuresToLoad = features;
-    prefs.numFeaturesToLoad = static_cast<uint32_t>(sizeof(features) / sizeof(features[0]));
-
-    // Declare the SDK version this runtime actually is, not one CE was built against.
-    uint32_t major = 0, minor = 0, patch = 0;
-    const std::string interposerPath = runtimeDir + "\\sl.interposer.dll";
-    if (!DllFileVersionParts(interposerPath.c_str(), &major, &minor, &patch) || major != 2) {
-        HookLogImportant("Streamline bridge: cannot read a 2.x version from %s - not bridging",
-                         interposerPath.c_str());
-        return false;
-    }
-    const int result = slInit(&prefs, StreamlineSdkVersion(major, minor, patch));
-    if (result != 0) {
-        HookLogImportant(
-            "Streamline bridge: Streamline %u.%u.%u refused to initialise (sl::Result=%d) with plugins from %s - "
-            "not bridging, the game keeps its own Streamline",
-            major, minor, patch, result, runtimeDir.c_str());
-        return false;
-    }
-    HookLogImportant(
-        "Streamline bridge: Streamline %u.%u.%u initialised with plugins pinned to %s (OTA off, DXGI factory "
-        "proxy on)",
-        major, minor, patch, runtimeDir.c_str());
-    return true;
+        g_runtimeReady.store(true, std::memory_order_release);
+    });
+    return g_runtimeReady.load(std::memory_order_acquire);
 }
 
 }  // namespace
 
 bool IsActive() { return g_active.load(std::memory_order_acquire); }
+
+void NotifyD3D12Device(void* device) {
+    if (!device || !g_active.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!EnsureRuntimeReady()) {
+        return;
+    }
+    SetV2RuntimeDevice(device);
+}
 
 void TryActivate() {
     static std::atomic<bool> s_attempted{false};
@@ -382,7 +480,7 @@ void TryActivate() {
         return;
     }
 
-    const std::string runtimeDir = TrimTrailingSeparator(g_pLocalConfig->graphics.streamlineDllPath);
+    static std::string runtimeDir = TrimTrailingSeparator(g_pLocalConfig->graphics.streamlineDllPath);
 
     ActivationInputs inputs;
     inputs.upgradeEnabled = g_pLocalConfig->graphics.streamlineUpgrade;
@@ -396,10 +494,13 @@ void TryActivate() {
         }
     }
     inputs.gameAlreadyInitializedStreamline = GameAlreadyInitializedStreamline();
+    // Not knowable from inside the process: CE was injected after the game started, so it
+    // cannot observe a device created before that. WarnIfTheGameOwnsTheDevice answers it
+    // from the calls that actually arrive instead of from a guess made here.
     inputs.gameAlreadyCreatedDeviceOrFactory = false;
 
     const ActivationDecision decision = DecideActivation(inputs);
-    if (decision != ActivationDecision::Activate) {
+    if (!ShouldActivate(inputs)) {
         // Silent only in the overwhelmingly common case of a profile that never asked.
         if (inputs.upgradeEnabled) {
             HookLogImportant(
@@ -407,51 +508,32 @@ void TryActivate() {
                 api::Describe(inputs.processGeneration),
                 inputs.runtimePathConfigured ? runtimeDir.c_str() : "(no streamline_dll_path)",
                 api::Describe(inputs.runtimeGeneration));
+            LogStreamlineModuleInventory("at the refused takeover");
         }
         return;
     }
 
     HookLogImportant(
         "Streamline bridge: this process runs %s and %s holds %s - upgrading it in place instead of "
-        "substituting DLLs",
-        api::Describe(inputs.processGeneration), runtimeDir.c_str(), api::Describe(inputs.runtimeGeneration));
+        "substituting DLLs (%s)",
+        api::Describe(inputs.processGeneration), runtimeDir.c_str(), api::Describe(inputs.runtimeGeneration),
+        Describe(decision));
+    LogStreamlineModuleInventory("at the takeover");
 
-    const std::string interposerPath = runtimeDir + "\\sl.interposer.dll";
-    g_v2Interposer = LoadLibraryA(interposerPath.c_str());
-    if (!g_v2Interposer) {
-        HookLogImportant("Streamline bridge: failed to load %s (error %lu) - not bridging", interposerPath.c_str(),
-                         GetLastError());
-        return;
-    }
-    if (!ExportsLookLike2x(g_v2Interposer)) {
-        HookLogImportant(
-            "Streamline bridge: %s does not present the 2.x export surface despite its file version - not "
-            "bridging",
-            interposerPath.c_str());
-        return;
-    }
+    g_runtimeDir = &runtimeDir;
 
-    if (!InitializeV2Runtime(runtimeDir)) {
-        return;
-    }
-
-    // Resolve every slot's 2.x target before touching a single import, so the takeover is
-    // the all-or-nothing switch the policy promises rather than a partial rewrite.
+    // The slot table is built and repointed before the 2.x runtime is loaded. Everything
+    // here is memory writes into import tables - no loader work, no Streamline call - which
+    // is what lets the takeover happen in the narrow window between CE arriving in the
+    // process and the game reaching its own Streamline. The expensive half runs behind it,
+    // in EnsureRuntimeReady, and any call that arrives meanwhile waits there.
     static std::vector<BridgedSlot> slots;
     slots.clear();
     for (size_t i = 0; i < kTranslatedV1ExportCount; ++i) {
         slots.push_back(BridgedSlot{kTranslatedV1Exports[i], nullptr, nullptr});
     }
     for (size_t i = 0; i < kPassThroughExportCount; ++i) {
-        BridgedSlot slot{kPassThroughExports[i], nullptr, nullptr};
-        slot.v2Target = reinterpret_cast<void*>(GetProcAddress(g_v2Interposer, kPassThroughExports[i]));
-        if (!slot.v2Target) {
-            HookLogImportant(
-                "Streamline bridge: the 2.x runtime does not export %s - that slot will keep forwarding to the "
-                "game's own interposer",
-                kPassThroughExports[i]);
-        }
-        slots.push_back(slot);
+        slots.push_back(BridgedSlot{kPassThroughExports[i], nullptr, nullptr});
     }
     g_slots = &slots;
 
@@ -461,8 +543,25 @@ void TryActivate() {
             "Streamline bridge: no sl.interposer import slot could be repointed - leaving the process on its own "
             "Streamline");
         g_slots = nullptr;
+        g_runtimeDir = nullptr;
         return;
     }
+
+    // On a late start the game's own runtime is already up. It is shut back down from the
+    // first call the game makes through a thunk, never from here: see
+    // MaybeQuiesceLegacyRuntime for why the thread this happens on is the whole argument.
+    if (RequiresLegacyQuiesce(decision)) {
+        g_quiescePending.store(true, std::memory_order_release);
+    }
+
+    g_active.store(true, std::memory_order_release);
+    HookLogImportant(
+        "Streamline bridge ACTIVE: %zu of %zu sl.interposer import slots now reach CE (%zu translated, %zu "
+        "forwarded to the 2.x runtime)%s",
+        patched, slots.size(), kTranslatedV1ExportCount, kPassThroughExportCount,
+        RequiresLegacyQuiesce(decision) ? ". The game's 1.x runtime was already initialised and will be shut down "
+                                          "on its next Streamline call"
+                                        : ". The game's own 1.x runtime never initialised");
 
     // The NGX runtimes are a separate override family and keep working while bridged:
     // `dlss_sr_dll_path` / `dlss_fg_dll_path` are not sl.* names, so the stand-down above
@@ -491,11 +590,18 @@ void TryActivate() {
         }
     }
 
-    g_active.store(true, std::memory_order_release);
-    HookLogImportant(
-        "Streamline bridge ACTIVE: %zu of %zu sl.interposer import slots now reach CE (%zu translated, %zu "
-        "forwarded to the 2.x runtime). The game's own 1.x runtime stays loaded and untouched",
-        patched, slots.size(), kTranslatedV1ExportCount, kPassThroughExportCount);
+    // Bring the runtime up now rather than leaving it to the game's first call. The slots
+    // are already CE's, so this no longer races anything - it only decides which thread
+    // pays for it, and CE's hook thread is the one with time to spare.
+    //
+    // Except on a late start, where it must NOT happen here. The 1.x set has to be shut
+    // down before the 2.x plugins load, or the two claim the same base names at once, and
+    // that shutdown only happens on a thread the game itself is on. So the first bridged
+    // call does both, in that order, and pays the bring-up cost once - the same cost the
+    // game's own slInit would have had.
+    if (!RequiresLegacyQuiesce(decision)) {
+        EnsureRuntimeReady();
+    }
 }
 
 }  // namespace ce::streamline_bridge

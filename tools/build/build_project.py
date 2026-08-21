@@ -338,6 +338,20 @@ def compile_project(
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+                # The Streamline SDK headers, for the generation bridge only.
+                #
+                # The bridge translates a 1.x game's calls into 2.x ones, which means
+                # constructing sl::Constants, sl::ResourceTag, sl::DLSSOptions and friends.
+                # Hand-mirroring those in the hook DLL is a claim about somebody else's ABI
+                # per struct, and the first such mirror (sl::Preferences) was already wrong
+                # on its first write - BaseStructure puts `next` at 0 and `structType` at 8,
+                # the reverse of how the declaration reads. Using the real headers removes
+                # that entire class of bug instead of re-verifying it eight more times.
+                #
+                # Isolation-aware via FG_SDK_INCLUDE_DIR, and the SDK is prepared before the
+                # hook DLL compiles. CE's own `sl*`-prefixed types live in the global
+                # namespace, so they do not collide with the SDK's `sl::` ones.
+                "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
             ]
         )
 

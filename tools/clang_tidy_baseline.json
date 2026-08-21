@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 636,
+    "entries": 638,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -256,6 +256,8 @@
       "hook/apis/opengl_sampler_override_core.cpp",
       "hook/apis/opengl_texture_storage_override.cpp",
       "hook/apis/streamline_bridge.cpp",
+      "hook/apis/streamline_bridge_runtime.cpp",
+      "hook/apis/streamline_bridge_translate.cpp",
       "hook/apis/streamline_hook.cpp",
       "hook/apis/streamline_hook_api.cpp",
       "hook/apis/streamline_hook_detours.cpp",

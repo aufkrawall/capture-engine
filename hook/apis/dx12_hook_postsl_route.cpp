@@ -1,5 +1,5 @@
 #include "dx12_hook_internal.h"
-
+#include "streamline_bridge.h"
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
@@ -121,6 +121,11 @@ if (g_CommandQueue.load() != pQueue) {
     ID3D12Device* dev = nullptr;
     if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
         DX12_PublishNativeLimiterDevice(dev, pQueue, "command queue");
+        // A bridged Streamline 2.x runtime needs this device, and this is the route that
+        // finds it in a title whose device never came through an sl.interposer export -
+        // an Agility SDK game creates it via ID3D12DeviceFactory::CreateDevice, which
+        // Streamline does not interpose at all. No-op unless the bridge is active.
+        ce::streamline_bridge::NotifyD3D12Device(dev);
         if (g_Device.load() != dev) {
             if (g_Device.load())
                 g_Device.load()->Release();

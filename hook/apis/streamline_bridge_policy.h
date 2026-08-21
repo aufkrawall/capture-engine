@@ -216,6 +216,91 @@ inline bool IsBridgedExport(const char* name) {
 }
 
 // ---------------------------------------------------------------------------
+// Which translated calls may reach a 2.x runtime that has no device yet
+// ---------------------------------------------------------------------------
+//
+// Streamline 2.x's exported entry points are NOT all callable before
+// `slSetD3DDevice`. Most of them are thin forwarders into a plugin the manager binds only
+// once the device is known, and before that the pointer they jump through is null - they
+// do not return an error, they jump to address zero.
+//
+// This is measured, not defensive. Session `20260821_155250` crashed with
+// `0xC0000005 at 0x0000000000000000`, RIP=0, stack:
+//
+//     capture_hook_x64!Bridged_slSetConstants
+//     sl_interposer!slSetConstants+0x49
+//     0x0
+//
+// The bridge had taken the imports over and initialised its 2.x runtime, the game called
+// `slSetConstants`, and the translation forwarded it into a runtime with no device. The
+// same run shows the other half of the same cause: the feature entry points never resolved,
+// because `slGetFeatureFunction` needs the device too, so DLSS and DLSS-G were being
+// refused for a reason that would never have stopped being true.
+//
+// So the bridge holds these calls back until the device is set, and refuses them meanwhile.
+// A refused call costs the game one frame of configuration; a forwarded one kills it.
+//
+// The SDK header states the requirement per function - "requires DX/VK device to be created
+// before calling it" on `slSetConstants`, `slSetTagForFrame` and `slEvaluateFeature`, and
+// "Must be called AFTER device is set" on `slGetFeatureFunction`. `slIsFeatureSupported`
+// takes an `AdapterInfo` and asks about hardware rather than a live device, which is why it
+// is the one call that legitimately answers early - and it did, in that same session.
+enum class V2Call {
+    Init,
+    Shutdown,
+    IsFeatureSupported,
+    SetTag,
+    SetConstants,
+    SetFeatureConstants,
+    GetFeatureSettings,
+    EvaluateFeature,
+};
+
+inline bool V2CallRequiresDevice(V2Call call) {
+    switch (call) {
+        case V2Call::Init:
+        case V2Call::Shutdown:
+        case V2Call::IsFeatureSupported:
+            // Init and Shutdown never reach the 2.x runtime at all - CE owns its lifetime -
+            // and IsFeatureSupported is adapter-scoped.
+            return false;
+        case V2Call::SetTag:
+        case V2Call::SetConstants:
+        case V2Call::EvaluateFeature:
+            // These three say so themselves in sl_core_api.h: "requires DX/VK device to be
+            // created before calling it".
+        case V2Call::SetFeatureConstants:
+        case V2Call::GetFeatureSettings:
+            // These two are reached through slGetFeatureFunction, which the same header
+            // says must be called after the device is set.
+            return true;
+    }
+    return true;  // an unlisted call is held back, never let through
+}
+
+inline const char* DescribeV2Call(V2Call call) {
+    switch (call) {
+        case V2Call::Init:
+            return "slInit";
+        case V2Call::Shutdown:
+            return "slShutdown";
+        case V2Call::IsFeatureSupported:
+            return "slIsFeatureSupported";
+        case V2Call::SetTag:
+            return "slSetTag";
+        case V2Call::SetConstants:
+            return "slSetConstants";
+        case V2Call::SetFeatureConstants:
+            return "slSetFeatureConstants";
+        case V2Call::GetFeatureSettings:
+            return "slGetFeatureSettings";
+        case V2Call::EvaluateFeature:
+            return "slEvaluateFeature";
+    }
+    return "an unrecognized call";
+}
+
+// ---------------------------------------------------------------------------
 // Preferences the bridge initialises its 2.x runtime with
 // ---------------------------------------------------------------------------
 //
@@ -278,11 +363,17 @@ inline constexpr uint64_t StreamlineSdkVersion(uint32_t major, uint32_t minor, u
 // ---------------------------------------------------------------------------
 
 enum class ActivationDecision {
+    // Nothing of the game's own Streamline has run yet: take the imports over and its 1.x
+    // runtime never comes up at all.
     Activate,
+    // The game's 1.x core is already resident, so `slInit` has run. Take the imports over
+    // anyway and shut that runtime back down - see DecideActivation for why that is a
+    // complete end state rather than a half-switch.
+    ActivateAndQuiesce,
     DeclinedNotEnabled,
     DeclinedNoRuntimePath,
     DeclinedNotAnUpgrade,
-    DeclinedTooLate,
+    DeclinedGameOwnsItsDevice,
 };
 
 struct ActivationInputs {
@@ -295,11 +386,11 @@ struct ActivationInputs {
     // The generation the game itself is running, and the one in the configured folder.
     Generation processGeneration = Generation::Unknown;
     Generation runtimeGeneration = Generation::Unknown;
-    // Whether the game has already driven Streamline. Both are late-signals: once the game
-    // has initialised its own 1.x runtime or created its device/factory through the 1.x
-    // interposer, taking the imports over would leave half the process talking to each
-    // generation.
+    // `sl.common.dll` resident: 1.x loads its core from inside `slInit`, so this is proof
+    // that the game already brought its own runtime up. Recoverable - see below.
     bool gameAlreadyInitializedStreamline = false;
+    // The game already created its D3D12 device or DXGI factory through the 1.x interposer.
+    // This one is not recoverable: a 2.x runtime can only drive a device it interposed.
     bool gameAlreadyCreatedDeviceOrFactory = false;
 };
 
@@ -307,6 +398,28 @@ struct ActivationInputs {
 // over. A half-bridged process - some calls translated, some reaching the 1.x runtime, a
 // device created through one generation and driven through the other - is worse than either
 // end state, so every "no" here must leave the process exactly as it was.
+//
+// Where "too late" actually falls was measured, and it is later than this policy first
+// claimed. The original version refused as soon as `sl.common.dll` was resident, which made
+// the feature unreachable rather than careful: CE reaches a title through WMI process
+// notification (`WITHIN 0.5`), a config reload and a remote-thread LoadLibrary, and in a
+// 1.x DX12 title whose executable imports its D3D12/DXGI entry points FROM
+// `sl.interposer.dll` - The Witcher 3 does - `d3d12.dll` is not even in the process until
+// `sl.common.dll` drags it in through its own import table, from inside `slInit`. So the
+// arrival CE can engineer and the deadline it was being held to are the same event. Both
+// recorded sessions refused for this reason (`20260821_151738`, `20260821_151924`), and no
+// amount of shaving milliseconds off CE's startup would reliably change that. A fix that
+// consists of winning a race is not a fix.
+//
+// The genuinely irreversible step is not `slInit`, it is device creation. Until the game
+// creates its device or factory through the 1.x interposer, everything 1.x has done is
+// undoable: CE brings its own 2.x runtime up, repoints the imports, and then shuts the 1.x
+// runtime back down through the very export slot it saved while repointing it. What is left
+// is exactly one initialised runtime driving everything - the same end state an early
+// takeover reaches, from a later start. The margin is not marginal: in session
+// `20260821_151738` the 1.x core was resident by 15:18:12.3 while the game's real swapchain
+// was not created until 15:18:29.1, and its 1.x feature plugins (`sl.dlss_g`, `sl.reflex`,
+// `sl.dlss`) did not load until 15:18:13.4-13.9, all of it after the point CE refused at.
 inline ActivationDecision DecideActivation(const ActivationInputs& inputs) {
     if (!inputs.upgradeEnabled) {
         return ActivationDecision::DeclinedNotEnabled;
@@ -320,28 +433,41 @@ inline ActivationDecision DecideActivation(const ActivationInputs& inputs) {
     if (inputs.processGeneration != Generation::V1 || inputs.runtimeGeneration != Generation::V2) {
         return ActivationDecision::DeclinedNotAnUpgrade;
     }
-    if (inputs.gameAlreadyInitializedStreamline || inputs.gameAlreadyCreatedDeviceOrFactory) {
-        return ActivationDecision::DeclinedTooLate;
+    if (inputs.gameAlreadyCreatedDeviceOrFactory) {
+        return ActivationDecision::DeclinedGameOwnsItsDevice;
+    }
+    if (inputs.gameAlreadyInitializedStreamline) {
+        return ActivationDecision::ActivateAndQuiesce;
     }
     return ActivationDecision::Activate;
 }
 
 inline bool ShouldActivate(const ActivationInputs& inputs) {
-    return DecideActivation(inputs) == ActivationDecision::Activate;
+    const ActivationDecision decision = DecideActivation(inputs);
+    return decision == ActivationDecision::Activate || decision == ActivationDecision::ActivateAndQuiesce;
+}
+
+// Whether the takeover has to shut the game's own 1.x runtime down afterwards. Only the
+// late start does: on an early one there is nothing initialised to shut down, and calling
+// `slShutdown` on a runtime that never ran is a state change made for no reason.
+inline bool RequiresLegacyQuiesce(ActivationDecision decision) {
+    return decision == ActivationDecision::ActivateAndQuiesce;
 }
 
 inline const char* Describe(ActivationDecision decision) {
     switch (decision) {
         case ActivationDecision::Activate:
-            return "activating the Streamline generation bridge";
+            return "activating the Streamline generation bridge before the game's own runtime ran";
+        case ActivationDecision::ActivateAndQuiesce:
+            return "activating the Streamline generation bridge and shutting the game's own 1.x runtime back down";
         case ActivationDecision::DeclinedNotEnabled:
             return "streamline_upgrade is off";
         case ActivationDecision::DeclinedNoRuntimePath:
             return "streamline_upgrade is on but streamline_dll_path names no 2.x runtime";
         case ActivationDecision::DeclinedNotAnUpgrade:
             return "this is not a 1.x process with a 2.x replacement runtime";
-        case ActivationDecision::DeclinedTooLate:
-            return "the game already drove its own Streamline runtime";
+        case ActivationDecision::DeclinedGameOwnsItsDevice:
+            return "the game already created its device through its own 1.x interposer, which no takeover undoes";
     }
     return "unrecognized bridge activation decision";
 }
@@ -361,6 +487,33 @@ inline const char* Describe(ActivationDecision decision) {
 // hooks on it, which is the argument truncation the whole generation gate exists to stop.
 inline Generation AuthoritativeProcessGeneration(bool bridgeActive, Generation firstSeenGeneration) {
     return bridgeActive ? Generation::V2 : firstSeenGeneration;
+}
+
+// Whether CE should leave a Streamline module's own exports alone because the bridge has
+// already routed every call away from it.
+//
+// With the bridge active the game's 1.x interposer is inert: all fifteen import slots that
+// used to reach it now reach CE, and its plugins have been unloaded. Hooking it is not
+// merely pointless, it is actively harmful, and session `20260821_155250` shows both ways:
+//
+//     Streamline Hook: sl.interposer.dll speaks Streamline 1.x - CE installs only the hooks
+//     Streamline Hook: registered the Streamline 2.x slSetTag/slEvaluateFeature dynamic routes
+//     Streamline Hook: Inline hook installed for slSetTag at 00007FFE25921D50   <- the 1.x module
+//     ...
+//     Streamline Hook: Refusing to retarget slSetTag from 00007FFE25921D50 to 00007FFE037273D0
+//         - the installed target is still mapped
+//
+// A 2.x-shaped hook landed on the 1.x image (the argument truncation the generation gate
+// exists to prevent), and then it held CE's single forward pointer, so the hook on the
+// runtime that actually runs was refused. CE ends up watching a module nothing calls while
+// the live one goes unobserved - which is `dlss_fg_factor`, `dlss_fg_preset` and the
+// overlay's whole FG state machine, blind.
+//
+// The generation alone identifies it: the bridge activates only for a 1.x process paired
+// with a 2.x runtime, so while it is active any V1 Streamline module in the process is by
+// construction the superseded one.
+inline bool StreamlineModuleSupersededByBridge(bool bridgeActive, Generation moduleGeneration) {
+    return bridgeActive && moduleGeneration == Generation::V1;
 }
 
 // While the bridge owns the process's Streamline, the ordinary path-substitution redirect

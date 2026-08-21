@@ -31,6 +31,7 @@ Primary sources:
 - Read `log/recent.md` after that when you need the recent historical genesis for a changing area. For older entries, consult the relevant `log/archive-YYYY-Www*.md` file.
 - For build and tooling questions, read `build.py.md` and `codestyle.md`.
 - Streamline API generation (1.x vs 2.x) is an ABI precondition for hooking `slSetTag`/`slEvaluateFeature` and for `streamline_dll_path`; see `frame-generation/guardrails.md`.
+- `streamline_upgrade` runs a 2.x runtime inside a 1.x game (DLSS-G on SL1 titles). `frame-generation/streamline-generation-bridge.md` carries the **measured 1.x ABI** - function signatures, feature values, and the `Constants` / `Resource` / `DLSSConstants` / `DLSSSettings` / `DLSSGConstants` layouts - which exists in no public source and cannot be re-derived from documentation. Read it before touching anything 1.x-shaped.
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog

@@ -38,6 +38,26 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     ArmManualReflexQueryHookIfConfigured("config.ini");
     ArmNgxFgPresetOverrideIfConfigured("config.ini");
 
+    // With streamline_upgrade=on, run the configured Streamline 2.x runtime as a
+    // second, CE-owned runtime beside a 1.x game's own and repoint the game's
+    // sl.interposer imports at CE.
+    //
+    // This is the first thing the hook thread does once it has a config, and the
+    // position is the point. A 1.x game reaches its own Streamline within a few
+    // hundred milliseconds of CE's DllMain - session 20260821_151738 has it there
+    // by 15:18:12.3, against a DllMain at 15:18:11.99 - and the previous position,
+    // after the pre-termination dump hooks, was roughly 550 ms further on, most of
+    // it spent quiescing peer threads to install inline hooks. Every stage between
+    // here and there is work the bridge does not need and the game does not wait
+    // for. It also has to stay ahead of the runtime preload below: both mechanisms
+    // want the same configured folder for opposite purposes, and an active bridge
+    // stands the sl.* substitution down entirely.
+    //
+    // The takeover itself is only import-table writes; loading and initialising
+    // the 2.x runtime happens behind it, so arriving here early costs nothing and
+    // a game call that lands mid-bring-up waits rather than races.
+    ce::streamline_bridge::TryActivate();
+
     // User-configured third-party tools (Special K / ReShade / OptiScaler) must
     // be present before the game creates its first graphics device, so load
     // them as early as the hook can, ahead of CE's wrapper and runtime
@@ -264,13 +284,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   FFXHook::RegisterDynamicHooks();
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
-
-  // With streamline_upgrade=on, run the configured Streamline 2.x runtime as a
-  // second, CE-owned runtime beside a 1.x game's own and repoint the game's
-  // sl.interposer imports at CE. This must be decided BEFORE the preload below:
-  // the two mechanisms want the same configured folder for opposite purposes,
-  // and an active bridge stands the sl.* substitution down entirely.
-  ce::streamline_bridge::TryActivate();
 
   // When the profile configures runtime override paths (dlss_sr_dll_path,
   // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override

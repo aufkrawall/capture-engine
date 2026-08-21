@@ -614,18 +614,18 @@ streamline_dll_path=
 ; streamline_upgrade=on stops treating streamline_dll_path as a DLL substitution and runs
 ; that folder's Streamline 2.x runtime as a SECOND, CaptureEngine-owned runtime beside the
 ; game's own 1.x one, then repoints the game's sl.interposer import slots at CaptureEngine
-; so 1.x calls can be translated to 2.x - the groundwork for making DLSS-G / multi-frame
-; generation reachable in a title that shipped Streamline 1.x. Nothing on disk is renamed or
-; patched - unlike the third-party bridges above, the takeover happens in memory and
-; disappears with the process - and the game's own 1.x runtime stays loaded and untouched.
-; STATUS: the takeover works, but the call translation is NOT implemented yet, so a bridged
-; game currently starts and renders WITHOUT Streamline features rather than with frame
-; generation. Two of the calls carry per-feature structs (sl::DLSSConstants,
-; sl::DLSSGConstants) whose 1.x layouts NVIDIA has never published for sl.interposer 1.5.6 -
-; there is no 1.x release at all and the public 1.x tags stop at v1.1.1, which predates
-; DLSS-G. CaptureEngine refuses those calls rather than guessing a foreign ABI, and records
-; what the game passes so the layout can be measured from a single run. Turning this on today
-; is therefore only useful for validating the takeover itself.
+; so 1.x calls are translated to 2.x, making DLSS-G / multi-frame generation reachable in a
+; title that shipped Streamline 1.x. Nothing on disk is renamed or patched - unlike the
+; third-party bridges above, the takeover happens in memory and disappears with the process.
+; STATUS: the takeover and the call translation are both implemented, but this has not yet
+; been validated in a real game - treat it as experimental and expect to report findings.
+; Two of the calls carry per-feature structs (sl::DLSSConstants, sl::DLSSGConstants) whose
+; 1.x layouts NVIDIA never published for sl.interposer 1.5.6 - there is no 1.x release at
+; all and the public 1.x tags stop at v1.1.1, which predates DLSS-G. CaptureEngine measured
+; them from a real session rather than guessing, and still records every such payload, so a
+; title whose constants differ from the measured shape shows up in the log instead of
+; silently misbehaving. Anything CaptureEngine has not verified is refused rather than
+; approximated, which costs that one feature instead of corrupting frame generation.
 ; Requirements: streamline_dll_path must point at a COMPLETE 2.x plugin set (sl.interposer,
 ; sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl and the matching nvngx_* runtimes); a
 ; folder missing sl.dlss.dll cannot serve a game that also upscales. The plugin set is
@@ -639,10 +639,19 @@ streamline_dll_path=
 ; stand-down below never touches them), but a bridged Streamline resolves its own nvngx_*
 ; snippets out of the folder it was pinned to - so pointing them elsewhere makes load order
 ; decide which copy wins. CaptureEngine logs it when they disagree.
-; CaptureEngine refuses to activate unless the process really is 1.x, the configured folder
-; really is 2.x, and it got control before the game drove its own Streamline. A refusal
-; leaves the process exactly as it was: half-bridged is worse than not bridged, so this is
-; always all-or-nothing.
+; CaptureEngine refuses to activate unless the process really is 1.x and the configured
+; folder really is 2.x. A refusal leaves the process exactly as it was: half-bridged is
+; worse than not bridged, so this is always all-or-nothing.
+; Arriving after the game has already called slInit is NOT a refusal. CaptureEngine is
+; injected into a running process, and in a 1.x DX12 title whose executable imports its
+; D3D12/DXGI entry points from sl.interposer.dll, d3d12.dll - CaptureEngine's own signal
+; that the game has a graphics runtime - is not even loaded until Streamline pulls it in
+; from inside slInit. So that deadline could essentially never be met. What is genuinely
+; irreversible is device creation, not slInit: until the game creates its device through its
+; own interposer, CaptureEngine takes the imports over and then shuts the game's 1.x runtime
+; back down, leaving exactly one initialised runtime in the process. If CaptureEngine did
+; arrive after device creation, it says so in the log rather than leaving frame generation
+; quietly absent.
 ; Off by default. This is more invasive than the path overrides above and is NOT anti-cheat
 ; safe - the same warning applies, more so.
 streamline_upgrade=false

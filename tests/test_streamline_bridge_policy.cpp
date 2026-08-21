@@ -226,6 +226,60 @@ TEST(StreamlineBridgePolicyTest, DerivesTheSdkVersionFromWhicheverRuntimeIsStage
 }
 
 // ---------------------------------------------------------------------------
+// Which calls may reach a deviceless 2.x runtime
+// ---------------------------------------------------------------------------
+
+TEST(StreamlineBridgePolicyTest, EveryDeviceDependentCallIsHeldBackUntilTheDeviceIsSet) {
+    // The regression this pins is a crash, not a misbehaviour. Session `20260821_155250`:
+    //     0xC0000005 at 0x0000000000000000, RIP=0
+    //     capture_hook_x64!Bridged_slSetConstants -> sl_interposer!slSetConstants+0x49 -> 0x0
+    // The bridge had taken the imports over and initialised its 2.x runtime, and forwarded
+    // the game's slSetConstants into it before any device was set. Streamline's exports
+    // forward through a plugin pointer the manager binds at slSetD3DDevice; before that they
+    // do not return an error, they jump to null.
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::SetConstants));
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::SetTag));
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::EvaluateFeature));
+
+    // These two go through slGetFeatureFunction, which the SDK header says must be called
+    // after the device is set - the same run shows the feature entry points never resolving.
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::SetFeatureConstants));
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(bridge::V2Call::GetFeatureSettings));
+}
+
+TEST(StreamlineBridgePolicyTest, TheThreeCallsThatAreSafeEarlyStaySafeEarly) {
+    // slIsFeatureSupported takes an AdapterInfo and asks about hardware, not a live device -
+    // and demonstrably answered correctly before the device existed in that same session.
+    // Holding it back too would refuse the feature negotiation the game does at startup.
+    EXPECT_FALSE(bridge::V2CallRequiresDevice(bridge::V2Call::IsFeatureSupported));
+    // Init and Shutdown never reach the 2.x runtime at all: CE owns its lifetime.
+    EXPECT_FALSE(bridge::V2CallRequiresDevice(bridge::V2Call::Init));
+    EXPECT_FALSE(bridge::V2CallRequiresDevice(bridge::V2Call::Shutdown));
+}
+
+TEST(StreamlineBridgePolicyTest, AnUnrecognizedCallIsHeldBackRatherThanLetThrough) {
+    // Fail-closed: a value outside the enum must not be read as "safe without a device".
+    // Getting this backwards is a null call into somebody else's runtime.
+    EXPECT_TRUE(bridge::V2CallRequiresDevice(static_cast<bridge::V2Call>(9999)));
+}
+
+TEST(StreamlineBridgePolicyTest, NamesEveryV2CallDistinctlyForDiagnostics) {
+    const bridge::V2Call calls[] = {
+        bridge::V2Call::Init,          bridge::V2Call::Shutdown,           bridge::V2Call::IsFeatureSupported,
+        bridge::V2Call::SetTag,        bridge::V2Call::SetConstants,       bridge::V2Call::SetFeatureConstants,
+        bridge::V2Call::GetFeatureSettings, bridge::V2Call::EvaluateFeature};
+    std::set<std::string> seen;
+    for (auto call : calls) {
+        const char* text = bridge::DescribeV2Call(call);
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(std::string(text).rfind("sl", 0), 0u) << text;
+        EXPECT_TRUE(seen.insert(text).second) << "duplicate call name: " << text;
+    }
+    EXPECT_EQ(std::string(bridge::DescribeV2Call(static_cast<bridge::V2Call>(9999))),
+              "an unrecognized call");
+}
+
+// ---------------------------------------------------------------------------
 // Activation
 // ---------------------------------------------------------------------------
 
@@ -260,17 +314,64 @@ TEST(StreamlineBridgePolicyTest, RefusesEveryGenerationPairingThatIsNotAnUpgrade
     }
 }
 
-TEST(StreamlineBridgePolicyTest, RefusesOnceTheGameHasDrivenItsOwnRuntime) {
-    // Taking the imports over after the game has initialised 1.x, or created its device
-    // through the 1.x interposer, leaves half the process talking to each generation. The
-    // bridge is all-or-nothing, so lateness declines instead of half-switching.
+TEST(StreamlineBridgePolicyTest, AnAlreadyInitialised1xRuntimeIsTakenOverAndShutDown) {
+    // The regression this pins: refusing here made the feature unreachable. CE reaches a 1.x
+    // DX12 title through WMI notification, a config reload and a remote-thread LoadLibrary,
+    // and in a title whose executable imports D3D12/DXGI FROM sl.interposer.dll, `d3d12.dll`
+    // only enters the process when sl.common.dll drags it in from inside slInit - so CE's
+    // arrival signal and this deadline are the same event. Sessions 20260821_151738 and
+    // 20260821_151924 both refused for exactly this reason.
+    //
+    // slInit is recoverable: CE takes the imports over and shuts that runtime back down.
     auto inputs = UpgradeableProcess();
     inputs.gameAlreadyInitializedStreamline = true;
-    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedTooLate);
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::ActivateAndQuiesce);
+    EXPECT_TRUE(bridge::ShouldActivate(inputs));
+    EXPECT_TRUE(bridge::RequiresLegacyQuiesce(bridge::DecideActivation(inputs)));
+}
+
+TEST(StreamlineBridgePolicyTest, RefusesOnceTheGameOwnsItsDevice) {
+    // Device creation is the one step no in-memory takeover undoes: a 2.x runtime can only
+    // drive a device its own interposer created. This one stays a refusal.
+    auto inputs = UpgradeableProcess();
+    inputs.gameAlreadyCreatedDeviceOrFactory = true;
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedGameOwnsItsDevice);
+    EXPECT_FALSE(bridge::ShouldActivate(inputs));
+
+    // And it outranks the recoverable one, so a process that is past both never activates.
+    inputs.gameAlreadyInitializedStreamline = true;
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedGameOwnsItsDevice);
+}
+
+TEST(StreamlineBridgePolicyTest, ShutsTheLegacyRuntimeDownOnlyWhenOneIsActuallyUp) {
+    // An early takeover must not call slShutdown on a runtime that never initialised: that
+    // is a state change made for no reason, on a runtime the game may still be about to use
+    // if the bridge later falls back to it.
+    EXPECT_FALSE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::Activate));
+    EXPECT_TRUE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::ActivateAndQuiesce));
+    EXPECT_FALSE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::DeclinedGameOwnsItsDevice));
+    EXPECT_FALSE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::DeclinedNotEnabled));
+    EXPECT_FALSE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::DeclinedNoRuntimePath));
+    EXPECT_FALSE(bridge::RequiresLegacyQuiesce(bridge::ActivationDecision::DeclinedNotAnUpgrade));
+}
+
+TEST(StreamlineBridgePolicyTest, LatenessNeverOverridesTheGatesInFrontOfIt) {
+    // Being late is not a reason to activate something that was never eligible: the opt-in,
+    // the configured runtime and the generation pairing all still have to hold first.
+    auto inputs = UpgradeableProcess();
+    inputs.gameAlreadyInitializedStreamline = true;
+    inputs.upgradeEnabled = false;
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedNotEnabled);
 
     inputs = UpgradeableProcess();
-    inputs.gameAlreadyCreatedDeviceOrFactory = true;
-    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedTooLate);
+    inputs.gameAlreadyInitializedStreamline = true;
+    inputs.runtimePathConfigured = false;
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedNoRuntimePath);
+
+    inputs = UpgradeableProcess();
+    inputs.gameAlreadyInitializedStreamline = true;
+    inputs.processGeneration = Generation::V2;
+    EXPECT_EQ(bridge::DecideActivation(inputs), bridge::ActivationDecision::DeclinedNotAnUpgrade);
 }
 
 TEST(StreamlineBridgePolicyTest, ADefaultConstructedProcessNeverActivates) {
@@ -278,13 +379,19 @@ TEST(StreamlineBridgePolicyTest, ADefaultConstructedProcessNeverActivates) {
 }
 
 TEST(StreamlineBridgePolicyTest, EveryDecisionExplainsItself) {
-    for (auto decision : {bridge::ActivationDecision::Activate, bridge::ActivationDecision::DeclinedNotEnabled,
-                          bridge::ActivationDecision::DeclinedNoRuntimePath,
-                          bridge::ActivationDecision::DeclinedNotAnUpgrade,
-                          bridge::ActivationDecision::DeclinedTooLate}) {
+    const bridge::ActivationDecision decisions[] = {
+        bridge::ActivationDecision::Activate,          bridge::ActivationDecision::ActivateAndQuiesce,
+        bridge::ActivationDecision::DeclinedNotEnabled, bridge::ActivationDecision::DeclinedNoRuntimePath,
+        bridge::ActivationDecision::DeclinedNotAnUpgrade,
+        bridge::ActivationDecision::DeclinedGameOwnsItsDevice};
+    std::set<std::string> seen;
+    for (auto decision : decisions) {
         const char* text = bridge::Describe(decision);
         ASSERT_NE(text, nullptr);
         EXPECT_GT(std::string(text).size(), 8u);
+        // Two decisions that read the same in the log are two decisions nobody can tell
+        // apart from a session - which is precisely what made the first refusals unreadable.
+        EXPECT_TRUE(seen.insert(text).second) << "duplicate decision text: " << text;
     }
 }
 
@@ -319,6 +426,33 @@ TEST(StreamlineBridgePolicyTest, TheProcessWideAnswerMustNeverDecideAPerModuleAb
         << "the process-wide answer would authorise a 2.x hook";
     EXPECT_FALSE(ce::streamline_api::MayInstallAbiSensitiveHook(Generation::V1, Generation::V2))
         << "the 1.x module's own generation is the answer that must be used";
+}
+
+TEST(StreamlineBridgePolicyTest, ABridgedAwayOneXModuleGetsNoHooks) {
+    // Session `20260821_155250`: CE hooked the game's 1.x interposer - which the bridge had
+    // already routed every one of its fifteen import slots away from - and then refused the
+    // hook on the 2.x runtime that was actually being called, because its single forward
+    // pointer per symbol was already taken:
+    //     Refusing to retarget slSetTag from <1.x addr> to <2.x addr> - the installed
+    //     target is still mapped
+    // CE was left watching a module nothing calls, so dlss_fg_factor, dlss_fg_preset and the
+    // overlay's FG state machine saw nothing.
+    EXPECT_TRUE(bridge::StreamlineModuleSupersededByBridge(/*bridgeActive=*/true, Generation::V1));
+
+    // The CE-owned 2.x runtime is the one being called, so it must keep its hooks.
+    EXPECT_FALSE(bridge::StreamlineModuleSupersededByBridge(true, Generation::V2));
+    // An unclassified module is never assumed to be the superseded one - skipping hooks on a
+    // module CE could not identify would silently drop coverage.
+    EXPECT_FALSE(bridge::StreamlineModuleSupersededByBridge(true, Generation::Unknown));
+}
+
+TEST(StreamlineBridgePolicyTest, WithoutABridgeEveryStreamlineModuleKeepsItsHooks) {
+    // The overwhelmingly common case is an unbridged 1.x game whose own runtime is the only
+    // one there is. Skipping its hooks would break DLSS-G observation in every SL1 title.
+    for (Generation generation : {Generation::Unknown, Generation::V1, Generation::V2}) {
+        EXPECT_FALSE(bridge::StreamlineModuleSupersededByBridge(/*bridgeActive=*/false, generation))
+            << "generation=" << static_cast<int>(generation);
+    }
 }
 
 TEST(StreamlineBridgePolicyTest, AnActiveBridgeStandsTheOrdinaryRedirectDown) {
