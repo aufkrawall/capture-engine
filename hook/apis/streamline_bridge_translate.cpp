@@ -79,6 +79,7 @@ struct CachedDLSSGOptions {
 };
 std::mutex g_dlssgOptionsMutex;
 std::unordered_map<uint32_t, CachedDLSSGOptions> g_dlssgOptionsByViewport;
+std::atomic<uint32_t> g_forwardedReflexMode{UINT32_MAX};
 
 // Feature entry points exist only once a device is set - `slGetFeatureFunction` says so in
 // the SDK header itself - so they are resolved from the calls that need them rather than at
@@ -198,6 +199,34 @@ bool ResultOk(sl::Result result, const char* call, std::atomic<bool>& latch) {
         HookLogImportant("Streamline bridge: %s returned sl::Result=%d", call, static_cast<int>(result));
     }
     return false;
+}
+
+// Sends one Reflex state and suppresses repeats. ReflexOptions has no viewport argument in
+// 2.x, so the last state is intentionally process-wide.
+bool ForwardReflexOptions(sl::ReflexMode mode, bool synthesized) {
+    const uint32_t modeValue = static_cast<uint32_t>(mode);
+    if (g_forwardedReflexMode.load(std::memory_order_relaxed) == modeValue) {
+        return true;
+    }
+    if (!g_slReflexSetOptions) {
+        return false;
+    }
+
+    sl::ReflexOptions options{};
+    options.mode = mode;
+    static std::atomic<bool> latch{false};
+    if (!ResultOk(g_slReflexSetOptions(options), "slReflexSetOptions", latch)) {
+        return false;
+    }
+    g_forwardedReflexMode.store(modeValue, std::memory_order_relaxed);
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant("Streamline bridge: translated Reflex mode=%u", modeValue);
+    } else {
+        HookLogImportant("Streamline bridge: %s Reflex mode=%u",
+                         synthesized ? "synthesized for DLSS-G" : "translated", modeValue);
+    }
+    return true;
 }
 
 // 1.x threads a bare frame index; 2.x wants a token obtained once per frame and reused
@@ -517,6 +546,16 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         if (ResultOk(g_slDLSSGSetOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch)) {
             std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
             g_dlssgOptionsByViewport[id] = cached;
+            // 2.x refuses to generate frames unless Reflex is detected at runtime. Some 1.x
+            // titles (including The Witcher 3) leave their SL Reflex mode at zero while using
+            // NVAPI Reflex separately, which the 2.x plugin cannot observe. Promote Reflex
+            // while FG is on and restore the game's mode when it turns off.
+            if (!ForwardReflexOptions(options.mode == sl::DLSSGMode::eOff ? sl::ReflexMode::eOff
+                                                                          : sl::ReflexMode::eLowLatencyWithBoost,
+                                      /*synthesized=*/true)) {
+                HookLogImportant("Streamline bridge: failed to update Reflex for DLSS-G state %u",
+                                 cached.mode);
+            }
             return true;
         }
         return false;
@@ -544,12 +583,16 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         }
         sl::ReflexOptions options{};
         options.mode = static_cast<sl::ReflexMode>(in.mode);
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-            HookLogImportant("Streamline bridge: first Reflex options translated - mode=%u", in.mode);
+        bool fgEnabled = false;
+        {
+            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
+            auto it = g_dlssgOptionsByViewport.find(id);
+            fgEnabled = it != g_dlssgOptionsByViewport.end() &&
+                        it->second.mode != static_cast<uint32_t>(sl::DLSSGMode::eOff);
         }
-        static std::atomic<bool> latch{false};
-        return ResultOk(g_slReflexSetOptions(options), "slReflexSetOptions", latch);
+        return ForwardReflexOptions(
+            fgEnabled ? sl::ReflexMode::eLowLatencyWithBoost : static_cast<sl::ReflexMode>(in.mode),
+            /*synthesized=*/fgEnabled);
     }
 
     static std::atomic<bool> latch{false};

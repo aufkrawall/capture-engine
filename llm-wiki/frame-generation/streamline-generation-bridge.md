@@ -503,11 +503,11 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - **The `20260821_161620` startup C++ exception did not recur** in `20260821_163534`, which
   reached the render loop. It remains unexplained rather than fixed; if it returns, `sl.log`
   is now there to say whether Streamline was involved.
-- **Reflex now translates, but only `mode`.** 1.x drives it through `slSetFeatureConstants`,
-  2.x through `slReflexSetOptions`. This is not optional - DLSS-G does not engage with Reflex
-  off, so refusing the call would have left frame generation configured and inert - but the
-  frame-limit and marker fields keep 2.x defaults because they were never measured. If FG comes
-  up but latency behaves oddly, this is where to look.
+- **Reflex translates plus one deliberate synthesis.** 1.x drives it through
+  `slSetFeatureConstants`, 2.x through `slReflexSetOptions`; only `mode` was measured. While
+  bridged DLSS-G is on, a 1.x mode of zero is promoted to low-latency-with-boost because SL2
+  refuses generation without a live Reflex signal (`20260822_011315`). Turning DLSS-G off
+  restores off. Frame-limit and marker fields keep 2.x defaults because they were never measured.
 - **`slShutdown` on a 1.x runtime that has only been `slInit`ed is expected to unload its
   plugins, but that is not verified.** The inventory line printed straight after the call is
   there to settle it: if `sl.common.dll` is still listed from the game's folder afterwards,
@@ -525,7 +525,7 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-22 (build 0.1.6231; ABI measurements from The Witcher 3 sessions
+Last verified 2026-08-22 (build 0.1.6233; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

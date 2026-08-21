@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-22 - Bridged DLSS-G requires a synthesized Reflex activation
+
+Witcher 3 `20260822_011315` reached DLSS-G present handling, but SL2 rejected every frame with
+`eDLSSGStatusFailReflexNotDetectedAtRuntime - sl.reflex must be enabled and active`. The measured
+1.x payload had Reflex mode zero even while the title used NVAPI Reflex separately; forwarding
+that zero faithfully told 2.x that Reflex was off.
+
+- While translated DLSS-G is on, the bridge forwards `eLowLatencyWithBoost`; when DLSS-G turns
+  off, it restores off. An explicit Reflex call while FG is on is also promoted instead of
+  overwriting the required signal.
+- Repeat suppression remains process-wide because 2.x `ReflexOptions` has no viewport argument.
+- This explains the earlier "options accepted but no FPS gain" state. The next validation must
+  show `Achieved 'good' FC feedback state` without the Reflex-not-detected errors.
+
 ### 2026-08-22 - Streamline bridge tag lifetime and FG option deduplication
 
 Witcher 3 `20260822_005204` reached the render loop and DLSS-G created its swapchain, but the

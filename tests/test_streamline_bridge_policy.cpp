@@ -292,6 +292,20 @@ TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchanged
     EXPECT_NE(source.find("unchanged: forwarding again is a documented Present race"), std::string::npos);
 }
 
+TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) {
+    // Session 20260822_011315: SL2 rejected every generated frame with
+    // `eDLSSGStatusFailReflexNotDetectedAtRuntime` because the 1.x title kept its SL Reflex
+    // mode at zero. A zero mode cannot be forwarded verbatim into a runtime that requires an
+    // active Reflex signal before DLSS-G will produce frames.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("bool ForwardReflexOptions(sl::ReflexMode mode, bool synthesized)"),
+              std::string::npos);
+    EXPECT_NE(source.find("sl::ReflexMode::eLowLatencyWithBoost"), std::string::npos);
+    EXPECT_NE(source.find("synthesized for DLSS-G"), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Which calls may reach a deviceless 2.x runtime
 // ---------------------------------------------------------------------------
