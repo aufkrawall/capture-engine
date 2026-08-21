@@ -4,8 +4,10 @@
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <wrl/client.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -225,15 +227,78 @@ using PFN_D3D12GetDebugInterface = HRESULT(WINAPI*)(REFIID, void**);
 using PFN_D3D12SerializeVersionedRootSignature = HRESULT(WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*,
                                                                   ID3DBlob**, ID3DBlob**);
 
+// Device-creation failures need the exact request in the log: a reset from an adapter-bound
+// creation is not distinguishable from a reset for a null/default request otherwise.
+void DescribeIid(REFIID iid, char (&text)[40]) {
+    std::snprintf(text, sizeof(text), "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", iid.Data1,
+                  iid.Data2, iid.Data3, iid.Data4[0], iid.Data4[1], iid.Data4[2], iid.Data4[3],
+                  iid.Data4[4], iid.Data4[5], iid.Data4[6], iid.Data4[7]);
+}
+
+// A game may hand us an adapter owned by a short-lived proxy/factory generation. D3D12 only
+// needs the same physical adapter, so resolve its LUID through DXGI and obtain a fresh,
+// unowned adapter instance before calling Microsoft's API. This preserves multi-GPU intent
+// without passing another module's object lifetime into D3D12.
+IUnknown* ResolveEquivalentAdapter(IUnknown* adapter) {
+    if (!adapter) {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter> requested;
+    HRESULT hr = adapter->QueryInterface(IID_PPV_ARGS(&requested));
+    if (FAILED(hr) || !requested) {
+        static std::atomic<bool> qiLogged{false};
+        if (!qiLogged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: D3D12 adapter lacks IDXGIAdapter (hr=0x%08X)",
+                             static_cast<uint32_t>(hr));
+        }
+        return adapter;
+    }
+
+    DXGI_ADAPTER_DESC desc{};
+    hr = requested->GetDesc(&desc);
+    if (FAILED(hr)) {
+        static std::atomic<bool> descLogged{false};
+        if (!descLogged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: cannot read D3D12 adapter LUID (hr=0x%08X)",
+                             static_cast<uint32_t>(hr));
+        }
+        return adapter;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    hr = CreateDXGIFactory1(__uuidof(IDXGIFactory4), reinterpret_cast<void**>(factory.GetAddressOf()));
+    if (FAILED(hr) || !factory) {
+        static std::atomic<bool> factoryLogged{false};
+        if (!factoryLogged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: cannot create a fresh DXGI factory for device creation "
+                             "(hr=0x%08X)",
+                             static_cast<uint32_t>(hr));
+        }
+        return adapter;
+    }
+
+    Microsoft::WRL::ComPtr<IUnknown> equivalent;
+    hr = factory->EnumAdapterByLuid(desc.AdapterLuid, IID_PPV_ARGS(&equivalent));
+    if (FAILED(hr) || !equivalent) {
+        static std::atomic<bool> enumLogged{false};
+        if (!enumLogged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant(
+                "Streamline bridge: cannot resolve a fresh adapter for LUID %08lx:%08lx (hr=0x%08X)",
+                static_cast<unsigned long>(desc.AdapterLuid.HighPart),
+                static_cast<unsigned long>(desc.AdapterLuid.LowPart), static_cast<uint32_t>(hr));
+        }
+        return adapter;
+    }
+
+    return equivalent.Detach();
+}
+
 // Creates the device with Microsoft's entry point rather than the 2.x interposer's. The
-// interposer turned this title's later real-device request into DXGI_ERROR_DEVICE_RESET
-// (`sl.log`, 20260821_234606), while the game expects the ordinary D3D12 result. A native
-// device is also the documented input to `slSetD3DDevice`, so Streamline still receives
-// exactly the device the game will use.
-//
-// A factory proxy may hand its adapter proxy back as `adapter`. `slGetNativeInterface`
-// returns an AddRef'd base interface for proxies and also AddRefs a non-proxy, so the
-// caller always balances one successful unwrap with one Release.
+// interposer returned the same reset for this request (`20260821_234606`). The later native
+// attempt still failed while reusing the caller's adapter instance (`20260822_001759`), so we
+// first normalize that input to a fresh DXGI adapter by LUID. A native device is the documented
+// input to `slSetD3DDevice`.
 HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
                                     void** ppDevice) {
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
@@ -253,27 +318,22 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
         return DXGI_ERROR_UNSUPPORTED;
     }
 
-    IUnknown* adapterForCreate = adapter;
-    bool releaseAdapter = false;
-    if (adapter && g_v2Interposer) {
-        auto getNative = reinterpret_cast<int (*)(void*, void**)>(GetProcAddress(g_v2Interposer,
-                                                                                 "slGetNativeInterface"));
-        void* native = nullptr;
-        if (getNative && getNative(adapter, &native) == 0 && native) {
-            adapterForCreate = static_cast<IUnknown*>(native);
-            releaseAdapter = true;
-        }
-    }
-
+    IUnknown* adapterForCreate = ResolveEquivalentAdapter(adapter);
     const HRESULT hr = create(adapterForCreate, minimumFeatureLevel, riid, ppDevice);
-    if (releaseAdapter) {
+    if (adapterForCreate != adapter && adapterForCreate) {
         adapterForCreate->Release();
     }
     if (FAILED(hr)) {
         static std::atomic<uint32_t> loggedHr{0};
         const uint32_t encoded = static_cast<uint32_t>(hr);
         if (loggedHr.exchange(encoded, std::memory_order_relaxed) != encoded) {
-            HookLogImportant("Streamline bridge: native D3D12CreateDevice failed (hr=0x%08X)", encoded);
+            char iidText[40] = {};
+            DescribeIid(riid, iidText);
+            HookLogImportant(
+                "Streamline bridge: native D3D12CreateDevice failed (hr=0x%08X adapter=%p resolved=%p "
+                "featureLevel=%u riid=%s)",
+                encoded, static_cast<void*>(adapter), static_cast<void*>(adapterForCreate),
+                static_cast<unsigned>(minimumFeatureLevel), iidText);
         }
     }
     return hr;

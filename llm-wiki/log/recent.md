@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-22 - Streamline bridge adapters need a fresh LUID-matched instance
+
+Witcher 3 `20260822_001759` proved that native `D3D12CreateDevice` alone was not enough. The first
+bridged device succeeded and feature contexts came up, then the later render-device request failed
+again with `DXGI_ERROR_DEVICE_RESET` while reusing the game's adapter object after short-lived
+factory/proxy generations had been destroyed.
+
+- Before calling D3D12, read the requested adapter's LUID, create a fresh OS `IDXGIFactory4`, and
+  resolve an equivalent adapter by that LUID. This preserves multi-GPU intent while avoiding
+  dependence on another module's adapter/factory object lifetime.
+- Device failures now include requested vs resolved adapter, feature level and IID.
+
 ### 2026-08-22 - Streamline bridge: native device handoff and NGX project identity
 
 Witcher 3 `20260821_234606` isolated two bridge failures. V2's interposer returned

@@ -273,14 +273,20 @@ Both are bridge defects rather than capture-engine interference:
 
 - **V2 interposer creation is not required.** The bridge had treated every `D3D12CreateDevice`
   import as a pass-through into V2, coupling ordinary D3D12 semantics to Streamline's proxy
-  implementation. CE now calls Microsoft's `d3d12.dll`, uses `slGetNativeInterface` only to
-  unwrap an adapter proxy, and explicitly hands every distinct resulting device to V2 with
-  `slSetD3DDevice` - the SDK's supported manual-device route.
+  implementation. CE now calls Microsoft's `d3d12.dll` and explicitly hands every distinct
+  resulting device to V2 with `slSetD3DDevice` - the SDK's supported manual-device route.
 - **Zero application ID becomes a temporary ID in production.** V2 replaced zero with
   `kTemporaryAppId` (`100721531` in the log) and refused NGX. A late bridge cannot observe the
   game's original `slInit` application ID, so it supplies the other accepted identity: a stable
   project ID derived from the host executable path plus the host version. No title table exists,
   and the path itself does not leave the process.
+
+Session `20260822_001759` showed that merely calling Microsoft's API was not enough: the later
+real-device request failed with the same reset even without V2 interposer creation. CE now reads
+the requested adapter's LUID, creates a fresh OS DXGI factory, resolves an equivalent adapter from
+that factory, and gives that instance to D3D12. This preserves multi-GPU intent while keeping
+another module's object lifetime out of D3D12. Device failures log requested/resolved adapters,
+feature level and IID.
 
 ## Invariants
 
