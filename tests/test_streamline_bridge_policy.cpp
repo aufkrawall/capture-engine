@@ -272,6 +272,8 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
+    EXPECT_NE(source.find("RememberDeviceSupport(adapterForCreate, minimumFeatureLevel)"), std::string::npos);
+    EXPECT_NE(source.find("answered D3D12 capability probe from prior successful"), std::string::npos);
     EXPECT_EQ(source.find("reinterpret_cast<PFN_D3D12CreateDevice>(V2Target(\"D3D12CreateDevice\"))"),
               std::string::npos);
 }

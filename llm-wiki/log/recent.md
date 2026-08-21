@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-08-22 - Null-output D3D12 probes need bridge-side support caching
+
+Witcher 3 `20260822_014209` crashed during startup after a successful bridged device creation.
+Its later `D3D12CreateDevice` request used the optional null output form, but both the
+LUID-matched adapter and null/default retries returned `DXGI_ERROR_DEVICE_RESET`. The game treated
+that failed redundant probe as fatal.
+
+- CE now remembers each successful native D3D12 creation by adapter LUID and feature level.
+- A later equal-or-lower ID3D12Device capability probe with a null output is answered `S_OK` from
+  that proof instead of asking the driver again.
+
 ### 2026-08-22 - Bridged DLSS-G requires a synthesized Reflex activation
 
 Witcher 3 `20260822_011315` reached DLSS-G present handling, but SL2 rejected every frame with
