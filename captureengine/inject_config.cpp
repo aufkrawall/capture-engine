@@ -39,6 +39,15 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.internalAnisotropicFiltering = config.graphics.internalAnisotropicFiltering;
     graphics.internalTextureMipBias = config.graphics.internalTextureMipBias;
     graphics.displayGamma = config.graphics.displayGamma;
+    graphics.depthOfField = config.graphics.depthOfField;
+    graphics.dlssSuperResolution = config.graphics.dlssSuperResolution;
+    graphics.dlssScreenPercentage = config.graphics.dlssScreenPercentage;
+    graphics.hdrOutput = config.graphics.hdrOutput;
+    graphics.hdrPeakLuminance = config.graphics.hdrPeakLuminance;
+    graphics.hdrPaperWhite = config.graphics.hdrPaperWhite;
+    graphics.hdrUiLuminance = config.graphics.hdrUiLuminance;
+    graphics.hdrMinLuminance = config.graphics.hdrMinLuminance;
+    graphics.hdrColorGamut = config.graphics.hdrColorGamut;
     graphics.prerenderLimit = config.graphics.cpuPrerenderLimit;
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
@@ -117,7 +126,16 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (std::hash<float>{}(graphics.internalFpsLimit) << 14) ^
         (static_cast<uint64_t>(graphics.internalAnisotropicFiltering) << 15) ^
         (std::hash<float>{}(graphics.internalTextureMipBias) << 16) ^
-        (std::hash<float>{}(graphics.displayGamma) << 17);
+        (std::hash<float>{}(graphics.displayGamma) << 17) ^
+        (static_cast<uint64_t>(graphics.depthOfField) << 22) ^
+        (static_cast<uint64_t>(graphics.dlssSuperResolution) << 23) ^
+        (std::hash<float>{}(graphics.dlssScreenPercentage) << 24) ^
+        (static_cast<uint64_t>(graphics.hdrOutput) << 25) ^
+        (static_cast<uint64_t>(graphics.hdrPeakLuminance) << 26) ^
+        (std::hash<float>{}(graphics.hdrPaperWhite) << 27) ^
+        (std::hash<float>{}(graphics.hdrUiLuminance) << 28) ^
+        (std::hash<float>{}(graphics.hdrMinLuminance) << 29) ^
+        (static_cast<uint64_t>(graphics.hdrColorGamut) << 30);
 
     if (summaryHash != configSummaryHash) {
         LogInfo(
@@ -126,7 +144,9 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
-            "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f",
+            "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
+            "ue5DlssScreenPercentage=%.2f ue5HdrOutput=%d ue5HdrPeak=%d ue5HdrPaperWhite=%.1f "
+            "ue5HdrUiLuminance=%.1f ue5HdrMinLuminance=%.4f ue5HdrColorGamut=%d",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
@@ -139,7 +159,10 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.rayReconstructionOptimalSettings ? 1 : 0,
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
             graphics.internalFpsLimit, graphics.internalAnisotropicFiltering,
-            graphics.internalTextureMipBias, graphics.displayGamma);
+            graphics.internalTextureMipBias, graphics.displayGamma, graphics.depthOfField,
+            graphics.dlssSuperResolution, graphics.dlssScreenPercentage, graphics.hdrOutput,
+            graphics.hdrPeakLuminance, graphics.hdrPaperWhite, graphics.hdrUiLuminance,
+            graphics.hdrMinLuminance, graphics.hdrColorGamut);
         configSummaryHash = summaryHash;
     }
 }

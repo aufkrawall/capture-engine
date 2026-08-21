@@ -26,6 +26,21 @@ enum class Activation : uint8_t {
     // game is asking for the sRGB transform, never to pick a device.
     DisplayGammaOutputDevice,
     DisplayGammaExponent,
+    DepthOfField,
+    // r.NGX.DLSS.Enable itself: the NVIDIA UE plugin's own documented on/off
+    // switch, written in both directions.
+    DlssSuperResolutionEnable,
+    // The levers that only matter when DLSS SR is being forced ON, each with its
+    // own constant: without them a game that never exposed DLSS keeps routing
+    // through its own upscaler and the enable flag reaches nothing.
+    DlssSuperResolutionForceOn,
+    DlssSuperResolutionScreenPercentage,
+    HdrOutput,
+    HdrPeakLuminance,
+    HdrPaperWhite,
+    HdrUiLuminance,
+    HdrMinLuminance,
+    HdrColorGamut,
 };
 
 // Whether an override may be applied at all, judged from the value the game
@@ -70,6 +85,77 @@ constexpr bool IsDisplayGammaPiecewiseSrgb(float gamma) noexcept {
     return gamma == kDisplayGammaSrgb;
 }
 
+// Tri-state switches (depth of field, DLSS Super Resolution, HDR output) are
+// carried as int32 so the shared-memory field and the policy agree on one
+// representation. Anything that is not exactly off or on - including a value a
+// host built before the field existed leaves behind - means "leave the engine
+// alone" rather than a guessed direction.
+inline constexpr int32_t kToggleDefault = -1;
+inline constexpr int32_t kToggleOff = 0;
+inline constexpr int32_t kToggleOn = 1;
+
+constexpr bool IsToggleRequested(int32_t toggle) noexcept {
+    return toggle == kToggleOff || toggle == kToggleOn;
+}
+
+constexpr bool IsToggleOn(int32_t toggle) noexcept {
+    return toggle == kToggleOn;
+}
+
+// UE's own r.DepthOfFieldQuality: the engine help documents 0 as "Off" and 2 as
+// the default quality (measured in the Gothic 1 Remake UE5 registration, which
+// passes 2 in r8d). Forcing it on restores that default; it cannot invent depth
+// of field a game never configured, because the blur still comes from the
+// post-process settings.
+inline constexpr int32_t kDepthOfFieldOffQuality = 0;
+inline constexpr int32_t kDepthOfFieldDefaultQuality = 2;
+
+// DLSS Super Resolution quality is expressed as UE's own screen percentage,
+// which is what the NVIDIA plugin snaps to its quality modes. 100 is DLAA.
+inline constexpr float kDlssScreenPercentageMin = 25.0f;
+inline constexpr float kDlssScreenPercentageMax = 100.0f;
+
+constexpr bool IsDlssScreenPercentageRequested(float percentage) noexcept {
+    return percentage >= kDlssScreenPercentageMin && percentage <= kDlssScreenPercentageMax;
+}
+
+// HDR luminance bounds. The engine's own names for these: r.HDR.Display.MaxLuminance
+// is "the configured display output nit level", r.HDR.Display.MidLuminance "the
+// configured display output nit level for 18% gray" (paper white),
+// r.HDR.UI.Luminance the "base Luminance in nits for UI elements", and
+// r.HDR.Display.MinLuminanceLog10 "the configured minimum display output nit
+// level (log10 value)" - so the black floor is configured in nits here and
+// converted, rather than making the user write a logarithm.
+inline constexpr int32_t kHdrPeakLuminanceMin = 80;
+inline constexpr int32_t kHdrPeakLuminanceMax = 10000;
+inline constexpr float kHdrPaperWhiteMin = 20.0f;
+inline constexpr float kHdrPaperWhiteMax = 1000.0f;
+inline constexpr float kHdrUiLuminanceMin = 20.0f;
+inline constexpr float kHdrUiLuminanceMax = 1000.0f;
+inline constexpr float kHdrMinLuminanceMin = 0.0001f;
+inline constexpr float kHdrMinLuminanceMax = 10.0f;
+inline constexpr int32_t kHdrColorGamutMax = 4;  // 0 Rec709, 1 DCI-P3, 2 Rec2020, 3 ACES, 4 ACEScg
+
+constexpr bool IsHdrPeakLuminanceRequested(int32_t nits) noexcept {
+    return nits >= kHdrPeakLuminanceMin && nits <= kHdrPeakLuminanceMax;
+}
+
+constexpr bool IsHdrPaperWhiteRequested(float nits) noexcept {
+    return nits >= kHdrPaperWhiteMin && nits <= kHdrPaperWhiteMax;
+}
+
+constexpr bool IsHdrUiLuminanceRequested(float nits) noexcept {
+    return nits >= kHdrUiLuminanceMin && nits <= kHdrUiLuminanceMax;
+}
+
+constexpr bool IsHdrMinLuminanceRequested(float nits) noexcept {
+    return nits >= kHdrMinLuminanceMin && nits <= kHdrMinLuminanceMax;
+}
+
+constexpr bool IsHdrColorGamutRequested(int32_t gamut) noexcept {
+    return gamut >= 0 && gamut <= kHdrColorGamutMax;
+}
+
 struct Settings {
     bool forceRayReconstruction = false;
     bool rayReconstructionOptimalSettings = false;
@@ -87,6 +173,25 @@ struct Settings {
     // Negative leaves the engine's display gamma alone, 0 selects UE's piecewise
     // sRGB/Rec709 transform, 1.0..3.0 selects a pure power curve.
     float displayGamma = kDisplayGammaDefault;
+    // -1 leaves r.DepthOfFieldQuality alone, 0 disables depth of field, 1 forces
+    // UE's default quality back on.
+    int32_t depthOfField = kToggleDefault;
+    // -1 leaves the NVIDIA UE plugin alone, 0 disables DLSS SR/RR through its own
+    // r.NGX.DLSS.Enable switch, 1 forces the whole DLSS SR path on.
+    int32_t dlssSuperResolution = kToggleDefault;
+    // Screen percentage the forced DLSS SR path asks for (the plugin resolves it
+    // to a quality mode). Outside 25..100 leaves r.ScreenPercentage alone, and it
+    // is only written while DLSS SR is being forced on.
+    float dlssScreenPercentage = 0.0f;
+    // -1 leaves r.HDR.EnableHDROutput alone, 0/1 force the engine's HDR output.
+    int32_t hdrOutput = kToggleDefault;
+    // HDR display parameters in nits (0 or out of range leaves each one alone).
+    int32_t hdrPeakLuminance = 0;
+    float hdrPaperWhite = 0.0f;
+    float hdrUiLuminance = 0.0f;
+    float hdrMinLuminance = 0.0f;
+    // -1 leaves r.HDR.Display.ColorGamut alone, 0..4 selects the output gamut.
+    int32_t hdrColorGamut = kToggleDefault;
 };
 
 struct Spec {
@@ -190,6 +295,31 @@ inline constexpr std::array kSpecs{
     Spec{"r.HDR.Display.OutputDevice", ValueType::Int32, Activation::DisplayGammaOutputDevice, 0.0,
          ApplyGuard::SdrOutputDeviceOnly},
     Spec{"r.TonemapperGamma", ValueType::Float, Activation::DisplayGammaExponent, 0.0},
+    // Depth of field. Int32 with default 2, read out of the UE5 registration
+    // itself (`mov r8d, 2` into the int32 registration slot).
+    Spec{"r.DepthOfFieldQuality", ValueType::Int32, Activation::DepthOfField, 0.0},
+    // DLSS Super Resolution. r.NGX.DLSS.Enable is the plugin's own switch
+    // ("0: Disable DLSS-SR and DLSS-RR (default), 1: Enable DLSS-SR or DLSS-RR"
+    // in its registered help text), so it carries both directions. The rest only
+    // move when SR is forced on: UE only routes through a third-party temporal
+    // upscaler when the AA method is TAA and r.TemporalAA.Upscaler is 1, which is
+    // exactly what a game that ships TSR (r.AntiAliasingMethod default 4 in the
+    // measured build) never does.
+    Spec{"r.NGX.DLSS.Enable", ValueType::Int32, Activation::DlssSuperResolutionEnable, 0.0},
+    Spec{"r.NGX.Enable", ValueType::Int32, Activation::DlssSuperResolutionForceOn, 1.0},
+    Spec{"r.TemporalAA.Upscaler", ValueType::Int32, Activation::DlssSuperResolutionForceOn, 1.0},
+    Spec{"r.AntiAliasingMethod", ValueType::Int32, Activation::DlssSuperResolutionForceOn, 2.0},
+    Spec{"r.ScreenPercentage", ValueType::Float, Activation::DlssSuperResolutionScreenPercentage, 100.0},
+    // HDR. Types measured from the UE5 registrations: the int32 registration
+    // passes its default in r8d, the float one in xmm2, and MaxLuminance/
+    // ColorGamut/EnableHDROutput take the int slot while Mid/MinLuminance and
+    // UI.Luminance take the float slot.
+    Spec{"r.HDR.EnableHDROutput", ValueType::Int32, Activation::HdrOutput, 0.0},
+    Spec{"r.HDR.Display.MaxLuminance", ValueType::Int32, Activation::HdrPeakLuminance, 0.0},
+    Spec{"r.HDR.Display.MidLuminance", ValueType::Float, Activation::HdrPaperWhite, 0.0},
+    Spec{"r.HDR.UI.Luminance", ValueType::Float, Activation::HdrUiLuminance, 0.0},
+    Spec{"r.HDR.Display.MinLuminanceLog10", ValueType::Float, Activation::HdrMinLuminance, 0.0},
+    Spec{"r.HDR.Display.ColorGamut", ValueType::Int32, Activation::HdrColorGamut, 0.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -231,13 +361,59 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             value = enabled ? settings.internalTextureMipBias : 0.0;
             break;
         case Activation::DisplayGammaOutputDevice:
+            // Pinning an SDR output device while the user is also asking for HDR
+            // output would be CE arguing with itself, so the HDR request wins.
             enabled = IsDisplayGammaRequested(settings.displayGamma) &&
-                      IsDisplayGammaPiecewiseSrgb(settings.displayGamma);
+                      IsDisplayGammaPiecewiseSrgb(settings.displayGamma) &&
+                      !IsToggleOn(settings.hdrOutput);
             value = 0.0;  // EDisplayOutputFormat::SDR_sRGB
             break;
         case Activation::DisplayGammaExponent:
             enabled = IsDisplayGammaRequested(settings.displayGamma);
             value = enabled ? settings.displayGamma : 0.0;
+            break;
+        case Activation::DepthOfField:
+            enabled = IsToggleRequested(settings.depthOfField);
+            value = IsToggleOn(settings.depthOfField) ? kDepthOfFieldDefaultQuality
+                                                      : kDepthOfFieldOffQuality;
+            break;
+        case Activation::DlssSuperResolutionEnable:
+            enabled = IsToggleRequested(settings.dlssSuperResolution);
+            value = IsToggleOn(settings.dlssSuperResolution) ? 1.0 : 0.0;
+            break;
+        case Activation::DlssSuperResolutionForceOn:
+            enabled = IsToggleOn(settings.dlssSuperResolution);
+            break;
+        case Activation::DlssSuperResolutionScreenPercentage:
+            enabled = IsToggleOn(settings.dlssSuperResolution) &&
+                      IsDlssScreenPercentageRequested(settings.dlssScreenPercentage);
+            value = enabled ? settings.dlssScreenPercentage : kDlssScreenPercentageMax;
+            break;
+        case Activation::HdrOutput:
+            enabled = IsToggleRequested(settings.hdrOutput);
+            value = IsToggleOn(settings.hdrOutput) ? 1.0 : 0.0;
+            break;
+        case Activation::HdrPeakLuminance:
+            enabled = IsHdrPeakLuminanceRequested(settings.hdrPeakLuminance);
+            value = enabled ? settings.hdrPeakLuminance : 0.0;
+            break;
+        case Activation::HdrPaperWhite:
+            enabled = IsHdrPaperWhiteRequested(settings.hdrPaperWhite);
+            value = enabled ? settings.hdrPaperWhite : 0.0;
+            break;
+        case Activation::HdrUiLuminance:
+            enabled = IsHdrUiLuminanceRequested(settings.hdrUiLuminance);
+            value = enabled ? settings.hdrUiLuminance : 0.0;
+            break;
+        case Activation::HdrMinLuminance:
+            // The engine stores this one as a log10 nit level, so the configured
+            // nits are converted here rather than asking the user for a logarithm.
+            enabled = IsHdrMinLuminanceRequested(settings.hdrMinLuminance);
+            value = enabled ? std::log10(static_cast<double>(settings.hdrMinLuminance)) : 0.0;
+            break;
+        case Activation::HdrColorGamut:
+            enabled = IsHdrColorGamutRequested(settings.hdrColorGamut);
+            value = enabled ? settings.hdrColorGamut : 0.0;
             break;
     }
     return {enabled, ValueBits(spec.type, value)};
@@ -248,7 +424,15 @@ inline bool AnyEnabled(const Settings& settings) noexcept {
            settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
            settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0 ||
            IsTextureMipBiasRequested(settings.internalTextureMipBias) ||
-           IsDisplayGammaRequested(settings.displayGamma);
+           IsDisplayGammaRequested(settings.displayGamma) ||
+           IsToggleRequested(settings.depthOfField) ||
+           IsToggleRequested(settings.dlssSuperResolution) ||
+           IsToggleRequested(settings.hdrOutput) ||
+           IsHdrPeakLuminanceRequested(settings.hdrPeakLuminance) ||
+           IsHdrPaperWhiteRequested(settings.hdrPaperWhite) ||
+           IsHdrUiLuminanceRequested(settings.hdrUiLuminance) ||
+           IsHdrMinLuminanceRequested(settings.hdrMinLuminance) ||
+           IsHdrColorGamutRequested(settings.hdrColorGamut);
 }
 
 // UE registers the show flag console variables as `FConsoleVariableBitRef` -

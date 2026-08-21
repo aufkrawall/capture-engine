@@ -542,7 +542,67 @@ internal_texture_mip_bias=default
 ; for the sRGB direction. The output-device write is applied only when the game
 ; is already on an SDR device (sRGB, Rec709 or explicit gamma), so this can never
 ; pull an HDR game out of HDR output - with HDR active the option does nothing.
+; It is also held back while hdr_output=on below, so the two never contradict.
 display_gamma=default
+;
+; Overrides UE5's own depth of field (r.DepthOfFieldQuality, where the engine
+; documents 0 as "Off" and 2 as its default quality). off disables depth of
+; field, on restores the engine default, default leaves the game alone.
+; on only re-enables the engine's depth of field; it cannot add blur to a game
+; whose post-process settings configure none.
+depth_of_field=default
+;
+; Forces UE5's DLSS Super Resolution, for a game whose binary already ships the
+; NVIDIA DLSS plugin but never offers DLSS in its options menu.
+; off is the plugin's own switch: r.NGX.DLSS.Enable=0.
+; on sets that switch and additionally moves the engine levers that decide
+; whether a third-party temporal upscaler runs at all, which is what such a game
+; never does by itself:
+; r.NGX.Enable=1
+; r.NGX.DLSS.Enable=1
+; r.TemporalAA.Upscaler=1
+; r.AntiAliasingMethod=2 (TAA - UE only routes third-party upscalers through that
+;   path, so a game rendering with TSR is moved off TSR while this is on)
+; This cannot add the plugin to a binary that lacks it, supply nvngx_dlss.dll, or
+; make an unsupported GPU/driver combination work. A compatible DLL can still be
+; selected with [DLSS] dlss_sr_dll_path, and presets in the [DLSS] section apply
+; as usual.
+dlss_super_resolution=default
+;
+; Quality mode for dlss_super_resolution=on, expressed as UE's screen percentage
+; (r.ScreenPercentage) because that is what the plugin resolves into its quality
+; modes: dlaa (100), ultra_quality (77), quality (66.67), balanced (58),
+; performance (50), ultra_performance (33.33). A number from 25 to 100 sets the
+; screen percentage directly. default leaves the game's own screen percentage
+; alone, in which case the game decides the render resolution and an unchanged
+; 100% means DLAA. Only written while dlss_super_resolution=on.
+dlss_super_resolution_quality=default
+;
+; Forces UE5's HDR output (r.HDR.EnableHDROutput) on or off, for games that
+; support HDR in the engine but do not expose the option. The engine reads this
+; where it creates or reconfigures its swap chain, so it takes effect at game
+; start; changing it while a game runs may only apply on the next display or
+; resolution change. It needs an HDR-capable display in HDR mode - it cannot
+; invent HDR output on an SDR display. default leaves the game alone.
+hdr_output=default
+;
+; HDR display parameters, in the units UE's own CVars document. They apply
+; whether HDR was enabled by the game itself or by hdr_output above, and each one
+; independently leaves the engine alone at default.
+; Peak display brightness in nits (r.HDR.Display.MaxLuminance), 80 to 10000.
+hdr_peak_luminance=default
+; Paper white in nits: the display output level UE maps 18% gray to
+; (r.HDR.Display.MidLuminance), 20 to 1000.
+hdr_paper_white=default
+; UI and HUD brightness in nits (r.HDR.UI.Luminance), 20 to 1000. Older UE builds
+; do not have this CVar; it is then logged as missing and skipped.
+hdr_ui_luminance=default
+; Black floor in nits (r.HDR.Display.MinLuminanceLog10 - CaptureEngine converts
+; the nits to the log10 level that CVar stores), 0.0001 to 10.
+hdr_min_luminance=default
+; Output color gamut (r.HDR.Display.ColorGamut): rec709, dcip3, rec2020, aces or
+; acescg.
+hdr_color_gamut=default
 
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.
@@ -822,6 +882,15 @@ dx12_focus_analysis=false
 ;UE5.internal_anisotropic_filtering=8x
 ;UE5.internal_texture_mip_bias=-2
 ;UE5.display_gamma=srgb
+;UE5.depth_of_field=off
+;UE5.dlss_super_resolution=on
+;UE5.dlss_super_resolution_quality=performance
+;UE5.hdr_output=on
+;UE5.hdr_peak_luminance=1000
+;UE5.hdr_paper_white=200
+;UE5.hdr_ui_luminance=200
+;UE5.hdr_min_luminance=0.01
+;UE5.hdr_color_gamut=rec2020
 ; Third-party tool paths can be overridden per application. Values follow the
 ; same file/folder rules as [ThirdParty] above; empty uses the global path.
 ; Changing them requires relaunching the game.

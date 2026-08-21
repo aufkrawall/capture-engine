@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 638,
+    "entries": 639,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -109,6 +109,7 @@
       "common/config_load_misc.cpp",
       "common/config_load_overlay.cpp",
       "common/config_load_third_party.cpp",
+      "common/config_load_ue5.cpp",
       "common/config_load_whitelist.cpp",
       "common/cpp_exception_message.cpp",
       "common/crash_dump_writer.cpp",

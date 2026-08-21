@@ -294,3 +294,284 @@ TEST(UE5CVarOverridePolicyTest, OutputDeviceOverrideIsRefusedOnHdrDevices) {
     EXPECT_EQ(mipBias->guard, ce::ue5_cvar::ApplyGuard::Always);
     EXPECT_TRUE(ce::ue5_cvar::MayApplyOverObservedValue(*mipBias, 0x41C80000));
 }
+
+// Depth of field is a plain quality CVar: 0 is the engine's own "Off", and the
+// on direction restores UE's registered default (2) rather than inventing a
+// quality level the game never used.
+TEST(UE5CVarOverridePolicyTest, DepthOfFieldTogglesTheEngineQualityCVar) {
+    const auto* spec = FindSpec("r.DepthOfFieldQuality");
+    ASSERT_NE(spec, nullptr);
+    EXPECT_EQ(spec->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(spec->activation, ce::ue5_cvar::Activation::DepthOfField);
+
+    const ce::ue5_cvar::Settings defaults;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, defaults).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(defaults));
+
+    ce::ue5_cvar::Settings off;
+    off.depthOfField = ce::ue5_cvar::kToggleOff;
+    auto resolved = ce::ue5_cvar::Resolve(*spec, off);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), ce::ue5_cvar::kDepthOfFieldOffQuality);
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(off));
+
+    ce::ue5_cvar::Settings on;
+    on.depthOfField = ce::ue5_cvar::kToggleOn;
+    resolved = ce::ue5_cvar::Resolve(*spec, on);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), ce::ue5_cvar::kDepthOfFieldDefaultQuality);
+
+    // A value that is neither off nor on cannot be turned into a direction.
+    for (int32_t bogus : {-2, 2, 7}) {
+        ce::ue5_cvar::Settings rejected;
+        rejected.depthOfField = bogus;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, rejected).enabled) << bogus;
+        EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(rejected)) << bogus;
+    }
+}
+
+// Turning DLSS SR off is the plugin's own switch and nothing else. Turning it on
+// also has to move the engine levers that decide whether a third-party temporal
+// upscaler runs at all, which is exactly what a game that hides DLSS never does.
+TEST(UE5CVarOverridePolicyTest, DlssSuperResolutionForcesTheThirdPartyUpscalerPathOnlyWhenOn) {
+    const auto* enable = FindSpec("r.NGX.DLSS.Enable");
+    ASSERT_NE(enable, nullptr);
+    EXPECT_EQ(enable->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(enable->activation, ce::ue5_cvar::Activation::DlssSuperResolutionEnable);
+
+    struct ForceOnSpec {
+        std::string_view name;
+        int32_t value;
+    };
+    constexpr ForceOnSpec forceOn[] = {
+        {"r.NGX.Enable", 1},
+        {"r.TemporalAA.Upscaler", 1},
+        // AAM_TemporalAA: UE only offers the third-party upscaler on the TAA path.
+        {"r.AntiAliasingMethod", 2},
+    };
+
+    ce::ue5_cvar::Settings off;
+    off.dlssSuperResolution = ce::ue5_cvar::kToggleOff;
+    auto resolved = ce::ue5_cvar::Resolve(*enable, off);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 0);
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(off));
+
+    ce::ue5_cvar::Settings on;
+    on.dlssSuperResolution = ce::ue5_cvar::kToggleOn;
+    resolved = ce::ue5_cvar::Resolve(*enable, on);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 1);
+
+    for (const auto& item : forceOn) {
+        const auto* spec = FindSpec(item.name);
+        ASSERT_NE(spec, nullptr) << item.name;
+        EXPECT_EQ(spec->type, ce::ue5_cvar::ValueType::Int32) << item.name;
+        EXPECT_EQ(spec->activation, ce::ue5_cvar::Activation::DlssSuperResolutionForceOn) << item.name;
+
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, ce::ue5_cvar::Settings{}).enabled) << item.name;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, off).enabled)
+            << item.name << " must not be touched while only disabling DLSS";
+        const auto forced = ce::ue5_cvar::Resolve(*spec, on);
+        ASSERT_TRUE(forced.enabled) << item.name;
+        EXPECT_EQ(static_cast<int32_t>(forced.bits), item.value) << item.name;
+    }
+}
+
+TEST(UE5CVarOverridePolicyTest, DlssScreenPercentageOnlyAppliesWhileSuperResolutionIsForcedOn) {
+    const auto* spec = FindSpec("r.ScreenPercentage");
+    ASSERT_NE(spec, nullptr);
+    EXPECT_EQ(spec->type, ce::ue5_cvar::ValueType::Float);
+    EXPECT_EQ(spec->activation, ce::ue5_cvar::Activation::DlssSuperResolutionScreenPercentage);
+
+    ce::ue5_cvar::Settings percentageWithoutSr;
+    percentageWithoutSr.dlssScreenPercentage = 66.67f;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, percentageWithoutSr).enabled)
+        << "a resolution scale must never be forced on a game that did not ask for DLSS";
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(percentageWithoutSr));
+
+    ce::ue5_cvar::Settings on;
+    on.dlssSuperResolution = ce::ue5_cvar::kToggleOn;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, on).enabled)
+        << "forcing DLSS on without a quality mode leaves the game's own screen percentage";
+
+    for (float percentage : {33.33f, 50.0f, 58.0f, 66.67f, 100.0f}) {
+        on.dlssScreenPercentage = percentage;
+        const auto resolved = ce::ue5_cvar::Resolve(*spec, on);
+        ASSERT_TRUE(resolved.enabled) << percentage;
+        EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), percentage);
+    }
+
+    for (float outside : {0.0f, 24.99f, 100.01f, -50.0f}) {
+        on.dlssScreenPercentage = outside;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, on).enabled) << outside;
+    }
+}
+
+// Every HDR knob is written in the unit the engine's own help text names, and
+// the black floor is the one that is configured in nits but stored as a log10
+// level, so the conversion belongs here rather than in the user's config file.
+TEST(UE5CVarOverridePolicyTest, HdrOverridesUseTheEngineUnits) {
+    const auto* output = FindSpec("r.HDR.EnableHDROutput");
+    const auto* peak = FindSpec("r.HDR.Display.MaxLuminance");
+    const auto* paperWhite = FindSpec("r.HDR.Display.MidLuminance");
+    const auto* uiLuminance = FindSpec("r.HDR.UI.Luminance");
+    const auto* minLuminance = FindSpec("r.HDR.Display.MinLuminanceLog10");
+    const auto* gamut = FindSpec("r.HDR.Display.ColorGamut");
+    ASSERT_NE(output, nullptr);
+    ASSERT_NE(peak, nullptr);
+    ASSERT_NE(paperWhite, nullptr);
+    ASSERT_NE(uiLuminance, nullptr);
+    ASSERT_NE(minLuminance, nullptr);
+    ASSERT_NE(gamut, nullptr);
+    // Measured from the UE5 registrations: the int32 registration passes its
+    // default in r8d, the float one in xmm2.
+    EXPECT_EQ(output->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(peak->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(gamut->type, ce::ue5_cvar::ValueType::Int32);
+    EXPECT_EQ(paperWhite->type, ce::ue5_cvar::ValueType::Float);
+    EXPECT_EQ(uiLuminance->type, ce::ue5_cvar::ValueType::Float);
+    EXPECT_EQ(minLuminance->type, ce::ue5_cvar::ValueType::Float);
+
+    const ce::ue5_cvar::Settings defaults;
+    for (const auto* spec : {output, peak, paperWhite, uiLuminance, minLuminance, gamut})
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*spec, defaults).enabled) << spec->name;
+
+    ce::ue5_cvar::Settings settings;
+    settings.hdrOutput = ce::ue5_cvar::kToggleOn;
+    settings.hdrPeakLuminance = 1000;
+    settings.hdrPaperWhite = 200.0f;
+    settings.hdrUiLuminance = 300.0f;
+    settings.hdrMinLuminance = 0.001f;
+    settings.hdrColorGamut = 2;
+
+    auto resolved = ce::ue5_cvar::Resolve(*output, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 1);
+    resolved = ce::ue5_cvar::Resolve(*peak, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 1000);
+    resolved = ce::ue5_cvar::Resolve(*paperWhite, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 200.0f);
+    resolved = ce::ue5_cvar::Resolve(*uiLuminance, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), 300.0f);
+    resolved = ce::ue5_cvar::Resolve(*minLuminance, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(resolved.bits), -3.0f) << "0.001 nits is log10 -3";
+    resolved = ce::ue5_cvar::Resolve(*gamut, settings);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 2);
+
+    ce::ue5_cvar::Settings hdrOff;
+    hdrOff.hdrOutput = ce::ue5_cvar::kToggleOff;
+    resolved = ce::ue5_cvar::Resolve(*output, hdrOff);
+    ASSERT_TRUE(resolved.enabled);
+    EXPECT_EQ(static_cast<int32_t>(resolved.bits), 0);
+}
+
+TEST(UE5CVarOverridePolicyTest, HdrValuesOutsideTheAcceptedRangeLeaveTheEngineAlone) {
+    const auto* peak = FindSpec("r.HDR.Display.MaxLuminance");
+    const auto* paperWhite = FindSpec("r.HDR.Display.MidLuminance");
+    const auto* uiLuminance = FindSpec("r.HDR.UI.Luminance");
+    const auto* minLuminance = FindSpec("r.HDR.Display.MinLuminanceLog10");
+    const auto* gamut = FindSpec("r.HDR.Display.ColorGamut");
+    ASSERT_NE(peak, nullptr);
+    ASSERT_NE(paperWhite, nullptr);
+    ASSERT_NE(uiLuminance, nullptr);
+    ASSERT_NE(minLuminance, nullptr);
+    ASSERT_NE(gamut, nullptr);
+
+    for (int32_t nits : {0, 79, 10001, -100}) {
+        ce::ue5_cvar::Settings settings;
+        settings.hdrPeakLuminance = nits;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*peak, settings).enabled) << nits;
+        EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings)) << nits;
+    }
+    for (float nits : {0.0f, 19.99f, 1000.01f, -5.0f}) {
+        ce::ue5_cvar::Settings settings;
+        settings.hdrPaperWhite = nits;
+        settings.hdrUiLuminance = nits;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*paperWhite, settings).enabled) << nits;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*uiLuminance, settings).enabled) << nits;
+        EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings)) << nits;
+    }
+    for (float nits : {0.0f, 0.00009f, 10.01f, -1.0f}) {
+        ce::ue5_cvar::Settings settings;
+        settings.hdrMinLuminance = nits;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*minLuminance, settings).enabled) << nits;
+        EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings)) << nits;
+    }
+    for (int32_t value : {-1, -2, 5, 9}) {
+        ce::ue5_cvar::Settings settings;
+        settings.hdrColorGamut = value;
+        EXPECT_FALSE(ce::ue5_cvar::Resolve(*gamut, settings).enabled) << value;
+        EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings)) << value;
+    }
+}
+
+// CE must not argue with itself: display_gamma=srgb selects an SDR output device,
+// so it has to stand down when the same configuration is asking the engine for
+// HDR output. The exponent is unaffected - it is a different CVar.
+TEST(UE5CVarOverridePolicyTest, ForcedHdrOutputSuppressesTheSrgbOutputDeviceWrite) {
+    const auto* device = FindSpec("r.HDR.Display.OutputDevice");
+    const auto* exponent = FindSpec("r.TonemapperGamma");
+    ASSERT_NE(device, nullptr);
+    ASSERT_NE(exponent, nullptr);
+
+    ce::ue5_cvar::Settings srgb;
+    srgb.displayGamma = ce::ue5_cvar::kDisplayGammaSrgb;
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*device, srgb).enabled);
+
+    ce::ue5_cvar::Settings withHdr = srgb;
+    withHdr.hdrOutput = ce::ue5_cvar::kToggleOn;
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*device, withHdr).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*exponent, withHdr).enabled);
+
+    // Explicitly disabling HDR output is not a reason to hold the write back.
+    ce::ue5_cvar::Settings withHdrOff = srgb;
+    withHdrOff.hdrOutput = ce::ue5_cvar::kToggleOff;
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*device, withHdrOff).enabled);
+}
+
+TEST(UE5CVarOverridePolicyTest, NewOverridesAreIndependentlySelectable) {
+    ce::ue5_cvar::Settings settings;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+
+    settings.depthOfField = ce::ue5_cvar::kToggleOff;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.depthOfField = ce::ue5_cvar::kToggleDefault;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+
+    settings.dlssSuperResolution = ce::ue5_cvar::kToggleOn;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.dlssSuperResolution = ce::ue5_cvar::kToggleDefault;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+
+    settings.hdrOutput = ce::ue5_cvar::kToggleOn;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.hdrOutput = ce::ue5_cvar::kToggleDefault;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+
+    settings.hdrPaperWhite = 200.0f;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    settings.hdrPaperWhite = 0.0f;
+    EXPECT_FALSE(ce::ue5_cvar::AnyEnabled(settings));
+
+    settings.hdrColorGamut = 0;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings))
+        << "Rec709 is a real gamut selection, not the untouched state";
+}
+
+// Every spec name has to be unique: two entries sharing a CVar would race for the
+// same console object, and the install path resolves by name.
+TEST(UE5CVarOverridePolicyTest, SpecNamesAreUnique) {
+    for (std::size_t outer = 0; outer < ce::ue5_cvar::kSpecs.size(); ++outer) {
+        ASSERT_NE(ce::ue5_cvar::kSpecs[outer].name, nullptr) << outer;
+        for (std::size_t inner = outer + 1; inner < ce::ue5_cvar::kSpecs.size(); ++inner) {
+            EXPECT_STRNE(ce::ue5_cvar::kSpecs[outer].name, ce::ue5_cvar::kSpecs[inner].name)
+                << outer << " vs " << inner;
+        }
+    }
+}

@@ -180,6 +180,16 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";UE5.tonemapper_sharpen=0.5", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.internal_fps_limit=60", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.internal_anisotropic_filtering=8x", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.depth_of_field=off", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.dlss_super_resolution=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.dlss_super_resolution_quality=performance", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_output=on", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_peak_luminance=1000", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_paper_white=200", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_ui_luminance=200", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_min_luminance=0.01", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.hdr_color_gamut=rec2020", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.reshade_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.optiscaler_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.specialk_dll_path=", profileExample), std::string::npos);

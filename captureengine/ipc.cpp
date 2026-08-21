@@ -190,6 +190,15 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.internalAnisotropicFiltering = src.internalAnisotropicFiltering;
         dst.internalTextureMipBias = src.internalTextureMipBias;
         dst.displayGamma = src.displayGamma;
+        dst.depthOfField = src.depthOfField;
+        dst.dlssSuperResolution = src.dlssSuperResolution;
+        dst.dlssScreenPercentage = src.dlssScreenPercentage;
+        dst.hdrOutput = src.hdrOutput;
+        dst.hdrPeakLuminance = src.hdrPeakLuminance;
+        dst.hdrPaperWhite = src.hdrPaperWhite;
+        dst.hdrUiLuminance = src.hdrUiLuminance;
+        dst.hdrMinLuminance = src.hdrMinLuminance;
+        dst.hdrColorGamut = src.hdrColorGamut;
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;

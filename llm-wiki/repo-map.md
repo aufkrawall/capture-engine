@@ -61,9 +61,10 @@ anchors that predate the split are approximate.
   | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
-  - `shared_defs.h` - shared-memory ABI (current version `40`).
-  - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist.cpp`) -
-    config model, loader, and themed section loaders (`ConfigReader`).
+  - `shared_defs.h` - shared-memory ABI (current version `44`).
+  - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5.cpp`) -
+    config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
+    whole `[UE5]` vocabulary.
   - `process_ipc.h/.cpp` + `process_ipc_client.cpp` - private IPC channels.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
@@ -83,8 +84,9 @@ anchors that predate the split are approximate.
     `main_ue5.cpp` (policy/lifecycle/service pass), `main_ue5_scan.cpp` (literal + candidate discovery),
     `main_ue5_install.cpp` (install, refresh, read-back verification, restore), `main_ue5_memory.cpp`
     (process-memory/PE primitives), `main_ue5_registry.cpp` (resolution through UE's console-object map).
-    `hook/common/ue5_cvar_override_policy.h` defines the exact UE5 bundles and sharpen precedence,
-    `ue5_redirect_plan.h` the redirect undo contract, `ue5_console_registry.h` the registry decoders.
+    `hook/common/ue5_cvar_override_policy.h` defines the exact UE5 bundles, sharpen precedence, and the
+    depth-of-field / DLSS Super Resolution / HDR specs, `ue5_redirect_plan.h` the redirect undo contract,
+    `ue5_console_registry.h` the registry decoders. Topic page: `llm-wiki/ue5-cvar-overrides.md`.
   - `apis/` - per-API hook sets, de-inlined into semantic units:
     - DX12: `dx12_hook.cpp` (facade) + `dx12_hook_internal.h` + semantic units:
       `dx12_hook_main.cpp` (module lifecycle), `dx12_hook_fg_state.cpp` /

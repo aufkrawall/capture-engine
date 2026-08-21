@@ -536,6 +536,15 @@ existing NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` path, while
 bundle from `config.ini`. Neither option invents missing RR inputs, spoofs driver support, or blocks ordinary DLSS SR
 fallback. A compatible `nvngx_dlssd.dll` can still be supplied separately with `[DLSS] dlss_rr_dll_path`.
 
+`depth_of_field`, `dlss_super_resolution` and the `hdr_*` settings drive the same mechanism for engine features a game
+may not expose at all: `depth_of_field=off|on` writes `r.DepthOfFieldQuality`; `dlss_super_resolution=on` sets the
+NVIDIA plugin's own `r.NGX.DLSS.Enable` **and** the engine levers that route rendering through the third-party
+temporal upscaler (`r.NGX.Enable`, `r.TemporalAA.Upscaler`, `r.AntiAliasingMethod=2`), with
+`dlss_super_resolution_quality` selecting the mode through UE's screen percentage; and `hdr_output`,
+`hdr_peak_luminance`, `hdr_paper_white`, `hdr_ui_luminance`, `hdr_min_luminance` and `hdr_color_gamut` drive
+`r.HDR.EnableHDROutput` and the `r.HDR.Display.*`/`r.HDR.UI.*` parameters in the nits the engine documents. None of
+them can add a missing plugin, invent HDR output on an SDR display, or create depth of field a game never configured.
+
 `disable_post_processing_effects=on` disables UE's built-in sharpen, film grain, vignette, motion blur, and chromatic
 aberration through dedicated CVars/show flags without lowering `r.Tonemapper.Quality`. Set
 `tonemapper_sharpen=0..10` to restore a chosen built-in tonemapper sharpen strength while keeping the other effects

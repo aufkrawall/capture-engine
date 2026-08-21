@@ -220,6 +220,31 @@ struct GraphicsConfig {
     // UE's display gamma transform: negative leaves the engine alone, 0 selects
     // the piecewise sRGB/Rec709 transform, 1.0..3.0 a pure power curve.
     float displayGamma = -1.0f;
+    // UE's own depth of field (r.DepthOfFieldQuality): -1 leaves the engine
+    // alone, 0 disables depth of field, 1 restores UE's default quality.
+    int depthOfField = -1;
+    // UE's DLSS Super Resolution path (the NVIDIA plugin's r.NGX.DLSS.Enable
+    // plus the engine levers that route rendering through a third-party temporal
+    // upscaler): -1 leaves the game alone, 0 disables it, 1 forces it on.
+    int dlssSuperResolution = -1;
+    // Screen percentage the forced DLSS SR path requests, which is what selects
+    // its quality mode (100 = DLAA). Outside 25..100 leaves r.ScreenPercentage
+    // alone; only written while dlssSuperResolution is on.
+    float dlssScreenPercentage = 0.0f;
+    // UE's HDR output (r.HDR.EnableHDROutput): -1 leaves the game alone, 0/1
+    // force it off/on.
+    int hdrOutput = -1;
+    // HDR display parameters in nits; 0 or out of range leaves each CVar alone.
+    // Peak is r.HDR.Display.MaxLuminance, paper white r.HDR.Display.MidLuminance
+    // (the engine's nit level for 18% gray), UI luminance r.HDR.UI.Luminance, and
+    // the black floor r.HDR.Display.MinLuminanceLog10 (converted to log10).
+    int hdrPeakLuminance = 0;
+    float hdrPaperWhite = 0.0f;
+    float hdrUiLuminance = 0.0f;
+    float hdrMinLuminance = 0.0f;
+    // r.HDR.Display.ColorGamut: -1 leaves the engine alone, 0..4 selects the
+    // output gamut (Rec709, DCI-P3, Rec2020, ACES, ACEScg).
+    int hdrColorGamut = -1;
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;

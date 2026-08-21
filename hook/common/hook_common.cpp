@@ -494,6 +494,15 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.internalAnisotropicFiltering = shmGfx.internalAnisotropicFiltering;
         mergedConfig.internalTextureMipBias = shmGfx.internalTextureMipBias;
         mergedConfig.displayGamma = shmGfx.displayGamma;
+        mergedConfig.depthOfField = shmGfx.depthOfField;
+        mergedConfig.dlssSuperResolution = shmGfx.dlssSuperResolution;
+        mergedConfig.dlssScreenPercentage = shmGfx.dlssScreenPercentage;
+        mergedConfig.hdrOutput = shmGfx.hdrOutput;
+        mergedConfig.hdrPeakLuminance = shmGfx.hdrPeakLuminance;
+        mergedConfig.hdrPaperWhite = shmGfx.hdrPaperWhite;
+        mergedConfig.hdrUiLuminance = shmGfx.hdrUiLuminance;
+        mergedConfig.hdrMinLuminance = shmGfx.hdrMinLuminance;
+        mergedConfig.hdrColorGamut = shmGfx.hdrColorGamut;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

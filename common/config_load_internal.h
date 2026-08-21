@@ -278,6 +278,7 @@ void RemoveOverlappingLegacyEntry(const WhitelistEntry& profileTarget, std::vect
 // Per-section loaders invoked by LoadConfig in order.
 void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection, const std::string& path) ;
 void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) ;
+void LoadUE5Settings(ConfigReader& reader, AppConfig& config) ;
 void LoadThirdParty(ConfigReader& reader, AppConfig& config) ;
 void LoadFpsLimiter(ConfigReader& reader, AppConfig& config) ;
 void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& path, bool& pseudoProcessListSet) ;

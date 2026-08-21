@@ -64,17 +64,20 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             judged on the compiled layout instead of exact build identity.
 //             The rename is what keeps an already-running older inject process
 //             from handing us its smaller discovery section.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 43;
+// Version 44: Added the UE5 depth of field, DLSS Super Resolution and HDR
+//             override fields (r.DepthOfFieldQuality, r.NGX.DLSS.Enable and the
+//             third-party upscaler levers, r.HDR.*)
+static constexpr uint32_t SHARED_MEMORY_VERSION = 44;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_43_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_44_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_43";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_44";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -494,6 +497,25 @@ struct SharedGraphicsConfig {
     // The matching r.HDR.Display.OutputDevice write is guarded so it can never
     // pull a game out of an HDR output device.
     float displayGamma;
+    // UE depth of field (r.DepthOfFieldQuality): -1 untouched, 0 off, 1 on.
+    int32_t depthOfField;
+    // UE DLSS Super Resolution (r.NGX.DLSS.Enable plus the engine levers that
+    // route rendering through a third-party temporal upscaler): -1 untouched,
+    // 0 off, 1 on. The screen percentage selects the forced path's quality mode
+    // and is only written while SR is forced on; outside 25..100 it is untouched.
+    int32_t dlssSuperResolution;
+    float dlssScreenPercentage;
+    // UE HDR output (r.HDR.EnableHDROutput): -1 untouched, 0 off, 1 on. The
+    // luminance fields are nits (0 or out of range = untouched) for
+    // r.HDR.Display.MaxLuminance, r.HDR.Display.MidLuminance, r.HDR.UI.Luminance
+    // and r.HDR.Display.MinLuminanceLog10 (converted to log10 hook-side).
+    int32_t hdrOutput;
+    int32_t hdrPeakLuminance;
+    float hdrPaperWhite;
+    float hdrUiLuminance;
+    float hdrMinLuminance;
+    // r.HDR.Display.ColorGamut: -1 untouched, 0..4.
+    int32_t hdrColorGamut;
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -506,6 +528,31 @@ inline constexpr float kUE5TextureMipBiasLimit = 15.0f;
 constexpr bool IsUE5TextureMipBiasRequested(float bias) noexcept {
     return bias >= -kUE5TextureMipBiasLimit && bias <= kUE5TextureMipBiasLimit;
 }
+
+// Screen percentage the forced UE5 DLSS Super Resolution path may request. 100 is
+// DLAA; the NVIDIA plugin resolves everything below it to one of its quality
+// modes. The hook-side policy carries the same bounds and the unit tests pin the
+// two together, so a value that survives configuration is one the hook accepts.
+inline constexpr float kUE5DlssScreenPercentageMin = 25.0f;
+inline constexpr float kUE5DlssScreenPercentageMax = 100.0f;
+
+constexpr bool IsUE5DlssScreenPercentageRequested(float percentage) noexcept {
+    return percentage >= kUE5DlssScreenPercentageMin && percentage <= kUE5DlssScreenPercentageMax;
+}
+
+// UE5 HDR parameter bounds, in the units the engine's own CVar help documents:
+// peak and paper white in nits, the black floor in nits (the hook converts it to
+// the log10 level r.HDR.Display.MinLuminanceLog10 stores). Same contract as the
+// screen percentage above - configuration and hook-side policy carry one set of
+// bounds, pinned together by the unit tests.
+inline constexpr int32_t kUE5HdrPeakLuminanceMin = 80;
+inline constexpr int32_t kUE5HdrPeakLuminanceMax = 10000;
+inline constexpr float kUE5HdrPaperWhiteMin = 20.0f;
+inline constexpr float kUE5HdrPaperWhiteMax = 1000.0f;
+inline constexpr float kUE5HdrUiLuminanceMin = 20.0f;
+inline constexpr float kUE5HdrUiLuminanceMax = 1000.0f;
+inline constexpr float kUE5HdrMinLuminanceMin = 0.0001f;
+inline constexpr float kUE5HdrMinLuminanceMax = 10.0f;
 
 static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
                   offsetof(SharedGraphicsConfig, msaaSamples) + 32,
@@ -534,7 +581,13 @@ static_assert(offsetof(SharedGraphicsConfig, internalTextureMipBias) ==
 static_assert(offsetof(SharedGraphicsConfig, displayGamma) ==
                   offsetof(SharedGraphicsConfig, internalTextureMipBias) + sizeof(float),
               "UE5 display gamma must follow the texture mip bias");
-static_assert(sizeof(SharedGraphicsConfig) == 384,
+static_assert(offsetof(SharedGraphicsConfig, depthOfField) ==
+                  offsetof(SharedGraphicsConfig, displayGamma) + sizeof(float),
+              "UE5 depth of field must follow the display gamma");
+static_assert(offsetof(SharedGraphicsConfig, hdrColorGamut) ==
+                  offsetof(SharedGraphicsConfig, depthOfField) + 8 * sizeof(int32_t),
+              "the UE5 DLSS SR and HDR fields must stay contiguous after depth of field");
+static_assert(sizeof(SharedGraphicsConfig) == 420,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

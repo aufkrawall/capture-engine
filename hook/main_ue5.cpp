@@ -30,9 +30,21 @@ ce::ue5_cvar::Settings MakeSettings(const GraphicsConfig& config) {
       config.internalAnisotropicFiltering,
       config.internalTextureMipBias,
       config.displayGamma,
+      config.depthOfField,
+      config.dlssSuperResolution,
+      config.dlssScreenPercentage,
+      config.hdrOutput,
+      config.hdrPeakLuminance,
+      config.hdrPaperWhite,
+      config.hdrUiLuminance,
+      config.hdrMinLuminance,
+      config.hdrColorGamut,
   };
 }
 
+// Floats are compared by bit pattern on purpose: these carry sentinels ("leave
+// the engine alone") as ordinary values, and a change between two sentinels
+// still has to re-resolve the desired override set.
 bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settings& right) {
   return left.forceRayReconstruction == right.forceRayReconstruction &&
          left.rayReconstructionOptimalSettings == right.rayReconstructionOptimalSettings &&
@@ -44,7 +56,19 @@ bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settin
          left.internalAnisotropicFiltering == right.internalAnisotropicFiltering &&
          std::bit_cast<uint32_t>(left.internalTextureMipBias) ==
              std::bit_cast<uint32_t>(right.internalTextureMipBias) &&
-         std::bit_cast<uint32_t>(left.displayGamma) == std::bit_cast<uint32_t>(right.displayGamma);
+         std::bit_cast<uint32_t>(left.displayGamma) == std::bit_cast<uint32_t>(right.displayGamma) &&
+         left.depthOfField == right.depthOfField &&
+         left.dlssSuperResolution == right.dlssSuperResolution &&
+         std::bit_cast<uint32_t>(left.dlssScreenPercentage) ==
+             std::bit_cast<uint32_t>(right.dlssScreenPercentage) &&
+         left.hdrOutput == right.hdrOutput && left.hdrPeakLuminance == right.hdrPeakLuminance &&
+         std::bit_cast<uint32_t>(left.hdrPaperWhite) ==
+             std::bit_cast<uint32_t>(right.hdrPaperWhite) &&
+         std::bit_cast<uint32_t>(left.hdrUiLuminance) ==
+             std::bit_cast<uint32_t>(right.hdrUiLuminance) &&
+         std::bit_cast<uint32_t>(left.hdrMinLuminance) ==
+             std::bit_cast<uint32_t>(right.hdrMinLuminance) &&
+         left.hdrColorGamut == right.hdrColorGamut;
 }
 
 void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
@@ -148,13 +172,18 @@ void RefreshOverrides(const GraphicsConfig& config) {
     detail::ResetConsoleRegistry();
     HookLogImportant(
         "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
-        "internalFpsLimit=%.3f internalAF=%d internalTextureMipBias=%.3f displayGamma=%.3f; "
+        "internalFpsLimit=%.3f internalAF=%d internalTextureMipBias=%.3f displayGamma=%.3f "
+        "depthOfField=%d dlssSR=%d dlssScreenPercentage=%.2f hdrOutput=%d hdrPeak=%d "
+        "hdrPaperWhite=%.1f hdrUiLuminance=%.1f hdrMinLuminance=%.4f hdrColorGamut=%d; "
         "installing persistent in-memory CVar shadows without changing Engine.ini",
         settings.forceRayReconstruction ? 1 : 0,
         settings.rayReconstructionOptimalSettings ? 1 : 0,
         settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen,
         settings.internalFpsLimit, settings.internalAnisotropicFiltering,
-        settings.internalTextureMipBias, settings.displayGamma);
+        settings.internalTextureMipBias, settings.displayGamma, settings.depthOfField,
+        settings.dlssSuperResolution, settings.dlssScreenPercentage, settings.hdrOutput,
+        settings.hdrPeakLuminance, settings.hdrPaperWhite, settings.hdrUiLuminance,
+        settings.hdrMinLuminance, settings.hdrColorGamut);
   }
 
   detail::ForgetUnloadedOverrides();
