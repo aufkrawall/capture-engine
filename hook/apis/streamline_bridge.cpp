@@ -319,7 +319,32 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
     }
 
     IUnknown* adapterForCreate = ResolveEquivalentAdapter(adapter);
-    const HRESULT hr = create(adapterForCreate, minimumFeatureLevel, riid, ppDevice);
+    if (ppDevice) {
+        *ppDevice = nullptr;
+    }
+    HRESULT hr = create(adapterForCreate, minimumFeatureLevel, riid, ppDevice);
+
+    // The LUID-matched request still returned DEVICE_RESET on Witcher 3's real-device pass
+    // (`20260822_003051`) even though the same route had already created a device. A null retry
+    // is a narrowly scoped diagnostic fallback for device-lost-class failures only: it asks
+    // DXGI/D3D12 to select its default hardware adapter when the explicitly selected object is
+    // rejected. If this succeeds on a multi-GPU system, the warning below makes the departure
+    // from the game's requested adapter visible rather than silently changing GPU selection.
+    const bool deviceLostClass = hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG ||
+                                 hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+    if (FAILED(hr) && deviceLostClass && adapterForCreate && ppDevice) {
+        *ppDevice = nullptr;
+        const HRESULT defaultHr = create(nullptr, minimumFeatureLevel, riid, ppDevice);
+        HookLogImportant(
+            "Streamline bridge: adapter-bound D3D12CreateDevice returned hr=0x%08X; null/default retry "
+            "returned hr=0x%08X (adapter=%p resolved=%p featureLevel=%u)",
+            static_cast<uint32_t>(hr), static_cast<uint32_t>(defaultHr), static_cast<void*>(adapter),
+            static_cast<void*>(adapterForCreate), static_cast<unsigned>(minimumFeatureLevel));
+        if (SUCCEEDED(defaultHr)) {
+            hr = defaultHr;
+        }
+    }
+
     if (adapterForCreate != adapter && adapterForCreate) {
         adapterForCreate->Release();
     }
@@ -330,7 +355,8 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
             char iidText[40] = {};
             DescribeIid(riid, iidText);
             HookLogImportant(
-                "Streamline bridge: native D3D12CreateDevice failed (hr=0x%08X adapter=%p resolved=%p "
+                "Streamline bridge: native D3D12CreateDevice failed after fallback (hr=0x%08X adapter=%p "
+                "resolved=%p "
                 "featureLevel=%u riid=%s)",
                 encoded, static_cast<void*>(adapter), static_cast<void*>(adapterForCreate),
                 static_cast<unsigned>(minimumFeatureLevel), iidText);

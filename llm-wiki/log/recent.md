@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-08-22 - Fresh Streamline bridge adapters can still be reset; add scoped default retry
+
+Witcher 3 `20260822_003051` created the first bridged D3D12 device successfully and resolved all
+feature contexts, but its later `ID3D12Device` request still returned `DXGI_ERROR_DEVICE_RESET`
+with feature level 11.0—even after resolving a fresh DXGI adapter by the requested LUID.
+
+- Keep LUID normalization, but on device-lost-class failures only (`REMOVED`, `HUNG`, `RESET`,
+  driver internal error), retry once with a null/default adapter.
+- Log both attempts, both adapter pointers and the feature level. This keeps multi-GPU selection
+  changes visible instead of silently substituting hardware.
+
 ### 2026-08-22 - Streamline bridge adapters need a fresh LUID-matched instance
 
 Witcher 3 `20260822_001759` proved that native `D3D12CreateDevice` alone was not enough. The first

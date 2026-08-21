@@ -255,14 +255,17 @@ TEST(StreamlineBridgePolicyTest, ProvidesAStableProjectIdentityWhenNoAppIdIsObse
 }
 
 TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitlyToStreamline) {
-    // Sessions 20260821_234606 and 20260822_001759 both show DXGI_ERROR_DEVICE_RESET when the
-    // later real-device request reused a foreign/proxy-owned adapter instance. D3D12 needs the
-    // same physical adapter, not that object's lifetime; normalize it by LUID first.
+    // Sessions 20260821_234606 and 20260822_001759 show DXGI_ERROR_DEVICE_RESET on the later
+    // real-device request. Normalize a foreign/proxy-owned adapter by LUID first. Session
+    // 20260822_003051 showed that even the fresh instance can be rejected, so device-lost-class
+    // failures get one logged default-adapter retry rather than terminating the title.
     const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("IUnknown* ResolveEquivalentAdapter(IUnknown* adapter)"), std::string::npos);
     EXPECT_NE(source.find("factory->EnumAdapterByLuid(desc.AdapterLuid"), std::string::npos);
+    EXPECT_NE(source.find("const bool deviceLostClass ="), std::string::npos);
+    EXPECT_NE(source.find("null/default retry"), std::string::npos);
     EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);

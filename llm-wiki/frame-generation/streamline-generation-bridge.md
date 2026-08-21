@@ -288,6 +288,12 @@ that factory, and gives that instance to D3D12. This preserves multi-GPU intent 
 another module's object lifetime out of D3D12. Device failures log requested/resolved adapters,
 feature level and IID.
 
+Session `20260822_003051` proved that even a freshly LUID-matched instance could be rejected with
+the same reset while an earlier device through the route succeeded. For device-lost-class HRESULTs
+only, CE makes one logged retry with DXGI/D3D12's default adapter. On multi-GPU systems this is a
+visible compatibility fallback, not a silent policy: the log names both HRESULTs and both adapter
+pointers.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
