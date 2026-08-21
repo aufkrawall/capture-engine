@@ -516,16 +516,16 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - `DLSSGConstants` beyond `mode` is unconfirmed. `+4` is mapped to `numFramesToGenerate`
   because it was constantly 1 and 2.x defaults to 1 - plausible, not proven, and it is the
   field `dlss_fg_factor` interacts with.
-- The `slSetTag` deferral (1.x carries no command buffer, so tags flush at the next
-  `slEvaluateFeature`) is the same pattern the unbridged 1.x overlay route uses, but has not
-  been exercised through the bridge.
+- `slSetTag` translates immediately to deprecated 2.x `slSetTag`; each tag is
+  `eValidUntilPresent`, so the command buffer is allowed to be null. Deferral overflowed in
+  `20260822_005204` and left evaluate with incomplete inputs.
 - `Extent` is assumed to match 2.x's `{top,left,width,height}`; only consumed when the game
   supplies one.
 - `dlss_sr_dll_path` / `dlss_fg_dll_path` keep working while bridged (they are NGX runtimes,
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-21 (build 0.1.6220; ABI measurements from The Witcher 3 sessions
+Last verified 2026-08-22 (build 0.1.6231; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

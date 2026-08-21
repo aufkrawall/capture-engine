@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 
 #include "../common/hook_common.h"
 #include "streamline_bridge_policy.h"
@@ -69,6 +70,15 @@ PFun_slDLSSSetOptions* g_slDLSSSetOptions = nullptr;
 PFun_slDLSSGetOptimalSettings* g_slDLSSGetOptimalSettings = nullptr;
 PFun_slDLSSGSetOptions* g_slDLSSGSetOptions = nullptr;
 PFun_slReflexSetOptions* g_slReflexSetOptions = nullptr;
+
+// 2.x treats repeated SetOptions as a Present-race warning; 1.x drives feature constants
+// every frame. Keep the last translated state per viewport and forward only changes.
+struct CachedDLSSGOptions {
+    uint32_t mode;
+    uint32_t numFramesToGenerate;
+};
+std::mutex g_dlssgOptionsMutex;
+std::unordered_map<uint32_t, CachedDLSSGOptions> g_dlssgOptionsByViewport;
 
 // Feature entry points exist only once a device is set - `slGetFeatureFunction` says so in
 // the SDK header itself - so they are resolved from the calls that need them rather than at
@@ -216,32 +226,6 @@ sl::FrameToken* TokenFor(uint32_t frameIndex) {
 // 1.x `slSetTag` carries no command buffer, so tags are held until the next
 // `slEvaluateFeature`, which supplies one. That is the same deferral the non-bridged 1.x
 // overlay route already uses, and it still lands before the present DLSS-G consumes.
-constexpr size_t kMaxPendingTags = 16;
-
-// Held as plain data, not as `sl::Resource` / `sl::ResourceTag`.
-//
-// Those carry non-trivial constructors, and an array of them at namespace scope is a
-// throwing static initialization inside a DLL - something that cannot be caught and that
-// clang-tidy rightly refuses. Staging the fields instead and building the SDK structs on
-// the stack when they are flushed keeps the hot path allocation-free and the module's
-// static initialization trivial.
-struct PendingTag {
-    bool hasResource;
-    bool hasExtent;
-    uint32_t bufferType;
-    uint32_t resourceType;
-    void* native;
-    void* memory;
-    void* view;
-    uint32_t state;
-    uint32_t top, left, width, height;
-};
-
-std::mutex g_tagMutex;
-PendingTag g_pendingTags[kMaxPendingTags]{};
-size_t g_pendingTagCount = 0;
-uint32_t g_pendingViewport = 0;
-
 }  // namespace
 
 bool ResolveTranslationTargets(void* v2InterposerModule) {
@@ -360,8 +344,6 @@ bool TranslateIsFeatureSupported(uint32_t feature1x, uint32_t* adapterBitMask) {
 }
 
 bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, const void* extent1x) {
-    // Tags are only staged here, but staging one for a runtime that may never receive it
-    // just grows a buffer that the flush would then push into a deviceless runtime.
     static std::atomic<bool> deviceLatch{false};
     if (!DeviceReadyFor(V2Call::SetTag, deviceLatch)) {
         return false;
@@ -373,38 +355,57 @@ bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, c
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(g_tagMutex);
-    if (g_pendingTagCount >= kMaxPendingTags) {
-        static std::atomic<bool> latch{false};
-        RefuseOnce(latch, "slSetTag", "more tags are pending than one frame should ever carry");
+    if (!g_slSetTag) {
         return false;
     }
 
-    PendingTag& pending = g_pendingTags[g_pendingTagCount];
-    pending = {};
-    pending.bufferType = bufferType2x;
-
-    // A null resource is a legitimate 1.x "untag this slot".
+    // Translate immediately. 2.x's deprecated slSetTag explicitly permits a null command
+    // buffer when every tag is eValidUntilPresent, which is exactly the 1.x call shape.
+    // Deferring these tags until evaluate mixed frames/viewports once the title staged more
+    // than the arbitrary queue capacity, after which evaluate had neither the complete input
+    // set nor valid SR resources (`20260822_005204`).
+    sl::Resource resource{};
     if (resource1x) {
         const auto* source = static_cast<const V1Resource*>(resource1x);
-        pending.hasResource = true;
-        pending.resourceType = source->type;
-        pending.native = source->native;
-        pending.memory = source->memory;
-        pending.view = source->view;
-        pending.state = source->state;
+        resource.type = (source->type == 0) ? sl::ResourceType::eTex2d : sl::ResourceType::eBuffer;
+        resource.native = source->native;
+        resource.memory = source->memory;
+        resource.view = source->view;
+        resource.state = source->state;
     }
+
     if (extent1x) {
-        const auto* source = static_cast<const V1Extent*>(extent1x);
-        pending.hasExtent = true;
-        pending.top = source->top;
-        pending.left = source->left;
-        pending.width = source->width;
-        pending.height = source->height;
+        const auto in = *static_cast<const V1Extent*>(extent1x);
+        sl::Extent extent{};
+        extent.top = in.top;
+        extent.left = in.left;
+        extent.width = in.width;
+        extent.height = in.height;
+        sl::ResourceTag tag(resource1x ? &resource : nullptr,
+                            static_cast<sl::BufferType>(bufferType2x),
+                            sl::ResourceLifecycle::eValidUntilPresent, &extent);
+        sl::ResourceTag tags[] = {tag};
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: first slSetTag translated - viewport=%u buffer=%u "
+                             "resource=%p",
+                             id, bufferType2x, resource1x ? resource.native : nullptr);
+        }
+        static std::atomic<bool> latch{false};
+        return ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch);
     }
-    g_pendingViewport = id;
-    ++g_pendingTagCount;
-    return true;
+
+    sl::ResourceTag tag(resource1x ? &resource : nullptr,
+                        static_cast<sl::BufferType>(bufferType2x),
+                        sl::ResourceLifecycle::eValidUntilPresent);
+    sl::ResourceTag tags[] = {tag};
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant("Streamline bridge: first slSetTag translated - viewport=%u buffer=%u resource=%p",
+                         id, bufferType2x, resource1x ? resource.native : nullptr);
+    }
+    static std::atomic<bool> latch{false};
+    return ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch);
 }
 
 bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_t id) {
@@ -498,13 +499,27 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         // Left at whatever 1.x asked for; CE's own dlss_fg_factor override applies later,
         // on its existing slDLSSGSetOptions hook, exactly as it does for a native 2.x game.
         options.numFramesToGenerate = in.numFramesToGenerate ? in.numFramesToGenerate : 1;
+        const CachedDLSSGOptions cached{static_cast<uint32_t>(options.mode), options.numFramesToGenerate};
+        {
+            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
+            auto it = g_dlssgOptionsByViewport.find(id);
+            if (it != g_dlssgOptionsByViewport.end() && it->second.mode == cached.mode &&
+                it->second.numFramesToGenerate == cached.numFramesToGenerate) {
+                return true;  // unchanged: forwarding again is a documented Present race
+            }
+        }
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true, std::memory_order_relaxed)) {
             HookLogImportant("Streamline bridge: first DLSS-G options translated - mode=%u numFramesToGenerate=%u",
                              in.mode, options.numFramesToGenerate);
         }
         static std::atomic<bool> latch{false};
-        return ResultOk(g_slDLSSGSetOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch);
+        if (ResultOk(g_slDLSSGSetOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch)) {
+            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
+            g_dlssgOptionsByViewport[id] = cached;
+            return true;
+        }
+        return false;
     }
 
     // Reflex. 1.x configures it through slSetFeatureConstants; 2.x through slReflexSetOptions.
@@ -598,46 +613,6 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         static std::atomic<bool> latch{false};
         RefuseOnce(latch, "slEvaluateFeature", "the 2.x runtime would not issue a frame token");
         return false;
-    }
-
-    // Flush the tags 1.x had no command buffer to submit with. This is the point at which
-    // one exists, and it still precedes the present that DLSS-G consumes.
-    {
-        std::lock_guard<std::mutex> lock(g_tagMutex);
-        if (g_pendingTagCount > 0 && g_slSetTag) {
-            // Built here rather than held: see PendingTag on why these types must not have
-            // static storage. The resources have to outlive the slSetTag call, so both
-            // arrays live in this scope together.
-            sl::Resource resources[kMaxPendingTags]{};
-            sl::ResourceTag tags[kMaxPendingTags]{};
-            for (size_t i = 0; i < g_pendingTagCount; ++i) {
-                const PendingTag& pending = g_pendingTags[i];
-                sl::Resource* resource = nullptr;
-                if (pending.hasResource) {
-                    resources[i].type =
-                        (pending.resourceType == 0) ? sl::ResourceType::eTex2d : sl::ResourceType::eBuffer;
-                    resources[i].native = pending.native;
-                    resources[i].memory = pending.memory;
-                    resources[i].view = pending.view;
-                    resources[i].state = pending.state;
-                    resource = &resources[i];
-                }
-                tags[i] = sl::ResourceTag(resource, static_cast<sl::BufferType>(pending.bufferType),
-                                          sl::ResourceLifecycle::eValidUntilPresent);
-                if (pending.hasExtent) {
-                    tags[i].extent.top = pending.top;
-                    tags[i].extent.left = pending.left;
-                    tags[i].extent.width = pending.width;
-                    tags[i].extent.height = pending.height;
-                }
-            }
-            static std::atomic<bool> tagLatch{false};
-            ResultOk(g_slSetTag(sl::ViewportHandle(g_pendingViewport), tags,
-                                static_cast<uint32_t>(g_pendingTagCount),
-                                static_cast<sl::CommandBuffer*>(commandBuffer)),
-                     "slSetTag", tagLatch);
-            g_pendingTagCount = 0;
-        }
     }
 
     // The viewport travels in the input chain, not as a parameter. 1.x threads it through

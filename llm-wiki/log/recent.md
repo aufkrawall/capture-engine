@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-08-22 - Streamline bridge tag lifetime and FG option deduplication
+
+Witcher 3 `20260822_005204` reached the render loop and DLSS-G created its swapchain, but the
+first SR evaluate returned `eErrorMissingInputParameter`. The bridge's arbitrary 16-entry tag
+queue had already overflowed; evaluate then flushed a mixed/incomplete set. SL2 also logged a
+Present race for every repeated `slDLSSGSetOptions`, while 1.x drives feature constants every
+frame.
+
+- `slSetTag` now translates immediately to deprecated 2.x `slSetTag` with a null command buffer;
+  every translated tag is `eValidUntilPresent`, which the 2.x API explicitly permits without a
+  command buffer. No cross-frame queue exists.
+- Cache DLSS-G mode/generated-frame count per viewport and forward only state changes. Unchanged
+  calls return success without provoking SL2's documented SetOptions/Present race.
+
 ### 2026-08-22 - Streamline bridge default retry must cover null-output capability probes
 
 Witcher 3 `20260822_003944` still ended at the same adapter-bound reset, but the expected

@@ -276,6 +276,22 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
               std::string::npos);
 }
 
+TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchangedFGOptions) {
+    // Session 20260822_005204: the arbitrary pending-tag queue overflowed before evaluate, so
+    // SR received an incomplete input set (sl::Result=20). 2.x's deprecated slSetTag allows a
+    // null command buffer for eValidUntilPresent tags, which is exactly the 1.x call shape.
+    // The same session showed SL2 warning on every repeated FG options call, so unchanged 1.x
+    // per-frame constants must be suppressed at the bridge boundary.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("Translate immediately."), std::string::npos);
+    EXPECT_NE(source.find("g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr)"), std::string::npos);
+    EXPECT_EQ(source.find("constexpr size_t kMaxPendingTags"), std::string::npos);
+    EXPECT_NE(source.find("struct CachedDLSSGOptions"), std::string::npos);
+    EXPECT_NE(source.find("unchanged: forwarding again is a documented Present race"), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Which calls may reach a deviceless 2.x runtime
 // ---------------------------------------------------------------------------
