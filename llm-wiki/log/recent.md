@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-08-21 - Hosting a Streamline 2.x runtime inside a 1.x process is feasible (measured)
+
+Feasibility gate for the proposed `streamline_dll_path` generation upgrade - running a 2.x runtime
+in a game that shipped 1.x so DLSS-G/MFG becomes available. The question was whether the two
+generations can be resident at once, given that 2.x wants the same plugin **base names** 1.x already
+holds. Answered with a standalone probe rather than in CE, so a failure would not be confounded by
+CE's own hooks.
+
+**Result: go.** With The Witcher 3's `sl.interposer` 1.5.6 plus `sl.common` / `sl.dlss` / `sl.dlss_g`
+/ `sl.reflex` resident first, loading Talos Reawakened's 2.11.1 interposer by full path and calling
+`slInit` with `Preferences::pathsToPlugins` set to that folder returns `eOk`, maps a second
+`sl.common.dll` at its own base, and binds every 2.x plugin from the 2.x folder.
+`slIsFeatureSupported` returns `eOk` for `kFeatureDLSS` and `kFeatureDLSS_G`; `slShutdown` returns
+`eOk`; the process exits 0. A `sl2only` control run was taken first so the coexist result is
+attributable. The identified risk - 2.x resolving a plugin via `GetModuleHandleW("sl.common.dll")`
+and getting 1.x's image, which wins that lookup for the whole process - does not occur: 2.x binds by
+path.
+
+Three findings that constrain the implementation, all recorded in
+`frame-generation/guardrails.md`: the feature enum is **not** identity across generations
+(1.x `eFeatureDLSS_G` 5 vs 2.x `kFeatureDLSS_G` 1000; 1.x `eFeatureDebug` 4 collides with 2.x
+`kFeaturePCL` 4) while `BufferType` **is** identity across every value 1.x can emit; SL1's
+`VS_FIXEDFILEINFO` reads `1.0.0.0` against a StringFileInfo of `1.5.6.0`, so generation gating via
+`DllFileMajorVersion()` is sound but minor-version pinning needs the string table; and 2.x's default
+`PreferenceFlags` let OTA plugins under `C:\ProgramData\NVIDIA\NGX\models\` compete with the staged
+set, so a pinned bridge should clear `eAllowOTA | eLoadDownloadedPlugins`.
+
+Not yet done: the import takeover, the actual 1.x->2.x call translation, and making
+`ResolveStreamlineGeneration` treat the bridged runtime as authoritative when both are resident. No
+CE code changed for this entry - the probe lives in the session scratchpad, and the vendored 2.11.1
+headers it built against are already in `build/fg_sdk_include/streamline/include`.
+
 ### 2026-08-20 - CE installed Streamline 2.x hooks on a Streamline 1.x interposer
 
 With the executable renamed past the driver refusal (see the entry below), The Witcher 3 started
