@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-22 - Streamline bridge default retry must cover null-output capability probes
+
+Witcher 3 `20260822_003944` still ended at the same adapter-bound reset, but the expected
+`null/default retry` diagnostic was absent. The fallback was incorrectly gated on `ppDevice`
+being non-null; `D3D12CreateDevice` allows a null output as a support probe, and this title uses
+that form on its later request.
+
+- Run the device-lost-class null/default retry for both object-creating calls and null-output
+  capability probes.
+- Log the actual output-pointer value in retry/failure diagnostics; never dereference an absent
+  output just to clear it.
+
 ### 2026-08-22 - Fresh Streamline bridge adapters can still be reset; add scoped default retry
 
 Witcher 3 `20260822_003051` created the first bridged D3D12 device successfully and resolved all

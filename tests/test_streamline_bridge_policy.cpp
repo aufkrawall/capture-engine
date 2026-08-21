@@ -258,7 +258,9 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     // Sessions 20260821_234606 and 20260822_001759 show DXGI_ERROR_DEVICE_RESET on the later
     // real-device request. Normalize a foreign/proxy-owned adapter by LUID first. Session
     // 20260822_003051 showed that even the fresh instance can be rejected, so device-lost-class
-    // failures get one logged default-adapter retry rather than terminating the title.
+    // failures get one logged default-adapter retry rather than terminating the title. The
+    // follow-up session showed that Witcher can make this request with a null optional output,
+    // so the retry must not require ppDevice to be non-null.
     const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
     ASSERT_FALSE(source.empty());
 
@@ -266,6 +268,7 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     EXPECT_NE(source.find("factory->EnumAdapterByLuid(desc.AdapterLuid"), std::string::npos);
     EXPECT_NE(source.find("const bool deviceLostClass ="), std::string::npos);
     EXPECT_NE(source.find("null/default retry"), std::string::npos);
+    EXPECT_EQ(source.find("deviceLostClass && adapterForCreate && ppDevice"), std::string::npos);
     EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
