@@ -265,6 +265,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
 
+  // With streamline_upgrade=on, run the configured Streamline 2.x runtime as a
+  // second, CE-owned runtime beside a 1.x game's own and repoint the game's
+  // sl.interposer imports at CE. This must be decided BEFORE the preload below:
+  // the two mechanisms want the same configured folder for opposite purposes,
+  // and an active bridge stands the sl.* substitution down entirely.
+  ce::streamline_bridge::TryActivate();
+
   // When the profile configures runtime override paths (dlss_sr_dll_path,
   // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override
   // copies NOW so name-based loads later resolve to them instead of the game's

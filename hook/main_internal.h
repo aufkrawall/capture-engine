@@ -58,6 +58,8 @@ struct ChildInjectParams;
 
 #include "common/dlss_indicator_spoof.h"
 
+#include "apis/streamline_bridge.h"
+
 #include "common/nv_lod_spread_override.h"
 
 #include "common/input_manager.h"

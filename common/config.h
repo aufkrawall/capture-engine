@@ -277,6 +277,11 @@ struct GraphicsConfig {
     std::string dlssRrDllPath;
     std::string dlssFgDllPath;
     std::string streamlineDllPath;
+    // Run the streamline_dll_path runtime as a SECOND, CE-owned Streamline instead of
+    // substituting the game's DLLs, so a 1.x title can drive a 2.x runtime (DLSS-G / MFG).
+    // Off by default: it is more invasive than the path overrides and carries the same
+    // anti-cheat warning. See hook/apis/streamline_bridge_policy.h.
+    bool streamlineUpgrade = false;
 
     // Debug
     std::string dlssDebugOverlay;  // "default", "on", "off"

@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "../common/module_enumeration.h"
+#include "apis/streamline_bridge_policy.h"
 #include "common/dll_utils.h"
 #include "common/streamline_api_generation.h"
 
@@ -117,6 +118,21 @@ bool StreamlineOverrideRedirectAllowed(const char *targetDllName) {
   if (targetDllName && !ce::graphics_runtime::HasPrefixIgnoreCase(
                            ce::graphics_runtime::ModuleFileName(targetDllName), "sl.")) {
     return true;
+  }
+  // An active generation bridge already owns the configured folder, as a second
+  // CE-owned 2.x runtime. Substituting the game's own 1.x plugins out of that
+  // same folder would leave the 1.x interposer resolving 2.x plugins - the
+  // version mixing this whole gate exists to prevent - so the bridge and the
+  // substitution are mutually exclusive by construction.
+  if (ce::streamline_bridge::StreamlineRedirectSuppressedByBridge(
+          ce::streamline_bridge::IsActive())) {
+    static std::atomic<bool> loggedOnce{false};
+    if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {
+      HookLogImportant(
+          "Streamline override redirect stood down for the sl.* set: the generation bridge owns this process's "
+          "Streamline and the configured folder is its 2.x runtime, not a replacement for the game's plugins");
+    }
+    return false;
   }
   if (ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect(
           true, g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire))) {

@@ -608,8 +608,28 @@ dlss_fg_dll_path=
 ; is detected and hooked normally, and this override then works within that 2.x set.
 ; Without a bridge, what does upgrade a 1.x title is the NGX runtime, which is
 ; generation-independent: use dlss_sr_dll_path (nvngx_dlss.dll) and dlss_fg_dll_path
-; (nvngx_dlssg.dll) above.
+; (nvngx_dlssg.dll) above - or streamline_upgrade below, which is CaptureEngine's own
+; in-process version of that shim.
 streamline_dll_path=
+; streamline_upgrade=on stops treating streamline_dll_path as a DLL substitution and runs
+; that folder's Streamline 2.x runtime as a SECOND, CaptureEngine-owned runtime beside the
+; game's own 1.x one, then repoints the game's sl.interposer import slots at CaptureEngine
+; so 1.x calls can be translated to 2.x. That is what makes DLSS-G / multi-frame generation
+; reachable in a title that shipped Streamline 1.x. Nothing on disk is renamed or patched -
+; unlike the third-party bridges above, the takeover happens in memory and disappears with
+; the process - and the game's own 1.x runtime stays loaded and untouched.
+; Requirements: streamline_dll_path must point at a COMPLETE 2.x plugin set (sl.interposer,
+; sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl and the matching nvngx_* runtimes); a
+; folder missing sl.dlss.dll cannot serve a game that also upscales. The plugin set is
+; pinned, with Streamline's over-the-air plugin updates turned off, so the runtime you
+; staged is the runtime that runs.
+; CaptureEngine refuses to activate unless the process really is 1.x, the configured folder
+; really is 2.x, and it got control before the game drove its own Streamline. A refusal
+; leaves the process exactly as it was: half-bridged is worse than not bridged, so this is
+; always all-or-nothing.
+; Off by default. This is more invasive than the path overrides above and is NOT anti-cheat
+; safe - the same warning applies, more so.
+streamline_upgrade=false
 
 [ThirdParty]
 ; CaptureEngine's injected hook can load ReShade, OptiScaler, and Special K

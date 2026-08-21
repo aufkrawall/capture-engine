@@ -409,6 +409,8 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     config.graphics.dlssFgDllPath = reader.GetStrCompat("DLSS", "dlss_fg_dll_path", "Graphics", "dlss_fg_dll_path", "");
     config.graphics.streamlineDllPath =
         reader.GetStrCompat("DLSS", "streamline_dll_path", "Graphics", "streamline_dll_path", "");
+    config.graphics.streamlineUpgrade =
+        reader.GetBoolCompat("DLSS", "streamline_upgrade", "Graphics", "streamline_upgrade", false);
 
     config.graphics.dlssDebugOverlay =
         reader.GetStrCompat("DLSS", "dlss_debug_overlay", "Graphics", "dlss_debug_overlay", "default");

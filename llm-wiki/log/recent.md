@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-08-21 - streamline_upgrade: CE takes a 1.x game's Streamline imports over
+
+Second step of the generation bridge, on top of the feasibility result below. `streamline_upgrade=on`
+(default off) stops treating `streamline_dll_path` as a DLL substitution and instead loads that
+folder's 2.x interposer by full path as a second, CE-owned runtime, initialises it with
+`pathsToPlugins` pinned and OTA off, and repoints the game's `sl.interposer` import slots at CE.
+The game's own 1.x runtime stays loaded and untouched. Policy in
+`hook/apis/streamline_bridge_policy.h` with 20 regression tests; runtime in
+`hook/apis/streamline_bridge.{h,cpp}`.
+
+At this stage the eight Streamline calls are owned but not yet translated - each refuses politely, so
+a bridged game runs without Streamline features. The seven DXGI/D3D12 entry points the interposer
+re-exports forward to the 2.x runtime (falling back to the original 1.x slot if a symbol is missing),
+which is what actually puts the game's device behind the 2.x interposer.
+
+**Two corrections to the plan this was written from.** The plan called for a narrow exemption to
+`WouldRedirectDuplicateLoadedModule`; that was the wrong place, because that guard governs
+redirecting the *game's own loads* and the bridge never redirects anything. The guard is unchanged.
+The real requirement is the inverse - an active bridge stands the ordinary sl.* substitution down,
+since both mechanisms want the same folder for opposite purposes. And the hand-rolled `sl::Preferences`
+mirror (the hook DLL cannot include `sl.h`) was **wrong on first write**: `BaseStructure` puts `next`
+at offset 0 and `structType` at 8, the reverse of how the declaration reads. Measuring it against the
+real header caught it; every payload field was already right, so it would have failed nowhere near
+its cause.
+
+**1.x ground truth, and a wrong assumption corrected.** There is no public Streamline 1.5.6 header -
+upstream's 1.x tags stop at v1.1.1 - so 1.5.6-specific values must come from W3's own binaries.
+OptiScaler vendors a genuine SL1 header set (`external/streamline1/`) whose `Constants` matches
+v1.1.1 and whose `Resource` independently confirms the offsets CE already encodes, but it predates
+DLSS-G and must not be trusted for the feature enum. Details and the per-source trust levels are in
+`frame-generation/guardrails.md`.
+
+Still open: the actual 1.x->2.x call translation, and making `ResolveStreamlineGeneration` treat the
+bridged runtime as authoritative when both generations are resident. The translation map for
+`Constants` is now known (prepend the 2.x `BaseStructure`; copy `cameraViewToClip`..`reset`
+verbatim; **drop** 1.x `notRenderingGameFrames`, which has no 2.x field; keep the three motion-vector
+/ projection Booleans; leave 2.x `minRelativeLinearDepthObjectSeparation` at its 40.0f default rather
+than zero; drop 1.x `ext`). Verifying it needs a real run of the game.
+
 ### 2026-08-21 - Hosting a Streamline 2.x runtime inside a 1.x process is feasible (measured)
 
 Feasibility gate for the proposed `streamline_dll_path` generation upgrade - running a 2.x runtime
