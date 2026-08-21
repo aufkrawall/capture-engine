@@ -12,31 +12,42 @@ void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
 }
 
 static float GetWindowsDpiScale(HWND targetHwnd) {
-    // Prefer the target game window. Adapters without one reuse a known game
-    // window before falling back to foreground/desktop state.
+    // The overlay draws in the swapchain's physical pixels. The nearest monitor's
+    // effective DPI is therefore the display truth; a game window can report a
+    // DPI-virtualized value (commonly 96) when the game is not per-monitor aware.
     HWND hwnd = ResolveOverlayReferenceHwnd(targetHwnd);
 
     ScopedThreadDpiAwareness dpiAwarenessScope;
 
-    // Try GetDpiForWindow first (Windows 10 1607+)
-    typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
-    static GetDpiForWindowFn getDpiForWindow =
-        (GetDpiForWindowFn)GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow");
-
-    if (getDpiForWindow) {
-        UINT dpi = getDpiForWindow(hwnd);
-        if (dpi > 0) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            return dpi / 96.0f;
+    const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT monitorDpiX = 0;
+    UINT monitorDpiY = 0;
+    if (monitor) {
+        using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+        HMODULE shcore = GetModuleHandleW(L"shcore.dll");
+        if (!shcore) {
+            shcore = ce::security::LoadSystemLibrary(L"shcore.dll");
+        }
+        const auto getDpiForMonitor =
+            shcore ? reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor")) : nullptr;
+        if (getDpiForMonitor &&
+            SUCCEEDED(getDpiForMonitor(monitor, 0 /* MDT_EFFECTIVE_DPI */, &monitorDpiX, &monitorDpiY)) &&
+            monitorDpiX > 0) {
+            HookLogImportant("[Overlay] Windows effective DPI: hwnd=%p monitor=%p dpi=%u scale=%.2f", hwnd,
+                             static_cast<void*>(monitor), static_cast<unsigned>(monitorDpiX),
+                             ce::pseudo_overlay::ResolveOverlayDpi(monitorDpiX, 96u) / 96.0f);
+            return static_cast<float>(monitorDpiX) / 96.0f;
         }
     }
 
-    // Fallback to GetDeviceCaps
+    // Keep older systems on the legacy system-DPI source when Shcore is unavailable.
     HDC hdc = GetDC(hwnd);
     if (hdc) {
         int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
         ReleaseDC(hwnd, hdc);
         if (dpiX > 0) {
+            HookLogImportant("[Overlay] Windows legacy system DPI: hwnd=%p dpi=%d scale=%.2f", hwnd, dpiX,
+                             ce::pseudo_overlay::ResolveOverlayDpi(0u, static_cast<uint32_t>(dpiX)) / 96.0f);
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             return dpiX / 96.0f;
         }

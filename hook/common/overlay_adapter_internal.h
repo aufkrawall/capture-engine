@@ -18,6 +18,8 @@
 
 #include "perf_logger.h"
 
+#include "../../common/pseudo_overlay_dpi_policy.h"
+
 #include "../../common/secure_dll_loading.h"
 
 #include <cfloat>  // FLT_MAX

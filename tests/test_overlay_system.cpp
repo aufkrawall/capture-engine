@@ -522,6 +522,24 @@ TEST(OverlayHdrSourceTest, AutoPaperWhiteUsesWindowsPerMonitorCalibration) {
     EXPECT_NE(source.find("MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST)"), std::string::npos);
 }
 
+TEST(OverlayDpiSourceTest, InjectOverlayScaleUsesNearestMonitorEffectiveDpi) {
+    // RoboCop 20260821_224340 initialized on a 150% display while its DPI-virtualized
+    // window reported 96 DPI. The first swapchain was 2560x1440 and later resized to
+    // 3840x2160; warm backend reuse preserved the already-wrong font atlas. The inject
+    // overlay must therefore resolve display DPI at initialization exactly like the
+    // pseudo-overlay instead of consulting the game window's awareness-dependent value.
+    const std::string adapter = ReadOverlaySource("hook/common/overlay_adapter.cpp");
+    const std::string internalHeader = ReadOverlaySource("hook/common/overlay_adapter_internal.h");
+    ASSERT_FALSE(adapter.empty());
+    ASSERT_FALSE(internalHeader.empty());
+
+    EXPECT_NE(adapter.find("GetDpiForMonitor"), std::string::npos);
+    EXPECT_NE(adapter.find("MDT_EFFECTIVE_DPI"), std::string::npos);
+    EXPECT_NE(adapter.find("ResolveOverlayDpi"), std::string::npos);
+    EXPECT_EQ(adapter.find("GetDpiForWindow"), std::string::npos);
+    EXPECT_NE(internalHeader.find("pseudo_overlay_dpi_policy.h"), std::string::npos);
+}
+
 TEST(LegacyOverlayBackendSourceTest, DX8AndDX9ReuseStateBlocksButCaptureAndApplyEveryDraw) {
     const std::string dx8 = ReadOverlaySource("hook/common/custom_overlay_dx8.cpp");
     const std::string dx9 = ReadOverlaySource("hook/common/custom_overlay_dx9.cpp");

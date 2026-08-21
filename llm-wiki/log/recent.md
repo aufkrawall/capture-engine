@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-21 - Inject-overlay DPI: nearest display truth, not game-window awareness
+
+RoboCop `20260821_224340` initialized the DX12 overlay at `dpiScale=1.00` on a 150% display. Its first
+Streamline-created swapchain was 2560x1440; after Alt+Tab/fullscreen recovery it became 3840x2160, and warm
+DX12 resize reuse preserved the font atlas that had been rasterized for the wrong scale.
+
+- The adapter previously called `GetDpiForWindow()`. That reports the target window's awareness-virtualized
+  DPI (96 for an unaware app), not the physical display scale. This is the same trap already fixed in the
+  pseudo-overlay.
+- Inject adapters now query `GetDpiForMonitor(MDT_EFFECTIVE_DPI)` for `MonitorFromWindow(referenceHwnd)` and
+  use the shared pseudo-overlay fallback policy. The legacy `LOGPIXELSX` path remains only for systems without
+  Shcore. Initialization logs the resolved monitor/DPI/scale.
+- Do not infer DPI from backbuffer dimensions: logical-to-physical resolution changes are a presentation-mode
+  change, while monitor effective DPI is the stable scaling input.
+- Source regression: `OverlayDpiSourceTest.InjectOverlayScaleUsesNearestMonitorEffectiveDpi`. Focused tests
+  pass; fresh RoboCop runtime confirmation is still manual.
+
 ### 2026-08-21 - Three new UE5 override families, and reading the types out of the binary
 
 Added `[UE5]` `depth_of_field`, `dlss_super_resolution` (+ `dlss_super_resolution_quality`) and the HDR set
