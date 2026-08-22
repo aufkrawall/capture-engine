@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-08-22 - A duplicate refusal must not replay the duplicate's absolute path
+
+Witcher 3 session `20260822_182415` reached Streamline 2.12.128, bound the native device and
+resolved all requested feature functions, but the external fatal-exit dump proved that the game's
+`nvngx_dlss.dll` 3.1.1 and the configured 310.7.128 image were both live. DriverStore
+`nvngx_dlssg.dll` 310.2.1 and configured 310.7.128 were live too. The retained device was healthy
+at the 11.7-second capability probe, then reported `DXGI_ERROR_DEVICE_RESET` before the title's
+final object request; the title again terminated with `0xe06d7363`.
+
+- The duplicate guard logged "keeping the loaded copy" but returned an empty redirect. That only
+  preserves the resident image when the caller originally requested it; SL2 requested the custom
+  absolute path, so replaying the original request mapped the second image anyway. Duplicate
+  refusal now returns the resident physical path through every loader front end.
+- An eligible 1.x -> 2.x bridge preloads SR/FG from `streamline_dll_path` before the 15-slot import
+  takeover and immediately patches the already-resident legacy SL modules' LoadLibrary imports.
+  This lets an in-flight late 1.x `slInit` converge on the same NGX images as 2.x.
+- The quiesce captures all live SR/FG feature images before calling legacy `slShutdown`. After a
+  successful shutdown it releases each captured foreign image once, before SL2 initialization,
+  while never draining an opaque loader count that another integration may own. Logs and bridge
+  inventories include every physical SR/FG image, not only `GetModuleHandle`'s first answer.
+- The duplicate NGX state is the concrete unsafe difference from the preceding run; attributing
+  the device reset specifically to it remains an inference until a fresh title run proves the
+  single-generation state and reaches the render loop.
+
 ### 2026-08-22 - Reuse the proven D3D12 device before a redundant creation can reset it
 
 Witcher 3 session `20260822_174509` reached a healthy CE-owned Streamline 2.12.128 runtime, loaded

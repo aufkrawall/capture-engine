@@ -310,6 +310,38 @@ handoff path compares canonical `IUnknown` identity, so requesting `ID3D12Device
 object cannot spuriously rebind the 2.x runtime merely because that interface has a different
 pointer value.
 
+## The fifth bridged run: the duplicate guard did not guard an absolute request
+
+Session `20260822_182415` had a different state from `20260822_174509`. CDB found both the game's
+`nvngx_dlss.dll` 3.1.1 and the configured 310.7.128 image live; for FG, DriverStore 310.2.1 and the
+configured 310.7.128 image were both live. The hook log had already said why, but its claimed
+outcome was false:
+
+```text
+Loader redirect refused for ...\npi\sl\nvngx_dlss.dll: nvngx_dlss.dll is already loaded from
+...\The Witcher 3\bin\x64_dx12\nvngx_dlss.dll ... keeping the loaded copy
+Loader: runtime module loaded: nvngx_dlss.dll -> ...\npi\sl\nvngx_dlss.dll
+```
+
+An empty redirect means "call the loader with the original request." That preserves the loaded
+copy only when the original request names it. The CE-owned 2.x runtime requested the configured
+absolute path, so the supposed refusal replayed exactly the path that mapped the duplicate. A
+duplicate decision now returns the already-resident physical path instead of empty.
+
+The bridge also owns the generation transition rather than depending on that fallback. For a real
+V1-process/V2-folder pairing it pre-registers `nvngx_dlss.dll` and `nvngx_dlssg.dll` from the
+Streamline folder before taking over the imports, then patches the already-resident 1.x SL modules'
+LoadLibrary IATs so absolute internal loads reach the same copies. If a legacy image already won,
+the quiesce snapshots it before `slShutdown` and releases that captured foreign feature reference
+after shutdown but before 2.x initialization. It releases once only: draining an opaque loader
+count could steal lifetime from an independent integration. The inventory now enumerates every
+physical SR/FG image so a duplicate cannot hide behind `GetModuleHandle`'s first answer.
+
+The device was healthy at the 11.7-second cached capability probe and reset before the final
+object request. The mixed NGX state is the concrete unsafe difference in this run; treating it as
+the reset's cause remains an inference until the next runtime validation proves a single NGX
+generation and reaches the render loop.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -333,6 +365,10 @@ pointer value.
   may still be running, and no ordering on CE's side could rule that out. It also has to
   precede the 2.x bring-up: both plugin sets carry the same base names, and CE's Streamline
   hooks are keyed on those names.
+- **The quiesce includes the old runtime's dynamically loaded NGX feature images.** Preload and
+  early legacy-module IAT patching try to make both generations choose the configured SR/FG
+  images. If late injection still loses, only images captured while 1.x was live, differing from
+  the configured runtime copy, are released after successful `slShutdown` and before 2.x init.
 - **The generation that authorises an ABI-sensitive hook is the MODULE's, never the
   process's.** The bridge makes two generations resident on purpose, so a process-wide latch
   would authorise 2.x-shaped hooks on the still-resident 1.x interposer - the truncation

@@ -532,11 +532,13 @@ void MaybeQuiesceLegacyRuntime() {
             "stays loaded beside the CE-owned 2.x one");
         return;
     }
+    const std::vector<LegacyNgxFeatureModule> legacyNgxModules = CaptureLegacyNgxFeatureModules();
     const bool ok = shutdown();
+    const bool ngxRetired = ok && RetireLegacyNgxFeatureModules(legacyNgxModules, *g_runtimeDir);
     HookLogImportant(
         "Streamline bridge: shut the game's own 1.x Streamline runtime down (returned %s) - the 2.x runtime CE "
-        "owns is now the only initialised one in this process",
-        ok ? "true" : "false");
+        "owns is now the only initialised one in this process; legacy NGX feature images retired=%s",
+        ok ? "true" : "false", ngxRetired ? "true" : "false");
     LogStreamlineModuleInventory("after quiescing the 1.x runtime");
 }
 

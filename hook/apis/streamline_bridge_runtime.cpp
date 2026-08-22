@@ -2,9 +2,12 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "../../common/config.h"
+#include "../../common/module_enumeration.h"
 #include "../common/dll_utils.h"
+#include "../common/graphics_runtime_module_policy.h"
 #include "../common/hook_common.h"
 #include "streamline_bridge_policy.h"
 
@@ -19,6 +22,40 @@ namespace ce::streamline_bridge {
 namespace {
 
 namespace api = ce::streamline_api;
+
+std::string RuntimeFeaturePath(const std::string& runtimeDir, const char* baseName) {
+    std::string path = runtimeDir;
+    if (!path.empty() && path.back() != '\\' && path.back() != '/') {
+        path += '\\';
+    }
+    path += baseName;
+    return path;
+}
+
+bool QueryModulePath(HMODULE module, char* path, size_t pathSize) {
+    if (!module || !path || pathSize == 0 || pathSize > MAX_PATH) {
+        return false;
+    }
+    const DWORD length = GetModuleFileNameA(module, path, static_cast<DWORD>(pathSize));
+    if (length == 0 || length >= pathSize) {
+        path[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool SameModuleImageIsStillLoaded(HMODULE module, const char* expectedPath) {
+    HMODULE current = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(module), &current) ||
+        current != module) {
+        return false;
+    }
+    char currentPath[MAX_PATH] = {};
+    return QueryModulePath(current, currentPath, sizeof(currentPath)) &&
+           ce::graphics_runtime::EqualsModulePathIgnoreCase(currentPath, expectedPath);
+}
 
 std::wstring Widen(const char* text) {
     if (!text || !*text) {
@@ -183,6 +220,71 @@ api::Generation ProcessGeneration() {
     return api::GenerationFromMajorVersion(DllFileMajorVersion(path));
 }
 
+std::vector<LegacyNgxFeatureModule> CaptureLegacyNgxFeatureModules() {
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        HookLogImportant(
+            "Streamline bridge: could not inventory the legacy NGX feature images before 1.x shutdown");
+        return {};
+    }
+
+    std::vector<LegacyNgxFeatureModule> featureModules;
+    for (HMODULE module : modules) {
+        char path[MAX_PATH] = {};
+        if (QueryModulePath(module, path, sizeof(path)) &&
+            ce::graphics_runtime::IsBridgeNgxFeatureModuleName(path)) {
+            featureModules.push_back({module, path});
+        }
+    }
+    return featureModules;
+}
+
+bool RetireLegacyNgxFeatureModules(const std::vector<LegacyNgxFeatureModule>& legacyModules,
+                                  const std::string& runtimeDir) {
+    bool allRetired = true;
+    for (const LegacyNgxFeatureModule& legacy : legacyModules) {
+        if (!SameModuleImageIsStillLoaded(legacy.module, legacy.path.c_str())) {
+            continue;  // The legacy shutdown already unloaded it.
+        }
+
+        const char* loadedPath = legacy.path.c_str();
+        const char* baseName = ce::graphics_runtime::ModuleFileName(loadedPath);
+        const std::string configuredPath = RuntimeFeaturePath(runtimeDir, baseName);
+        if (!ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule(
+                true, configuredPath.c_str(), loadedPath)) {
+            continue;
+        }
+        if (GetFileAttributesA(configuredPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            HookLogImportant(
+                "Streamline bridge: cannot retire legacy NGX image %s because its configured replacement %s "
+                "does not exist",
+                loadedPath, configuredPath.c_str());
+            allRetired = false;
+            continue;
+        }
+
+        // Release only the legacy runtime's surviving feature-image reference.
+        // Draining an opaque loader count would risk stealing a reference from
+        // an independent integration in the same process. Never touch an image
+        // that was not captured while 1.x was live.
+        const bool released = FreeLibrary(legacy.module) != FALSE;
+
+        if (SameModuleImageIsStillLoaded(legacy.module, loadedPath)) {
+            HookLogImportant(
+                "Streamline bridge: FAILED to retire legacy NGX image %s after its post-shutdown loader-reference "
+                "release (FreeLibrary=%s); "
+                "initializing %s would leave two feature generations resident",
+                loadedPath, released ? "true" : "false", configuredPath.c_str());
+            allRetired = false;
+            continue;
+        }
+        HookLogImportant(
+            "Streamline bridge: retired legacy NGX image %s after 1.x shutdown; 2.x will load %s",
+            loadedPath, configuredPath.c_str());
+    }
+    return allRetired;
+}
+
 // Every Streamline module a 1.x game can have resident, so one log line settles which
 // runtime is actually in the process.
 //
@@ -208,6 +310,21 @@ void LogStreamlineModuleInventory(const char* when) {
         DllFileVersionParts(path, &major, &minor, &patch);
         HookLogImportant("Streamline bridge inventory (%s): %s %u.%u.%u resident from %s", when, name, major, minor,
                          patch, path);
+    }
+    std::vector<HMODULE> modules;
+    if (ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        for (HMODULE module : modules) {
+            char path[MAX_PATH] = {};
+            if (!QueryModulePath(module, path, sizeof(path)) ||
+                !ce::graphics_runtime::IsBridgeNgxFeatureModuleName(path)) {
+                continue;
+            }
+            uint32_t major = 0, minor = 0, patch = 0;
+            DllFileVersionParts(path, &major, &minor, &patch);
+            HookLogImportant("Streamline bridge inventory (%s): %s %u.%u.%u resident from %s (module=%p)",
+                             when, ce::graphics_runtime::ModuleFileName(path), major, minor, patch, path,
+                             reinterpret_cast<void*>(module));
+        }
     }
     if (strcmp(when, "after quiescing the 1.x runtime") == 0 && GetModuleHandleA("sl.interposer.dll")) {
         HookLogImportant(

@@ -9,12 +9,14 @@ namespace {
 
 using ce::graphics_runtime::EqualsModulePathIgnoreCase;
 using ce::graphics_runtime::IsRuntimeModuleBaseName;
+using ce::graphics_runtime::IsBridgeNgxFeatureModuleName;
 using ce::graphics_runtime::IsNgxModelRepositoryPath;
 using ce::graphics_runtime::IsStreamlineCoreProvidedDllName;
 using ce::graphics_runtime::ModelSegmentToDllName;
 using ce::graphics_runtime::NgxModelSegment;
 using ce::graphics_runtime::ResolveStreamlineProvidedDllName;
 using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
+using ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule;
 using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
 // The full family CE can redirect through the per-profile override paths
@@ -35,6 +37,32 @@ TEST(GraphicsRuntimeModulePolicy, RecognizesNgxCoreAndSnippets) {
         EXPECT_TRUE(IsRuntimeModuleBaseName(name)) << name;
         EXPECT_TRUE(IsRuntimeModuleBaseName((std::string("D:\\games\\app\\") + name).c_str())) << name;
     }
+}
+
+TEST(GraphicsRuntimeModulePolicy, IdentifiesOnlyTheNgxFeaturesOwnedByTheGenerationBridge) {
+    EXPECT_TRUE(IsBridgeNgxFeatureModuleName("nvngx_dlss.dll"));
+    EXPECT_TRUE(IsBridgeNgxFeatureModuleName("C:\\npi\\sl\\NVNGX_DLSSG.DLL"));
+    const char* rejected[] = {"_nvngx.dll", "nvngx.dll", "nvngx_dlssd.dll",
+                              "nvngx_deepdvc.dll", "sl.dlss.dll", nullptr};
+    for (const char* name : rejected) {
+        EXPECT_FALSE(IsBridgeNgxFeatureModuleName(name));
+    }
+}
+
+TEST(GraphicsRuntimeModulePolicy, RetiresOnlyForeignNgxFeaturesAfterLegacyShutdown) {
+    EXPECT_TRUE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        true, "C:\\npi\\sl\\nvngx_dlss.dll", "H:\\game\\nvngx_dlss.dll"));
+    EXPECT_TRUE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        true, "C:\\npi\\sl\\nvngx_dlssg.dll", "C:\\DriverStore\\nvngx_dlssg.dll"));
+
+    EXPECT_FALSE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        false, "C:\\npi\\sl\\nvngx_dlss.dll", "H:\\game\\nvngx_dlss.dll"));
+    EXPECT_FALSE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        true, "C:\\npi\\sl\\nvngx_dlss.dll", "c:/NPI/sl/NVNGX_DLSS.DLL"));
+    EXPECT_FALSE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        true, "C:\\npi\\sl\\nvngx_dlss.dll", "H:\\game\\nvngx_dlssg.dll"));
+    EXPECT_FALSE(ShouldRetireLegacyBridgeNgxFeatureModule(
+        true, "C:\\npi\\sl\\nvngx_dlssd.dll", "H:\\game\\nvngx_dlssd.dll"));
 }
 
 TEST(GraphicsRuntimeModulePolicy, IsCaseInsensitive) {
@@ -218,13 +246,23 @@ TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplic
 
     const size_t modelReturn = redirect.find("return modelFinal;");
     ASSERT_NE(modelReturn, std::string::npos);
-    const size_t modelGuard = redirect.rfind("RedirectWouldDuplicateLoadedModule(modelFinal)", modelReturn);
+    const size_t modelGuard =
+        redirect.rfind("RedirectWouldDuplicateLoadedModule(modelFinal, &loadedPath)", modelReturn);
     EXPECT_NE(modelGuard, std::string::npos);
 
     const size_t genericReturn = redirect.find("return finalPath;");
     ASSERT_NE(genericReturn, std::string::npos);
-    const size_t genericGuard = redirect.rfind("RedirectWouldDuplicateLoadedModule(finalPath)", genericReturn);
+    const size_t genericGuard =
+        redirect.rfind("RedirectWouldDuplicateLoadedModule(finalPath, &loadedPath)", genericReturn);
     EXPECT_NE(genericGuard, std::string::npos);
+
+    // Empty means "use the caller's original path", which is precisely wrong when the
+    // original request is already the configured absolute path. A duplicate refusal must
+    // return the resident physical path so every loader front-end reuses that image.
+    EXPECT_NE(redirect.find("*loadedPathForReuse = loadedPath[0] ? loadedPath : baseName"),
+              std::string::npos);
+    EXPECT_NE(redirect.find("return loadedPath;", modelGuard), std::string::npos);
+    EXPECT_NE(redirect.find("return loadedPath;", genericGuard), std::string::npos);
 }
 
 // The all-or-nothing rule has to be enforced at every place CE can place an override plugin:

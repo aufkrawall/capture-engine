@@ -384,6 +384,10 @@ Primary sources:
   path), backed by `ce::graphics_runtime::WouldRedirectDuplicateLoadedModule`. This generalizes the rule the preload
   already followed. The override still wins every load it can actually win — a name that is not loaded yet, and a
   repeat load of the override copy itself.
+  - `20260822_182415` exposed the tri-state detail: "no redirect" is not "reuse the loaded copy" when the caller's
+    original request already names the configured absolute path. Returning empty mapped the duplicate despite the
+    refusal log. The duplicate branch now returns the resident physical path (or its base name when the path cannot
+    be queried), so LoadLibrary and LdrLoadDll actually acquire the existing image.
 - **Invariant (build 0.1.6122): the Streamline override is all-or-nothing, anchored on `sl.common`.** `sl.common`
   is the plugin manager's shared core; every other `sl.*` plugin is built against it and resolves its services
   through it, so a process runs exactly **one** Streamline distribution. CE can only place the override while it

@@ -360,6 +360,7 @@ bool NeedsLowLevelModuleLoadObservationHook();
 // original loader entry and notifies CE's module hooks immediately. No-op when
 // no override paths are configured.
 void PreloadConfiguredGraphicsRuntimeDlls();
+void PreloadConfiguredStreamlineBridgeNgxDlls();
 
 // Loads the user-configured third-party tool DLLs (ThirdParty.reshade_dll_path,
 // ThirdParty.optiscaler_dll_path, ThirdParty.specialk_dll_path) into the

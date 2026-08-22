@@ -387,6 +387,46 @@ TEST(StreamlineBridgePolicyTest, ExplainsTheInertStaticImportInterposer) {
     EXPECT_NE(source.find("every live import slot reaches CE"), std::string::npos);
 }
 
+TEST(StreamlineBridgePolicyTest, RetiresLegacyNgxBeforeStartingTheReplacementRuntime) {
+    // Session 20260822_182415 reached the device successfully, but the dump held the game's
+    // nvngx_dlss 3.1.1 beside the configured 310.7.128 image. The old feature DLL won while
+    // CE was taking imports over; slShutdown removed the 1.x plugins but left their NGX
+    // loader references behind. Initializing 2.x then mapped a second process-global image;
+    // that unsafe mixed state was live when the working D3D12 device reset before the final probe.
+    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    const std::string runtimeSource = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
+    const std::string hookThreadSource = ReadProjectSource("hook/main_hookthread.cpp");
+    ASSERT_FALSE(bridgeSource.empty());
+    ASSERT_FALSE(runtimeSource.empty());
+    ASSERT_FALSE(hookThreadSource.empty());
+
+    const size_t capture = bridgeSource.find("CaptureLegacyNgxFeatureModules()");
+    const size_t shutdown = bridgeSource.find("const bool ok = shutdown()", capture);
+    const size_t retire = bridgeSource.find("RetireLegacyNgxFeatureModules(", shutdown);
+    ASSERT_NE(capture, std::string::npos);
+    ASSERT_NE(shutdown, std::string::npos);
+    ASSERT_NE(retire, std::string::npos);
+    EXPECT_LT(capture, shutdown);
+    EXPECT_LT(shutdown, retire);
+
+    EXPECT_NE(runtimeSource.find("SameModuleImageIsStillLoaded"), std::string::npos);
+    EXPECT_NE(runtimeSource.find("FreeLibrary(legacy.module)"), std::string::npos);
+    EXPECT_NE(runtimeSource.find("FAILED to retire legacy NGX image"), std::string::npos);
+
+    const size_t earlyNgx = hookThreadSource.find("PreloadConfiguredStreamlineBridgeNgxDlls();");
+    const size_t takeover = hookThreadSource.find("ce::streamline_bridge::TryActivate();");
+    ASSERT_NE(earlyNgx, std::string::npos);
+    ASSERT_NE(takeover, std::string::npos);
+    EXPECT_LT(earlyNgx, takeover);
+
+    const std::string redirectSource = ReadProjectSource("hook/main_redirect.cpp");
+    ASSERT_FALSE(redirectSource.empty());
+    const size_t earlyPreload = redirectSource.find("void PreloadConfiguredStreamlineBridgeNgxDlls()");
+    ASSERT_NE(earlyPreload, std::string::npos);
+    EXPECT_NE(redirectSource.find("PatchLoadLibraryIatForLateLoadedModule(module, modulePath)", earlyPreload),
+              std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Which calls may reach a deviceless 2.x runtime
 // ---------------------------------------------------------------------------

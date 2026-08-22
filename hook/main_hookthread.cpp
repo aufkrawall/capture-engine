@@ -38,12 +38,17 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     ArmManualReflexQueryHookIfConfigured("config.ini");
     ArmNgxFgPresetOverrideIfConfigured("config.ini");
 
+    // A late 1.x runtime may still be inside slInit while CE is arriving. Give
+    // both generations the configured NGX SR/FG images before taking its imports
+    // over; any legacy image that already won is retired after 1.x shutdown.
+    PreloadConfiguredStreamlineBridgeNgxDlls();
+
     // With streamline_upgrade=on, run the configured Streamline 2.x runtime as a
     // second, CE-owned runtime beside a 1.x game's own and repoint the game's
     // sl.interposer imports at CE.
     //
-    // This is the first thing the hook thread does once it has a config, and the
-    // position is the point. A 1.x game reaches its own Streamline within a few
+    // This is the first import takeover the hook thread does once it has a config,
+    // and the position is the point. A 1.x game reaches its own Streamline within a few
     // hundred milliseconds of CE's DllMain - session 20260821_151738 has it there
     // by 15:18:12.3, against a DllMain at 15:18:11.99 - and the previous position,
     // after the pre-termination dump hooks, was roughly 550 ms further on, most of

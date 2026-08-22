@@ -137,6 +137,30 @@ inline const char* ModuleFileName(const char* moduleNameOrPath) {
     return fileName;
 }
 
+// The NGX feature images the 1.x -> 2.x Streamline bridge asks both
+// generations to use. These are dynamically loaded implementation snippets,
+// not the driver-owned `_nvngx.dll` core, so a late bridge may retire the old
+// copies after the legacy runtime has shut down and before initializing 2.x.
+inline bool IsBridgeNgxFeatureModuleName(const char* moduleNameOrPath) {
+    const char* baseName = ModuleFileName(moduleNameOrPath);
+    return EqualsIgnoreCase(baseName, "nvngx_dlss.dll") ||
+           EqualsIgnoreCase(baseName, "nvngx_dlssg.dll");
+}
+
+inline bool ShouldRetireLegacyBridgeNgxFeatureModule(bool legacyShutdownSucceeded,
+                                                     const char* configuredModulePath,
+                                                     const char* loadedModulePath) {
+    if (!legacyShutdownSucceeded || !configuredModulePath || !configuredModulePath[0] ||
+        !loadedModulePath || !loadedModulePath[0]) {
+        return false;
+    }
+    if (!IsBridgeNgxFeatureModuleName(configuredModulePath) ||
+        !EqualsIgnoreCase(ModuleFileName(configuredModulePath), ModuleFileName(loadedModulePath))) {
+        return false;
+    }
+    return !EqualsModulePathIgnoreCase(configuredModulePath, loadedModulePath);
+}
+
 // Maps an NVIDIA NGX model-repository segment (the folder name under
 // ...\NVIDIA\NGX\models\) to the real Streamline DLL base name. The driver
 // stores the Streamline plugins in the model cache under hashed file names

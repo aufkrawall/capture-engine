@@ -18,7 +18,7 @@ namespace {
 // already owns when the call arrives through HookedLdrLoadDll; the lock is
 // re-entrant for its owner, and the surrounding redirect resolution already
 // touches the file system here.
-bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath) {
+bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::string* loadedPathForReuse) {
   const char *baseName = ce::graphics_runtime::ModuleFileName(finalPath.c_str());
   if (!baseName || !baseName[0]) {
     return false;
@@ -36,11 +36,19 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath) {
     return false;
   }
 
+  if (loadedPathForReuse) {
+    // Returning an empty redirect would merely replay an already-absolute
+    // request for finalPath and map the duplicate anyway. Route the loader to
+    // the existing physical image instead; a bare name is sufficient when the
+    // loader path could not be resolved.
+    *loadedPathForReuse = loadedPath[0] ? loadedPath : baseName;
+  }
+
   static std::atomic<uint32_t> refusalLogs{0};
   const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
   if (logIndex < 8 || (logIndex % 1000) == 0) {
     HookLogImportant("Loader redirect refused for %s: %s is already loaded from %s, so redirecting would map a "
-                     "SECOND instance of a process-global runtime; keeping the loaded copy",
+                     "SECOND instance of a process-global runtime; routing this load to the loaded copy",
                      finalPath.c_str(), baseName, loadedPath[0] ? loadedPath : "an unresolved path");
   }
   return true;
@@ -295,8 +303,9 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
         std::string modelFinal = BuildOverridePath(g_pLocalConfig->graphics.streamlineDllPath, modelDllName);
         if (!modelFinal.empty() &&
             GetFileAttributesA(modelFinal.c_str()) != INVALID_FILE_ATTRIBUTES) {
-          if (RedirectWouldDuplicateLoadedModule(modelFinal)) {
-            return "";
+          std::string loadedPath;
+          if (RedirectWouldDuplicateLoadedModule(modelFinal, &loadedPath)) {
+            return loadedPath;
           }
           if (!StreamlineOverrideGenerationMatches(modelFinal, modelDllName)) {
             return "";
@@ -351,8 +360,9 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
         }
       }
 
-      if (RedirectWouldDuplicateLoadedModule(finalPath)) {
-        return "";
+      std::string loadedPath;
+      if (RedirectWouldDuplicateLoadedModule(finalPath, &loadedPath)) {
+        return loadedPath;
       }
 
       if (isStreamlineMatch && !StreamlineOverrideGenerationMatches(finalPath, filename.c_str())) {
@@ -411,11 +421,7 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
     return;
   }
 
-  std::string fullPath = directory;
-  if (!fullPath.empty() && fullPath.back() != '\\' && fullPath.back() != '/') {
-    fullPath += '\\';
-  }
-  fullPath += fileName;
+  const std::string fullPath = BuildOverridePath(directory, fileName);
   if (GetFileAttributesA(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
     HookLog("Runtime preload: %s not found at %s - skipping", fileName, fullPath.c_str());
     return;
@@ -477,6 +483,43 @@ void PreloadConfiguredGraphicsRuntimeDlls() {
   PreloadOverrideDll(gfx.dlssSrDllPath, "nvngx_dlss.dll");
   PreloadOverrideDll(gfx.dlssFgDllPath, "nvngx_dlssg.dll");
   PreloadOverrideDll(gfx.dlssRrDllPath, "nvngx_dlssd.dll");
+}
+
+void PreloadConfiguredStreamlineBridgeNgxDlls() {
+  if (!g_pLocalConfig || !g_pLocalConfig->graphics.streamlineUpgrade) {
+    return;
+  }
+
+  const auto& gfx = g_pLocalConfig->graphics;
+  const std::string interposerPath = BuildOverridePath(gfx.streamlineDllPath, "sl.interposer.dll");
+  const ce::streamline_api::Generation runtimeGeneration =
+      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(interposerPath.c_str()));
+  if (LiveStreamlineGeneration() != ce::streamline_api::Generation::V1 ||
+      runtimeGeneration != ce::streamline_api::Generation::V2) {
+    return;
+  }
+
+  // A late bridge can arrive while the game's 1.x slInit is still loading its
+  // NGX snippets. Register the configured copies before the import-table
+  // takeover, so that in-flight 1.x initialization and the later CE-owned 2.x
+  // runtime converge on the same physical images. The post-shutdown retirement
+  // path covers the race where a legacy copy had already won.
+  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlss.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlssg.dll");
+
+  // Cover absolute-path loads as well as ordinary base-name resolution. The
+  // 1.x core/plugins predate CE's normal loader-IAT snapshot in late-injected
+  // titles; patch the already-resident owners now so their next feature load
+  // reaches the configured-path redirect.
+  for (const char* moduleName : {"sl.interposer.dll", "sl.common.dll", "sl.dlss.dll",
+                                 "sl.dlss_g.dll"}) {
+    if (HMODULE module = GetModuleHandleA(moduleName)) {
+      char modulePath[MAX_PATH] = {};
+      if (GetModuleFileNameA(module, modulePath, MAX_PATH)) {
+        PatchLoadLibraryIatForLateLoadedModule(module, modulePath);
+      }
+    }
+  }
 }
 
 void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
