@@ -6,14 +6,16 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- Added Streamline 1.x-to-2.x upgrade bridging behind `streamline_upgrade=on`: CaptureEngine loads a complete
+- Added a Streamline 1.x-to-2.x upgrade bridge behind `streamline_upgrade=on`. This feature is still
+  work-in-progress and currently non-functioning: it does not yet produce a working upgrade, so enabling it
+  is not expected to restore Streamline features in a bridged game. The mechanism loads a complete
   user-supplied 2.x plugin set as a second, CE-owned runtime, repoints the game's `sl.interposer` import slots
   at it in memory (nothing on disk is renamed or patched), and translates the game's own 1.x Streamline calls
   onto the 2.x ABI - including measured 1.x feature-constant layouts, Reflex translation, and synthesized
-  Reflex activation plus per-frame Reflex sleeps so bridged DLSS-G engages. The bridge holds device continuity
-  across adapter resets, reuses proven D3D12 devices, resolves adapters by fresh LUID, falls back safely for
-  capability probes, serializes legacy teardown before upgrade, takes over NGX identity cleanly, and fixes tag
-  lifetime and FG option deduplication.
+  Reflex activation plus per-frame Reflex sleeps. Existing plumbing holds device continuity across adapter
+  resets, reuses proven D3D12 devices, resolves adapters by fresh LUID, falls back safely for capability
+  probes, serializes legacy teardown before upgrade, takes over NGX identity cleanly, and fixes tag lifetime
+  and FG option deduplication.
 - Expanded `[UE5]` overrides with `depth_of_field`, `dlss_super_resolution`, `dlss_super_resolution_quality`,
   `hdr_output`, `hdr_peak_luminance`, `hdr_paper_white`, `hdr_ui_luminance`, `hdr_min_luminance`, and
   `hdr_color_gamut`: `depth_of_field=off|on` writes `r.DepthOfFieldQuality`; `dlss_super_resolution=on` sets
