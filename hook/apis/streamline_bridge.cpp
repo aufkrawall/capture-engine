@@ -303,6 +303,29 @@ IUnknown* ResolveEquivalentAdapter(IUnknown* adapter) {
 // input to `slSetD3DDevice`.
 HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
                                     void** ppDevice) {
+    if (ppDevice) {
+        *ppDevice = nullptr;
+        // A second creation for the same adapter is not a second runtime device. Reuse the
+        // healthy native device before entering D3D12: a failed redundant call can reset that
+        // already-proven device, leaving nothing usable for a recovery attempted afterwards.
+        if (TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)) {
+            return S_OK;
+        }
+    }
+
+    // A null-output request is a capability probe, not device creation. If this bridge already
+    // created a device on the same adapter at an equal-or-higher feature level, answer it from
+    // that proof instead of asking the driver for redundant validation.
+    if (!ppDevice && riid == IID_ID3D12Device && HasRememberedDeviceSupport(adapter, minimumFeatureLevel)) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: answered D3D12 capability probe from prior successful "
+                             "creation (featureLevel=%u)",
+                             static_cast<unsigned>(minimumFeatureLevel));
+        }
+        return S_OK;
+    }
+
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
     if (!d3d12) {
         d3d12 = LoadLibraryW(L"d3d12.dll");
@@ -320,23 +343,9 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
         return DXGI_ERROR_UNSUPPORTED;
     }
 
-    // A null-output request is a capability probe, not device creation. If this bridge already
-    // created a device on the same adapter at an equal-or-higher feature level, answer it from
-    // that proof instead of asking the driver for redundant validation.
-    if (!ppDevice && riid == IID_ID3D12Device && HasRememberedDeviceSupport(adapter, minimumFeatureLevel)) {
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-            HookLogImportant("Streamline bridge: answered D3D12 capability probe from prior successful "
-                             "creation (featureLevel=%u)",
-                             static_cast<unsigned>(minimumFeatureLevel));
-        }
-        return S_OK;
-    }
     IUnknown* adapterForCreate = ResolveEquivalentAdapter(adapter);
-    if (ppDevice) {
-        *ppDevice = nullptr;
-    }
     HRESULT hr = create(adapterForCreate, minimumFeatureLevel, riid, ppDevice);
+    bool usedDefaultAdapter = false;
 
     // The LUID-matched request still returned DEVICE_RESET on Witcher 3's real-device pass
     // (`20260822_003051`) even though the same route had already created a device. A null retry
@@ -359,14 +368,12 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
             static_cast<void*>(ppDevice));
         if (SUCCEEDED(defaultHr)) {
             hr = defaultHr;
+            usedDefaultAdapter = true;
         }
-    }
-    if (FAILED(hr) && deviceLostClass && TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)) {
-        hr = S_OK;
     }
 
     if (SUCCEEDED(hr)) {
-        RememberCreatedDevice(adapterForCreate, minimumFeatureLevel,
+        RememberCreatedDevice(usedDefaultAdapter ? nullptr : adapterForCreate, minimumFeatureLevel,
                               ppDevice && SUCCEEDED(hr) ? *ppDevice : nullptr);
     }
 

@@ -18,6 +18,9 @@
 // build caught this rather than silently mis-laying the structs out.
 #if defined(_M_X64) || defined(__x86_64__)
 
+#include <d3d12.h>
+#include <wrl/client.h>
+
 #include "sl.h"
 #include "sl_consts.h"
 #include "sl_dlss.h"
@@ -95,7 +98,8 @@ std::atomic<uint32_t> g_forwardedReflexMode{UINT32_MAX};
 std::mutex g_featureFunctionMutex;
 
 void ResolveFeatureFunctions() {
-    if (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions && g_slReflexSleep) {
+    if (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions &&
+        g_slReflexSetOptions && g_slReflexSleep) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_featureFunctionMutex);
@@ -121,20 +125,18 @@ void ResolveFeatureFunctions() {
         g_slGetFeatureFunction(sl::kFeatureReflex, "slReflexSleep",
                                reinterpret_cast<void*&>(g_slReflexSleep));
     }
-    // Logged once the set is complete, and once more if it is still incomplete after the
-    // runtime has become usable - reporting every failed attempt would be noise, because
-    // failing before the device exists is the expected case this is polling for.
+    // Report only the complete set; failures before the device exists are the expected reason
+    // this event-driven path retries, not useful per-attempt diagnostics.
     static std::atomic<bool> logged{false};
-    if ((g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions) &&
-        !logged.exchange(true, std::memory_order_relaxed)) {
+    const bool complete = g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions &&
+                          g_slReflexSetOptions && g_slReflexSleep;
+    if (complete && !logged.exchange(true, std::memory_order_relaxed)) {
         HookLogImportant(
-            "Streamline bridge: feature entry points %s - slDLSSSetOptions=%p slDLSSGetOptimalSettings=%p "
-            "slDLSSGSetOptions=%p slReflexSetOptions=%p",
-            (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions && g_slReflexSetOptions)
-                ? "resolved"
-                : "PARTIALLY resolved",
+            "Streamline bridge: feature entry points resolved - slDLSSSetOptions=%p "
+            "slDLSSGetOptimalSettings=%p slDLSSGSetOptions=%p slReflexSetOptions=%p slReflexSleep=%p",
             reinterpret_cast<void*>(g_slDLSSSetOptions), reinterpret_cast<void*>(g_slDLSSGetOptimalSettings),
-            reinterpret_cast<void*>(g_slDLSSGSetOptions), reinterpret_cast<void*>(g_slReflexSetOptions));
+            reinterpret_cast<void*>(g_slDLSSGSetOptions), reinterpret_cast<void*>(g_slReflexSetOptions),
+            reinterpret_cast<void*>(g_slReflexSleep));
     }
 }
 
@@ -147,8 +149,8 @@ void RefuseOnce(std::atomic<bool>& latch, const char* what, const char* why) {
 }
 
 std::mutex g_deviceMutex;
-void* g_lastDeviceHandedOver = nullptr;  // guarded by g_deviceMutex
-bool g_haveExplicitDevice = false;       // guarded by g_deviceMutex
+Microsoft::WRL::ComPtr<IUnknown> g_lastDeviceIdentity;  // guarded by g_deviceMutex
+bool g_haveExplicitDevice = false;                      // guarded by g_deviceMutex
 
 void BumpReadinessEpoch() { g_readinessEpoch.fetch_add(1, std::memory_order_relaxed); }
 
@@ -167,7 +169,12 @@ bool TryBecomeUsable() {
         return false;  // nothing has changed since the last time this was asked
     }
     ResolveFeatureFunctions();
-    if (!g_slDLSSSetOptions) {
+    PFun_slDLSSSetOptions* readinessFunction = nullptr;
+    if (g_slGetFeatureFunction) {
+        g_slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions",
+                               reinterpret_cast<void*&>(readinessFunction));
+    }
+    if (!readinessFunction) {
         return false;
     }
     if (!g_runtimeUsable.exchange(true, std::memory_order_acq_rel)) {
@@ -331,6 +338,19 @@ bool SetV2RuntimeDevice(void* d3d12Device, bool explicitHandoff) {
     if (!d3d12Device) {
         return false;
     }
+    Microsoft::WRL::ComPtr<ID3D12Device> nativeDevice;
+    Microsoft::WRL::ComPtr<IUnknown> identity;
+    const HRESULT deviceHr = static_cast<IUnknown*>(d3d12Device)->QueryInterface(IID_PPV_ARGS(&nativeDevice));
+    const HRESULT identityHr = SUCCEEDED(deviceHr) ? nativeDevice.As(&identity) : deviceHr;
+    if (FAILED(identityHr)) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant("Streamline bridge: refusing D3D12 device handoff because COM identity "
+                             "normalization failed (device=%p hr=0x%08X)",
+                             d3d12Device, static_cast<uint32_t>(identityHr));
+        }
+        return false;
+    }
     // Hand over every DISTINCT device CE learns of, not just the first.
     //
     // The first one is routinely a throwaway: The Witcher 3 creates a device, has Streamline
@@ -348,19 +368,29 @@ bool SetV2RuntimeDevice(void* d3d12Device, bool explicitHandoff) {
         std::lock_guard<std::mutex> lock(g_deviceMutex);
         // Never let the queue-derived fallback overwrite an explicitly selected device.
         const bool superseded = !explicitHandoff && g_haveExplicitDevice;
-        if (!superseded && g_lastDeviceHandedOver != d3d12Device && g_slSetD3DDevice) {
-            result = g_slSetD3DDevice(d3d12Device);
-            g_lastDeviceHandedOver = d3d12Device;
-            g_haveExplicitDevice = g_haveExplicitDevice || explicitHandoff;
+        const bool sameDevice = g_lastDeviceIdentity.Get() == identity.Get();
+        if (!superseded && sameDevice && explicitHandoff) {
+            g_haveExplicitDevice = true;
+        } else if (!superseded && !sameDevice && g_slSetD3DDevice) {
+            // Calls already admitted for the prior device must stop until the plugin manager
+            // proves its contexts survived or completed this genuinely new handoff.
+            g_runtimeUsable.store(false, std::memory_order_release);
+            result = g_slSetD3DDevice(nativeDevice.Get());
+            if (result == sl::Result::eOk) {
+                g_lastDeviceIdentity = identity;
+                g_haveExplicitDevice = g_haveExplicitDevice || explicitHandoff;
+            }
             attempted = true;
         }
     }
     if (attempted) {
         HookLogImportant(
             "Streamline bridge: handed %s device %p to the 2.x runtime (slSetD3DDevice sl::Result=%d)",
-            explicitHandoff ? "an explicitly handed" : "the game's queue-derived", d3d12Device,
+            explicitHandoff ? "an explicitly handed" : "the game's queue-derived", nativeDevice.Get(),
             static_cast<int>(result));
-        BumpReadinessEpoch();
+        if (result == sl::Result::eOk) {
+            BumpReadinessEpoch();
+        }
     }
     return TryBecomeUsable();
 }

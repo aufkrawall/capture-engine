@@ -14,6 +14,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Policy (activation, feature/buffer maps, preference flags) | `hook/apis/streamline_bridge_policy.h` (unit-tested) |
 | Runtime (import takeover, fallback, 1.x quiesce) | `hook/apis/streamline_bridge.{h,cpp}` |
 | 2.x bring-up (load by full path, `slInit`, inventory) | `hook/apis/streamline_bridge_runtime.{h,cpp}` |
+| Native D3D12 device continuity | `hook/apis/streamline_bridge_device_cache.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
@@ -294,10 +295,20 @@ only, CE makes one logged retry with DXGI/D3D12's default adapter. On multi-GPU 
 visible compatibility fallback, not a silent policy: the log names both HRESULTs and both adapter
 pointers.
 
-Session `20260822_021816` added the final step: when both attempts fail despite an earlier success,
-CE reuses the retained successful device after checking `ID3D12Device::GetDeviceRemovedReason`.
-This avoids converting a transient driver refusal to recreate an equivalent device into a fatal
-title exception while preserving normal distinct-device semantics on the happy path.
+Session `20260822_021816` motivated retaining the successful device, but initially reused it only
+after both recreation attempts failed. Session `20260822_174509` disproved that ordering: the
+redundant call itself returned `DXGI_ERROR_DEVICE_RESET`, and by the time the fallback checked the
+retained device it had been reset too. The title threw before making a single translated feature
+call.
+
+The cache therefore answers a compatible same-LUID object request **before entering D3D12**, after
+checking `ID3D12Device::GetDeviceRemovedReason` and querying the requested COM interface. A higher
+feature-level request, a different adapter, an unsupported interface, or an unhealthy device still
+takes the native creation path. Cache entries use the created device's actual adapter LUID rather
+than the requested/default adapter argument, and default-adapter reuse is tracked explicitly. The
+handoff path compares canonical `IUnknown` identity, so requesting `ID3D12Device1` from the same
+object cannot spuriously rebind the 2.x runtime merely because that interface has a different
+pointer value.
 
 ## Invariants
 
@@ -342,11 +353,14 @@ title exception while preserving normal distinct-device semantics on the happy p
 - **The first device a title creates may be a throwaway.** Hand over every distinct one.
   Explicitly selected native/interposer devices supersede each other; queue-derived discovery is
   only a fallback and never overwrites an explicit handoff.
-- **A proven device may answer only a failed redundant recreation.** Some driver/title sequences
-  accept creation, pass a null-output probe, then reject another object-producing request with
-  `DXGI_ERROR_DEVICE_RESET` (`20260822_021816`). Retain the successful device by LUID; after a
-  device-lost-class failure, verify it is not removed and return the requested COM interface. Do
-  not replace ordinary distinct-device creation with reuse.
+- **A proven device answers a compatible redundant recreation before the driver is called.** A
+  device-lost-class call can reset the already-retained object, making after-failure recovery
+  impossible (`20260822_174509`). Reuse requires the same physical-adapter LUID, equal-or-lower
+  minimum feature level, a healthy device, and the requested COM interface. Otherwise ordinary
+  native creation remains authoritative.
+- **Device identity is COM identity, not an interface pointer.** Different D3D12 interfaces on the
+  same object may have different addresses. Canonicalize through `IUnknown`, retain that identity,
+  and call `slSetD3DDevice` only for a genuinely distinct successfully accepted device.
 - **The probe is event-driven, not polled and not once-only.** Once per epoch, where an epoch is
   a device handed over or the game's frame index moving; nothing at all once the answer is yes.
 - **A module the bridge routed around gets no hooks.** With two generations resident and one

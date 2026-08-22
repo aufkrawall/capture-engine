@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-08-22 - Reuse the proven D3D12 device before a redundant creation can reset it
+
+Witcher 3 session `20260822_174509` reached a healthy CE-owned Streamline 2.12.128 runtime, loaded
+the custom-path DLSS, DLSS-G, Reflex and PCL plugins, bound a native D3D12 device, and applied the
+configured SR/FG overrides. Before any translated feature call, its later `ID3D12Device1` request
+returned `DXGI_ERROR_DEVICE_RESET` for both the LUID-matched and default-adapter attempts; the title
+then threw `0xe06d7363`. The retained-device fallback ran too late because the failed driver call
+had already reset the object it needed to recover.
+
+- A compatible same-LUID repeated object request now checks device health and queries the requested
+  interface before entering D3D12 at all. Different adapters, higher feature requirements,
+  unsupported interfaces and unhealthy devices still take the native path.
+- Cache identity comes from the created device's actual adapter LUID, including explicit tracking
+  for default-adapter creations; the cache always follows the newest successfully created device.
+- Streamline handoff deduplication now uses canonical COM identity rather than interface-pointer
+  equality, and a failed `slSetD3DDevice` is not recorded as an accepted runtime device.
+- A genuinely new device closes the feature-call gate until `slGetFeatureFunction` answers again;
+  Reflex set/sleep entry points both remain in the retry-completeness condition.
+- The dump and module inventory confirm that the statically imported 1.x interposer is mapped but
+  inert; every live Streamline plugin and NGX binary came from the configured 2.x folder.
+
 ### 2026-08-22 - Vulkan compute presents need a compute-side overlay composite
 
 DOOM Eternal's async-present mode changed the present topology from graphics family 0 to a

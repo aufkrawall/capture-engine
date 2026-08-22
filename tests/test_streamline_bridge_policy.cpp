@@ -272,7 +272,8 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
-    EXPECT_NE(source.find("RememberCreatedDevice(adapterForCreate, minimumFeatureLevel,"), std::string::npos);
+    EXPECT_NE(source.find("RememberCreatedDevice(usedDefaultAdapter ? nullptr : adapterForCreate,"),
+              std::string::npos);
     EXPECT_NE(source.find("TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)"),
               std::string::npos);
     EXPECT_NE(source.find("answered D3D12 capability probe from prior successful"), std::string::npos);
@@ -280,20 +281,51 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
               std::string::npos);
 }
 
-TEST(StreamlineBridgePolicyTest, ReusesAProvenDeviceWhenDriverRejectsRecreation) {
-    // Session 20260822_021816: after a successful native creation and a successful null-output
-    // probe, the driver rejected the next object-producing request with DEVICE_RESET on both
-    // adapter-bound and default retries; the title treated that redundant failure as fatal.
-    // A retained COM reference to the already-proven device can satisfy an equivalent request
-    // without asking the driver to validate the same adapter again.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_device_cache.cpp");
+TEST(StreamlineBridgePolicyTest, ReusesAProvenDeviceBeforeRedundantDriverCreation) {
+    // Session 20260822_174509: trying the driver first returned DEVICE_RESET and poisoned the
+    // retained device before the recovery path inspected it. A compatible repeated request must
+    // therefore reuse the proven object before D3D12 is entered at all.
+    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    const std::string cacheSource = ReadProjectSource("hook/apis/streamline_bridge_device_cache.cpp");
+    ASSERT_FALSE(bridgeSource.empty());
+    ASSERT_FALSE(cacheSource.empty());
+
+    const size_t reuse = bridgeSource.find("if (TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, "
+                                           "ppDevice))");
+    const size_t driverLoad = bridgeSource.find("HMODULE d3d12 = GetModuleHandleW");
+    ASSERT_NE(reuse, std::string::npos);
+    ASSERT_NE(driverLoad, std::string::npos);
+    EXPECT_LT(reuse, driverLoad);
+    EXPECT_EQ(bridgeSource.find("FAILED(hr) && deviceLostClass && TryReuseCreatedDevice"),
+              std::string::npos);
+
+    EXPECT_NE(cacheSource.find("std::map<uint64_t, RememberedDevice> g_devicesByAdapter"),
+              std::string::npos);
+    EXPECT_NE(cacheSource.find("GetDeviceRemovedReason()"), std::string::npos);
+    EXPECT_NE(cacheSource.find("cached.CopyTo(riid, ppDevice)"), std::string::npos);
+    EXPECT_NE(cacheSource.find("reused the prior successful D3D12 device before a redundant"),
+              std::string::npos);
+    EXPECT_NE(cacheSource.find("LuidKey(retained->GetAdapterLuid())"), std::string::npos);
+    EXPECT_NE(cacheSource.find("g_defaultAdapterKey = key"), std::string::npos);
+}
+
+TEST(StreamlineBridgePolicyTest, DeduplicatesDeviceHandoffsByComIdentity) {
+    // QueryInterface may return a different pointer for ID3D12Device1 than ID3D12Device even
+    // though both name the same object. Raw-pointer comparison would rebind SL2 on Witcher's
+    // repeated Device1 request and violate the one-runtime-device invariant.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
 
-    EXPECT_NE(source.find("std::map<uint64_t, RememberedDevice> g_devicesByAdapter"),
+    EXPECT_NE(source.find("Microsoft::WRL::ComPtr<IUnknown> g_lastDeviceIdentity"),
               std::string::npos);
-    EXPECT_NE(source.find("GetDeviceRemovedReason()"), std::string::npos);
-    EXPECT_NE(source.find("cached.CopyTo(riid, ppDevice)"), std::string::npos);
-    EXPECT_NE(source.find("reused the prior successful D3D12 device"), std::string::npos);
+    EXPECT_NE(source.find("nativeDevice.As(&identity)"), std::string::npos);
+    EXPECT_NE(source.find("g_lastDeviceIdentity.Get() == identity.Get()"), std::string::npos);
+    EXPECT_NE(source.find("g_slSetD3DDevice(nativeDevice.Get())"), std::string::npos);
+    EXPECT_NE(source.find("g_runtimeUsable.store(false, std::memory_order_release)"),
+              std::string::npos);
+    EXPECT_NE(source.find("PFun_slDLSSSetOptions* readinessFunction = nullptr"),
+              std::string::npos);
+    EXPECT_EQ(source.find("g_lastDeviceHandedOver"), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchangedFGOptions) {
@@ -324,6 +356,7 @@ TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) 
               std::string::npos);
     EXPECT_NE(source.find("sl::ReflexMode::eLowLatencyWithBoost"), std::string::npos);
     EXPECT_NE(source.find("synthesized for DLSS-G"), std::string::npos);
+    EXPECT_NE(source.find("g_slReflexSetOptions && g_slReflexSleep"), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, DrivesReflexRuntimeDetectionOncePerBridgedFGFrame) {
