@@ -163,7 +163,8 @@ bool BuildOverlayQueueReservation(InstanceDispatch* instanceDispatch, VkPhysical
 // presents on one thread, so nothing of the game's can slip onto its graphics
 // queue between the frame CE is overlaying and CE's own submit.
 OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* disp, VkQueue presentQueue,
-                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently) {
+                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently,
+                                               bool independentOffscreenWork) {
     OverlaySubmitTarget target;
     if (VulkanLayerState::Get().QueueSupportsGraphics(presentQueue)) {
         target.queue = presentQueue;
@@ -173,13 +174,18 @@ OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* 
     }
 
     const VkQueue reserved = disp ? disp->overlayQueue : VK_NULL_HANDLE;
-    // The borrow candidate is resolved even when a reserved queue exists, and it
-    // is published even on a call that then picks the reserved queue. The tier
-    // is evidence-driven and a swapchain recreate re-arms that evidence, so a
-    // process can move onto the borrowed queue at any later present - and the
-    // publication must already be in place by then, because it is what makes the
-    // game's own submissions take CE's lock. Publishing it early costs the game
-    // one uncontended mutex per submit and buys a queue CE can never race.
+    if (independentOffscreenWork && reserved != VK_NULL_HANDLE) {
+        target.queue = reserved;
+        target.queueFamilyIndex = disp->overlayQueueFamilyIndex;
+        target.valid = target.queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED;
+        return target;
+    }
+    // On the direct render-pass path the borrow candidate is resolved even when
+    // a reserved queue exists, and published even on a call that then picks the
+    // reserved queue. The tier is evidence-driven and a swapchain recreate
+    // re-arms that evidence, so a process can move onto the borrowed queue at
+    // any later present. Independent offscreen work returned above: it owns the
+    // reserved queue and must not put a mutex on the game's graphics submits.
     VkQueue borrowed = g_BorrowedOverlayQueue.load(std::memory_order_acquire);
     if (borrowed == VK_NULL_HANDLE) {
         // Prefer the exact queue the game last submitted graphics work on -
@@ -204,7 +210,12 @@ OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* 
     availability.borrowedQueueAvailable = borrowed != VK_NULL_HANDLE;
     availability.gameSubmitsConcurrently = gameSubmitsConcurrently;
 
-    switch (ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue(availability)) {
+    const ce::overlay_submit_queue_policy::OverlaySubmitQueue selected =
+        independentOffscreenWork
+            ? ce::overlay_submit_queue_policy::ChooseIndependentGraphicsQueue(reserved != VK_NULL_HANDLE,
+                                                                               borrowed != VK_NULL_HANDLE)
+            : ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue(availability);
+    switch (selected) {
         case ce::overlay_submit_queue_policy::OverlaySubmitQueue::kReservedQueue:
             target.queue = reserved;
             target.queueFamilyIndex = disp->overlayQueueFamilyIndex;

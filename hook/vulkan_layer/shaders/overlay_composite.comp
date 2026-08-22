@@ -1,0 +1,38 @@
+#version 450
+
+#extension GL_EXT_shader_image_load_formatted : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The swapchain format is selected by the application. ImageFormat Unknown is
+// therefore intentional and gated on the core read/write-without-format device
+// features before this pipeline is used.
+layout(binding = 0) uniform image2D targetImage;
+layout(binding = 1) uniform sampler2D overlayImage;
+
+layout(push_constant) uniform CompositeRect {
+    ivec2 origin;
+    ivec2 size;
+} rect;
+
+void main() {
+    ivec2 local = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(local, rect.size))) {
+        return;
+    }
+
+    ivec2 pixel = rect.origin + local;
+    vec4 overlay = texelFetch(overlayImage, pixel, 0);
+    if (overlay.a <= 0.0) {
+        return;
+    }
+
+    // The graphics pass rendered into transparent black with standard source
+    // alpha blending, so RGB is already premultiplied here. This reproduces the
+    // direct render-pass blend without sending the present dependency back to
+    // the graphics engine.
+    vec4 base = imageLoad(targetImage, pixel);
+    imageStore(targetImage, pixel,
+               vec4(overlay.rgb + base.rgb * (1.0 - overlay.a),
+                    overlay.a + base.a * (1.0 - overlay.a)));
+}

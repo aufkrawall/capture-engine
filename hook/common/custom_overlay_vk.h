@@ -87,7 +87,10 @@ public:
 
     // Vulkan-specific: Set command buffer and render pass info before rendering
     void SetRenderContext(VkCommandBuffer cmdBuffer, VkRenderPass renderPass, VkFramebuffer framebuffer,
-                          VkExtent2D extent);
+                          VkExtent2D extent, bool clearTransparent = false);
+    VkRect2D GetLastRenderBounds() const {
+        return lastRenderBounds;
+    }
 
 private:
     bool CreateDescriptorSetLayout();
@@ -134,6 +137,8 @@ private:
     VkRenderPass currentRenderPass = VK_NULL_HANDLE;
     VkFramebuffer currentFramebuffer = VK_NULL_HANDLE;
     VkExtent2D currentExtent = {};
+    VkRect2D lastRenderBounds = {};
+    bool clearTransparentTarget = false;
 
     // Dispatch tables (casted from void* in .cpp to avoid circular dependency)
     void* deviceDispatch = nullptr;    // DeviceDispatch*

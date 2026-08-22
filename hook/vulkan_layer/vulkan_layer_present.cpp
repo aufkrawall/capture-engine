@@ -145,9 +145,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     // EXCLUSIVE is fine as long as CE uses the family the game rendered on,
     // which is what the reserved overlay queue guarantees; record it so a real
     // run can prove which case a title is in.
-    LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (sharingMode=%s familyCount=%u)", res,
-             pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
-             pCreateInfo->queueFamilyIndexCount);
+    LayerLog(
+        "Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (sharingMode=%s familyCount=%u imageUsage=0x%x)",
+        res, pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
+        pCreateInfo->queueFamilyIndexCount, pCreateInfo->imageUsage);
     if (res == VK_SUCCESS) {
         auto* sd = new SwapchainData();
         sd->swapchain = *pSwapchain;
@@ -155,6 +156,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->format = pCreateInfo->imageFormat;
         sd->colorSpace = pCreateInfo->imageColorSpace;
         sd->extent = pCreateInfo->imageExtent;
+        sd->imageUsage = pCreateInfo->imageUsage;
 
         uint32_t count = 0;
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, nullptr);
@@ -196,7 +198,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                     shmPtr->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
                 }
             } else {
-                InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count,
+                InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage, count,
                                   sd->images.data(), sd->window);
                 LayerLog(
                     "Vulkan Layer: InitializeOverlay returned, registering "
@@ -286,8 +288,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (sd && !sd->runtimeInitialized.exchange(true, std::memory_order_acq_rel)) {
         if (runtimeEligible) {
             if (!preferDX9Path) {
-                InitializeOverlay(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageCount,
-                                  sd->images.data(), sd->window);
+                InitializeOverlay(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage,
+                                  sd->imageCount, sd->images.data(), sd->window);
             }
             LayerLog("[InjectLifecycle] Late-initialized Vulkan swapchain %p", sd->swapchain);
         }

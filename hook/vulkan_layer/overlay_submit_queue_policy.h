@@ -17,22 +17,21 @@
 // synchronized, and a game that presents from several threads submits from
 // several more.
 //
-// **The overlay is never parallel work.** It waits on exactly the semaphores
-// the present was already going to wait on, and the rewritten present then waits
-// on the overlay. It therefore sits on the present's critical path by
-// construction, and a queue of its own cannot make it overlap with anything -
-// it can only add synchronization. That matters most on NVIDIA, where every
-// VkQueue in the graphics family shares one hardware engine: two queues means
-// two channel context switches per frame (drain the pipe, switch, drain, switch
-// back) plus two cross-queue semaphore hops, all of them delaying the present.
-// DOOM Eternal session `20260819_140614` is the symptom: turning the game's
-// "present from compute" on costs frame rate with CE injected and costs nothing
-// without it, while CE's CPU time inside the present is identical either way
-// (~175 us) - the difference is entirely which queue the overlay submit lands
-// on, since the overlay records against queue family 0 in both configurations.
+// **The direct overlay is never parallel work.** It waits on exactly the
+// semaphores the present was already going to wait on, and the rewritten
+// present then waits on the overlay. It therefore sits on the present's
+// critical path by construction, and a queue of its own cannot make it overlap
+// with anything. That matters most on NVIDIA, where every VkQueue in the
+// graphics family shares one hardware engine. DOOM Eternal's 2026-08-22 async
+// present switch proves the remaining case: CE's CPU and overlay GPU costs stay
+// flat, but a compute-produced present forces the direct path through compute
+// -> graphics -> compute. The compute-present compositor below renders only
+// the overlay texture independently and performs the final blend on the
+// original compute/present queue, removing that round trip.
 //
-// So the preference order is "join the game's own graphics timeline", and CE's
-// reserved queue is the fallback for the one case where joining it is unsafe:
+// For the direct path the preference order is "join the game's own graphics
+// timeline", and CE's reserved queue is the fallback for the one case where
+// joining it is unsafe:
 //
 //   1. The present queue itself, when it supports graphics. Unchanged behaviour
 //      for every title that works today - and note this is already the game's
@@ -76,6 +75,25 @@ struct SubmitQueueAvailability {
     bool gameSubmitsConcurrently = false;
 };
 
+struct ComputePresentAvailability {
+    bool presentQueueSupportsGraphics = false;
+    bool presentQueueSupportsCompute = false;
+    bool swapchainSupportsStorage = false;
+    bool storageReadWithoutFormatAvailable = false;
+    bool storageWriteWithoutFormatAvailable = false;
+};
+
+// A compute compositor is the only route that keeps a present-from-compute
+// dependency on its original engine. It is used strictly when the application
+// created storage-capable swapchain images and enabled the two formatless image
+// features needed to preserve arbitrary WSI formats. Every other topology keeps
+// the proven graphics-render-pass path.
+inline bool ShouldUseComputePresent(const ComputePresentAvailability& availability) {
+    return !availability.presentQueueSupportsGraphics && availability.presentQueueSupportsCompute &&
+           availability.swapchainSupportsStorage && availability.storageReadWithoutFormatAvailable &&
+           availability.storageWriteWithoutFormatAvailable;
+}
+
 inline OverlaySubmitQueue ChooseOverlaySubmitQueue(const SubmitQueueAvailability& availability) {
     if (availability.presentQueueSupportsGraphics) {
         return OverlaySubmitQueue::kPresentQueue;
@@ -89,6 +107,17 @@ inline OverlaySubmitQueue ChooseOverlaySubmitQueue(const SubmitQueueAvailability
     if (availability.borrowedQueueAvailable) {
         return OverlaySubmitQueue::kBorrowedQueue;
     }
+    return OverlaySubmitQueue::kNone;
+}
+
+// Offscreen overlay work has no dependency on the game's graphics timeline.
+// Prefer CE's queue so an async game cannot enqueue its next frame in front of
+// the overlay texture the current compute-present is about to sample.
+inline OverlaySubmitQueue ChooseIndependentGraphicsQueue(bool reservedQueueAvailable, bool borrowedQueueAvailable) {
+    if (reservedQueueAvailable)
+        return OverlaySubmitQueue::kReservedQueue;
+    if (borrowedQueueAvailable)
+        return OverlaySubmitQueue::kBorrowedQueue;
     return OverlaySubmitQueue::kNone;
 }
 

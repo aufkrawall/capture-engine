@@ -21,10 +21,13 @@ namespace {
 using ce::overlay_submit_queue_policy::CanReserveOverlayQueue;
 using ce::overlay_submit_queue_policy::CanWidenQueueCreateEntry;
 using ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue;
+using ce::overlay_submit_queue_policy::ChooseIndependentGraphicsQueue;
+using ce::overlay_submit_queue_policy::ComputePresentAvailability;
 using ce::overlay_submit_queue_policy::OverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueueIndex;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueuePriority;
 using ce::overlay_submit_queue_policy::ShouldSerializeSubmissionsOnQueue;
+using ce::overlay_submit_queue_policy::ShouldUseComputePresent;
 using ce::overlay_submit_queue_policy::SubmitQueueAvailability;
 
 SubmitQueueAvailability Availability(bool presentGraphics, bool reserved, bool borrowed, bool concurrent) {
@@ -33,6 +36,17 @@ SubmitQueueAvailability Availability(bool presentGraphics, bool reserved, bool b
     availability.reservedQueueAvailable = reserved;
     availability.borrowedQueueAvailable = borrowed;
     availability.gameSubmitsConcurrently = concurrent;
+    return availability;
+}
+
+ComputePresentAvailability ComputeAvailability(bool graphics, bool compute, bool storage, bool readWithoutFormat,
+                                               bool writeWithoutFormat) {
+    ComputePresentAvailability availability;
+    availability.presentQueueSupportsGraphics = graphics;
+    availability.presentQueueSupportsCompute = compute;
+    availability.swapchainSupportsStorage = storage;
+    availability.storageReadWithoutFormatAvailable = readWithoutFormat;
+    availability.storageWriteWithoutFormatAvailable = writeWithoutFormat;
     return availability;
 }
 
@@ -125,6 +139,22 @@ TEST(OverlaySubmitQueuePolicyTest, OnlyTheBorrowedQueuePaysForSerialization) {
     EXPECT_FALSE(ShouldSerializeSubmissionsOnQueue(/*borrowActive=*/false, /*queueIsBorrowedQueue=*/true));
     EXPECT_FALSE(ShouldSerializeSubmissionsOnQueue(/*borrowActive=*/true, /*queueIsBorrowedQueue=*/false));
     EXPECT_TRUE(ShouldSerializeSubmissionsOnQueue(/*borrowActive=*/true, /*queueIsBorrowedQueue=*/true));
+}
+
+TEST(OverlaySubmitQueuePolicyTest, StorageCapableComputePresentStaysOnItsOriginalQueue) {
+    EXPECT_TRUE(ShouldUseComputePresent(ComputeAvailability(false, true, true, true, true)));
+    EXPECT_FALSE(ShouldUseComputePresent(ComputeAvailability(true, true, true, true, true)))
+        << "a graphics present already has the zero-cross-queue direct render-pass path";
+    EXPECT_FALSE(ShouldUseComputePresent(ComputeAvailability(false, false, true, true, true)));
+    EXPECT_FALSE(ShouldUseComputePresent(ComputeAvailability(false, true, false, true, true)));
+    EXPECT_FALSE(ShouldUseComputePresent(ComputeAvailability(false, true, true, false, true)));
+    EXPECT_FALSE(ShouldUseComputePresent(ComputeAvailability(false, true, true, true, false)));
+}
+
+TEST(OverlaySubmitQueuePolicyTest, IndependentOffscreenWorkPrefersCesQueue) {
+    EXPECT_EQ(ChooseIndependentGraphicsQueue(true, true), OverlaySubmitQueue::kReservedQueue);
+    EXPECT_EQ(ChooseIndependentGraphicsQueue(false, true), OverlaySubmitQueue::kBorrowedQueue);
+    EXPECT_EQ(ChooseIndependentGraphicsQueue(false, false), OverlaySubmitQueue::kNone);
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, OverlaySubmitsOnTheResolvedQueueNotThePresentQueue) {
@@ -255,4 +285,68 @@ TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapc
     }
     // Two definitions plus both paths of each of the three submit wrappers.
     EXPECT_EQ(noteCount, 8u);
+}
+
+// DOOM Eternal `doomasyncpresentswitch` (2026-08-22) proves the remaining
+// penalty is GPU scheduling, not CE's CPU/GPU workload: overlay CPU is 64-66 us
+// and overlay GPU is 9 us in both modes, but the compute-signalled present
+// forces the direct render pass through compute -> graphics -> compute.
+TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentCompositesOnThePresentQueue) {
+    const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    const std::string shader = ReadProjectSource("hook/vulkan_layer/shaders/overlay_composite.comp");
+    const std::string spirv = ReadProjectSource("hook/common/overlay_shader_spirv.h");
+    const std::string generator = ReadProjectSource("tools/compile_vulkan_overlay_shaders.py");
+    ASSERT_FALSE(compute.empty());
+    ASSERT_FALSE(render.empty());
+    ASSERT_FALSE(shader.empty());
+    ASSERT_FALSE(spirv.empty());
+    ASSERT_FALSE(generator.empty());
+
+    EXPECT_NE(render.find("ShouldUseComputePresent"), std::string::npos);
+    EXPECT_NE(compute.find("fp_vkQueueSubmit(presentQueue"), std::string::npos)
+        << "the final composite must stay on the compute/present queue";
+    EXPECT_NE(compute.find("VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT"), std::string::npos);
+    EXPECT_EQ(compute.find("graphicsSubmit.waitSemaphoreCount"), std::string::npos)
+        << "offscreen graphics must run concurrently, not wait behind the game's final compute work";
+    EXPECT_NE(compute.find("computeSubmit.waitSemaphoreCount"), std::string::npos)
+        << "the compute composite joins the game's present waits and the independently rendered overlay";
+    EXPECT_NE(shader.find("overlay.rgb + base.rgb * (1.0 - overlay.a)"), std::string::npos)
+        << "the offscreen render pass produces premultiplied RGB";
+    EXPECT_NE(spirv.find("g_ComputeCompositeShaderSpv"), std::string::npos);
+    EXPECT_NE(generator.find("overlay_composite.comp"), std::string::npos)
+        << "the checked-in payload must remain reproducible and SPIR-V validated";
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentIsCapabilityGatedAndKeepsTheGraphicsFallback) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    const std::string hooks = ReadProjectSource("hook/vulkan_layer/vulkan_layer_hooks.cpp");
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(render.empty());
+    ASSERT_FALSE(hooks.empty());
+
+    EXPECT_NE(present.find("sd->imageUsage = pCreateInfo->imageUsage"), std::string::npos);
+    EXPECT_NE(render.find("VK_IMAGE_USAGE_STORAGE_BIT"), std::string::npos);
+    EXPECT_NE(render.find("storageImageReadWithoutFormatAvailable"), std::string::npos);
+    EXPECT_NE(render.find("storageImageWriteWithoutFormatAvailable"), std::string::npos);
+    EXPECT_NE(hooks.find("shaderStorageImageReadWithoutFormat"), std::string::npos);
+    EXPECT_NE(hooks.find("shaderStorageImageWriteWithoutFormat"), std::string::npos);
+    EXPECT_NE(hooks.find("VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME"), std::string::npos)
+        << "the SPIR-V capabilities may come from Vulkan 1.3 or the format-feature-flags2 extension";
+
+    const std::string initialization = ReadProjectSource("hook/vulkan_layer/layer_overlay.cpp");
+    ASSERT_FALSE(initialization.empty());
+    EXPECT_NE(initialization.find("VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT"), std::string::npos);
+    EXPECT_NE(initialization.find("VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT"), std::string::npos)
+        << "B8G8R8A8 is not core-guaranteed for formatless access, so the exact format needs querying";
+    EXPECT_NE(initialization.find("formatFeatureFlags2Available &&"), std::string::npos)
+        << "VkFormatProperties3 must not be chained on devices that do not support its API or extension";
+
+    const size_t computeAttempt = render.find("RenderComputePresentOverlay");
+    const size_t directRenderPass = render.find("// Record command buffer");
+    ASSERT_NE(computeAttempt, std::string::npos);
+    ASSERT_NE(directRenderPass, std::string::npos);
+    EXPECT_LT(computeAttempt, directRenderPass)
+        << "unsupported formats/features must fall through to the proven graphics route";
 }

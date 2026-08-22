@@ -176,6 +176,10 @@ bool VulkanLayerState::QueueSupportsGraphics(VkQueue queue) {
     return (GetQueueFlags(queue) & VK_QUEUE_GRAPHICS_BIT) != 0;
 }
 
+bool VulkanLayerState::QueueSupportsCompute(VkQueue queue) {
+    return (GetQueueFlags(queue) & VK_QUEUE_COMPUTE_BIT) != 0;
+}
+
 bool VulkanLayerState::QueueSupportsTransfer(VkQueue queue) {
     const uint32_t flags = GetQueueFlags(queue);
     return (flags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0;

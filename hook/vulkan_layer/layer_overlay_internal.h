@@ -40,6 +40,9 @@ struct OverlayState {
     VkExtent2D extent = {0, 0};
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    VkImageUsageFlags imageUsage = 0;
+    bool storageFormatReadWithoutFormatSupported = false;
+    bool storageFormatWriteWithoutFormatSupported = false;
     PerformanceMetrics* metrics = nullptr;
     bool needsWindowHook = false;
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -56,6 +59,29 @@ struct OverlayState {
 
     // OverlayAdapter for content rendering
     OverlayAdapter* overlayAdapter = nullptr;
+
+    // Present-from-compute route. The graphics queue renders the small overlay
+    // concurrently into these transparent images; the present queue then
+    // composites only the occupied rectangle onto its storage-capable
+    // swapchain image. This removes the compute -> graphics -> compute round
+    // trip from the present dependency chain.
+    bool computePresentInitialized = false;
+    bool computePresentUnavailable = false;
+    uint32_t computeQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    VkRenderPass offscreenRenderPass = VK_NULL_HANDLE;
+    std::vector<VkImage> offscreenImages;
+    std::vector<VkDeviceMemory> offscreenMemory;
+    std::vector<VkImageView> offscreenImageViews;
+    std::vector<VkFramebuffer> offscreenFramebuffers;
+    std::vector<VkSemaphore> offscreenReadySemaphores;
+    VkCommandPool computeCommandPool = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> computeCommandBuffers;
+    VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> computeDescriptorSets;
+    VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline computePipeline = VK_NULL_HANDLE;
+    VkSampler computeSampler = VK_NULL_HANDLE;
 };
 
 extern std::mutex g_OverlayMutex;
@@ -63,3 +89,7 @@ extern std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 
 void SyncOverlayActiveFlagLocked();
 bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex);
+void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp);
+bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
+                                 VkQueue presentQueue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
+                                 uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool* routeAttempted);

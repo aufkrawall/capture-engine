@@ -37,6 +37,7 @@ struct InstanceDispatch {
     PFN_vkGetPhysicalDeviceProperties2 fp_vkGetPhysicalDeviceProperties2 = nullptr;
     PFN_vkGetPhysicalDeviceFeatures fp_vkGetPhysicalDeviceFeatures = nullptr;
     PFN_vkGetPhysicalDeviceFeatures2 fp_vkGetPhysicalDeviceFeatures2 = nullptr;
+    PFN_vkGetPhysicalDeviceFormatProperties2 fp_vkGetPhysicalDeviceFormatProperties2 = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties fp_vkGetPhysicalDeviceQueueFamilyProperties = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties fp_vkGetPhysicalDeviceMemoryProperties = nullptr;
     PFN_vkCreateDevice fp_vkCreateDevice = nullptr;
@@ -62,6 +63,9 @@ struct DeviceDispatch {
     uint32_t overlayQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bool captureInteropEnabled = false;
     bool samplerAnisotropyEnabled = false;
+    bool formatFeatureFlags2Available = false;
+    bool storageImageReadWithoutFormatAvailable = false;
+    bool storageImageWriteWithoutFormatAvailable = false;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;
@@ -143,7 +147,9 @@ struct DeviceDispatch {
     PFN_vkCreatePipelineLayout fp_vkCreatePipelineLayout = nullptr;
     PFN_vkDestroyPipelineLayout fp_vkDestroyPipelineLayout = nullptr;
     PFN_vkCreateGraphicsPipelines fp_vkCreateGraphicsPipelines = nullptr;
+    PFN_vkCreateComputePipelines fp_vkCreateComputePipelines = nullptr;
     PFN_vkDestroyPipeline fp_vkDestroyPipeline = nullptr;
+    PFN_vkCmdDispatch fp_vkCmdDispatch = nullptr;
     PFN_vkCreateShaderModule fp_vkCreateShaderModule = nullptr;
     PFN_vkDestroyShaderModule fp_vkDestroyShaderModule = nullptr;
 #ifdef VK_USE_PLATFORM_WIN32_KHR
@@ -167,6 +173,7 @@ struct SwapchainData {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D extent = {0, 0};
+    VkImageUsageFlags imageUsage = 0;
     uint32_t imageCount = 0;
     std::vector<VkImage> images;
     HWND window = nullptr;
@@ -203,6 +210,7 @@ public:
     uint32_t GetQueueFamilyIndex(VkQueue queue);
     uint32_t GetQueueFlags(VkQueue queue);
     bool QueueSupportsGraphics(VkQueue queue);
+    bool QueueSupportsCompute(VkQueue queue);
     bool QueueSupportsTransfer(VkQueue queue);
     // Any graphics-capable queue the game itself fetched on this device. Only
     // used as the last resort for overlay submission, on hardware that exposes
@@ -387,7 +395,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instan
 
 // Functional entry points defined in other files but needed by hooks
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
-                       VkExtent2D extent,
+                       VkExtent2D extent, VkImageUsageFlags imageUsage,
                        uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
@@ -432,7 +440,8 @@ struct OverlaySubmitTarget {
 };
 
 OverlaySubmitTarget ResolveOverlaySubmitTarget(VkDevice device, DeviceDispatch* disp, VkQueue presentQueue,
-                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently);
+                                               uint32_t presentQueueFamily, bool gameSubmitsConcurrently,
+                                               bool independentOffscreenWork = false);
 void ForgetBorrowedOverlaySubmitQueue(VkDevice device);
 VkQueue GetBorrowedOverlaySubmitQueue();
 void SetBorrowedOverlaySubmitQueue(VkQueue queue);

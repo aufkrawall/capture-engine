@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-08-22 - Vulkan compute presents need a compute-side overlay composite
+
+DOOM Eternal's async-present mode changed the present topology from graphics family 0 to a
+compute-only family 2 and reduced the swapchain from three images to two. CE's CPU and overlay
+cost stayed effectively flat (about 8-9 us overlay GPU time), but the direct graphics render pass
+inserted a compute -> graphics -> compute dependency round trip that the game does not have without
+the overlay.
+
+- On eligible non-graphics compute presents, render the overlay independently into a transparent
+  sampled image on CE's reserved graphics queue, then blend only its occupied rectangle into the
+  storage-capable swapchain image on the original compute/present queue.
+- Gate the formatless compute shader on the application's existing swapchain storage usage and
+  SPIR-V read/write-without-format capability (legacy device features, Vulkan 1.3, or the
+  format-feature-flags2 extension), plus the exact format's corresponding feature bits when it is
+  not core-guaranteed. Do not widen device features or swapchain usage; retain the direct
+  render-pass fallback when any capability is absent.
+- Keep the independent graphics submit free of game waits and prefer CE's queue, avoiding both the
+  cross-engine critical path and serialization with the game's next graphics submission.
+
 ### 2026-08-22 - Redundant D3D12 recreation can reuse the proven device
 
 Witcher 3 `20260822_021816` successfully created a native D3D12 device, handed it to SL2, and

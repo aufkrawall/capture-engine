@@ -32,6 +32,12 @@ void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance, P
         (PFN_vkGetPhysicalDeviceFeatures)gipa(instance, "vkGetPhysicalDeviceFeatures");
     dispatch->fp_vkGetPhysicalDeviceFeatures2 =
         (PFN_vkGetPhysicalDeviceFeatures2)gipa(instance, "vkGetPhysicalDeviceFeatures2");
+    dispatch->fp_vkGetPhysicalDeviceFormatProperties2 =
+        (PFN_vkGetPhysicalDeviceFormatProperties2)gipa(instance, "vkGetPhysicalDeviceFormatProperties2");
+    if (!dispatch->fp_vkGetPhysicalDeviceFormatProperties2) {
+        dispatch->fp_vkGetPhysicalDeviceFormatProperties2 =
+            (PFN_vkGetPhysicalDeviceFormatProperties2)gipa(instance, "vkGetPhysicalDeviceFormatProperties2KHR");
+    }
     dispatch->fp_vkGetPhysicalDeviceQueueFamilyProperties =
         (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
     dispatch->fp_vkGetPhysicalDeviceMemoryProperties =
@@ -138,7 +144,9 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkCreatePipelineLayout = (PFN_vkCreatePipelineLayout)gdpa(device, "vkCreatePipelineLayout");
     dispatch->fp_vkDestroyPipelineLayout = (PFN_vkDestroyPipelineLayout)gdpa(device, "vkDestroyPipelineLayout");
     dispatch->fp_vkCreateGraphicsPipelines = (PFN_vkCreateGraphicsPipelines)gdpa(device, "vkCreateGraphicsPipelines");
+    dispatch->fp_vkCreateComputePipelines = (PFN_vkCreateComputePipelines)gdpa(device, "vkCreateComputePipelines");
     dispatch->fp_vkDestroyPipeline = (PFN_vkDestroyPipeline)gdpa(device, "vkDestroyPipeline");
+    dispatch->fp_vkCmdDispatch = (PFN_vkCmdDispatch)gdpa(device, "vkCmdDispatch");
     dispatch->fp_vkCreateShaderModule = (PFN_vkCreateShaderModule)gdpa(device, "vkCreateShaderModule");
     dispatch->fp_vkDestroyShaderModule = (PFN_vkDestroyShaderModule)gdpa(device, "vkDestroyShaderModule");
 #ifdef VK_USE_PLATFORM_WIN32_KHR
@@ -476,8 +484,28 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     VkResult result = VK_SUCCESS;
     bool captureInteropEnabled = false;
     bool samplerAnisotropyEnabled = false;
+    bool formatFeatureFlags2Available = false;
+    bool storageImageReadWithoutFormatAvailable = false;
+    bool storageImageWriteWithoutFormatAvailable = false;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
+    const VkPhysicalDeviceFeatures* requestedCoreFeatures = pCreateInfo->pEnabledFeatures;
+    if (!requestedCoreFeatures) {
+        for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(pCreateInfo->pNext); node;
+             node = node->pNext) {
+            if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                requestedCoreFeatures = &reinterpret_cast<const VkPhysicalDeviceFeatures2*>(node)->features;
+                break;
+            }
+        }
+    }
+    if (requestedCoreFeatures) {
+        samplerAnisotropyEnabled = requestedCoreFeatures->samplerAnisotropy == VK_TRUE;
+        storageImageReadWithoutFormatAvailable =
+            requestedCoreFeatures->shaderStorageImageReadWithoutFormat == VK_TRUE;
+        storageImageWriteWithoutFormatAvailable =
+            requestedCoreFeatures->shaderStorageImageWriteWithoutFormat == VK_TRUE;
+    }
     // Must outlive the vkCreateDevice call below: modifiedCreateInfo points at
     // them when CE reserves its own overlay submission queue.
     OverlayQueueReservation overlayQueueReservation;
@@ -515,6 +543,14 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         const bool externalMemoryCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
         const bool externalSemaphoreCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
         const bool timelineCore = physicalProperties.apiVersion >= VK_API_VERSION_1_2;
+        formatFeatureFlags2Available = physicalProperties.apiVersion >= VK_API_VERSION_1_3 ||
+                                       extensionAvailable(VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME);
+        // Vulkan 1.3 and VK_KHR_format_feature_flags2 make the SPIR-V
+        // read/write-without-format capabilities available independently of
+        // the legacy core feature booleans. Per-format bits still decide
+        // whether a particular swapchain format may use them.
+        storageImageReadWithoutFormatAvailable |= formatFeatureFlags2Available;
+        storageImageWriteWithoutFormatAvailable |= formatFeatureFlags2Available;
 
         PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 =
             instanceDispatch ? instanceDispatch->fp_vkGetPhysicalDeviceFeatures2 : nullptr;
@@ -599,17 +635,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         VkPhysicalDeviceFeatures enabledFeatures = {};
         if (pCreateInfo->pEnabledFeatures) {
             enabledFeatures = *pCreateInfo->pEnabledFeatures;
-            samplerAnisotropyEnabled = enabledFeatures.samplerAnisotropy == VK_TRUE;
             modifiedCreateInfo.pEnabledFeatures = &enabledFeatures;
-        } else {
-            for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(pCreateInfo->pNext); node;
-                 node = node->pNext) {
-                if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                    const auto* features2 = reinterpret_cast<const VkPhysicalDeviceFeatures2*>(node);
-                    samplerAnisotropyEnabled = features2->features.samplerAnisotropy == VK_TRUE;
-                    break;
-                }
-            }
         }
 
         // Enable timeline semaphores only when the app did not already include
@@ -663,6 +689,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->physicalDevice = physicalDevice;
     dispatch->captureInteropEnabled = captureInteropEnabled;
     dispatch->samplerAnisotropyEnabled = samplerAnisotropyEnabled;
+    dispatch->formatFeatureFlags2Available = formatFeatureFlags2Available;
+    dispatch->storageImageReadWithoutFormatAvailable = storageImageReadWithoutFormatAvailable;
+    dispatch->storageImageWriteWithoutFormatAvailable = storageImageWriteWithoutFormatAvailable;
     dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);

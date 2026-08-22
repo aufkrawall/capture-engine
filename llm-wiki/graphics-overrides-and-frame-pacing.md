@@ -125,20 +125,35 @@ Primary sources:
 
 ## Overlay submission queue (Vulkan)
 
-- **The overlay is a render pass, so it needs `VK_QUEUE_GRAPHICS_BIT` - and the queue a game presents from
-  need not have it.** DOOM Eternal (idTech 7) presents from queue family 2, compute + transfer only, once its
-  real render loop starts. `ResolveOverlaySubmitTarget` (`hook/vulkan_layer/layer_overlay_queue.cpp`) picks
-  the present queue when it is graphics-capable, else the game's own graphics queue under
+- **The direct overlay is a render pass, so it needs `VK_QUEUE_GRAPHICS_BIT` - and the queue a game presents
+  from need not have it.** DOOM Eternal (idTech 7) presents from queue family 2, compute + transfer only, once
+  its real render loop starts. `ResolveOverlaySubmitTarget` (`hook/vulkan_layer/layer_overlay_queue.cpp`)
+  picks the present queue when it is graphics-capable, else the game's own graphics queue under
   `ScopedBorrowedQueueSubmission`, else a queue CE reserved for itself at `vkCreateDevice`. Rules and
   reasoning live in `hook/vulkan_layer/overlay_submit_queue_policy.h`.
-- **The overlay is never parallel work, so a queue of CE's own cannot make it overlap with anything.** It
-  waits on exactly the semaphores the present was going to wait on and the rewritten present then waits on
+- **The direct overlay is never parallel work, so a queue of CE's own cannot make it overlap with anything.**
+  It waits on exactly the semaphores the present was going to wait on and the rewritten present then waits on
   it, so it is on the critical path by construction. A second queue can only add synchronization - and on
   NVIDIA the whole graphics family is one hardware engine, so it adds two channel context switches per frame
   (drain, switch, drain, switch back) plus two cross-queue semaphore hops, all in front of the present.
   Joining the queue the game rendered on is in-order instead: `FindLastGameGraphicsSubmitQueue` names it
   exactly (CE's own submits bypass the layer's `vkQueueSubmit` wrappers, so they never pollute that tracking).
-- The reserved queue is the fallback for the one unsafe case: `asyncPresentDetected`, i.e. the game acquires
+- **Compute-only present queues use a split compositor when the application made that legal.** The graphics
+  queue renders the overlay without game waits into one transparent sampled image per swapchain image; only
+  the occupied overlay rectangle is cleared. A compute dispatch on the original present queue then waits on
+  both the game's present semaphores and the offscreen-ready semaphore, performs a premultiplied-alpha blend
+  over that rectangle, returns the swapchain image to `PRESENT_SRC_KHR`, and signals CE's normal present
+  semaphore. This removes the compute -> graphics -> compute dependency round trip while preserving the
+  proven direct route for every other topology. The offscreen submit prefers CE's reserved graphics queue
+  because it is independent work and must not sit behind the game's next frame on a borrowed queue.
+- The compute route is deliberately capability-preserving: `ShouldUseComputePresent` requires a non-graphics
+  compute present queue, swapchain `VK_IMAGE_USAGE_STORAGE_BIT`, and SPIR-V formatless read/write capabilities
+  supplied by enabled legacy device features, Vulkan 1.3, or `VK_KHR_format_feature_flags2`. It also queries
+  the exact WSI format's `STORAGE_READ_WITHOUT_FORMAT` and `STORAGE_WRITE_WITHOUT_FORMAT` properties when that
+  format is not core-guaranteed. The shader therefore never requires CE to change device features, swapchain
+  usage, or image formats. Missing capabilities or resource creation retain the direct fallback.
+- The reserved queue is the direct-path fallback for the one unsafe case: `asyncPresentDetected`, i.e. the
+  game acquires
   or submits from a thread other than the one it presents on. CE is then inside the present while the game
   may already be queueing the next frame, so appending there could put a whole frame of its work ahead of the
   overlay the present must wait for. Two context switches beat a frame.
@@ -155,8 +170,9 @@ Primary sources:
   CSV make a regression there measurable rather than arguable.
 - Once per swapchain generation the layer logs `Present topology - present queue family=... wait semaphore
   signalled by queue ...`. Graphics-signalled means CE only appends to the game's timeline;
-  compute-signalled means CE's render pass forced a compute -> graphics -> compute round trip the game never
-  had, and only moving the composite onto the present queue as a compute dispatch can remove it.
+  compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
+  permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay
+  unavailable` names the missing capability before retaining the direct fallback.
 - CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
   entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
   the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one
@@ -167,9 +183,11 @@ Primary sources:
   ring - passes through one lock. `ShouldSerializeQueueSubmission` makes that a single relaxed atomic load
   for every other queue in the process. Lock order is always overlay state -> borrowed queue.
 - Capture and screenshots need only `VK_QUEUE_TRANSFER_BIT` and keep using the present queue.
-- Open boundary: CE's swapchain-image barriers use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family ownership
-  transfer, matching what a game itself does when it renders on one family and presents on another.
-  `vkCreateSwapchainKHR` logs the requested `sharingMode` so a real run can say which case a title is in.
+- Open boundary: direct-path swapchain-image transitions use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family
+  ownership transfer, matching what a game itself does when it renders on one family and presents on another.
+  The compute route accesses the swapchain only from the original present family and creates its offscreen
+  images concurrent across graphics and compute families. `vkCreateSwapchainKHR` logs `sharingMode` and
+  `imageUsage` so a real run can prove which route is valid.
 
 ## Vulkan swapchain image count (`backbuffer_count`)
 

@@ -1,5 +1,8 @@
 #include "custom_overlay_vk_internal.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace CustomOverlay {
 // SPIR-V shaders (compiled from hook/vulkan_layer/shaders/)
 // Vertex shader: transforms screen coords to NDC using push constants
@@ -496,11 +499,13 @@ bool VulkanBackend::CreatePipelineLayout() {
 
 namespace CustomOverlay {
 void VulkanBackend::SetRenderContext(VkCommandBuffer cmdBuffer, VkRenderPass renderPass, VkFramebuffer framebuffer,
-                                     VkExtent2D extent) {
+                                     VkExtent2D extent, bool clearTransparent) {
     currentCmdBuffer = cmdBuffer;
     currentRenderPass = renderPass;
     currentFramebuffer = framebuffer;
     currentExtent = extent;
+    clearTransparentTarget = clearTransparent;
+    lastRenderBounds = {};
 }
 }
 
@@ -523,6 +528,43 @@ void VulkanBackend::Render(const std::vector<DrawVertex>& vertices, const std::v
 
     if (pipeline == VK_NULL_HANDLE)
         return;
+
+    // The compute-present route first renders the overlay onto a transparent
+    // offscreen attachment. Clear only the rectangle the generated geometry
+    // can touch: clearing the whole 4K attachment would turn a tiny overlay
+    // into a full-frame bandwidth pass. The direct swapchain route leaves this
+    // disabled, including the bounds scan, because its render pass loads the
+    // game's existing pixels and must retain its established CPU cost.
+    if (clearTransparentTarget) {
+        float minX = vertices[0].x;
+        float minY = vertices[0].y;
+        float maxX = vertices[0].x;
+        float maxY = vertices[0].y;
+        for (const DrawVertex& vertex : vertices) {
+            minX = std::min(minX, vertex.x);
+            minY = std::min(minY, vertex.y);
+            maxX = std::max(maxX, vertex.x);
+            maxY = std::max(maxY, vertex.y);
+        }
+        const int32_t left = std::clamp(static_cast<int32_t>(std::floor(minX)), 0, viewportWidth);
+        const int32_t top = std::clamp(static_cast<int32_t>(std::floor(minY)), 0, viewportHeight);
+        const int32_t right = std::clamp(static_cast<int32_t>(std::ceil(maxX)), left, viewportWidth);
+        const int32_t bottom = std::clamp(static_cast<int32_t>(std::ceil(maxY)), top, viewportHeight);
+        lastRenderBounds.offset = {left, top};
+        lastRenderBounds.extent = {static_cast<uint32_t>(right - left), static_cast<uint32_t>(bottom - top)};
+    }
+    if (clearTransparentTarget && lastRenderBounds.extent.width > 0 && lastRenderBounds.extent.height > 0 &&
+        disp->fp_vkCmdClearAttachments) {
+        VkClearAttachment clear = {};
+        clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear.colorAttachment = 0;
+        clear.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        VkClearRect rect = {};
+        rect.rect = lastRenderBounds;
+        rect.baseArrayLayer = 0;
+        rect.layerCount = 1;
+        disp->fp_vkCmdClearAttachments(currentCmdBuffer, 1, &clear, 1, &rect);
+    }
 
     // Advance to the next pool slot for this frame
     int slot = frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;

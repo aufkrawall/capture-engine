@@ -15,6 +15,7 @@ SHADERS = (
     ("overlay.vert", "vert", "g_VertexShaderSpv"),
     ("overlay_textured.frag", "frag", "g_FragmentShaderSpv"),
     ("overlay_solid.frag", "frag", "g_FragmentShaderSolidSpv"),
+    ("overlay_composite.comp", "comp", "g_ComputeCompositeShaderSpv"),
 )
 
 

@@ -47,12 +47,36 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return false;
     }
 
-    // The overlay is a render pass. A game is free to present from a queue
-    // family without VK_QUEUE_GRAPHICS_BIT - DOOM Eternal presents from a
-    // compute-only family once its real render loop starts - so resolve which
-    // graphics queue this submit belongs on before touching any resources.
-    const OverlaySubmitTarget submitTarget =
-        ResolveOverlaySubmitTarget(device, disp, queue, queueFamilyIndex, gameSubmitsConcurrently);
+    ce::overlay_submit_queue_policy::ComputePresentAvailability computeAvailability;
+    computeAvailability.presentQueueSupportsGraphics = VulkanLayerState::Get().QueueSupportsGraphics(queue);
+    computeAvailability.presentQueueSupportsCompute = VulkanLayerState::Get().QueueSupportsCompute(queue);
+    computeAvailability.swapchainSupportsStorage = (state.imageUsage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+    computeAvailability.storageReadWithoutFormatAvailable =
+        disp->storageImageReadWithoutFormatAvailable && state.storageFormatReadWithoutFormatSupported;
+    computeAvailability.storageWriteWithoutFormatAvailable =
+        disp->storageImageWriteWithoutFormatAvailable && state.storageFormatWriteWithoutFormatSupported;
+    const bool useComputePresent =
+        ce::overlay_submit_queue_policy::ShouldUseComputePresent(computeAvailability);
+    if (!computeAvailability.presentQueueSupportsGraphics && !useComputePresent) {
+        static std::atomic<int> s_computeFallbackLogCount{0};
+        if (s_computeFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            LayerLog(
+                "Vulkan Layer: Compute-present overlay unavailable - computeQueue=%d storageUsage=%d "
+                "readWithoutFormat=%d writeWithoutFormat=%d; retaining graphics fallback",
+                computeAvailability.presentQueueSupportsCompute ? 1 : 0,
+                computeAvailability.swapchainSupportsStorage ? 1 : 0,
+                computeAvailability.storageReadWithoutFormatAvailable ? 1 : 0,
+                computeAvailability.storageWriteWithoutFormatAvailable ? 1 : 0);
+        }
+    }
+
+    // The overlay is normally a render pass. A game is free to present from a
+    // queue family without VK_QUEUE_GRAPHICS_BIT, so resolve the graphics work
+    // before touching command resources. Compute-present uses an independent
+    // offscreen target and therefore prefers CE's reserved queue; the direct
+    // fallback still joins the game's graphics timeline when that is safe.
+    const OverlaySubmitTarget submitTarget = ResolveOverlaySubmitTarget(
+        device, disp, queue, queueFamilyIndex, gameSubmitsConcurrently, useComputePresent);
     if (!submitTarget.valid) {
         return false;
     }
@@ -142,6 +166,17 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     }
     if (overlayGpuUs) {
         *overlayGpuUs = state.lastOverlayGpuUs;
+    }
+
+    if (useComputePresent) {
+        bool routeAttempted = false;
+        const bool rendered =
+            RenderComputePresentOverlay(state, disp, submitTarget, queue, imageIndex, waitSemaphores,
+                                        waitSemaphoreCount, signalSemaphore, &routeAttempted);
+        if (routeAttempted)
+            return rendered;
+        // Resource creation/recording failed before either queue saw work. The
+        // direct graphics path below remains a safe per-frame fallback.
     }
 
     // Record command buffer
