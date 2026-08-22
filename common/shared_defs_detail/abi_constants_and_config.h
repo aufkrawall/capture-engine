@@ -67,23 +67,26 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 44: Added the UE5 depth of field, DLSS Super Resolution and HDR
 //             override fields (r.DepthOfFieldQuality, r.NGX.DLSS.Enable and the
 //             third-party upscaler levers, r.HDR.*)
-static constexpr uint32_t SHARED_MEMORY_VERSION = 44;
+// Version 45: Added the four-level UE5 Ray Reconstruction settings preset and
+//             typed per-CVar custom override values.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 45;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_44_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_45_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_44";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_45";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
 static constexpr int FRAME_RING_SIZE = 32;
 static constexpr int SHARED_TEXTURE_SLOT_COUNT = 16;
 static constexpr int ENCODER_TEXTURE_SLOT_COUNT = SHARED_TEXTURE_SLOT_COUNT;
+static constexpr std::size_t UE5_CVAR_OVERRIDE_CAPACITY = 64;
 
 inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
     return backbufferCount >= 2 && backbufferCount <= 6;
@@ -476,7 +479,9 @@ struct SharedGraphicsConfig {
 
     // UE5 process-local persistent CVar overrides. A negative sharpen value
     // leaves r.Tonemapper.Sharpen alone unless disablePostProcessingEffects is set.
-    bool rayReconstructionOptimalSettings;
+    // 0=off, 1=light, 2=medium, 3=full. The uint8 representation preserves the
+    // original Boolean field's layout while allowing the graduated preset.
+    uint8_t rayReconstructionOptimalSettings;
     bool disablePostProcessingEffects;
     float tonemapperSharpen;
     // -1 leaves UE's own engine limiter alone, 0 disables it (t.MaxFPS=0),
@@ -516,6 +521,11 @@ struct SharedGraphicsConfig {
     float hdrMinLuminance;
     // r.HDR.Display.ColorGamut: -1 untouched, 0..4.
     int32_t hdrColorGamut;
+    // A bit selects the matching ue5_cvar::kSpecs entry and the parallel array
+    // carries its already type-validated raw Int32/Float bits. Custom values
+    // are resolved after all named presets, so they have final precedence.
+    uint64_t ue5CustomCVarOverrideMask;
+    uint32_t ue5CustomCVarOverrideValues[UE5_CVAR_OVERRIDE_CAPACITY];
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -587,7 +597,10 @@ static_assert(offsetof(SharedGraphicsConfig, depthOfField) ==
 static_assert(offsetof(SharedGraphicsConfig, hdrColorGamut) ==
                   offsetof(SharedGraphicsConfig, depthOfField) + 8 * sizeof(int32_t),
               "the UE5 DLSS SR and HDR fields must stay contiguous after depth of field");
-static_assert(sizeof(SharedGraphicsConfig) == 420,
+static_assert(offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideValues) ==
+                  offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideMask) + sizeof(uint64_t),
+              "UE5 custom CVar values must immediately follow their selection mask");
+static_assert(sizeof(SharedGraphicsConfig) == 688,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

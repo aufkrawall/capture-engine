@@ -18,11 +18,12 @@ TEST_F(ConfigTest, ParsesUE5OverridesAndLegacyRayReconstructionLocations) {
     EXPECT_TRUE(config.graphics.disablePostProcessingEffects);
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, 0.75f);
 
-    WriteConfig("[UE5]\nray_reconstruction_optimal_settings=on\n");
+    WriteConfig("[UE5]\nray_reconstruction_optimal_settings=full\n");
     LoadConfig(tempConfigFile, config);
-    EXPECT_TRUE(config.graphics.rayReconstructionOptimalSettings);
-    EXPECT_TRUE(config.graphics.forceRayReconstruction)
-        << "the documented optimal bundle includes r.NGX.DLSS.DenoiserMode=1";
+    EXPECT_EQ(config.graphics.rayReconstructionOptimalSettings,
+              ce::ue5_cvar::kRayReconstructionPresetFull);
+    EXPECT_FALSE(config.graphics.forceRayReconstruction)
+        << "quality settings must not silently select the DLSS RR denoiser";
 
     WriteConfig("[DLSS]\nforce_ray_reconstruction=on\n");
     LoadConfig(tempConfigFile, config);
@@ -42,6 +43,53 @@ TEST_F(ConfigTest, ParsesUE5OverridesAndLegacyRayReconstructionLocations) {
                 "[Graphics]\nforce_ray_reconstruction=off\n");
     LoadConfig(tempConfigFile, config);
     EXPECT_TRUE(config.graphics.forceRayReconstruction);
+}
+
+TEST_F(ConfigTest, ParsesGraduatedRayReconstructionSettingsAndLegacyOnAsFull) {
+    struct PresetCase {
+        const char* value;
+        uint8_t expected;
+    };
+    const PresetCase cases[] = {
+        {"off", ce::ue5_cvar::kRayReconstructionPresetOff},
+        {"light", ce::ue5_cvar::kRayReconstructionPresetLight},
+        {"medium", ce::ue5_cvar::kRayReconstructionPresetMedium},
+        {"full", ce::ue5_cvar::kRayReconstructionPresetFull},
+        {"on", ce::ue5_cvar::kRayReconstructionPresetFull},
+        {"true", ce::ue5_cvar::kRayReconstructionPresetFull},
+        {"invalid", ce::ue5_cvar::kRayReconstructionPresetOff},
+    };
+    AppConfig config;
+    for (const auto& preset : cases) {
+        WriteConfig(std::string("[UE5]\nray_reconstruction_optimal_settings=") + preset.value + "\n");
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(config.graphics.rayReconstructionOptimalSettings, preset.expected) << preset.value;
+        EXPECT_FALSE(config.graphics.forceRayReconstruction) << preset.value;
+    }
+}
+
+TEST_F(ConfigTest, ParsesTypedCustomCVarOverridesAndIgnoresUnsupportedEntries) {
+    WriteConfig("[UE5]\n"
+                "custom_cvar_overrides=r.NGX.DLSS.denoisermode=1,r.SSR.Temporal=0,"
+                "tonemapper_sharpen=0.5,not.supported=2,r.MaxAnisotropy=bad,r.SSR.Temporal=1\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    const std::size_t denoiser = ce::ue5_cvar::FindSpecIndex("r.NGX.DLSS.DenoiserMode");
+    const std::size_t temporal = ce::ue5_cvar::FindSpecIndex("r.SSR.Temporal");
+    const std::size_t sharpen = ce::ue5_cvar::FindSpecIndex("tonemapper_sharpen");
+    const std::size_t anisotropy = ce::ue5_cvar::FindSpecIndex("r.MaxAnisotropy");
+    ASSERT_LT(denoiser, ce::ue5_cvar::kSpecs.size());
+    ASSERT_LT(temporal, ce::ue5_cvar::kSpecs.size());
+    ASSERT_LT(sharpen, ce::ue5_cvar::kSpecs.size());
+    ASSERT_LT(anisotropy, ce::ue5_cvar::kSpecs.size());
+    EXPECT_NE(config.graphics.ue5CustomCVarOverrideMask & (uint64_t{1} << denoiser), 0u);
+    EXPECT_NE(config.graphics.ue5CustomCVarOverrideMask & (uint64_t{1} << temporal), 0u);
+    EXPECT_NE(config.graphics.ue5CustomCVarOverrideMask & (uint64_t{1} << sharpen), 0u);
+    EXPECT_EQ(config.graphics.ue5CustomCVarOverrideMask & (uint64_t{1} << anisotropy), 0u);
+    EXPECT_EQ(static_cast<int32_t>(config.graphics.ue5CustomCVarOverrideValues[denoiser]), 1);
+    EXPECT_EQ(static_cast<int32_t>(config.graphics.ue5CustomCVarOverrideValues[temporal]), 1);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(config.graphics.ue5CustomCVarOverrideValues[sharpen]), 0.5f);
 }
 
 TEST_F(ConfigTest, RejectsInvalidUE5TonemapperSharpenStrength) {

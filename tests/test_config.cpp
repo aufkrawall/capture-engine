@@ -174,7 +174,10 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_preset=B", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_debug_overlay=on", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.force_ray_reconstruction=on", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find(";UE5.ray_reconstruction_optimal_settings=on", profileExample),
+    EXPECT_NE(generatedText.find(";UE5.ray_reconstruction_optimal_settings=full", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find(";UE5.custom_cvar_overrides=r.SSR.Temporal=0,tonemapper_sharpen=0.5",
+                                 profileExample),
               std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.disable_post_processing_effects=on", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.tonemapper_sharpen=0.5", profileExample), std::string::npos);
@@ -208,6 +211,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("Sharpening accepts default, off"), std::string::npos);
     EXPECT_NE(generatedText.find("\n[UE5]\n"), std::string::npos);
     EXPECT_NE(generatedText.find("ray_reconstruction_optimal_settings=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("custom_cvar_overrides=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("r.SSR.Temporal=0"), std::string::npos);
     EXPECT_NE(generatedText.find("disable_post_processing_effects=off"), std::string::npos);
     EXPECT_NE(generatedText.find("tonemapper_sharpen=default"), std::string::npos);
     EXPECT_NE(generatedText.find("internal_fps_limit=default"), std::string::npos);
@@ -734,67 +739,4 @@ TEST_F(ConfigTest, FullscreenFocusBlackoutParsesGloballyAndFromProfile) {
         "Capture.black_when_no_fullscreen_focus=true\n");
     LoadConfig(tempConfigFile, config, "privacy-game.exe");
     EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
-}
-
-TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
-    EXPECT_TRUE(IsDxgiDupCaptureMethod("dxgi_dup"));
-    EXPECT_TRUE(IsDxgiDupCaptureMethod("desktop_dup"));
-    EXPECT_FALSE(IsDxgiDupCaptureMethod("wgc"));
-    EXPECT_FALSE(IsDxgiDupCaptureMethod("inject"));
-    EXPECT_FALSE(IsDxgiDupCaptureMethod("auto"));
-
-    // Screen-grab family = any non-inject desktop/window grab method.
-    EXPECT_TRUE(IsScreenGrabCaptureMethod("wgc"));
-    EXPECT_TRUE(IsScreenGrabCaptureMethod("screengrab"));
-    EXPECT_TRUE(IsScreenGrabCaptureMethod("dxgi_dup"));
-    EXPECT_TRUE(IsScreenGrabCaptureMethod("desktop_dup"));
-    EXPECT_FALSE(IsScreenGrabCaptureMethod("inject"));
-    EXPECT_FALSE(IsScreenGrabCaptureMethod("auto"));
-    EXPECT_FALSE(IsScreenGrabCaptureMethod("none"));
-    EXPECT_TRUE(IsVideoCaptureDisabledMethod("none"));
-    EXPECT_FALSE(IsVideoCaptureDisabledMethod("auto"));
-
-    // dxgi_dup must not be mistaken for wgc or auto.
-    EXPECT_FALSE(IsWgcCaptureMethod("dxgi_dup"));
-    EXPECT_FALSE(IsAutoCaptureMethod("dxgi_dup"));
-    EXPECT_FALSE(IsInjectCaptureMethod("dxgi_dup"));
-}
-
-TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
-    std::string iniContent =
-        "[Overlay]\n"
-        "enabled=true\n"
-        "observer_only=true\n"
-        "observer_policy_only=true\n"
-        "observer_startup_present_only=true\n"
-        "capture_include_overlay=false\n"
-        "screenshot_include_overlay=false\n";
-
-    WriteConfig(iniContent);
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config);
-
-    EXPECT_TRUE(config.overlay.showOverlay);
-    EXPECT_TRUE(config.overlay.observerOnly);
-    EXPECT_TRUE(config.overlay.observerPolicyOnly);
-    EXPECT_TRUE(config.overlay.observerStartupPresentOnly);
-    EXPECT_FALSE(config.overlay.captureIncludeOverlay);
-    EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
-    // dx12_focus_analysis is absent here -> defaults off.
-    EXPECT_FALSE(config.overlay.dx12FocusAnalysis);
-    EXPECT_FALSE(IsOverlayDx12FocusAnalysis(config.overlay));
-}
-
-TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
-    WriteConfig(
-        "[Overlay]\n"
-        "enabled=true\n"
-        "dx12_focus_analysis=true\n");
-
-    AppConfig config;
-    LoadConfig(tempConfigFile, config);
-
-    EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
-    EXPECT_TRUE(IsOverlayDx12FocusAnalysis(config.overlay));
 }

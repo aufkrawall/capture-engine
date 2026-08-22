@@ -45,8 +45,10 @@ Primary sources:
 - `[UE5] force_ray_reconstruction=off|on` is the canonical x64 policy. `on` persistently selects the existing NVIDIA
   plugin's `r.NGX.DLSS.DenoiserMode=1` render path in process memory; legacy `[DLSS]` / `[Graphics]` inputs remain
   accepted, and `UE5.force_ray_reconstruction` works in a process-backed profile.
-- `ray_reconstruction_optimal_settings=on` adds the exact 29-CVar DenoiserMode/Lumen/VSM/MegaLights bundle listed in
-  `captureengine/config.ini.template`; it implies force RR. `disable_post_processing_effects=on` applies dedicated
+- `ray_reconstruction_optimal_settings=off|light|medium|full` applies nested rendering-quality bundles listed in
+  `captureengine/config.ini.template`; none selects `r.NGX.DLSS.DenoiserMode`, so RR remains the independent
+  `force_ray_reconstruction` policy. Legacy `on` maps to `full`. `custom_cvar_overrides` accepts typed, comma-separated
+  values for any CVar in the supported spec table and has final precedence. `disable_post_processing_effects=on` applies dedicated
   built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
   touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.
 - `internal_fps_limit=default|off|1..1000` overrides UE5's own engine frame rate limiter (`t.MaxFPS`, a float CVar

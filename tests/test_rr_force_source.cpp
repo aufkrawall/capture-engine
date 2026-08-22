@@ -23,6 +23,7 @@ TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInstead
 
     EXPECT_NE(policy.find("r.NGX.DLSS.DenoiserMode"), std::string::npos);
     EXPECT_NE(policy.find("r.Lumen.Reflections.BilateralFilter"), std::string::npos);
+    EXPECT_NE(policy.find("r.SSR.Temporal"), std::string::npos);
     EXPECT_NE(policy.find("ShowFlag.Vignette"), std::string::npos);
     EXPECT_NE(source.find("InterlockedCompareExchangePointer"), std::string::npos);
     EXPECT_NE(source.find("ShouldAcceptCandidate"), std::string::npos);
@@ -55,9 +56,13 @@ TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeH
     EXPECT_NE(host.find("graphics.forceRayReconstruction = config.graphics.forceRayReconstruction"),
               std::string::npos);
     EXPECT_NE(host.find("graphics.rayReconstructionOptimalSettings"), std::string::npos);
+    EXPECT_NE(host.find("graphics.ue5CustomCVarOverrideMask"), std::string::npos);
+    EXPECT_NE(host.find("graphics.ue5CustomCVarOverrideValues"), std::string::npos);
     EXPECT_NE(host.find("graphics.disablePostProcessingEffects"), std::string::npos);
     EXPECT_NE(host.find("graphics.tonemapperSharpen"), std::string::npos);
     EXPECT_NE(hookCommon.find("mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction"),
+              std::string::npos);
+    EXPECT_NE(hookCommon.find("mergedConfig.ue5CustomCVarOverrideMask = shmGfx.ue5CustomCVarOverrideMask"),
               std::string::npos);
     EXPECT_NE(hookThread.find("RefreshOverrides(activeGraphicsConfig)"), std::string::npos);
     EXPECT_NE(hookThread.find("ShutdownOverrides()"), std::string::npos);

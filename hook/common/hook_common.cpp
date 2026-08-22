@@ -503,6 +503,9 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.hdrUiLuminance = shmGfx.hdrUiLuminance;
         mergedConfig.hdrMinLuminance = shmGfx.hdrMinLuminance;
         mergedConfig.hdrColorGamut = shmGfx.hdrColorGamut;
+        mergedConfig.ue5CustomCVarOverrideMask = shmGfx.ue5CustomCVarOverrideMask;
+        memcpy(mergedConfig.ue5CustomCVarOverrideValues.data(), shmGfx.ue5CustomCVarOverrideValues,
+               sizeof(shmGfx.ue5CustomCVarOverrideValues));
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.frameLatency = shmGfx.frameLatency;

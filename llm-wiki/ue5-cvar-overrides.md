@@ -1,6 +1,6 @@
 # UE5 CVar Overrides
 
-Last cross-checked: 2026-08-21
+Last cross-checked: 2026-08-22
 
 Process-local, persistent overrides of Unreal Engine console variables in an injected x64 game: how CE finds a CVar's
 value storage, which layouts it accepts, what it refuses, and every setting the `[UE5]` config section ships. Split
@@ -322,6 +322,25 @@ mode is a visibly broken frame in the user's game.
   evaluation while forced is an explicit fallback diagnostic; if it precedes the install line, RR discovery was too
   late and caused a live renderer transition. Talos runtime logs have confirmed forced Feature 13 evaluation and
   preset E without an on-disk CVar override; repeated level transitions and software-RT cases remain validation work.
+
+## Graduated RR quality settings and typed custom values (2026-08-22)
+
+- `ray_reconstruction_optimal_settings` is a nested `off|light|medium|full` preset. `light` writes
+  `r.Lumen.Reflections.BilateralFilter=0`, `ScreenSpaceReconstruction=0`, `Temporal=0`, and `r.SSR.Temporal=0`;
+  `medium` adds `r.Lumen.Reflections.DownsampleFactor=1`; `full` adds every remaining value from the former bundle.
+  The old `on`/true spellings remain aliases for `full` so existing profiles retain their quality settings.
+- The preset never selects `r.NGX.DLSS.DenoiserMode`. Its dedicated named control is
+  `force_ray_reconstruction=on`, preserving the distinction between tuning renderer inputs and selecting the NVIDIA
+  RR denoiser. An explicit custom DenoiserMode entry can still override it like any other supported CVar.
+- `custom_cvar_overrides=name=value,...` resolves names only against `kSpecs`; it cannot make the scanner write an
+  unknown CVar or guess a type. Canonical names are case-insensitive, and normalized aliases drop a leading `r.` or
+  `t.` and replace dots with underscores (`tonemapper_sharpen` -> `r.Tonemapper.Sharpen`). Int32 values require
+  integer syntax and Float values require a finite full-string number. Invalid entries are independently ignored,
+  duplicates are last-wins, and custom values resolve after all presets/dedicated options.
+- Parsing occurs at the host config boundary. ABI 45 transports only a 64-bit spec mask and 64 raw values whose
+  types were already validated; the injected hook does not parse an untrusted expression. `kSpecs` is statically
+  capped at that capacity. `SharedGraphicsConfig` grows from 420 to 688 bytes, and all mapping/event names move with
+  `SHARED_MEMORY_VERSION` 44 -> 45.
 
 ## Depth of field, DLSS Super Resolution, and HDR (added 2026-08-21)
 

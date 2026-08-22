@@ -441,6 +441,9 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.tonemapperSharpen = sharedMem->graphicsConfig.tonemapperSharpen;
         result.internalFpsLimit = sharedMem->graphicsConfig.internalFpsLimit;
         result.internalAnisotropicFiltering = sharedMem->graphicsConfig.internalAnisotropicFiltering;
+        result.ue5CustomCVarOverrideMask = sharedMem->graphicsConfig.ue5CustomCVarOverrideMask;
+        memcpy(result.ue5CustomCVarOverrideValues.data(), sharedMem->graphicsConfig.ue5CustomCVarOverrideValues,
+               sizeof(sharedMem->graphicsConfig.ue5CustomCVarOverrideValues));
         result.cpuPrerenderLimit = sharedMem->graphicsConfig.prerenderLimit;
         result.backbufferCount = sharedMem->graphicsConfig.backbufferCount;
         result.frameLatency = sharedMem->graphicsConfig.frameLatency;

@@ -25,7 +25,6 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         double value;
     };
     constexpr Expected expected[] = {
-        {"r.NGX.DLSS.DenoiserMode", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.Reflections.BilateralFilter", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.Reflections.ScreenSpaceReconstruction", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.Reflections.Temporal", ce::ue5_cvar::ValueType::Int32, 0.0},
@@ -55,6 +54,7 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Shadow.Virtual.ResolutionLodBiasLocalMoving", ce::ue5_cvar::ValueType::Float, 0.5},
         {"r.MegaLights.DownsampleMode", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.MegaLights.NumSamplesPerPixel", ce::ue5_cvar::ValueType::Int32, 8.0},
+        {"r.SSR.Temporal", ce::ue5_cvar::ValueType::Int32, 0.0},
     };
     for (const auto& item : expected) {
         const auto* spec = FindSpec(item.name);
@@ -79,12 +79,76 @@ TEST(UE5CVarOverridePolicyTest, PostProcessingBundleUsesDedicatedControlsAndShow
         << "unrelated game-authored post-process materials must remain enabled";
 }
 
-TEST(UE5CVarOverridePolicyTest, OptimalBundleAlsoSelectsRayReconstruction) {
+TEST(UE5CVarOverridePolicyTest, RayReconstructionSettingsLevelsAreNestedWithoutSelectingDenoiserMode) {
     ce::ue5_cvar::Settings settings;
-    settings.rayReconstructionOptimalSettings = true;
+    const auto countEnabled = [&settings]() {
+        std::size_t count = 0;
+        for (const auto& spec : ce::ue5_cvar::kSpecs)
+            count += ce::ue5_cvar::Resolve(spec, settings).enabled ? 1u : 0u;
+        return count;
+    };
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
     const auto denoiser = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex], settings);
-    EXPECT_TRUE(denoiser.enabled);
-    EXPECT_EQ(static_cast<int32_t>(denoiser.bits), 1);
+    EXPECT_FALSE(denoiser.enabled);
+    EXPECT_EQ(countEnabled(), 29u);
+
+    const auto* bilateral = FindSpec("r.Lumen.Reflections.BilateralFilter");
+    const auto* ssrTemporal = FindSpec("r.SSR.Temporal");
+    const auto* downsample = FindSpec("r.Lumen.Reflections.DownsampleFactor");
+    const auto* maxIntensity = FindSpec("r.Lumen.Reflections.MaxRayIntensity");
+    ASSERT_NE(bilateral, nullptr);
+    ASSERT_NE(ssrTemporal, nullptr);
+    ASSERT_NE(downsample, nullptr);
+    ASSERT_NE(maxIntensity, nullptr);
+
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetLight;
+    EXPECT_EQ(countEnabled(), 4u);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*bilateral, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*ssrTemporal, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetMedium;
+    EXPECT_EQ(countEnabled(), 5u);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetOff;
+    settings.forceRayReconstruction = true;
+    const auto forcedDenoiser =
+        ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex], settings);
+    ASSERT_TRUE(forcedDenoiser.enabled);
+    EXPECT_EQ(static_cast<int32_t>(forcedDenoiser.bits), 1);
+}
+
+TEST(UE5CVarOverridePolicyTest, CustomCVarValueHasFinalPrecedence) {
+    const std::size_t sharpenIndex = ce::ue5_cvar::FindSpecIndex("tonemapper_sharpen");
+    const std::size_t temporalIndex = ce::ue5_cvar::FindSpecIndex("R.SSR.TEMPORAL");
+    ASSERT_EQ(sharpenIndex, ce::ue5_cvar::kTonemapperSharpenIndex);
+    ASSERT_LT(temporalIndex, ce::ue5_cvar::kSpecs.size());
+
+    ce::ue5_cvar::Settings settings;
+    settings.disablePostProcessingEffects = true;
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
+    settings.customCVarOverrideMask = (uint64_t{1} << sharpenIndex) | (uint64_t{1} << temporalIndex);
+    settings.customCVarOverrideValues[sharpenIndex] = std::bit_cast<uint32_t>(0.5f);
+    settings.customCVarOverrideValues[temporalIndex] = 1;
+
+    const auto sharpen = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[sharpenIndex], settings);
+    const auto temporal = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[temporalIndex], settings);
+    ASSERT_TRUE(sharpen.enabled);
+    ASSERT_TRUE(temporal.enabled);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(sharpen.bits), 0.5f);
+    EXPECT_EQ(static_cast<int32_t>(temporal.bits), 1);
+
+    settings.disablePostProcessingEffects = false;
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetOff;
+    EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings));
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[temporalIndex], settings).enabled)
+        << "a custom entry must work without any preset enabling the same CVar";
 }
 
 TEST(UE5CVarOverridePolicyTest, CustomSharpenTakesPrecedenceOverDisableBundle) {

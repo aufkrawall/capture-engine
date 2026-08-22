@@ -461,13 +461,16 @@ backbuffer_count=-1
 ; nvngx_dlssd.dll can still be selected with [DLSS] dlss_rr_dll_path below.
 force_ray_reconstruction=off
 ;
-; Applies the complete Ray Reconstruction quality bundle below. This option also
-; implies force_ray_reconstruction=on because DenoiserMode=1 is part of the bundle:
-; r.NGX.DLSS.DenoiserMode=1
+; Applies a graduated Ray Reconstruction quality-settings preset. It does not
+; select the RR denoiser; use force_ray_reconstruction=on separately when wanted.
+; off applies none of these settings. light applies:
 ; r.Lumen.Reflections.BilateralFilter=0
 ; r.Lumen.Reflections.ScreenSpaceReconstruction=0
 ; r.Lumen.Reflections.Temporal=0
+; r.SSR.Temporal=0
+; medium applies all light settings and additionally:
 ; r.Lumen.Reflections.DownsampleFactor=1
+; full applies all medium settings and additionally:
 ; r.Lumen.Reflections.DownsampleCheckerboard=0
 ; r.Lumen.Reflections.MaxRayIntensity=100
 ; r.Lumen.ScreenProbeGather.StochasticInterpolation=0
@@ -492,7 +495,19 @@ force_ray_reconstruction=off
 ; r.Shadow.Virtual.ResolutionLodBiasLocalMoving=0.5
 ; r.MegaLights.DownsampleMode=0
 ; r.MegaLights.NumSamplesPerPixel=8
+; The legacy value on remains accepted as an alias for full.
 ray_reconstruction_optimal_settings=off
+;
+; Optional final overrides for any CVar supported by the settings above or the
+; other [UE5] options in this section. Use comma-separated name=value entries.
+; Canonical CVar names are case-insensitive; underscore aliases drop a leading
+; r./t. and replace dots, so tonemapper_sharpen maps to r.Tonemapper.Sharpen.
+; Values must match the CVar's existing Int32/Float type. Unsupported or malformed
+; entries are logged and ignored, duplicate names use the last value, and valid
+; entries take precedence over all presets and dedicated options. Decimal values
+; use a dot because commas separate entries. off applies no custom overrides.
+; Example: r.NGX.DLSS.DenoiserMode=1,r.SSR.Temporal=0,tonemapper_sharpen=0.5
+custom_cvar_overrides=off
 ;
 ; Disables UE's built-in tonemapper sharpen, film grain (including tonemapper
 ; grain quantization), vignette, motion blur, and chromatic aberration without
@@ -875,7 +890,8 @@ dx12_focus_analysis=false
 ;DLSS.dlss_fg_preset=B
 ;DLSS.dlss_debug_overlay=on
 ;UE5.force_ray_reconstruction=on
-;UE5.ray_reconstruction_optimal_settings=on
+;UE5.ray_reconstruction_optimal_settings=full
+;UE5.custom_cvar_overrides=r.SSR.Temporal=0,tonemapper_sharpen=0.5
 ;UE5.disable_post_processing_effects=on
 ;UE5.tonemapper_sharpen=0.5
 ;UE5.internal_fps_limit=60

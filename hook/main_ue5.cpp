@@ -39,6 +39,8 @@ ce::ue5_cvar::Settings MakeSettings(const GraphicsConfig& config) {
       config.hdrUiLuminance,
       config.hdrMinLuminance,
       config.hdrColorGamut,
+      config.ue5CustomCVarOverrideMask,
+      config.ue5CustomCVarOverrideValues,
   };
 }
 
@@ -68,7 +70,9 @@ bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settin
              std::bit_cast<uint32_t>(right.hdrUiLuminance) &&
          std::bit_cast<uint32_t>(left.hdrMinLuminance) ==
              std::bit_cast<uint32_t>(right.hdrMinLuminance) &&
-         left.hdrColorGamut == right.hdrColorGamut;
+         left.hdrColorGamut == right.hdrColorGamut &&
+         left.customCVarOverrideMask == right.customCVarOverrideMask &&
+         left.customCVarOverrideValues == right.customCVarOverrideValues;
 }
 
 void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
@@ -174,16 +178,18 @@ void RefreshOverrides(const GraphicsConfig& config) {
         "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
         "internalFpsLimit=%.3f internalAF=%d internalTextureMipBias=%.3f displayGamma=%.3f "
         "depthOfField=%d dlssSR=%d dlssScreenPercentage=%.2f hdrOutput=%d hdrPeak=%d "
-        "hdrPaperWhite=%.1f hdrUiLuminance=%.1f hdrMinLuminance=%.4f hdrColorGamut=%d; "
+        "hdrPaperWhite=%.1f hdrUiLuminance=%.1f hdrMinLuminance=%.4f hdrColorGamut=%d "
+        "customMask=0x%016llX; "
         "installing persistent in-memory CVar shadows without changing Engine.ini",
         settings.forceRayReconstruction ? 1 : 0,
-        settings.rayReconstructionOptimalSettings ? 1 : 0,
+        static_cast<int>(settings.rayReconstructionOptimalSettings),
         settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen,
         settings.internalFpsLimit, settings.internalAnisotropicFiltering,
         settings.internalTextureMipBias, settings.displayGamma, settings.depthOfField,
         settings.dlssSuperResolution, settings.dlssScreenPercentage, settings.hdrOutput,
         settings.hdrPeakLuminance, settings.hdrPaperWhite, settings.hdrUiLuminance,
-        settings.hdrMinLuminance, settings.hdrColorGamut);
+        settings.hdrMinLuminance, settings.hdrColorGamut,
+        static_cast<unsigned long long>(settings.customCVarOverrideMask));
   }
 
   detail::ForgetUnloadedOverrides();

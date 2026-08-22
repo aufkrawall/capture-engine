@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-15
+Last cross-checked: 2026-08-22
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -8,6 +8,7 @@ Primary sources:
 - `common/config_resource.h`
 - `common/config.{h,cpp}`
 - `common/config_load_core.cpp`
+- `common/config_load_ue5.cpp`
 - `captureengine/inject_config.cpp`
 - `common/monitor_selection.{h,cpp}`
 - `common/screen_grab_privacy.{h,cpp}`
@@ -69,9 +70,16 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   the canonical global location wins when several globals are present. Existing section-qualified legacy profile
   values retain profile precedence over globals. It does not change Engine.ini, add absent RR inputs, or falsify
   runtime capability/support results.
-- `[UE5] ray_reconstruction_optimal_settings=on` applies the exact 29-CVar DenoiserMode/Lumen/VSM/MegaLights bundle
-  documented in the template and implies the force policy because DenoiserMode=1 is one of those values. Missing
-  CVars in a particular UE/plugin build are logged and skipped rather than guessed.
+- `[UE5] ray_reconstruction_optimal_settings=off|light|medium|full` applies nested quality bundles. `light` disables
+  Lumen reflection bilateral/screen-space/temporal reconstruction and SSR temporal accumulation; `medium` also sets
+  the Lumen reflection downsample factor to 1; `full` adds the remaining former Lumen/VSM/MegaLights values. It no
+  longer includes `r.NGX.DLSS.DenoiserMode` or implies the independent force policy. Legacy `on`/Boolean-true inputs
+  remain compatibility aliases for `full`. Missing CVars are logged and skipped.
+- `[UE5] custom_cvar_overrides` is a comma-separated final-precedence list for any CVar already present in
+  `ce::ue5_cvar::kSpecs`. Names are case-insensitive; normalized aliases such as `tonemapper_sharpen` drop a leading
+  `r.`/`t.` and replace dots with underscores. Each value must match the known Int32/Float type; unsupported,
+  malformed, and non-finite entries are logged and ignored independently, while later duplicates win. `off` clears
+  the list, including from a process-backed profile.
 - `[UE5] disable_post_processing_effects=on` persistently disables built-in tonemapper sharpening, film grain/grain
   quantization, vignette, motion blur, and scene-color fringe through dedicated CVars/show flags. It deliberately
   does not lower `r.Tonemapper.Quality` or globally disable game-authored post-process materials. A finite
@@ -100,9 +108,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Validation boundary
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
-- The six `[UE5]` settings default off/default and are live-reloadable. The policy flags, sharpen value, internal fps
-  limit, and internal AF level are appended to `SharedGraphicsConfig`; shared-memory ABI/version 40 and
-  mapping/event names isolate older processes.
+- `[UE5]` settings default off/default and are live-reloadable. ABI 45 carries the four-level RR settings byte plus
+  a 64-bit custom-spec mask and 64 type-validated values; versioned mappings/events isolate older processes.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

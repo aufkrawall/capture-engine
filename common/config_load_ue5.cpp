@@ -1,5 +1,12 @@
 #include "config_load_internal.h"
 
+#include "../hook/common/ue5_cvar_override_policy.h"
+
+#include <bit>
+
+static_assert(UE5_CVAR_OVERRIDE_CAPACITY == ce::ue5_cvar::kCustomCVarOverrideCapacity,
+              "shared custom-CVar storage must match the hook policy capacity");
+
 namespace {
 
 std::string NormalizeUE5Value(ConfigReader& reader, const char* key) {
@@ -54,17 +61,71 @@ int ParseUE5Int(ConfigReader& reader, const char* key, int minimum, int maximum,
     return parsed;
 }
 
+uint8_t ParseRayReconstructionSettingsPreset(ConfigReader& reader) {
+    const std::string value = NormalizeUE5Value(reader, "ray_reconstruction_optimal_settings");
+    if (value == "default" || value == "off" || value == "false" || value == "0" || value == "no" ||
+        value == "disabled")
+        return ce::ue5_cvar::kRayReconstructionPresetOff;
+    if (value == "light")
+        return ce::ue5_cvar::kRayReconstructionPresetLight;
+    if (value == "medium")
+        return ce::ue5_cvar::kRayReconstructionPresetMedium;
+    if (value == "full" || value == "on" || value == "true" || value == "1" || value == "yes" ||
+        value == "enabled")
+        return ce::ue5_cvar::kRayReconstructionPresetFull;
+    LogInvalidConfigBoundary("UE5", "ray_reconstruction_optimal_settings", value, "off");
+    return ce::ue5_cvar::kRayReconstructionPresetOff;
+}
+
+void ParseCustomCVarOverrides(ConfigReader& reader, AppConfig& config) {
+    config.graphics.ue5CustomCVarOverrideMask = 0;
+    config.graphics.ue5CustomCVarOverrideValues.fill(0);
+    const std::string list = reader.GetStr("UE5", "custom_cvar_overrides", "off");
+    if (list.empty() || ce::ue5_cvar::EqualsIgnoreCase(list, "off") ||
+        ce::ue5_cvar::EqualsIgnoreCase(list, "default"))
+        return;
+
+    std::size_t begin = 0;
+    while (begin <= list.size()) {
+        const std::size_t comma = list.find(',', begin);
+        const std::string entry = Trim(list.substr(begin, comma == std::string::npos ? comma : comma - begin));
+        const std::size_t equals = entry.find('=');
+        const std::string name = equals == std::string::npos ? std::string{} : Trim(entry.substr(0, equals));
+        const std::string value = equals == std::string::npos ? std::string{} : Trim(entry.substr(equals + 1));
+        const std::size_t specIndex = ce::ue5_cvar::FindSpecIndex(name);
+        bool valid = !name.empty() && !value.empty() && specIndex < ce::ue5_cvar::kSpecs.size();
+        uint32_t bits = 0;
+        if (valid) {
+            const auto& spec = ce::ue5_cvar::kSpecs[specIndex];
+            if (spec.type == ce::ue5_cvar::ValueType::Int32) {
+                int parsed = 0;
+                valid = TryParseInt(value, parsed);
+                bits = static_cast<uint32_t>(static_cast<int32_t>(parsed));
+            } else {
+                float parsed = 0.0f;
+                valid = ce::TryParseFiniteFloat(value, parsed);
+                bits = std::bit_cast<uint32_t>(parsed);
+            }
+        }
+        if (valid) {
+            config.graphics.ue5CustomCVarOverrideMask |= uint64_t{1} << specIndex;
+            config.graphics.ue5CustomCVarOverrideValues[specIndex] = bits;
+        } else if (!entry.empty()) {
+            LogInvalidConfigBoundary("UE5", "custom_cvar_overrides", entry, "entry ignored");
+        }
+        if (comma == std::string::npos)
+            break;
+        begin = comma + 1;
+    }
+}
+
 }  // namespace
 
 void LoadUE5Settings(ConfigReader& reader, AppConfig& config) {
     config.graphics.forceRayReconstruction = reader.GetBoolCompat2(
         "UE5", "force_ray_reconstruction", "DLSS", "force_ray_reconstruction", "Graphics",
         "force_ray_reconstruction", false);
-    config.graphics.rayReconstructionOptimalSettings =
-        reader.GetBool("UE5", "ray_reconstruction_optimal_settings", false);
-    // The optimal bundle explicitly contains r.NGX.DLSS.DenoiserMode=1, so it
-    // also enables the existing RR lifecycle diagnostics and SR-fallback proof.
-    config.graphics.forceRayReconstruction |= config.graphics.rayReconstructionOptimalSettings;
+    config.graphics.rayReconstructionOptimalSettings = ParseRayReconstructionSettingsPreset(reader);
     config.graphics.disablePostProcessingEffects =
         reader.GetBool("UE5", "disable_post_processing_effects", false);
     std::string tonemapperSharpen = reader.GetStr("UE5", "tonemapper_sharpen", "default");
@@ -229,4 +290,5 @@ void LoadUE5Settings(ConfigReader& reader, AppConfig& config) {
             LogInvalidConfigBoundary("UE5", "hdr_color_gamut", hdrColorGamut, "default");
         }
     }
+    ParseCustomCVarOverrides(reader, config);
 }

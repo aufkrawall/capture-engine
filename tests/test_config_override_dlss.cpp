@@ -1,5 +1,8 @@
 #include "../common/config.h"
+#include "../hook/common/ue5_cvar_override_policy.h"
 #include "test_config_override_fixture.h"
+
+#include <bit>
 
 TEST_F(ConfigOverrideTest, ProfileCanEnableAndDisableRayReconstructionForcePolicy) {
     WriteConfig(
@@ -53,8 +56,8 @@ TEST_F(ConfigOverrideTest, ProfileControlsUE5BundlesAndSharpenPrecedenceInput) {
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "ue5.exe");
-    EXPECT_TRUE(config.graphics.rayReconstructionOptimalSettings);
-    EXPECT_TRUE(config.graphics.forceRayReconstruction);
+    EXPECT_EQ(config.graphics.rayReconstructionOptimalSettings, 3);
+    EXPECT_FALSE(config.graphics.forceRayReconstruction);
     EXPECT_TRUE(config.graphics.disablePostProcessingEffects);
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, 0.6f);
 }
@@ -77,6 +80,35 @@ TEST_F(ConfigOverrideTest, ProfileControlsUE5InternalFpsLimitAndAnisotropy) {
     LoadConfig(tempConfigFile, config, "other.exe");
     EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
     EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
+}
+
+TEST_F(ConfigOverrideTest, ProfileCanReplaceOrDisableGlobalCustomCVarOverrides) {
+    WriteConfig(
+        "[UE5]\n"
+        "custom_cvar_overrides=r.SSR.Temporal=0\n"
+        "[Profile.Custom]\n"
+        "process=custom.exe\n"
+        "UE5.custom_cvar_overrides=tonemapper_sharpen=0.25\n"
+        "[Profile.Off]\n"
+        "process=off.exe\n"
+        "UE5.custom_cvar_overrides=off\n");
+
+    const std::size_t temporal = ce::ue5_cvar::FindSpecIndex("r.SSR.Temporal");
+    const std::size_t sharpen = ce::ue5_cvar::FindSpecIndex("tonemapper_sharpen");
+    ASSERT_LT(temporal, ce::ue5_cvar::kSpecs.size());
+    ASSERT_LT(sharpen, ce::ue5_cvar::kSpecs.size());
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "custom.exe");
+    EXPECT_EQ(config.graphics.ue5CustomCVarOverrideMask, uint64_t{1} << sharpen);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(config.graphics.ue5CustomCVarOverrideValues[sharpen]), 0.25f);
+
+    LoadConfig(tempConfigFile, config, "off.exe");
+    EXPECT_EQ(config.graphics.ue5CustomCVarOverrideMask, 0u);
+
+    LoadConfig(tempConfigFile, config, "other.exe");
+    EXPECT_EQ(config.graphics.ue5CustomCVarOverrideMask, uint64_t{1} << temporal);
+    EXPECT_EQ(static_cast<int32_t>(config.graphics.ue5CustomCVarOverrideValues[temporal]), 0);
 }
 
 TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {

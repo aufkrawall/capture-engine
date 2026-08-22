@@ -199,6 +199,9 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         dst.hdrUiLuminance = src.hdrUiLuminance;
         dst.hdrMinLuminance = src.hdrMinLuminance;
         dst.hdrColorGamut = src.hdrColorGamut;
+        dst.ue5CustomCVarOverrideMask = src.ue5CustomCVarOverrideMask;
+        memcpy(dst.ue5CustomCVarOverrideValues, src.ue5CustomCVarOverrideValues.data(),
+               sizeof(dst.ue5CustomCVarOverrideValues));
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 namespace ce::ue5_cvar {
 
@@ -16,7 +17,9 @@ enum class ValueType : uint8_t {
 
 enum class Activation : uint8_t {
     RayReconstruction,
-    RayReconstructionOptimal,
+    RayReconstructionLight,
+    RayReconstructionMedium,
+    RayReconstructionFull,
     DisablePostProcessing,
     TonemapperSharpen,
     InternalFpsLimit,
@@ -42,6 +45,12 @@ enum class Activation : uint8_t {
     HdrMinLuminance,
     HdrColorGamut,
 };
+
+inline constexpr uint8_t kRayReconstructionPresetOff = 0;
+inline constexpr uint8_t kRayReconstructionPresetLight = 1;
+inline constexpr uint8_t kRayReconstructionPresetMedium = 2;
+inline constexpr uint8_t kRayReconstructionPresetFull = 3;
+inline constexpr std::size_t kCustomCVarOverrideCapacity = 64;
 
 // Whether an override may be applied at all, judged from the value the game
 // currently holds. Most CVars are unconditional; a few are only safe to touch in
@@ -158,7 +167,7 @@ constexpr bool IsHdrColorGamutRequested(int32_t gamut) noexcept {
 
 struct Settings {
     bool forceRayReconstruction = false;
-    bool rayReconstructionOptimalSettings = false;
+    uint8_t rayReconstructionOptimalSettings = kRayReconstructionPresetOff;
     bool disablePostProcessingEffects = false;
     float tonemapperSharpen = -1.0f;
     // -1 leaves UE's own engine limiter alone, 0 disables it (t.MaxFPS=0), a
@@ -192,12 +201,14 @@ struct Settings {
     float hdrMinLuminance = 0.0f;
     // -1 leaves r.HDR.Display.ColorGamut alone, 0..4 selects the output gamut.
     int32_t hdrColorGamut = kToggleDefault;
+    uint64_t customCVarOverrideMask = 0;
+    std::array<uint32_t, kCustomCVarOverrideCapacity> customCVarOverrideValues{};
 };
 
 struct Spec {
     const char* name = nullptr;
     ValueType type = ValueType::Int32;
-    Activation activation = Activation::RayReconstructionOptimal;
+    Activation activation = Activation::RayReconstructionFull;
     double value = 0.0;
     ApplyGuard guard = ApplyGuard::Always;
 };
@@ -210,22 +221,22 @@ struct ResolvedValue {
 inline constexpr std::array kSpecs{
     Spec{"r.NGX.DLSS.DenoiserMode", ValueType::Int32, Activation::RayReconstruction, 1.0},
     Spec{"r.Lumen.Reflections.BilateralFilter", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionLight, 0.0},
     Spec{"r.Lumen.Reflections.ScreenSpaceReconstruction", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
-    Spec{"r.Lumen.Reflections.Temporal", ValueType::Int32, Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionLight, 0.0},
+    Spec{"r.Lumen.Reflections.Temporal", ValueType::Int32, Activation::RayReconstructionLight, 0.0},
     Spec{"r.Lumen.Reflections.DownsampleFactor", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 1.0},
+         Activation::RayReconstructionMedium, 1.0},
     Spec{"r.Lumen.Reflections.DownsampleCheckerboard", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.Reflections.MaxRayIntensity", ValueType::Float,
-         Activation::RayReconstructionOptimal, 100.0},
+         Activation::RayReconstructionFull, 100.0},
     Spec{"r.Lumen.ScreenProbeGather.StochasticInterpolation", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 1.0},
+         Activation::RayReconstructionFull, 1.0},
     Spec{"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 3.0},
+         Activation::RayReconstructionFull, 3.0},
     // Float, not int: Talos's console object carries a shadow of 25.0f
     // (0x41C80000) behind its reference pointer, which the Int32 plausibility
     // check refused for the whole life of this entry. The refusal was right -
@@ -235,42 +246,42 @@ inline constexpr std::array kSpecs{
     // 10 or 25, which reinterpret as denormal floats and are refused rather
     // than written.
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ValueType::Float,
-         Activation::RayReconstructionOptimal, 10.0},
+         Activation::RayReconstructionFull, 10.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 8.0},
+         Activation::RayReconstructionFull, 8.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.ScreenProbeGather.TracingOctahedronResolution", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 16.0},
+         Activation::RayReconstructionFull, 16.0},
     Spec{"r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 600.0},
+         Activation::RayReconstructionFull, 600.0},
     Spec{"r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 32.0},
+         Activation::RayReconstructionFull, 32.0},
     Spec{"r.Lumen.ScreenProbeGather.ShortRangeAO.ApplyDuringIntegration", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.0},
     Spec{"r.LumenScene.Radiosity.Temporal.MaxFramesAccumulated", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 4.0},
+         Activation::RayReconstructionFull, 4.0},
     Spec{"r.LumenScene.Radiosity.UpdateFactor", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 16.0},
+         Activation::RayReconstructionFull, 16.0},
     Spec{"r.LumenScene.DirectLighting.UpdateFactor", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 16.0},
+         Activation::RayReconstructionFull, 16.0},
     Spec{"r.Shadow.Virtual.SMRT.RayCountDirectional", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 12.0},
+         Activation::RayReconstructionFull, 12.0},
     Spec{"r.Shadow.Virtual.SMRT.SamplesPerRayDirectional", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 4.0},
+         Activation::RayReconstructionFull, 4.0},
     Spec{"r.Shadow.Virtual.SMRT.RayCountLocal", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 12.0},
+         Activation::RayReconstructionFull, 12.0},
     Spec{"r.Shadow.Virtual.SMRT.SamplesPerRayLocal", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 4.0},
+         Activation::RayReconstructionFull, 4.0},
     Spec{"r.Shadow.Virtual.ResolutionLodBiasLocal", ValueType::Float,
-         Activation::RayReconstructionOptimal, -0.5},
+         Activation::RayReconstructionFull, -0.5},
     Spec{"r.Shadow.Virtual.ResolutionLodBiasLocalMoving", ValueType::Float,
-         Activation::RayReconstructionOptimal, 0.5},
-    Spec{"r.MegaLights.DownsampleMode", ValueType::Int32, Activation::RayReconstructionOptimal, 0.0},
+         Activation::RayReconstructionFull, 0.5},
+    Spec{"r.MegaLights.DownsampleMode", ValueType::Int32, Activation::RayReconstructionFull, 0.0},
     Spec{"r.MegaLights.NumSamplesPerPixel", ValueType::Int32,
-         Activation::RayReconstructionOptimal, 8.0},
+         Activation::RayReconstructionFull, 8.0},
     Spec{"r.Tonemapper.Sharpen", ValueType::Float, Activation::TonemapperSharpen, 0.0},
     Spec{"r.FilmGrain", ValueType::Int32, Activation::DisablePostProcessing, 0.0},
     Spec{"r.Tonemapper.GrainQuantization", ValueType::Int32,
@@ -320,10 +331,50 @@ inline constexpr std::array kSpecs{
     Spec{"r.HDR.UI.Luminance", ValueType::Float, Activation::HdrUiLuminance, 0.0},
     Spec{"r.HDR.Display.MinLuminanceLog10", ValueType::Float, Activation::HdrMinLuminance, 0.0},
     Spec{"r.HDR.Display.ColorGamut", ValueType::Int32, Activation::HdrColorGamut, 0.0},
+    // Kept at the end so every established positional index remains stable.
+    Spec{"r.SSR.Temporal", ValueType::Int32, Activation::RayReconstructionLight, 0.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
 inline constexpr std::size_t kTonemapperSharpenIndex = 29;
+static_assert(kSpecs.size() <= kCustomCVarOverrideCapacity,
+              "the custom CVar selection mask needs one bit per spec");
+
+inline char AsciiLower(char value) noexcept {
+    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
+}
+
+inline bool EqualsIgnoreCase(std::string_view left, std::string_view right) noexcept {
+    if (left.size() != right.size())
+        return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (AsciiLower(left[index]) != AsciiLower(right[index]))
+            return false;
+    }
+    return true;
+}
+
+inline bool MatchesConfigAlias(std::string_view canonical, std::string_view candidate) noexcept {
+    std::size_t source = canonical.size() > 2 && canonical[1] == '.' ? 2 : 0;
+    if (canonical.size() - source != candidate.size())
+        return false;
+    for (std::size_t index = 0; index < candidate.size(); ++index) {
+        char expected = canonical[source + index];
+        if (expected == '.')
+            expected = '_';
+        if (AsciiLower(expected) != AsciiLower(candidate[index]))
+            return false;
+    }
+    return true;
+}
+
+inline std::size_t FindSpecIndex(std::string_view name) noexcept {
+    for (std::size_t index = 0; index < kSpecs.size(); ++index) {
+        if (EqualsIgnoreCase(kSpecs[index].name, name) || MatchesConfigAlias(kSpecs[index].name, name))
+            return index;
+    }
+    return kSpecs.size();
+}
 
 inline uint32_t ValueBits(ValueType type, double value) noexcept {
     if (type == ValueType::Float)
@@ -336,10 +387,16 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
     double value = spec.value;
     switch (spec.activation) {
         case Activation::RayReconstruction:
-            enabled = settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings;
+            enabled = settings.forceRayReconstruction;
             break;
-        case Activation::RayReconstructionOptimal:
-            enabled = settings.rayReconstructionOptimalSettings;
+        case Activation::RayReconstructionLight:
+            enabled = settings.rayReconstructionOptimalSettings >= kRayReconstructionPresetLight;
+            break;
+        case Activation::RayReconstructionMedium:
+            enabled = settings.rayReconstructionOptimalSettings >= kRayReconstructionPresetMedium;
+            break;
+        case Activation::RayReconstructionFull:
+            enabled = settings.rayReconstructionOptimalSettings >= kRayReconstructionPresetFull;
             break;
         case Activation::DisablePostProcessing:
             enabled = settings.disablePostProcessingEffects;
@@ -416,11 +473,16 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             value = enabled ? settings.hdrColorGamut : 0.0;
             break;
     }
+    const std::size_t specIndex = FindSpecIndex(spec.name ? spec.name : "");
+    if (specIndex < kSpecs.size() && (settings.customCVarOverrideMask & (uint64_t{1} << specIndex)))
+        return {true, settings.customCVarOverrideValues[specIndex]};
     return {enabled, ValueBits(spec.type, value)};
 }
 
 inline bool AnyEnabled(const Settings& settings) noexcept {
-    return settings.forceRayReconstruction || settings.rayReconstructionOptimalSettings ||
+    return settings.forceRayReconstruction ||
+           settings.rayReconstructionOptimalSettings != kRayReconstructionPresetOff ||
+           settings.customCVarOverrideMask != 0 ||
            settings.disablePostProcessingEffects || settings.tonemapperSharpen >= 0.0f ||
            settings.internalFpsLimit >= 0.0f || settings.internalAnisotropicFiltering != 0 ||
            IsTextureMipBiasRequested(settings.internalTextureMipBias) ||

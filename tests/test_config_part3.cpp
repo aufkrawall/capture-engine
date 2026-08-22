@@ -447,3 +447,66 @@ TEST_F(WhitelistEntryTest, OverlayWhitelistEntries) {
         EXPECT_EQ(config.overlayWhitelist[1].mode, MatchMode::kTitleExecutable);
     }
 }
+
+TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
+    EXPECT_TRUE(IsDxgiDupCaptureMethod("dxgi_dup"));
+    EXPECT_TRUE(IsDxgiDupCaptureMethod("desktop_dup"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("wgc"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("inject"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("auto"));
+
+    // Screen-grab family = any non-inject desktop/window grab method.
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("wgc"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("screengrab"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("dxgi_dup"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("desktop_dup"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("inject"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("auto"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("none"));
+    EXPECT_TRUE(IsVideoCaptureDisabledMethod("none"));
+    EXPECT_FALSE(IsVideoCaptureDisabledMethod("auto"));
+
+    // dxgi_dup must not be mistaken for wgc or auto.
+    EXPECT_FALSE(IsWgcCaptureMethod("dxgi_dup"));
+    EXPECT_FALSE(IsAutoCaptureMethod("dxgi_dup"));
+    EXPECT_FALSE(IsInjectCaptureMethod("dxgi_dup"));
+}
+
+TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
+    std::string iniContent =
+        "[Overlay]\n"
+        "enabled=true\n"
+        "observer_only=true\n"
+        "observer_policy_only=true\n"
+        "observer_startup_present_only=true\n"
+        "capture_include_overlay=false\n"
+        "screenshot_include_overlay=false\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.overlay.showOverlay);
+    EXPECT_TRUE(config.overlay.observerOnly);
+    EXPECT_TRUE(config.overlay.observerPolicyOnly);
+    EXPECT_TRUE(config.overlay.observerStartupPresentOnly);
+    EXPECT_FALSE(config.overlay.captureIncludeOverlay);
+    EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
+    // dx12_focus_analysis is absent here -> defaults off.
+    EXPECT_FALSE(config.overlay.dx12FocusAnalysis);
+    EXPECT_FALSE(IsOverlayDx12FocusAnalysis(config.overlay));
+}
+
+TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
+    WriteConfig(
+        "[Overlay]\n"
+        "enabled=true\n"
+        "dx12_focus_analysis=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
+    EXPECT_TRUE(IsOverlayDx12FocusAnalysis(config.overlay));
+}

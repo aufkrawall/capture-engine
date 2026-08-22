@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-22 - RR quality presets no longer force the RR denoiser
+
+`ray_reconstruction_optimal_settings` is now a nested `off|light|medium|full` quality preset. Light disables the
+three requested Lumen/SSR temporal reconstruction paths, medium adds full-resolution Lumen reflections, and full
+adds the former remaining Lumen/VSM/MegaLights values. `r.NGX.DLSS.DenoiserMode=1` was removed from this bundle;
+only `force_ray_reconstruction=on` selects RR. Legacy `on` remains a `full` alias.
+
+`custom_cvar_overrides` adds typed final precedence for every existing `kSpecs` CVar, including case-insensitive
+canonical names and normalized aliases such as `tonemapper_sharpen`. The host rejects unsupported/mistyped entries
+before publication and sends a spec mask plus raw typed values to the hook. This grows `SharedGraphicsConfig` from
+420 to 688 bytes and moves the shared ABI and every versioned mapping/event name from 44 to 45.
+
 ### 2026-08-22 - Device notification bypassed the legacy teardown boundary
 
 Witcher 3 session `20260822_185158` started and rendered its loading screen, then raised a real

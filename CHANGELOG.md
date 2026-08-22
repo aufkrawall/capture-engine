@@ -17,6 +17,9 @@ Changes since the last stable release [v0.1.5299](https://github.com/aufkrawall/
   mip level all 2D textures sample from via `r.MipMapLODBias`; `display_gamma` selects `r.TonemapperGamma`
   with sRGB/Rec709 or a pure power-curve exponent and is guarded so `r.HDR.Display.OutputDevice` is only
   written on SDR devices. Added "internal_texture_mip_bias" and "display_gamma" to the per-app profile example in the default config template.
+- Expanded `ray_reconstruction_optimal_settings` into `off|light|medium|full` quality levels without implicitly
+  forcing DLSS Ray Reconstruction, and added `custom_cvar_overrides` for typed final-value overrides of every
+  supported UE5 CVar. The former `on` spelling remains an alias for `full`.
 - Added per-application `[ThirdParty]` override keys (`reshade_dll_path`, `optiscaler_dll_path`,
   `specialk_dll_path`) that take precedence over the global paths.
 

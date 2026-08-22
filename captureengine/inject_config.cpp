@@ -48,6 +48,9 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.hdrUiLuminance = config.graphics.hdrUiLuminance;
     graphics.hdrMinLuminance = config.graphics.hdrMinLuminance;
     graphics.hdrColorGamut = config.graphics.hdrColorGamut;
+    graphics.ue5CustomCVarOverrideMask = config.graphics.ue5CustomCVarOverrideMask;
+    memcpy(graphics.ue5CustomCVarOverrideValues, config.graphics.ue5CustomCVarOverrideValues.data(),
+           sizeof(graphics.ue5CustomCVarOverrideValues));
     graphics.prerenderLimit = config.graphics.cpuPrerenderLimit;
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
@@ -135,9 +138,17 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (std::hash<float>{}(graphics.hdrPaperWhite) << 27) ^
         (std::hash<float>{}(graphics.hdrUiLuminance) << 28) ^
         (std::hash<float>{}(graphics.hdrMinLuminance) << 29) ^
-        (static_cast<uint64_t>(graphics.hdrColorGamut) << 30);
+        (static_cast<uint64_t>(graphics.hdrColorGamut) << 30) ^
+        graphics.ue5CustomCVarOverrideMask;
 
-    if (summaryHash != configSummaryHash) {
+    uint64_t completeSummaryHash = summaryHash;
+    for (std::size_t index = 0; index < UE5_CVAR_OVERRIDE_CAPACITY; ++index) {
+        if (graphics.ue5CustomCVarOverrideMask & (uint64_t{1} << index))
+            completeSummaryHash = (completeSummaryHash * 1099511628211ull) ^
+                                  graphics.ue5CustomCVarOverrideValues[index];
+    }
+
+    if (completeSummaryHash != configSummaryHash) {
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
@@ -146,7 +157,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
             "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
             "ue5DlssScreenPercentage=%.2f ue5HdrOutput=%d ue5HdrPeak=%d ue5HdrPaperWhite=%.1f "
-            "ue5HdrUiLuminance=%.1f ue5HdrMinLuminance=%.4f ue5HdrColorGamut=%d",
+            "ue5HdrUiLuminance=%.1f ue5HdrMinLuminance=%.4f ue5HdrColorGamut=%d "
+            "ue5CustomMask=0x%016llX",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
@@ -156,13 +168,14 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             sharedMemory->overlayConfig.captureIncludeOverlay,
             sharedMemory->overlayConfig.screenshotIncludeOverlay, graphics.dlssAutoExposure,
             graphics.dlssSharpening, graphics.dlssSRPreset, graphics.forceRayReconstruction ? 1 : 0,
-            graphics.rayReconstructionOptimalSettings ? 1 : 0,
+            static_cast<int>(graphics.rayReconstructionOptimalSettings),
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
             graphics.internalFpsLimit, graphics.internalAnisotropicFiltering,
             graphics.internalTextureMipBias, graphics.displayGamma, graphics.depthOfField,
             graphics.dlssSuperResolution, graphics.dlssScreenPercentage, graphics.hdrOutput,
             graphics.hdrPeakLuminance, graphics.hdrPaperWhite, graphics.hdrUiLuminance,
-            graphics.hdrMinLuminance, graphics.hdrColorGamut);
-        configSummaryHash = summaryHash;
+            graphics.hdrMinLuminance, graphics.hdrColorGamut,
+            static_cast<unsigned long long>(graphics.ue5CustomCVarOverrideMask));
+        configSummaryHash = completeSummaryHash;
     }
 }

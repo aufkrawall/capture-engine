@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <map>
@@ -199,8 +200,9 @@ struct GraphicsConfig {
     // Persistently select the UE NVIDIA plugin's Ray Reconstruction denoiser
     // mode when that integration is already present and capable.
     bool forceRayReconstruction = false;
-    // Persistently apply the UE5 rendering CVars selected for Ray Reconstruction.
-    bool rayReconstructionOptimalSettings = false;
+    // Persistently apply a graduated UE5 rendering-CVar preset for Ray
+    // Reconstruction: 0=off, 1=light, 2=medium, 3=full.
+    uint8_t rayReconstructionOptimalSettings = 0;
     // Disable UE5 sharpening, film grain, vignette, motion blur, and chromatic aberration.
     bool disablePostProcessingEffects = false;
     // -1 leaves the game/default bundle policy alone; otherwise r.Tonemapper.Sharpen 0..10.
@@ -245,6 +247,10 @@ struct GraphicsConfig {
     // r.HDR.Display.ColorGamut: -1 leaves the engine alone, 0..4 selects the
     // output gamut (Rec709, DCI-P3, Rec2020, ACES, ACEScg).
     int hdrColorGamut = -1;
+    // Type-validated raw values for supported UE5 CVars. The bit mask selects
+    // entries by their stable kSpecs index; these values override every preset.
+    uint64_t ue5CustomCVarOverrideMask = 0;
+    std::array<uint32_t, UE5_CVAR_OVERRIDE_CAPACITY> ue5CustomCVarOverrideValues{};
 
     // DLSS Presets (Super Resolution)
     std::string dlssPresetDLAA;
