@@ -492,22 +492,25 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - `Streamline bridge: refusing <call> - <why>` - one line per distinct reason, so a first
   bridged run diagnoses itself.
 - `Streamline bridge: <call> returned sl::Result=N` - the 2.x runtime rejected a translated call.
+- A healthy bridged FG session has no `slReflexSleep` refusal and no
+  `eDLSSGStatusFailReflexNotDetectedAtRuntime` records in `sl.log`.
 - `Streamline 1.x probe: ...` - a recorded payload (fires unbridged too).
 
 ## Open questions / stale-risk
 
-- **Partly validated.** The takeover, the 2.x bring-up, the 1.x quiesce, `slIsFeatureSupported`,
-  the swapchain and the render loop are all proven. Nothing past `slSetConstants` has ever
-  executed successfully, so the tag/constant/evaluate path and DLSS-G itself remain untried -
-  the device fix is what should let them run for the first time.
+- **Runtime path validated through DLSS-G bring-up.** Session `20260822_015042` proved that a
+  late takeover, device handoff, tags/constants/evaluation, NGX SR and the SL2 proxy swapchain
+  can all run together. Its remaining blocker was Reflex *runtime detection*, not the call path.
 - **The `20260821_161620` startup C++ exception did not recur** in `20260821_163534`, which
   reached the render loop. It remains unexplained rather than fixed; if it returns, `sl.log`
   is now there to say whether Streamline was involved.
-- **Reflex translates plus one deliberate synthesis.** 1.x drives it through
-  `slSetFeatureConstants`, 2.x through `slReflexSetOptions`; only `mode` was measured. While
-  bridged DLSS-G is on, a 1.x mode of zero is promoted to low-latency-with-boost because SL2
-  refuses generation without a live Reflex signal (`20260822_011315`). Turning DLSS-G off
-  restores off. Frame-limit and marker fields keep 2.x defaults because they were never measured.
+- **Reflex activation alone is not runtime detection.** 1.x drives options through
+  `slSetFeatureConstants`, while native 2.x titles also call `slReflexSleep` once per frame.
+  Witcher 3 `20260822_015042` accepted `eLowLatencyWithBoost` yet kept reporting
+  `eDLSSGStatusFailReflexNotDetectedAtRuntime`; there was no sleep traffic. While bridged DLSS-G
+  is on, CE now resolves `slReflexSleep`, promotes the mode as before, and issues exactly one
+  sleep per translated game-frame token. Turning DLSS-G off stops the sleeps and restores off.
+  Frame-limit and marker fields keep 2.x defaults because they were never measured.
 - **`slShutdown` on a 1.x runtime that has only been `slInit`ed is expected to unload its
   plugins, but that is not verified.** The inventory line printed straight after the call is
   there to settle it: if `sl.common.dll` is still listed from the game's folder afterwards,
@@ -525,7 +528,7 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-22 (build 0.1.6233; ABI measurements from The Witcher 3 sessions
+Last verified 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

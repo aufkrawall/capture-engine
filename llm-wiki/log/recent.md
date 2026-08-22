@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-22 - Bridged Reflex needs per-frame sleep, not just activation
+
+Witcher 3 `20260822_015042` accepted the synthesized `eLowLatencyWithBoost` options, but SL2
+kept every generated frame in
+`eDLSSGStatusFailReflexNotDetectedAtRuntime - sl.reflex must be enabled and active`. A native 2.x
+title also calls `slReflexSleep` once per frame; a 1.x title has no such export.
+
+- The bridge now resolves `slReflexSleep`, enables it only while translated DLSS-G is on, and
+  deduplicates it by game-frame token before common constants and again as an evaluate fallback.
+- The statically imported 1.x interposer necessarily remains mapped after takeover. The post-quiesce
+  log now states that its loader reference is inert and all live imports reach CE.
+
 ### 2026-08-22 - Null-output D3D12 probes need bridge-side support caching
 
 Witcher 3 `20260822_014209` crashed during startup after a successful bridged device creation.

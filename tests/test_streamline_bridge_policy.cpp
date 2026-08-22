@@ -308,6 +308,34 @@ TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) 
     EXPECT_NE(source.find("synthesized for DLSS-G"), std::string::npos);
 }
 
+TEST(StreamlineBridgePolicyTest, DrivesReflexRuntimeDetectionOncePerBridgedFGFrame) {
+    // Session 20260822_015042: setting eLowLatencyWithBoost was not enough. SL2 continued to
+    // report `eDLSSGStatusFailReflexNotDetectedAtRuntime` because native 2.x titles also call
+    // slReflexSleep once per frame, while a 1.x title has no equivalent export for the bridge
+    // to translate. The bridge must own that per-frame contract and deduplicate it by token.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("PFun_slReflexSleep* g_slReflexSleep"), std::string::npos);
+    EXPECT_NE(source.find("bool MaybeSynthesizeReflexSleep(uint32_t frameIndex"), std::string::npos);
+    EXPECT_NE(source.find("g_slGetFeatureFunction(sl::kFeatureReflex, \"slReflexSleep\""),
+              std::string::npos);
+    EXPECT_NE(source.find("MaybeSynthesizeReflexSleep(frameIndex, token);"), std::string::npos);
+}
+
+TEST(StreamlineBridgePolicyTest, ExplainsTheInertStaticImportInterposer) {
+    // The executable's loader reference cannot be dropped in-process, so one old interposer
+    // image stays mapped even though its plugins are unloaded and all live imports reach CE.
+    // Saying so prevents the expected module-list entry from being mistaken for a second
+    // initialised Streamline runtime.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("statically imported 1.x sl.interposer.dll remains mapped"),
+              std::string::npos);
+    EXPECT_NE(source.find("every live import slot reaches CE"), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Which calls may reach a deviceless 2.x runtime
 // ---------------------------------------------------------------------------

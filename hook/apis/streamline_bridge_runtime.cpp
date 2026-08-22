@@ -1,5 +1,6 @@
 #include "streamline_bridge_runtime.h"
 
+#include <cstring>
 #include <string>
 
 #include "../../common/config.h"
@@ -207,6 +208,11 @@ void LogStreamlineModuleInventory(const char* when) {
         DllFileVersionParts(path, &major, &minor, &patch);
         HookLogImportant("Streamline bridge inventory (%s): %s %u.%u.%u resident from %s", when, name, major, minor,
                          patch, path);
+    }
+    if (strcmp(when, "after quiescing the 1.x runtime") == 0 && GetModuleHandleA("sl.interposer.dll")) {
+        HookLogImportant(
+            "Streamline bridge: the statically imported 1.x sl.interposer.dll remains mapped because the OS loader "
+            "holds the executable's import reference; its plugins are gone and every live import slot reaches CE");
     }
 }
 
