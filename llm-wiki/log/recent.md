@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-08-22 - Injection DLL integrity gates wired up (audit follow-ups)
+
+A full security audit found that the injection subsystem's designed DLL-integrity protections were inactive:
+`ValidateDllSecurity` (install-dir containment + broad-writability ACL check) and `VerifyDLLHash` were dead code,
+and the early-APC path (`InjectEarly`, the primary route for launched games) skipped every check that `Inject()`
+did have. Shipped releases are built without `--production`, so `CE_PRODUCTION_BUILD` is undefined and
+signature enforcement was advisory-only anyway; README now states this explicitly (trust = GitHub attestations
++ reproducible builds until Authenticode signing ships).
+
+Changes (commit `6f4ba8b4`, all additive, dev builds stay warn-only so local iteration is unaffected):
+
+- `ValidateDllSecurity` is now called by BOTH `Inject()` and `InjectEarly()` before any remote load.
+  Production builds fail closed on out-of-app-dir paths or broadly writable DLLs; dev logs and continues.
+- `InjectEarly()` mirrors `Inject()`'s signature gate: `CE_PRODUCTION_BUILD` refuses invalid signatures;
+  dev warns and honors `SKIP_DLL_VERIFICATION=1`.
+- `VerifyDLLSignature` converts the ANSI path with `ce::injection::AnsiPathToWide` (`CP_ACP` +
+  `MB_ERR_INVALID_CHARS`) instead of byte-wise char->wchar_t widening, which sign-extended bytes >= 0x80 and
+  would verify a mangled name on non-ASCII install paths. Empty conversion fails closed.
+- Launcher (`main_controller.cpp`) and inject child (`inject_main.cpp`) fail closed on truncated/unresolvable
+  `GetModuleFileNameA` results when deriving hook-DLL/config paths: launcher resumes without injection and
+  logs `[Launcher] Cannot resolve the application directory reliably`; inject child exits 1 with a clear log.
+- Dead code removed: `VerifyDLLHash`, the `.hash` sidecar logic, member `ComputeFileHash`, and an unused static
+  hash helper. Pure helpers now live in `captureengine/injection_path_policy.h`
+  (`IsPathInsideDirectory`, `AnsiPathToWide`) with unit coverage in `tests/test_injection_path_policy.cpp`
+  (sibling-prefix rejection like `C:\appdir2` vs `C:\appdir` is locked).
+
+Audit items deliberately deferred near release: pip hash-pinning of bootstrap lint tools (build-env change),
+trace-log default / crash-dump retention policy (user-visible product change), real Authenticode signing
+(needs cert infra), same-user named-object hardening (accepted trust boundary). x86 CFG/ASan gaps remain
+documented toolchain limitations. clang-tidy baseline scope auto-refreshed to 642 TUs (0 warnings).
+
 ### 2026-08-22 - RR quality presets no longer force the RR denoiser
 
 `ray_reconstruction_optimal_settings` is now a nested `off|light|medium|full` quality preset. Light disables the
