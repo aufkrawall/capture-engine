@@ -1,5 +1,6 @@
 #include "streamline_bridge_runtime.h"
 
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -22,6 +23,17 @@ namespace ce::streamline_bridge {
 namespace {
 
 namespace api = ce::streamline_api;
+
+enum class LegacyQuiesceState : uint8_t {
+    NotRequired,
+    Pending,
+    Running,
+    Complete,
+    Failed,
+};
+
+std::atomic<LegacyQuiesceState> g_legacyQuiesceState{LegacyQuiesceState::NotRequired};
+thread_local bool g_thisThreadOwnsLegacyQuiesce = false;
 
 std::string RuntimeFeaturePath(const std::string& runtimeDir, const char* baseName) {
     std::string path = runtimeDir;
@@ -55,6 +67,73 @@ bool SameModuleImageIsStillLoaded(HMODULE module, const char* expectedPath) {
     char currentPath[MAX_PATH] = {};
     return QueryModulePath(current, currentPath, sizeof(currentPath)) &&
            ce::graphics_runtime::EqualsModulePathIgnoreCase(currentPath, expectedPath);
+}
+
+bool PreloadReplacementNgxFeatureModules(const std::string& runtimeDir) {
+    std::vector<HMODULE> replacements;
+    for (const char* baseName : {"nvngx_dlss.dll", "nvngx_dlssg.dll"}) {
+        const std::string configuredPath = RuntimeFeaturePath(runtimeDir, baseName);
+        HMODULE module = LoadLibraryA(configuredPath.c_str());
+        const DWORD loadError = module ? ERROR_SUCCESS : GetLastError();
+        char loadedPath[MAX_PATH] = {};
+        SetLastError(ERROR_SUCCESS);
+        const bool pathResolved = module && QueryModulePath(module, loadedPath, sizeof(loadedPath));
+        const DWORD pathError = pathResolved ? ERROR_SUCCESS : GetLastError();
+        if (!module || !pathResolved ||
+            !ce::graphics_runtime::EqualsModulePathIgnoreCase(configuredPath.c_str(), loadedPath)) {
+            HookLogImportant(
+                "Streamline bridge: FAILED to preload configured replacement NGX image %s (module=%p path=%s "
+                "error=%lu)",
+                configuredPath.c_str(), reinterpret_cast<void*>(module),
+                loadedPath[0] ? loadedPath : "(unresolved)", module ? pathError : loadError);
+            for (HMODULE replacement : replacements) {
+                FreeLibrary(replacement);
+            }
+            if (module) {
+                FreeLibrary(module);
+            }
+            return false;
+        }
+        replacements.push_back(module);  // Deliberately pin the configured image for the bridge lifetime.
+    }
+
+    // A racing absolute load must not recreate the state this boundary exists
+    // to prevent. Verify every physical SR/FG image, not GetModuleHandle's first
+    // answer, before allowing the V2 interposer to initialize.
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        HookLogImportant(
+            "Streamline bridge: FAILED to verify configured NGX replacement ownership after preload");
+        for (HMODULE replacement : replacements) {
+            FreeLibrary(replacement);
+        }
+        return false;
+    }
+    for (HMODULE module : modules) {
+        char loadedPath[MAX_PATH] = {};
+        if (!QueryModulePath(module, loadedPath, sizeof(loadedPath)) ||
+            !ce::graphics_runtime::IsBridgeNgxFeatureModuleName(loadedPath)) {
+            continue;
+        }
+        const std::string configuredPath = RuntimeFeaturePath(
+            runtimeDir, ce::graphics_runtime::ModuleFileName(loadedPath));
+        if (!ce::graphics_runtime::EqualsModulePathIgnoreCase(configuredPath.c_str(), loadedPath)) {
+            HookLogImportant(
+                "Streamline bridge: FAILED replacement ownership check: foreign NGX image %s became resident "
+                "before 2.x initialization",
+                loadedPath);
+            for (HMODULE replacement : replacements) {
+                FreeLibrary(replacement);
+            }
+            return false;
+        }
+    }
+
+    HookLogImportant(
+        "Streamline bridge: preloaded and pinned the configured NGX SR/FG replacements from %s before 2.x "
+        "initialization",
+        runtimeDir.c_str());
+    return true;
 }
 
 std::wstring Widen(const char* text) {
@@ -285,6 +364,83 @@ bool RetireLegacyNgxFeatureModules(const std::vector<LegacyNgxFeatureModule>& le
     return allRetired;
 }
 
+void RequireLegacyRuntimeQuiesce() {
+    LegacyQuiesceState expected = LegacyQuiesceState::NotRequired;
+    g_legacyQuiesceState.compare_exchange_strong(
+        expected, LegacyQuiesceState::Pending, std::memory_order_release,
+        std::memory_order_relaxed);
+}
+
+bool LegacyRuntimeQuiesceAllowsV2Initialization() {
+    const LegacyQuiesceState state = g_legacyQuiesceState.load(std::memory_order_acquire);
+    return state == LegacyQuiesceState::NotRequired || state == LegacyQuiesceState::Complete;
+}
+
+bool QuiesceLegacyRuntimeForBridgeCall(LegacyStreamlineShutdown shutdown,
+                                       const std::string& runtimeDir) {
+    for (;;) {
+        LegacyQuiesceState state = g_legacyQuiesceState.load(std::memory_order_acquire);
+        if (state == LegacyQuiesceState::NotRequired || state == LegacyQuiesceState::Complete) {
+            return true;
+        }
+        if (state == LegacyQuiesceState::Failed) {
+            return false;
+        }
+        if (state == LegacyQuiesceState::Running) {
+            // A legacy shutdown can re-enter a hooked graphics path on its own
+            // thread. That nested call must keep using 1.x; waiting here would
+            // deadlock the shutdown, while starting 2.x recreated the mixed-NGX
+            // state observed in session 20260822_185158.
+            if (g_thisThreadOwnsLegacyQuiesce) {
+                static std::atomic<bool> logged{false};
+                if (!logged.exchange(true, std::memory_order_relaxed)) {
+                    HookLogImportant(
+                        "Streamline bridge: legacy shutdown re-entered a bridged path; keeping that nested call "
+                        "on 1.x until teardown completes");
+                }
+                return false;
+            }
+            g_legacyQuiesceState.wait(LegacyQuiesceState::Running, std::memory_order_acquire);
+            continue;
+        }
+
+        if (!g_legacyQuiesceState.compare_exchange_weak(
+                state, LegacyQuiesceState::Running, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            continue;
+        }
+
+        g_thisThreadOwnsLegacyQuiesce = true;
+        bool shutdownOk = false;
+        bool ngxRetired = false;
+        bool replacementsReady = false;
+        if (!shutdown) {
+            HookLogImportant(
+                "Streamline bridge: the game's 1.x runtime is up but its slShutdown slot was never captured; "
+                "refusing to initialize 2.x beside it");
+        } else {
+            const std::vector<LegacyNgxFeatureModule> legacyNgxModules = CaptureLegacyNgxFeatureModules();
+            shutdownOk = shutdown();
+            ngxRetired = shutdownOk && RetireLegacyNgxFeatureModules(legacyNgxModules, runtimeDir);
+            replacementsReady = ngxRetired && PreloadReplacementNgxFeatureModules(runtimeDir);
+            HookLogImportant(
+                "Streamline bridge: shut the game's own 1.x Streamline runtime down (returned %s); legacy NGX "
+                "feature images retired=%s; configured replacements ready=%s; 2.x initialization permitted=%s",
+                shutdownOk ? "true" : "false", ngxRetired ? "true" : "false",
+                replacementsReady ? "true" : "false",
+                shutdownOk && ngxRetired && replacementsReady ? "true" : "false");
+            LogStreamlineModuleInventory("after quiescing the 1.x runtime and before initializing 2.x");
+        }
+
+        const bool complete = shutdownOk && ngxRetired && replacementsReady;
+        g_thisThreadOwnsLegacyQuiesce = false;
+        g_legacyQuiesceState.store(complete ? LegacyQuiesceState::Complete : LegacyQuiesceState::Failed,
+                                   std::memory_order_release);
+        g_legacyQuiesceState.notify_all();
+        return complete;
+    }
+}
+
 // Every Streamline module a 1.x game can have resident, so one log line settles which
 // runtime is actually in the process.
 //
@@ -326,7 +482,8 @@ void LogStreamlineModuleInventory(const char* when) {
                              reinterpret_cast<void*>(module));
         }
     }
-    if (strcmp(when, "after quiescing the 1.x runtime") == 0 && GetModuleHandleA("sl.interposer.dll")) {
+    if (strncmp(when, "after quiescing the 1.x runtime", strlen("after quiescing the 1.x runtime")) == 0 &&
+        GetModuleHandleA("sl.interposer.dll")) {
         HookLogImportant(
             "Streamline bridge: the statically imported 1.x sl.interposer.dll remains mapped because the OS loader "
             "holds the executable's import reference; its plugins are gone and every live import slot reaches CE");

@@ -41,6 +41,15 @@ std::vector<LegacyNgxFeatureModule> CaptureLegacyNgxFeatureModules();
 bool RetireLegacyNgxFeatureModules(const std::vector<LegacyNgxFeatureModule>& legacyModules,
                                   const std::string& runtimeDir);
 
+// Serializes the late-injection generation boundary. No path may load or
+// initialize Streamline 2.x until the game's initialized 1.x runtime has
+// returned from slShutdown and its foreign NGX feature images are gone.
+using LegacyStreamlineShutdown = bool (*)();
+void RequireLegacyRuntimeQuiesce();
+bool QuiesceLegacyRuntimeForBridgeCall(LegacyStreamlineShutdown shutdown,
+                                       const std::string& runtimeDir);
+bool LegacyRuntimeQuiesceAllowsV2Initialization();
+
 // Loads the configured 2.x interposer by full path and initialises it with its plugin
 // folder pinned. Returns nullptr on any failure, having said why; the caller then leaves
 // every bridged call forwarding to the game's own 1.x runtime.

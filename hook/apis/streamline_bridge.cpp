@@ -54,11 +54,6 @@ std::once_flag g_bringUpOnce;
 std::atomic<bool> g_runtimeReady{false};
 std::atomic<bool> g_runtimeFailed{false};
 
-// Set when the game had already run its own `slInit` before CE could take the imports over.
-// The 1.x runtime is then shut back down, but only from a call the GAME makes, never from
-// CE's hook thread - see MaybeQuiesceLegacyRuntime.
-std::atomic<bool> g_quiescePending{false};
-
 BridgedSlot* FindSlot(const char* name) {
     if (!g_slots) {
         return nullptr;
@@ -79,7 +74,7 @@ void* V1Original(const char* name) {
 }
 
 bool EnsureRuntimeReady();
-void MaybeQuiesceLegacyRuntime();
+bool MaybeQuiesceLegacyRuntime();
 
 void* V2Target(const char* name) {
     const BridgedSlot* slot = FindSlot(name);
@@ -100,7 +95,15 @@ void* V2Target(const char* name) {
 // means the 2.x plugins load into a process where those names are free, and CE's existing
 // unload handling re-installs its hooks against the fresh images.
 bool BridgeCallReady() {
-    MaybeQuiesceLegacyRuntime();
+    // A thunk can become visible while TakeOverImports is still walking the
+    // process. Until activation is published, that early entrant must behave
+    // exactly as the original slot did and leave the legacy runtime alone.
+    if (!g_active.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (!MaybeQuiesceLegacyRuntime()) {
+        return false;
+    }
     return EnsureRuntimeReady();
 }
 
@@ -516,30 +519,9 @@ bool GameAlreadyInitializedStreamline() { return GetModuleHandleA("sl.common.dll
 //
 // The shutdown goes through the export pointer saved while repointing the slot, so it
 // reaches the 1.x runtime rather than the thunk that now stands in front of it.
-void MaybeQuiesceLegacyRuntime() {
-    // The load is the fast path - this sits in front of every bridged call, including the
-    // per-frame ones - and the exchange is what makes exactly one caller do the work.
-    if (!g_quiescePending.load(std::memory_order_acquire)) {
-        return;
-    }
-    if (!g_quiescePending.exchange(false, std::memory_order_acq_rel)) {
-        return;
-    }
+bool MaybeQuiesceLegacyRuntime() {
     auto shutdown = reinterpret_cast<bool (*)()>(V1Original("slShutdown"));
-    if (!shutdown) {
-        HookLogImportant(
-            "Streamline bridge: the game's 1.x runtime is up but its slShutdown slot was never captured, so it "
-            "stays loaded beside the CE-owned 2.x one");
-        return;
-    }
-    const std::vector<LegacyNgxFeatureModule> legacyNgxModules = CaptureLegacyNgxFeatureModules();
-    const bool ok = shutdown();
-    const bool ngxRetired = ok && RetireLegacyNgxFeatureModules(legacyNgxModules, *g_runtimeDir);
-    HookLogImportant(
-        "Streamline bridge: shut the game's own 1.x Streamline runtime down (returned %s) - the 2.x runtime CE "
-        "owns is now the only initialised one in this process; legacy NGX feature images retired=%s",
-        ok ? "true" : "false", ngxRetired ? "true" : "false");
-    LogStreamlineModuleInventory("after quiescing the 1.x runtime");
+    return g_runtimeDir && QuiesceLegacyRuntimeForBridgeCall(shutdown, *g_runtimeDir);
 }
 
 // Repoints every module that imports from sl.interposer.dll at CE's thunks.
@@ -591,6 +573,15 @@ size_t TakeOverImports() {
 // A failure is a complete, coherent end state rather than a hole: every thunk then forwards
 // to the 1.x export its slot used to hold, which is what the call would have done unbridged.
 bool EnsureRuntimeReady() {
+    if (!LegacyRuntimeQuiesceAllowsV2Initialization()) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant(
+                "Streamline bridge: refusing to load Streamline 2.x before the legacy runtime and its NGX "
+                "feature images have completed teardown");
+        }
+        return false;
+    }
     if (g_runtimeReady.load(std::memory_order_acquire)) {
         return true;
     }
@@ -633,7 +624,7 @@ void NotifyD3D12Device(void* device) {
     if (!device || !g_active.load(std::memory_order_acquire)) {
         return;
     }
-    if (!EnsureRuntimeReady()) {
+    if (!BridgeCallReady()) {
         return;
     }
     SetV2RuntimeDevice(device, /*explicitHandoff=*/false);
@@ -715,11 +706,12 @@ void TryActivate() {
         return;
     }
 
-    // On a late start the game's own runtime is already up. It is shut back down from the
-    // first call the game makes through a thunk, never from here: see
-    // MaybeQuiesceLegacyRuntime for why the thread this happens on is the whole argument.
+    // On a late start the game's own runtime is already up. Publish this
+    // prerequisite after every import is rewritten but before g_active: the
+    // active acquire in BridgeCallReady then cannot observe an incomplete
+    // takeover or miss the pending teardown.
     if (RequiresLegacyQuiesce(decision)) {
-        g_quiescePending.store(true, std::memory_order_release);
+        RequireLegacyRuntimeQuiesce();
     }
 
     g_active.store(true, std::memory_order_release);

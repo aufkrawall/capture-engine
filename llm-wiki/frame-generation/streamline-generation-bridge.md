@@ -342,6 +342,41 @@ object request. The mixed NGX state is the concrete unsafe difference in this ru
 the reset's cause remains an inference until the next runtime validation proves a single NGX
 generation and reaches the render loop.
 
+## The sixth bridged run: one bring-up route crossed the teardown boundary
+
+Session `20260822_185158` reached the loading screen and produced a direct game-side access violation,
+but it also disproved the claimed NGX ordering. The decisive sequence was:
+
+```text
+18:52:05.590  Streamline 2.12.128 initialised
+18:52:05.592  FAILED to retire ... game nvngx_dlss.dll 3.1.1
+18:52:05.592  FAILED to retire ... DriverStore nvngx_dlssg.dll 310.2.1
+```
+
+There was no longer a duplicate physical image; the corrected duplicate route made SL2 reuse the old
+resident copy. That still violated the upgrade contract. SL2 acquired another loader reference before
+the old runtime shut down, so the one safe post-shutdown release could not retire either image. The
+dump consequently held game SR 3.1.1 and DriverStore FG 310.2.1, not the configured 310.7.128 copies.
+
+The ordinary thunk path already called quiesce before `EnsureRuntimeReady`. The bypass was the
+queue-derived `NotifyD3D12Device`, which called `EnsureRuntimeReady` directly while quiescence was
+pending. The boundary is now a global state machine rather than call-site convention: every V2 route
+must transition Pending -> Running -> Complete, and `EnsureRuntimeReady` refuses any other state.
+The bridge remains inactive while import thunks are being repointed, so an early entrant forwards to
+1.x without initiating teardown. Pending is published after the complete rewrite and before Active;
+the active acquire therefore cannot observe an incomplete takeover or miss the teardown requirement.
+Concurrent callers block on the state transition without polling; a same-thread path re-entered by
+legacy `slShutdown` forwards to V1 until teardown returns, avoiding self-deadlock. Complete is
+published only after shutdown, NGX retirement, and preloading/pinning both configured replacements.
+Every physical SR/FG module is verified against the configured folder before the first V2 interposer
+load, closing the small race between retirement and the replacement runtime's own feature loads.
+
+The first DLSS evaluate later returned `eErrorMissingConstants` and the title dereferenced null about
+six seconds after that. This is correlation, not an attributed stack: the dump contains no CE or SL
+frame. The first translated set-constants and evaluate calls now log the 1.x input frame, actual 2.x
+token frame, viewport and result, which will settle whether a frame-token translation problem remains
+after the configured NGX generation is genuinely live.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -369,6 +404,11 @@ generation and reaches the render loop.
   early legacy-module IAT patching try to make both generations choose the configured SR/FG
   images. If late injection still loses, only images captured while 1.x was live, differing from
   the configured runtime copy, are released after successful `slShutdown` and before 2.x init.
+- **Quiescence is a global prerequisite, not a thunk-ordering convention.** Device discovery and
+  every future V2 bring-up route must cross the same state machine; `EnsureRuntimeReady` itself
+  rejects Pending, Running and Failed. Complete means legacy shutdown and NGX retirement succeeded,
+  both configured replacements are pinned, and no foreign SR/FG image is resident. It is published
+  before any code may load the V2 interposer.
 - **The generation that authorises an ABI-sensitive hook is the MODULE's, never the
   process's.** The bridge makes two generations resident on purpose, so a process-wide latch
   would authorise 2.x-shaped hooks on the still-resident 1.x interposer - the truncation

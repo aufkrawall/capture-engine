@@ -388,30 +388,84 @@ TEST(StreamlineBridgePolicyTest, ExplainsTheInertStaticImportInterposer) {
 }
 
 TEST(StreamlineBridgePolicyTest, RetiresLegacyNgxBeforeStartingTheReplacementRuntime) {
-    // Session 20260822_182415 reached the device successfully, but the dump held the game's
-    // nvngx_dlss 3.1.1 beside the configured 310.7.128 image. The old feature DLL won while
-    // CE was taking imports over; slShutdown removed the 1.x plugins but left their NGX
-    // loader references behind. Initializing 2.x then mapped a second process-global image;
-    // that unsafe mixed state was live when the working D3D12 device reset before the final probe.
+    // Session 20260822_185158 exposed a second route around the required ordering. A
+    // queue-derived device notification called EnsureRuntimeReady directly while legacy
+    // quiescence was pending, so 2.x acquired the old NGX images before slShutdown. The
+    // safe post-shutdown release then could not unload them, and the loading screen ran
+    // Streamline 2.12 against game SR 3.1.1 and DriverStore FG 310.2.1.
     const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge.cpp");
     const std::string runtimeSource = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
+    const std::string translationSource = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
     const std::string hookThreadSource = ReadProjectSource("hook/main_hookthread.cpp");
     ASSERT_FALSE(bridgeSource.empty());
     ASSERT_FALSE(runtimeSource.empty());
+    ASSERT_FALSE(translationSource.empty());
     ASSERT_FALSE(hookThreadSource.empty());
 
-    const size_t capture = bridgeSource.find("CaptureLegacyNgxFeatureModules()");
-    const size_t shutdown = bridgeSource.find("const bool ok = shutdown()", capture);
-    const size_t retire = bridgeSource.find("RetireLegacyNgxFeatureModules(", shutdown);
+    const size_t capture = runtimeSource.find("CaptureLegacyNgxFeatureModules()");
+    const size_t shutdown = runtimeSource.find("shutdownOk = shutdown()", capture);
+    const size_t retire = runtimeSource.find("RetireLegacyNgxFeatureModules(", shutdown);
+    const size_t replacementPreload = runtimeSource.find("PreloadReplacementNgxFeatureModules(", retire);
+    const size_t publishComplete = runtimeSource.find("LegacyQuiesceState::Complete", replacementPreload);
     ASSERT_NE(capture, std::string::npos);
     ASSERT_NE(shutdown, std::string::npos);
     ASSERT_NE(retire, std::string::npos);
+    ASSERT_NE(replacementPreload, std::string::npos);
+    ASSERT_NE(publishComplete, std::string::npos);
     EXPECT_LT(capture, shutdown);
     EXPECT_LT(shutdown, retire);
+    EXPECT_LT(retire, replacementPreload);
+    EXPECT_LT(replacementPreload, publishComplete);
 
     EXPECT_NE(runtimeSource.find("SameModuleImageIsStillLoaded"), std::string::npos);
     EXPECT_NE(runtimeSource.find("FreeLibrary(legacy.module)"), std::string::npos);
     EXPECT_NE(runtimeSource.find("FAILED to retire legacy NGX image"), std::string::npos);
+    EXPECT_NE(runtimeSource.find("FAILED replacement ownership check"), std::string::npos);
+    EXPECT_NE(runtimeSource.find("preloaded and pinned the configured NGX SR/FG replacements"),
+              std::string::npos);
+    EXPECT_NE(runtimeSource.find("g_legacyQuiesceState.wait(LegacyQuiesceState::Running"),
+              std::string::npos);
+    EXPECT_NE(runtimeSource.find("g_thisThreadOwnsLegacyQuiesce"), std::string::npos);
+
+    const size_t publishImports = bridgeSource.find("const size_t patched = TakeOverImports();");
+    const size_t requireQuiesce = bridgeSource.find("RequireLegacyRuntimeQuiesce();", publishImports);
+    const size_t publishActive = bridgeSource.find("g_active.store(true, std::memory_order_release)",
+                                                   requireQuiesce);
+    ASSERT_NE(requireQuiesce, std::string::npos);
+    ASSERT_NE(publishImports, std::string::npos);
+    ASSERT_NE(publishActive, std::string::npos);
+    EXPECT_LT(publishImports, requireQuiesce);
+    EXPECT_LT(requireQuiesce, publishActive);
+
+    const size_t bridgeReady = bridgeSource.find("bool BridgeCallReady()");
+    const size_t activationGate = bridgeSource.find("if (!g_active.load(std::memory_order_acquire))",
+                                                    bridgeReady);
+    const size_t quiesceFirst = bridgeSource.find("if (!MaybeQuiesceLegacyRuntime())", bridgeReady);
+    const size_t ensureAfter = bridgeSource.find("return EnsureRuntimeReady();", quiesceFirst);
+    ASSERT_NE(bridgeReady, std::string::npos);
+    ASSERT_NE(activationGate, std::string::npos);
+    ASSERT_NE(quiesceFirst, std::string::npos);
+    ASSERT_NE(ensureAfter, std::string::npos);
+    EXPECT_LT(activationGate, quiesceFirst);
+    EXPECT_LT(quiesceFirst, ensureAfter);
+
+    const size_t ensureBody = bridgeSource.find("bool EnsureRuntimeReady()");
+    const size_t finalGate = bridgeSource.find("LegacyRuntimeQuiesceAllowsV2Initialization()", ensureBody);
+    const size_t loadV2 = bridgeSource.find("LoadAndInitializeV2Runtime", ensureBody);
+    ASSERT_NE(finalGate, std::string::npos);
+    ASSERT_NE(loadV2, std::string::npos);
+    EXPECT_LT(finalGate, loadV2);
+
+    const size_t notify = bridgeSource.find("void NotifyD3D12Device(void* device)");
+    const size_t notifyGate = bridgeSource.find("if (!BridgeCallReady())", notify);
+    const size_t notifyHandoff = bridgeSource.find("SetV2RuntimeDevice(device", notify);
+    ASSERT_NE(notifyGate, std::string::npos);
+    ASSERT_NE(notifyHandoff, std::string::npos);
+    EXPECT_LT(notifyGate, notifyHandoff);
+    EXPECT_NE(translationSource.find("first slSetConstants translated - inputFrame=%u tokenFrame=%u"),
+              std::string::npos);
+    EXPECT_NE(translationSource.find("first slEvaluateFeature translated - feature=%u->%u inputFrame=%u"),
+              std::string::npos);
 
     const size_t earlyNgx = hookThreadSource.find("PreloadConfiguredStreamlineBridgeNgxDlls();");
     const size_t takeover = hookThreadSource.find("ce::streamline_bridge::TryActivate();");

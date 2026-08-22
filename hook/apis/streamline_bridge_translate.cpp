@@ -554,8 +554,16 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
     // frame where both the frame boundary and the complete FrameToken exist.
     MaybeSynthesizeReflexSleep(frameIndex, token);
 
+    const sl::Result result = g_slSetConstants(out, *token, sl::ViewportHandle(id));
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant(
+            "Streamline bridge: first slSetConstants translated - inputFrame=%u tokenFrame=%u viewport=%u "
+            "sl::Result=%d",
+            frameIndex, static_cast<uint32_t>(*token), id, static_cast<int>(result));
+    }
     static std::atomic<bool> latch{false};
-    return ResultOk(g_slSetConstants(out, *token, sl::ViewportHandle(id)), "slSetConstants", latch);
+    return ResultOk(result, "slSetConstants", latch);
 }
 
 bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, uint32_t /*frameIndex*/,
@@ -740,10 +748,18 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
     sl::ViewportHandle viewport(id);
     const sl::BaseStructure* inputs[] = {&viewport};
 
+    const sl::Result result = g_slEvaluateFeature(feature2x, *token, inputs, 1,
+                                                  static_cast<sl::CommandBuffer*>(commandBuffer));
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant(
+            "Streamline bridge: first slEvaluateFeature translated - feature=%u->%u inputFrame=%u "
+            "tokenFrame=%u viewport=%u commandBuffer=%p sl::Result=%d",
+            feature1x, feature2x, frameIndex, static_cast<uint32_t>(*token), id, commandBuffer,
+            static_cast<int>(result));
+    }
     static std::atomic<bool> latch{false};
-    return ResultOk(g_slEvaluateFeature(feature2x, *token, inputs, 1,
-                                        static_cast<sl::CommandBuffer*>(commandBuffer)),
-                    "slEvaluateFeature", latch);
+    return ResultOk(result, "slEvaluateFeature", latch);
 }
 
 }  // namespace ce::streamline_bridge
