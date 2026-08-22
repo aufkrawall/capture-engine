@@ -272,10 +272,28 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
-    EXPECT_NE(source.find("RememberDeviceSupport(adapterForCreate, minimumFeatureLevel)"), std::string::npos);
+    EXPECT_NE(source.find("RememberCreatedDevice(adapterForCreate, minimumFeatureLevel,"), std::string::npos);
+    EXPECT_NE(source.find("TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)"),
+              std::string::npos);
     EXPECT_NE(source.find("answered D3D12 capability probe from prior successful"), std::string::npos);
     EXPECT_EQ(source.find("reinterpret_cast<PFN_D3D12CreateDevice>(V2Target(\"D3D12CreateDevice\"))"),
               std::string::npos);
+}
+
+TEST(StreamlineBridgePolicyTest, ReusesAProvenDeviceWhenDriverRejectsRecreation) {
+    // Session 20260822_021816: after a successful native creation and a successful null-output
+    // probe, the driver rejected the next object-producing request with DEVICE_RESET on both
+    // adapter-bound and default retries; the title treated that redundant failure as fatal.
+    // A retained COM reference to the already-proven device can satisfy an equivalent request
+    // without asking the driver to validate the same adapter again.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_device_cache.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("std::map<uint64_t, RememberedDevice> g_devicesByAdapter"),
+              std::string::npos);
+    EXPECT_NE(source.find("GetDeviceRemovedReason()"), std::string::npos);
+    EXPECT_NE(source.find("cached.CopyTo(riid, ppDevice)"), std::string::npos);
+    EXPECT_NE(source.find("reused the prior successful D3D12 device"), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchangedFGOptions) {

@@ -20,6 +20,7 @@
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_bridge_device_cache.h"
 #include "streamline_bridge_runtime.h"
 #include "streamline_bridge_translate.h"
 #include "streamline_v1_feature_probe.h"
@@ -236,44 +237,6 @@ void DescribeIid(REFIID iid, char (&text)[40]) {
                   iid.Data4[4], iid.Data4[5], iid.Data4[6], iid.Data4[7]);
 }
 
-// D3D12CreateDevice permits a null output as a pure support probe. Some titles use that form
-// immediately after creating one real device; drivers can reject the redundant probe with
-// DEVICE_RESET even though they just proved support (`20260822_014209`). Remember successful
-// device creation per physical adapter and answer an equivalent later probe without touching
-// the driver again.
-std::mutex g_deviceSupportMutex;
-std::map<uint64_t, uint32_t> g_supportedDeviceLevelByAdapter;
-
-uint64_t DeviceSupportKey(IUnknown* adapter) {
-    if (!adapter) {
-        return 0;
-    }
-    Microsoft::WRL::ComPtr<IDXGIAdapter> descriptor;
-    DXGI_ADAPTER_DESC desc{};
-    if (SUCCEEDED(adapter->QueryInterface(IID_PPV_ARGS(&descriptor))) &&
-        SUCCEEDED(descriptor->GetDesc(&desc))) {
-        return (static_cast<uint64_t>(desc.AdapterLuid.HighPart) << 32) |
-               static_cast<uint32_t>(desc.AdapterLuid.LowPart);
-    }
-    return 0;
-}
-
-void RememberDeviceSupport(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel) {
-    const uint64_t key = DeviceSupportKey(adapter);
-    std::lock_guard<std::mutex> lock(g_deviceSupportMutex);
-    auto [entry, inserted] = g_supportedDeviceLevelByAdapter.try_emplace(key, static_cast<uint32_t>(featureLevel));
-    if (!inserted && entry->second < static_cast<uint32_t>(featureLevel)) {
-        entry->second = static_cast<uint32_t>(featureLevel);
-    }
-}
-
-bool HasRememberedDeviceSupport(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel) {
-    std::lock_guard<std::mutex> lock(g_deviceSupportMutex);
-    const auto entry = g_supportedDeviceLevelByAdapter.find(DeviceSupportKey(adapter));
-    return entry != g_supportedDeviceLevelByAdapter.end() &&
-           entry->second >= static_cast<uint32_t>(featureLevel);
-}
-
 // A game may hand us an adapter owned by a short-lived proxy/factory generation. D3D12 only
 // needs the same physical adapter, so resolve its LUID through DXGI and obtain a fresh,
 // unowned adapter instance before calling Microsoft's API. This preserves multi-GPU intent
@@ -369,7 +332,6 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
         }
         return S_OK;
     }
-
     IUnknown* adapterForCreate = ResolveEquivalentAdapter(adapter);
     if (ppDevice) {
         *ppDevice = nullptr;
@@ -399,9 +361,13 @@ HRESULT CallNativeD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimum
             hr = defaultHr;
         }
     }
+    if (FAILED(hr) && deviceLostClass && TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)) {
+        hr = S_OK;
+    }
 
     if (SUCCEEDED(hr)) {
-        RememberDeviceSupport(adapterForCreate, minimumFeatureLevel);
+        RememberCreatedDevice(adapterForCreate, minimumFeatureLevel,
+                              ppDevice && SUCCEEDED(hr) ? *ppDevice : nullptr);
     }
 
     if (adapterForCreate != adapter && adapterForCreate) {

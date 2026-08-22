@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-08-22 - Redundant D3D12 recreation can reuse the proven device
+
+Witcher 3 `20260822_021816` successfully created a native D3D12 device, handed it to SL2, and
+answered a later null-output probe from that proof. Eleven seconds later an object-producing
+request with the same adapter/feature level failed with `DXGI_ERROR_DEVICE_RESET`; the default
+retry failed identically. The title threw `0xe06d7363`.
+
+- Keep a COM reference to the last successful native device per adapter LUID.
+- On a device-lost-class failure only, satisfy the repeated request by querying that retained
+  device for the requested interface after checking its removal reason.
+- Normal first requests still create distinct devices; this is a recovery path for drivers that
+  reject redundant validation they had just completed.
+
 ### 2026-08-22 - Bridged Reflex needs per-frame sleep, not just activation
 
 Witcher 3 `20260822_015042` accepted the synthesized `eLowLatencyWithBoost` options, but SL2

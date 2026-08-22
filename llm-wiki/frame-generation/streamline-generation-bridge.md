@@ -294,6 +294,11 @@ only, CE makes one logged retry with DXGI/D3D12's default adapter. On multi-GPU 
 visible compatibility fallback, not a silent policy: the log names both HRESULTs and both adapter
 pointers.
 
+Session `20260822_021816` added the final step: when both attempts fail despite an earlier success,
+CE reuses the retained successful device after checking `ID3D12Device::GetDeviceRemovedReason`.
+This avoids converting a transient driver refusal to recreate an equivalent device into a fatal
+title exception while preserving normal distinct-device semantics on the happy path.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -337,6 +342,11 @@ pointers.
 - **The first device a title creates may be a throwaway.** Hand over every distinct one.
   Explicitly selected native/interposer devices supersede each other; queue-derived discovery is
   only a fallback and never overwrites an explicit handoff.
+- **A proven device may answer only a failed redundant recreation.** Some driver/title sequences
+  accept creation, pass a null-output probe, then reject another object-producing request with
+  `DXGI_ERROR_DEVICE_RESET` (`20260822_021816`). Retain the successful device by LUID; after a
+  device-lost-class failure, verify it is not removed and return the requested COM interface. Do
+  not replace ordinary distinct-device creation with reuse.
 - **The probe is event-driven, not polled and not once-only.** Once per epoch, where an epoch is
   a device handed over or the game's frame index moving; nothing at all once the answer is yes.
 - **A module the bridge routed around gets no hooks.** With two generations resident and one
