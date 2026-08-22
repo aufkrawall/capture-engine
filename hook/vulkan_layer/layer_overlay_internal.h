@@ -22,6 +22,17 @@
 #include "overlay_submit_queue_policy.h"
 #include "vulkan_layer.h"
 
+struct ComputePresentDiagnostics {
+    uint64_t frames = 0;
+    uint64_t commandCacheHits = 0;
+    uint64_t phaseSamples = 0;
+    uint64_t graphicsRecordUs = 0;
+    uint64_t graphicsSubmitUs = 0;
+    uint64_t computeSubmitUs = 0;
+    uint64_t commandRecordMisses = 0;
+    uint64_t computeRecordMissUs = 0;
+};
+
 // Overlay state per device - manages Vulkan frame resources
 struct OverlayState {
     bool initialized = false;
@@ -76,12 +87,17 @@ struct OverlayState {
     std::vector<VkSemaphore> offscreenReadySemaphores;
     VkCommandPool computeCommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> computeCommandBuffers;
+    std::vector<ce::overlay_submit_queue_policy::ComputeCompositeBounds> computeCommandBounds;
+    std::vector<uint8_t> computeCommandRecorded;
+    std::vector<VkSemaphore> computeWaitSemaphores;
+    std::vector<VkPipelineStageFlags> computeWaitStages;
     VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> computeDescriptorSets;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
     VkPipeline computePipeline = VK_NULL_HANDLE;
     VkSampler computeSampler = VK_NULL_HANDLE;
+    ComputePresentDiagnostics computePresentDiagnostics;
 };
 
 extern std::mutex g_OverlayMutex;

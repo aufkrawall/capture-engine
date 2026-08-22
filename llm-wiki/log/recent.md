@@ -18,6 +18,12 @@ the overlay.
   render-pass fallback when any capability is absent.
 - Keep the independent graphics submit free of game waits and prefer CE's queue, avoiding both the
   cross-engine critical path and serialization with the game's next graphics submission.
+- Follow-up A/B/A session `20260822_165450` showed 138.48 / 140.08 / 138.56 FPS for async-on / off / on.
+  There were no fallback or fence stalls; the remaining measurable difference was 33-34 us of overlay CPU.
+  Cache the executable final-composite command per swapchain image while its occupied rectangle is unchanged,
+  and retain compute wait scratch vectors across presents. A once-per-2048-frame CPU summary samples the steady
+  record/submit phases every 128 frames and times only actual command-cache misses, so future runtime evidence can
+  distinguish submission overhead without materially perturbing the present path.
 
 ### 2026-08-22 - Redundant D3D12 recreation can reuse the proven device
 

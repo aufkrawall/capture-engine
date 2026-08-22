@@ -9,11 +9,15 @@
 
 #include "layer_overlay_internal.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "../common/overlay_shader_spirv.h"
 
 namespace {
+
+constexpr uint64_t kDiagnosticWindowFrames = 2048;
+constexpr uint64_t kDiagnosticSampleInterval = 128;
 
 uint32_t FindDeviceLocalMemoryType(const OverlayState& state, uint32_t typeBits) {
     InstanceDispatch* inst = VulkanLayerState::Get().GetInstanceDispatch(state.instance);
@@ -290,6 +294,10 @@ bool InitializeComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, 
         state.computePresentUnavailable = true;
         return false;
     }
+    state.computeCommandBounds.resize(state.computeCommandBuffers.size());
+    state.computeCommandRecorded.assign(state.computeCommandBuffers.size(), 0);
+    state.computeWaitSemaphores.reserve(2);
+    state.computeWaitStages.reserve(2);
 
     state.computePresentInitialized = true;
     LayerLog(
@@ -312,6 +320,41 @@ void RecordSwapchainLayoutBarrier(DeviceDispatch* disp, VkCommandBuffer command,
     barrier.srcAccessMask = sourceAccess;
     barrier.dstAccessMask = destinationAccess;
     disp->fp_vkCmdPipelineBarrier(command, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+void CommitComputePresentDiagnostics(OverlayState& state, bool commandReused, bool phaseSampled,
+                                     uint64_t graphicsRecordUs, uint64_t graphicsSubmitUs, uint64_t computeSubmitUs,
+                                     uint64_t computeRecordMissUs) {
+    ComputePresentDiagnostics& stats = state.computePresentDiagnostics;
+    ++stats.frames;
+    if (commandReused) {
+        ++stats.commandCacheHits;
+    } else {
+        ++stats.commandRecordMisses;
+        stats.computeRecordMissUs += computeRecordMissUs;
+    }
+    if (phaseSampled) {
+        ++stats.phaseSamples;
+        stats.graphicsRecordUs += graphicsRecordUs;
+        stats.graphicsSubmitUs += graphicsSubmitUs;
+        stats.computeSubmitUs += computeSubmitUs;
+    }
+    if (stats.frames < kDiagnosticWindowFrames)
+        return;
+
+    const uint64_t phaseSamples = std::max<uint64_t>(stats.phaseSamples, 1);
+    const uint64_t recordMisses = std::max<uint64_t>(stats.commandRecordMisses, 1);
+    LayerLog(
+        "Vulkan Layer: Compute-present CPU summary frames=%llu commandCacheHits=%llu/%llu "
+        "graphicsRecordAvg=%lluus graphicsSubmitAvg=%lluus computeSubmitAvg=%lluus "
+        "computeRecordMissAvg=%lluus",
+        static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.commandCacheHits),
+        static_cast<unsigned long long>(stats.frames),
+        static_cast<unsigned long long>(stats.graphicsRecordUs / phaseSamples),
+        static_cast<unsigned long long>(stats.graphicsSubmitUs / phaseSamples),
+        static_cast<unsigned long long>(stats.computeSubmitUs / phaseSamples),
+        static_cast<unsigned long long>(stats.computeRecordMissUs / recordMisses));
+    stats = {};
 }
 
 }  // namespace
@@ -361,6 +404,10 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
     state.computeCommandPool = VK_NULL_HANDLE;
     state.offscreenRenderPass = VK_NULL_HANDLE;
     state.computeCommandBuffers.clear();
+    state.computeCommandBounds.clear();
+    state.computeCommandRecorded.clear();
+    state.computeWaitSemaphores.clear();
+    state.computeWaitStages.clear();
     state.computeDescriptorSets.clear();
     state.offscreenFramebuffers.clear();
     state.offscreenImageViews.clear();
@@ -368,6 +415,7 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
     state.offscreenMemory.clear();
     state.offscreenReadySemaphores.clear();
     state.computePresentInitialized = false;
+    state.computePresentDiagnostics = {};
 }
 
 bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
@@ -378,8 +426,13 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(presentQueue);
     if (!InitializeComputePresentOverlay(state, disp, graphicsTarget.queueFamilyIndex, presentFamily))
         return false;
-    if (imageIndex >= state.computeCommandBuffers.size() || !state.overlayAdapter)
+    if (imageIndex >= state.computeCommandBuffers.size() || imageIndex >= state.computeCommandBounds.size() ||
+        imageIndex >= state.computeCommandRecorded.size() || !state.overlayAdapter)
         return false;
+
+    const bool phaseSampled =
+        (state.computePresentDiagnostics.frames + 1) % kDiagnosticSampleInterval == 0;
+    const int64_t graphicsRecordStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
 
     VkCommandBuffer graphicsCommand = state.commandBuffers[imageIndex];
     disp->fp_vkResetCommandBuffer(graphicsCommand, 0);
@@ -420,54 +473,76 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     }
     if (disp->fp_vkEndCommandBuffer(graphicsCommand) != VK_SUCCESS)
         return false;
+    const uint64_t graphicsRecordUs =
+        phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - graphicsRecordStartUs) : 0;
 
     VkCommandBuffer computeCommand = state.computeCommandBuffers[imageIndex];
-    disp->fp_vkResetCommandBuffer(computeCommand, 0);
-    if (disp->fp_vkBeginCommandBuffer(computeCommand, &begin) != VK_SUCCESS)
-        return false;
-    RecordSwapchainLayoutBarrier(disp, computeCommand, state.swapchainImages[imageIndex],
-                                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
-                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-    if (bounds.extent.width > 0 && bounds.extent.height > 0) {
-        const int32_t rect[4] = {bounds.offset.x, bounds.offset.y, static_cast<int32_t>(bounds.extent.width),
-                                 static_cast<int32_t>(bounds.extent.height)};
-        disp->fp_vkCmdBindPipeline(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE, state.computePipeline);
-        disp->fp_vkCmdBindDescriptorSets(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE, state.computePipelineLayout,
-                                         0, 1, &state.computeDescriptorSets[imageIndex], 0, nullptr);
-        disp->fp_vkCmdPushConstants(computeCommand, state.computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                    sizeof(rect), rect);
-        disp->fp_vkCmdDispatch(computeCommand, (bounds.extent.width + 15) / 16, (bounds.extent.height + 15) / 16, 1);
+    const ce::overlay_submit_queue_policy::ComputeCompositeBounds currentBounds = {
+        bounds.offset.x, bounds.offset.y, bounds.extent.width, bounds.extent.height};
+    const bool commandReused = ce::overlay_submit_queue_policy::CanReuseComputeCompositeCommand(
+        state.computeCommandRecorded[imageIndex] != 0, state.computeCommandBounds[imageIndex], currentBounds);
+    uint64_t computeRecordMissUs = 0;
+    if (!commandReused) {
+        const int64_t computeRecordStartUs = PerfLogger::GetQpcUs();
+        state.computeCommandRecorded[imageIndex] = 0;
+        if (disp->fp_vkResetCommandBuffer(computeCommand, 0) != VK_SUCCESS)
+            return false;
+        VkCommandBufferBeginInfo computeBegin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        if (disp->fp_vkBeginCommandBuffer(computeCommand, &computeBegin) != VK_SUCCESS)
+            return false;
+        RecordSwapchainLayoutBarrier(disp, computeCommand, state.swapchainImages[imageIndex],
+                                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
+                                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        if (bounds.extent.width > 0 && bounds.extent.height > 0) {
+            const int32_t rect[4] = {bounds.offset.x, bounds.offset.y, static_cast<int32_t>(bounds.extent.width),
+                                     static_cast<int32_t>(bounds.extent.height)};
+            disp->fp_vkCmdBindPipeline(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE, state.computePipeline);
+            disp->fp_vkCmdBindDescriptorSets(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                             state.computePipelineLayout, 0, 1,
+                                             &state.computeDescriptorSets[imageIndex], 0, nullptr);
+            disp->fp_vkCmdPushConstants(computeCommand, state.computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                        sizeof(rect), rect);
+            disp->fp_vkCmdDispatch(computeCommand, (bounds.extent.width + 15) / 16,
+                                   (bounds.extent.height + 15) / 16, 1);
+        }
+        RecordSwapchainLayoutBarrier(disp, computeCommand, state.swapchainImages[imageIndex],
+                                     VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                     VK_ACCESS_SHADER_WRITE_BIT, 0);
+        if (disp->fp_vkEndCommandBuffer(computeCommand) != VK_SUCCESS)
+            return false;
+        state.computeCommandBounds[imageIndex] = currentBounds;
+        state.computeCommandRecorded[imageIndex] = 1;
+        computeRecordMissUs = static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeRecordStartUs);
     }
-    RecordSwapchainLayoutBarrier(disp, computeCommand, state.swapchainImages[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
-                                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_SHADER_WRITE_BIT, 0);
-    if (disp->fp_vkEndCommandBuffer(computeCommand) != VK_SUCCESS)
-        return false;
 
     VkSubmitInfo graphicsSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     graphicsSubmit.commandBufferCount = 1;
     graphicsSubmit.pCommandBuffers = &graphicsCommand;
     graphicsSubmit.signalSemaphoreCount = 1;
     graphicsSubmit.pSignalSemaphores = &state.offscreenReadySemaphores[imageIndex];
+    const int64_t graphicsSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
     {
         ScopedBorrowedQueueSubmission guard(graphicsTarget.queue);
         if (disp->fp_vkQueueSubmit(graphicsTarget.queue, 1, &graphicsSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
             return false;
     }
+    const uint64_t graphicsSubmitUs =
+        phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - graphicsSubmitStartUs) : 0;
     if (routeAttempted)
         *routeAttempted = true;
 
-    std::vector<VkSemaphore> waits;
-    std::vector<VkPipelineStageFlags> waitStages;
-    waits.reserve(waitSemaphoreCount + 1);
-    waitStages.reserve(waitSemaphoreCount + 1);
+    std::vector<VkSemaphore>& waits = state.computeWaitSemaphores;
+    std::vector<VkPipelineStageFlags>& waitStages = state.computeWaitStages;
+    waits.resize(waitSemaphoreCount + 1);
+    waitStages.resize(waitSemaphoreCount + 1);
     for (uint32_t i = 0; i < waitSemaphoreCount; ++i) {
-        waits.push_back(waitSemaphores[i]);
-        waitStages.push_back(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        waits[i] = waitSemaphores[i];
+        waitStages[i] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     }
-    waits.push_back(state.offscreenReadySemaphores[imageIndex]);
-    waitStages.push_back(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    waits[waitSemaphoreCount] = state.offscreenReadySemaphores[imageIndex];
+    waitStages[waitSemaphoreCount] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo computeSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     computeSubmit.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
     computeSubmit.pWaitSemaphores = waits.data();
@@ -476,8 +551,13 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     computeSubmit.pCommandBuffers = &computeCommand;
     computeSubmit.signalSemaphoreCount = 1;
     computeSubmit.pSignalSemaphores = &signalSemaphore;
+    const int64_t computeSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
     if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, state.fences[imageIndex]) != VK_SUCCESS)
         return false;
+    const uint64_t computeSubmitUs =
+        phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeSubmitStartUs) : 0;
+    CommitComputePresentDiagnostics(state, commandReused, phaseSampled, graphicsRecordUs, graphicsSubmitUs,
+                                    computeSubmitUs, computeRecordMissUs);
     if (writeTimestamps)
         state.timestampWritten[imageIndex] = true;
     return true;

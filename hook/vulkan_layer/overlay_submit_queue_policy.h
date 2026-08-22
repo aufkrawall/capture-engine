@@ -83,6 +83,24 @@ struct ComputePresentAvailability {
     bool storageWriteWithoutFormatAvailable = false;
 };
 
+struct ComputeCompositeBounds {
+    int32_t x = 0;
+    int32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+// The final compute command buffer contains only per-image resources and this
+// occupied rectangle. Once its fence has retired, Vulkan permits resubmitting
+// the executable command buffer without recording it again. Dynamic overlay
+// contents do not invalidate it: those pixels live in the independently
+// rendered offscreen image.
+inline bool CanReuseComputeCompositeCommand(bool commandRecorded, const ComputeCompositeBounds& recorded,
+                                             const ComputeCompositeBounds& current) {
+    return commandRecorded && recorded.x == current.x && recorded.y == current.y &&
+           recorded.width == current.width && recorded.height == current.height;
+}
+
 // A compute compositor is the only route that keeps a present-from-compute
 // dependency on its original engine. It is used strictly when the application
 // created storage-capable swapchain images and enabled the two formatless image

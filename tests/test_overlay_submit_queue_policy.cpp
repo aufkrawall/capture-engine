@@ -19,9 +19,11 @@
 namespace {
 
 using ce::overlay_submit_queue_policy::CanReserveOverlayQueue;
+using ce::overlay_submit_queue_policy::CanReuseComputeCompositeCommand;
 using ce::overlay_submit_queue_policy::CanWidenQueueCreateEntry;
 using ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ChooseIndependentGraphicsQueue;
+using ce::overlay_submit_queue_policy::ComputeCompositeBounds;
 using ce::overlay_submit_queue_policy::ComputePresentAvailability;
 using ce::overlay_submit_queue_policy::OverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueueIndex;
@@ -155,6 +157,16 @@ TEST(OverlaySubmitQueuePolicyTest, IndependentOffscreenWorkPrefersCesQueue) {
     EXPECT_EQ(ChooseIndependentGraphicsQueue(true, true), OverlaySubmitQueue::kReservedQueue);
     EXPECT_EQ(ChooseIndependentGraphicsQueue(false, true), OverlaySubmitQueue::kBorrowedQueue);
     EXPECT_EQ(ChooseIndependentGraphicsQueue(false, false), OverlaySubmitQueue::kNone);
+}
+
+TEST(OverlaySubmitQueuePolicyTest, ComputeCommandReuseRequiresIdenticalRecordedBounds) {
+    const ComputeCompositeBounds bounds = {100, 50, 640, 240};
+    EXPECT_FALSE(CanReuseComputeCompositeCommand(false, bounds, bounds));
+    EXPECT_TRUE(CanReuseComputeCompositeCommand(true, bounds, bounds));
+    EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {101, 50, 640, 240}));
+    EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 51, 640, 240}));
+    EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 50, 641, 240}));
+    EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 50, 640, 241}));
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, OverlaySubmitsOnTheResolvedQueueNotThePresentQueue) {
@@ -311,6 +323,12 @@ TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentCompositesOnThePresentQue
         << "offscreen graphics must run concurrently, not wait behind the game's final compute work";
     EXPECT_NE(compute.find("computeSubmit.waitSemaphoreCount"), std::string::npos)
         << "the compute composite joins the game's present waits and the independently rendered overlay";
+    EXPECT_NE(compute.find("CanReuseComputeCompositeCommand"), std::string::npos)
+        << "stable overlay bounds must not force compute command recording on every present";
+    EXPECT_NE(compute.find("state.computeWaitSemaphores"), std::string::npos)
+        << "the present hot path must retain its semaphore scratch allocation";
+    EXPECT_EQ(compute.find("std::vector<VkSemaphore> waits"), std::string::npos)
+        << "a local vector allocates again on every present";
     EXPECT_NE(shader.find("overlay.rgb + base.rgb * (1.0 - overlay.a)"), std::string::npos)
         << "the offscreen render pass produces premultiplied RGB";
     EXPECT_NE(spirv.find("g_ComputeCompositeShaderSpv"), std::string::npos);

@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-15
+Last cross-checked: 2026-08-22
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -168,6 +168,17 @@ Primary sources:
   configuration and a frame-rate loss in its two-image one. Diagnostics-only work therefore never runs before
   the down-call, and `pre_present_us` / `present_call_us` / `post_present_us` / `overlay_gpu_us` in the perf
   CSV make a regression there measurable rather than arguable.
+- Follow-up DOOM Eternal session `20260822_165450` bracketed async-off with two stable async-on windows:
+  138.48 / 140.08 / 138.56 FPS. The compute route never fell back and its per-image fence wait remained about
+  1 us, but async-on still spent 102-103 us of overlay CPU versus 69 us direct. The final compute command contains
+  only per-image handles and the occupied rectangle, so it now remains executable and is resubmitted after the
+  existing per-image fence proves retirement; only a bounds change resets and records it again. The compute wait
+  semaphore/stage vectors likewise retain their allocations instead of rebuilding them on every present.
+- `overlay_gpu_us` measures the offscreen graphics command, not the final compute dispatch or queue handoff.
+  `Compute-present CPU summary` therefore reports once per 2048 successful frames: command-cache hits plus sampled
+  graphics-record, graphics-submit, compute-submit, and compute-record-miss averages. Steady phases are timed only
+  every 128th frame, while rare command-record misses are timed when they occur, keeping the diagnostic itself off
+  the performance result in all other frames.
 - Once per swapchain generation the layer logs `Present topology - present queue family=... wait semaphore
   signalled by queue ...`. Graphics-signalled means CE only appends to the game's timeline;
   compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
