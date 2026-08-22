@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.6143
 
 Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6142).
 
