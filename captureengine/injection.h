@@ -57,10 +57,6 @@ public:
   bool VerifyDLLSignature(
       const std::string &dllPath,
       bool logFailures = true); // Verify Authenticode signature
-  bool VerifyDLLHash(
-      const std::string &dllPath); // Verify SHA-256 hash (debug builds)
-  std::string
-  ComputeFileHash(const std::string &filePath); // Compute SHA-256 hash of file
 
   // WMI Event Sink
   class ProcessEventSink : public IWbemObjectSink {

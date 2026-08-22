@@ -1,46 +1,6 @@
 #include "injection_internal.h"
 
-// SHA256 using Windows CNG (bcrypt.dll)
-[[maybe_unused]] static std::string ComputeFileHash(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        return "";
-
-    BCRYPT_ALG_HANDLE hAlg = NULL;
-    BCRYPT_HASH_HANDLE hHash = NULL;
-    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
-        return "";
-
-    // Calculate buffer size
-    DWORD cbHashObject = 0, cbData = 0;
-    BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PBYTE)&cbHashObject, sizeof(DWORD), &cbData, 0);
-
-    std::vector<BYTE> pbHashObject(cbHashObject);
-    if (BCryptCreateHash(hAlg, &hHash, pbHashObject.data(), cbHashObject, NULL, 0, 0) < 0) {
-        BCryptCloseAlgorithmProvider(hAlg, 0);
-        return "";
-    }
-
-    char buffer[4096];
-    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-        BCryptHashData(hHash, (PBYTE)buffer, (ULONG)file.gcount(), 0);
-        if (file.eof())
-            break;
-    }
-
-    DWORD cbHash = 0;
-    BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0);
-    std::vector<BYTE> pbHash(cbHash);
-    BCryptFinishHash(hHash, pbHash.data(), cbHash, 0);
-
-    BCryptDestroyHash(hHash);
-    BCryptCloseAlgorithmProvider(hAlg, 0);
-
-    std::stringstream ss;
-    for (BYTE b : pbHash)
-        ss << std::hex << std::setw(2) << std::setfill('0') << (int)b;
-    return ss.str();
-}
+#include "injection_path_policy.h"
 
 bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
     char exePathBuf[MAX_PATH];
@@ -52,9 +12,7 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
     std::error_code ec;
     auto canonicalCheck = fs::weakly_canonical(checkPath, ec);
     auto canonicalExe = fs::weakly_canonical(exePath, ec);
-    if (ec || canonicalCheck.string().find(canonicalExe.string()) != 0 ||
-        (canonicalCheck.string().size() > canonicalExe.string().size() &&
-         canonicalCheck.string()[canonicalExe.string().size()] != '\\')) {
+    if (ec || !ce::injection::IsPathInsideDirectory(canonicalCheck.string(), canonicalExe.string())) {
         LogError("[Security] DLL path is outside application directory: %s", checkPath.string().c_str());
         return false;
     }
@@ -122,8 +80,17 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
 // Verify DLL Authenticode signature (production builds only)
 // Returns true if DLL is properly signed, false otherwise
 bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFailures) {
-    // Convert to wide string for WinVerifyTrust
-    std::wstring widePath(dllPath.begin(), dllPath.end());
+    // Convert to wide string for WinVerifyTrust. The ANSI codepage matches what
+    // GetModuleFileNameA/LoadLibraryA interpreted, so non-ASCII install paths
+    // verify the exact file the loader opens instead of a sign-extension-mangled
+    // name. Conversion failure fails closed.
+    const std::wstring widePath = ce::injection::AnsiPathToWide(dllPath);
+    if (widePath.empty()) {
+        if (logFailures) {
+            LogError("[Security] Could not convert DLL path for signature verification: %s", dllPath.c_str());
+        }
+        return false;
+    }
 
     // Setup WINTRUST_FILE_INFO structure
     WINTRUST_FILE_INFO fileInfo = {};
@@ -202,137 +169,6 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFa
         }
         return false;
     }
-}
-
-// Verify DLL integrity using SHA-256 hash comparison
-// This is a fallback for debug builds when Authenticode signing is not
-// available Expected hashes are stored in a .hashes file next to the DLL
-bool InjectionManager::VerifyDLLHash(const std::string& dllPath) {
-    // Check if hash file exists (debug builds only)
-    std::string hashFilePath = dllPath + ".hash";
-    if (!fs::exists(hashFilePath)) {
-        // No hash file - skip verification in debug builds
-        LogDebug("[Security] No hash file found for %s, skipping hash verification", dllPath.c_str());
-        return true;
-    }
-
-    // Read expected hash from file
-    std::ifstream hashFile(hashFilePath);
-    if (!hashFile.is_open()) {
-        LogWarn("[Security] Failed to open hash file: %s", hashFilePath.c_str());
-        return true;  // Allow in debug mode
-    }
-
-    std::string expectedHash;
-    std::getline(hashFile, expectedHash);
-    hashFile.close();
-
-    // Trim whitespace
-    expectedHash.erase(0, expectedHash.find_first_not_of(" \t\r\n"));
-    expectedHash.erase(expectedHash.find_last_not_of(" \t\r\n") + 1);
-
-    if (expectedHash.empty()) {
-        LogWarn("[Security] Empty hash file: %s", hashFilePath.c_str());
-        return true;  // Allow in debug mode
-    }
-
-    // Compute actual hash of DLL
-    std::string actualHash = ComputeFileHash(dllPath);
-    if (actualHash.empty()) {
-        LogError("[Security] Failed to compute hash for: %s", dllPath.c_str());
-        return false;
-    }
-
-    // Compare hashes (case-insensitive)
-    bool match = (actualHash.length() == expectedHash.length());
-    if (match) {
-        for (size_t i = 0; i < actualHash.length(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(actualHash[i])) !=
-                std::tolower(static_cast<unsigned char>(expectedHash[i]))) {
-                match = false;
-                break;
-            }
-        }
-    }
-
-    if (match) {
-        LogInfo("[Security] DLL hash verified: %s", dllPath.c_str());
-        return true;
-    } else {
-        LogError("[SECURITY] DLL hash mismatch for %s", dllPath.c_str());
-        LogError("[SECURITY] Expected: %s", expectedHash.c_str());
-        LogError("[SECURITY] Actual:   %s", actualHash.c_str());
-        return false;
-    }
-}
-
-// Compute SHA-256 hash of a file
-std::string InjectionManager::ComputeFileHash(const std::string& filePath) {
-    // Open file
-    HANDLE hFile = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                               FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        LogError("[Security] Failed to open file for hashing: %s", filePath.c_str());
-        return "";
-    }
-
-    // Get file size
-    LARGE_INTEGER fileSize;
-    if (!GetFileSizeEx(hFile, &fileSize)) {
-        CloseHandle(hFile);
-        return "";
-    }
-
-    // Map file into memory for efficient hashing
-    HANDLE hMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (!hMapping) {
-        CloseHandle(hFile);
-        return "";
-    }
-
-    LPVOID pData = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
-    if (!pData) {
-        CloseHandle(hMapping);
-        CloseHandle(hFile);
-        return "";
-    }
-
-    // Compute SHA-256 hash using BCrypt
-    BCRYPT_ALG_HANDLE hAlg = NULL;
-    BCRYPT_HASH_HANDLE hHash = NULL;
-    std::string result;
-
-    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == STATUS_SUCCESS) {
-        DWORD hashLen = 0;
-        DWORD dataLen = 0;
-
-        if (BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hashLen, sizeof(hashLen), &dataLen, 0) ==
-            STATUS_SUCCESS) {
-            std::vector<BYTE> hashBytes(hashLen);
-
-            if (BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) == STATUS_SUCCESS) {
-                if (BCryptHashData(hHash, (PUCHAR)pData, (ULONG)fileSize.QuadPart, 0) == STATUS_SUCCESS) {
-                    if (BCryptFinishHash(hHash, hashBytes.data(), hashLen, 0) == STATUS_SUCCESS) {
-                        // Convert to hex string
-                        std::stringstream ss;
-                        for (BYTE b : hashBytes) {
-                            ss << std::hex << std::setw(2) << std::setfill('0') << (int)b;
-                        }
-                        result = ss.str();
-                    }
-                }
-                BCryptDestroyHash(hHash);
-            }
-        }
-        BCryptCloseAlgorithmProvider(hAlg, 0);
-    }
-
-    // Cleanup
-    UnmapViewOfFile(pData);
-    CloseHandle(hMapping);
-    CloseHandle(hFile);
-
-    return result;
 }
 
 void InjectionManager::ScanExistingProcesses() {

@@ -129,30 +129,41 @@ void LaunchGameSuspended(const std::string& path) {
 
             std::string hookDllPath;
             char buffer[MAX_PATH];
-            GetModuleFileNameA(NULL, buffer, MAX_PATH);
-            std::string baseDir = std::string(buffer).substr(0, std::string(buffer).find_last_of("\\/"));
-            hookDllPath = isWow64 ? (baseDir + "\\capture_hook_x86.dll") : (baseDir + "\\capture_hook_x64.dll");
-
-            // Try early APC injection first (runs before import resolution)
-            bool injected = injector->InjectEarly(pi.dwProcessId, hookDllPath, pi.hThread);
-
-            if (injected) {
-                LogInfo("[Launcher] Early APC injection successful. Resuming thread.");
+            const DWORD modulePathChars = GetModuleFileNameA(NULL, buffer, MAX_PATH);
+            const size_t lastSeparator =
+                (modulePathChars > 0 && modulePathChars < MAX_PATH)
+                    ? std::string(buffer).find_last_of("\\/")
+                    : std::string::npos;
+            if (modulePathChars == 0 || modulePathChars >= MAX_PATH || lastSeparator == std::string::npos) {
+                LogError("[Launcher] Cannot resolve the application directory reliably (chars=%lu); resuming %s "
+                         "without injection",
+                         static_cast<unsigned long>(modulePathChars), launchCommand.fileName.c_str());
                 ResumeThread(pi.hThread);
             } else {
-                LogInfo(
-                    "[Launcher] APC injection failed, falling back to "
-                    "CreateRemoteThread...");
-                ResumeThread(pi.hThread);
+                const std::string baseDir = std::string(buffer).substr(0, lastSeparator);
+                hookDllPath = isWow64 ? (baseDir + "\\capture_hook_x86.dll") : (baseDir + "\\capture_hook_x64.dll");
 
-                // Fallback to traditional injection
-                Sleep(100);  // Give process a moment to initialize
-                if (injector->Inject(pi.dwProcessId, launchCommand.fileName)) {
-                    LogInfo("[Launcher] Fallback injection successful.");
+                // Try early APC injection first (runs before import resolution)
+                bool injected = injector->InjectEarly(pi.dwProcessId, hookDllPath, pi.hThread);
+
+                if (injected) {
+                    LogInfo("[Launcher] Early APC injection successful. Resuming thread.");
+                    ResumeThread(pi.hThread);
                 } else {
-                    LogError(
-                        "[Launcher] Fallback injection FAILED. Game running without "
-                        "hooks.");
+                    LogInfo(
+                        "[Launcher] APC injection failed, falling back to "
+                        "CreateRemoteThread...");
+                    ResumeThread(pi.hThread);
+
+                    // Fallback to traditional injection
+                    Sleep(100);  // Give process a moment to initialize
+                    if (injector->Inject(pi.dwProcessId, launchCommand.fileName)) {
+                        LogInfo("[Launcher] Fallback injection successful.");
+                    } else {
+                        LogError(
+                            "[Launcher] Fallback injection FAILED. Game running without "
+                            "hooks.");
+                    }
                 }
             }
 

@@ -271,11 +271,22 @@ int InjectProcessMain(const AppConfig& config) {
         return 1;
     }
 
-    // Deduce config path (same logic as main.cpp)
+    // Deduce config path (same logic as main.cpp). Fail closed rather than
+    // guessing from a truncated module path: a wrong config.ini silently changes
+    // hook behavior, so an unresolvable directory aborts this child instead.
     char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    const DWORD modulePathChars = GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    const size_t lastSeparator = (modulePathChars > 0 && modulePathChars < MAX_PATH)
+                                     ? std::string(buffer).find_last_of("\\/")
+                                     : std::string::npos;
+    if (modulePathChars == 0 || modulePathChars >= MAX_PATH || lastSeparator == std::string::npos) {
+        LogError(
+            "[Inject] Cannot resolve the executable directory reliably (chars=%lu); refusing ambiguous config path",
+            static_cast<unsigned long>(modulePathChars));
+        return 1;
+    }
     std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
+    std::string baseDir = exePath.substr(0, lastSeparator);
     std::string configPath = baseDir + "\\config.ini";
 
     HMODULE hHookDll = NULL;

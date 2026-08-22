@@ -22,6 +22,14 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
     std::string dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
 
+    // SECURITY: Contain the DLL to the application directory and reject broadly
+    // writable install locations before any remote load. Production builds fail
+    // closed; development builds log and continue so local trees stay usable.
+    if (!ValidateDllSecurity(dllPath)) {
+        LogError("[SECURITY] DLL security validation failed for %s - refusing to inject", dllPath.c_str());
+        return false;
+    }
+
     // SECURITY: Verify DLL integrity before injection
     // This prevents injection of tampered DLLs and protects against DLL hijacking
     //
@@ -295,6 +303,32 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
 
     BOOL isWow64Target = FALSE;
     IsWow64Process(hProcess, &isWow64Target);
+
+    // SECURITY: Mirror Inject()'s integrity gates. Early APC injection runs
+    // before import resolution and previously skipped every check, so a swapped
+    // hook DLL would execute inside the game without even a warning log.
+    // Production builds fail closed; development builds log advisories and
+    // honor SKIP_DLL_VERIFICATION=1 like Inject().
+    if (!ValidateDllSecurity(dllPath)) {
+        LogError("[SECURITY] DLL security validation failed for %s - refusing early APC injection", dllPath.c_str());
+        CloseHandle(hProcess);
+        return false;
+    }
+#ifdef CE_PRODUCTION_BUILD
+    if (!VerifyDLLSignature(dllPath, true)) {
+        LogError("[SECURITY] DLL signature verification failed for %s - refusing early APC injection",
+                 dllPath.c_str());
+        CloseHandle(hProcess);
+        return false;
+    }
+#else
+    const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
+    if (skipVerification && strcmp(skipVerification, "1") == 0) {
+        LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
+    } else if (!VerifyDLLSignature(dllPath, false)) {
+        LogWarn("[SECURITY] Early APC target DLL is not Authenticode-signed: %s", dllPath.c_str());
+    }
+#endif
 
     LPVOID pLoadLibraryA = nullptr;
     if (isWow64Target) {

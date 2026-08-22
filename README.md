@@ -86,6 +86,10 @@ gh attestation verify .\captureengine.7z --repo aufkrawall/capture-engine
 
 CaptureEngine binaries are not currently Authenticode-signed, so Windows may show a SmartScreen warning. An
 attestation verifies the downloaded bytes and their GitHub Actions provenance; it does not make unsigned code safe.
+Consistent with that, the runtime re-verification performed before injecting a hook DLL is advisory in current
+releases: only `--production` builds (`CE_PRODUCTION_BUILD=1`) enforce a valid Authenticode signature, and stable
+release binaries are currently built without it. Until Authenticode signing ships, injection-time trust derives
+from the attestations above plus reproducible local builds, not from the runtime signature check.
 Security vulnerabilities should be reported privately through the [security policy](SECURITY.md), not in a public
 issue.
 
