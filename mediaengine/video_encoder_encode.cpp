@@ -188,11 +188,11 @@ bool VideoEncoder::HandleResolutionChange(int newWidth, int newHeight) {
 
 bool VideoEncoder::OpenOutputAndWriteHeader() {
     if (!fileOpened) {
-        DLL_Log("[VideoEncoder] Opening Output File: %s", outputFilename.c_str());
+        DLL_Log("[VideoEncoder] Opening Output File: %s", ce::privacy::CollapsePathForLog(outputFilename).c_str());
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
             if (!outputReservation.ReleaseToWriter()) {
                 DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before mux open: %s",
-                        outputFilename.c_str());
+                        ce::privacy::CollapsePathForLog(outputFilename).c_str());
                 return false;
             }
             // Use 256KB buffer for better performance on slow storage (HDD/network)

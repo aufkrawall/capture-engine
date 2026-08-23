@@ -74,11 +74,11 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         return false;
 
     if (!fileOpened) {
-        DLL_Log("[VideoEncoder] Opening Output File: %s", outputFilename.c_str());
+        DLL_Log("[VideoEncoder] Opening Output File: %s", ce::privacy::CollapsePathForLog(outputFilename).c_str());
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
             if (!outputReservation.ReleaseToWriter()) {
                 DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before WGC mux open: %s",
-                        outputFilename.c_str());
+                        ce::privacy::CollapsePathForLog(outputFilename).c_str());
                 return false;
             }
             int ret = avio_open(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE);

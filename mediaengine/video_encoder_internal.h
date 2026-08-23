@@ -18,6 +18,8 @@ struct FrameStats;
 
 #include "../common/frame_timing_utils.h"
 
+#include "../common/log_privacy.h"
+
 #include "../common/path_utils.h"
 
 #include "../common/raii_helpers.h"

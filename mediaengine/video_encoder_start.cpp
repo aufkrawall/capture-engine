@@ -353,7 +353,8 @@ bool VideoEncoder::Start() {
             return false;
         }
         outputFilename = outputReservation.Utf8Path();
-        DLL_Log("[VideoEncoder] Reserved staging output for recording: %s", outputFilename.c_str());
+        DLL_Log("[VideoEncoder] Reserved staging output for recording: %s",
+                ce::privacy::CollapsePathForLog(outputFilename).c_str());
     }
 
     BeginDeferredRecording();

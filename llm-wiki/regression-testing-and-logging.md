@@ -412,6 +412,16 @@ For a multi-recording session, select the immutable recording ID or exact media 
   game thread happened to log (DOOM Eternal `20260819_034454` — the present thread, wedged in `NtWriteFile` inside
   `FpsLimiter::Apply`, with every other layer thread stacked behind it on the CRT stream lock).
   `VulkanSwapchainImagePolicySourceTest.LayerNeverWritesToTheHostStandardStreams` enforces this for the layer.
+- **Log privacy is enforced centrally; do not bypass it.** Every funnel scrubs lines before they reach disk or the
+  SHM ring: `ce::privacy::RedactUserAccountComponents` masks `\Users\<account>` path components (length-preserving
+  `*` fill — redaction must never grow a formatted line, because funnels format into fixed-capacity buffers) inside
+  `common/logging.cpp` (`Log`), `hook/common/hook_common.cpp` (`LogToFileAtomic`, covering hook_debug/nvngx logs and
+  the logger-service SHM consumer), and the Vulkan layer's `EarlyLog`/`LayerLog`/incompatible-discovery report.
+  User-configured output paths additionally collapse to root + leaf via `ce::privacy::CollapsePathForLog` at the
+  video-encoder/audio-only/screenshot/reserved-output call sites, so a shared log shows `H:\...\capture_*.mkv`,
+  never private folder names. Hardware model, game process names, PIDs, and timestamps stay logged deliberately:
+  high diagnostic value, not directly identifying. Regression coverage: `tests/test_log_privacy.cpp`.
+  Last verified 2026-08-23.
 - Prefer logs that make transition and ownership changes reconstructible later.
 - Keep logs specific enough to compare traces across regressions.
 - Rate-limit logs in per-frame paths so diagnosis stays useful instead of turning into noise.

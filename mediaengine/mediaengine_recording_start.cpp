@@ -25,7 +25,8 @@ bool MediaEngine::StartRecording() {
                 return false;
             }
             if (avio_open(&audioOnlyFmtCtx->pb, audioOnlyFilename.c_str(), AVIO_FLAG_WRITE) < 0) {
-                DLL_Log("MediaEngine: Failed to open audio-only output file: %s", audioOnlyFilename.c_str());
+                DLL_Log("MediaEngine: Failed to open audio-only output file: %s",
+                        ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
                 return false;
             }
             if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(audioOnlyFmtCtx)) {
@@ -47,7 +48,8 @@ bool MediaEngine::StartRecording() {
                 audioOnlyOutputReservation.CleanupOwnedFile();
                 return false;
             }
-            DLL_Log("MediaEngine: Audio-only recording writing to %s", audioOnlyFilename.c_str());
+            DLL_Log("MediaEngine: Audio-only recording writing to %s",
+                    ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
 
             // Set stream indices from muxer - only on OWNER encoders (unique)
             {

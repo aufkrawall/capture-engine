@@ -125,7 +125,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 if (!audioOnlyTrailerSucceeded) {
                     DLL_Log("[StopAudio] ERROR: Audio-only trailer write failed");
                 }
-                DLL_Log("[StopAudio] Audio-only recording finalized: %s", audioOnlyFilename.c_str());
+                DLL_Log("[StopAudio] Audio-only recording finalized: %s",
+                        ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
                 audioOutputPublished = CleanupAudioOnlyMuxer();
             }
             firstVideoFrameMs = 0;

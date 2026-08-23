@@ -32,6 +32,8 @@
 
 #include "../common/logging.h"
 
+#include "../common/log_privacy.h"
+
 #include "../common/monitor_selection.h"
 
 #include "../common/process_ipc.h"
@@ -348,7 +350,7 @@ inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& co
 
     manifest << "build_version=" << GetCaptureVersion() << "\n";
     manifest << "build_timestamp=" << GetBuildTimestamp() << "\n";
-    manifest << "session_dir=" << logsDir << "\n";
+    manifest << "session_dir=" << ce::privacy::RedactUserAccountComponents(logsDir) << "\n";
     manifest << "process_mode="
              << (mode == ProcessMode::Controller ? "Controller"
                  : mode == ProcessMode::Inject   ? "Inject"

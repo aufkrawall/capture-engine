@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mutex>
 #include <unordered_map>
+#include "../../common/log_privacy.h"
 #include "../../common/shared_defs.h"
 #include "fps_limiter.h"
 #include "hook_context.h"
@@ -217,6 +218,11 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     int len_buf = vsnprintf(formatBuffer, sizeof(formatBuffer), fmt, args);
     if (len_buf < 0)
         len_buf = 0;
+    // Log privacy: strip user-profile account names before the line reaches
+    // either the SHM ring (consumed by the logger service) or direct file I/O.
+    len_buf = static_cast<int>(ce::privacy::RedactUserAccountComponents(
+        formatBuffer, static_cast<size_t>(len_buf) < sizeof(formatBuffer) ? static_cast<size_t>(len_buf)
+                                                                          : sizeof(formatBuffer) - 1));
 
     SYSTEMTIME st;
     GetLocalTime(&st);

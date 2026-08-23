@@ -8,6 +8,8 @@ class MediaEngine;
 
 #include "../common/logging.h"
 
+#include "../common/log_privacy.h"
+
 #include "../common/path_utils.h"
 
 #include "../common/reserved_capture_output.h"

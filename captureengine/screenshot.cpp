@@ -1,5 +1,6 @@
 #include "screenshot.h"
 
+#include "../common/log_privacy.h"
 #include "../common/logging.h"
 #include "../common/raii_helpers.h"
 #include "../common/reserved_capture_output.h"
@@ -534,7 +535,7 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
             outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "BT.709 SDR PNG" : "preserve source");
     if (TryHookScreenshot(outputDirectory, screenshot)) {
         if (SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
-            LogInfo("[Screenshot] Saved (hook): %s", WideToUtf8(publishedPath.wstring()).c_str());
+            LogInfo("[Screenshot] Saved (hook): %s", ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
             return true;
         }
         LogError("[Screenshot] Hook capture encoding failed; no partial output was published");
@@ -547,7 +548,7 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
             SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
             LogInfo("[Screenshot] Saved (WGC %s): %s",
                     outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "HDR->SDR" : "HDR",
-                    WideToUtf8(publishedPath.wstring()).c_str());
+                    ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
             return true;
         }
         LogError("[Screenshot] HDR WGC capture failed; refusing to publish a clipped SDR fallback");
@@ -559,6 +560,6 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
         LogError("[Screenshot] GDI capture failed; no partial output was published");
         return false;
     }
-    LogInfo("[Screenshot] Saved (GDI): %s", WideToUtf8(publishedPath.wstring()).c_str());
+    LogInfo("[Screenshot] Saved (GDI): %s", ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
     return true;
 }

@@ -53,7 +53,8 @@ void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
         audioOnlyOutputReservation =
             ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
         if (!audioOnlyOutputReservation) {
-            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s", outDir.string().c_str());
+            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s",
+                    ce::privacy::CollapsePathForLog(outDir.string()).c_str());
             audioOnlyFmtCtx = nullptr;
             return;
         }

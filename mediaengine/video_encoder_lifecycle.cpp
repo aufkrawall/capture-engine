@@ -156,7 +156,8 @@ void VideoEncoder::CleanupResources() {
     qsvSurfaceMappingFailures = 0;
     asyncWriteErrorCount = 0;
     if (outputReservation.CleanupOwnedFile()) {
-        DLL_Log("[VideoEncoder] Removed unpublished staging output during cleanup: %s", outputFilename.c_str());
+        DLL_Log("[VideoEncoder] Removed unpublished staging output during cleanup: %s",
+                ce::privacy::CollapsePathForLog(outputFilename).c_str());
     }
 }
 
@@ -366,8 +367,8 @@ void VideoEncoder::Stop() {
             }
             fileOpened = false;
             const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
-            DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
-                    (long long)finalDurationUs);
+            DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld",
+                    ce::privacy::CollapsePathForLog(outputFilename).c_str(), (long long)finalDurationUs);
             if (published && finalDurationUs > 0) {
                 RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,
                                 video_encoder_kPostMuxProbeTimeoutMs);
@@ -587,8 +588,8 @@ void VideoEncoder::AsyncWriteLoop() {
                 }
                 fileOpened = false;
                 const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
-                DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
-                        (long long)finalDurationUs);
+                DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld",
+                        ce::privacy::CollapsePathForLog(outputFilename).c_str(), (long long)finalDurationUs);
                 if (published && finalDurationUs > 0) {
                     writerFinalizePhase.store(kWriterPhasePostMuxProbe, std::memory_order_release);
                     RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,

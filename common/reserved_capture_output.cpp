@@ -1,5 +1,6 @@
 #include "reserved_capture_output.h"
 
+#include "log_privacy.h"
 #include "logging.h"
 #include "path_utils.h"
 
@@ -108,8 +109,8 @@ std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirec
         LogWarn(
             "[Output] Configured capture directory could not be created; using fallback '%ls' "
             "(configured='%s' error=%u). Recordings will be written below the fallback path.",
-            (executableDirectory / L"captures").wstring().c_str(), configuredDirectory.c_str(),
-            static_cast<unsigned>(error.value()));
+            (executableDirectory / L"captures").wstring().c_str(),
+            ce::privacy::CollapsePathForLog(configuredDirectory).c_str(), static_cast<unsigned>(error.value()));
     } else if (fallbackIndex == 4) {
         LogWarn("[Output] Further capture-directory fallback diagnostics are suppressed for this process");
     }

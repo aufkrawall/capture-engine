@@ -122,11 +122,13 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     if (filename.empty() || finalDurationUs <= 0) {
         return true;
     }
+    // Log privacy: probe diagnostics correlate by timestamped leaf name only.
+    const std::string logFilename = ce::privacy::CollapsePathForLog(filename);
 
     AVFormatContext* probeCtx = avformat_alloc_context();
     if (!probeCtx) {
         DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to allocate context for '%s'",
-                filename.c_str());
+                logFilename.c_str());
         return false;
     }
     if (control) {
@@ -137,7 +139,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to open '%s': %s", filename.c_str(), errbuf);
+        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to open '%s': %s", logFilename.c_str(), errbuf);
         avformat_close_input(&probeCtx);
         return false;
     }
@@ -146,7 +148,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed stream info for '%s': %s", filename.c_str(),
+        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed stream info for '%s': %s", logFilename.c_str(),
                 errbuf);
         avformat_close_input(&probeCtx);
         return false;
@@ -203,12 +205,12 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         av_packet_free(&pkt);
     }
     if (ShouldCancelPostMuxProbe(control)) {
-        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' packets=%d", filename.c_str(), packetsRead);
+        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' packets=%d", logFilename.c_str(), packetsRead);
         avformat_close_input(&probeCtx);
         return false;
     }
     if (packetsRead >= kPostMuxProbeMaxPackets) {
-        DLL_Log("[VideoEncoder] post_mux_probe_packet_limit file='%s' packets=%d", filename.c_str(), packetsRead);
+        DLL_Log("[VideoEncoder] post_mux_probe_packet_limit file='%s' packets=%d", logFilename.c_str(), packetsRead);
     }
 
     std::vector<uint32_t> terminalDiscardSamples(probeCtx->nb_streams, 0);
@@ -241,7 +243,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     }
     if (!tailScanComplete) {
         DLL_Log("[VideoEncoder] post_mux_probe_tail_incomplete file='%s' seekRet=%d packets=%d limit=%d",
-                filename.c_str(), ret, tailPacketsRead, kPostMuxProbeMaxTailPackets);
+                logFilename.c_str(), ret, tailPacketsRead, kPostMuxProbeMaxTailPackets);
     }
 
     for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
@@ -338,8 +340,9 @@ void RunPostMuxDurationProbeBounded(const std::string& filename, int64_t finalDu
     PostMuxProbeControl control;
     control.deadlineTickMs = GetTickCount64() + std::max<uint64_t>(1, timeoutMs);
     const uint64_t startMs = GetTickCount64();
-    DLL_Log("[VideoEncoder] post_mux_probe_start file='%s' target=%lld timeout=%llums", filename.c_str(),
-            (long long)finalDurationUs, (unsigned long long)timeoutMs);
+    DLL_Log("[VideoEncoder] post_mux_probe_start file='%s' target=%lld timeout=%llums",
+            ce::privacy::CollapsePathForLog(filename).c_str(), (long long)finalDurationUs,
+            (unsigned long long)timeoutMs);
     // Run on the already-owned writer/finalizer thread. Every potentially
     // blocking demux operation sees the deadline through interrupt_callback,
     // and packet inspection has a hard count bound. A nested worker cannot be
@@ -648,7 +651,8 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
     }
 
     outputFilename = outputReservation.Utf8Path();
-    DLL_Log("[VideoEncoder] output_published file='%s' durationUs=%lld videoPackets=%llu", outputFilename.c_str(),
+    DLL_Log("[VideoEncoder] output_published file='%s' durationUs=%lld videoPackets=%llu",
+            ce::privacy::CollapsePathForLog(outputFilename).c_str(),
             static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets));
     outputPublished.store(true, std::memory_order_release);
     return true;

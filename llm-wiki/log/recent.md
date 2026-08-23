@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-08-23 - Log privacy: account names and output paths no longer logged
+
+Users sharing diagnostic logs raised privacy concerns; auditing `installed/captureengine/logs/example` found the
+Windows account name in 43 lines across 6 files (VulkanReg manifest/baseDir paths, screenshot save path, inject
+`logsPath`/DLL-validation paths, logger session discovery, NVNGX/Streamline DLL paths, perf-CSV init,
+`session_manifest.txt` `session_dir=`) and the user-chosen recording folder (`H:\...\capture_*.mkv`) in the media
+log.
+
+Fix (all funnels covered; no call site can forget):
+
+- New header-only `common/log_privacy.h` (`ce::privacy`): `RedactUserAccountComponents` masks the account token of
+  `\users\<account>` prefixes with `*` (case-insensitive marker match, marker spelling preserved). Deliberately
+  **length-preserving**: an earlier compaction prototype corrupted adjacent bytes for accounts shorter than a
+  placeholder and could grow formatted lines past funnel buffer capacity — tests caught both. CollapsePathForLog
+  collapses user-configured output paths to root + leaf (`H:\...\capture.mkv`, UNC server/share collapsed too).
+- Wired centrally: `common/logging.cpp` `Log()` now formats into a stack buffer (heap fallback via `va_copy` for
+  oversized messages) and redacts before fwrite; `hook/common/hook_common.cpp` `LogToFileAtomic` redacts before the
+  SHM ring / direct-file fan-out (covers hook_debug.log, nvngx_debug.log, and the logger-service consumer); Vulkan
+  layer `EarlyLog`/`LayerLog`/`LayerReportIncompatibleDiscovery` redact their buffers; `session_manifest.txt`
+  redacts `session_dir=`.
+- Targeted leaf-collapse at every log site printing capture/screenshot output paths (video encoder staging/open/
+  publish/mux-close/probe/cleanup, audio-only muxer start/stop, screenshot Saved lines, reserved-capture-output
+  fallback warning `configured=`).
+- Kept deliberately: CPU/GPU model + VRAM + DPI (high diagnostic value), game process/profile names (per-game
+  diagnosis; it is CE's own config), PIDs/LUIDs/handles, timestamps. Crash dumps still contain paths by nature —
+  unchanged scope.
+- Coverage: new `tests/test_log_privacy.cpp` (13 units: masking, case-insensitivity, length preservation,
+  bounded-input safety, collapse roots incl. `\\?\`/UNC/relative/URL-ish). clang-tidy baseline scope refreshed to
+  643 TUs (0 warnings). Gates: incremental product build, full unit suite + Python self-tests, lint — all green.
+
 ### 2026-08-22 - Injection DLL integrity gates wired up (audit follow-ups)
 
 A full security audit found that the injection subsystem's designed DLL-integrity protections were inactive:

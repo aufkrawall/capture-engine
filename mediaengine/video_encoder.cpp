@@ -135,10 +135,11 @@ ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoCo
     const std::wstring ext(config.container.begin(), config.container.end());
     auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", ext);
     if (reservation) {
-        DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s", reservation.Utf8Path().c_str());
+        DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s",
+                ce::privacy::CollapsePathForLog(reservation.Utf8Path()).c_str());
     } else {
         DLL_Log("[VideoEncoder] ERROR: Could not reserve a collision-safe staging output in: %s",
-                outDir.string().c_str());
+                ce::privacy::CollapsePathForLog(outDir.string()).c_str());
     }
     return reservation;
 }

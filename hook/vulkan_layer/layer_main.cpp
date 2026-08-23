@@ -9,6 +9,8 @@
 #include <cstring>
 #include <filesystem>
 
+#include "../../common/log_privacy.h"
+
 // Get the directory where this DLL is located
 static std::string GetLayerDllDirectory() {
     char dllPath[MAX_PATH];
@@ -118,8 +120,11 @@ static void EarlyLog(const char* fmt, ...) {
     va_start(args, fmt);
     SYSTEMTIME st;
     GetLocalTime(&st);
+    char line[2048];
+    vsnprintf(line, sizeof(line), fmt, args);
+    ce::privacy::RedactUserAccountComponents(line);
     fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    vfprintf(earlyLog, fmt, args);
+    fputs(line, earlyLog);
     fprintf(earlyLog, "\n");
     fflush(earlyLog);
     fclose(earlyLog);
@@ -154,13 +159,16 @@ void LayerReportIncompatibleDiscovery(const DiscoveryInfo* discovery) {
     GetLocalTime(&st);
     char processPath[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, processPath, sizeof(processPath));
-    fprintf(file,
-            "[%04d-%02d-%02d %02d:%02d:%02d.%03d] Resident CE Vulkan layer build %u (layout 0x%08X) cannot attach to "
-            "CaptureEngine build %u (layout 0x%08X) in '%s'. This title was started against a different CaptureEngine "
-            "layout; restart it to load the current layer.\n",
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-            static_cast<unsigned>(GetCurrentBuildNumber()), SHARED_MEMORY_ABI_SIGNATURE,
-            static_cast<unsigned>(discovery->GetBuildNumber()), discovery->GetAbiSignature(), processPath);
+    char line[1024];
+    snprintf(line, sizeof(line),
+             "[%04d-%02d-%02d %02d:%02d:%02d.%03d] Resident CE Vulkan layer build %u (layout 0x%08X) cannot attach to "
+             "CaptureEngine build %u (layout 0x%08X) in '%s'. This title was started against a different CaptureEngine "
+             "layout; restart it to load the current layer.\n",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+             static_cast<unsigned>(GetCurrentBuildNumber()), SHARED_MEMORY_ABI_SIGNATURE,
+             static_cast<unsigned>(discovery->GetBuildNumber()), discovery->GetAbiSignature(), processPath);
+    ce::privacy::RedactUserAccountComponents(line);
+    fputs(line, file);
     fclose(file);
 }
 
@@ -236,6 +244,8 @@ void LayerLog(const char* fmt, ...) {
     char buf[2048];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    // Log privacy: strip user-profile account names before fan-out.
+    ce::privacy::RedactUserAccountComponents(buf);
 
     // Initialize log file on first call
     InitLayerLogFile();

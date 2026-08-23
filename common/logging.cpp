@@ -4,8 +4,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include "config.h"
+#include "log_privacy.h"
 
 static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
@@ -61,6 +63,30 @@ void Log(LogLevel level, const char* format, ...) {
     va_list args;
     va_start(args, format);
 
+    // Format into a buffer first so every line passes through log privacy
+    // redaction before it reaches the file. Oversized messages fall back to a
+    // heap buffer instead of being truncated.
+    char stackBuffer[4096];
+    std::unique_ptr<char[]> heapBuffer;
+    va_list retryArgs;
+    va_copy(retryArgs, args);
+    int formatted = vsnprintf(stackBuffer, sizeof(stackBuffer), format, args);
+    if (formatted < 0) {
+        va_end(args);
+        va_end(retryArgs);
+        return;
+    }
+    char* message = stackBuffer;
+    if (static_cast<size_t>(formatted) >= sizeof(stackBuffer)) {
+        heapBuffer.reset(new char[static_cast<size_t>(formatted) + 1]);
+        vsnprintf(heapBuffer.get(), static_cast<size_t>(formatted) + 1, format, retryArgs);
+        message = heapBuffer.get();
+    }
+    const size_t messageLen =
+        ce::privacy::RedactUserAccountComponents(message, static_cast<size_t>(formatted));
+    va_end(args);
+    va_end(retryArgs);
+
     char timeBuf[64];
     SYSTEMTIME localTime = {};
     GetLocalTime(&localTime);
@@ -78,13 +104,11 @@ void Log(LogLevel level, const char* format, ...) {
         levelStr = "[WARN]";
 
     fprintf(g_LogFile, "[%s] %s ", timeBuf, levelStr);
-    vfprintf(g_LogFile, format, args);
+    fwrite(message, 1, messageLen, g_LogFile);
     fprintf(g_LogFile, "\n");
     // Flush after every write so log is accurate at crash time.
     // On Windows _IOLBF behaves as full buffering so explicit fflush is needed.
     fflush(g_LogFile);
-
-    va_end(args);
 }
 
 void LogInfo(const char* format, ...) {
