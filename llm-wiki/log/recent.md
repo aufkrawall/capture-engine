@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-23 - Manual pre-release from local packages (v0.1.6258)
+
+Published a GitHub **pre-release** from the already-built local `build/packages` archives instead of dispatching
+`release-stable` (first use of this path; stable releases keep using the action). Procedure and gotchas:
+
+- Identify provenance via `build/verification/<ts>_build_<n>/verification_manifest.json` (`package_archives: passed`),
+  not the top-level `latest_*` pointers, which may reference a later run.
+- Run-dir `verification_summary.txt` / `verification_manifest.json` written by builds predating the manifest-redaction
+  code contain raw `C:\Users\<account>` paths — never upload them as-is. Stage copies, scrub both spellings (plain and
+  JSON-escaped `\\`), rename to `latest_summary.txt` / `latest_manifest.json`, assert zero residual hits.
+- Pre-push secret/name audit of unpushed commits caught fixture data in `tests/test_log_privacy.cpp` plus wiki/comment
+  mentions of a private recording folder; rewrote the unpushed commits via fixup + autosquash before pushing (pushed
+  history must stay free of account names per project constraints).
+- `gh release create <tag> --prerelease --target <sha>` requires the FULL commit SHA; short SHAs fail with HTTP 422
+  `Release.target_commitish is invalid` even when the commit exists remotely. Archives came from `build/packages`
+  byte-identical; tag version must equal the binaries' embedded build identity (0.1.6258). Tag target: the rewritten
+  HEAD whose tree matches what the build compiled (redaction code was in the working tree at build time).
+
 ### 2026-08-23 - Log privacy: account names and output paths no longer logged
 
 Users sharing diagnostic logs raised privacy concerns; auditing `installed/captureengine/logs/example` found the
