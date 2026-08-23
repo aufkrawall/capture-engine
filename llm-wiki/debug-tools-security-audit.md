@@ -284,6 +284,31 @@ WARNING: Potentially outdated or vulnerable bundled library detected: <library/v
 
 Crash dumps can contain highly sensitive data. Treat them as confidential audit artifacts.
 
+CE-specific content map (last verified 2026-08-23 against `common/crash_dump_policy.h`; all dump writers funnel through these flag sets):
+
+| Writer site | Flag sequence |
+| --- | --- |
+| In-process crash (`common/crash_dump_writer.cpp`) | minimal (`MiniDumpNormal`) -> compat (`WithDataSegs + WithIndirectlyReferencedMemory`) -> rich (`+ WithHandleData WithThreadInfo WithUnloadedModules WithProcessThreadData WithFullMemoryInfo ScanMemory IgnoreInaccessible`) |
+| External helper (`captureengine/dump_helper.cpp`) | rich |
+| Freeze watchdog in-game (`hook/common/freeze_watchdog_dump.cpp`) | rich-freeze -> compat-freeze -> minimal |
+| Hook fatal dumps (`hook/main_fatal_dump.cpp`) | minimal |
+| UE5 ensure() quick assert (`common/crash_dump_writer.cpp`) | quick-assert |
+
+What identifying data each stream carries, and why it must stay:
+
+- **Module list (every type):** full on-disk paths of all loaded modules - the CE install dir (often under `\Users\<account>\`), the game exe, third-party overlay DLLs. This is the index symbolization depends on; stripping or renaming paths makes stacks unresolvable, so it is never redacted.
+- **Raw stack memory (already in `MiniDumpNormal`, all threads):** unpredictable live fragments - file paths mid-call (e.g., the configured capture output dir), window titles, buffer contents. This IS the crash evidence.
+- **Data segs + indirectly referenced memory (compat/rich):** CE globals hold config strings - output dir, logs path, whitelist process names.
+- **Handle names (rich only):** open recording/capture file paths, registry keys, `Local\CE_*` event/mutex names.
+
+Deliberate policy: **no in-dump redaction.** Post-hoc rewriting of minidump memory/name streams risks corrupting the file for cdb/windbg and always destroys evidence value; the privacy boundary is containment, not content scrubbing:
+
+- Dumps are written into the per-session logs directory (or a `[Crash]`-configured subdirectory of it), which package/release asset rules exclude entirely (`CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES` includes `logs`).
+- The `symbols\` archive written next to dumps (installed PDBs/exes/DLLs) is equally private.
+- AGENTS.md classifies dumps as sensitive: never commit, upload, or attach without explicit approval; analyze locally with both `srv*` and the local PDB dir.
+
+Generic background (any Windows minidump):
+
 Dumps may contain:
 
 - tokens
