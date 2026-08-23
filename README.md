@@ -287,8 +287,12 @@ Native D3D9Ex applications already get the fast GPU-only path without DXVK.
   selected window is not focused and fullscreen-like, output video is opaque black, including cursor and overlays.
   The check uses passive window-state APIs only; it never inspects or injects into the captured application, and
   Windows focus/bounds detection is not 100% reliable, so this is not a guaranteed redaction boundary.
-- **Logs and dumps:** session logs, manifests, and crash dumps can contain process names, paths, window titles,
-  memory, or other private data. Review them before sharing; see
+- **Logs and dumps:** all logging funnels pass through a shared privacy filter before anything reaches disk or the
+  shared-memory ring (builds v0.1.6258 and newer; older logs are unfiltered): Windows account components inside
+  `\Users\<account>` prefixes are masked, and user-configured recording/screenshot output paths are collapsed to root
+  and file name only. This is deliberate best-effort pattern matching over known path shapes, not a verified no-leak
+  guarantee; crash dumps intentionally retain full paths and memory, and unrecognized private data can still appear.
+  Review logs and manifests before sharing; see
   [Debug logging and crash dumps](#debug-logging-and-crash-dumps).
 
 ## Video, screenshots, and audio recording
@@ -521,8 +525,19 @@ therefore remains symbolizable after a newer build has replaced the installed bi
 can resolve both those archived local symbols and Microsoft system symbols. DX12 device-removal diagnosis can
 additionally use opt-in DRED breadcrumbs/page-fault data and the built-in command-queue/overlay timing diagnostics.
 
-Logs and dumps may contain process names, paths, window titles, memory, or other private data. Review them before
-sharing.
+Log privacy is enforced centrally: every funnel that writes a log line — controller logging, the hook's atomic file
+and shared-ring fan-out, the Vulkan layer's early/layer/incompatible-discovery reports, and the session manifest —
+passes through a shared filter first. This filtering is active in builds starting with v0.1.6258; logs produced by
+older builds are unfiltered. It masks Windows account components inside `\Users\<account>` path prefixes
+(length-preserving, so fixed-capacity log buffers can never overflow) and collapses user-configured recording and
+screenshot output paths to their root prefix plus file name, so a shared log shows `H:\...\capture_*.mkv` rather
+than private folder layouts. Hardware model, GPU driver details, game process names, PIDs, and timestamps remain in
+the logs deliberately: they carry high diagnostic value without being directly identifying.
+
+This filtering is best-effort pattern matching over known path shapes, not a guarantee. Crash dumps intentionally
+retain full module paths and raw memory for symbolization and evidence value, and private data that does not follow a
+recognized path shape can still reach a log line. Never treat a session directory as automatically safe to publish —
+review its contents before sharing.
 
 ## Configuration
 
