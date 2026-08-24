@@ -12,8 +12,8 @@
 // Two orthogonal transforms:
 //
 //   RedactUserAccountComponents - masks the account component of Windows
-//     user-profile paths ("C:\Users\<account>\..." becomes
-//     "C:\Users\******\..."). Length-preserving by design: log funnels format
+//     user-profile paths (for example, the `TestUser` component in
+//     "C:\Users\TestUser\..."). Length-preserving by design: log funnels format
 //     into fixed-capacity buffers, so redaction must never grow a message,
 //     and in-place masking needs no shifting (it cannot corrupt adjacent
 //     bytes). Applied centrally by the logging funnels so no call site can

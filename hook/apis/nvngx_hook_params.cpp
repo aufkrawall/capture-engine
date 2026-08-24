@@ -623,6 +623,20 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetCaps_VULKAN(NVSDK_NGX_Parameter** p
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(
     PFN_NVSDK_NGX_GetFeatureRequirements original, void* InAdapter,
     const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
+    thread_local bool s_insideFeatureRequirements = false;
+    ce::ngx::ScopedReentryGate reentryGate(s_insideFeatureRequirements);
+    if (!reentryGate.Entered()) {
+        static std::atomic<uint32_t> s_reentryCount{0};
+        const uint32_t occurrence = s_reentryCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (occurrence <= 8 || (occurrence % 100) == 0) {
+            HookLogImportant(
+                "NVNGX: Blocked recursive GetFeatureRequirements interceptor chain "
+                "(original=%p discovery=%p occurrence=%u); returning FeatureNotSupported instead of exhausting "
+                "the game thread stack",
+                reinterpret_cast<void*>(original), reinterpret_cast<const void*>(InDiscoveryInfo), occurrence);
+        }
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    }
     const NVSDK_NGX_Result res =
         original ? original(InAdapter, InDiscoveryInfo, OutSupported) : (NVSDK_NGX_Result)0xBAD00000;
     if (HookIsShuttingDown())

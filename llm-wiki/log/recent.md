@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-08-24 - RoboCop NGX override crash: CE trusted a foreign GetProcAddress wrapper
+
+The build 0.1.6258 user dump is a deterministic `0xC00000FD` recursion, not an NVIDIA implementation fault.
+`_nvngx.dll` was the queried driver module, but the pre-existing `GetProcAddress` chain returned
+`NVSDK_NGX_D3D12_GetFeatureRequirements` from game-local `version.dll` 4.5.2.2. CE then inline-hooked that foreign
+wrapper as if it were the core export. The dump contains 6,011 returns through
+`Hooked_GetFeatureRequirements_D3D12`, exactly `0x7d0` stack bytes apart, across nearly the complete 12 MiB thread
+stack. `KERNELBASE!WideCharToMultiByte` was only where the exhausted stack finally faulted; the repeating chain is
+`version.dll` / Streamline / CE. The NVIDIA core and plugin frames do not own the faulting recursion.
+
+Generic coexistence fix: NGX inline installation now resolves the core image's PE export table directly instead of
+calling an interceptable `GetProcAddress`; filtered dynamic hooks preserve results owned by a different module or an
+unmapped thunk and emit a rate-limited ownership diagnostic; the requirements wrapper has a thread-local re-entry
+fuse so any future malformed interceptor chain fails the one capability query instead of crashing the game. Focused
+coverage exercises direct resolution, foreign-owner policy, and nested-gate ownership. The exact third-party proxy
+binary was unavailable after the submitted session, so same-title runtime confirmation remains manual.
+
 ### 2026-08-24 - RR capability verdict is runtime-stack-dependent: full override flips Available 0->1
 
 User report (submitted diagnostic logs, kept out of the wiki by name): `force_ray_reconstruction=on` did nothing in
@@ -30,7 +47,7 @@ Published a GitHub **pre-release** from the already-built local `build/packages`
 - Identify provenance via `build/verification/<ts>_build_<n>/verification_manifest.json` (`package_archives: passed`),
   not the top-level `latest_*` pointers, which may reference a later run.
 - Run-dir `verification_summary.txt` / `verification_manifest.json` written by builds predating the manifest-redaction
-  code contain raw `C:\Users\<account>` paths — never upload them as-is. Stage copies, scrub both spellings (plain and
+  code contain raw `C:\Users\<user>` paths — never upload them as-is. Stage copies, scrub both spellings (plain and
   JSON-escaped `\\`), rename to `latest_summary.txt` / `latest_manifest.json`, assert zero residual hits.
 - Pre-push secret/name audit of unpushed commits caught fixture data in `tests/test_log_privacy.cpp` plus wiki/comment
   mentions of a private recording folder; rewrote the unpushed commits via fixup + autosquash before pushing (pushed

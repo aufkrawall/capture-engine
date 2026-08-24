@@ -91,6 +91,15 @@ inline bool ShouldApplyDynamicHookForModule(DynamicHookModuleFilter moduleFilter
     return !moduleFilter || moduleFilter(moduleBaseName, module);
 }
 
+// A filtered hook promises that one particular module owns the export. If an
+// earlier interceptor returns code from another image (or an allocated thunk),
+// replacing that foreign result with CE's process-wide wrapper can make both
+// interceptors save each other as "original" and recurse forever.
+inline bool ShouldPreserveFilteredForeignResolvedTarget(bool hasModuleFilter, bool resolvedOwnerKnown,
+                                                         bool resolvedOwnerMatchesQueriedModule) {
+    return hasModuleFilter && (!resolvedOwnerKnown || !resolvedOwnerMatchesQueriedModule);
+}
+
 inline bool IsFFXApiDynamicHookName(const char* functionName) {
     if (!functionName) {
         return false;

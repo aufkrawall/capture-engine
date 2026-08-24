@@ -1,4 +1,5 @@
 #include "nvngx_hook_internal.h"
+#include "../common/module_export_resolver.h"
 
 static PFN_NVSDK_NGX_CreateFeature oCreateFeature_VULKAN = nullptr;
 static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
@@ -494,7 +495,12 @@ static void InstallNGXExportInlineHooks() {
     int failed = 0;
     std::vector<std::pair<void*, void*>> hookedTargets;
     for (const ExportHook& entry : exports) {
-        void* target = (void*)GetProcAddress(hNGX, entry.name);
+        // A game-local proxy can intercept GetProcAddress and return one of its
+        // own wrappers for an NGX query. Patching that address as though it were
+        // the core export corrupts the proxy's saved-original chain. Read the
+        // loaded core image's EAT directly; any established inline entry patch
+        // remains visible and InlineHook will preserve it normally.
+        void* target = ce::module_export::ResolveAddressDirect(hNGX, entry.name);
         if (!target) {
             ++missing;
             continue;
@@ -523,8 +529,9 @@ static void InstallNGXExportInlineHooks() {
     if (hooked > 0)
         s_HookedModule = hNGX;
 
-    HookLogImportant("NVNGX: inline-hooked %d export(s) in %s at %p (aliases=%d absent=%d failed=%d); preset/parameter overrides "
-                     "now apply regardless of how the caller resolved them",
+    HookLogImportant("NVNGX: directly resolved and inline-hooked %d export(s) in %s at %p "
+                     "(aliases=%d absent=%d failed=%d); preset/parameter overrides now apply without trusting a "
+                     "foreign GetProcAddress chain",
                      hooked, moduleName, (void*)hNGX, aliased, missing, failed);
 }
 

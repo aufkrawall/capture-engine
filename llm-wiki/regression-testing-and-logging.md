@@ -261,6 +261,12 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Percentile FPS helpers are hot-path overlay code and should avoid per-frame heap allocation/full sort work. If this area changes, keep `PerformanceMetricsTest.LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency` or an equivalent regression around worst-frame percentile behavior.
 - `hook/wrappers/iat_hook.cpp`
   - Logs Streamline proxy DXGI factory export pass-through. A healthy DLSS-G switch-app run includes `GetProcAddress: Leaving Streamline proxy export CreateDXGIFactory1 from sl.interposer.dll unmodified`, while Streamline feature APIs remain hookable through their dedicated feature paths.
+  - A module-filtered dynamic hook must preserve a resolved pointer owned by another image (or by no discoverable
+    image). `GetProcAddress: Preserving foreign-resolved ... the filtered CE hook is not returned` proves this safety
+    boundary fired. Replacing it with CE's wrapper can make two interceptors save one another as their originals and
+    recurse. `IATHookDynamicFilterTest.FilteredHookPreservesForeignResolvedTargets`,
+    `IATHookExportResolverTest.DirectResolutionBypassesGetProcAddressWithoutChangingTheOwner`, and
+    `NgxModulePolicy.ReentryGateOwnsOnlyTheOutermostCall` are the focused regression floor.
 - `hook/wrappers/inline_hook.cpp`
   - Bypass/deep-hook diagnostics should prove external patch resume safety. `Extended resume offset past patched fill bytes` means CE skipped over a third-party `E9 ... CC ...` patch span and resumed only at a verified disk-matching instruction boundary.
 - `hook/common/freeze_watchdog.cpp`

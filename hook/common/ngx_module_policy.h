@@ -82,6 +82,28 @@ inline bool ShouldInterceptNgxExportLookup(const char* queriedModuleNameOrPath) 
     return IsNgxCoreModulePath(queriedModuleNameOrPath);
 }
 
+class ScopedReentryGate {
+  public:
+    explicit ScopedReentryGate(bool& active) : active_(active), entered_(!active) {
+        if (entered_)
+            active_ = true;
+    }
+
+    ScopedReentryGate(const ScopedReentryGate&) = delete;
+    ScopedReentryGate& operator=(const ScopedReentryGate&) = delete;
+
+    ~ScopedReentryGate() {
+        if (entered_)
+            active_ = false;
+    }
+
+    bool Entered() const { return entered_; }
+
+  private:
+    bool& active_;
+    bool entered_;
+};
+
 // Streamline plugins reach NGX through sl.common.dll; they export no NGX entry
 // points of their own and must never terminate the search for the provider.
 inline bool IsStreamlineNgxClientPath(const char* moduleNameOrPath) {

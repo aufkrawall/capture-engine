@@ -623,6 +623,30 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
             return proc;
         }
 
+        HMODULE resolvedOwner = nullptr;
+        const bool resolvedOwnerKnown =
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(proc), &resolvedOwner) &&
+            resolvedOwner;
+        if (ShouldPreserveFilteredForeignResolvedTarget(it->second.moduleFilter != nullptr, resolvedOwnerKnown,
+                                                        resolvedOwner == hModule)) {
+            static std::atomic<uint32_t> s_foreignResolvedTargetCount{0};
+            const uint32_t occurrence =
+                s_foreignResolvedTargetCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (occurrence <= 16 || (occurrence % 256) == 0) {
+                char ownerPath[MAX_PATH] = {};
+                if (resolvedOwnerKnown)
+                    GetModuleFileNameA(resolvedOwner, ownerPath, sizeof(ownerPath));
+                HookLogImportant(
+                    "GetProcAddress: Preserving foreign-resolved %s from %s (resolved=%p owner=%s occurrence=%u); "
+                    "the filtered CE hook is not returned because two interceptors must not save each other as "
+                    "original",
+                    lpProcName, moduleName[0] ? moduleName : "unknown", proc,
+                    ownerPath[0] ? ownerPath : "unmapped-code", occurrence);
+            }
+            return proc;
+        }
+
         // We found a hook!
         // Store the original address if requested
         if (it->second.outOriginal && *it->second.outOriginal == nullptr) {

@@ -332,6 +332,17 @@ Primary sources:
   `NVSDK_NGX_D3D12_GetFeatureRequirements`). It also hid the snippet's real entry point behind that shared pointer.
   The system-module caller bypass masks this for a driver-store `nvngx.dll`; a title shipping its own `_nvngx.dll`
   hits it immediately.
+- Invariant: neither NGX inline-hook installation nor a filtered dynamic lookup may trust a returned address merely
+  because the query named the core module. A pre-existing proxy can intercept `GetProcAddress(_nvngx, name)` and
+  return its own wrapper from another image. Inline installation resolves the loaded core module's PE export table
+  directly; the generic dynamic route preserves an address whose owning image differs from the queried module (or
+  cannot be established). Otherwise CE and the proxy can each save the other's wrapper as "original" and recurse.
+  RoboCop build 0.1.6258 is the concrete regression: the query named driver `_nvngx.dll`, but the returned
+  `NVSDK_NGX_D3D12_GetFeatureRequirements` body belonged to game-local `version.dll` 4.5.2.2. CE patched that foreign
+  wrapper and the dump contained 6,011 returns through `Hooked_GetFeatureRequirements_D3D12`, spaced by a constant
+  `0x7d0` bytes, before `0xC00000FD` exhausted the thread stack. The requirements wrapper also has a same-thread
+  re-entry fuse as a last-resort fail-closed boundary; reaching it is diagnostic evidence of another invalid chain,
+  not the normal routing mechanism.
 - The parameter machinery downstream (vtable hooks on `SetUI`/`SetI` plus `InjectPreset` at parameter creation) was
   already complete; it simply never ran. `nvngx_debug.log` showing only `Config forced SR Preset ... (via Install)` and
   no `SetUI`/`CreateFeature` lines is the signature of interception never engaging.

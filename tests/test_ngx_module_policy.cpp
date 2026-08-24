@@ -7,6 +7,7 @@ namespace {
 using ce::ngx::IsNgxCoreModulePath;
 using ce::ngx::IsStreamlineNgxClientPath;
 using ce::ngx::ModuleFileName;
+using ce::ngx::ScopedReentryGate;
 using ce::ngx::ShouldInterceptNgxExportLookup;
 
 TEST(NgxModulePolicy, ModuleFileNameStripsBothSeparators) {
@@ -77,6 +78,22 @@ TEST(NgxModulePolicy, UnderscoreStubIsNotConfusedWithTheBareName) {
     EXPECT_TRUE(IsNgxCoreModulePath("_nvngx.dll"));
     EXPECT_FALSE(IsNgxCoreModulePath("x_nvngx.dll"));
     EXPECT_FALSE(IsNgxCoreModulePath("nvngx.dll.bak"));
+}
+
+TEST(NgxModulePolicy, ReentryGateOwnsOnlyTheOutermostCall) {
+    bool active = false;
+    {
+        ScopedReentryGate outer(active);
+        EXPECT_TRUE(outer.Entered());
+        EXPECT_TRUE(active);
+        {
+            ScopedReentryGate nested(active);
+            EXPECT_FALSE(nested.Entered());
+            EXPECT_TRUE(active);
+        }
+        EXPECT_TRUE(active);
+    }
+    EXPECT_FALSE(active);
 }
 
 }  // namespace

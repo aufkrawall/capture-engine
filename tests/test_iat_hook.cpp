@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../hook/apis/ffx_hook.h"
+#include "../hook/common/module_export_resolver.h"
 #include "../hook/common/streamline_runtime_policy.h"
 #include "../hook/wrappers/iat_hook.h"
 
@@ -52,6 +53,28 @@ TEST(IATHookDynamicFilterTest, FilteredDynamicHookRoutesOnlyMatchingModules) {
 
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(StreamlineReflexModuleFilter, "sl.reflex.dll", nullptr));
     EXPECT_FALSE(IATHook::ShouldApplyDynamicHookForModule(StreamlineReflexModuleFilter, "sl.common.dll", nullptr));
+}
+
+TEST(IATHookDynamicFilterTest, FilteredHookPreservesForeignResolvedTargets) {
+    EXPECT_FALSE(IATHook::ShouldPreserveFilteredForeignResolvedTarget(false, false, false));
+    EXPECT_FALSE(IATHook::ShouldPreserveFilteredForeignResolvedTarget(true, true, true));
+    EXPECT_TRUE(IATHook::ShouldPreserveFilteredForeignResolvedTarget(true, true, false));
+    EXPECT_TRUE(IATHook::ShouldPreserveFilteredForeignResolvedTarget(true, false, false));
+}
+
+TEST(IATHookExportResolverTest, DirectResolutionBypassesGetProcAddressWithoutChangingTheOwner) {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    ASSERT_NE(ntdll, nullptr);
+    void* resolved = ce::module_export::ResolveAddressDirect(ntdll, "RtlAllocateHeap");
+    ASSERT_NE(resolved, nullptr);
+    EXPECT_EQ(resolved, reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlAllocateHeap")));
+
+    HMODULE owner = nullptr;
+    ASSERT_TRUE(GetModuleHandleExA(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCSTR>(resolved), &owner));
+    EXPECT_EQ(owner, ntdll);
+    EXPECT_EQ(ce::module_export::ResolveAddressDirect(ntdll, "CE_DefinitelyMissingExport"), nullptr);
 }
 
 TEST(IATHookDynamicFilterTest, OverlayCallerBypassKeepsNativeFSRApiHooksVisible) {
