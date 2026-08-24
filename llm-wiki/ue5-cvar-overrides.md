@@ -307,7 +307,12 @@ mode is a visibly broken frame in the user's game.
   `SuperSamplingDenoising.FeatureInitResult`, or `GetFeatureRequirements(Feature 13)`. It cannot add missing
   albedo/specular/normal/depth/motion-vector inputs, enable a disabled temporal upscaler, retrofit an older NVIDIA UE
   plugin, or make an unsupported GPU/runtime work. It also never blocks Feature 1 ordinary SR fallback: a failed RR
-  create/evaluate must produce an ordinary frame rather than a blank output or engine assertion.
+  create/evaluate must produce an ordinary frame rather than a blank output or engine assertion. Caveat from the
+  2026-08-24 RoboCop A/B (same machine/driver/GPU/game): "unsupported" is frequently a *runtime-stack* property, not a
+  hardware verdict - a partial DLL override (only `dlss_rr_dll_path`) yielded `Available=0` plus
+  `GetFeatureRequirements(13) = FAIL_NotImplemented`, while pinning all four override paths to one complete modern set
+  flipped the same probe to `Available=1` with Feature 13 created and evaluated. Before concluding RR is impossible on
+  a title, verify the user runs one coherent overridden stack; spoofing stays out of policy regardless.
 - CE adds authoritative lifecycle evidence around D3D11/D3D12/Vulkan NGX Create/Evaluate/Evaluate_C/Release. Feature
   13 is reported active only after a successful evaluation, not merely after handle creation; Feature 1 reports an SR
   fallback, and release republishes the remaining evaluated handles. Streamline's successful

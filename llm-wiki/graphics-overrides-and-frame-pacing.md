@@ -404,7 +404,8 @@ Primary sources:
     `ScanLoadedModulesForForeignStreamlineCore()` pass at preload time for modules that predate CE.
   - The gate is scoped to `sl.*`. `nvngx_dlss*`/`nvngx_deepdvc`/`nvlowlatencyvk` are negotiated independently by
     NGX and the Vulkan loader, so those overrides keep working even when the Streamline stack is left alone.
-- **Consequence for CE's own loader calls:** the `LdrLoadDll` hook is process-global, so CE's own
+- **Partial overrides are worse than none for RR capability (2026-08-24 A/B: user-submitted partial-override failure logs vs the local full-override session `robocopnooverlayscaling`; same machine/driver/GPU/game).** A profile setting only `dlss_rr_dll_path` (single-snippet folder) left the game's old bundled SL stack and SR/FG snippets in charge; NGX answered `GetFeatureRequirements(13) = 0xBAD00012 FAIL_NotImplemented` and `SuperSamplingDenoising.Available = 0`, so Feature 13 was never created despite the preloaded modern `nvngx_dlssd.dll` and a held `DenoiserMode=1`. Pinning ALL FOUR paths to one complete coherent folder (full sl.* set plus all nvngx snippets) flipped the same probe to `Available = 1` and RR created/evaluated. The capability verdict therefore depends on which runtime stack initializes NGX, not only on driver/GPU; a lone snippet cannot flip it. Recommend staging one complete modern set and pointing every override path at it.
+- **Consequence for CE's own loader calls:**** the `LdrLoadDll` hook is process-global, so CE's own
   `LoadLibrary`-by-path calls are redirected too. Anything that means "pin this exact mapped image" must resolve by
   address (`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`), never by re-loading a path — see
   `PinLoadedStreamlineModule` in `hook/apis/streamline_hook_resolve.cpp` and the Cyberpunk 20260816_045933 entry in

@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-08-24 - RR capability verdict is runtime-stack-dependent: full override flips Available 0->1
+
+User report (submitted diagnostic logs, kept out of the wiki by name): `force_ray_reconstruction=on` did nothing in
+RoboCop (build 0.1.6258). The CVar write held
+(writeThrough=1, never drifted), but NGX answered `GetFeatureRequirements(Feature 13) = 0xBAD00012 FAIL_NotImplemented`
+(support bitmask 16 = NotImplemented; minArch=10 is garbage - the struct is only valid on Success) and
+`SuperSamplingDenoising.Available = 0`; Feature 13 was never created while SR (1) and FG (11) created/evaluated fine.
+That profile had configured ONLY `dlss_rr_dll_path` (single-snippet DLSS Swapper-style folder); every sl.* module came
+from the game's old bundled stack.
+
+Decisive A/B on the SAME machine/driver/GPU/game: local validation session `robocopnooverlayscaling` (build 0.1.6223)
+with all four paths
+(`dlss_sr_dll_path`, `dlss_rr_dll_path`, `dlss_fg_dll_path`, `streamline_dll_path`) pinned to one complete NPI folder
+read `SuperSamplingDenoising.Available = 1` through the same GetI hook and created+evaluated Feature 13. Conclusion:
+NGX's RR capability verdict is established by whichever coherent runtime stack initializes NGX in the process, not only
+by driver/GPU; a lone modern snippet inside an otherwise-old stack does not flip it (and the requirements-probe call was
+not even observed in the healthy session). Corrections: my earlier "capability answers come from driver-store NGX core,
+overrides cannot change them" reasoning was empirically wrong; the wiki no-spoof policy stands, but "unsupported" must
+first mean "incoherent partial override" before it means impossible. Open question: the exact internal trigger inside
+NGX init (SDK-version negotiation vs snippet validation vs per-app deny list). Actionable: stage ONE complete modern
+set and point all four override paths at it.
+
 ### 2026-08-23 - Manual pre-release from local packages (v0.1.6258)
 
 Published a GitHub **pre-release** from the already-built local `build/packages` archives instead of dispatching
