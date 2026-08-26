@@ -294,10 +294,13 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
 TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     const std::string controllerSource = ReadSource("captureengine/main.cpp");
     const std::string injectSource = ReadSource("captureengine/inject_main.cpp");
+    const std::string publicationSource =
+        ReadSource("captureengine/inject_config_publication.cpp");
     const std::string protocolHeader = ReadSource("common/process_ipc.h");
     const std::string templateSource = ReadSource("captureengine/config.ini.template");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(injectSource.empty());
+    ASSERT_FALSE(publicationSource.empty());
     ASSERT_FALSE(protocolHeader.empty());
     ASSERT_FALSE(templateSource.empty());
 
@@ -328,20 +331,26 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     const size_t toggleEnd = injectSource.find("case ProcessCommand::ReloadConfig:", toggleCase);
     ASSERT_NE(toggleEnd, std::string::npos);
     const std::string toggleBlock = injectSource.substr(toggleCase, toggleEnd - toggleCase);
-    EXPECT_NE(toggleBlock.find("ResolveActiveConfigLocked(pSharedMem, targetProcess)"), std::string::npos);
-    EXPECT_NE(toggleBlock.find("ToggleOverlayVisibility(publication.overlayVisibility"), std::string::npos);
-    EXPECT_NE(toggleBlock.find("ApplyOverlayVisibility(publication.overlayVisibility, resolved)"), std::string::npos);
-    EXPECT_NE(toggleBlock.find("PublishConfigLocked(pSharedMem, resolved"), std::string::npos);
+    EXPECT_NE(toggleBlock.find("TogglePublishedOverlayVisibility(pSharedMem)"), std::string::npos);
     EXPECT_EQ(toggleBlock.find("currentConfig"), std::string::npos)
         << "publishing the base config here drops the active target's profile overrides";
     EXPECT_NE(toggleBlock.find("ProcessResponse::Ack"), std::string::npos);
+    EXPECT_NE(publicationSource.find("ResolveActiveConfigLocked(sharedMemory, targetProcess)"),
+              std::string::npos);
+    EXPECT_NE(publicationSource.find("ToggleOverlayVisibility(publication.overlayVisibility"),
+              std::string::npos);
+    EXPECT_NE(publicationSource.find("ApplyOverlayVisibility(publication.overlayVisibility, resolved)"),
+              std::string::npos);
+    EXPECT_NE(publicationSource.find("PublishConfigLocked(sharedMemory, resolved"), std::string::npos);
 
     // One publication path for the whole process. A second direct call is
     // exactly how an unresolved base config reached shared memory.
     size_t publications = 0;
-    for (size_t at = injectSource.find("UpdateSharedMemoryFromConfig("); at != std::string::npos;
-         at = injectSource.find("UpdateSharedMemoryFromConfig(", at + 1)) {
-        ++publications;
+    for (const std::string* source : {&injectSource, &publicationSource}) {
+        for (size_t at = source->find("UpdateSharedMemoryFromConfig("); at != std::string::npos;
+             at = source->find("UpdateSharedMemoryFromConfig(", at + 1)) {
+            ++publications;
+        }
     }
     EXPECT_EQ(publications, 1u) << "every shared-memory config publication must resolve the active target first";
 

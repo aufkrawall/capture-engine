@@ -208,15 +208,15 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_45_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_45"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_46_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_46"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_45"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_45_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_45_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_45_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_45_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_46"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_46_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_46_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_46_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_46_1234ABCD"), 0);
 }
 
 // Discovery compatibility is judged on the compiled layout, never on build
@@ -263,6 +263,17 @@ TEST(SharedDefsTest, DiscoveryCompatibilityPrefixKeepsStableOffsets) {
     EXPECT_EQ(offsetof(DiscoveryInfo, magic), 4u);
     EXPECT_EQ(offsetof(DiscoveryInfo, buildNumber), 8u);
     EXPECT_EQ(offsetof(DiscoveryInfo, abiSignature), 12u);
+}
+
+TEST(SharedDefsTest, DiscoveryProfileTargetIdentityIsAtomicAndClearIsGenerationSafe) {
+    DiscoveryInfo discovery;
+    EXPECT_EQ(discovery.GetProfileTargetPid(), 0u);
+    discovery.SetProfileTargetPid(1234);
+    EXPECT_EQ(discovery.GetProfileTargetPid(), 1234u);
+    EXPECT_FALSE(discovery.ClearProfileTargetPid(5678));
+    EXPECT_EQ(discovery.GetProfileTargetPid(), 1234u);
+    EXPECT_TRUE(discovery.ClearProfileTargetPid(1234));
+    EXPECT_EQ(discovery.GetProfileTargetPid(), 0u);
 }
 
 // A DiscoveryInfo layout change must move the signature, otherwise a reader that

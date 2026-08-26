@@ -2,55 +2,26 @@
 #include <windows.h>
 #include <psapi.h>
 // clang-format on
-#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cstring>
 #include <filesystem>
-#include <mutex>
 #include <new>
 #include <string>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
-#include "../common/process_identity.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "host_metrics.h"
 #include "inject_config.h"
+#include "inject_config_publication.h"
 #include "injection.h"
 #include "inject_lifecycle.h"
 
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_Running{true};
-
-// Everything the inject process publishes into shared memory goes through the
-// helpers below, under this state's mutex. Two reasons it has to be serialized:
-// the overlay-config seqlock tolerates exactly one writer, and delayed-injection
-// worker threads publish for freshly injected targets while the main loop is
-// servicing IPC commands and hook-source changes.
-struct PublicationState {
-    std::mutex mutex;
-    // Config path and loaded base config the publications derive from. Held here
-    // so worker-thread publications never read the main loop's own copies.
-    std::string configPath;
-    AppConfig baseConfig;
-    // Target whose [Profile.*] section the published config must resolve
-    // against. Empty means no injected target has been identified yet.
-    std::string targetProcess;
-    // Runtime overlay visibility from the toggle hotkey. Kept beside the config
-    // instead of written into it, so republishing never has to reconstruct it.
-    OverlayVisibilityOverride overlayVisibility;
-};
-
-// Constructed on first use: the AppConfig defaults allocate, which must not run
-// during static initialization.
-static PublicationState& Publication() {
-    static PublicationState state;
-    return state;
-}
 
 static const char* InjectOverlayRuntimeFlagName(CaptureRuntimeFlags flag) {
     switch (flag) {
@@ -96,13 +67,7 @@ static bool IsProcessAlive(uint32_t processId) {
 static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory) {
     if (!sharedMemory)
         return;
-    {
-        // The target died, so its profile must stop deciding what later
-        // publications resolve against.
-        PublicationState& publication = Publication();
-        std::lock_guard<std::mutex> lock(publication.mutex);
-        publication.targetProcess.clear();
-    }
+    ClearPublicationTarget();
     sharedMemory->SetSourcePid(0);
     sharedMemory->SetLuidSourcePid(0);
     sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
@@ -123,135 +88,6 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
         return TRUE;
     }
     return FALSE;
-}
-
-// Helper: Get process name from PID
-std::string GetProcessNameFromPID(DWORD pid) {
-    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
-    if (!identity) {
-        static std::atomic<uint32_t> failureLogs{0};
-        if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
-            LogDebug("[Identity] Limited process-name query failed (pid=%lu error=%lu)",
-                     static_cast<unsigned long>(pid), identity.error);
-        }
-    }
-    return identity.imageName;
-}
-
-// Records the config file as the state every later publication derives from.
-// The overlay toggle deliberately does not come through here: it is a runtime
-// override, and a reload means the file is the declared state again.
-static void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig) {
-    PublicationState& publication = Publication();
-    std::lock_guard<std::mutex> lock(publication.mutex);
-    publication.configPath = configPath;
-    publication.baseConfig = baseConfig;
-    publication.overlayVisibility = {};
-}
-
-// The active target's config as the file declares it, without the runtime
-// overlay override. Resolving against that target's profile is the whole point:
-// publishing a config that skipped it strips the target's graphics, DLSS and UE5
-// overrides out of shared memory, and the injected hook then restores its
-// installed CVar shadows as "configuration disabled" while the game runs on.
-static AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::string& targetProcessOut) {
-    std::string hookSourceProcess;
-    if (sharedMemory) {
-        const uint32_t sourcePid = sharedMemory->GetSourcePid();
-        if (sourcePid != 0) {
-            hookSourceProcess = GetProcessNameFromPID(sourcePid);
-        }
-    }
-
-    const PublicationState& publication = Publication();
-    targetProcessOut = ResolveActiveTargetProcessName(publication.targetProcess, hookSourceProcess);
-    return ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
-}
-
-static void PublishConfigLocked(SharedMemoryLayout* sharedMemory, const AppConfig& resolved,
-                                const std::string& targetProcess, const char* reason) {
-    LogDebug("[Inject] Publishing config: target=%s overlayOverride=%d overlayVisible=%d source=%s",
-             targetProcess.empty() ? "<none>" : targetProcess.c_str(),
-             Publication().overlayVisibility.active ? 1 : 0, resolved.overlay.showOverlay ? 1 : 0,
-             reason ? reason : "unknown");
-    UpdateSharedMemoryFromConfig(sharedMemory, resolved);
-}
-
-static void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* reason) {
-    std::string targetProcess;
-    AppConfig resolved = ResolveActiveConfigLocked(sharedMemory, targetProcess);
-    ApplyOverlayVisibility(Publication().overlayVisibility, resolved);
-    PublishConfigLocked(sharedMemory, resolved, targetProcess, reason);
-}
-
-static void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {
-    std::lock_guard<std::mutex> lock(Publication().mutex);
-    PublishResolvedConfigLocked(sharedMemory, reason);
-}
-
-// Publication for a target the caller already identified. Recording the name is
-// what keeps a later hotkey toggle or config reload resolving the same profile,
-// including in the window before that target's hook publishes its source PID.
-static void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
-                                           const char* reason) {
-    PublicationState& publication = Publication();
-    std::lock_guard<std::mutex> lock(publication.mutex);
-    if (!targetProcessName.empty()) {
-        publication.targetProcess = targetProcessName;
-    }
-    PublishResolvedConfigLocked(sharedMemory, reason);
-}
-
-static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {
-    if (!pDisc)
-        return;
-    memset(pDisc->processWhitelist, 0, sizeof(pDisc->processWhitelist));
-
-    char* p = pDisc->processWhitelist;
-    char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist) - 2;  // -2 for double null
-
-    auto addName = [&](const std::string& name) {
-        if (name.empty())
-            return;
-        size_t len = name.length();
-        if (p + len + 1 < end) {
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            memcpy(p, lower.c_str(), len);
-            p += len;
-            *p++ = '\0';
-        }
-    };
-
-    size_t gameCount = 0;
-    size_t overlayCount = 0;
-
-    for (const auto& entry : config.gameWhitelist) {
-        addName(entry.pattern);
-        gameCount++;
-        if (IsTraceLoggingEnabled(config.logLevel)) {
-            LogInfo("[Inject] Added game to whitelist cache: %s", entry.pattern.c_str());
-        }
-    }
-    for (const auto& entry : config.overlayWhitelist) {
-        addName(entry.pattern);
-        overlayCount++;
-        if (IsTraceLoggingEnabled(config.logLevel)) {
-            LogInfo("[Inject] Added overlay target to whitelist cache: %s", entry.pattern.c_str());
-        }
-    }
-
-    // Always whitelist our test processes too
-    if (IsTraceLoggingEnabled(config.logLevel)) {
-        addName("dx12_test.exe");
-        addName("dx11_test.exe");
-        addName("vulkan_test.exe");
-    }
-
-    *p = '\0';  // Double null terminator
-    LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu traceExtras=%d", gameCount, overlayCount,
-            IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
 }
 
 int InjectProcessMain(const AppConfig& config) {
@@ -371,6 +207,7 @@ int InjectProcessMain(const AppConfig& config) {
         }
         pDiscovery->SetMagic(0);
         pDiscovery->SetInjectPid(0);
+        pDiscovery->SetProfileTargetPid(0);
         pDiscovery->SetBuildNumber(GetCurrentBuildNumber());
         pDiscovery->SetAbiSignature(0);
         memset(pDiscovery->processWhitelist, 0, sizeof(pDiscovery->processWhitelist));
@@ -503,8 +340,15 @@ int InjectProcessMain(const AppConfig& config) {
             return;
         }
 
-        manager->SetOnInjectCallback([&](const std::string& processName) {
+        manager->SetOnInjectCallback([&](DWORD targetPid, const std::string& processName) {
             LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
+
+            // Publish the exact configured parent before remote LoadLibrary.
+            // A split renderer can create its Vulkan child while injection is
+            // still pending, before sourcePid proves the hook connection.
+            pDiscovery->SetProfileTargetPid(targetPid);
+            LogInfo("[Inject] Published profile target identity: %s (PID: %lu)", processName.c_str(),
+                    static_cast<unsigned long>(targetPid));
 
             // Suppress the controller-side layered pseudo overlay immediately
             // while the injected overlay handoff settles.
@@ -606,21 +450,7 @@ int InjectProcessMain(const AppConfig& config) {
                         // config and republishing that used to strip the running
                         // target's profile, so one hotkey press dropped its
                         // graphics, DLSS and UE5 overrides mid-session.
-                        bool overlayVisible = false;
-                        {
-                            PublicationState& publication = Publication();
-                            std::lock_guard<std::mutex> lock(publication.mutex);
-                            std::string targetProcess;
-                            AppConfig resolved = ResolveActiveConfigLocked(pSharedMem, targetProcess);
-                            // Flip what the target actually shows, so a profile
-                            // that overrides [Overlay] enabled cannot turn the
-                            // first press into a no-op.
-                            publication.overlayVisibility = ToggleOverlayVisibility(publication.overlayVisibility,
-                                                                                    resolved.overlay.showOverlay);
-                            overlayVisible = publication.overlayVisibility.showOverlay;
-                            ApplyOverlayVisibility(publication.overlayVisibility, resolved);
-                            PublishConfigLocked(pSharedMem, resolved, targetProcess, "hotkey:toggle-overlay");
-                        }
+                        const bool overlayVisible = TogglePublishedOverlayVisibility(pSharedMem);
                         LogInfo("[Inject] Overlay %s via controller hotkey",
                                 overlayVisible ? "enabled" : "disabled");
                         ipc.SendResponse(ProcessResponse::Ack);
@@ -684,6 +514,12 @@ int InjectProcessMain(const AppConfig& config) {
         // Monitor sourcePid for config reloads (CBT hook support)
         static uint32_t lastSourcePid = 0;
         static DWORD lastIdentityWarningTick = 0;
+        const uint32_t profileTargetPid = pDiscovery ? pDiscovery->GetProfileTargetPid() : 0;
+        if (profileTargetPid != 0 && !IsProcessAlive(profileTargetPid) &&
+            pDiscovery->ClearProfileTargetPid(profileTargetPid)) {
+            LogInfo("[Inject] Profile target process exited (PID: %lu); cleared discovery identity",
+                    static_cast<unsigned long>(profileTargetPid));
+        }
         uint32_t currentSourcePid = pSharedMem->GetSourcePid();
         // The hook lives inside the source process and dies with it, so the
         // hook-owned identity can only be cleared from here. A stale PID must
@@ -759,6 +595,7 @@ int InjectProcessMain(const AppConfig& config) {
     if (pDiscovery) {
         pDiscovery->SetMagic(0);
         pDiscovery->SetInjectPid(0);
+        pDiscovery->SetProfileTargetPid(0);
     }
     if (pShmem)
         UnmapViewOfFile(pShmem);

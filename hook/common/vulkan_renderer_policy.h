@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // Evidence-based Vulkan renderer decision for the DXGI/D3D hook paths.
 //
 // A process that merely loads vulkan-1.dll is not necessarily a Vulkan app:
@@ -38,6 +40,58 @@ inline bool ShouldTreatVulkanAsActiveRenderer(bool vulkanModuleLoaded, bool vulk
         return false;
     }
     return !d3dUsageEvidence;
+}
+
+// The resident CE Vulkan layer is stronger startup evidence than vulkan-1.dll
+// alone.  It has already negotiated into this process and owns the renderer
+// before the injected hook's IPC connection and periodic renderer decision are
+// available.  Installing speculative D3D/DXGI hooks in that window can mutate
+// the Vulkan driver's private WSI-to-DXGI objects.
+inline bool ShouldInstallEarlyD3DDXGIHooks(bool vulkanLayerModuleLoaded) {
+    return !vulkanLayerModuleLoaded;
+}
+
+// Runtime DLL presence is not proof of D3D12 use. In particular, a legacy
+// client or translation front-end can load d3d12.dll through an overlay while
+// its non-system D3D9/D3D11 runtime owns rendering. Do not create a speculative
+// DX12 device/swapchain in that process; confirmed D3D12 device evidence wins.
+inline bool ShouldSuppressSpeculativeDX12Bootstrap(bool d3d12DeviceCreated,
+                                                   bool nonSystemD3D11Runtime,
+                                                   bool nonSystemD3D9Runtime) {
+    return !d3d12DeviceCreated && (nonSystemD3D11Runtime || nonSystemD3D9Runtime);
+}
+
+// DX9Hook::Init discovers vtable addresses by creating a synthetic D3D9
+// factory and device.  That is safe only for the native runtime.  A Vulkan-
+// owned or non-system D3D9 translation runtime may initialize a second global
+// renderer (RTX Remix is one such split-runtime topology), so those paths must
+// use the real-object IAT/Vulkan interception instead of active probing.
+inline bool ShouldBootstrapD3D9Hooks(bool vulkanActive, bool nonSystemD3D9Runtime,
+                                     bool hookAlreadyInstalled, bool d3d12ActuallyUsed,
+                                     bool d3d11DllLoaded, bool d3d9DllLoaded) {
+    return !vulkanActive && !nonSystemD3D9Runtime && !hookAlreadyInstalled &&
+           !d3d12ActuallyUsed && !d3d11DllLoaded && d3d9DllLoaded;
+}
+
+// Split-renderer applications can keep their explicitly profiled client in
+// one process while a direct child owns the final Vulkan swapchain. The child
+// inherits layer eligibility only from the host's current source PID or the
+// exact profile target published before injection, and that parent executable
+// must itself still match the published whitelist. Requiring both PID and name
+// proof prevents unrelated Vulkan helpers, launchers, and stale PID reuse from
+// broadening an executable-name profile.
+inline bool ShouldEnableVulkanLayerForProfile(bool currentProcessWhitelisted,
+                                              uint32_t currentParentPid,
+                                              uint32_t activeSourcePid,
+                                              uint32_t profileTargetPid,
+                                              bool parentProcessWhitelisted) {
+    if (currentProcessWhitelisted) {
+        return true;
+    }
+    const bool parentIsPublishedTarget =
+        currentParentPid != 0 &&
+        (currentParentPid == activeSourcePid || currentParentPid == profileTargetPid);
+    return parentIsPublishedTarget && parentProcessWhitelisted;
 }
 
 } // namespace ce::vulkan_renderer_policy

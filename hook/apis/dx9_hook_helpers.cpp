@@ -129,15 +129,11 @@ bool ShouldSkipDX9PresentForVulkan() {
     if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
         return false;
 
-    if (IsDXVKD3D9WrapperLoaded()) {
-        static int dxvkPreferLogCount = 0;
-        if (dxvkPreferLogCount < 6) {
-            HookLogImportant("DX9: DXVK d3d9 wrapper detected; keeping DX9 present path active");
-            dxvkPreferLogCount++;
-        }
-        return false;
+    static int vulkanYieldLogCount = 0;
+    if (vulkanYieldLogCount < 6) {
+        HookLogImportant("DX9: Vulkan layer owns final presentation; yielding the DX9 Present path");
+        vulkanYieldLogCount++;
     }
-
     return true;
 
 }

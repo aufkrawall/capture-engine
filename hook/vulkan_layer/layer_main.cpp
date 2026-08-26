@@ -349,45 +349,14 @@ static bool PerformEarlyWhitelistCheck() {
         return g_LayerState.whitelisted;
     g_WhitelistCheckDone = true;
 
-    char fullPath[MAX_PATH];
-    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
-    char* p = strrchr(fullPath, '\\');
-    const char* processName = p ? p + 1 : fullPath;
-
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!hDisc) {
-        g_LayerState.whitelisted = false;
-        return false;
+    DWORD inheritedParentPid = 0;
+    g_LayerState.whitelisted = LayerIPC_IsProcessEligibleByCurrentHost(&inheritedParentPid);
+    if (inheritedParentPid != 0) {
+        EarlyLog("Process inherited Vulkan eligibility from published parent target/source PID %lu",
+                 inheritedParentPid);
+        LayerLog("Vulkan Layer: Inherited profile eligibility from published parent target/source PID %lu",
+                 inheritedParentPid);
     }
-
-    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (!pDisc) {
-        CloseHandle(hDisc);
-        g_LayerState.whitelisted = false;
-        return false;
-    }
-
-    g_LayerState.whitelisted = false;
-    LayerReportIncompatibleDiscovery(pDisc);
-    if (ValidateDiscoveryInfo(pDisc)) {
-        const char* pw = pDisc->processWhitelist;
-        const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
-
-        while (pw < end && *pw != '\0') {
-            if (_stricmp(processName, pw) == 0) {
-                g_LayerState.whitelisted = true;
-                break;
-            }
-            const size_t remaining = static_cast<size_t>(end - pw);
-            const size_t length = strnlen(pw, remaining);
-            if (length == remaining)
-                break;
-            pw += length + 1;
-        }
-    }
-
-    UnmapViewOfFile(pDisc);
-    CloseHandle(hDisc);
 
     if (!g_LayerState.whitelisted) {
         EarlyLog("Process not whitelisted - layer dormant");

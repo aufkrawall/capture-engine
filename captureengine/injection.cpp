@@ -57,7 +57,7 @@ InjectionManager::~InjectionManager() {
     }
 }
 
-void InjectionManager::SetOnInjectCallback(std::function<void(const std::string&)> callback) {
+void InjectionManager::SetOnInjectCallback(std::function<void(DWORD, const std::string&)> callback) {
     this->onInjectCallback = std::move(callback);
 }
 

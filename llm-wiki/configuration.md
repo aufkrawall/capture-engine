@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-22
+Last cross-checked: 2026-08-26
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -10,6 +10,7 @@ Primary sources:
 - `common/config_load_core.cpp`
 - `common/config_load_ue5.cpp`
 - `captureengine/inject_config.cpp`
+- `captureengine/inject_config_publication.cpp`
 - `common/monitor_selection.{h,cpp}`
 - `common/screen_grab_privacy.{h,cpp}`
 - `captureengine/media_main.cpp`
@@ -100,7 +101,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - Empty video and screenshot output directories both resolve to the `captures` directory beside the executable. The two paths are independent when customized. `crash_dump_dir` accepts only a safe relative subfolder beneath `logs`; absolute and parent-traversal paths are ignored.
 - Hotkeys are delivered on two paths that share one dispatch. `RegisterHotKey` is the registration of record and posts `WM_HOTKEY`; a `WH_KEYBOARD_LL` hook on its own pump-only thread (`captureengine/hotkey_input_hook.cpp`) posts `main_kMsgHotkeyFromInputHook`. The second path exists because a foreground application that registers its raw-input keyboard with `RIDEV_NOHOTKEYS` switches off application hotkey processing for the whole desktop - DOOM Eternal does (usage page 1 / usage 6, `dwFlags=0x200`), so no process received `WM_HOTKEY` at all while it had focus. Both paths call the same `DispatchHotkey(id)`, and they can never both fire: the hook returns 1 for a matched key, and a consumed key never reaches hotkey processing. The hook only serves combinations `RegisterHotKey` actually granted this process, so one another application owns is left to that application; it reads its binding table with `TryAcquireSRWLockShared` and never waits, because a low-level hook that blocks stalls input for every process on the desktop. Matching semantics (exact modifier set, `MOD_NOREPEAT`, consuming the release of a consumed press) live in `common/hotkey_matcher.h`.
 - An empty optional hotkey disables it. `start_stop` is the exception and falls back to F9 so recording cannot be left without a toggle. `toggle_overlay` (default `CTRL+8`) hides/shows the injected in-game overlay at runtime without a restart. It flips the *effective* visibility, so a profile that overrides `[Overlay] enabled` cannot swallow the first press, and it survives every republication (injection, hook-source change) until a config reload makes the file authoritative again.
-- The inject process publishes exactly one resolved config into shared memory, and every publication resolves the active target's `[Profile.*]` section first. Publishing an unresolved base config drops that target's graphics/DLSS/UE5 overrides, which the hook then restores as `configuration disabled` mid-session; `captureengine/inject_main.cpp` funnels all of it through one `PublishConfigLocked` under one mutex, which is also what keeps the overlay-config seqlock single-writer against injection worker threads.
+- The inject process publishes exactly one resolved config into shared memory, and every publication resolves the active target's `[Profile.*]` section first. Publishing an unresolved base config drops that target's graphics/DLSS/UE5 overrides, which the hook then restores as `configuration disabled` mid-session; `captureengine/inject_config_publication.cpp` funnels all of it through one `PublishConfigLocked` under one mutex, which is also what keeps the overlay-config seqlock single-writer against injection worker threads.
 - Choosing `video_capture=inject` or `dll_injection=always` can trigger anti-cheat protection. Do not use either for multiplayer/anti-cheat software unless injection is known to be permitted; `never` remains available as an explicit safety lock.
 - Desktop-overlay mode 2 is warning-only. With the shipped mode 2 profile there is no steady recording dot.
 - `[Overlay] copy_queue_priority` controls the injected D3D12 overlay's DIRECT queue priority, not a copy queue. The key name is retained for compatibility.
@@ -108,8 +109,9 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Validation boundary
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
-- `[UE5]` settings default off/default and are live-reloadable. ABI 45 carries the four-level RR settings byte plus
-  a 64-bit custom-spec mask and 64 type-validated values; versioned mappings/events isolate older processes.
+- `[UE5]` settings default off/default and are live-reloadable. ABI 45 introduced the four-level RR settings byte plus
+  a 64-bit custom-spec mask and 64 type-validated values; ABI 46 retains them while adding pre-injection profile-target
+  discovery, and versioned mappings/events isolate older processes.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

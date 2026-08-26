@@ -16,6 +16,10 @@ namespace DXGIShared {
 // the DXGI present/overlay path.
 void SetVulkanActiveForDXGIPresentPath(bool active);
 bool IsVulkanActive();
+// Creation-time counterpart to the Present/Resize pass-through rule. This is
+// deliberately checked by every residual factory/swapchain hook because those
+// hooks may have been installed before Vulkan ownership became observable.
+bool ShouldBypassSwapchainCreateForVulkan(const char* source);
 }
 
 namespace DXGIShared {

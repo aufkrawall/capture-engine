@@ -107,6 +107,12 @@ if (HookIsShuttingDown()) {
     return E_FAIL;
 }
 
+if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("CreateSwapChainForHwnd INLINE")) {
+    return dx12_hook_s_oCreateSCForHwndInline
+               ? dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
+               : E_FAIL;
+}
+
 // Skip side-effects for temp swapchains created during hook installation
 if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
     HookLog("CreateSwapChainForHwnd INLINE: Temp swapchain — passthrough");
@@ -384,6 +390,12 @@ if (HookIsShuttingDown()) {
     return E_FAIL;
 }
 
+if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DetourCreateSwapChainGlobal")) {
+    return dx12_hook_oCreateSwapChainGlobal
+               ? dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain)
+               : E_FAIL;
+}
+
 if (DX12_IsInternalDXGISwapchainProbe()) {
     HookLog("DetourCreateSwapChainGlobal: Internal D3D10/11 probe — passthrough without DX12 side-effects");
     return dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
@@ -572,6 +584,12 @@ if (HookIsShuttingDown()) {
     if (dx12_hook_oCreateSwapChainForHwndGlobal)
         return dx12_hook_oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     return E_FAIL;
+}
+
+if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DetourCreateSwapChainForHwndGlobal")) {
+    return dx12_hook_oCreateSwapChainForHwndGlobal
+               ? dx12_hook_oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
+               : E_FAIL;
 }
 
 HookLogImportant(

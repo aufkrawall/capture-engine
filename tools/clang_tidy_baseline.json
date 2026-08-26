@@ -23,13 +23,14 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 643,
+    "entries": 644,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
       "captureengine/host_metrics.cpp",
       "captureengine/hotkey_input_hook.cpp",
       "captureengine/inject_config.cpp",
+      "captureengine/inject_config_publication.cpp",
       "captureengine/inject_lifecycle.cpp",
       "captureengine/inject_main.cpp",
       "captureengine/injection.cpp",

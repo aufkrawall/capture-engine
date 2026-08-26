@@ -52,6 +52,8 @@ struct ChildInjectParams;
 
 #include "common/graphics_runtime_module_policy.h"
 
+#include "common/vulkan_renderer_policy.h"
+
 #include "common/hook_common.h"
 
 #include "common/hook_context.h"

@@ -556,7 +556,26 @@ void SetVulkanActiveForDXGIPresentPath(bool active) {
 }
 
 bool IsVulkanActive() {
-    return s_dxgiVulkanActive.load(std::memory_order_acquire);
+    if (s_dxgiVulkanActive.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
+        return sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+    }
+    return false;
+}
+
+bool ShouldBypassSwapchainCreateForVulkan(const char* source) {
+    if (!IsVulkanActive()) {
+        return false;
+    }
+    static std::atomic<uint32_t> s_vulkanCreateBypassLogCount{0};
+    const uint32_t count = s_vulkanCreateBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (count < 20 || (count % 256) == 0) {
+        HookLog("%s: Vulkan layer owns presentation - exact DXGI swapchain-create pass-through (count=%u)",
+                source ? source : "DXGI swapchain create", count + 1);
+    }
+    return true;
 }
 }
 

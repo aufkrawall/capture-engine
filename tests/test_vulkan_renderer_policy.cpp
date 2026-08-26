@@ -9,6 +9,10 @@
 namespace {
 
 using ce::vulkan_renderer_policy::HasD3DUsageEvidence;
+using ce::vulkan_renderer_policy::ShouldBootstrapD3D9Hooks;
+using ce::vulkan_renderer_policy::ShouldInstallEarlyD3DDXGIHooks;
+using ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile;
+using ce::vulkan_renderer_policy::ShouldSuppressSpeculativeDX12Bootstrap;
 using ce::vulkan_renderer_policy::ShouldTreatVulkanAsActiveRenderer;
 
 // RAII restore for the process-global present-path flag.
@@ -99,13 +103,58 @@ TEST(VulkanRendererPolicyTest, NoVulkanModuleMeansNotVulkanActive) {
     EXPECT_FALSE(ShouldTreatVulkanAsActiveRenderer(false, false, noD3dEvidence));
 }
 
+TEST(VulkanRendererPolicyTest, ResidentCaptureLayerSuppressesSpeculativeEarlyD3DHooks) {
+    EXPECT_FALSE(ShouldInstallEarlyD3DDXGIHooks(/*vulkanLayerModuleLoaded=*/true));
+    EXPECT_TRUE(ShouldInstallEarlyD3DDXGIHooks(/*vulkanLayerModuleLoaded=*/false));
+}
+
+TEST(VulkanRendererPolicyTest, D3D9BootstrapRejectsVulkanAndTranslationRuntimes) {
+    EXPECT_TRUE(ShouldBootstrapD3D9Hooks(false, false, false, false, false, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(/*vulkanActive=*/true, false, false, false, false, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(false, /*nonSystemD3D9Runtime=*/true, false, false, false, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(false, false, /*hookAlreadyInstalled=*/true, false, false, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(false, false, false, /*d3d12ActuallyUsed=*/true, false, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(false, false, false, false, /*d3d11DllLoaded=*/true, true));
+    EXPECT_FALSE(ShouldBootstrapD3D9Hooks(false, false, false, false, false, /*d3d9DllLoaded=*/false));
+}
+
+TEST(VulkanRendererPolicyTest, TranslationRuntimeSuppressesOnlyUnprovenDX12Bootstrap) {
+    EXPECT_TRUE(ShouldSuppressSpeculativeDX12Bootstrap(false, /*nonSystemD3D11Runtime=*/true, false));
+    EXPECT_TRUE(ShouldSuppressSpeculativeDX12Bootstrap(false, false, /*nonSystemD3D9Runtime=*/true));
+    EXPECT_FALSE(ShouldSuppressSpeculativeDX12Bootstrap(false, false, false));
+    EXPECT_FALSE(ShouldSuppressSpeculativeDX12Bootstrap(/*d3d12DeviceCreated=*/true, true, true));
+}
+
+TEST(VulkanRendererPolicyTest, DirectChildRendererInheritsActiveProfileEligibility) {
+    EXPECT_TRUE(ShouldEnableVulkanLayerForProfile(
+        /*currentProcessWhitelisted=*/false, /*currentParentPid=*/42,
+        /*activeSourcePid=*/42, /*profileTargetPid=*/0,
+        /*parentProcessWhitelisted=*/true));
+    EXPECT_TRUE(ShouldEnableVulkanLayerForProfile(
+        /*currentProcessWhitelisted=*/false, /*currentParentPid=*/42,
+        /*activeSourcePid=*/0, /*profileTargetPid=*/42,
+        /*parentProcessWhitelisted=*/true));
+    EXPECT_TRUE(ShouldEnableVulkanLayerForProfile(
+        /*currentProcessWhitelisted=*/true, 0, 0, 0, false));
+}
+
+TEST(VulkanRendererPolicyTest, VulkanEligibilityInheritanceFailsClosed) {
+    EXPECT_FALSE(ShouldEnableVulkanLayerForProfile(false, 0, 42, 0, true));
+    EXPECT_FALSE(ShouldEnableVulkanLayerForProfile(false, 41, 42, 0, true));
+    EXPECT_FALSE(ShouldEnableVulkanLayerForProfile(false, 41, 0, 42, true));
+    EXPECT_FALSE(ShouldEnableVulkanLayerForProfile(false, 42, 42, 42,
+                                                   /*parentProcessWhitelisted=*/false));
+}
+
 TEST(VulkanRendererPolicyTest, SharedFlagFollowsPublishedDecision) {
     ScopedVulkanPresentFlag restore;
     EXPECT_FALSE(DXGIShared::IsVulkanActive());
     DXGIShared::SetVulkanActiveForDXGIPresentPath(true);
     EXPECT_TRUE(DXGIShared::IsVulkanActive());
+    EXPECT_TRUE(DXGIShared::ShouldBypassSwapchainCreateForVulkan("unit test"));
     DXGIShared::SetVulkanActiveForDXGIPresentPath(false);
     EXPECT_FALSE(DXGIShared::IsVulkanActive());
+    EXPECT_FALSE(DXGIShared::ShouldBypassSwapchainCreateForVulkan("unit test"));
 }
 
 TEST(VulkanRendererPolicySourceTest, HookInstallPublishesTheSharedDecision) {
@@ -121,6 +170,91 @@ TEST(VulkanRendererPolicySourceTest, HookInstallPublishesTheSharedDecision) {
     ASSERT_NE(decision, std::string::npos);
     ASSERT_NE(publish, std::string::npos);
     EXPECT_LT(decision, publish);
+}
+
+TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3DHooks) {
+    namespace fs = std::filesystem;
+    const std::string dllMain = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_dllmain.cpp");
+    const std::string hookThread = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_hookthread.cpp");
+    const std::string create =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+    const std::string deep =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+    const std::string ecl =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_ecl_install.cpp");
+    const std::string dx11 =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_detours.cpp");
+    const std::string wrappers =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    ASSERT_FALSE(dllMain.empty());
+    ASSERT_FALSE(hookThread.empty());
+    ASSERT_FALSE(create.empty());
+    ASSERT_FALSE(deep.empty());
+    ASSERT_FALSE(ecl.empty());
+    ASSERT_FALSE(dx11.empty());
+    ASSERT_FALSE(wrappers.empty());
+
+    EXPECT_NE(dllMain.find("ShouldInstallEarlyD3DDXGIHooks"), std::string::npos);
+    const size_t earlyInstall = hookThread.find("InstallGlobalVTableHooks();");
+    const size_t earlyPolicy = hookThread.find("ShouldInstallEarlyD3DDXGIHooks");
+    ASSERT_NE(earlyInstall, std::string::npos);
+    ASSERT_NE(earlyPolicy, std::string::npos);
+    EXPECT_LT(earlyPolicy, earlyInstall);
+    EXPECT_NE(create.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(deep.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(ecl.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(dx11.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(wrappers.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+}
+
+TEST(VulkanRendererPolicySourceTest, VulkanLayerOwnsTranslatedD3D9FinalPresentation) {
+    namespace fs = std::filesystem;
+    const std::string install = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
+    const std::string present =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
+    const std::string dx9Helpers =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx9_hook_helpers.cpp");
+    const std::string dx9Wrapper =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "d3d9_device_wrap.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(dx9Helpers.empty());
+    ASSERT_FALSE(dx9Wrapper.empty());
+
+    EXPECT_NE(install.find("ShouldBootstrapD3D9Hooks"), std::string::npos);
+    EXPECT_NE(install.find("ShouldSuppressSpeculativeDX12Bootstrap"), std::string::npos);
+    EXPECT_EQ(present.find("preferDX9Path"), std::string::npos);
+    EXPECT_EQ(present.find("skipping Vulkan present-time overlay"), std::string::npos);
+    EXPECT_EQ(dx9Helpers.find("keeping DX9 present path active"), std::string::npos);
+    EXPECT_NE(dx9Wrapper.find("ShouldSkipDX9PresentForVulkan"), std::string::npos);
+}
+
+TEST(VulkanRendererPolicySourceTest, LayerEligibilityFollowsOnlyThePublishedWhitelistedParent) {
+    namespace fs = std::filesystem;
+    const std::string ipc =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_ipc.cpp");
+    const std::string main =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
+    const std::string injectHost =
+        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_main.cpp");
+    ASSERT_FALSE(ipc.empty());
+    ASSERT_FALSE(main.empty());
+    ASSERT_FALSE(injectHost.empty());
+
+    EXPECT_NE(ipc.find("CreateToolhelp32Snapshot"), std::string::npos);
+    EXPECT_NE(ipc.find("sharedMemory->GetSourcePid()"), std::string::npos);
+    EXPECT_NE(ipc.find("info->GetProfileTargetPid()"), std::string::npos);
+    EXPECT_NE(ipc.find("IsProcessNameWhitelisted(info, parentName)"), std::string::npos);
+    EXPECT_NE(ipc.find("ShouldEnableVulkanLayerForProfile"), std::string::npos);
+    EXPECT_NE(main.find("LayerIPC_IsProcessEligibleByCurrentHost"), std::string::npos);
+    const size_t publishTarget = injectHost.find("SetProfileTargetPid(targetPid)");
+    const size_t publishConfig = injectHost.find("PublishResolvedConfigForTarget(pSharedMem, processName");
+    ASSERT_NE(publishTarget, std::string::npos);
+    ASSERT_NE(publishConfig, std::string::npos);
+    EXPECT_LT(publishTarget, publishConfig);
+    EXPECT_EQ(ipc.find("NvRemixBridge"), std::string::npos);
+    EXPECT_EQ(main.find("NvRemixBridge"), std::string::npos);
+    EXPECT_EQ(injectHost.find("NvRemixBridge"), std::string::npos);
 }
 
 // Late injection wakes the resident Vulkan layer only after CaptureEngine

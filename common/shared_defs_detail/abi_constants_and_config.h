@@ -69,17 +69,20 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             third-party upscaler levers, r.HDR.*)
 // Version 45: Added the four-level UE5 Ray Reconstruction settings preset and
 //             typed per-CVar custom override values.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 45;
+// Version 46: Added DiscoveryInfo::profileTargetPid so a direct child Vulkan
+//             renderer can inherit the selected parent profile before hook
+//             injection publishes sourcePid.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 46;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_45_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_46_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_45";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_46";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -138,6 +141,12 @@ struct DiscoveryInfo {
     // Logs directory path (set by captureengine host)
     char logsPath[MAX_PATH]{};
 
+    // PID whose exact profile was selected before injection begins. This is
+    // distinct from SharedMemoryLayout::sourcePid_, which proves that the hook
+    // has connected and therefore cannot cover a child renderer that starts
+    // during the remote LoadLibrary transaction.
+    std::atomic<uint32_t> profileTargetPid{0};
+
     // Atomic accessor methods
     uint32_t GetMagic() const {
         return magic.load(std::memory_order_acquire);
@@ -162,6 +171,16 @@ struct DiscoveryInfo {
     }
     void SetAbiSignature(uint32_t val) {
         abiSignature.store(val, std::memory_order_release);
+    }
+    uint32_t GetProfileTargetPid() const {
+        return profileTargetPid.load(std::memory_order_acquire);
+    }
+    void SetProfileTargetPid(uint32_t val) {
+        profileTargetPid.store(val, std::memory_order_release);
+    }
+    bool ClearProfileTargetPid(uint32_t expectedPid) {
+        return profileTargetPid.compare_exchange_strong(expectedPid, 0, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire);
     }
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;

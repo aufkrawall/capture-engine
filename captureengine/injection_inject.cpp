@@ -4,7 +4,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     // Execute callback if set (e.g. to reload config for this specific process)
     if (onInjectCallback) {
         LogInfo("[Inject] Executing pre-injection callback for %s", processName.c_str());
-        onInjectCallback(processName);
+        onInjectCallback(pid, processName);
     }
 
     // Determine architecture - use RAII HandleGuard to prevent leaks

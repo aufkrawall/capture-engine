@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-08-25 - RTX Remix crash: synthetic D3D9 probe initialized a second renderer
+
+Portal RTX did not have a missing-whitelist or generic injector failure. Literal session enumeration found the earlier
+`20260825_190436` bridge-target run and its CE/external dumps; the later submitted `192442`/`194911` runs targeted the
+32-bit `hl2.exe` client and exited during speculative x86 DX12 bootstrap. The actual renderer process is
+`NvRemixBridge.exe`: it owns the x64 Remix `d3d9.dll`, CE Vulkan layer, Vulkan device, and WSI swapchain. The follow-up
+`20260825_202150` run proved the remaining routing failure: the profiled `hl2.exe` connected normally, but the bridge's
+layer logged `Process not whitelisted - layer dormant`, then forwarded all real swapchain calls without overlay/capture.
+
+CDB plus the layer/hook timestamps establish two generic CE violations. HookThread entered
+`GetD3D9PresentAddresses -> Direct3DCreate9Ex -> Remix d3d9` after `CheckAndInstallHooks` had already established Vulkan
+ownership. That synthetic device negotiated a second Vulkan instance/device on the hook worker while the real Remix
+renderer was still initializing; the external dump then faulted on a null read in `d3d9!remixapi_InitializeLibrary`.
+Meanwhile NVIDIA's real Vulkan WSI swapchain traversed CE's pre-installed global, inline, and deep DXGI creation hooks,
+which treated the ICD-private object as a game DX12 swapchain and began installing Present/colour-space hooks.
+
+Fix: a resident CE Vulkan-layer module suppresses speculative D3D/DXGI setup before hook IPC classification; residual
+`CreateSwapChain*` hooks exact-pass-through once layer ownership is visible; Vulkan-owned and non-system D3D9 runtimes
+never receive synthetic D3D9 factory/device probes; false-positive D3D12 runtime presence no longer starts the x86 DX12
+bootstrap over such a D3D9 translator. The Vulkan layer now owns the final overlay/capture/screenshot/limiter boundary
+for translated D3D9. Policy and source regressions cover early suppression, the Remix topology, and residual-hook gates.
+The Vulkan eligibility check now also recognizes a non-whitelisted direct child when its live parent PID equals the
+host's active source PID or its exact pre-injection profile target, and that parent executable still matches the
+published whitelist. Session `20260825_203627` falsified the first source-only implementation: the bridge checked at
+`20:36:31.904`, 41 ms before remote `LoadLibrary` finished and published the parent as `sourcePid`. The host now writes
+the selected target PID into versioned discovery memory in its pre-injection callback; that callback ran 272 ms before
+the bridge check in the falsifying session. This generic lineage proof lets a client profile follow its final child
+renderer while rejecting unrelated helpers and stale/unverified parents; there is no Portal/Remix executable-name
+exception.
+
 ### 2026-08-24 - RoboCop NGX override crash: CE trusted a foreign GetProcAddress wrapper
 
 The build 0.1.6258 user dump is a deterministic `0xC00000FD` recursion, not an NVIDIA implementation fault.

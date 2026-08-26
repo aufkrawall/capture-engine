@@ -329,6 +329,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
                                                              IDXGISwapChain** ppSwapChain) {
     if (HookIsShuttingDown())
         return m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, ppSwapChain);
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DXGI wrapper CreateSwapChain"))
+        return m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, ppSwapChain);
     WrapperLog("CreateSwapChain: CALLED (device=%p, hwnd=%p)", pDevice, pDesc ? pDesc->OutputWindow : nullptr);
 
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
@@ -414,6 +416,10 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
         return m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput,
                                                ppSwapChain);
     }
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DXGI wrapper CreateSwapChainForHwnd")) {
+        return m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput,
+                                               ppSwapChain);
+    }
     WrapperLog("CreateSwapChainForHwnd: CALLED (device=%p, hwnd=%p)", pDevice, hWnd);
 
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.
@@ -462,6 +468,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
                                                                           IDXGIOutput* pRestrictToOutput,
                                                                           IDXGISwapChain1** ppSwapChain) {
     if (HookIsShuttingDown()) {
+        return m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput,
+                                                     ppSwapChain);
+    }
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DXGI wrapper CreateSwapChainForCoreWindow")) {
         return m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput,
                                                      ppSwapChain);
     }
@@ -533,6 +543,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                                                                            IDXGIOutput* pRestrictToOutput,
                                                                            IDXGISwapChain1** ppSwapChain) {
     if (HookIsShuttingDown()) {
+        return m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, ppSwapChain);
+    }
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DXGI wrapper CreateSwapChainForComposition")) {
         return m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, ppSwapChain);
     }
     // DX12: The "device" passed to CreateSwapChain is actually the command queue.

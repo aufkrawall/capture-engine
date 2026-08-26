@@ -6,6 +6,8 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         return;
     if (ShouldBypassDX9HooksForDevice(device))
         return;
+    if (ShouldSkipDX9PresentForVulkan())
+        return;
 
     // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)
     g_RenderWatchdog.Heartbeat();

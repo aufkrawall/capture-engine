@@ -50,7 +50,7 @@ public:
   bool InjectEarly(DWORD pid, const std::string &dllPath, HANDLE hMainThread);
 
   // Callback to execute before injection (e.g. to reload config)
-  void SetOnInjectCallback(std::function<void(const std::string &)> callback);
+  void SetOnInjectCallback(std::function<void(DWORD, const std::string &)> callback);
 
   // Security Validation
   bool ValidateDllSecurity(const std::string &dllPath);
@@ -148,7 +148,7 @@ private:
   std::mutex threadListMutex;
 
   // Inject moved to public
-  std::function<void(const std::string &)> onInjectCallback;
+  std::function<void(DWORD, const std::string &)> onInjectCallback;
 
 public:
   // CRITICAL FIX: Make mutex and shutdown methods accessible to delayed

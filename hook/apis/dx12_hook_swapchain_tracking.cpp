@@ -406,6 +406,12 @@ if (HookIsShuttingDown()) {
     return E_FAIL;
 }
 
+if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DeepHookCreateSwapChainForHwnd")) {
+    return dx12_hook_s_deepHookTrampoline
+               ? dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
+               : E_FAIL;
+}
+
 // Skip side-effects for temp swapchains created during hook installation
 if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
     HookLog("DeepHook: Temp swapchain creation — passthrough (no tracking)");

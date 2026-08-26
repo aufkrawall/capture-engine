@@ -61,7 +61,7 @@ anchors that predate the split are approximate.
   | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
-  - `shared_defs.h` - shared-memory ABI (current version `45`).
+  - `shared_defs.h` - shared-memory ABI (current version `46`).
   - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary.
@@ -70,7 +70,8 @@ anchors that predate the split are approximate.
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.
   - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_inject.cpp`,
-    `injection_security.cpp`, `inject_main.cpp`, `inject_config.cpp`, `inject_lifecycle.cpp`.
+    `injection_security.cpp`, `inject_main.cpp`, `inject_config.cpp`,
+    `inject_config_publication.cpp`, `inject_lifecycle.cpp`.
   - Recording/media orchestration: `media_main_encoder_0*.cpp` (session, loop start,
     WGC target, select, startup, emit, encode, health),
     `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target
@@ -185,14 +186,15 @@ anchors that predate the split are approximate.
 
 ## High-Risk / High-Value Files
 
-- `common/shared_defs.h` - shared-memory ABI (version `45`, source-verified).
+- `common/shared_defs.h` - shared-memory ABI (version `46`, source-verified).
 - `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_inject.cpp` -
   host-side startup/late injection, resident target adoption, and deject acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
   `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
   reactivation lifecycle across host generations.
-- `captureengine/inject_main.cpp` + `inject_config.cpp` - shared-memory setup/config reload orchestration,
-  resolved config publication, and inject-overlay runtime handoff flags.
+- `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory
+  setup/config reload orchestration, serialized resolved-config/discovery publication, and inject-overlay runtime
+  handoff flags.
 - `hook/main.cpp` + `main_injection.cpp` - hook bootstrap and wrapper-init decisions.
 - `hook/common/dxgi_shared.cpp` (+ `dxgi_shared_present*.cpp`, `dxgi_shared_steam*.cpp`)
   - central Present routing and startup bypass behavior.

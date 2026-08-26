@@ -172,7 +172,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
 
         sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
-        const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
         const bool activateNow = g_LayerState.whitelisted.load(std::memory_order_acquire);
         if (activateNow && isTinySwapchain) {
             LayerLog(
@@ -181,30 +180,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 sd->extent.width, sd->extent.height);
         } else if (activateNow) {
             LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
-            if (preferDX9Path) {
-                // DXVK d3d9: skip overlay (DX9 hook handles it) but still init capture for zero-copy
-                LayerLog("Vulkan Layer: DXVK d3d9 - skipping overlay, initializing Vulkan capture (%ux%u)",
-                         sd->extent.width, sd->extent.height);
-                InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
-                // Ensure vulkanLayerActive is set: may have been missed at vkCreateInstance if IPC
-                // wasn't ready yet. DX9 hook checks this flag to decide whether to use Vulkan
-                // capture vs its own staging path. Setting it here (before any Present) guarantees
-                // the Vulkan layer capture path is used for all frames.
-                auto* shmPtr = g_IPCClient.GetSharedMem();
-                if (shmPtr && !shmPtr->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
-                    LayerLog(
-                        "Vulkan Layer: DXVK d3d9 swapchain - setting vulkanLayerActive=true (deferred from "
-                        "vkCreateInstance)");
-                    shmPtr->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
-                }
-            } else {
-                InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage, count,
-                                  sd->images.data(), sd->window);
-                LayerLog(
-                    "Vulkan Layer: InitializeOverlay returned, registering "
-                    "swapchain");
-                InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
-            }
+            InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage, count,
+                              sd->images.data(), sd->window);
+            LayerLog(
+                "Vulkan Layer: InitializeOverlay returned, registering "
+                "swapchain");
+            InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
         }
         sd->runtimeInitialized.store(activateNow, std::memory_order_release);
         if (activateNow) {
@@ -273,7 +254,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
     }
 
-    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
@@ -287,10 +267,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     const bool runtimeEligible = sd && sd->extent.width >= 320 && sd->extent.height >= 180;
     if (sd && !sd->runtimeInitialized.exchange(true, std::memory_order_acq_rel)) {
         if (runtimeEligible) {
-            if (!preferDX9Path) {
-                InitializeOverlay(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage,
-                                  sd->imageCount, sd->images.data(), sd->window);
-            }
+            InitializeOverlay(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageUsage,
+                              sd->imageCount, sd->images.data(), sd->window);
             LayerLog("[InjectLifecycle] Late-initialized Vulkan swapchain %p", sd->swapchain);
         }
     }
@@ -349,11 +327,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // cadence grid: exactly one present per target interval, evenly spaced,
     // regardless of vsync (FIFO stays untouched and the limiter waits before
     // the driver call, so vsync on/off paces identically).
-    // DXVK keeps the legacy first-present gating + dedup: its CS thread presents
-    // once per frame while the DX9 hook paces the game thread for d3d9, and the
-    // game-thread DXGI hook + layer both pace for d3d11 — the layer's second
-    // call is then a duplicate of the same frame and must not wait again.
-    if (!preferDX9Path && !asyncPresentDetected) {
+    // DXVK D3D9 is paced here too: Vulkan owns the final presentation boundary,
+    // and actively bootstrapping a parallel DX9 hook is unsafe for translation
+    // runtimes with global renderer state.
+    if (!asyncPresentDetected) {
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
@@ -396,14 +373,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     uint32_t currentWaitSemaphoreCount = pPresentInfo ? pPresentInfo->waitSemaphoreCount : 0;
     std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;
-    if (preferDX9Path) {
-        static int dxvkPresentSkipLogCount = 0;
-        if (dxvkPresentSkipLogCount < 6) {
-            LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan present-time overlay only");
-            dxvkPresentSkipLogCount++;
-        }
-    }
-
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
 
         if (sd) {
@@ -419,7 +388,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             if (shm) {
                 overlayCfg = shm->ReadOverlayConfig();
             }
-            const bool overlayEnabled = !preferDX9Path && shm && overlayCfg.showOverlay;
+            const bool overlayEnabled = shm && overlayCfg.showOverlay;
             const bool captureRequested = shm && shm->runtimeState.IsInjectVideoCaptureRequested();
             const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
             const bool screenshotRequested = screenshotRequestId != 0;
@@ -594,16 +563,14 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
         return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
 
     SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(swapchain);
-    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
     if (sd) {
         sd->lastAcquireThreadId.store(GetCurrentThreadId(), std::memory_order_release);
         sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
-        if (sd->asyncPresentDetected.load(std::memory_order_acquire) && !preferDX9Path) {
+        if (sd->asyncPresentDetected.load(std::memory_order_acquire)) {
             g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
             // Async-present games acquire from a different thread than they
             // present on, so the present-time wait cannot throttle production;
-            // gate every acquire on the cadence grid instead. DXVK keeps the
-            // legacy behavior for the same reason as in vkQueuePresentKHR.
+            // gate every acquire on the cadence grid instead.
             g_SharedFpsLimiter.Apply(false, !IsDXVKD3D11WrapperLoaded());
         }
     }

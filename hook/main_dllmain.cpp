@@ -199,12 +199,22 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                              GetModuleHandleA("d3d8.dll") != NULL ||
                              GetModuleHandleA("ddraw.dll") != NULL);
 
-      // Initialize hooks for all graphics APIs (injection delay prevents D3D12
-      // init crashes)
-      if (hasGraphicsAPI && !IsDXVKD3D11WrapperLoaded()) {
+      const bool vulkanLayerModuleLoaded =
+          GetModuleHandleW(L"VK_LAYER_CE_overlay.dll") != NULL ||
+          GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll") != NULL;
+
+      // Initialize hooks for D3D/OpenGL processes. A resident CE Vulkan layer
+      // already owns graphics interception and must remain the only path.
+      if (hasGraphicsAPI &&
+          ce::vulkan_renderer_policy::ShouldInstallEarlyD3DDXGIHooks(
+              vulkanLayerModuleLoaded) &&
+          !IsDXVKD3D11WrapperLoaded()) {
         EarlyLog("DllMain: Graphics API detected - initializing IAT hooks "
                  "immediately...");
         InitializeWrapperHooks();
+      } else if (hasGraphicsAPI && vulkanLayerModuleLoaded) {
+        EarlyLog("DllMain: CaptureEngine Vulkan layer already owns the process - "
+                 "skipping immediate D3D/DXGI wrapper init");
       } else if (hasGraphicsAPI) {
         EarlyLog("DllMain: DXVK d3d11 detected - skipping immediate DXGI/D3D wrapper init");
       } else {

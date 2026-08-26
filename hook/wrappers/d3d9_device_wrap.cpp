@@ -8,6 +8,7 @@
 // Avoid including dx9_hook.h to prevent include path issues
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer);
 void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
+bool ShouldSkipDX9PresentForVulkan();
 
 // GUID for wrapper identification
 static const GUID IID_CWrapD3D9Device = {0x13579bdf, 0x2468, 0xace0, {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}};
@@ -93,6 +94,10 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::Present(const RECT* pSourceRect, cons
         return m_pReal ? m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion)
                        : D3DERR_INVALIDCALL;
     }
+    if (ShouldSkipDX9PresentForVulkan()) {
+        return m_pReal ? m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion)
+                       : D3DERR_INVALIDCALL;
+    }
     // Draw Overlay using shared logic
     IDirect3DSurface9* backBuffer = nullptr;
     // We pass m_pReal (Real Device) to the overlay drawer because it expects a
@@ -118,6 +123,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::PresentEx(const RECT* pSourceRect, co
     if (!m_pRealEx)
         return E_NOTIMPL;
     if (HookIsShuttingDown())
+        return m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    if (ShouldSkipDX9PresentForVulkan())
         return m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
     // Draw Overlay

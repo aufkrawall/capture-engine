@@ -529,6 +529,11 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory,  IUnknow
         return dx11_hook_oCreateSwapChain ? dx11_hook_oCreateSwapChain(pFactory, DeWrap(pDevice), pDesc, ppSwapChain)
                                           : DXGI_ERROR_INVALID_CALL;
     }
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DX11 CreateSwapChain")) {
+        return dx11_hook_oCreateSwapChain
+                   ? dx11_hook_oCreateSwapChain(pFactory, DeWrap(pDevice), pDesc, ppSwapChain)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         if (pDesc) {
             EarlyLog(
@@ -633,6 +638,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, 
 
 
     if (HookIsShuttingDown()) {
+        return dx11_hook_oCreateSwapChainForHwnd
+                   ? dx11_hook_oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc,
+                                                       pRestrictToOutput, ppSwapChain)
+                   : DXGI_ERROR_INVALID_CALL;
+    }
+    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DX11 CreateSwapChainForHwnd")) {
         return dx11_hook_oCreateSwapChainForHwnd
                    ? dx11_hook_oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc,
                                                        pRestrictToOutput, ppSwapChain)

@@ -31,6 +31,7 @@ void LayerReportIncompatibleDiscovery(const DiscoveryInfo* discovery);
 bool LayerIPC_Init();
 void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
+bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid = nullptr);
 void LayerIPC_StartHostLifecycleWatcher();
 void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
 void LayerIPC_SetFence(HANDLE fenceHandle);
