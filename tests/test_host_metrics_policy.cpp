@@ -58,6 +58,20 @@ TEST(HostMetricsPolicyTest, ExactCaptureDeviceLuidRetainsNonInjectProvenance) {
     EXPECT_EQ(resolution.source, AdapterResolutionSource::CaptureDeviceLuid);
 }
 
+TEST(HostMetricsPolicyTest, GraphicsLuidAcceptsProfileSourceOrItsDirectRendererChild) {
+    EXPECT_TRUE(scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
+        /*targetPid=*/42, /*publisherPid=*/42, /*publisherParentPid=*/0));
+    EXPECT_TRUE(scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
+        /*targetPid=*/42, /*publisherPid=*/84, /*publisherParentPid=*/42));
+}
+
+TEST(HostMetricsPolicyTest, GraphicsLuidRejectsMissingAndUnrelatedPublishers) {
+    EXPECT_FALSE(scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(0, 42, 0));
+    EXPECT_FALSE(scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(42, 0, 0));
+    EXPECT_FALSE(scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
+        /*targetPid=*/42, /*publisherPid=*/84, /*publisherParentPid=*/41));
+}
+
 TEST(HostMetricsPolicyTest, MissingLegacyLuidResolvesFromTargetProcessEngines) {
     const std::vector<GpuEngineSample> samples = {
         Sample(7, 0x1111, 80.0),
@@ -169,24 +183,32 @@ TEST(HostMetricsSourceInvariantTest, HookConsumesValidityInsteadOfNonzeroHeurist
     EXPECT_NE(overlay.find("cachedSystemMetrics.vramUsageValid"), std::string::npos);
 }
 
-TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlyLuidStampedByCurrentSourcePid) {
+TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlySourceOrDirectChildGraphicsLuid) {
     const std::string source = ReadProjectSource("captureengine/sensor_service.cpp");
     ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("luidSourcePid == sourcePid"), std::string::npos);
+    EXPECT_NE(source.find("QueryDirectParentProcessId(luidSourcePid)"), std::string::npos);
+    EXPECT_NE(source.find("IsGpuTelemetryPublisherEligible"), std::string::npos);
     EXPECT_NE(source.find("ResetGpuTelemetryForSource(s.shm, sourcePid)"), std::string::npos);
     EXPECT_NE(source.find("s.cachedLuid = 0"), std::string::npos);
     EXPECT_NE(source.find("ReadScreenGrabTarget"), std::string::npos);
     EXPECT_NE(source.find("CaptureDeviceLuid"), std::string::npos);
+    EXPECT_NE(source.find("UpdateSystemMetrics(\n                s.shm, sourcePid"), std::string::npos)
+        << "the profiled process must remain the shared telemetry/config source";
 }
 
 TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessProvenance) {
-    for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp", "hook/common/system_metrics.cpp",
-                             "hook/vulkan_layer/layer_ipc.cpp"}) {
+    for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp",
+                             "hook/common/system_metrics.cpp"}) {
         const std::string source = ReadProjectSource(path);
         SCOPED_TRACE(path);
         ASSERT_FALSE(source.empty());
         EXPECT_NE(source.find("SetLuidSourcePid(GetCurrentProcessId())"), std::string::npos);
     }
+
+    const std::string layerIpc = ReadProjectSource("hook/vulkan_layer/layer_ipc.cpp");
+    ASSERT_FALSE(layerIpc.empty());
+    EXPECT_NE(layerIpc.find("publisherPid = GetCurrentProcessId()"), std::string::npos);
+    EXPECT_NE(layerIpc.find("SetLuidSourcePid(publisherPid)"), std::string::npos);
 }
 
 TEST(HostMetricsSourceInvariantTest, DirectDrawOverlayHelperPublishesAdapterWithoutRecording) {

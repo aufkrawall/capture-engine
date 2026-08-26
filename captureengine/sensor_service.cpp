@@ -1,5 +1,6 @@
 #include "sensor_service.h"
 #include <windows.h>
+#include <tlhelp32.h>
 #include <atomic>
 #include <map>
 #include <string_view>
@@ -16,9 +17,35 @@ struct SensorSession {
     int64_t cachedLuid = 0;  // Cache valid LUID once discovered
     uint32_t lastSourcePid = 0;
     int64_t lastEffectiveLuid = 0;
+    uint32_t lastLuidPublisherPid = 0;
+    uint32_t lastLuidPublisherParentPid = 0;
+    bool lastLuidPublisherEligible = false;
     bool lastSourceWasScreenGrab = false;
     uint32_t updatesSinceSummary = 0;
 };
+
+static uint32_t QueryDirectParentProcessId(uint32_t processId) {
+    if (processId == 0)
+        return 0;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return 0;
+
+    uint32_t parentProcessId = 0;
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == processId) {
+                parentProcessId = entry.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return parentProcessId;
+}
 
 static void ResetGpuTelemetryForSource(SharedMemoryLayout* shm, uint32_t sourcePid) {
     if (!shm)
@@ -177,11 +204,16 @@ int SensorProcessMain(const AppConfig& config) {
             }
 
             // A LUID belongs to this source only when the publishing hook stamped
-            // the same process ID. Otherwise it may be stale from an earlier game
-            // in the controller session, and host-side PID inference must resolve it.
+            // the same process ID or a live direct child renderer. The latter is
+            // the split-renderer case: the configured/injected parent remains the
+            // profile source while its child owns final Vulkan presentation.
             const uint32_t luidSourcePid = s.shm->GetLuidSourcePid();
+            const uint32_t luidSourceParentPid =
+                luidSourcePid != 0 && luidSourcePid != sourcePid ? QueryDirectParentProcessId(luidSourcePid) : 0;
+            const bool luidPublisherEligible = scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
+                sourcePid, luidSourcePid, luidSourceParentPid);
             int64_t luid = 0;
-            if (luidSourcePid == sourcePid) {
+            if (!useScreenGrabTarget && luidPublisherEligible) {
                 const uint64_t high = static_cast<uint32_t>(s.shm->GetLuidHighPart());
                 const uint64_t low = static_cast<uint32_t>(s.shm->GetLuidLowPart());
                 luid = static_cast<int64_t>((high << 32) | low);
@@ -201,14 +233,20 @@ int SensorProcessMain(const AppConfig& config) {
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
             if (sourcePid != s.lastSourcePid || effectiveLuid != s.lastEffectiveLuid ||
+                luidSourcePid != s.lastLuidPublisherPid ||
+                luidSourceParentPid != s.lastLuidPublisherParentPid ||
+                luidPublisherEligible != s.lastLuidPublisherEligible ||
                 useScreenGrabTarget != s.lastSourceWasScreenGrab) {
                 LogInfo(
                     "[Sensors] Session update: injectPid=%u targetPid=%u targetSource=%s adapterLuid=0x%llX "
-                    "hookLuidPublisherPid=%u",
+                    "graphicsLuidPublisherPid=%u publisherParentPid=%u publisherEligible=%d",
                     it->first, sourcePid, useScreenGrabTarget ? "screen-grab-media" : "inject-hook", effectiveLuid,
-                    luidSourcePid);
+                    luidSourcePid, luidSourceParentPid, luidPublisherEligible ? 1 : 0);
                 s.lastSourcePid = sourcePid;
                 s.lastEffectiveLuid = effectiveLuid;
+                s.lastLuidPublisherPid = luidSourcePid;
+                s.lastLuidPublisherParentPid = luidSourceParentPid;
+                s.lastLuidPublisherEligible = luidPublisherEligible;
                 s.lastSourceWasScreenGrab = useScreenGrabTarget;
             }
 
@@ -217,14 +255,16 @@ int SensorProcessMain(const AppConfig& config) {
                 const auto& metrics = s.shm->systemMetrics;
                 LogInfo(
                     "[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u cpu=%.1f maxCore=%u "
-                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu validity=0x%X",
+                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu validity=0x%X publisherPid=%u publisherParentPid=%u "
+                    "publisherEligible=%d",
                     it->first, sourcePid, effectiveLuid, s.updatesSinceSummary,
                     metrics.cpuUsage.load(std::memory_order_relaxed),
                     metrics.maxCoreLoad.load(std::memory_order_relaxed),
                     metrics.gpuUsage.load(std::memory_order_relaxed),
                     metrics.vramUsage.load(std::memory_order_relaxed),
                     metrics.vramTotal.load(std::memory_order_relaxed) / (1024 * 1024),
-                    metrics.validityMask.load(std::memory_order_relaxed));
+                    metrics.validityMask.load(std::memory_order_relaxed), luidSourcePid, luidSourceParentPid,
+                    luidPublisherEligible ? 1 : 0);
                 s.updatesSinceSummary = 0;
             }
 

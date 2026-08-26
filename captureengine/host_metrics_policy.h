@@ -28,6 +28,18 @@ struct AdapterResolution {
     AdapterResolutionSource source = AdapterResolutionSource::Unavailable;
 };
 
+// The configured/injected process remains the profile source in split-renderer
+// applications, while a live direct child can own final presentation and publish
+// the exact adapter LUID. This mirrors the Vulkan eligibility boundary: accept
+// the profiled source itself or its direct renderer child, never an unrelated or
+// merely stale publisher PID.
+inline bool IsGpuTelemetryPublisherEligible(uint32_t targetPid, uint32_t publisherPid,
+                                            uint32_t publisherParentPid) {
+    if (targetPid == 0 || publisherPid == 0)
+        return false;
+    return publisherPid == targetPid || publisherParentPid == targetPid;
+}
+
 inline uint32_t CalculateProcessorUsagePercent(uint64_t previousIdle, uint64_t previousKernel,
                                                uint64_t previousUser, uint64_t currentIdle, uint64_t currentKernel,
                                                uint64_t currentUser) {

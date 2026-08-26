@@ -30,6 +30,15 @@ the bridge check in the falsifying session. This generic lineage proof lets a cl
 renderer while rejecting unrelated helpers and stale/unverified parents; there is no Portal/Remix executable-name
 exception.
 
+Build 0.1.6266 and session `20260826_020732` runtime-confirmed that Portal RTX no longer crashes and the Vulkan overlay
+is visible. The remaining `GPU --` / absent VRAM rows were a distinct provenance mismatch: `sourcePid` correctly stayed
+on profiled `hl2.exe` (PID 3944), while the live bridge (PID 22668) owned RTX 5070 LUID `0xC88E`. The Vulkan metrics
+collector stamped the bridge PID, but sensors accepted an exact LUID only from the source PID and found no GPU-engine
+evidence under the non-rendering parent, so it published validity `0x0`. Sensors now accept a graphics LUID from the
+selected source or a live direct child whose process-table parent is that source, retain the parent as config/telemetry
+publication identity, and log publisher PID, parent PID, and eligibility. This reuses the generic split-renderer lineage
+boundary rather than adding a Remix name rule.
+
 ### 2026-08-24 - RoboCop NGX override crash: CE trusted a foreign GetProcAddress wrapper
 
 The build 0.1.6258 user dump is a deterministic `0xC00000FD` recursion, not an NVIDIA implementation fault.

@@ -561,10 +561,16 @@ void LayerIPC_SetLUID(int32_t low, int32_t high) {
     if (!mem)
         return;
 
+    const uint32_t publisherPid = GetCurrentProcessId();
+    const bool changed = mem->GetLuidLowPart() != low || mem->GetLuidHighPart() != high ||
+                         mem->GetLuidSourcePid() != publisherPid;
     mem->SetLuidLowPart(low);
     mem->SetLuidHighPart(high);
-    mem->SetLuidSourcePid(GetCurrentProcessId());
-    // LayerLog("Layer IPC: Set LUID %08x:%08x", high, low);
+    mem->SetLuidSourcePid(publisherPid);
+    if (changed) {
+        LayerLog("Layer IPC: Published renderer LUID %08x:%08x (publisherPid=%u profileSourcePid=%u)",
+                 static_cast<uint32_t>(high), static_cast<uint32_t>(low), publisherPid, mem->GetSourcePid());
+    }
 }
 
 uint32_t LayerIPC_GetWriteIndex() {
