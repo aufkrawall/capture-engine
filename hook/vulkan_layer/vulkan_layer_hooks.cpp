@@ -1,5 +1,6 @@
 #include "vulkan_layer_internal.h"
 #include "nv_lod_spread_override.h"
+#include "vulkan_reflex_limiter.h"
 
 namespace {
 
@@ -125,6 +126,10 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkDestroyFence = (PFN_vkDestroyFence)gdpa(device, "vkDestroyFence");
     dispatch->fp_vkWaitForFences = (PFN_vkWaitForFences)gdpa(device, "vkWaitForFences");
     dispatch->fp_vkResetFences = (PFN_vkResetFences)gdpa(device, "vkResetFences");
+    dispatch->fp_vkWaitSemaphores = (PFN_vkWaitSemaphores)gdpa(device, "vkWaitSemaphores");
+    if (!dispatch->fp_vkWaitSemaphores) {
+        dispatch->fp_vkWaitSemaphores = (PFN_vkWaitSemaphores)gdpa(device, "vkWaitSemaphoresKHR");
+    }
     dispatch->fp_vkCreateSemaphore = (PFN_vkCreateSemaphore)gdpa(device, "vkCreateSemaphore");
     dispatch->fp_vkDestroySemaphore = (PFN_vkDestroySemaphore)gdpa(device, "vkDestroySemaphore");
     dispatch->fp_vkCreateSwapchainKHR = (PFN_vkCreateSwapchainKHR)gdpa(device, "vkCreateSwapchainKHR");
@@ -132,6 +137,9 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkGetSwapchainImagesKHR = (PFN_vkGetSwapchainImagesKHR)gdpa(device, "vkGetSwapchainImagesKHR");
     dispatch->fp_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)gdpa(device, "vkAcquireNextImageKHR");
     dispatch->fp_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)gdpa(device, "vkQueuePresentKHR");
+    dispatch->fp_vkSetLatencySleepModeNV =
+        (PFN_vkSetLatencySleepModeNV)gdpa(device, "vkSetLatencySleepModeNV");
+    dispatch->fp_vkLatencySleepNV = (PFN_vkLatencySleepNV)gdpa(device, "vkLatencySleepNV");
     dispatch->fp_vkCreateDescriptorSetLayout =
         (PFN_vkCreateDescriptorSetLayout)gdpa(device, "vkCreateDescriptorSetLayout");
     dispatch->fp_vkDestroyDescriptorSetLayout =
@@ -696,6 +704,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
+    g_VulkanReflexLimiter.SetDevice(*pDevice, dispatch);
 
     if (overlayQueueReservation.reserved && dispatch->fp_vkGetDeviceQueue) {
         dispatch->fp_vkGetDeviceQueue(*pDevice, overlayQueueReservation.queueFamilyIndex,
@@ -724,6 +733,7 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllo
     CleanupOverlay(device);
     CleanupCapture(device);
     CleanupPrerenderFences(device);
+    g_VulkanReflexLimiter.ShutdownDevice(device);
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkDestroyDevice)
         disp->fp_vkDestroyDevice(device, pAllocator);

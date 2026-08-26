@@ -77,6 +77,8 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
         }
         m_QueueFamilies.erase(queueIt->first);
         m_QueueFlags.erase(queueIt->first);
+        m_QueueLastSubmitThreadIds.erase(queueIt->first);
+        m_QueueGraphicsProducerQueues.erase(queueIt->first);
         queueIt = m_Queues.erase(queueIt);
     }
     m_DeviceLastSubmitThreadIds.erase(device);
@@ -234,6 +236,7 @@ void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
         return;
     }
     m_DeviceLastSubmitThreadIds[queueIt->second] = GetCurrentThreadId();
+    m_QueueLastSubmitThreadIds[queue] = GetCurrentThreadId();
     // Only the game reaches this: CE's own overlay, capture, screenshot and
     // prerender submissions call the dispatch pointer directly and never come
     // through the layer's vkQueueSubmit wrappers.
@@ -246,30 +249,84 @@ void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
 void VulkanLayerState::ArmPresentTopologyLearning() {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_SignalSemaphoreQueues.clear();
+    m_SemaphoreGraphicsProducerQueues.clear();
+    m_QueueGraphicsProducerQueues.clear();
     m_LearnPresentTopology.store(true, std::memory_order_relaxed);
 }
 
-void VulkanLayerState::NoteSignalSemaphores(VkQueue queue, const VkSemaphore* semaphores, uint32_t count) {
-    if (!semaphores || count == 0)
+void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores,
+                                                 uint32_t waitCount, const VkSemaphore* signalSemaphores,
+                                                 uint32_t signalCount) {
+    if (!signalSemaphores || signalCount == 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
         return;
-    for (uint32_t i = 0; i < count; ++i) {
-        if (semaphores[i] != VK_NULL_HANDLE)
-            m_SignalSemaphoreQueues[semaphores[i]] = queue;
+
+    VkQueue graphicsProducer = VK_NULL_HANDLE;
+    const auto queueFlags = m_QueueFlags.find(queue);
+    if (queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0) {
+        graphicsProducer = queue;
+    } else if (waitSemaphores) {
+        for (uint32_t i = 0; i < waitCount; ++i) {
+            const auto upstream = m_SemaphoreGraphicsProducerQueues.find(waitSemaphores[i]);
+            if (upstream != m_SemaphoreGraphicsProducerQueues.end())
+                graphicsProducer = upstream->second;
+        }
+    }
+    if (graphicsProducer == VK_NULL_HANDLE) {
+        const auto prior = m_QueueGraphicsProducerQueues.find(queue);
+        if (prior != m_QueueGraphicsProducerQueues.end())
+            graphicsProducer = prior->second;
+    } else {
+        m_QueueGraphicsProducerQueues[queue] = graphicsProducer;
+    }
+
+    for (uint32_t i = 0; i < signalCount; ++i) {
+        if (signalSemaphores[i] == VK_NULL_HANDLE)
+            continue;
+        m_SignalSemaphoreQueues[signalSemaphores[i]] = queue;
+        if (graphicsProducer != VK_NULL_HANDLE)
+            m_SemaphoreGraphicsProducerQueues[signalSemaphores[i]] = graphicsProducer;
     }
 }
 
-void VulkanLayerState::NoteSignalSemaphores2(VkQueue queue, const VkSemaphoreSubmitInfo* semaphores, uint32_t count) {
-    if (!semaphores || count == 0)
+void VulkanLayerState::NoteSemaphoreDependencies2(VkQueue queue, const VkSemaphoreSubmitInfo* waitSemaphores,
+                                                  uint32_t waitCount,
+                                                  const VkSemaphoreSubmitInfo* signalSemaphores,
+                                                  uint32_t signalCount) {
+    if (!signalSemaphores || signalCount == 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
         return;
-    for (uint32_t i = 0; i < count; ++i) {
-        if (semaphores[i].semaphore != VK_NULL_HANDLE)
-            m_SignalSemaphoreQueues[semaphores[i].semaphore] = queue;
+
+    VkQueue graphicsProducer = VK_NULL_HANDLE;
+    const auto queueFlags = m_QueueFlags.find(queue);
+    if (queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0) {
+        graphicsProducer = queue;
+    } else if (waitSemaphores) {
+        for (uint32_t i = 0; i < waitCount; ++i) {
+            const auto upstream = m_SemaphoreGraphicsProducerQueues.find(waitSemaphores[i].semaphore);
+            if (upstream != m_SemaphoreGraphicsProducerQueues.end())
+                graphicsProducer = upstream->second;
+        }
+    }
+    if (graphicsProducer == VK_NULL_HANDLE) {
+        const auto prior = m_QueueGraphicsProducerQueues.find(queue);
+        if (prior != m_QueueGraphicsProducerQueues.end())
+            graphicsProducer = prior->second;
+    } else {
+        m_QueueGraphicsProducerQueues[queue] = graphicsProducer;
+    }
+
+    for (uint32_t i = 0; i < signalCount; ++i) {
+        const VkSemaphore semaphore = signalSemaphores[i].semaphore;
+        if (semaphore == VK_NULL_HANDLE)
+            continue;
+        m_SignalSemaphoreQueues[semaphore] = queue;
+        if (graphicsProducer != VK_NULL_HANDLE)
+            m_SemaphoreGraphicsProducerQueues[semaphore] = graphicsProducer;
     }
 }
 
@@ -279,10 +336,24 @@ VkQueue VulkanLayerState::GetSemaphoreSignalQueue(VkSemaphore semaphore) {
     return (it != m_SignalSemaphoreQueues.end()) ? it->second : VK_NULL_HANDLE;
 }
 
+VkQueue VulkanLayerState::GetSemaphoreGraphicsProducerQueue(VkSemaphore semaphore) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_SemaphoreGraphicsProducerQueues.find(semaphore);
+    return (it != m_SemaphoreGraphicsProducerQueues.end()) ? it->second : VK_NULL_HANDLE;
+}
+
 void VulkanLayerState::FinishPresentTopologyLearning() {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_LearnPresentTopology.store(false, std::memory_order_relaxed);
     m_SignalSemaphoreQueues.clear();
+    m_SemaphoreGraphicsProducerQueues.clear();
+    m_QueueGraphicsProducerQueues.clear();
+}
+
+uint32_t VulkanLayerState::GetQueueLastSubmitThreadId(VkQueue queue) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_QueueLastSubmitThreadIds.find(queue);
+    return (it != m_QueueLastSubmitThreadIds.end()) ? it->second : 0;
 }
 
 uint32_t VulkanLayerState::GetLastSubmitThreadId(VkDevice device) {
@@ -437,7 +508,7 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     LayerLog(
         "VulkanLayerState: Updated from config - policy=%s AF=%d, MipBias=%.1f, "
-        "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d",
+        "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d, Prerender=%.0f",
         m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(), m_ForceMipBiasClamp ? 1 : 0,
-        m_VsyncMode.c_str(), m_BackbufferCount);
+        m_VsyncMode.c_str(), m_BackbufferCount, m_PrerenderLimit);
 }

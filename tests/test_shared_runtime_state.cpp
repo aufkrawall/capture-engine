@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cwchar>
+#include <cstring>
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
@@ -208,15 +209,34 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_46_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_46"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_47_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_47"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_46"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_46_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_46_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_46_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_46_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_47"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_47_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_47_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_47_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_47_1234ABCD"), 0);
+}
+
+TEST(SharedDefsTest, RendererPidAndRuntimeOverrideProfileHaveIndependentStorage) {
+    SharedMemoryLayout sharedMemory;
+    sharedMemory.SetSourcePid(41);
+    sharedMemory.runtimeState.inheritedRendererProcessPid.store(42, std::memory_order_release);
+    std::strcpy(sharedMemory.graphicsConfig.dlssSrDllPath, "C:\\runtime\\sl");
+    std::strcpy(sharedMemory.graphicsConfig.dlssRrDllPath, "C:\\runtime\\sl");
+    std::strcpy(sharedMemory.graphicsConfig.dlssFgDllPath, "C:\\runtime\\sl");
+    std::strcpy(sharedMemory.graphicsConfig.streamlineDllPath, "C:\\runtime\\sl");
+    std::strcpy(sharedMemory.graphicsConfig.dlssDebugOverlay, "on");
+
+    EXPECT_EQ(sharedMemory.GetSourcePid(), 41u);
+    EXPECT_EQ(sharedMemory.runtimeState.inheritedRendererProcessPid.load(std::memory_order_acquire), 42u);
+    EXPECT_STREQ(sharedMemory.graphicsConfig.dlssSrDllPath, "C:\\runtime\\sl");
+    EXPECT_STREQ(sharedMemory.graphicsConfig.dlssRrDllPath, "C:\\runtime\\sl");
+    EXPECT_STREQ(sharedMemory.graphicsConfig.dlssFgDllPath, "C:\\runtime\\sl");
+    EXPECT_STREQ(sharedMemory.graphicsConfig.streamlineDllPath, "C:\\runtime\\sl");
+    EXPECT_STREQ(sharedMemory.graphicsConfig.dlssDebugOverlay, "on");
 }
 
 // Discovery compatibility is judged on the compiled layout, never on build

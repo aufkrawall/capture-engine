@@ -176,3 +176,28 @@ TEST_F(ConfigOverrideTest, StreamlineDllPathParsing) {
 
     EXPECT_EQ(config.graphics.streamlineDllPath, "C:\\custom\\sl\\dlls");
 }
+
+TEST_F(ConfigOverrideTest, ProfileResolvesTheCompleteProcessLocalDlssRuntimeSet) {
+    WriteConfig(
+        "[Profile.SplitRenderer]\n"
+        "process=client.exe\n"
+        "dlss_sr_dll_path=C:\\runtime\\sl\n"
+        "dlss_rr_dll_path=C:\\runtime\\sl\n"
+        "dlss_fg_dll_path=C:\\runtime\\sl\n"
+        "streamline_dll_path=C:\\runtime\\sl\n"
+        "dlss_sr_preset=M\n"
+        "dlss_rr_preset=F\n"
+        "dlss_fg_preset=B\n"
+        "dlss_debug_overlay=on\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "client.exe");
+    EXPECT_EQ(config.graphics.dlssSrDllPath, "C:\\runtime\\sl");
+    EXPECT_EQ(config.graphics.dlssRrDllPath, "C:\\runtime\\sl");
+    EXPECT_EQ(config.graphics.dlssFgDllPath, "C:\\runtime\\sl");
+    EXPECT_EQ(config.graphics.streamlineDllPath, "C:\\runtime\\sl");
+    EXPECT_EQ(config.graphics.parsed.srPreset, 13u);
+    EXPECT_EQ(config.graphics.parsed.rrPreset, 6u);
+    EXPECT_EQ(config.graphics.parsed.fgPreset, 2u);
+    EXPECT_EQ(config.graphics.dlssDebugOverlay, "on");
+}

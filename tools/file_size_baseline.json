@@ -13,8 +13,8 @@
   "limit": 800,
   "target": 750,
   "files": {
-    "tests/test_fps_limiter.cpp": 852
+    "tests/test_fps_limiter.cpp": 822
   },
   "count": 1,
-  "total": 852
+  "total": 822
 }

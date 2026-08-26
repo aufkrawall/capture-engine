@@ -8,6 +8,23 @@ bool IsRayReconstructionCapabilityParameter(const char* name) {
             strcmp(name, NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult) == 0);
 }
 
+bool ResolveConfiguredFGParameter(const char* name, int& value) {
+    if (!name)
+        return false;
+    const int multiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    if (multiplier <= 0)
+        return false;
+    if (strcmp(name, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
+        value = multiplier;
+        return true;
+    }
+    if (strcmp(name, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount) == 0) {
+        value = static_cast<int>(DLSSFGMultiplierToGeneratedFrames(multiplier));
+        return true;
+    }
+    return false;
+}
+
 template <typename T>
 void LogObservedRayReconstructionCapability(const char* name, NVSDK_NGX_Result result, const T* value,
                                             const char* getter) {
@@ -23,6 +40,60 @@ void LogObservedRayReconstructionCapability(const char* name, NVSDK_NGX_Result r
 }
 
 }  // namespace
+
+int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
+    const int multiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    if (multiplier <= 0 || !params)
+        return multiplier;
+
+    const ParameterVTableOriginals originals = GetParameterOriginals(params);
+    if (!originals.setI && !originals.setUI) {
+        static std::atomic<bool> missingSetterLogged{false};
+        if (!missingSetterLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "NVNGX FG: cannot enforce the runtime factor because the tracked parameter vtable has no "
+                "captured setter");
+        }
+        return 0;
+    }
+    const int generatedFrames = static_cast<int>(DLSSFGMultiplierToGeneratedFrames(multiplier));
+
+    int observedGeneratedFrames = 0;
+    if (originals.getI) {
+        originals.getI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &observedGeneratedFrames);
+    } else if (originals.getUI) {
+        unsigned int value = 0;
+        if (originals.getUI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &value) ==
+            NVSDK_NGX_Result_Success) {
+            observedGeneratedFrames = static_cast<int>(value);
+        }
+    }
+
+    // Use the captured originals so this is an unconditional write at the
+    // final consumption boundary, not another trip through our Set hooks.
+    if (originals.setI) {
+        originals.setI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, multiplier);
+        originals.setI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, generatedFrames);
+    }
+    if (originals.setUI) {
+        originals.setUI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier,
+                        static_cast<unsigned int>(multiplier));
+        originals.setUI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                        static_cast<unsigned int>(generatedFrames));
+    }
+
+    if (observedGeneratedFrames != 0 && observedGeneratedFrames != generatedFrames) {
+        static std::atomic<uint32_t> changedValueLogs{0};
+        const uint32_t logIndex = changedValueLogs.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 16) {
+            HookLogImportant(
+                "NVNGX FG: runtime EvaluateFeature factor changed to %dx; reasserted configured %dx "
+                "(MultiFrameCount %d -> %d)",
+                observedGeneratedFrames + 1, multiplier, observedGeneratedFrames, generatedFrames);
+        }
+    }
+    return multiplier;
+}
 
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue) {
     const PFN_SetI original = GetParameterOriginals(pThis).setI;
@@ -80,13 +151,14 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 LogOncePerParam(InName, "NVNGX: Forcing AutoExposure to %d", InValue);
         } else {
             const auto& cfg = GetActiveGraphicsConfig();
-            if (strcmp(InName, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
-                const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
-                if (fgMultiplier > 0 && InValue != fgMultiplier) {
+            int desiredFGValue = 0;
+            if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
+                if (InValue != desiredFGValue) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
-                        LogOncePerParam(InName, "NVNGX: Overriding FrameGenerationMultiplier via SetI -> %d (was %d)",
-                                        fgMultiplier, InValue);
-                    InValue = fgMultiplier;
+                        LogOncePerParam(InName, "NVNGX: Overriding %s via SetI -> %d (was %d; configured=%dx)",
+                                        InName, desiredFGValue, InValue,
+                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()));
+                    InValue = desiredFGValue;
                 }
             }
 
@@ -227,13 +299,14 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 InValue = 0;
         } else {
             const auto& cfg = GetActiveGraphicsConfig();
-            if (strcmp(InName, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
-                const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
-                if (fgMultiplier > 0 && InValue != (unsigned int)fgMultiplier) {
+            int desiredFGValue = 0;
+            if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
+                if (InValue != static_cast<unsigned int>(desiredFGValue)) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
-                        LogOncePerParam(InName, "NVNGX: Overriding FrameGenerationMultiplier via SetUI -> %d (was %u)",
-                                        fgMultiplier, InValue);
-                    InValue = (unsigned int)fgMultiplier;
+                        LogOncePerParam(InName, "NVNGX: Overriding %s via SetUI -> %u (was %u; configured=%dx)",
+                                        InName, static_cast<unsigned int>(desiredFGValue), InValue,
+                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()));
+                    InValue = static_cast<unsigned int>(desiredFGValue);
                 }
             }
 
@@ -387,6 +460,9 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetI(NVSDK_NGX_Parameter* pThis, const
     if (IsSafeString(InName))
         LogObservedRayReconstructionCapability(InName, res, OutValue, "GetI");
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
+        int desiredFGValue = 0;
+        if (ResolveConfiguredFGParameter(InName, desiredFGValue))
+            *OutValue = desiredFGValue;
         // If the game/driver is reading back a preset or quality value, we capture
         // it
         if (strcmp(InName, NVSDK_NGX_Parameter_PerfQualityValue) == 0) {
@@ -410,6 +486,9 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
     if (IsSafeString(InName))
         LogObservedRayReconstructionCapability(InName, res, OutValue, "GetUI");
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
+        int desiredFGValue = 0;
+        if (ResolveConfiguredFGParameter(InName, desiredFGValue))
+            *OutValue = static_cast<unsigned int>(desiredFGValue);
         if (strcmp(InName, NVSDK_NGX_Parameter_PerfQualityValue) == 0) {
             std::lock_guard<std::mutex> lock(nvngx_hook_g_ParamMapMutex);
             nvngx_hook_g_ParameterQualityMap[pThis] = (int)*OutValue;
@@ -495,14 +574,23 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
 
     if (fgMultiplier > 0) {
+        const int generatedFrames = static_cast<int>(DLSSFGMultiplierToGeneratedFrames(fgMultiplier));
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             LogOncePerParam(NVSDK_NGX_Parameter_FrameGenerationMultiplier,
                             "NVNGX: Injecting initial FrameGenerationMultiplier = %d", fgMultiplier);
+            LogOncePerParam(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                            "NVNGX: Injecting initial MultiFrameCount = %d (%dx output)", generatedFrames,
+                            fgMultiplier);
         }
-        if (vtable[3])
+        if (vtable[3]) {
             ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, fgMultiplier);
-        if (vtable[4])
+            ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, generatedFrames);
+        }
+        if (vtable[4]) {
             ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, (unsigned int)fgMultiplier);
+            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                                  static_cast<unsigned int>(generatedFrames));
+        }
     }
 
     // Initial Injection for Presets (via SetUI VT[4] and SetI VT[3])

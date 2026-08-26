@@ -46,6 +46,15 @@ inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool inje
     return !usingCaptureSync || !injectVideoCaptureRequested;
 }
 
+inline int ResolveFrameGenerationBaseTarget(int outputTargetFps, bool frameGenerationActive, int multiplier,
+                                            bool scaleForFrameGeneration) {
+    if (outputTargetFps <= 0)
+        return outputTargetFps;
+    if (!frameGenerationActive || multiplier < 2 || !scaleForFrameGeneration)
+        return outputTargetFps;
+    return std::max(1, outputTargetFps / std::min(multiplier, 4));
+}
+
 inline int64_t NextRationalIntervalTicks(int64_t frequency, int fps, int64_t& remainder) {
     if (frequency <= 0 || fps <= 0) {
         remainder = 0;

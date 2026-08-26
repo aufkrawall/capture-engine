@@ -40,21 +40,23 @@ namespace {
 
 // Steady-state cost is the relaxed atomic load inside IsLearningPresentTopology;
 // the map is only touched while a swapchain generation is still unidentified.
-inline void NotePresentTopologySignals(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits) {
+inline void NotePresentTopologyDependencies(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits) {
     if (!pSubmits || !VulkanLayerState::Get().IsLearningPresentTopology())
         return;
     for (uint32_t i = 0; i < submitCount; ++i) {
-        VulkanLayerState::Get().NoteSignalSemaphores(queue, pSubmits[i].pSignalSemaphores,
-                                                     pSubmits[i].signalSemaphoreCount);
+        VulkanLayerState::Get().NoteSemaphoreDependencies(
+            queue, pSubmits[i].pWaitSemaphores, pSubmits[i].waitSemaphoreCount, pSubmits[i].pSignalSemaphores,
+            pSubmits[i].signalSemaphoreCount);
     }
 }
 
-inline void NotePresentTopologySignals2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits) {
+inline void NotePresentTopologyDependencies2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits) {
     if (!pSubmits || !VulkanLayerState::Get().IsLearningPresentTopology())
         return;
     for (uint32_t i = 0; i < submitCount; ++i) {
-        VulkanLayerState::Get().NoteSignalSemaphores2(queue, pSubmits[i].pSignalSemaphoreInfos,
-                                                      pSubmits[i].signalSemaphoreInfoCount);
+        VulkanLayerState::Get().NoteSemaphoreDependencies2(
+            queue, pSubmits[i].pWaitSemaphoreInfos, pSubmits[i].waitSemaphoreInfoCount,
+            pSubmits[i].pSignalSemaphoreInfos, pSubmits[i].signalSemaphoreInfoCount);
     }
 }
 
@@ -69,7 +71,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
             return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
-        NotePresentTopologySignals(queue, submitCount, pSubmits);
+        NotePresentTopologyDependencies(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
     }
@@ -90,7 +92,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
     if (fence != VK_NULL_HANDLE) {}
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
-    NotePresentTopologySignals(queue, submitCount, pSubmits);
+    NotePresentTopologyDependencies(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
@@ -104,7 +106,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
             return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
-        NotePresentTopologySignals2(queue, submitCount, pSubmits);
+        NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
     }
@@ -125,7 +127,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
     if (fence != VK_NULL_HANDLE) {}
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
-    NotePresentTopologySignals2(queue, submitCount, pSubmits);
+    NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
 }
@@ -137,7 +139,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
         if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
             return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
         VulkanLayerState::Get().NoteQueueSubmit(queue);
-        NotePresentTopologySignals2(queue, submitCount, pSubmits);
+        NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
     }
@@ -155,7 +157,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
         return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
-    NotePresentTopologySignals2(queue, submitCount, pSubmits);
+    NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
     return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }

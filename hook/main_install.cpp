@@ -352,7 +352,7 @@ void CheckAndInstallHooks() {
             GetModuleHandleA("d3d8.dll") ? 1 : 0);
   }
 
-  if (!g_DX8Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d8.dll")) {
+  if (!s_vulkanActive && !g_DX8Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d8.dll")) {
     HookLog("Detected d3d8.dll. Installing DX8 hooks...");
     g_DX8Hook = new DX8Hook();
     LARGE_INTEGER _t1, _t2, _freq;
@@ -366,7 +366,7 @@ void CheckAndInstallHooks() {
     HookLog("DX8 hooks installed (init=%.1f ms)", _initMs);
   }
 
-  if (!g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
+  if (!s_vulkanActive && !g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
     HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
     g_OpenGLHook = new OpenGLHook();
     LARGE_INTEGER _t1, _t2, _freq;

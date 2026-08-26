@@ -493,6 +493,12 @@ extern OpenGLHook *g_OpenGLHook;
 // destroyed, so the pointer stays valid for every hook entry point that can
 // still run while the process tears down.
 extern AppConfig *g_pLocalConfig;
+extern std::atomic<bool> g_InheritedRendererProcess;
+
+void InitializeInheritedRendererBootstrapSignal();
+void CompleteInheritedRendererBootstrap(bool success);
+void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory);
+bool CurrentProcessOwnsProcessLocalRuntimeOverrides();
 
 extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
 

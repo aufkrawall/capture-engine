@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../hook/vulkan_layer/overlay_submit_queue_policy.h"
+#include "../hook/vulkan_layer/vulkan_reflex_limiter.h"
 #include "source_fragment_reader.h"
 
 // Regression coverage for the DOOM Eternal overlay disappearing after ~240
@@ -291,12 +292,69 @@ TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapc
     const std::string hooks = ReadProjectSource("hook/vulkan_layer/layer_hooks.cpp");
     ASSERT_FALSE(hooks.empty());
     size_t noteCount = 0;
-    for (size_t pos = hooks.find("NotePresentTopologySignals"); pos != std::string::npos;
-         pos = hooks.find("NotePresentTopologySignals", pos + 1)) {
+    for (size_t pos = hooks.find("NotePresentTopologyDependencies"); pos != std::string::npos;
+         pos = hooks.find("NotePresentTopologyDependencies", pos + 1)) {
         ++noteCount;
     }
     // Two definitions plus both paths of each of the three submit wrappers.
     EXPECT_EQ(noteCount, 8u);
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitUsesSemaphoreDerivedGraphicsProducer) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string state = ReadProjectSource("hook/vulkan_layer/vulkan_layer.h");
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(state.empty());
+
+    EXPECT_NE(state.find("prerenderProducerQueue"), std::string::npos);
+    EXPECT_NE(present.find("GetSemaphoreGraphicsProducerQueue"), std::string::npos);
+    EXPECT_NE(present.find("prerenderProducerQueue.store(graphicsProducerQueue"), std::string::npos);
+    EXPECT_NE(present.find("GetQueueLastSubmitThreadId(prerenderQueue)"), std::string::npos)
+        << "a queue borrowed from a different game thread is not externally synchronized";
+    EXPECT_NE(present.find("ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue"), std::string::npos)
+        << "a compute-only present queue must not silently disable a configured render queue depth";
+
+    const std::string hooks = ReadProjectSource("hook/vulkan_layer/layer_hooks.cpp");
+    ASSERT_FALSE(hooks.empty());
+    EXPECT_NE(hooks.find("pWaitSemaphores"), std::string::npos);
+    EXPECT_NE(hooks.find("pWaitSemaphoreInfos"), std::string::npos)
+        << "submit dependencies must propagate the upstream graphics producer through compute queues";
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, ForcedAnisotropyPublishesBoundedApplicationProof) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    ASSERT_FALSE(present.empty());
+    EXPECT_NE(present.find("Vulkan sampler: forced AF applied"), std::string::npos);
+    EXPECT_NE(present.find("s_anisotropyAppliedLogCount"), std::string::npos);
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, VulkanReflexUsesDriverSignaledPostPresentWait) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string reflex = ReadProjectSource("hook/vulkan_layer/vulkan_reflex_limiter.h");
+    const std::string entry = ReadProjectSource("hook/vulkan_layer/layer_main.cpp");
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(reflex.empty());
+    ASSERT_FALSE(entry.empty());
+
+    EXPECT_NE(reflex.find("kSetSleepModeId = 0x2acfd162"), std::string::npos);
+    EXPECT_NE(reflex.find("kSleepId = 0x36732b1e"), std::string::npos);
+    EXPECT_NE(reflex.find("fp_vkWaitSemaphores"), std::string::npos);
+    EXPECT_NE(present.find("g_SharedFpsLimiter.Apply(true, nativeVulkanPresent)"), std::string::npos);
+    EXPECT_NE(present.find("g_SharedFpsLimiter.ApplyPostPresent()"), std::string::npos);
+    EXPECT_NE(entry.find("Capture_vkSetLatencySleepModeNV"), std::string::npos);
+    EXPECT_NE(entry.find("Capture_vkLatencySleepNV"), std::string::npos);
+}
+
+TEST(VulkanReflexLimiterTest, ExposesCompleteNativePacingCallbacks) {
+    const NativeFpsPacingBackend backend = GetVulkanNativeFpsPacingBackend();
+    EXPECT_NE(backend.context, nullptr);
+    EXPECT_NE(backend.isAvailable, nullptr);
+    EXPECT_NE(backend.isGameActive, nullptr);
+    EXPECT_NE(backend.setTargetFps, nullptr);
+    EXPECT_NE(backend.sleep, nullptr);
+    EXPECT_NE(backend.clear, nullptr);
+    ASSERT_NE(backend.name, nullptr);
+    EXPECT_STREQ(backend.name, "Vulkan Reflex");
 }
 
 // DOOM Eternal `doomasyncpresentswitch` (2026-08-22) proves the remaining

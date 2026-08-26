@@ -125,6 +125,7 @@ struct DeviceDispatch {
     PFN_vkDestroyFence fp_vkDestroyFence = nullptr;
     PFN_vkWaitForFences fp_vkWaitForFences = nullptr;
     PFN_vkResetFences fp_vkResetFences = nullptr;
+    PFN_vkWaitSemaphores fp_vkWaitSemaphores = nullptr;
     PFN_vkCreateQueryPool fp_vkCreateQueryPool = nullptr;
     PFN_vkDestroyQueryPool fp_vkDestroyQueryPool = nullptr;
     PFN_vkCmdResetQueryPool fp_vkCmdResetQueryPool = nullptr;
@@ -137,6 +138,8 @@ struct DeviceDispatch {
     PFN_vkGetSwapchainImagesKHR fp_vkGetSwapchainImagesKHR = nullptr;
     PFN_vkAcquireNextImageKHR fp_vkAcquireNextImageKHR = nullptr;
     PFN_vkQueuePresentKHR fp_vkQueuePresentKHR = nullptr;
+    PFN_vkSetLatencySleepModeNV fp_vkSetLatencySleepModeNV = nullptr;
+    PFN_vkLatencySleepNV fp_vkLatencySleepNV = nullptr;
     PFN_vkCreateDescriptorSetLayout fp_vkCreateDescriptorSetLayout = nullptr;
     PFN_vkDestroyDescriptorSetLayout fp_vkDestroyDescriptorSetLayout = nullptr;
     PFN_vkCreateDescriptorPool fp_vkCreateDescriptorPool = nullptr;
@@ -183,6 +186,10 @@ struct SwapchainData {
     std::atomic<uint32_t> lastAcquireThreadId{0};
     std::atomic<uint64_t> lastAcquireTick{0};
     std::atomic<bool> asyncPresentDetected{false};
+    // Graphics queue that produced the image consumed by a non-graphics
+    // present queue. Learned from the first present wait semaphore and reused
+    // for queue-depth control without introducing a cross-engine marker.
+    std::atomic<VkQueue> prerenderProducerQueue{VK_NULL_HANDLE};
 };
 
 // Singleton state manager
@@ -204,6 +211,7 @@ public:
         m_Queues.erase(queue);
         m_QueueFamilies.erase(queue);
         m_QueueFlags.erase(queue);
+        m_QueueLastSubmitThreadIds.erase(queue);
     }
     DeviceDispatch* GetDeviceFromQueue(VkQueue queue);
     VkDevice GetVkDeviceFromQueue(VkQueue queue);
@@ -224,6 +232,7 @@ public:
     VkQueue FindLastGameGraphicsSubmitQueue(VkDevice device);
     void NoteQueueSubmit(VkQueue queue);
     uint32_t GetLastSubmitThreadId(VkDevice device);
+    uint32_t GetQueueLastSubmitThreadId(VkQueue queue);
 
     // One-shot present-topology learning. Which queue signals the semaphores a
     // present waits on decides whether CE's overlay - a render pass, so always
@@ -235,9 +244,12 @@ public:
         return m_LearnPresentTopology.load(std::memory_order_relaxed);
     }
     void ArmPresentTopologyLearning();
-    void NoteSignalSemaphores(VkQueue queue, const VkSemaphore* semaphores, uint32_t count);
-    void NoteSignalSemaphores2(VkQueue queue, const VkSemaphoreSubmitInfo* semaphores, uint32_t count);
+    void NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores, uint32_t waitCount,
+                                   const VkSemaphore* signalSemaphores, uint32_t signalCount);
+    void NoteSemaphoreDependencies2(VkQueue queue, const VkSemaphoreSubmitInfo* waitSemaphores, uint32_t waitCount,
+                                    const VkSemaphoreSubmitInfo* signalSemaphores, uint32_t signalCount);
     VkQueue GetSemaphoreSignalQueue(VkSemaphore semaphore);
+    VkQueue GetSemaphoreGraphicsProducerQueue(VkSemaphore semaphore);
     void FinishPresentTopologyLearning();
 
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
@@ -319,9 +331,12 @@ private:
     // and consulted at lookup time, never captured from a fresh queue handle.
     std::unordered_map<const void*, VkDevice> m_DevicesByDispatchKey;
     std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
+    std::unordered_map<VkQueue, uint32_t> m_QueueLastSubmitThreadIds;
     std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
     std::atomic<bool> m_LearnPresentTopology{true};
     std::unordered_map<VkSemaphore, VkQueue> m_SignalSemaphoreQueues;
+    std::unordered_map<VkSemaphore, VkQueue> m_SemaphoreGraphicsProducerQueues;
+    std::unordered_map<VkQueue, VkQueue> m_QueueGraphicsProducerQueues;
 
     // Generation counter to invalidate TLS swapchain caches on unregister
     std::atomic<uint64_t> m_SwapchainGeneration{0};
@@ -385,6 +400,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkSetLatencySleepModeNV(
+    VkDevice device, VkSwapchainKHR swapchain, const VkLatencySleepModeInfoNV* pSleepModeInfo);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkLatencySleepNV(VkDevice device, VkSwapchainKHR swapchain,
+                                                        const VkLatencySleepInfoNV* pSleepInfo);
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instance,
                                                                const VkWin32SurfaceCreateInfoKHR* pCreateInfo,

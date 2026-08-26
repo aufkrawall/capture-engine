@@ -1,5 +1,149 @@
 #include "test_fps_limiter_shared.h"
 
+namespace {
+
+struct MockNativePacingBackend {
+    bool available = true;
+    bool gameActive = false;
+    bool setTargetSucceeds = true;
+    int targetFps = 0;
+    int setTargetCalls = 0;
+    int sleepCalls = 0;
+    int clearCalls = 0;
+};
+
+NativeFpsPacingBackend MakeMockNativePacingBackend(MockNativePacingBackend* mock) {
+    NativeFpsPacingBackend backend{};
+    backend.context = mock;
+    backend.isAvailable = [](void* context) { return static_cast<MockNativePacingBackend*>(context)->available; };
+    backend.isGameActive = [](void* context) { return static_cast<MockNativePacingBackend*>(context)->gameActive; };
+    backend.setTargetFps = [](void* context, int fps) {
+        auto* state = static_cast<MockNativePacingBackend*>(context);
+        ++state->setTargetCalls;
+        state->targetFps = fps;
+        return state->available && state->setTargetSucceeds;
+    };
+    backend.sleep = [](void* context, int64_t* waitUs) {
+        auto* state = static_cast<MockNativePacingBackend*>(context);
+        ++state->sleepCalls;
+        *waitUs = 321;
+        return state->available;
+    };
+    backend.clear = [](void* context) { ++static_cast<MockNativePacingBackend*>(context)->clearCalls; };
+    backend.name = "test native backend";
+    return backend;
+}
+
+}  // namespace
+
+TEST(FpsLimiterPolicyTest, EveryGeneralLimiterModeTargetsFinalFrameGeneratedRate) {
+    using ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget;
+
+    EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 3, true), 33);
+    EXPECT_EQ(ResolveFrameGenerationBaseTarget(120, true, 4, true), 30);
+    EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 2, true), 50);
+    EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, false, 3, true), 100);
+    EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 3, false), 100)
+        << "inject capture-sync targets application frames, unlike the general output cap";
+}
+
+// Basic mode has the same final-output target semantics as native/FG-fallback
+// mode. Capture sync avoids the intentional immediate duplicate-present guard,
+// making the scaled interval directly measurable without a timing sleep.
+TEST_F(FpsLimiterTest, BasicCaptureSyncScalesToFinalFGOutputRate) {
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply();
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();
+    QueryPerformanceCounter(&end);
+    const double elapsedMs =
+        static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
+
+    EXPECT_GE(elapsedMs, 25.0);
+    EXPECT_LT(elapsedMs, 100.0);
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+TEST_F(FpsLimiterTest, ExplicitNativeModeUsesApiBackendAfterPresent) {
+    MockNativePacingBackend mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(100);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+
+    limiter.Apply(true);
+
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.targetFps, 100);
+    EXPECT_EQ(mock.sleepCalls, 0);
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
+
+    limiter.ApplyPostPresent();
+    EXPECT_EQ(mock.sleepCalls, 1);
+    EXPECT_EQ(limiter.GetLastWaitUs(), 321);
+    limiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, VulkanNativeTargetScalesToBaseRateForMfg) {
+    MockNativePacingBackend mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(90);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    g_FGCompat.SetDLSSFGMultiplier(3);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply(true);
+
+    EXPECT_EQ(mock.targetFps, 30);
+    limiter.CancelPostPresentPacing();
+    g_FGCompat.SetDLSSFGActive(false);
+    limiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, AutoModeUsesAnAlreadyActiveVulkanNativeBackend) {
+    MockNativePacingBackend mock;
+    mock.gameActive = true;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(100);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+
+    limiter.Apply(true);
+
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.targetFps, 100);
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, NativeRetargetFailureClearsPersistentDriverIntervalBeforeFallback) {
+    MockNativePacingBackend mock;
+    mock.setTargetSucceeds = false;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(100);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+
+    limiter.Apply(true);
+
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.clearCalls, 1);
+    EXPECT_EQ(mock.sleepCalls, 0);
+    EXPECT_TRUE(limiter.IsActivelyLimiting());
+    limiter.Shutdown();
+}
+
 TEST(OverlayCompatTest, SameProcessForegroundWindowCanDrivePostResumeCountdown) {
     LONG width = 0;
     LONG height = 0;

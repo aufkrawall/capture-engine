@@ -153,6 +153,10 @@ struct alignas(8) CaptureState {
     std::atomic<bool> audioOnly{false};              // true = audio-only recording mode (no video)
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
+    // Exact child PID whose inherited Vulkan eligibility was proven by the
+    // layer. The child hook accepts this identity without broadening the
+    // executable whitelist and leaves sourcePid_ owned by the profiled parent.
+    std::atomic<uint32_t> inheritedRendererProcessPid{0};
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan
     std::atomic<uint64_t> vulkanPresentTick{0};      // GetTickCount64 of last Vulkan present
 

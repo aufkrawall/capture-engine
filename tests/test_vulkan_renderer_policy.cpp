@@ -9,9 +9,12 @@
 namespace {
 
 using ce::vulkan_renderer_policy::HasD3DUsageEvidence;
+using ce::vulkan_renderer_policy::IsPublishedInheritedRenderer;
 using ce::vulkan_renderer_policy::ShouldBootstrapD3D9Hooks;
+using ce::vulkan_renderer_policy::ShouldApplyProcessLocalRuntimeOverrides;
 using ce::vulkan_renderer_policy::ShouldInstallEarlyD3DDXGIHooks;
 using ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile;
+using ce::vulkan_renderer_policy::ShouldPublishHookAsSource;
 using ce::vulkan_renderer_policy::ShouldSuppressSpeculativeDX12Bootstrap;
 using ce::vulkan_renderer_policy::ShouldTreatVulkanAsActiveRenderer;
 
@@ -146,6 +149,21 @@ TEST(VulkanRendererPolicyTest, VulkanEligibilityInheritanceFailsClosed) {
                                                    /*parentProcessWhitelisted=*/false));
 }
 
+TEST(VulkanRendererPolicyTest, RendererHookEligibilityIsExactAndPreservesParentSource) {
+    EXPECT_TRUE(IsPublishedInheritedRenderer(42, 42));
+    EXPECT_FALSE(IsPublishedInheritedRenderer(0, 0));
+    EXPECT_FALSE(IsPublishedInheritedRenderer(41, 42));
+
+    EXPECT_FALSE(ShouldPublishHookAsSource(/*inheritedRenderer=*/true));
+    EXPECT_TRUE(ShouldPublishHookAsSource(/*inheritedRenderer=*/false));
+}
+
+TEST(VulkanRendererPolicyTest, ProcessLocalOverridesMoveOnlyAfterRendererPublication) {
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(41, 0));
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(42, 42));
+    EXPECT_FALSE(ShouldApplyProcessLocalRuntimeOverrides(41, 42));
+}
+
 TEST(VulkanRendererPolicyTest, SharedFlagFollowsPublishedDecision) {
     ScopedVulkanPresentFlag restore;
     EXPECT_FALSE(DXGIShared::IsVulkanActive());
@@ -186,6 +204,8 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
         ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_detours.cpp");
     const std::string wrappers =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    const std::string install =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
     ASSERT_FALSE(dllMain.empty());
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(create.empty());
@@ -193,6 +213,7 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
     ASSERT_FALSE(ecl.empty());
     ASSERT_FALSE(dx11.empty());
     ASSERT_FALSE(wrappers.empty());
+    ASSERT_FALSE(install.empty());
 
     EXPECT_NE(dllMain.find("ShouldInstallEarlyD3DDXGIHooks"), std::string::npos);
     const size_t earlyInstall = hookThread.find("InstallGlobalVTableHooks();");
@@ -205,6 +226,8 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
     EXPECT_NE(ecl.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
     EXPECT_NE(dx11.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
     EXPECT_NE(wrappers.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(install.find("if (!s_vulkanActive && !g_DX8Hook"), std::string::npos);
+    EXPECT_NE(install.find("if (!s_vulkanActive && !g_OpenGLHook"), std::string::npos);
 }
 
 TEST(VulkanRendererPolicySourceTest, VulkanLayerOwnsTranslatedD3D9FinalPresentation) {
@@ -255,6 +278,41 @@ TEST(VulkanRendererPolicySourceTest, LayerEligibilityFollowsOnlyThePublishedWhit
     EXPECT_EQ(ipc.find("NvRemixBridge"), std::string::npos);
     EXPECT_EQ(main.find("NvRemixBridge"), std::string::npos);
     EXPECT_EQ(injectHost.find("NvRemixBridge"), std::string::npos);
+}
+
+TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverridesBeforeVulkan) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::current_path();
+    const std::string layerIpc =
+        ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_ipc.cpp");
+    const std::string layerBootstrap = ce::test_source::ReadFile(
+        root / "hook" / "vulkan_layer" / "layer_renderer_bootstrap.cpp");
+    const std::string hookBootstrap =
+        ce::test_source::ReadFile(root / "hook" / "main_renderer_bootstrap.cpp");
+    const std::string hookThread =
+        ce::test_source::ReadFile(root / "hook" / "main_hookthread.cpp");
+    ASSERT_FALSE(layerIpc.empty());
+    ASSERT_FALSE(layerBootstrap.empty());
+    ASSERT_FALSE(hookBootstrap.empty());
+    ASSERT_FALSE(hookThread.empty());
+
+    const size_t publish = layerIpc.find("inheritedRendererProcessPid.store");
+    const size_t bootstrap = layerIpc.find("LayerBootstrapInheritedRendererHook()", publish);
+    ASSERT_NE(publish, std::string::npos);
+    ASSERT_NE(bootstrap, std::string::npos);
+    EXPECT_LT(publish, bootstrap);
+    EXPECT_NE(layerBootstrap.find("capture_hook_x64.dll"), std::string::npos);
+    EXPECT_NE(layerBootstrap.find("CE_WaitForInheritedRendererBootstrap"), std::string::npos);
+    EXPECT_NE(layerBootstrap.find("LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"), std::string::npos);
+    EXPECT_NE(hookBootstrap.find("shared.dlssSrDllPath"), std::string::npos);
+    EXPECT_NE(hookBootstrap.find("shared.streamlineDllPath"), std::string::npos);
+    EXPECT_NE(hookBootstrap.find("shared.dlssDebugOverlay"), std::string::npos);
+    EXPECT_NE(hookThread.find("CompleteInheritedRendererBootstrap(true)"), std::string::npos);
+    EXPECT_NE(hookThread.find("ShouldPublishHookAsSource"), std::string::npos);
+
+    EXPECT_EQ(layerIpc.find("NvRemixBridge"), std::string::npos);
+    EXPECT_EQ(layerBootstrap.find("NvRemixBridge"), std::string::npos);
+    EXPECT_EQ(hookBootstrap.find("NvRemixBridge"), std::string::npos);
 }
 
 // Late injection wakes the resident Vulkan layer only after CaptureEngine

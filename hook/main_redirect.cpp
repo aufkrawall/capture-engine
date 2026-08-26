@@ -262,7 +262,7 @@ void ScanLoadedModulesForForeignStreamlineCore() {
 
 // DLL Redirection Helper
 std::string GetRedirectedPath(const std::string &requestedPath) {
-  if (requestedPath.empty())
+  if (requestedPath.empty() || !CurrentProcessOwnsProcessLocalRuntimeOverrides())
     return "";
 
   try {
@@ -389,7 +389,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
 }
 
 bool NeedsLoaderRedirectionHook() {
-  if (!g_pLocalConfig) {
+  if (!g_pLocalConfig || !CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
     return false;
   }
 
@@ -446,6 +446,12 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
 
 void PreloadConfiguredGraphicsRuntimeDlls() {
   if (!g_pLocalConfig) {
+    return;
+  }
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    HookLogImportant(
+        "Runtime preload: skipped because an inherited child renderer owns "
+        "process-local DLSS/Streamline overrides");
     return;
   }
   static std::atomic<bool> s_preloaded{false};

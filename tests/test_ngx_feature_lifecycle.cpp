@@ -28,13 +28,49 @@ TEST(NgxFeatureLifecycleTest, ResolvesDLSSFrameGenerationMultiplierFromParameter
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 4), 4);
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 3), 3);
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 2), 2);
-    // Config override wins over the default but not over a valid parameter.
+    // An explicit config override is authoritative even when the runtime later
+    // stores another valid value in its live option object.
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 0), 4);
-    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 3), 3);
+    EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 3), 4);
     // Invalid parameter values (absent/unreadable=0, out of range) are ignored.
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 1), 2);
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(0, 5), 2);
     EXPECT_EQ(ResolveNVNGXFrameGenerationMultiplier(4, 5), 4);
+}
+
+TEST(NgxFeatureLifecycleTest, ModernGeneratedFrameCountOverridesLegacyMultiplier) {
+    using ce::ngx_lifecycle::ResolveNVNGXObservedFrameGenerationMultiplier;
+
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(1, 4), 2);
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(2, 2), 3);
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(3, 2), 4);
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(0, 3), 3);
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(4, 4), 4);
+    EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(0, 0), 0);
+}
+
+TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_params.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("DLSSFGMultiplierToGeneratedFrames(fgMultiplier)"), std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_Parameter_FrameGenerationMultiplier"), std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
+    EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
+}
+
+TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationFactor) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_lifecycle.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("IsFrameGenerationFeature(expectedFeature)"), std::string::npos);
+    EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
 }
 
 // Source invariant: both NVNGX CreateFeature FG branches (legacy IDs 9/0xB and

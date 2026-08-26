@@ -12,6 +12,8 @@
 #include "../hook/common/hook_common.h"
 #include "../hook/common/custom_overlay_vk.h"
 
+void LayerLog(const char*, ...) {}
+
 namespace CustomOverlay {
 VulkanBackend::VulkanBackend(VkDevice device, VkPhysicalDevice physDevice, VkQueue queue, uint32_t queueFamily)
     : device(device), physicalDevice(physDevice), queue(queue), queueFamilyIndex(queueFamily) {}

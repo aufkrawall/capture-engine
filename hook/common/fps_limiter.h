@@ -25,6 +25,20 @@ constexpr uint32_t kNative = 2;  // NVIDIA Reflex
 constexpr uint32_t kAuto = 3;
 }  // namespace LimiterModeValues
 
+// Optional API-native pacing supplied by a presentation backend that cannot
+// use the D3D NvAPI device contract (currently Vulkan). The callback owns its
+// API objects; FpsLimiter owns only mode/target selection and post-Present
+// placement.
+struct NativeFpsPacingBackend {
+    void* context = nullptr;
+    bool (*isAvailable)(void* context) = nullptr;
+    bool (*isGameActive)(void* context) = nullptr;
+    bool (*setTargetFps)(void* context, int fps) = nullptr;
+    bool (*sleep)(void* context, int64_t* waitUs) = nullptr;
+    void (*clear)(void* context) = nullptr;
+    const char* name = nullptr;
+};
+
 // Shared FPS limiter - event-based synchronization with limiter process
 // Call Apply() each frame before present
 //
@@ -112,6 +126,16 @@ public:
     void ResetTraceLogPath();
 
     void ApplyPostPresent();
+    void CancelPostPresentPacing() {
+        std::lock_guard<std::mutex> lock(cadenceMutex_);
+        reflexPostPresentCadencePending_ = false;
+        externalNativePostPresentPending_ = false;
+    }
+
+    void SetNativePacingBackend(const NativeFpsPacingBackend& backend) {
+        std::lock_guard<std::mutex> lock(cadenceMutex_);
+        nativePacingBackend_ = backend;
+    }
 
     // Called each frame before present. DXGI/DX12 call sites can allow explicit
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
@@ -158,6 +182,8 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
+    bool lastFGActive_ = false;                              // Include FG activation in cadence transitions
+    int lastFGMultiplier_ = 1;                              // Re-arm immediately when MFG factor changes
     int nativeApiRecheckCounter_ = 0;                        // Frame counter for periodic native API re-check
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
@@ -172,6 +198,10 @@ private:
     bool reflexPostPresentRecentGap_ = false;                // Present-gap state captured for diagnostics
     bool reflexPostPresentSkipSleep_ = false;    // Skip CE-owned Sleep in ApplyPostPresent (game owns Reflex)
     bool reflexPostPresentArmedLogged_ = false;  // Avoid spam when arming post-present cadence
+    NativeFpsPacingBackend nativePacingBackend_{};
+    bool externalNativePostPresentPending_ = false;
+    int externalNativeTargetFps_ = 0;
+    bool externalNativeLoggedSuccess_ = false;
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps

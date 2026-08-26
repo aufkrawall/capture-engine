@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_reflex_limiter.h"
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
                                                      VkQueue* pQueue) {
@@ -264,6 +265,36 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
     VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
 
+    // Learn the render-producing queue before applying the prerender limit.
+    // RTX Remix and other renderers may present from a compute-only queue; the
+    // depth marker belongs on the graphics queue whose semaphore feeds that
+    // present, not on the final presentation queue.
+    if (sd && pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 &&
+        VulkanLayerState::Get().IsLearningPresentTopology()) {
+        const VkQueue signalQueue = VulkanLayerState::Get().GetSemaphoreSignalQueue(pPresentInfo->pWaitSemaphores[0]);
+        if (signalQueue != VK_NULL_HANDLE) {
+            const VkQueue graphicsProducerQueue =
+                VulkanLayerState::Get().GetSemaphoreGraphicsProducerQueue(pPresentInfo->pWaitSemaphores[0]);
+            const uint32_t signalFamily = VulkanLayerState::Get().GetQueueFamilyIndex(signalQueue);
+            const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+            const bool signalQueueGraphics = VulkanLayerState::Get().QueueSupportsGraphics(signalQueue);
+            const VkDevice signalDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(signalQueue);
+            const VkDevice producerDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(graphicsProducerQueue);
+            if (graphicsProducerQueue != VK_NULL_HANDLE && producerDevice == sd->device &&
+                VulkanLayerState::Get().QueueSupportsGraphics(graphicsProducerQueue)) {
+                sd->prerenderProducerQueue.store(graphicsProducerQueue, std::memory_order_release);
+            }
+            LayerLog(
+                "Vulkan Layer: Present topology - present queue family=%u, wait semaphore signalled by queue %p "
+                "(family=%u, graphics=%d), upstream graphics producer=%p (family=%u), waitSemaphoreCount=%u",
+                presentFamily, (void*)signalQueue, signalFamily, signalQueueGraphics ? 1 : 0,
+                (void*)graphicsProducerQueue,
+                VulkanLayerState::Get().GetQueueFamilyIndex(graphicsProducerQueue),
+                pPresentInfo->waitSemaphoreCount);
+            VulkanLayerState::Get().FinishPresentTopologyLearning();
+        }
+    }
+
     const bool runtimeEligible = sd && sd->extent.width >= 320 && sd->extent.height >= 180;
     if (sd && !sd->runtimeInitialized.exchange(true, std::memory_order_acq_rel)) {
         if (runtimeEligible) {
@@ -308,12 +339,34 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     if (isFirstHook) {
-        // Apply CPU prerender limit - only if we have valid device and queue
-        // tracking
+        // Apply queue-depth control to the render-producing graphics queue.
+        // When presentation itself uses a graphics queue that is the producer;
+        // otherwise use the semaphore-derived queue cached above. The existing
+        // same-thread check protects Vulkan's external queue synchronization.
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
-        if (prerenderLimit >= 0.0f && !asyncPresentDetected && VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
-            if (queueDevice != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
-                ApplyPrerenderLimitVulkan(queueDevice, queue, prerenderLimit);
+        if (prerenderLimit >= 0.0f && !asyncPresentDetected && queueDevice != VK_NULL_HANDLE) {
+            VkQueue prerenderQueue = VK_NULL_HANDLE;
+            if (VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
+                prerenderQueue = queue;
+            } else if (sd) {
+                prerenderQueue = sd->prerenderProducerQueue.load(std::memory_order_acquire);
+            }
+            if (prerenderQueue != VK_NULL_HANDLE &&
+                VulkanLayerState::Get().GetVkDeviceFromQueue(prerenderQueue) == queueDevice &&
+                VulkanLayerState::Get().QueueSupportsGraphics(prerenderQueue)) {
+                const uint32_t producerThreadId =
+                    VulkanLayerState::Get().GetQueueLastSubmitThreadId(prerenderQueue);
+                if (producerThreadId == 0 || producerThreadId == GetCurrentThreadId()) {
+                    ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue, prerenderLimit);
+                } else {
+                    static std::atomic<uint32_t> s_crossThreadPrerenderLogs{0};
+                    if (s_crossThreadPrerenderLogs.fetch_add(1, std::memory_order_relaxed) == 0) {
+                        LayerLog(
+                            "Vulkan Prerender: producer queue %p is submitted by thread %u, present runs on %u; "
+                            "queue-depth marker withheld to preserve Vulkan external synchronization",
+                            (void*)prerenderQueue, producerThreadId, GetCurrentThreadId());
+                    }
+                }
             }
         }
     }
@@ -324,40 +377,32 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // images through unpaced, so the displayed rate stayed at 2x the configured
     // target with alternating short/long frame times and bad 1% lows. The
     // limiter's gateEveryPresent mode serializes concurrent presents onto the
-    // cadence grid: exactly one present per target interval, evenly spaced,
-    // regardless of vsync (FIFO stays untouched and the limiter waits before
-    // the driver call, so vsync on/off paces identically).
+    // cadence grid: exactly one present per target interval, evenly spaced.
+    // Basic pacing waits before the driver call; native pacing keeps FIFO
+    // untouched and hands the interval to the game's pre-input sleep or CE's
+    // post-Present driver-signalled boundary.
     // DXVK D3D9 is paced here too: Vulkan owns the final presentation boundary,
     // and actively bootstrapping a parallel DX9 hook is unsafe for translation
     // runtimes with global renderer state.
     if (!asyncPresentDetected) {
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
-        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-        g_SharedFpsLimiter.Apply(false, nativeVulkanPresent);
-        perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
-    }
-
-    // One line per swapchain generation, naming the queue family that signals
-    // what this present waits on. CE's overlay is a render pass, so it always
-    // lands on a graphics queue; if the game's own pre-present work is already
-    // there, CE adds nothing but an in-order submit, and if it is on another
-    // engine CE has inserted a cross-engine round trip that the game never had.
-    // That single fact decides whether an overlay cost is a scheduling problem
-    // or a workload problem, and it cannot be recovered from a frame-time graph.
-    if (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 && VulkanLayerState::Get().IsLearningPresentTopology()) {
-        const VkQueue signalQueue = VulkanLayerState::Get().GetSemaphoreSignalQueue(pPresentInfo->pWaitSemaphores[0]);
-        if (signalQueue != VK_NULL_HANDLE) {
-            const uint32_t signalFamily = VulkanLayerState::Get().GetQueueFamilyIndex(signalQueue);
-            const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-            LayerLog(
-                "Vulkan Layer: Present topology - present queue family=%u, wait semaphore signalled by queue %p "
-                "(family=%u, graphics=%d), waitSemaphoreCount=%u",
-                presentFamily, (void*)signalQueue, signalFamily,
-                VulkanLayerState::Get().QueueSupportsGraphics(signalQueue) ? 1 : 0,
-                pPresentInfo->waitSemaphoreCount);
-            VulkanLayerState::Get().FinishPresentTopologyLearning();
+        if (shm) {
+            const bool sharedDLSSFGActive = shm->dlssState.fgActive.load(std::memory_order_acquire);
+            const int sharedDLSSFGMultiplier = shm->dlssState.mfgMultiplier.load(std::memory_order_acquire);
+            if (sharedDLSSFGActive) {
+                g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier, 2, 4));
+                g_FGCompat.SetDLSSFGActive(true);
+            } else if (g_FGCompat.IsDLSSFGApiActive()) {
+                g_FGCompat.SetDLSSFGActive(false);
+                g_FGCompat.SetDLSSFGMultiplier(0);
+            }
         }
+        g_VulkanReflexLimiter.SetDevice(queueDevice, disp);
+        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        g_SharedFpsLimiter.SetNativePacingBackend(GetVulkanNativeFpsPacingBackend());
+        g_SharedFpsLimiter.Apply(true, nativeVulkanPresent);
+        perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }
 
     // NOTE: the overlay's own FPS/percentile statistics are sampled *after* the
@@ -526,6 +571,14 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
     const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
     perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
+    if (!asyncPresentDetected) {
+        if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
+            g_SharedFpsLimiter.ApplyPostPresent();
+            perfMetrics.fpsLimitWaitUs += static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
+        } else {
+            g_SharedFpsLimiter.CancelPostPresentPacing();
+        }
+    }
 
     if (isFirstHook)
         g_InPresentHook = false;
@@ -627,6 +680,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
         if (policy.allowAnisotropy) {
             // Anisotropic filtering override
             if (state.IsAnisotropyOverrideActive()) {
+                const VkBool32 originalEnable = modified.anisotropyEnable;
+                const float originalValue = modified.maxAnisotropy;
                 uint32_t maxAniso = state.GetMaxAnisotropy();
                 if (maxAniso <= 1) {
                     // "off" - disable anisotropic filtering
@@ -642,6 +697,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
                         LayerLog(
                             "Vulkan sampler: forced AF skipped because samplerAnisotropy was not enabled at "
                             "vkCreateDevice");
+                    }
+                }
+                if ((modified.anisotropyEnable != originalEnable || modified.maxAnisotropy != originalValue) &&
+                    (maxAniso <= 1 || disp->samplerAnisotropyEnabled)) {
+                    static std::atomic<int> s_anisotropyAppliedLogCount{0};
+                    if (s_anisotropyAppliedLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                        LayerLog(
+                            "Vulkan sampler: forced AF applied enable=%u/%.1fx -> %u/%.1fx "
+                            "(requested=%ux deviceMax=%.1fx)",
+                            originalEnable, originalValue, modified.anisotropyEnable, modified.maxAnisotropy,
+                            maxAniso, disp->maxSamplerAnisotropy);
                     }
                 }
             }

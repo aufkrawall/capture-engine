@@ -269,6 +269,14 @@ bool LayerIPC_Init() {
         g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
         LayerLog("Set vulkanLayerActive flag in shared memory");
 
+        if (inheritedParentPid != 0) {
+            g_IPCClient.GetSharedMem()->runtimeState.inheritedRendererProcessPid.store(
+                GetCurrentProcessId(), std::memory_order_release);
+            LayerLog("Inherited renderer: published exact runtime-override PID %lu",
+                     static_cast<unsigned long>(GetCurrentProcessId()));
+            LayerBootstrapInheritedRendererHook();
+        }
+
         // Update graphics config from shared memory
         VulkanLayerState::Get().UpdateFromSharedMemory(&g_IPCClient);
 
@@ -322,6 +330,11 @@ bool LayerIPC_Init() {
 
 // Shutdown layer IPC
 void LayerIPC_Shutdown() {
+    if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
+        uint32_t expected = GetCurrentProcessId();
+        sharedMemory->runtimeState.inheritedRendererProcessPid.compare_exchange_strong(
+            expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
     g_IPCClient.Disconnect();
     LayerLog("Layer IPC: Shutdown");
 }
@@ -353,6 +366,9 @@ void SetLayerDormant(const char* reason) {
     if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
         sharedMemory->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
         sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
+        uint32_t expected = GetCurrentProcessId();
+        sharedMemory->runtimeState.inheritedRendererProcessPid.compare_exchange_strong(
+            expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
     }
     if (g_LayerDormantEvent)
         SetEvent(g_LayerDormantEvent);

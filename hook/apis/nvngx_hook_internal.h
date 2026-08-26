@@ -180,6 +180,12 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
 
 void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams);
 
+// Reassert an explicit DLSS-G output-factor override on the parameter object
+// consumed by EvaluateFeature. Some runtimes keep their live option state
+// outside the CreateFeature object and copy it back before each evaluation, so
+// creation-time SetI/SetUI interception alone is not authoritative.
+int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* pParams);
+
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessParameters(PFN_NVSDK_NGX_GetParameters original, NVSDK_NGX_Parameter** OutParameters, const char* source);
 
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetParams_D3D11(NVSDK_NGX_Parameter** p);

@@ -77,6 +77,18 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     graphics.dlssFGFactor = config.graphics.parsed.dlssFGFactor;
     graphics.dlssFGPreset = NormalizeDLSSFGPreset(config.graphics.parsed.fgPreset);
+    strncpy(graphics.dlssSrDllPath, config.graphics.dlssSrDllPath.c_str(), sizeof(graphics.dlssSrDllPath) - 1);
+    graphics.dlssSrDllPath[sizeof(graphics.dlssSrDllPath) - 1] = '\0';
+    strncpy(graphics.dlssRrDllPath, config.graphics.dlssRrDllPath.c_str(), sizeof(graphics.dlssRrDllPath) - 1);
+    graphics.dlssRrDllPath[sizeof(graphics.dlssRrDllPath) - 1] = '\0';
+    strncpy(graphics.dlssFgDllPath, config.graphics.dlssFgDllPath.c_str(), sizeof(graphics.dlssFgDllPath) - 1);
+    graphics.dlssFgDllPath[sizeof(graphics.dlssFgDllPath) - 1] = '\0';
+    strncpy(graphics.streamlineDllPath, config.graphics.streamlineDllPath.c_str(),
+            sizeof(graphics.streamlineDllPath) - 1);
+    graphics.streamlineDllPath[sizeof(graphics.streamlineDllPath) - 1] = '\0';
+    strncpy(graphics.dlssDebugOverlay, config.graphics.dlssDebugOverlay.c_str(),
+            sizeof(graphics.dlssDebugOverlay) - 1);
+    graphics.dlssDebugOverlay[sizeof(graphics.dlssDebugOverlay) - 1] = '\0';
     sharedMemory->configVersion.fetch_add(1, std::memory_order_release);
 
     sharedMemory->BeginWriteOverlayConfig();
@@ -139,6 +151,12 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (std::hash<float>{}(graphics.hdrUiLuminance) << 28) ^
         (std::hash<float>{}(graphics.hdrMinLuminance) << 29) ^
         (static_cast<uint64_t>(graphics.hdrColorGamut) << 30) ^
+        std::hash<std::string>{}(graphics.dlssSrDllPath) ^
+        std::hash<std::string>{}(graphics.dlssRrDllPath) ^
+        std::hash<std::string>{}(graphics.dlssFgDllPath) ^
+        std::hash<std::string>{}(graphics.streamlineDllPath) ^
+        std::hash<std::string>{}(graphics.dlssDebugOverlay) ^
+        (static_cast<uint64_t>(graphics.dlssFGPreset) << 31) ^
         graphics.ue5CustomCVarOverrideMask;
 
     uint64_t completeSummaryHash = summaryHash;
@@ -153,7 +171,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
-            "dlssAutoExp=%s sharpen=%.2f srPreset=%u forceRR=%d ue5RROptimal=%d "
+            "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
+            "runtimePaths=%d%d%d%d forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
             "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
             "ue5DlssScreenPercentage=%.2f ue5HdrOutput=%d ue5HdrPeak=%d ue5HdrPaperWhite=%.1f "
@@ -167,7 +186,11 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             sharedMemory->overlayConfig.observerStartupPresentOnly,
             sharedMemory->overlayConfig.captureIncludeOverlay,
             sharedMemory->overlayConfig.screenshotIncludeOverlay, graphics.dlssAutoExposure,
-            graphics.dlssSharpening, graphics.dlssSRPreset, graphics.forceRayReconstruction ? 1 : 0,
+            graphics.dlssSharpening, graphics.dlssSRPreset, graphics.dlssRRPreset,
+            graphics.dlssFGPreset, graphics.dlssDebugOverlay,
+            graphics.dlssSrDllPath[0] ? 1 : 0, graphics.dlssRrDllPath[0] ? 1 : 0,
+            graphics.dlssFgDllPath[0] ? 1 : 0, graphics.streamlineDllPath[0] ? 1 : 0,
+            graphics.forceRayReconstruction ? 1 : 0,
             static_cast<int>(graphics.rayReconstructionOptimalSettings),
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,
             graphics.internalFpsLimit, graphics.internalAnisotropicFiltering,

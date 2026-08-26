@@ -72,6 +72,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
 
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR swapchain,
+                                                               const VkLatencySleepModeInfoNV* pSleepModeInfo);
+
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkLatencySleepNV(VkDevice device, VkSwapchainKHR swapchain,
+                                                        const VkLatencySleepInfoNV* pSleepInfo);
+
 struct FrameLimitState {
     VkDevice device = VK_NULL_HANDLE;
     std::vector<VkFence> fences;

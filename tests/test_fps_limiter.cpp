@@ -370,36 +370,6 @@ TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
     g_FGCompat.SetDLSSFGActive(false);
 }
 
-// Test basic mode ignores FG (no interval doubling)
-TEST_F(FpsLimiterTest, BasicMode_IgnoresFG) {
-    mockShm->runtimeState.captureRequested = true;
-    mockShm->runtimeState.isRecording = true;
-    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
-    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
-    mockShm->fpsLimiter.SetCaptureFps(60);
-    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
-
-    // Simulate FG active
-    g_FGCompat.SetDLSSFGActive(true);
-
-    limiter.Apply();  // First call: cadence setup
-
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply();  // Second call: should wait ~16.6ms (60fps, no halving)
-    QueryPerformanceCounter(&end);
-
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    // Basic mode: 60fps target stays 60fps → ~16.6ms interval
-    EXPECT_GE(elapsedMs, 13.0);
-    EXPECT_LT(elapsedMs, 100.0);
-
-    g_FGCompat.SetDLSSFGActive(false);
-}
-
 // Test auto mode falls back to basic when no FG and no Reflex
 TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
     mockShm->runtimeState.captureRequested = true;

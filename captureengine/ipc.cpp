@@ -239,6 +239,18 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
 
         dst.dlssSharpening = src.parsed.dlssSharpening;
         dst.dlssFGFactor = src.parsed.dlssFGFactor;
+        dst.dlssFGPreset = NormalizeDLSSFGPreset(src.parsed.fgPreset);
+
+        strncpy(dst.dlssSrDllPath, src.dlssSrDllPath.c_str(), sizeof(dst.dlssSrDllPath) - 1);
+        dst.dlssSrDllPath[sizeof(dst.dlssSrDllPath) - 1] = '\0';
+        strncpy(dst.dlssRrDllPath, src.dlssRrDllPath.c_str(), sizeof(dst.dlssRrDllPath) - 1);
+        dst.dlssRrDllPath[sizeof(dst.dlssRrDllPath) - 1] = '\0';
+        strncpy(dst.dlssFgDllPath, src.dlssFgDllPath.c_str(), sizeof(dst.dlssFgDllPath) - 1);
+        dst.dlssFgDllPath[sizeof(dst.dlssFgDllPath) - 1] = '\0';
+        strncpy(dst.streamlineDllPath, src.streamlineDllPath.c_str(), sizeof(dst.streamlineDllPath) - 1);
+        dst.streamlineDllPath[sizeof(dst.streamlineDllPath) - 1] = '\0';
+        strncpy(dst.dlssDebugOverlay, src.dlssDebugOverlay.c_str(), sizeof(dst.dlssDebugOverlay) - 1);
+        dst.dlssDebugOverlay[sizeof(dst.dlssDebugOverlay) - 1] = '\0';
     }
 
     pSharedMem->configVersion.fetch_add(1, std::memory_order_acq_rel);

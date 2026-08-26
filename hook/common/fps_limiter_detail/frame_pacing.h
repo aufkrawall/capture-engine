@@ -214,6 +214,23 @@ inline void FpsLimiter::ApplyPostPresent() {
         concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    if (externalNativePostPresentPending_) {
+        externalNativePostPresentPending_ = false;
+        int64_t waitUs = 0;
+        const bool sleepOk = nativePacingBackend_.context && nativePacingBackend_.sleep &&
+                             nativePacingBackend_.sleep(nativePacingBackend_.context, &waitUs);
+        lastActualWaitUs_ = waitUs;
+        isActivelyLimiting_.store(false, std::memory_order_relaxed);
+        if (!sleepOk) {
+            externalNativeLoggedSuccess_ = false;
+            TraceLog("Apply: native backend sleep failed target=%d", externalNativeTargetFps_);
+            HookLog("FPS Limiter: API-native post-present pacing failed; timer fallback will be used");
+        }
+        LARGE_INTEGER retQpc;
+        QueryPerformanceCounter(&retQpc);
+        lastApplyReturnQpc = retQpc.QuadPart;
+        return;
+    }
     if (!reflexPostPresentCadencePending_) {
         return;
     }

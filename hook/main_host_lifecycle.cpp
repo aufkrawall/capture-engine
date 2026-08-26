@@ -59,7 +59,11 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
 
   if (!launcherOnly) {
     g_pSharedMem = sharedMemory;
-    sharedMemory->SetSourcePid(GetCurrentProcessId());
+    SyncInheritedRendererRuntimeConfig(sharedMemory);
+    if (ce::vulkan_renderer_policy::ShouldPublishHookAsSource(
+            g_InheritedRendererProcess.load(std::memory_order_acquire))) {
+      sharedMemory->SetSourcePid(GetCurrentProcessId());
+    }
     sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, true);
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
   }
@@ -84,8 +88,10 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
   if (g_HookLifecycleBootstrapComplete.load(std::memory_order_acquire)) {
     RefreshThirdPartyOverlayIdentityCache();
     FFXHook::ReactivateResidentHooks();
-    ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
-        g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
+    if (CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+      ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
+          g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
+    }
     UE5::RefreshOverrides(activeGraphicsConfig);
     ArmManualReflexQueryHookIfConfigured("reconnected shared memory");
     ArmNgxFgPresetOverrideIfConfigured("reconnected shared memory");

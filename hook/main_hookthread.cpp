@@ -10,6 +10,8 @@ void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
 
 DWORD WINAPI HookThread(LPVOID lpParam) {
   g_HookThreadRunning = true;
+  const bool inheritedRenderer =
+      g_InheritedRendererProcess.load(std::memory_order_acquire);
   InitializeHookLifecycleControl();
 
   // Fast D3D-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
@@ -52,7 +54,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // A late 1.x runtime may still be inside slInit while CE is arriving. Give
     // both generations the configured NGX SR/FG images before taking its imports
     // over; any legacy image that already won is retired after 1.x shutdown.
-    PreloadConfiguredStreamlineBridgeNgxDlls();
+    if (!inheritedRenderer)
+      PreloadConfiguredStreamlineBridgeNgxDlls();
 
     // With streamline_upgrade=on, run the configured Streamline 2.x runtime as a
     // second, CE-owned runtime beside a 1.x game's own and repoint the game's
@@ -72,14 +75,16 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // The takeover itself is only import-table writes; loading and initialising
     // the 2.x runtime happens behind it, so arriving here early costs nothing and
     // a game call that lands mid-bring-up waits rather than races.
-    ce::streamline_bridge::TryActivate();
+    if (!inheritedRenderer)
+      ce::streamline_bridge::TryActivate();
 
     // User-configured third-party tools (Special K / ReShade / OptiScaler) must
     // be present before the game creates its first graphics device, so load
     // them as early as the hook can, ahead of CE's wrapper and runtime
     // preloads. Each tool is loaded through the original loader entry and
     // tracked by the overlay-compatibility registry.
-    PreloadConfiguredThirdPartyDlls();
+    if (!inheritedRenderer)
+      PreloadConfiguredThirdPartyDlls();
 
     // Load wrapper DLLs for all graphics APIs
     {
@@ -161,6 +166,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // --- BLACKLISTED PROCESSES ---
   if (main_g_ProcessCategory == ProcessCategory::Blacklisted) {
+    CompleteInheritedRendererBootstrap(false);
     CloseCheckHooksEvent();
     return 0;
   }
@@ -183,6 +189,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                                 (void *)&HookedCreateProcessW, &dummy);
 
     RunLauncherHookLifecycle();
+    CompleteInheritedRendererBootstrap(false);
     CloseCheckHooksEvent();
     g_HookThreadRunning = false;
     return 0;
@@ -218,6 +225,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         Sleep(1000); // 1s is aggressive enough without being a CPU hog/bomb
       } else {
         if (!DeactivateHookRuntimeAndWaitForHost("initial host unavailable", true)) {
+          CompleteInheritedRendererBootstrap(false);
           CloseCheckHooksEvent();
           return 0;
         }
@@ -239,7 +247,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     if (g_IPC->GetSharedMem()) {
       g_pSharedMem = g_IPC->GetSharedMem();
-      g_pSharedMem->SetSourcePid(GetCurrentProcessId());
+      SyncInheritedRendererRuntimeConfig(g_pSharedMem);
+      if (ce::vulkan_renderer_policy::ShouldPublishHookAsSource(
+              g_InheritedRendererProcess.load(std::memory_order_acquire))) {
+        g_pSharedMem->SetSourcePid(GetCurrentProcessId());
+      } else {
+        HookLogImportant(
+            "Inherited renderer: preserving profiled parent source PID %u",
+            g_pSharedMem->GetSourcePid());
+      }
       ArmManualReflexQueryHookIfConfigured("shared memory");
       ArmNgxFgPresetOverrideIfConfigured("shared memory");
     }
@@ -259,6 +275,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   } else {
     EarlyLog("HookThread: IPC Connection FAILED!");
     HookLog("IPC Connection FAILED!");
+    CompleteInheritedRendererBootstrap(false);
     CloseCheckHooksEvent();
     g_HookThreadRunning = false;
     return 0;
@@ -314,8 +331,14 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // patch: nvngx_dlss.dll / nvngx_dlssg.dll are the modules that read the value
   // and they load minutes into a session, long after any IAT snapshot taken
   // here would have been applied.
-  ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
-      g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
+  if (CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
+        g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
+  } else {
+    HookLogImportant(
+        "DLSS indicator: skipped because an inherited child renderer owns the "
+        "process-local registry probe");
+  }
 
   // Retain inject-side coverage for OpenGL and already-loaded ICDs. Vulkan's
   // ordinary path is patched earlier by the Vulkan layer, before vkCreateDevice.
@@ -355,6 +378,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // authoritative queue.
   CheckAndInstallHooks();
   MarkHookLifecycleBootstrapComplete();
+  CompleteInheritedRendererBootstrap(true);
 
   const GraphicsConfig initialGraphicsConfig = GetActiveGraphicsConfig();
   UE5::RefreshOverrides(initialGraphicsConfig);
@@ -520,6 +544,32 @@ bool isProcessWhitelistedFast(const char *name) {
             break;
           }
           p += length + 1;
+        }
+
+        // A Vulkan layer may have proven that this exact process is the direct
+        // child renderer of the published profile target. Accept only that PID;
+        // the executable name itself is not added to the whitelist.
+        if (!found) {
+          wchar_t sharedMemName[64] = {};
+          GenerateSharedMemName(sharedMemName, _countof(sharedMemName),
+                                pDisc->GetInjectPid());
+          HANDLE sharedMapping =
+              OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
+          if (sharedMapping) {
+            auto *sharedMemory = static_cast<SharedMemoryLayout *>(MapViewOfFile(
+                sharedMapping, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout)));
+            if (ValidateSharedMemory(sharedMemory) &&
+                ce::vulkan_renderer_policy::IsPublishedInheritedRenderer(
+                    GetCurrentProcessId(),
+                    sharedMemory->runtimeState.inheritedRendererProcessPid.load(
+                        std::memory_order_acquire))) {
+              found = true;
+              g_InheritedRendererProcess.store(true, std::memory_order_release);
+            }
+            if (sharedMemory)
+              UnmapViewOfFile(sharedMemory);
+            CloseHandle(sharedMapping);
+          }
         }
       }
       UnmapViewOfFile(pDisc);

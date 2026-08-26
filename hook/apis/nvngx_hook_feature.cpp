@@ -31,15 +31,16 @@ static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
         }
         return 0;
     };
-    const int multiplier = readInt(NVSDK_NGX_Parameter_FrameGenerationMultiplier);
-    if (multiplier >= 2 && multiplier <= 4) {
-        return multiplier;
-    }
     const int generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);
-    if (generatedFrames >= 1 && generatedFrames <= 3) {
-        return generatedFrames + 1;
+    const int legacyMultiplier = readInt(NVSDK_NGX_Parameter_FrameGenerationMultiplier);
+    const int resolved = ce::ngx_lifecycle::ResolveNVNGXObservedFrameGenerationMultiplier(
+        generatedFrames, legacyMultiplier);
+    if (resolved > 0 && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
+        LogOncePerParam("FrameGenerationMultiplierResolution",
+                        "NVNGX: observed FG factor modernGeneratedFrames=%d legacyMultiplier=%d -> %dx",
+                        generatedFrames, legacyMultiplier, resolved);
     }
-    return 0;
+    return resolved;
 }
 
 // Helper to get DLSS Version from loaded DLL

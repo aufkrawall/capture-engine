@@ -6,6 +6,12 @@ bool IsTrackedUpscalerFeature(int featureID) {
     return featureID == 1 || featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction;
 }
 
+bool IsFrameGenerationFeature(int featureID) {
+    return featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration ||
+           featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration_11 ||
+           featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration;
+}
+
 void PublishEvaluatedFeature(int featureID, bool firstEvaluation) {
     if (!g_IPC || !g_IPC->GetSharedMem())
         return;
@@ -70,8 +76,30 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
         return original(ctx, handle, params, callback);
 
     const int expectedFeature = nvngx_hook_g_FeatureRegistry.FindFeature(const_cast<void*>(handle));
+    int configuredFGMultiplier = 0;
+    if (IsFrameGenerationFeature(expectedFeature)) {
+        configuredFGMultiplier = ApplyConfiguredFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
+        if (configuredFGMultiplier > 0) {
+            static std::atomic<uint32_t> enforcementLogs{0};
+            if (enforcementLogs.fetch_add(1, std::memory_order_relaxed) == 0) {
+                HookLogImportant(
+                    "NVNGX FG: %s EvaluateFeature now enforces the configured %dx factor at every runtime "
+                    "evaluation",
+                    api, configuredFGMultiplier);
+            }
+        }
+    }
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
     if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result))) {
+        if (IsFrameGenerationFeature(expectedFeature) && configuredFGMultiplier > 0) {
+            g_FGCompat.SetDLSSFGMultiplier(configuredFGMultiplier);
+            g_FGCompat.SetDLSSFGActive(true);
+            if (g_IPC && g_IPC->GetSharedMem()) {
+                auto& state = g_IPC->GetSharedMem()->dlssState;
+                state.mfgMultiplier.store(configuredFGMultiplier, std::memory_order_release);
+                state.fgActive.store(true, std::memory_order_release);
+            }
+        }
         const auto evaluation = nvngx_hook_g_FeatureRegistry.MarkEvaluated(const_cast<void*>(handle));
         if (evaluation.found) {
             PublishEvaluatedFeature(evaluation.feature, evaluation.firstEvaluation);

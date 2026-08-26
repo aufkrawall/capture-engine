@@ -110,8 +110,9 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 - User-facing booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`; malformed values use the documented fallback and emit a rate-limited warning.
 - `[UE5]` settings default off/default and are live-reloadable. ABI 45 introduced the four-level RR settings byte plus
-  a 64-bit custom-spec mask and 64 type-validated values; ABI 46 retains them while adding pre-injection profile-target
-  discovery, and versioned mappings/events isolate older processes.
+  a 64-bit custom-spec mask and 64 type-validated values; ABI 46 added pre-injection profile-target discovery. ABI 47
+  transports the four resolved NVIDIA runtime paths, DLSS indicator mode, and exact split-renderer child identity so
+  the final Vulkan renderer consumes the same profile as its parent. Versioned mappings/events isolate older processes.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

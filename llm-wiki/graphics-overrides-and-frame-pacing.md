@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-22
+Last cross-checked: 2026-08-26
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -12,7 +12,7 @@ Primary sources:
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
-- `hook/vulkan_layer/vulkan_layer.{h,cpp}`
+- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/vulkan_sampler_policy.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy}.cpp`
 
@@ -38,6 +38,13 @@ Primary sources:
   presets, but it is not delivered like them - see "DLSS Frame Generation render preset" below. The resolved value
   travels in `SharedGraphicsConfig::dlssFGPreset` (the slot previously retained as padding, so the layout and ABI
   signature are unchanged and a pre-feature host publishes a zero that reads as "no override").
+- `dlss_fg_factor=default|2x|3x|4x` must write both NGX contracts. Older runtimes consume
+  `FrameGenerationMultiplier=2/3/4`; current DLSS-G consumes `MultiFrameCount=1/2/3` (generated frames between real
+  frames). Parameter SetI/SetUI interception, readback interception, and initial injection cover both names. A
+  configured value is authoritative over later valid runtime values, and the FG `EvaluateFeature` boundary reasserts
+  both names because some integrations copy live menu state into the object after feature creation without calling
+  its public setters. Without a configured override, the modern generated-frame count is authoritative when both can
+  be read back, so a stale legacy value cannot make telemetry and limiter scaling claim the wrong output multiplier.
 - `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
@@ -241,7 +248,12 @@ Primary sources:
   because that queue may not retire until the same Present returns.
 - Vulkan `cpu_prerender_limit=1-6` uses a per-queue seven-fence marker ring; `0` waits the current marker. OpenGL uses
   the same lookback semantics per context. Vulkan drains and resets outstanding markers when the configured depth
-  changes so a previously signaled fence is never resubmitted.
+  changes so a previously signaled fence is never resubmitted. A non-graphics present queue does not disable the
+  setting: one-shot present-topology learning propagates graphics-producer ancestry through every submit wait/signal
+  dependency, follows the final present semaphore transitively across compute queues, caches the same-device graphics
+  queue per swapchain, and submits the depth marker there only under a same-thread/external-sync proof. This avoids
+  both a silent no-op and a new cross-engine marker; if the producer belongs to another host thread, the diagnostic
+  names that condition and CE does not race the application's externally synchronized `VkQueue`.
 - Flip-model latency waitables are requested at creation whenever `backbuffer_count` is active. Wrapped DXGI waits at
   the post-Present/next-frame boundary so simulation/render work cannot begin behind a full vsync queue.
 - **CE's D3D presentation policy applies only while CE owns presentation.** `WaitBackbufferFrameLatency`,
@@ -280,6 +292,21 @@ Primary sources:
   entry points directly. NvAPI code bytes/prologues are deliberately not patched because some DLSS FG integrations
   validate them during Reflex setup; `minimumIntervalUs` is pushed proactively, and pacing hands to the game-owned
   Reflex sleep path once stable.
+- Native Vulkan never passes a `VkDevice` to that D3D `IUnknown` contract. The layer first cooperates with a game's
+  `VK_NV_low_latency2` path by forwarding `vkSetLatencySleepModeNV`/`vkLatencySleepNV`, retaining the game's original
+  mode, and overriding only the persistent interval plus explicit low-latency enable while CE's Reflex limiter is
+  active. A recent game sleep remains the owner at the correct pre-input point; CE does not issue a duplicate sleep.
+  If the game uses the legacy NvAPI Vulkan contract, CE detects and preserves an already-owned context; otherwise it
+  initializes its own low-latency device, calls `NvAPI_Vulkan_Sleep` once per base frame after Present, and waits on
+  the driver-signalled timeline semaphore before the next simulation/input frame. Failure at any native stage is
+  logged and leaves the existing rational-timer fallback available. Auto mode recognizes an already-active modern or
+  legacy Vulkan game path without initializing a CE-owned context merely to probe it. FG state/multiplier is imported
+  from shared NGX state before mode resolution, so a 100fps output target with 3x MFG requests about 33 base fps
+  instead of 100.
+- The configured general limiter value always denotes the final displayed/output rate, independent of `basic`,
+  `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by an active 2x-4x
+  FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. Inject
+  capture-sync is deliberately different because its source contains only application-rendered frames.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.

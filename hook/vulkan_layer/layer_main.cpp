@@ -444,6 +444,10 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
         return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
     if (strcmp(pName, "vkCreateSampler") == 0)
         return (PFN_vkVoidFunction)Capture_vkCreateSampler;
+    if (strcmp(pName, "vkSetLatencySleepModeNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkSetLatencySleepModeNV;
+    if (strcmp(pName, "vkLatencySleepNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkLatencySleepNV;
 
     // Default: chain to next layer
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
@@ -486,6 +490,10 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
         return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
     if (strcmp(pName, "vkCreateSampler") == 0)
         return (PFN_vkVoidFunction)Capture_vkCreateSampler;
+    if (strcmp(pName, "vkSetLatencySleepModeNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkSetLatencySleepModeNV;
+    if (strcmp(pName, "vkLatencySleepNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkLatencySleepNV;
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkGetDeviceProcAddr) {

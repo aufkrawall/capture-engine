@@ -94,4 +94,27 @@ inline bool ShouldEnableVulkanLayerForProfile(bool currentProcessWhitelisted,
     return parentIsPublishedTarget && parentProcessWhitelisted;
 }
 
+// The layer publishes only a child PID whose parent identity passed the proof
+// above. The ordinary hook DLL may then initialize process-local graphics
+// runtime overrides in that exact renderer without adding its executable name
+// to the user's whitelist.
+inline bool IsPublishedInheritedRenderer(uint32_t currentProcessPid,
+                                         uint32_t publishedRendererPid) {
+    return currentProcessPid != 0 && currentProcessPid == publishedRendererPid;
+}
+
+// The profiled client remains the capture/config identity in a split process.
+// A renderer-side helper hook must never steal sourcePid from that parent.
+inline bool ShouldPublishHookAsSource(bool inheritedRenderer) {
+    return !inheritedRenderer;
+}
+
+// Once a child renderer is known, process-local NGX/Streamline work belongs
+// there alone. Before that evidence exists, retain the ordinary single-process
+// behavior.
+inline bool ShouldApplyProcessLocalRuntimeOverrides(uint32_t currentProcessPid,
+                                                    uint32_t publishedRendererPid) {
+    return publishedRendererPid == 0 || currentProcessPid == publishedRendererPid;
+}
+
 } // namespace ce::vulkan_renderer_policy

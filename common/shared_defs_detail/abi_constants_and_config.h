@@ -72,17 +72,20 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 46: Added DiscoveryInfo::profileTargetPid so a direct child Vulkan
 //             renderer can inherit the selected parent profile before hook
 //             injection publishes sourcePid.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 46;
+// Version 47: Added renderer-process attribution plus the process-local
+//             DLSS/Streamline path and indicator settings needed by an
+//             inherited child renderer.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 47;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_46_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_47_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_46";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_47";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -496,6 +499,16 @@ struct SharedGraphicsConfig {
     // leaves it zero, which reads back as "no override".
     uint32_t dlssFGPreset;
 
+    // Process-local runtime controls must follow the resolved profile into a
+    // split child renderer. Paths may name a directory or one exact DLL, using
+    // the same contract as GraphicsConfig. An empty path and "default"
+    // indicator mode preserve the runtime's own behavior.
+    char dlssSrDllPath[MAX_PATH];
+    char dlssRrDllPath[MAX_PATH];
+    char dlssFgDllPath[MAX_PATH];
+    char streamlineDllPath[MAX_PATH];
+    char dlssDebugOverlay[16];
+
     // UE5 process-local persistent CVar overrides. A negative sharpen value
     // leaves r.Tonemapper.Sharpen alone unless disablePostProcessingEffects is set.
     // 0=off, 1=light, 2=medium, 3=full. The uint8 representation preserves the
@@ -593,7 +606,7 @@ static_assert(offsetof(SharedGraphicsConfig, prerenderLimit) ==
                   offsetof(SharedGraphicsConfig, forceRayReconstruction) + 2,
               "RR policy flags must not move later SharedGraphicsConfig fields");
 static_assert(offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) ==
-                  offsetof(SharedGraphicsConfig, dlssFGPreset) + sizeof(uint32_t),
+                  offsetof(SharedGraphicsConfig, dlssDebugOverlay) + 16,
               "UE5 policy fields must remain appended to SharedGraphicsConfig");
 static_assert(offsetof(SharedGraphicsConfig, tonemapperSharpen) ==
                   offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) + 4,
@@ -619,7 +632,7 @@ static_assert(offsetof(SharedGraphicsConfig, hdrColorGamut) ==
 static_assert(offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideValues) ==
                   offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideMask) + sizeof(uint64_t),
               "UE5 custom CVar values must immediately follow their selection mask");
-static_assert(sizeof(SharedGraphicsConfig) == 688,
+static_assert(sizeof(SharedGraphicsConfig) == 1744,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

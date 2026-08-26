@@ -33,17 +33,30 @@ constexpr bool IsSuccessfulResult(uint32_t result) noexcept {
 // hooked when sl.dlssg was already loaded before hook installation (session
 // 20260811_222500: Talos configured for 4x MFG but the overlay showed DLSS
 // 2x). Precedence mirrors the MFG branch: a configured override wins over the
-// 2x default, and a valid parameter value (2/3/4) wins over the config.
+// 2x default. An explicit config is an override and therefore wins over a
+// valid parameter value (2/3/4); without a config, the observed value wins.
 // paramMultiplier must be 0 when the parameter is absent or unreadable.
 inline int ResolveNVNGXFrameGenerationMultiplier(int configuredMultiplier, int paramMultiplier) noexcept {
-    int multiplier = 2;  // Standard FG default is 2x
-    if (configuredMultiplier > 0) {
-        multiplier = configuredMultiplier;
+    if (configuredMultiplier >= 2 && configuredMultiplier <= 4)
+        return configuredMultiplier;
+    if (paramMultiplier >= 2 && paramMultiplier <= 4)
+        return paramMultiplier;
+    return 2;  // Standard FG default is 2x
+}
+
+// Modern DLSS-G runtimes expose the number of generated frames between real
+// frames (1/2/3) while older runtimes expose the output multiplier (2/3/4).
+// Prefer the modern value when both are present: an injected/stale legacy key
+// must not mask what the active runtime actually consumes.
+inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFrames,
+                                                         int legacyMultiplier) noexcept {
+    if (modernGeneratedFrames >= 1 && modernGeneratedFrames <= 3) {
+        return modernGeneratedFrames + 1;
     }
-    if (paramMultiplier >= 2 && paramMultiplier <= 4) {
-        multiplier = paramMultiplier;
+    if (legacyMultiplier >= 2 && legacyMultiplier <= 4) {
+        return legacyMultiplier;
     }
-    return multiplier;
+    return 0;
 }
 
 template <std::size_t Capacity>

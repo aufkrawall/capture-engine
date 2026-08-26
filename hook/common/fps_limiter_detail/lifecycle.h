@@ -140,6 +140,7 @@ inline void FpsLimiter::Shutdown() {
     reflexSleepBaselineCount_ = 0;
     reflexRecentPresentGap_ = false;
     ResetReflexNativePacingState();
+    nativePacingBackend_ = {};
     g_ReflexLimiter.Shutdown();
 }
 
@@ -172,6 +173,13 @@ inline void FpsLimiter::ResetReflexNativePacingState() {
     reflexPostPresentRecentGap_ = false;
     reflexPostPresentSkipSleep_ = false;
     reflexPostPresentArmedLogged_ = false;
+    if ((externalNativeTargetFps_ != 0 || externalNativePostPresentPending_) && nativePacingBackend_.context &&
+        nativePacingBackend_.clear) {
+        nativePacingBackend_.clear(nativePacingBackend_.context);
+    }
+    externalNativePostPresentPending_ = false;
+    externalNativeTargetFps_ = 0;
+    externalNativeLoggedSuccess_ = false;
     reflexSleepBaselineCount_ = 0;
     reflexRecentPresentGap_ = false;
     reflexLoggedSuccess_ = false;

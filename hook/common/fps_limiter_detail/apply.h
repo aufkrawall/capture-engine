@@ -207,13 +207,22 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     if (fgMultiplier > 4)
         fgMultiplier = 4;
 
+    const bool externalNativeCallbacks =
+        allowPostPresentReflexCadence && nativePacingBackend_.context && nativePacingBackend_.isAvailable &&
+        nativePacingBackend_.setTargetFps && nativePacingBackend_.sleep;
+    const bool externalNativeGameActive =
+        configuredMode == LimiterModeValues::kAuto && externalNativeCallbacks &&
+        nativePacingBackend_.isGameActive && nativePacingBackend_.isGameActive(nativePacingBackend_.context);
+
     uint32_t effectiveMode = configuredMode;
 
     if (configuredMode == LimiterModeValues::kAuto) {
         // Priority: Reflex (NVIDIA, game-activated) → FG fallback → basic
         // Native mode requires the game to have activated the API, not just API availability
-        bool reflexAvail = g_ReflexLimiter.IsAvailable();
-        bool reflexActive = g_ReflexLimiter.IsGameActivated();
+        const bool d3dReflexAvail = g_ReflexLimiter.IsAvailable();
+        const bool d3dReflexActive = g_ReflexLimiter.IsGameActivated();
+        const bool reflexAvail = d3dReflexAvail || externalNativeGameActive;
+        const bool reflexActive = (d3dReflexAvail && d3dReflexActive) || externalNativeGameActive;
 
         if (reflexAvail && reflexActive) {
             effectiveMode = LimiterModeValues::kNative;
@@ -249,7 +258,11 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // In explicit mode, availability is sufficient (user override).
     // In auto mode, we already checked game activation above.
     // Fall back gracefully if the selected mode is not supported on this system.
-    if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable()) {
+    const bool externalNativeAvailable =
+        effectiveMode == LimiterModeValues::kNative && externalNativeCallbacks &&
+        (externalNativeGameActive || nativePacingBackend_.isAvailable(nativePacingBackend_.context));
+    if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable() &&
+        !externalNativeAvailable) {
         effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
     }
     if (effectiveMode != LimiterModeValues::kNative) {
@@ -258,24 +271,19 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         reflexRecentPresentGap_ = false;
     }
 
-    // FG-aware FPS adjustment for FG fallback and all native low-latency modes:
+    // FG-aware FPS adjustment for every limiter mode:
     // When FG is active, the output frame rate is fgMultiplier × base rate.
     // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
-    int effectiveTargetFps = targetFps;
-    bool isNativeMode = effectiveMode == LimiterModeValues::kNative;
+    const bool scaleForFrameGeneration = ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
+        usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested());
+    int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
+        targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
     const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
     g_ReflexLimiter.SetManualLimiterConfiguredOrActive(limiterActive && explicitReflexMode);
-    if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode) &&
-        ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
-            usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested())) {
-        effectiveTargetFps = targetFps / fgMultiplier;
-        if (effectiveTargetFps < 1)
-            effectiveTargetFps = 1;
-    }
 
     // Log mode transitions - always log on first activation to confirm mode
     if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
-        lastEffectiveMode_ != effectiveMode) {
+        lastEffectiveMode_ != effectiveMode || lastFGActive_ != fgActive || lastFGMultiplier_ != fgMultiplier) {
         // Reset pacing cadence immediately when FPS or mode changes so hot
         // config reloads apply on the next frame instead of riding stale state.
         localTargetTime_ = 0;
@@ -297,6 +305,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         reflexPostPresentCaptureSync_ = false;
         reflexPostPresentSkipSleep_ = false;
         reflexPostPresentArmedLogged_ = false;
+        externalNativePostPresentPending_ = false;
 
         const char* modeStr = "basic";
         if (effectiveMode == LimiterModeValues::kFGFallback)
@@ -308,7 +317,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
 
         // Check if native API is actually available (not just selected)
         const char* availNote = "";
-        if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable())
+        if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable() &&
+            !externalNativeAvailable)
             availNote = " [API UNAVAILABLE - will fallback]";
 
         TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
@@ -321,11 +331,43 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         lastTargetFps_ = effectiveTargetFps;
         lastUsedCaptureSync_ = usingCaptureSync;
         lastEffectiveMode_ = effectiveMode;
+        lastFGActive_ = fgActive;
+        lastFGMultiplier_ = fgMultiplier;
     }
 
     // =====================================================================
     // Native (Reflex) mode: delegate pacing to the driver's pipeline
     // =====================================================================
+    if (effectiveMode == LimiterModeValues::kNative && externalNativeAvailable) {
+        if (nativePacingBackend_.setTargetFps(nativePacingBackend_.context, effectiveTargetFps)) {
+            externalNativePostPresentPending_ = true;
+            externalNativeTargetFps_ = effectiveTargetFps;
+            reflexLimiterActive_ = true;
+            loggedNativeFallback_ = false;
+            isActivelyLimiting_.store(false, std::memory_order_relaxed);
+            lastActualWaitUs_ = 0;
+            if (!externalNativeLoggedSuccess_) {
+                const char* backendName = nativePacingBackend_.name ? nativePacingBackend_.name : "API-native";
+                TraceLog("Apply: native backend armed name=%s target=%d", backendName, effectiveTargetFps);
+                HookLog("FPS Limiter: %s armed (target=%d fps, native driver pacing handoff)", backendName,
+                        effectiveTargetFps);
+                externalNativeLoggedSuccess_ = true;
+            }
+            LARGE_INTEGER retQpc;
+            QueryPerformanceCounter(&retQpc);
+            lastApplyReturnQpc = retQpc.QuadPart;
+            return;
+        }
+        // Do not leave an older persistent driver interval active while the
+        // rational-timer path takes over after a native retarget failure.
+        if (nativePacingBackend_.clear) {
+            nativePacingBackend_.clear(nativePacingBackend_.context);
+        }
+        externalNativePostPresentPending_ = false;
+        externalNativeTargetFps_ = 0;
+        externalNativeLoggedSuccess_ = false;
+    }
+
     if (effectiveMode == LimiterModeValues::kNative && g_ReflexLimiter.IsAvailable()) {
         // Lazy init: provide device from HookContext if not yet set
         if (!reflexDeviceProvided_) {
@@ -540,9 +582,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     }
 
     // =====================================================================
-    // Timer-based limiting (basic or FG fallback)
-    // Both use the same SmartWait mechanism; the only difference is that
-    // FG fallback has already adjusted effectiveTargetFps above.
+    // Timer-based limiting (basic or FG fallback). Both use the same SmartWait
+    // mechanism and the common final-output FG adjustment above.
     // =====================================================================
 
     isActivelyLimiting_.store(true, std::memory_order_relaxed);
