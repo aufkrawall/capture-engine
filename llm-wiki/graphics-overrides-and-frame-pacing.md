@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-27
+Last cross-checked: 2026-08-27 (FPS limiter output-group admission fix)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -300,10 +300,50 @@ Primary sources:
   a 60fps target displayed ~120fps (vsync-capped in intros) with alternating short/long frame times and bad 1% lows.
   Gate-every-present takes the cadence lock blocking (concurrent streams serialize onto the grid: exactly one present
   per target interval, evenly spaced) and bypasses both dedup fast paths. DXVK keeps the legacy first-present gating +
-  dedup because its CS thread presents once per frame while the DX9/DXGI hooks already pace the game thread, and
-  FG-scaled modes keep legacy behavior so generated frames are not pushed onto the base-frame grid. The strict path
+  dedup because its CS thread presents once per frame while the DX9/DXGI hooks already pace the game thread. FG-scaled
+  LEGACY (non-boundary) call sites keep the dedup so generated frames are not pushed onto the base-frame grid; the
+  FG-active real-boundary path instead uses the grouped admission below. The strict path
   works identically with FIFO vsync enabled or off: the wait happens before the driver call and the game's present
   mode is left untouched.
+- **FG-active real boundaries use deterministic multiplier-sized output-group admission, not a time window.**
+  `ce::fps_limiter_policy::OutputGroupAdmission` (`hook/common/fps_limiter_policy.h`) classifies each real
+  final-boundary callback (native-Vulkan present/acquire) by a pure ordinal: for an active FG multiplier m, exactly
+  one callback per m consecutive callbacks owns a cadence slot (`pace_group`) and the remaining m-1 are the generated
+  outputs of that already admitted group (`pass_generated_slot`, lock-free fast path that never touches the cadence
+  mutex). Six rapid callbacks at 3x therefore always produce pace/pass/pass/pace/pass/pass, even when they arrive
+  back-to-back. This replaced the time-based `activeDedup` window (0.5-2 ms after the last paced return) that
+  previously governed FG-active gate-every-present callbacks: that window could not distinguish the next real group
+  arriving inside it from generated spillover, so Portal with RTX Remix admitted ~86 extra 3-callback groups and ran
+  ~146 fps (167 peak) against a 130 cap. Classification never reads a clock.
+- **Admission is serialized, serialized owners never skip, and transitions re-base before classifying.** The ordinal
+  lives under a short `admissionMutex_` that is never held across a wait, so a generated slot can always classify
+  while a group owner is waiting on the cadence. Owners block on the cadence mutex (no failed-try-lock escape);
+  `concurrentApplySkips_` can therefore no longer increase from a real-boundary site, and any nonzero delta in the
+  120-frame stats is logged as an invariant violation. An admission-epoch key (limiter activity, capture source,
+  FG state, multiplier, boundary kind, cadence grid) is compared BEFORE classification, so the first callback after
+  any activation/deactivation, target/source change, FG on/off, multiplier change, IPC/session reset
+  (`Shutdown`), or pacing-boundary move (`ResetOutputGroupAdmission()`, called by the Vulkan layer on
+  async-present detection edges via `vulkan_present_boundary.h`) owns a clean slot and no partial group leaks across
+  the transition.
+- **The group cadence is an exact rational rate.** The local grid interval is
+  `QPC_frequency * cadenceScale / configured_target` (`NextRationalGroupIntervalTicks`, Bresenham remainder), where
+  `cadenceScale` is the FG multiplier for final-output observers (general cap, WGC-style capture sync) and 1 for
+  inject capture sync, whose source contains only application-rendered frames. A 130 fps cap with 3x FG paces
+  130/3 = 43.333... groups/s with zero long-term drift instead of the floored 43 (which capped output at 129). The
+  floored integer base target survives only where an integer API demands it (native/Reflex driver targets, legacy
+  non-boundary sites) and in the `effective=` log field next to the exact `group=130/3` ratio. Capture-sync late
+  recovery advances by whole GROUP slots on the scaled grid (`AdvanceCaptureSyncDeadlineAfterLateFrame` takes the
+  scale), and the post-present Reflex cadence stays on the unscaled base interval.
+- **Pacing-boundary observability.** `hook/vulkan_layer/vulkan_present_boundary.h` (header-only sibling of
+  `vulkan_layer_present.cpp`) owns async-present detection for the present hook: both routes - acquire-thread
+  mismatch and submit-thread mismatch - now emit a one-time edge log naming the route and the moved boundary (the
+  submit-thread route previously switched to acquire pacing silently, which made acquire-time pacing invisible in
+  session logs), and every detection edge resets the limiter's output-group admission. One-shot boundary-identity
+  logs report `FPS limiter boundary = vkQueuePresentKHR|vkAcquireNextImageKHR` with swapchain, FG multiplier, and
+  grouped admission on every change. The 120-frame limiter stats extend with boundaryCallbacks / pacedGroups /
+  generatedPasses / groupResets / concurrentSkips deltas. Telemetry stays unclamped: `PerformanceMetrics` keeps
+  reporting observed presentation activity (a correct 3x trace under a 130 cap converges near 130; the pre-fix
+  ~146 burst pattern stays honestly visible as the higher rate it was).
 - Reflex integration resolves `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` from `nvapi64.dll` and calls the original
   entry points directly. NvAPI code bytes/prologues are deliberately not patched because some DLSS FG integrations
   validate them during Reflex setup; `minimumIntervalUs` is pushed proactively, and pacing hands to the game-owned

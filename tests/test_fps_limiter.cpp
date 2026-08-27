@@ -211,37 +211,6 @@ TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
     EXPECT_TRUE(sawPacedSecondApply);
 }
 
-// FG-scaled modes keep the legacy dedup behavior: generated frames arrive a
-// few ms after the base frame and must not be pushed onto the base grid, so
-// gateEveryPresent defers to the dedup fast path while FG is active.
-TEST_F(FpsLimiterTest, GateEveryPresentDefersToDedupWhileFGActive) {
-    mockShm->runtimeState.isRecording = false;
-    mockShm->runtimeState.captureRequested = false;
-    mockShm->fpsLimiter.SetGeneralEnabled(true);
-    mockShm->fpsLimiter.SetGeneralFps(60);
-    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
-    g_FGCompat.SetDLSSFGMultiplier(2);
-    g_FGCompat.SetDLSSFGActive(true);
-
-    limiter.Apply(false, true);
-
-    bool sawFastDedup = false;
-    for (int attempt = 0; attempt < 3 && !sawFastDedup; ++attempt) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply(false, true);
-        QueryPerformanceCounter(&end);
-
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
-    }
-
-    EXPECT_TRUE(sawFastDedup);
-    g_FGCompat.SetDLSSFGMultiplier(0);
-    g_FGCompat.SetDLSSFGActive(false);
-}
-
 // gateEveryPresent must never stall when the limiter is not configured: it
 // only changes lock/dedup semantics, not the inactive fast path.
 TEST_F(FpsLimiterTest, GateEveryPresentStaysNonBlockingWhenInactive) {
@@ -315,7 +284,7 @@ TEST(FpsLimiterPolicyTest, RationalIntervalsPreserveExactLongTermCadence) {
 TEST(FpsLimiterPolicyTest, CaptureSyncLateAdvancePreservesGridPhaseWithoutImmediateCatchup) {
     int64_t remainder = 0;
     const auto result = ce::fps_limiter_policy::AdvanceCaptureSyncDeadlineAfterLateFrame(
-        /*currentTargetQpc=*/1000, /*nowQpc=*/1350, /*frequency=*/1000, /*fps=*/10, remainder);
+        /*currentTargetQpc=*/1000, /*nowQpc=*/1350, /*frequency=*/1000, /*fps=*/10, /*cadenceScale=*/1, remainder);
 
     EXPECT_EQ(result.nextTargetQpc, 1400);
     EXPECT_EQ(result.skippedGridSlots, 4u);

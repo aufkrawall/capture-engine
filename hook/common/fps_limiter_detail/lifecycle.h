@@ -139,6 +139,22 @@ inline void FpsLimiter::Shutdown() {
     reflexNativeSleepActive_ = false;
     reflexSleepBaselineCount_ = 0;
     reflexRecentPresentGap_ = false;
+    {
+        std::lock_guard<std::mutex> admissionLock(admissionMutex_);
+        groupAdmission_.Reset();
+        lastAdmissionKey_ = 0;
+    }
+    boundaryCallbackCount_.store(0, std::memory_order_relaxed);
+    pacedGroupCount_.store(0, std::memory_order_relaxed);
+    generatedSlotPassCount_.store(0, std::memory_order_relaxed);
+    groupAdmissionResetCount_.store(0, std::memory_order_relaxed);
+    statsSnapshotBoundaryCallbacks_ = 0;
+    statsSnapshotPacedGroups_ = 0;
+    statsSnapshotGeneratedPasses_ = 0;
+    statsSnapshotGroupResets_ = 0;
+    statsSnapshotConcurrentSkips_ = 0;
+    lastCadenceTargetFps_ = 0;
+    lastCadenceScale_ = 1;
     ResetReflexNativePacingState();
     nativePacingBackend_ = {};
     g_ReflexLimiter.Shutdown();

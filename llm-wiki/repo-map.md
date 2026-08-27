@@ -131,7 +131,10 @@ anchors that predate the split are approximate.
       `streamline_hook_internal.h`.
     - FFX: `ffx_hook.cpp` + `ffx_hook_{context,install}.cpp` + `ffx_hook_internal.h`.
     - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
-      textures,state,frame,capture}.cpp` + `layer_capture_internal.h`.
+      textures,state,frame,capture}.cpp` + `layer_capture_internal.h`;
+      `vulkan_present_boundary.h` (header-only) owns the async-present route detection
+      (acquire-thread / submit-thread mismatch) with edge-triggered diagnostics and the
+      limiter boundary-transition logs plus admission resets.
   - `common/` - overlay policy (`dx12_overlay_policy.h`, `streamline_runtime_policy.h`,
     `overlay_compat.h`), UE/NGX RR policies (`ue5_rr_override_policy.h`,
     `ngx_feature_lifecycle.h`), `dxgi_shared*.cpp` (central Present routing: hooks,
@@ -140,7 +143,11 @@ anchors that predate the split are approximate.
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
-    `system_metrics*.cpp` (metrics + gpu unit), `reflex_limiter.h`, `fps_limiter.h`.
+    `system_metrics*.cpp` (metrics + gpu unit), `reflex_limiter.h`, `fps_limiter.h` +
+    `fps_limiter_policy.h` (pure pacing policy incl. `OutputGroupAdmission` ordinal classification and
+    `NextRationalGroupIntervalTicks`) + `fps_limiter_detail/{apply,frame_pacing,lifecycle}.h`
+    (out-of-line inline member definitions; apply.h owns the admission-epoch key, the boundary
+    classification fast path, and the exact rational group cadence).
   - `wrappers/` - `dxgi_swapchain_wrap*.cpp` (wrap, present, lifetime, frame_latency),
     `hook_system.cpp`, `iat_hook.*`, `vtable_hook.cpp`, `inline_hook*.cpp`, and
     `hook_patch_transaction.*` (thread-quiesced code-patch transactions).

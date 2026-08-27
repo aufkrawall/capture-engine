@@ -114,6 +114,39 @@ TEST_F(PerformanceMetricsTest, HighFpsFramesAreNotDebouncedAway) {
     EXPECT_GT(metrics.GetCurrentFPS(), 1500.0f);
 }
 
+// Telemetry must keep reporting observed presentation activity - never clamp
+// it to the configured cap. A correct 3x output-group limiter under a 130 fps
+// cap produces an even ~7.7 ms callback cadence (the paced group owner waits
+// ~23.08 ms, its two generated outputs follow immediately), which converges
+// near 130. The pre-fix escape (whole extra callback groups admitted inside
+// the 2 ms dedup window, measured at ~146 fps with 167 fps one-second peaks)
+// stays honestly visible as the higher rate it really was.
+TEST_F(PerformanceMetricsTest, FGGroupedAdmissionTraceConvergesNearConfiguredCap) {
+    constexpr int64_t kFrame130Us = 7692;  // 130 fps output cadence (post-fix)
+    int64_t t = 1000000;
+    metrics.Update(t);
+    for (int i = 0; i < 120; ++i) {
+        t += kFrame130Us;
+        metrics.Update(t);
+    }
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 130.0f, 1.5f);
+    EXPECT_NEAR(metrics.GetAverageFPS(), 130.0f, 1.5f);
+
+    // The pre-fix burst pattern: groups of 3 outputs arrive together every
+    // ~20.5 ms because the time-window dedup admitted extra groups unpaced.
+    PerformanceMetrics burst;
+    int64_t b = 1000000;
+    burst.Update(b);
+    for (int i = 0; i < 60; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            b += 200;  // sub-threshold burst callback (not a duplicate sample)
+            burst.Update(b);
+        }
+        b += 19900;  // next paced group boundary
+    }
+    EXPECT_GT(burst.GetCurrentFPS(), 140.0f) << "telemetry must not be clamped to the configured cap";
+}
+
 TEST_F(PerformanceMetricsTest, LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency) {
     int64_t t = 1000000;
     metrics.Update(t);

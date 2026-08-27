@@ -6,35 +6,6 @@
 #include "../fps_limiter.h"
 
 inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEveryPresent) {
-    // Strict grid pacing: every present must be gated by the cadence grid, even
-    // when another present thread is currently inside the cadence. Blocking on
-    // the cadence lock serializes concurrent present streams so each one gets
-    // its own grid slot (one present per target interval), instead of letting
-    // the later present skip the wait and reach the swapchain unpaced. The
-    // legacy try-lock path keeps its non-blocking behavior for call sites whose
-    // second call is a duplicate of the same frame (DXVK Present+PresentEx).
-    const bool strictGrid = gateEveryPresent && !g_FGCompat.IsFGActive();
-    std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
-    if (strictGrid) {
-        LARGE_INTEGER lockStart, lockEnd, lockFreq;
-        QueryPerformanceCounter(&lockStart);
-        cadenceLock.lock();
-        QueryPerformanceCounter(&lockEnd);
-        QueryPerformanceFrequency(&lockFreq);
-        const int64_t lockWaitUs = ((lockEnd.QuadPart - lockStart.QuadPart) * 1000000) / lockFreq.QuadPart;
-        if (lockWaitUs > 500) {
-            ++strictGridContendedWaits_;
-            if (strictGridContendedWaits_ <= 3 || (strictGridContendedWaits_ % 600) == 0) {
-                TraceLog("Apply: STRICT grid serialized concurrent present lockWaitUs=%lld count=%u", lockWaitUs,
-                         strictGridContendedWaits_);
-                HookLog("FPS Limiter: strict grid serialized a concurrent present (lockWaitUs=%lld, count=%u)",
-                        lockWaitUs, strictGridContendedWaits_);
-            }
-        }
-    } else if (!cadenceLock.try_lock()) {
-        concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
     SharedMemoryLayout* shm = nullptr;
     if (dbgShm) {
         shm = dbgShm;
@@ -50,13 +21,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         return;
     }
 
-    // Dedup guard: DXVK calls Present and PresentEx sequentially on the same
-    // thread for each visual frame. Each call enters DX9_PresentBegin with
-    // g_PresentRecurse == 1 (they are sequential, not nested), so both fire
-    // Apply(). The second call occurs within ~1ms of the first Apply() returning,
-    // while the next legitimate frame's Apply() arrives at least 2ms later
-    // (after Vulkan QueuePresent + game render loop). Skip if called within 2ms
-    // of the previous Apply() returning.
     if (qpcFrequency == 0) {
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
@@ -64,20 +28,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     }
     LARGE_INTEGER nowQpc;
     QueryPerformanceCounter(&nowQpc);
-
-    // Dedup guard: DXVK fires Present+PresentEx per render frame. The second call
-    // arrives within ~1ms. Skip if called within 2ms of the previous return.
-    // BUT: when the FPS limiter is active and ALLOW_TEARING disables vsync,
-    // frames arrive very fast (1-2ms) and dedup would skip legitimate frames.
-    // Only apply dedup when the limiter is NOT active.
-    if (!isActivelyLimiting_.load(std::memory_order_relaxed) && !strictGrid) {
-        const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
-        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
-            applyDedupCount_++;
-            lastActualWaitUs_ = 0;
-            return;
-        }
-    }
 
     bool captureRequested = shm->runtimeState.captureRequested.load(std::memory_order_acquire);
     bool captureSyncEnabled = shm->fpsLimiter.GetCaptureSyncEnabled();
@@ -98,21 +48,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         shm->fpsLimiter.hookSessionId.store(sid, std::memory_order_release);
         sessionIdPublished = true;
         HookLog("FPS Limiter: Published Session ID: %u", sid);
-    }
-
-    // Periodically check for native low-latency APIs (Reflex).
-    // Games may load these dynamically (e.g., user enables Reflex in settings).
-    // Re-check every ~250ms (15 frames at 60fps) to catch late-loaded APIs
-    // and in-game Reflex toggles faster.
-    nativeApiRecheckCounter_++;
-    if (nativeApiRecheckCounter_ >= 15) {
-        nativeApiRecheckCounter_ = 0;
-        bool reflexWasAvailable = g_ReflexLimiter.IsAvailable();
-        g_ReflexLimiter.Init();
-        bool reflexNowAvailable = g_ReflexLimiter.IsAvailable();
-        if (!reflexWasAvailable && reflexNowAvailable) {
-            HookLogImportant("FPS Limiter: Reflex became available (nvapi64.dll loaded late)");
-        }
     }
 
     // Check if limiter should be active
@@ -148,6 +83,10 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     }
 
     if (!limiterActive) {
+        // The cadence lock serializes this cleanup against a concurrent owner
+        // that may still be inside its final wait; the branch is rare (config
+        // transitions) and every reset in it is idempotent.
+        std::lock_guard<std::mutex> cadenceLock(cadenceMutex_);
         isActivelyLimiting_.store(false, std::memory_order_relaxed);
         g_ReflexLimiter.SetManualLimiterConfiguredOrActive(false);
         lastActualWaitUs_ = 0;
@@ -163,7 +102,14 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
                 timerResolutionSet = false;
             }
         }
-        // Reset local limiter state when inactive
+        // Reset local limiter state when inactive. The output-group ordinal
+        // resets too so re-activation cannot inherit a partial group.
+        {
+            std::lock_guard<std::mutex> admissionLock(admissionMutex_);
+            if (groupAdmission_.Reset()) {
+                groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         if (localTargetTime_ != 0) {
             localTargetTime_ = 0;
             localIntervalFps_ = 0;
@@ -195,7 +141,14 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     loggedInactive_ = false;  // Reset so transitions back to inactive are logged
 
     // =====================================================================
-    // Resolve effective limiter mode (auto fallback chain)
+    // FG-aware target adjustment and the output-group cadence grid.
+    // When FG is active, the output frame rate is fgMultiplier x base rate.
+    // Real final-boundary call sites pace whole output groups on an exact
+    // rational grid: interval = QPC_frequency * cadenceScale / configured
+    // output target. A 130 fps cap with 3x FG therefore paces 43.333... groups
+    // per second without drift instead of flooring to 43 (129 output fps).
+    // Non-boundary call sites keep the floored base-frame target and legacy
+    // dedup semantics.
     // =====================================================================
     bool fgActive = g_FGCompat.IsFGActive();
     int fgMultiplier = fgActive ? g_FGCompat.GetFGMultiplier() : 1;
@@ -207,6 +160,118 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     if (fgMultiplier > 4)
         fgMultiplier = 4;
 
+    const bool scaleForFrameGeneration = ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
+        usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested());
+    int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
+        targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
+    const int cadenceScale = ce::fps_limiter_policy::ResolveCadenceScaleMultiplier(
+        fgActive, fgMultiplier, scaleForFrameGeneration && gateEveryPresent);
+    const int cadenceTargetFps = (cadenceScale > 1) ? targetFps : effectiveTargetFps;
+
+    // Admission epoch: any change of the configuration that shapes the output
+    // groups (limiter activity, capture source, FG state, multiplier, cadence
+    // grid) re-bases the ordinal BEFORE the next classification. That way the
+    // first callback of a new configuration owns a clean cadence slot, and a
+    // reset can never discard the group the current callback just opened.
+    const uint32_t admissionKey = (limiterActive ? 1u : 0u) | (usingCaptureSync ? 2u : 0u) |
+                                  (fgActive ? 4u : 0u) | (gateEveryPresent ? 8u : 0u) |
+                                  (static_cast<uint32_t>(fgMultiplier & 0x7) << 4) |
+                                  (static_cast<uint32_t>(std::clamp(cadenceTargetFps, 0, 0xFFFF)) << 7) |
+                                  (static_cast<uint32_t>(std::clamp(cadenceScale, 0, 0x7)) << 23);
+    {
+        std::lock_guard<std::mutex> admissionLock(admissionMutex_);
+        if (admissionKey != lastAdmissionKey_) {
+            lastAdmissionKey_ = admissionKey;
+            if (groupAdmission_.Reset()) {
+                groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        // Real final-boundary call sites classify every callback into a
+        // multiplier-sized output group BEFORE any locking: exactly one
+        // callback per group owns a cadence slot, the remaining FG
+        // multiplier-1 callbacks are the generated outputs of that already
+        // admitted group and pass without their own wait. Classification is a
+        // pure ordinal under a short admission mutex (never held across a
+        // wait), never a time window, so a next real group arriving inside the
+        // legacy dedup window cannot be confused with generated spillover -
+        // the escape that let Portal RTX admit whole unpaced groups and run
+        // ~146 fps against a 130 cap.
+        if (gateEveryPresent) {
+            boundaryCallbackCount_.fetch_add(1, std::memory_order_relaxed);
+            if (groupAdmission_.Classify(ce::fps_limiter_policy::ResolveOutputGroupAdmissionMultiplier(
+                    fgActive, fgMultiplier)) ==
+                ce::fps_limiter_policy::OutputGroupAdmission::Decision::kPassGeneratedSlot) {
+                generatedSlotPassCount_.fetch_add(1, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+                return;
+            }
+            pacedGroupCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Strict grid pacing: every paced present must be gated by the cadence
+    // grid, even when another present thread is currently inside the cadence.
+    // Blocking on the cadence lock serializes concurrent present streams so
+    // each group owner gets its own grid slot (one present per target
+    // interval), instead of letting the later present skip the wait and reach
+    // the swapchain unpaced. The legacy try-lock path keeps its non-blocking
+    // behavior for call sites whose second call is a duplicate of the same
+    // frame (DXVK Present+PresentEx).
+    const bool strictGrid = gateEveryPresent;
+    std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
+    if (strictGrid) {
+        LARGE_INTEGER lockStart, lockEnd, lockFreq;
+        QueryPerformanceCounter(&lockStart);
+        cadenceLock.lock();
+        QueryPerformanceCounter(&lockEnd);
+        QueryPerformanceFrequency(&lockFreq);
+        const int64_t lockWaitUs = ((lockEnd.QuadPart - lockStart.QuadPart) * 1000000) / lockFreq.QuadPart;
+        if (lockWaitUs > 500) {
+            ++strictGridContendedWaits_;
+            if (strictGridContendedWaits_ <= 3 || (strictGridContendedWaits_ % 600) == 0) {
+                TraceLog("Apply: STRICT grid serialized concurrent present lockWaitUs=%lld count=%u", lockWaitUs,
+                         strictGridContendedWaits_);
+                HookLog("FPS Limiter: strict grid serialized a concurrent present (lockWaitUs=%lld, count=%u)",
+                        lockWaitUs, strictGridContendedWaits_);
+            }
+        }
+    } else if (!cadenceLock.try_lock()) {
+        concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    // Dedup guard: DXVK fires Present+PresentEx per render frame. The second call
+    // arrives within ~1ms. Skip if called within 2ms of the previous return.
+    // BUT: when the FPS limiter is active and ALLOW_TEARING disables vsync,
+    // frames arrive very fast (1-2ms) and dedup would skip legitimate frames.
+    // Only apply dedup when the limiter is NOT active.
+    if (!isActivelyLimiting_.load(std::memory_order_relaxed) && !strictGrid) {
+        const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
+        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
+            applyDedupCount_++;
+            lastActualWaitUs_ = 0;
+            return;
+        }
+    }
+
+    // Periodically check for native low-latency APIs (Reflex).
+    // Games may load these dynamically (e.g., user enables Reflex in settings).
+    // Re-check every ~250ms (15 frames at 60fps) to catch late-loaded APIs
+    // and in-game Reflex toggles faster.
+    nativeApiRecheckCounter_++;
+    if (nativeApiRecheckCounter_ >= 15) {
+        nativeApiRecheckCounter_ = 0;
+        bool reflexWasAvailable = g_ReflexLimiter.IsAvailable();
+        g_ReflexLimiter.Init();
+        bool reflexNowAvailable = g_ReflexLimiter.IsAvailable();
+        if (!reflexWasAvailable && reflexNowAvailable) {
+            HookLogImportant("FPS Limiter: Reflex became available (nvapi64.dll loaded late)");
+        }
+    }
+
+    // =====================================================================
+    // Resolve effective limiter mode (auto fallback chain)
+    // =====================================================================
     const bool externalNativeCallbacks =
         allowPostPresentReflexCadence && nativePacingBackend_.context && nativePacingBackend_.isAvailable &&
         nativePacingBackend_.setTargetFps && nativePacingBackend_.sleep;
@@ -271,21 +336,17 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         reflexRecentPresentGap_ = false;
     }
 
-    // FG-aware FPS adjustment for every limiter mode:
-    // When FG is active, the output frame rate is fgMultiplier × base rate.
-    // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
-    const bool scaleForFrameGeneration = ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
-        usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested());
-    int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
-        targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
     const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
     g_ReflexLimiter.SetManualLimiterConfiguredOrActive(limiterActive && explicitReflexMode);
 
     // Log mode transitions - always log on first activation to confirm mode
     if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
-        lastEffectiveMode_ != effectiveMode || lastFGActive_ != fgActive || lastFGMultiplier_ != fgMultiplier) {
+        lastEffectiveMode_ != effectiveMode || lastFGActive_ != fgActive || lastFGMultiplier_ != fgMultiplier ||
+        lastCadenceTargetFps_ != cadenceTargetFps || lastCadenceScale_ != cadenceScale) {
         // Reset pacing cadence immediately when FPS or mode changes so hot
         // config reloads apply on the next frame instead of riding stale state.
+        // The output-group ordinal was already re-based by the admission epoch
+        // check above, before this callback classified.
         localTargetTime_ = 0;
         localIntervalFps_ = 0;
         localIntervalRemainder_ = 0;
@@ -321,18 +382,22 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
             !externalNativeAvailable)
             availNote = " [API UNAVAILABLE - will fallback]";
 
-        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
-                 usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
-                 fgMultiplier);
-        HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, capReq=%d)%s",
-                usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
-                fgMultiplier, captureRequested ? 1 : 0, availNote);
+        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d",
+                 usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
+                 cadenceScale, fgActive ? 1 : 0, fgMultiplier);
+        HookLog(
+            "FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, group=%d/%d, fg=%d/%dx, "
+            "capReq=%d)%s",
+            usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
+            cadenceScale, fgActive ? 1 : 0, fgMultiplier, captureRequested ? 1 : 0, availNote);
         loggedActive_ = true;
         lastTargetFps_ = effectiveTargetFps;
         lastUsedCaptureSync_ = usingCaptureSync;
         lastEffectiveMode_ = effectiveMode;
         lastFGActive_ = fgActive;
         lastFGMultiplier_ = fgMultiplier;
+        lastCadenceTargetFps_ = cadenceTargetFps;
+        lastCadenceScale_ = cadenceScale;
     }
 
     // =====================================================================
@@ -484,7 +549,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
                     lastApplyReturnQpc = retQpc.QuadPart;
                     return;
                 }
-                const auto cadence = RunLocalCadence(effectiveTargetFps, usingCaptureSync);
+                const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
 
                 LARGE_INTEGER sleepStart;
                 LARGE_INTEGER sleepEnd;
@@ -630,13 +695,14 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // the helper process here is fragile because per-game config can enable
     // the limiter after startup; an unanswered event used to cost one full
     // timeout per frame before local fallback ran.
-    const auto cadence = RunLocalCadence(effectiveTargetFps, usingCaptureSync);
+    const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
     if (localCadenceFirstFrame) {
         TraceLog(
-            "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d "
-            "firstWaitUs=%lld firstLateUs=%lld",
+            "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "
+            "events=%d/%d firstWaitUs=%lld firstLateUs=%lld",
             usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps, effectiveTargetFps,
-            releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs, cadence.lateUs);
+            cadenceTargetFps, cadenceScale, releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs,
+            cadence.lateUs);
         HookLog("FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d)",
                 usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps);
     }
@@ -655,6 +721,19 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
             cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
             effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
             cadence.statsSkippedGridSlots, applyActiveDedupCount_);
+        if (cadence.statsBoundaryCallbacks > 0 || cadence.statsGeneratedPasses > 0 ||
+            cadence.statsConcurrentSkips > 0 || cadence.statsGroupResets > 0) {
+            // Rate-limited by the 120-frame stats window. A nonzero concurrent
+            // skip while a real-boundary limiter is active is an invariant
+            // violation: boundary owners block on the cadence lock and
+            // generated slots never touch it, so this must not increase.
+            HookLog(
+                "FPS Limiter: boundary admission stats: boundaryCallbacks=%u pacedGroups=%u generatedPasses=%u "
+                "groupResets=%u concurrentSkips=%u%s",
+                cadence.statsBoundaryCallbacks, cadence.statsPacedGroups, cadence.statsGeneratedPasses,
+                cadence.statsGroupResets, cadence.statsConcurrentSkips,
+                cadence.statsConcurrentSkips > 0 ? " [INVARIANT VIOLATION: unpaced lock-contention escape]" : "");
+        }
     }
 
     // Record time Apply() returned so sequential duplicate presents

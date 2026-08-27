@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 649,
+    "entries": 650,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -582,6 +582,7 @@
       "tests/test_fg_switch_transition.cpp",
       "tests/test_fg_upscale_policy.cpp",
       "tests/test_fps_limiter.cpp",
+      "tests/test_fps_limiter_output_groups.cpp",
       "tests/test_fps_limiter_part2.cpp",
       "tests/test_frame_queue.cpp",
       "tests/test_frame_timing_utils.cpp",

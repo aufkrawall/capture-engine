@@ -5,9 +5,10 @@
 
 #include "../fps_limiter.h"
 
-inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveTargetFps, bool preserveCaptureSyncPhase) {
+inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps, int cadenceScale,
+                                                                  bool preserveCaptureSyncPhase) {
     LocalCadenceResult result;
-    if (effectiveTargetFps <= 0) {
+    if (targetFps <= 0) {
         return result;
     }
 
@@ -17,13 +18,14 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveT
         qpcFrequency = freq.QuadPart;
     }
 
-    if (localIntervalFps_ != effectiveTargetFps) {
-        localIntervalFps_ = effectiveTargetFps;
+    if (localIntervalFps_ != targetFps || localIntervalScale_ != cadenceScale) {
+        localIntervalFps_ = targetFps;
+        localIntervalScale_ = cadenceScale;
         localIntervalRemainder_ = 0;
     }
     const auto NextIntervalTicks = [&]() {
-        return ce::fps_limiter_policy::NextRationalIntervalTicks(qpcFrequency, effectiveTargetFps,
-                                                                 localIntervalRemainder_);
+        return ce::fps_limiter_policy::NextRationalGroupIntervalTicks(qpcFrequency, targetFps, cadenceScale,
+                                                                      localIntervalRemainder_);
     };
 
     LARGE_INTEGER now;
@@ -32,7 +34,8 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveT
     if (localTargetTime_ == 0) {
         // Start later in the current frame rather than a full frame ahead.
         // This preserves the low-latency behavior expected from Reflex.
-        const int64_t phaseOffsetTicks = std::max<int64_t>(1, (qpcFrequency / effectiveTargetFps) / 2);
+        // The phase offset is half of the (possibly FG-scaled) group interval.
+        const int64_t phaseOffsetTicks = std::max<int64_t>(1, (qpcFrequency / targetFps) * cadenceScale / 2);
         localTargetTime_ = now.QuadPart + phaseOffsetTicks;
         localFrameCount_ = 0;
         localStatsIntervalStart_ = now.QuadPart;
@@ -74,7 +77,7 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveT
         // apart afterward. General limiting keeps its established now-relative behavior.
         if (preserveCaptureSyncPhase) {
             const auto advance = ce::fps_limiter_policy::AdvanceCaptureSyncDeadlineAfterLateFrame(
-                localTargetTime_, now.QuadPart, qpcFrequency, effectiveTargetFps, localIntervalRemainder_);
+                localTargetTime_, now.QuadPart, qpcFrequency, targetFps, cadenceScale, localIntervalRemainder_);
             localTargetTime_ = advance.nextTargetQpc;
             result.statsSkippedGridSlots = advance.skippedGridSlots;
             localStatsSkippedGridSlots_ += advance.skippedGridSlots;
@@ -107,6 +110,24 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int effectiveT
         result.statsMaxLateUs = localStatsMaxLateUs_;
         result.statsAvgLateUs =
             (localStatsLateFrames_ > 0) ? (localStatsLateUsSum_ / static_cast<int64_t>(localStatsLateFrames_)) : 0;
+        // Boundary admission deltas over this stats window. The totals are
+        // relaxed atomics mutated by every real-boundary caller; the snapshots
+        // are only read/written here under the cadence mutex.
+        const uint32_t boundaryCallbacks = boundaryCallbackCount_.load(std::memory_order_relaxed);
+        const uint32_t pacedGroups = pacedGroupCount_.load(std::memory_order_relaxed);
+        const uint32_t generatedPasses = generatedSlotPassCount_.load(std::memory_order_relaxed);
+        const uint32_t groupResets = groupAdmissionResetCount_.load(std::memory_order_relaxed);
+        const uint32_t concurrentSkips = concurrentApplySkips_.load(std::memory_order_relaxed);
+        result.statsBoundaryCallbacks = boundaryCallbacks - statsSnapshotBoundaryCallbacks_;
+        result.statsPacedGroups = pacedGroups - statsSnapshotPacedGroups_;
+        result.statsGeneratedPasses = generatedPasses - statsSnapshotGeneratedPasses_;
+        result.statsGroupResets = groupResets - statsSnapshotGroupResets_;
+        result.statsConcurrentSkips = concurrentSkips - statsSnapshotConcurrentSkips_;
+        statsSnapshotBoundaryCallbacks_ = boundaryCallbacks;
+        statsSnapshotPacedGroups_ = pacedGroups;
+        statsSnapshotGeneratedPasses_ = generatedPasses;
+        statsSnapshotGroupResets_ = groupResets;
+        statsSnapshotConcurrentSkips_ = concurrentSkips;
         result.emitStats = true;
         localStatsIntervalStart_ = now.QuadPart;
         localStatsFrameCount_ = 0;
@@ -244,7 +265,9 @@ inline void FpsLimiter::ApplyPostPresent() {
 
     isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
-    const auto cadence = RunLocalCadence(targetFps, preserveCaptureSyncPhase);
+    // The post-present cadence paces base frames (the next frame's simulation
+    // starts behind this wait), so it keeps the unscaled base interval.
+    const auto cadence = RunLocalCadence(targetFps, 1, preserveCaptureSyncPhase);
 
     LARGE_INTEGER sleepStart;
     LARGE_INTEGER sleepEnd;

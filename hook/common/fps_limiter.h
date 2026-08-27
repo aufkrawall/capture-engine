@@ -61,6 +61,13 @@ private:
         uint32_t statsSkippedGridSlots = 0;
         int64_t statsAvgLateUs = 0;
         int64_t statsMaxLateUs = 0;
+        // Real-boundary output-group admission deltas since the previous
+        // emission of the 120-frame stats window.
+        uint32_t statsBoundaryCallbacks = 0;
+        uint32_t statsPacedGroups = 0;
+        uint32_t statsGeneratedPasses = 0;
+        uint32_t statsGroupResets = 0;
+        uint32_t statsConcurrentSkips = 0;
         bool emitStats = false;
         bool waited = false;
         bool resetCadence = false;
@@ -68,7 +75,7 @@ private:
         double instantFps = 0;
     };
 
-    LocalCadenceResult RunLocalCadence(int effectiveTargetFps, bool preserveCaptureSyncPhase);
+    LocalCadenceResult RunLocalCadence(int targetFps, int cadenceScale, bool preserveCaptureSyncPhase);
 
 public:
     void SetIPCClient(IPCClient* ipc) {
@@ -94,6 +101,33 @@ public:
     // Get last actual wait time in microseconds (for perf logging)
     int64_t GetLastWaitUs() const {
         return lastActualWaitUs_;
+    }
+    // Output-group admission diagnostics for tests and rate-limited stats.
+    uint32_t GetBoundaryCallbackCount() const {
+        return boundaryCallbackCount_.load(std::memory_order_relaxed);
+    }
+    uint32_t GetPacedGroupCount() const {
+        return pacedGroupCount_.load(std::memory_order_relaxed);
+    }
+    uint32_t GetGeneratedSlotPassCount() const {
+        return generatedSlotPassCount_.load(std::memory_order_relaxed);
+    }
+    uint32_t GetGroupAdmissionResetCount() const {
+        return groupAdmissionResetCount_.load(std::memory_order_relaxed);
+    }
+    uint32_t GetConcurrentApplySkipCount() const {
+        return concurrentApplySkips_.load(std::memory_order_relaxed);
+    }
+    // Discards the pending output-group ordinal so the next real-boundary
+    // callback owns a fresh cadence slot. Used when the pacing boundary itself
+    // moves (Vulkan moves limiter work between vkQueuePresentKHR and
+    // vkAcquireNextImageKHR when async present is detected) and on IPC/session
+    // resets; configuration-driven transitions reset inside Apply().
+    void ResetOutputGroupAdmission() {
+        std::lock_guard<std::mutex> admissionLock(admissionMutex_);
+        if (groupAdmission_.Reset()) {
+            groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     // Returns true when the limiter is actively pacing frames (capture_sync or general).
     // Used by Present hooks to disable vsync (SyncInterval=0) so that the limiter
@@ -141,17 +175,23 @@ public:
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
     //
-    // gateEveryPresent is for native-Vulkan call sites (vkQueuePresentKHR /
-    // vkAcquireNextImageKHR) that must pace EVERY present through the cadence
-    // grid. Some games present several real swapchain images per frame period
-    // (Strange Brigade Vulkan presents from multiple threads); the legacy
-    // first-present-only gating and the 2ms dedup let those extra presents
-    // through unpaced, so the displayed rate became 2x the target with bad
-    // frame-time variance. With gateEveryPresent the cadence lock is taken
-    // blocking (concurrent present streams are serialized onto the grid) and
-    // neither dedup fast path can let a real frame pass without a wait.
-    // FG-scaled modes keep the legacy behavior because generated frames must
-    // not be pushed onto the base-frame grid.
+    // gateEveryPresent marks real final presentation/acquire boundaries
+    // (native-Vulkan vkQueuePresentKHR / vkAcquireNextImageKHR). Those call
+    // sites use deterministic multiplier-sized output-group admission while
+    // frame generation is active: exactly one callback per group owns a
+    // cadence slot and waits on the exact rational group grid (interval =
+    // QPC_frequency * multiplier / configured output target), while the
+    // remaining multiplier-1 callbacks are the generated outputs of that
+    // already admitted group and pass through a lock-free fast path. The
+    // classification is an ordinal, never a time window, so bursts of rapid
+    // callbacks cannot be confused with generated spillover the way the legacy
+    // 2ms dedup allowed (that escape let Portal RTX run ~146 fps against a 130
+    // cap). With FG off every callback is its own group owner and blocking
+    // cadence-lock serialization preserves the Strange Brigade multi-present
+    // grid: exactly one present per target interval, evenly spaced.
+    // Non-boundary call sites (DXVK Present+PresentEx and the D3D/OpenGL
+    // wrappers) keep the legacy dedup fast paths because their second call is
+    // genuinely the same logical frame.
     void Apply(bool allowPostPresentReflexCadence = false, bool gateEveryPresent = false);
 
     void Shutdown();
@@ -207,7 +247,8 @@ private:
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
-    int localIntervalFps_ = 0;                     // Denominator of the rational QPC cadence
+    int localIntervalFps_ = 0;                     // Configured output target of the rational QPC cadence
+    int localIntervalScale_ = 1;                   // Cadence scale (FG multiplier) of the rational QPC cadence
     int64_t localIntervalRemainder_ = 0;           // Bresenham remainder; prevents integer-FPS drift
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats
     int64_t localStatsIntervalStart_ = 0;          // QPC start of current stats interval
@@ -229,6 +270,23 @@ private:
     int applyTraceCount_ = 0;
     uint32_t applyDedupCount_ = 0;
     uint32_t strictGridContendedWaits_ = 0;  // Strict-grid presents that had to block on the cadence lock
+    // Output-group admission state and diagnostics. The ordinal is only
+    // mutated under admissionMutex_, which is never held across a wait, so a
+    // generated-slot pass can always classify while a group owner is waiting.
+    mutable std::mutex admissionMutex_;
+    ce::fps_limiter_policy::OutputGroupAdmission groupAdmission_;
+    uint32_t lastAdmissionKey_ = 0;                      // Admission epoch (admissionMutex_-guarded)
+    std::atomic<uint32_t> boundaryCallbackCount_{0};     // Total real-boundary Apply() entries
+    std::atomic<uint32_t> pacedGroupCount_{0};           // Total pace_group admissions
+    std::atomic<uint32_t> generatedSlotPassCount_{0};    // Total generated-slot fast-path passes
+    std::atomic<uint32_t> groupAdmissionResetCount_{0};  // Resets that discarded a partial group
+    uint32_t statsSnapshotBoundaryCallbacks_ = 0;        // 120-frame stats windows (cadence-mutex-only writes)
+    uint32_t statsSnapshotPacedGroups_ = 0;
+    uint32_t statsSnapshotGeneratedPasses_ = 0;
+    uint32_t statsSnapshotGroupResets_ = 0;
+    uint32_t statsSnapshotConcurrentSkips_ = 0;
+    int lastCadenceTargetFps_ = 0;                       // Transition key: configured output cadence target
+    int lastCadenceScale_ = 1;                           // Transition key: cadence scale (FG multiplier)
     int traceLogCount_ = 0;
     mutable std::mutex eventStateMutex_;
     mutable std::mutex timerStateMutex_;

@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_present_boundary.h"
 #include "vulkan_reflex_limiter.h"
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
@@ -290,28 +291,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
-    bool asyncPresentDetected = false;
-    if (sd) {
-        const uint32_t acquireThreadId = sd->lastAcquireThreadId.load(std::memory_order_acquire);
-        const uint64_t lastAcquireTick = sd->lastAcquireTick.load(std::memory_order_acquire);
-        if (acquireThreadId != 0 && acquireThreadId != GetCurrentThreadId() && lastAcquireTick != 0 &&
-            (GetTickCount64() - lastAcquireTick) < 2000ULL) {
-            if (!sd->asyncPresentDetected.exchange(true, std::memory_order_acq_rel)) {
-                LayerLog("Vulkan Layer: Async present detected for swapchain %p; moving limiter off present thread",
-                         sd->swapchain);
-            }
-        }
-        asyncPresentDetected = sd->asyncPresentDetected.load(std::memory_order_acquire);
-    }
-    if (!asyncPresentDetected && queueDevice != VK_NULL_HANDLE) {
-        const uint32_t lastSubmitThreadId = VulkanLayerState::Get().GetLastSubmitThreadId(queueDevice);
-        if (lastSubmitThreadId != 0 && lastSubmitThreadId != GetCurrentThreadId()) {
-            asyncPresentDetected = true;
-            if (sd) {
-                sd->asyncPresentDetected.store(true, std::memory_order_release);
-            }
-        }
-    }
+    bool asyncPresentDetected = ce::vulkan_present_boundary::ResolvePresentLimiterBoundary(sd, queueDevice);
 
     if (isFirstHook) {
         // Apply queue-depth control to the render-producing graphics queue.
@@ -371,6 +351,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         g_VulkanReflexLimiter.SetDevice(queueDevice, disp);
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
         g_SharedFpsLimiter.SetNativePacingBackend(GetVulkanNativeFpsPacingBackend());
+        ce::vulkan_present_boundary::ReportPresentTimeLimiterBoundary(sd, nativeVulkanPresent);
         g_SharedFpsLimiter.Apply(true, nativeVulkanPresent);
         perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }
@@ -594,7 +575,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
             // Async-present games acquire from a different thread than they
             // present on, so the present-time wait cannot throttle production;
             // gate every acquire on the cadence grid instead.
-            g_SharedFpsLimiter.Apply(false, !IsDXVKD3D11WrapperLoaded());
+            const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
+            ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
+            g_SharedFpsLimiter.Apply(false, groupedAdmission);
         }
     }
 

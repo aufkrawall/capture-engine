@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-08-27 - FPS limiter: FG-aware output-group admission fixes Portal RTX cap escape (130 configured, ~146 observed)
+
+Session `20260827_211303` (build 0.1.6280, Portal with RTX Remix, `FpsLimiter.general_enabled=true`, cap 130, mode
+`basic`, DLSS FG 3x) falsified "the limiter is disabled": it resolved 130, activated in the bridge, and its clock was
+exact (~43.0 FPS local cadence) - but the callback stream reached 146.1/s (167 peak), with 92 six-callback / 31 five /
+33 four batches beside 531 clean 3-batches and `activeDedup=1458` at 600 paced frames (ideal 2 bypasses/frame = 1200;
+the ~258 excess = ~86 admitted extra groups explains the ~17-18 FPS overshoot). Root cause: while FG was active,
+`strictGrid = gateEveryPresent && !IsFGActive()` disabled serialized per-presentation admission and the time-based
+0.5-2 ms `activeDedup` window decided what "belongs to the current group" - the next real 3-frame group arriving
+inside the window was indistinguishable from generated spillover and was admitted unpaced. The submit-thread mismatch
+detection route had also switched pacing to `vkAcquireNextImageKHR` silently (no log), so acquire-time pacing was
+invisible in the session.
+
+Fix (all in the limiter + Vulkan layer, no game/executable/image-count/timing branches):
+
+- `ce::fps_limiter_policy::OutputGroupAdmission`: deterministic multiplier-ordinal classification (`pace_group` vs
+  `pass_generated_slot`) for real final-boundary callbacks; never reads a clock. Generated slots pass through a fast
+  path that never touches the cadence mutex; owners block on it. Replaces the FG-active dedup escape; FG-off strict
+  grid (Strange Brigade multi-present) and DXVK Present/PresentEx legacy dedup are unchanged.
+- Admission epoch key compared BEFORE classification: first callback after any activation/deactivation, target/source
+  change, FG on/off, multiplier change, IPC/session reset, or pacing-boundary move owns a clean slot.
+- Exact rational group cadence: interval = `QPC_frequency * cadenceScale / configured_target` with Bresenham
+  remainder (130/3 = 43.333... groups/s, zero drift); cadenceScale = FG multiplier for final-output observers, 1 for
+  inject capture sync. Floored integer target remains only for integer driver APIs and legacy sites; logs now show
+  `group=130/3`.
+- `hook/vulkan_layer/vulkan_present_boundary.h`: both async-detection routes log edge transitions (submit-thread was
+  silent), boundary-identity logs report QueuePresentKHR vs AcquireNextImageKHR with swapchain/FG/grouped, detection
+  edges reset output-group admission, 120-frame stats extended with boundary/paced/generated/resets/skips deltas and
+  a concurrentSkip invariant-violation tag.
+- Tests: new `tests/test_fps_limiter_output_groups.cpp` (pure ordinal sequences incl. the 3x six-callback burst,
+  2x/3x/4x windows, reset semantics, exact 130/3 + 100/3 + 141/4 sums, overflow guard, integration bursts, transition
+  resets, native post-present arming by owners only, capture-source scale selection, hitch recovery, 4-thread
+  concurrent admission with zero contention escapes); `GateEveryPresentDefersToDedupWhileFGActive` (the bug as a
+  requirement) replaced by `GateEveryPresentUsesGroupedAdmissionWhileFGActive` in the moved-out unit;
+  `PerformanceMetrics` trace test proves ~130 convergence and unclamped telemetry.
+
+Portal RTX matrix validation (2x/3x, non-divisible caps, toggles, VSync variants, Reflex smoke, FG-switch overlay
+capture continuity) remains required at runtime. Derived numbers: temp/fpslimitfix-notes.md (not committed).
+
 ### 2026-08-27 - Portal RTX override audit: upstream Remix MFG scheduling and Vulkan-native Reflex
 
 Sessions `20260826_162652`, `20260826_225500`, and `20260826_232211` proved the split renderer received the resolved
