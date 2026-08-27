@@ -46,11 +46,17 @@ Primary sources:
   generated-frame evaluation: session `20260827_155554` showed the indicator at configured 3x while changing Remix's
   menu from 2x to 3x still raised real output FPS. RTX Remix owns that earlier decision in
   `rtx.dlfg.maxInterpolatedFrames` (1/2/3 generated frames). Its bridge resolves the public
-  `remixapi_InitializeLibrary` interface and uses `SetConfigVariable`; CE intercepts that legitimate lookup, replaces
-  only the returned setter with a resident pass-through wrapper, and forces the scheduler option. NGX mismatch edges
-  reassert the same public option for internal Remix menu paths. CE never calls `Direct3DCreate9Ex` or initializes a
-  second Remix renderer. Without a configured override, the namespaced NGX value remains authoritative for telemetry
-  and limiter scaling, and Remix config calls pass through unchanged.
+  `remixapi_InitializeLibrary` interface and uses `SetConfigVariable`. CE wraps that setter on future initializations.
+  A Vulkan layer can arrive after Remix cached the interface, however, because public API initialization precedes
+  Vulkan negotiation. For that late-attachment case CE negotiates a private function table through the same official
+  initializer, using the exact known 0.6.4/0.5.1 API versions and validating the stable setter/DXVK prefix against the
+  pinned provider. NVIDIA's implementation only fills the append-only table; it does not create a device or renderer.
+  CE then forces the scheduler option. Remix 0.5.1 updates that option directly; current releases promote the public
+  user-layer write at a frame boundary. `DxvkDLFG::getInterpolatedFrameCount()` reads the effective value for each
+  batch. NGX mismatch edges reassert the same option for internal menu paths, including from CE's final
+  `EvaluateFeature` parameter check so old x64 helpers cannot bypass the synchronization by using a captured original
+  setter. CE never calls `Direct3DCreate9Ex` or initializes a second Remix renderer. Without a configured override,
+  the namespaced NGX value remains authoritative for telemetry and limiter scaling, and Remix config calls pass through.
 - `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see

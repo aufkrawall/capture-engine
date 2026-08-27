@@ -65,6 +65,17 @@ int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
         observedGeneratedFrames = readGeneratedFrames(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped);
     }
 
+    // This is the final parameter boundary before NGX consumes the evaluation.
+    // Older Remix x64 helpers can write the count through a captured original
+    // parameter vtable and bypass Hooked_SetI/Hooked_SetUI entirely. Keep the
+    // upstream Remix scheduler synchronized from the value observed here too;
+    // the Remix policy edge-deduplicates the normal setter-hook path.
+    if (observedGeneratedFrames > 0) {
+        RemixHook::ReassertFrameGenerationScheduleFromNgx(
+            NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+            static_cast<uint32_t>(observedGeneratedFrames), static_cast<uint32_t>(generatedFrames));
+    }
+
     // Use the captured originals so this is an unconditional write at the
     // final consumption boundary, not another trip through our Set hooks.
     if (originals.setI) {

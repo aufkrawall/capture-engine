@@ -14,9 +14,21 @@ NVIDIA's official `DLSSG.MultiFrameCount`. Session `20260827_155554` then falsif
 whole control boundary: the DLSS indicator showed configured 3x, yet changing Remix's menu 2x -> 3x still raised real
 FPS. NGX consumes one `MultiFrameIndex` per generated evaluation; changing its count cannot make the host schedule the
 missing evaluation. Remix schedules earlier through `rtx.dlfg.maxInterpolatedFrames`. Its bridge legitimately resolves
-`remixapi_InitializeLibrary` and calls the returned `SetConfigVariable`; CE now wraps that interface setter and forces
-the upstream option, with edge-triggered NGX mismatch reassertion for internal menu paths. No synthetic D3D9/Remix
-initialization and no title/executable rule were added. Runtime confirmation of real output remains pending.
+`remixapi_InitializeLibrary` and calls the returned `SetConfigVariable`. Session `20260827_162905` then falsified the
+first interception lifecycle: CE armed its filtered lookup route at 16:29:11.593 and verified the provider at .638,
+but never captured the interface; repeated NGX mismatches showed the setter remained unavailable. Vulkan negotiation
+had already begun at .448, and Remix initializes its public API before that boundary. NVIDIA's public bridge source
+and disassembly of the shipped binary confirm the returned 0xA8-byte interface is copied into writable global image
+storage. Session `20260827_202629` falsified CE's attempted table recovery too: build 0.1.6278 repeatedly found no
+candidate, never captured a setter, and therefore only forced downstream `DLSSG.MultiFrameCount`; the raw menu change
+to one generated frame remained observable at 20:27:20.309. CE now negotiates its own private function table through
+the official initializer using exact known 0.6.4/0.5.1 API versions, validates slots 10-12 as readable code owned by
+the pinned provider, and immediately calls the returned setter. NVIDIA's source and shipped machine code both show
+that this API only fills the append-only table; it does not create a device or renderer. An isolated call against the
+shipped provider returned success for both negotiation and `rtx.dlfg.maxInterpolatedFrames=2`, while an unknown key
+correctly failed. Future-initializer interception and NGX mismatch reassertion remain; the latter also runs at the
+final `EvaluateFeature` parameter boundary because old x64 Remix helpers can bypass earlier hooked parameter setters.
+No binary offset or title/executable rule was added. Runtime confirmation of real output remains pending.
 
 Remix's paired Present samples (~21.6 ms then ~0.2 ms) also explained the odd basic limiter: logical base rendering was
 only ~46 fps, below the old unscaled 100 target, so no wait was correct even while 2x/3x output appeared near 92/138.
@@ -196,33 +208,3 @@ only `force_ray_reconstruction=on` selects RR. Legacy `on` remains a `full` alia
 canonical names and normalized aliases such as `tonemapper_sharpen`. The host rejects unsupported/mistyped entries
 before publication and sends a spec mask plus raw typed values to the hook. This grows `SharedGraphicsConfig` from
 420 to 688 bytes and moves the shared ABI and every versioned mapping/event name from 44 to 45.
-
-### 2026-08-22 - Device notification bypassed the legacy teardown boundary
-
-Witcher 3 session `20260822_185158` started and rendered its loading screen, then raised a real
-`0xc0000005` null read in the title at `123.exe+0x1610976`. The bridge had progressed much farther,
-but the module and log timelines proved it still had not performed the requested NGX upgrade:
-
-- Streamline 2.12.128 finished initialization at `18:52:05.590`; legacy shutdown and NGX retirement
-  followed at `18:52:05.592`. Both retirement releases succeeded but both images stayed resident.
-- The dump contained one SR and one FG image, but they were the game's `nvngx_dlss.dll` 3.1.1 and
-  DriverStore `nvngx_dlssg.dll` 310.2.1. SL2 had requested the configured absolute paths, correctly
-  reused the already-resident images rather than mapping duplicates, and thereby acquired the extra
-  references which made the later safe retirement release insufficient.
-- The bypass was `NotifyD3D12Device`: unlike every bridged import, the queue-derived device path
-  called `EnsureRuntimeReady` directly while legacy quiescence was still pending.
-
-Legacy quiescence is now an explicit Pending/Running/Complete/Failed state machine. Every V2 bring-up
-route, including device notification, must cross it; `EnsureRuntimeReady` independently refuses to
-load V2 until it is Complete. The bridge stays inactive throughout import rewriting, then publishes
-Pending before Active; an early thunk entrant remains on V1 and cannot tear it down under the rewrite.
-Concurrent game callers wait without polling. A same-thread call
-re-entered by `slShutdown` stays on V1 so teardown cannot deadlock itself. After retirement CE
-preloads and pins the configured SR/FG images, verifies every physical copy belongs to that folder,
-and only then publishes Complete. The inventory is emitted before any V2 interposer load. The next
-run should therefore show only configured 310.7.128 SR/FG images at that boundary.
-
-That session's first translated DLSS evaluate returned `eErrorMissingConstants` six seconds before
-the game-side null read. Causality is not established; first set-constants/evaluate diagnostics now
-record input frame, actual V2 token frame, viewport and result so a remaining translation error can
-be distinguished from the proven mixed-generation problem.

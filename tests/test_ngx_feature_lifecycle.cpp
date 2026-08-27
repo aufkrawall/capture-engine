@@ -88,6 +88,7 @@ TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped"), std::string::npos);
     EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
+    EXPECT_NE(text.find("RemixHook::ReassertFrameGenerationScheduleFromNgx("), std::string::npos);
 }
 
 TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationFactor) {

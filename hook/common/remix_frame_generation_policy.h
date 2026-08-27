@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -8,6 +10,24 @@ namespace ce::remix_fg {
 inline constexpr char kScheduleOption[] = "rtx.dlfg.maxInterpolatedFrames";
 inline constexpr char kNgxGeneratedFrameParameter[] = "DLSSG.MultiFrameCount";
 inline constexpr char kNgxGeneratedFrameParameterCompat[] = "MultiFrameCount";
+inline constexpr size_t kPublicInterfacePrefixFunctionCount = 13;
+inline constexpr size_t kSetConfigVariableFunctionIndex = 10;
+inline constexpr size_t kPublicInterfaceStorageFunctionCount = 64;
+inline constexpr uint32_t kIncompatiblePublicApiVersion = 8;
+
+inline constexpr uint64_t MakePublicApiVersion(uint16_t major, uint32_t minor,
+                                               uint16_t patch) noexcept {
+    return (static_cast<uint64_t>(major) << 48) |
+           (static_cast<uint64_t>(minor) << 16) |
+           static_cast<uint64_t>(patch);
+}
+
+// Major zero Remix API builds require an exact minor match. Try the current
+// official interface first, then the 0.5.1 interface shipped by RTX Remix 1.0.
+inline constexpr std::array<uint64_t, 2> kKnownPublicApiVersions = {
+    MakePublicApiVersion(0, 6, 4),
+    MakePublicApiVersion(0, 5, 1),
+};
 
 inline bool IsScheduleOption(std::string_view key) noexcept {
     return key == kScheduleOption;

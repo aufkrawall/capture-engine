@@ -37,6 +37,17 @@ TEST(RemixFrameGenerationPolicyTest, FormatsThePublicConfigValueWithoutAllocatio
     EXPECT_EQ(ce::remix_fg::GeneratedFrameCountString(4), nullptr);
 }
 
+TEST(RemixFrameGenerationPolicyTest, NegotiatesExactKnownPublicApiVersionsWithTailCapacity) {
+    EXPECT_EQ(ce::remix_fg::MakePublicApiVersion(0, 5, 1), 0x0000000000050001ull);
+    EXPECT_EQ(ce::remix_fg::MakePublicApiVersion(0, 6, 4), 0x0000000000060004ull);
+    ASSERT_EQ(ce::remix_fg::kKnownPublicApiVersions.size(), 2u);
+    EXPECT_EQ(ce::remix_fg::kKnownPublicApiVersions[0],
+              ce::remix_fg::MakePublicApiVersion(0, 6, 4));
+    EXPECT_EQ(ce::remix_fg::kKnownPublicApiVersions[1],
+              ce::remix_fg::MakePublicApiVersion(0, 5, 1));
+    EXPECT_GE(ce::remix_fg::kPublicInterfaceStorageFunctionCount, 64u);
+}
+
 TEST(RemixFrameGenerationPolicyTest, HooksTheLegitimateRemixInterfaceWithoutSyntheticD3D9Startup) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "remix_hook.cpp";
@@ -47,8 +58,16 @@ TEST(RemixFrameGenerationPolicyTest, HooksTheLegitimateRemixInterfaceWithoutSynt
     EXPECT_NE(text.find("RegisterDynamicHookFiltered("), std::string::npos);
     EXPECT_NE(text.find("\"remixapi_InitializeLibrary\""), std::string::npos);
     EXPECT_NE(text.find("interfacePrefix->setConfigVariable = &HookedSetConfigVariable"), std::string::npos);
+    EXPECT_NE(text.find("CaptureSetterThroughPublicInterface"), std::string::npos);
+    EXPECT_NE(text.find("initializer(&info, static_cast<void*>(interfaceFunctions.data()))"),
+              std::string::npos);
+    EXPECT_NE(text.find("IsProviderOwnedFunction"), std::string::npos);
+    EXPECT_NE(text.find("kKnownPublicApiVersions"), std::string::npos);
+    EXPECT_EQ(text.find("CreateToolhelp32Snapshot"), std::string::npos);
     EXPECT_NE(text.find("ce::remix_fg::kScheduleOption"), std::string::npos);
     EXPECT_EQ(text.find("Direct3DCreate9Ex"), std::string::npos);
+    EXPECT_EQ(text.find("NvRemixBridge.exe"), std::string::npos);
+    EXPECT_EQ(text.find("PortalRTX"), std::string::npos);
 }
 
 TEST(RemixFrameGenerationPolicyTest, RegistersBeforeTheGetProcAddressRouterIsArmed) {

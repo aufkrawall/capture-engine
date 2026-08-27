@@ -11,8 +11,9 @@ namespace RemixHook {
 // interface initializer returned by GetProcAddress.
 void RegisterDynamicHooks();
 
-// Patch already-loaded static importers after the verified Remix d3d9 module
-// is available. Safe to call from every periodic hook-install pass.
+// Patch already-loaded static importers and negotiate CE's own public function
+// table when a client initialized before CE arrived. This API call only fills
+// function pointers; it does not create a renderer or D3D9 device.
 void Install();
 
 void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath);

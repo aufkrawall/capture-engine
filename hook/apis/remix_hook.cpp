@@ -2,9 +2,11 @@
 
 #include "../common/hook_common.h"
 #include "../common/module_export_resolver.h"
+#include "../common/module_pin.h"
 #include "../common/remix_frame_generation_policy.h"
 #include "../wrappers/iat_hook.h"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -27,9 +29,14 @@ inline constexpr RemixErrorCode kRemixGeneralFailure = 1;
 struct RemixInterfacePrefix {
     void* functionsBeforeSetConfigVariable[10];
     RemixSetConfigVariable setConfigVariable;
+    void* dxvkCreateD3D9;
+    void* dxvkRegisterD3D9Device;
 };
 
-static_assert(offsetof(RemixInterfacePrefix, setConfigVariable) == 10 * sizeof(void*));
+static_assert(offsetof(RemixInterfacePrefix, setConfigVariable) ==
+              ce::remix_fg::kSetConfigVariableFunctionIndex * sizeof(void*));
+static_assert(sizeof(RemixInterfacePrefix) ==
+              ce::remix_fg::kPublicInterfacePrefixFunctionCount * sizeof(void*));
 
 std::once_flag g_dynamicRegistrationOnce;
 std::atomic<HMODULE> g_remixModule{nullptr};
@@ -42,6 +49,91 @@ std::atomic<uint32_t> g_lastObservedNgxGeneratedFrames{UINT32_MAX};
 // storage contract as the other process-wide dynamic API hooks.
 RemixInitializeLibrary g_originalInitializeLibrary = nullptr;
 thread_local bool g_insideSetConfigVariable = false;
+
+RemixErrorCode WINAPI HookedSetConfigVariable(const char* key, const char* value);
+
+struct RemixInitializeLibraryInfo {
+    uint32_t sType = 1;
+    void* pNext = nullptr;
+    uint64_t version = 0;
+};
+
+static_assert(offsetof(RemixInitializeLibraryInfo, pNext) == 8);
+static_assert(offsetof(RemixInitializeLibraryInfo, version) == 16);
+static_assert(sizeof(RemixInitializeLibraryInfo) == 24);
+
+bool IsProviderOwnedFunction(HMODULE provider, void* function) {
+    if (!provider || !function || !ce::module_pin::IsReadableCode(function, 1))
+        return false;
+    HMODULE owner = nullptr;
+    return GetModuleHandleExA(
+               GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+               reinterpret_cast<LPCSTR>(function), &owner) &&
+           owner == provider;
+}
+
+bool CaptureSetterThroughPublicInterface(HMODULE provider, RemixInitializeLibrary initializer) {
+    if (!provider || !initializer)
+        return false;
+    if (g_originalSetConfigVariable.load(std::memory_order_acquire))
+        return true;
+
+    // InitializeLibrary only negotiates and fills the append-only public
+    // function table; it does not create a D3D9 device or renderer. Reserve
+    // ample tail capacity because the provider writes its compiled interface
+    // size and does not receive an output-buffer size.
+    std::array<void*, ce::remix_fg::kPublicInterfaceStorageFunctionCount> interfaceFunctions{};
+    for (const uint64_t version : ce::remix_fg::kKnownPublicApiVersions) {
+        interfaceFunctions.fill(nullptr);
+        RemixInitializeLibraryInfo info{};
+        info.version = version;
+        const RemixErrorCode result =
+            initializer(&info, static_cast<void*>(interfaceFunctions.data()));
+        if (result == ce::remix_fg::kIncompatiblePublicApiVersion)
+            continue;
+        if (result != kRemixSuccess) {
+            HookLogImportant(
+                "RTX Remix FG: official public-interface negotiation failed "
+                "(apiVersion=0x%llX result=%u)",
+                static_cast<unsigned long long>(version), result);
+            return false;
+        }
+
+        const size_t setterIndex = ce::remix_fg::kSetConfigVariableFunctionIndex;
+        if (!IsProviderOwnedFunction(provider, interfaceFunctions[setterIndex]) ||
+            !IsProviderOwnedFunction(provider, interfaceFunctions[setterIndex + 1]) ||
+            !IsProviderOwnedFunction(provider, interfaceFunctions[setterIndex + 2])) {
+            HookLogImportant(
+                "RTX Remix FG: rejected public-interface negotiation result because its stable "
+                "SetConfigVariable/DXVK prefix is not provider-owned (apiVersion=0x%llX)",
+                static_cast<unsigned long long>(version));
+            return false;
+        }
+
+        auto setter = reinterpret_cast<RemixSetConfigVariable>(interfaceFunctions[setterIndex]);
+        RemixSetConfigVariable expected = nullptr;
+        if (!g_originalSetConfigVariable.compare_exchange_strong(
+                expected, setter, std::memory_order_acq_rel, std::memory_order_acquire) &&
+            expected != setter) {
+            HookLogImportant(
+                "RTX Remix FG: rejected conflicting public SetConfigVariable routes "
+                "(negotiated=%p existing=%p)",
+                reinterpret_cast<void*>(setter), reinterpret_cast<void*>(expected));
+            return false;
+        }
+
+        HookLogImportant(
+            "RTX Remix FG: negotiated the official public SetConfigVariable route for late "
+            "attachment (apiVersion=0x%llX provider=%p)",
+            static_cast<unsigned long long>(version), static_cast<void*>(provider));
+        return true;
+    }
+
+    HookLogImportant(
+        "RTX Remix FG: provider rejected CE's known public API versions; upstream scheduler "
+        "override remains unavailable");
+    return false;
+}
 
 uint32_t ConfiguredGeneratedFrames() {
     return DLSSFGMultiplierToGeneratedFrames(GetActiveGraphicsConfig().parsed.dlssFGFactor);
@@ -152,10 +244,22 @@ RemixErrorCode WINAPI HookedInitializeLibrary(const void* info, void* outInterfa
 }
 
 void InstallForModule(HMODULE module, const char* moduleNameOrPath) {
-    if (!module || !IsRemixApiModule("d3d9.dll", module))
+    if (!module || g_remixModule.load(std::memory_order_acquire) == module)
         return;
+    void* initializerAddress =
+        ce::module_export::ResolveAddressDirect(module, "remixapi_InitializeLibrary");
+    if (!initializerAddress)
+        return;
+    HMODULE pinnedProvider = ce::module_pin::PinOwnerOfAddress(initializerAddress);
+    if (!pinnedProvider)
+        return;
+    module = pinnedProvider;
     if (g_remixModule.exchange(module, std::memory_order_acq_rel) == module)
         return;
+
+    auto initializer = reinterpret_cast<RemixInitializeLibrary>(initializerAddress);
+    if (!g_originalInitializeLibrary)
+        g_originalInitializeLibrary = initializer;
 
     void* captured = nullptr;
     const bool patched = IATHook::PatchIATAllModules(
@@ -168,6 +272,13 @@ void InstallForModule(HMODULE module, const char* moduleNameOrPath) {
         "(staticImportPatched=%d dynamicLookupArmed=1)",
         moduleNameOrPath && moduleNameOrPath[0] ? moduleNameOrPath : "d3d9.dll",
         static_cast<void*>(module), patched ? 1 : 0);
+    if (CaptureSetterThroughPublicInterface(module, initializer)) {
+        const uint32_t generatedFrames = ConfiguredGeneratedFrames();
+        if (generatedFrames > 0 &&
+            g_lastAppliedGeneratedFrames.load(std::memory_order_acquire) != generatedFrames) {
+            ApplyScheduleOverride(generatedFrames, "official public-interface negotiation");
+        }
+    }
 }
 
 }  // namespace
@@ -244,7 +355,7 @@ void ReassertFrameGenerationScheduleFromNgx(const char* parameterName, uint32_t 
     if (!g_originalSetConfigVariable.load(std::memory_order_acquire)) {
         static std::atomic<uint32_t> missingRouteLogs{0};
         const uint32_t logIndex = missingRouteLogs.fetch_add(1, std::memory_order_relaxed);
-        if (logIndex < 8 || (logIndex % 512) == 0) {
+        if (logIndex < 2 || (logIndex % 8192) == 0) {
             HookLogImportant(
                 "RTX Remix FG: NGX exposed scheduler mismatch %s=%u (configured=%u), but the public "
                 "SetConfigVariable route has not been captured yet (log=%u)",
