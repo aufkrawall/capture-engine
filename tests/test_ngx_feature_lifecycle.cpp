@@ -49,6 +49,33 @@ TEST(NgxFeatureLifecycleTest, ModernGeneratedFrameCountOverridesLegacyMultiplier
     EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(0, 0), 0);
 }
 
+TEST(NgxFeatureLifecycleTest, ResolvesOfficialAndCompatibilityFrameGenerationParameterNames) {
+    using ce::ngx_lifecycle::ResolveNVNGXFrameGenerationParameter;
+
+    int value = 0;
+    EXPECT_TRUE(ResolveNVNGXFrameGenerationParameter("DLSSG.MultiFrameCount", 3, value));
+    EXPECT_EQ(value, 2);
+    EXPECT_TRUE(ResolveNVNGXFrameGenerationParameter("MultiFrameCount", 4, value));
+    EXPECT_EQ(value, 3);
+    EXPECT_TRUE(ResolveNVNGXFrameGenerationParameter("FrameGenerationMultiplier", 2, value));
+    EXPECT_EQ(value, 2);
+    EXPECT_FALSE(ResolveNVNGXFrameGenerationParameter("DLSSG.MultiFrameIndex", 3, value));
+    EXPECT_FALSE(ResolveNVNGXFrameGenerationParameter("DLSSG.MultiFrameCount", 5, value));
+}
+
+TEST(NgxFeatureLifecycleTest, NvngxHookUsesTheOfficialNamespacedMultiFrameCountKey) {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook" / "apis" / "nvngx_hook_internal.h";
+    ASSERT_TRUE(std::filesystem::exists(source));
+
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount \"DLSSG.MultiFrameCount\""),
+              std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped \"MultiFrameCount\""),
+              std::string::npos);
+}
+
 TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_params.cpp";
@@ -59,6 +86,7 @@ TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     EXPECT_NE(text.find("DLSSFGMultiplierToGeneratedFrames(fgMultiplier)"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_Parameter_FrameGenerationMultiplier"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped"), std::string::npos);
     EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
 }
 
@@ -90,8 +118,8 @@ TEST(NgxFeatureLifecycleTest, CreateFeatureFGBranchesResolveTheMultiplierParamet
     // hardcoded 2x.
     EXPECT_NE(text.find("SetDLSSFGMultiplier(fgMultiplier)"), std::string::npos);
     // The resolver helper reads the parameter through the original vtable
-    // getI/getUI, covering both parameter spellings (legacy
-    // FrameGenerationMultiplier and FG-v2+ MultiFrameCount).
+    // getI/getUI, covering the legacy FrameGenerationMultiplier and current
+    // namespaced DLSSG.MultiFrameCount contracts.
     EXPECT_NE(text.find("NVSDK_NGX_Parameter_FrameGenerationMultiplier"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
 }

@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_prerender_policy.h"
 
 VulkanLayerState& VulkanLayerState::Get() {
     static VulkanLayerState instance;
@@ -79,6 +80,14 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
         m_QueueFlags.erase(queueIt->first);
         m_QueueLastSubmitThreadIds.erase(queueIt->first);
         m_QueueGraphicsProducerQueues.erase(queueIt->first);
+        m_QueueGraphicsProducerBoundaries.erase(queueIt->first);
+        // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - erase-by-value, order-independent
+        for (auto boundaryIt = m_PrerenderProducerBoundaryQueues.begin();
+             boundaryIt != m_PrerenderProducerBoundaryQueues.end();) {
+            boundaryIt = (boundaryIt->second == queueIt->first)
+                             ? m_PrerenderProducerBoundaryQueues.erase(boundaryIt)
+                             : std::next(boundaryIt);
+        }
         queueIt = m_Queues.erase(queueIt);
     }
     m_DeviceLastSubmitThreadIds.erase(device);
@@ -250,8 +259,12 @@ void VulkanLayerState::ArmPresentTopologyLearning() {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_SignalSemaphoreQueues.clear();
     m_SemaphoreGraphicsProducerQueues.clear();
+    m_SemaphoreGraphicsProducerBoundaries.clear();
+    m_PrerenderProducerBoundaryQueues.clear();
     m_QueueGraphicsProducerQueues.clear();
+    m_QueueGraphicsProducerBoundaries.clear();
     m_LearnPresentTopology.store(true, std::memory_order_relaxed);
+    m_LearnPrerenderBoundaries.store(true, std::memory_order_relaxed);
 }
 
 void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores,
@@ -260,18 +273,26 @@ void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphor
     if (!signalSemaphores || signalCount == 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
+    if (!m_LearnPresentTopology.load(std::memory_order_relaxed) &&
+        !m_LearnPrerenderBoundaries.load(std::memory_order_relaxed))
         return;
 
     VkQueue graphicsProducer = VK_NULL_HANDLE;
     const auto queueFlags = m_QueueFlags.find(queue);
-    if (queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0) {
+    const bool queueSupportsGraphics =
+        queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0;
+    VkSemaphore graphicsProducerBoundary = VK_NULL_HANDLE;
+    if (queueSupportsGraphics) {
         graphicsProducer = queue;
     } else if (waitSemaphores) {
         for (uint32_t i = 0; i < waitCount; ++i) {
             const auto upstream = m_SemaphoreGraphicsProducerQueues.find(waitSemaphores[i]);
-            if (upstream != m_SemaphoreGraphicsProducerQueues.end())
+            if (upstream != m_SemaphoreGraphicsProducerQueues.end()) {
                 graphicsProducer = upstream->second;
+                const auto boundary = m_SemaphoreGraphicsProducerBoundaries.find(waitSemaphores[i]);
+                if (boundary != m_SemaphoreGraphicsProducerBoundaries.end())
+                    graphicsProducerBoundary = boundary->second;
+            }
         }
     }
     if (graphicsProducer == VK_NULL_HANDLE) {
@@ -281,13 +302,24 @@ void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphor
     } else {
         m_QueueGraphicsProducerQueues[queue] = graphicsProducer;
     }
+    if (!queueSupportsGraphics && graphicsProducerBoundary == VK_NULL_HANDLE) {
+        const auto priorBoundary = m_QueueGraphicsProducerBoundaries.find(queue);
+        if (priorBoundary != m_QueueGraphicsProducerBoundaries.end())
+            graphicsProducerBoundary = priorBoundary->second;
+    } else if (graphicsProducerBoundary != VK_NULL_HANDLE) {
+        m_QueueGraphicsProducerBoundaries[queue] = graphicsProducerBoundary;
+    }
 
     for (uint32_t i = 0; i < signalCount; ++i) {
-        if (signalSemaphores[i] == VK_NULL_HANDLE)
+        const VkSemaphore signalSemaphore = signalSemaphores[i];
+        if (signalSemaphore == VK_NULL_HANDLE)
             continue;
-        m_SignalSemaphoreQueues[signalSemaphores[i]] = queue;
+        m_SignalSemaphoreQueues[signalSemaphore] = queue;
         if (graphicsProducer != VK_NULL_HANDLE)
-            m_SemaphoreGraphicsProducerQueues[signalSemaphores[i]] = graphicsProducer;
+            m_SemaphoreGraphicsProducerQueues[signalSemaphore] = graphicsProducer;
+        const VkSemaphore signalBoundary = queueSupportsGraphics ? signalSemaphore : graphicsProducerBoundary;
+        if (signalBoundary != VK_NULL_HANDLE)
+            m_SemaphoreGraphicsProducerBoundaries[signalSemaphore] = signalBoundary;
     }
 }
 
@@ -298,18 +330,26 @@ void VulkanLayerState::NoteSemaphoreDependencies2(VkQueue queue, const VkSemapho
     if (!signalSemaphores || signalCount == 0)
         return;
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    if (!m_LearnPresentTopology.load(std::memory_order_relaxed))
+    if (!m_LearnPresentTopology.load(std::memory_order_relaxed) &&
+        !m_LearnPrerenderBoundaries.load(std::memory_order_relaxed))
         return;
 
     VkQueue graphicsProducer = VK_NULL_HANDLE;
     const auto queueFlags = m_QueueFlags.find(queue);
-    if (queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0) {
+    const bool queueSupportsGraphics =
+        queueFlags != m_QueueFlags.end() && (queueFlags->second & VK_QUEUE_GRAPHICS_BIT) != 0;
+    VkSemaphore graphicsProducerBoundary = VK_NULL_HANDLE;
+    if (queueSupportsGraphics) {
         graphicsProducer = queue;
     } else if (waitSemaphores) {
         for (uint32_t i = 0; i < waitCount; ++i) {
             const auto upstream = m_SemaphoreGraphicsProducerQueues.find(waitSemaphores[i].semaphore);
-            if (upstream != m_SemaphoreGraphicsProducerQueues.end())
+            if (upstream != m_SemaphoreGraphicsProducerQueues.end()) {
                 graphicsProducer = upstream->second;
+                const auto boundary = m_SemaphoreGraphicsProducerBoundaries.find(waitSemaphores[i].semaphore);
+                if (boundary != m_SemaphoreGraphicsProducerBoundaries.end())
+                    graphicsProducerBoundary = boundary->second;
+            }
         }
     }
     if (graphicsProducer == VK_NULL_HANDLE) {
@@ -319,6 +359,13 @@ void VulkanLayerState::NoteSemaphoreDependencies2(VkQueue queue, const VkSemapho
     } else {
         m_QueueGraphicsProducerQueues[queue] = graphicsProducer;
     }
+    if (!queueSupportsGraphics && graphicsProducerBoundary == VK_NULL_HANDLE) {
+        const auto priorBoundary = m_QueueGraphicsProducerBoundaries.find(queue);
+        if (priorBoundary != m_QueueGraphicsProducerBoundaries.end())
+            graphicsProducerBoundary = priorBoundary->second;
+    } else if (graphicsProducerBoundary != VK_NULL_HANDLE) {
+        m_QueueGraphicsProducerBoundaries[queue] = graphicsProducerBoundary;
+    }
 
     for (uint32_t i = 0; i < signalCount; ++i) {
         const VkSemaphore semaphore = signalSemaphores[i].semaphore;
@@ -327,6 +374,9 @@ void VulkanLayerState::NoteSemaphoreDependencies2(VkQueue queue, const VkSemapho
         m_SignalSemaphoreQueues[semaphore] = queue;
         if (graphicsProducer != VK_NULL_HANDLE)
             m_SemaphoreGraphicsProducerQueues[semaphore] = graphicsProducer;
+        const VkSemaphore signalBoundary = queueSupportsGraphics ? semaphore : graphicsProducerBoundary;
+        if (signalBoundary != VK_NULL_HANDLE)
+            m_SemaphoreGraphicsProducerBoundaries[semaphore] = signalBoundary;
     }
 }
 
@@ -342,12 +392,137 @@ VkQueue VulkanLayerState::GetSemaphoreGraphicsProducerQueue(VkSemaphore semaphor
     return (it != m_SemaphoreGraphicsProducerQueues.end()) ? it->second : VK_NULL_HANDLE;
 }
 
+VkSemaphore VulkanLayerState::GetSemaphoreGraphicsProducerBoundary(VkSemaphore semaphore) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_SemaphoreGraphicsProducerBoundaries.find(semaphore);
+    return (it != m_SemaphoreGraphicsProducerBoundaries.end()) ? it->second : VK_NULL_HANDLE;
+}
+
+void VulkanLayerState::RegisterPrerenderProducerBoundary(VkQueue queue, VkSemaphore semaphore) {
+    if (queue == VK_NULL_HANDLE || semaphore == VK_NULL_HANDLE)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    m_PrerenderProducerBoundaryQueues[semaphore] = queue;
+}
+
+bool VulkanLayerState::IsPrerenderProducerSubmit(VkQueue queue, uint32_t submitCount,
+                                                 const VkSubmitInfo* pSubmits) {
+    if (!pSubmits)
+        return false;
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    for (uint32_t submit = 0; submit < submitCount; ++submit) {
+        if (!pSubmits[submit].pSignalSemaphores)
+            continue;
+        for (uint32_t signal = 0; signal < pSubmits[submit].signalSemaphoreCount; ++signal) {
+            const auto boundary = m_PrerenderProducerBoundaryQueues.find(pSubmits[submit].pSignalSemaphores[signal]);
+            if (boundary != m_PrerenderProducerBoundaryQueues.end() && boundary->second == queue)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool VulkanLayerState::IsPrerenderProducerSubmit2(VkQueue queue, uint32_t submitCount,
+                                                  const VkSubmitInfo2* pSubmits) {
+    if (!pSubmits)
+        return false;
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    for (uint32_t submit = 0; submit < submitCount; ++submit) {
+        if (!pSubmits[submit].pSignalSemaphoreInfos)
+            continue;
+        for (uint32_t signal = 0; signal < pSubmits[submit].signalSemaphoreInfoCount; ++signal) {
+            const VkSemaphore semaphore = pSubmits[submit].pSignalSemaphoreInfos[signal].semaphore;
+            const auto boundary = m_PrerenderProducerBoundaryQueues.find(semaphore);
+            if (boundary != m_PrerenderProducerBoundaryQueues.end() && boundary->second == queue)
+                return true;
+        }
+    }
+    return false;
+}
+
 void VulkanLayerState::FinishPresentTopologyLearning() {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_LearnPresentTopology.store(false, std::memory_order_relaxed);
-    m_SignalSemaphoreQueues.clear();
-    m_SemaphoreGraphicsProducerQueues.clear();
-    m_QueueGraphicsProducerQueues.clear();
+    if (!m_LearnPrerenderBoundaries.load(std::memory_order_relaxed)) {
+        m_SignalSemaphoreQueues.clear();
+        m_SemaphoreGraphicsProducerQueues.clear();
+        m_SemaphoreGraphicsProducerBoundaries.clear();
+        m_QueueGraphicsProducerQueues.clear();
+        m_QueueGraphicsProducerBoundaries.clear();
+    }
+}
+
+void VulkanLayerState::FinishPrerenderBoundaryLearning() {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    m_LearnPrerenderBoundaries.store(false, std::memory_order_relaxed);
+    if (!m_LearnPresentTopology.load(std::memory_order_relaxed)) {
+        m_SignalSemaphoreQueues.clear();
+        m_SemaphoreGraphicsProducerQueues.clear();
+        m_SemaphoreGraphicsProducerBoundaries.clear();
+        m_QueueGraphicsProducerQueues.clear();
+        m_QueueGraphicsProducerBoundaries.clear();
+    }
+}
+
+void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presentQueue,
+                                    const VkPresentInfoKHR* presentInfo) {
+    auto& state = VulkanLayerState::Get();
+    if (!swapchainData || !presentInfo || !presentInfo->pWaitSemaphores || presentInfo->waitSemaphoreCount == 0 ||
+        !state.IsTrackingPresentDependencies()) {
+        return;
+    }
+
+    VkSemaphore presentBoundary = VK_NULL_HANDLE;
+    VkSemaphore graphicsBoundary = VK_NULL_HANDLE;
+    VkQueue signalQueue = VK_NULL_HANDLE;
+    VkQueue graphicsQueue = VK_NULL_HANDLE;
+    for (uint32_t index = 0; index < presentInfo->waitSemaphoreCount; ++index) {
+        const VkSemaphore candidate = presentInfo->pWaitSemaphores[index];
+        const VkQueue candidateSignalQueue = state.GetSemaphoreSignalQueue(candidate);
+        if (candidateSignalQueue == VK_NULL_HANDLE)
+            continue;
+        presentBoundary = candidate;
+        signalQueue = candidateSignalQueue;
+        graphicsQueue = state.GetSemaphoreGraphicsProducerQueue(candidate);
+        graphicsBoundary = state.GetSemaphoreGraphicsProducerBoundary(candidate);
+        if (graphicsQueue != VK_NULL_HANDLE && graphicsBoundary != VK_NULL_HANDLE)
+            break;
+    }
+    if (signalQueue == VK_NULL_HANDLE)
+        return;
+
+    const bool learningPresentTopology = state.IsLearningPresentTopology();
+    if (graphicsQueue != VK_NULL_HANDLE && state.GetVkDeviceFromQueue(graphicsQueue) == swapchainData->device &&
+        state.QueueSupportsGraphics(graphicsQueue)) {
+        swapchainData->prerenderProducerQueue.store(graphicsQueue, std::memory_order_release);
+        const uint32_t producerThreadId = state.GetQueueLastSubmitThreadId(graphicsQueue);
+        if (ce::vulkan_prerender_policy::ShouldPaceOnProducerSubmit(producerThreadId, GetCurrentThreadId()) &&
+            graphicsBoundary != VK_NULL_HANDLE) {
+            state.RegisterPrerenderProducerBoundary(graphicsQueue, graphicsBoundary);
+            if (!swapchainData->prerenderOnProducerSubmit.exchange(true, std::memory_order_acq_rel)) {
+                LayerLog(
+                    "Vulkan Prerender: producer-submit pacing armed queue=%p boundary=%p producerThread=%u "
+                    "presentThread=%u",
+                    (void*)graphicsQueue, (void*)graphicsBoundary, producerThreadId, GetCurrentThreadId());
+            }
+        }
+    }
+
+    if (learningPresentTopology) {
+        LayerLog(
+            "Vulkan Layer: Present topology - present queue family=%u, boundary=%p signalled by queue %p "
+            "(family=%u, graphics=%d), upstream graphics producer=%p (family=%u), producer boundary=%p, "
+            "waitSemaphoreCount=%u",
+            state.GetQueueFamilyIndex(presentQueue), (void*)presentBoundary, (void*)signalQueue,
+            state.GetQueueFamilyIndex(signalQueue), state.QueueSupportsGraphics(signalQueue) ? 1 : 0,
+            (void*)graphicsQueue, state.GetQueueFamilyIndex(graphicsQueue), (void*)graphicsBoundary,
+            presentInfo->waitSemaphoreCount);
+        state.FinishPresentTopologyLearning();
+    }
+    const uint32_t topologySamples =
+        swapchainData->prerenderTopologySamples.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (topologySamples >= std::clamp(swapchainData->imageCount, 1u, 8u))
+        state.FinishPrerenderBoundaryLearning();
 }
 
 uint32_t VulkanLayerState::GetQueueLastSubmitThreadId(VkQueue queue) {

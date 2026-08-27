@@ -10,6 +10,7 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 #include <atomic>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -190,6 +191,8 @@ struct SwapchainData {
     // present queue. Learned from the first present wait semaphore and reused
     // for queue-depth control without introducing a cross-engine marker.
     std::atomic<VkQueue> prerenderProducerQueue{VK_NULL_HANDLE};
+    std::atomic<bool> prerenderOnProducerSubmit{false};
+    std::atomic<uint32_t> prerenderTopologySamples{0};
 };
 
 // Singleton state manager
@@ -212,6 +215,12 @@ public:
         m_QueueFamilies.erase(queue);
         m_QueueFlags.erase(queue);
         m_QueueLastSubmitThreadIds.erase(queue);
+        m_QueueGraphicsProducerQueues.erase(queue);
+        m_QueueGraphicsProducerBoundaries.erase(queue);
+        for (auto it = m_PrerenderProducerBoundaryQueues.begin();
+             it != m_PrerenderProducerBoundaryQueues.end();) {
+            it = (it->second == queue) ? m_PrerenderProducerBoundaryQueues.erase(it) : std::next(it);
+        }
     }
     DeviceDispatch* GetDeviceFromQueue(VkQueue queue);
     VkDevice GetVkDeviceFromQueue(VkQueue queue);
@@ -243,6 +252,9 @@ public:
     bool IsLearningPresentTopology() const {
         return m_LearnPresentTopology.load(std::memory_order_relaxed);
     }
+    bool IsTrackingPresentDependencies() const {
+        return IsLearningPresentTopology() || m_LearnPrerenderBoundaries.load(std::memory_order_relaxed);
+    }
     void ArmPresentTopologyLearning();
     void NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores, uint32_t waitCount,
                                    const VkSemaphore* signalSemaphores, uint32_t signalCount);
@@ -250,7 +262,12 @@ public:
                                     const VkSemaphoreSubmitInfo* signalSemaphores, uint32_t signalCount);
     VkQueue GetSemaphoreSignalQueue(VkSemaphore semaphore);
     VkQueue GetSemaphoreGraphicsProducerQueue(VkSemaphore semaphore);
+    VkSemaphore GetSemaphoreGraphicsProducerBoundary(VkSemaphore semaphore);
+    void RegisterPrerenderProducerBoundary(VkQueue queue, VkSemaphore semaphore);
+    bool IsPrerenderProducerSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits);
+    bool IsPrerenderProducerSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits);
     void FinishPresentTopologyLearning();
+    void FinishPrerenderBoundaryLearning();
 
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
     void UnregisterSwapchain(VkSwapchainKHR swapchain);
@@ -334,9 +351,13 @@ private:
     std::unordered_map<VkQueue, uint32_t> m_QueueLastSubmitThreadIds;
     std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
     std::atomic<bool> m_LearnPresentTopology{true};
+    std::atomic<bool> m_LearnPrerenderBoundaries{true};
     std::unordered_map<VkSemaphore, VkQueue> m_SignalSemaphoreQueues;
     std::unordered_map<VkSemaphore, VkQueue> m_SemaphoreGraphicsProducerQueues;
+    std::unordered_map<VkSemaphore, VkSemaphore> m_SemaphoreGraphicsProducerBoundaries;
+    std::unordered_map<VkSemaphore, VkQueue> m_PrerenderProducerBoundaryQueues;
     std::unordered_map<VkQueue, VkQueue> m_QueueGraphicsProducerQueues;
+    std::unordered_map<VkQueue, VkSemaphore> m_QueueGraphicsProducerBoundaries;
 
     // Generation counter to invalidate TLS swapchain caches on unregister
     std::atomic<uint64_t> m_SwapchainGeneration{0};
@@ -474,7 +495,8 @@ void UnlockBorrowedQueueSubmission();
 // keeps the uncontended path.
 class ScopedBorrowedQueueSubmission {
 public:
-    explicit ScopedBorrowedQueueSubmission(VkQueue queue) : locked_(ShouldSerializeQueueSubmission(queue)) {
+    explicit ScopedBorrowedQueueSubmission(VkQueue queue, bool queueAlreadySynchronized = false)
+        : locked_(!queueAlreadySynchronized && ShouldSerializeQueueSubmission(queue)) {
         if (locked_) {
             LockBorrowedQueueSubmission();
         }

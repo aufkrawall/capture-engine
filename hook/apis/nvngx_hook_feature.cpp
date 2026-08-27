@@ -6,11 +6,12 @@ static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
 
 // Read the game's frame-generation multiplier from the CreateFeature
 // parameter object. Modern FG v2+ runtimes (DLSS 310.x) carry the generated
-// frame count in NVSDK_NGX_DLSSG_Parameter_MultiFrameCount (1=2x, 2=3x, 3=4x);
+// frame count in the official namespaced
+// NVSDK_NGX_DLSSG_Parameter_MultiFrameCount (1=2x, 2=3x, 3=4x);
 // older SDKs use NVSDK_NGX_Parameter_FrameGenerationMultiplier (2=2x, 3=3x,
-// 4=4x). Talos Reawakened sets MultiFrameCount=3 for 4x MFG (verified in its
-// shipped nvngx_dlssg.dll, which contains the "MultiFrameCount" string but no
-// "FrameGenerationMultiplier"). Both getI and getUI are tried because the
+// 4=4x). Talos Reawakened sets DLSSG.MultiFrameCount=3 for 4x MFG (verified in
+// its shipped nvngx_dlssg.dll, which contains that key but no
+// FrameGenerationMultiplier key). Both getI and getUI are tried because the
 // runtime may store the value in either slot. Returns 0 when absent or
 // unreadable so the caller falls back to the default/config multiplier.
 static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
@@ -31,7 +32,10 @@ static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
         }
         return 0;
     };
-    const int generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);
+    int generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);
+    if (generatedFrames == 0) {
+        generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped);
+    }
     const int legacyMultiplier = readInt(NVSDK_NGX_Parameter_FrameGenerationMultiplier);
     const int resolved = ce::ngx_lifecycle::ResolveNVNGXObservedFrameGenerationMultiplier(
         generatedFrames, legacyMultiplier);

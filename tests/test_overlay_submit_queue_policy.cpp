@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../hook/vulkan_layer/overlay_submit_queue_policy.h"
+#include "../hook/vulkan_layer/vulkan_prerender_policy.h"
 #include "../hook/vulkan_layer/vulkan_reflex_limiter.h"
 #include "source_fragment_reader.h"
 
@@ -282,11 +283,13 @@ TEST(OverlaySubmitQueuePolicySourceTest, TheRenderPassOwnsBothLayoutTransitions)
 // layer states it once per swapchain generation.
 TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapchainGeneration) {
     const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
     ASSERT_FALSE(present.empty());
-    EXPECT_NE(present.find("Present topology - present queue family"), std::string::npos);
+    ASSERT_FALSE(topology.empty());
+    EXPECT_NE(topology.find("Present topology - present queue family"), std::string::npos);
     EXPECT_NE(present.find("ArmPresentTopologyLearning()"), std::string::npos)
         << "a swapchain recreate is exactly when a game's present topology can change";
-    EXPECT_NE(present.find("FinishPresentTopologyLearning()"), std::string::npos)
+    EXPECT_NE(topology.find("FinishPresentTopologyLearning()"), std::string::npos)
         << "learning must stop once the answer is known, so the steady state pays only an atomic load";
 
     const std::string hooks = ReadProjectSource("hook/vulkan_layer/layer_hooks.cpp");
@@ -303,22 +306,39 @@ TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapc
 TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitUsesSemaphoreDerivedGraphicsProducer) {
     const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
     const std::string state = ReadProjectSource("hook/vulkan_layer/vulkan_layer.h");
+    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(state.empty());
+    ASSERT_FALSE(topology.empty());
 
     EXPECT_NE(state.find("prerenderProducerQueue"), std::string::npos);
-    EXPECT_NE(present.find("GetSemaphoreGraphicsProducerQueue"), std::string::npos);
-    EXPECT_NE(present.find("prerenderProducerQueue.store(graphicsProducerQueue"), std::string::npos);
-    EXPECT_NE(present.find("GetQueueLastSubmitThreadId(prerenderQueue)"), std::string::npos)
-        << "a queue borrowed from a different game thread is not externally synchronized";
+    EXPECT_NE(topology.find("GetSemaphoreGraphicsProducerQueue"), std::string::npos);
+    EXPECT_NE(topology.find("prerenderProducerQueue.store(graphicsQueue"), std::string::npos);
+    EXPECT_NE(present.find("prerenderOnProducerSubmit"), std::string::npos)
+        << "a queue owned by another game thread must be paced from that thread's submit wrapper";
     EXPECT_NE(present.find("ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue"), std::string::npos)
         << "a compute-only present queue must not silently disable a configured render queue depth";
+    EXPECT_EQ(present.find("queue-depth marker withheld"), std::string::npos)
+        << "cross-thread ownership must move the marker instead of disabling the configured override";
 
     const std::string hooks = ReadProjectSource("hook/vulkan_layer/layer_hooks.cpp");
     ASSERT_FALSE(hooks.empty());
     EXPECT_NE(hooks.find("pWaitSemaphores"), std::string::npos);
     EXPECT_NE(hooks.find("pWaitSemaphoreInfos"), std::string::npos)
         << "submit dependencies must propagate the upstream graphics producer through compute queues";
+    EXPECT_NE(hooks.find("IsPrerenderProducerSubmit"), std::string::npos);
+    EXPECT_NE(hooks.find("ApplyPrerenderLimitVulkan"), std::string::npos);
+    EXPECT_NE(hooks.find("queue, prerenderLimit, true"), std::string::npos)
+        << "the marker must remain inside the app submit wrapper's queue-serialization scope";
+}
+
+TEST(VulkanPrerenderPolicyTest, MovesCrossThreadQueuePacingToTheProducerSubmit) {
+    using ce::vulkan_prerender_policy::ShouldPaceOnProducerSubmit;
+
+    EXPECT_TRUE(ShouldPaceOnProducerSubmit(8184, 27228));
+    EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 8184));
+    EXPECT_FALSE(ShouldPaceOnProducerSubmit(0, 8184));
+    EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 0));
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, ForcedAnisotropyPublishesBoundedApplicationProof) {

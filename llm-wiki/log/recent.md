@@ -1,26 +1,32 @@
 # llm-wiki Log
 
-### 2026-08-26 - Portal RTX override audit: modern MFG key and Vulkan-native Reflex
+### 2026-08-27 - Portal RTX override audit: upstream Remix MFG scheduling and Vulkan-native Reflex
 
-Sessions `20260826_162652` and `20260826_225500` proved the split renderer received the resolved profile. FIFO VSync,
+Sessions `20260826_162652`, `20260826_225500`, and `20260826_232211` proved the split renderer received the resolved
+profile. FIFO VSync,
 forced AF, SR preset M, RR preset F, FG preset B, all four runtime folders, the process-local DLSS indicator, and the
 NVIDIA LOD-spread patch reached their real consumers. The later run gives direct application proof: both immediate
 swapchains were changed `present mode 0 -> 2 (FIFO)` and five live samplers logged their before/after 16x state. Thus
 an unblocked FIFO present call or FG output above the base rate is not evidence that CE missed the swapchain override.
 
-The runs exposed three distinct gaps. Initial injection eventually covered both `FrameGenerationMultiplier=3` and
-`MultiFrameCount=2`, and telemetry published 3x, but the game menu could still change actual output to 2x: creation-time
-parameter state was not authoritative. The generic fix intercepts both read/write contracts and reasserts both values
-at every tracked FG `EvaluateFeature`, after live menu state is copied and immediately before DLSS-G consumes it. The
-configured factor now wins; without one, modern-key readback remains authoritative.
+The runs exposed three distinct gaps. The first factor fix wrote a stale bare compatibility key; CE corrected this to
+NVIDIA's official `DLSSG.MultiFrameCount`. Session `20260827_155554` then falsified the assumption that this is the
+whole control boundary: the DLSS indicator showed configured 3x, yet changing Remix's menu 2x -> 3x still raised real
+FPS. NGX consumes one `MultiFrameIndex` per generated evaluation; changing its count cannot make the host schedule the
+missing evaluation. Remix schedules earlier through `rtx.dlfg.maxInterpolatedFrames`. Its bridge legitimately resolves
+`remixapi_InitializeLibrary` and calls the returned `SetConfigVariable`; CE now wraps that interface setter and forces
+the upstream option, with edge-triggered NGX mismatch reassertion for internal menu paths. No synthetic D3D9/Remix
+initialization and no title/executable rule were added. Runtime confirmation of real output remains pending.
 
 Remix's paired Present samples (~21.6 ms then ~0.2 ms) also explained the odd basic limiter: logical base rendering was
 only ~46 fps, below the old unscaled 100 target, so no wait was correct even while 2x/3x output appeared near 92/138.
 Every limiter mode now treats the configured general cap as final output: 100 with 3x paces about 33 base fps. Finally,
-the present semaphore was signalled by a compute-only queue, whose own wait came from graphics; topology learning now
-propagates producer ancestry transitively through submit dependencies and preserves per-queue thread ownership before
-using the graphics prerender ring. Vulkan native Reflex remains the preferred low-latency path with timer fallback. No
-Portal/Remix executable-name rule was added.
+the present semaphore was signalled by a compute-only queue, whose own wait came from graphics. Session `232211`
+proved the remaining limiter gap explicitly: graphics producer thread 8184 differed from present thread 27228, so CE
+withheld the marker to avoid an illegal cross-thread queue borrow. Topology learning now retains the exact bounded
+graphics-signal semaphore ring, and the matching `vkQueueSubmit*` wrapper appends the prerender marker from the owning
+producer thread. Vulkan native Reflex remains preferred with timer fallback. No Portal/Remix executable-name rule was
+added.
 
 ### 2026-08-25 - RTX Remix crash: synthetic D3D9 probe initialized a second renderer
 

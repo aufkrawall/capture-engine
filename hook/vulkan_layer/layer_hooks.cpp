@@ -8,7 +8,7 @@
 #include <vector>
 #include "../common/fps_limiter.h"
 #include "layer_main.h"
-#include "vulkan_layer.h"
+#include "vulkan_layer_internal.h"
 
 // Swapchain tracking
 struct SwapchainState {
@@ -38,10 +38,11 @@ static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
 
 namespace {
 
-// Steady-state cost is the relaxed atomic load inside IsLearningPresentTopology;
-// the map is only touched while a swapchain generation is still unidentified.
+// Steady-state cost is the relaxed atomic load inside
+// IsTrackingPresentDependencies; the map is only touched while the queue route
+// and its small ring of producer-boundary semaphores are being identified.
 inline void NotePresentTopologyDependencies(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits) {
-    if (!pSubmits || !VulkanLayerState::Get().IsLearningPresentTopology())
+    if (!pSubmits || !VulkanLayerState::Get().IsTrackingPresentDependencies())
         return;
     for (uint32_t i = 0; i < submitCount; ++i) {
         VulkanLayerState::Get().NoteSemaphoreDependencies(
@@ -51,7 +52,7 @@ inline void NotePresentTopologyDependencies(VkQueue queue, uint32_t submitCount,
 }
 
 inline void NotePresentTopologyDependencies2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits) {
-    if (!pSubmits || !VulkanLayerState::Get().IsLearningPresentTopology())
+    if (!pSubmits || !VulkanLayerState::Get().IsTrackingPresentDependencies())
         return;
     for (uint32_t i = 0; i < submitCount; ++i) {
         VulkanLayerState::Get().NoteSemaphoreDependencies2(
@@ -72,8 +73,16 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
         NotePresentTopologyDependencies(queue, submitCount, pSubmits);
+        const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+        const bool paceProducer = prerenderLimit >= 0.0f &&
+                                  VulkanLayerState::Get().IsPrerenderProducerSubmit(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
-        return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+        const VkResult result = tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+        if (result == VK_SUCCESS && paceProducer) {
+            ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit,
+                                      true);
+        }
+        return result;
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -93,8 +102,15 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
     NotePresentTopologyDependencies(queue, submitCount, pSubmits);
+    const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+    const bool paceProducer = prerenderLimit >= 0.0f &&
+                              VulkanLayerState::Get().IsPrerenderProducerSubmit(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
-    return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    const VkResult result = disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    if (result == VK_SUCCESS && paceProducer) {
+        ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit, true);
+    }
+    return result;
 }
 
 // vkQueueSubmit2 - Vulkan 1.3 version
@@ -107,8 +123,16 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
         if (fence != VK_NULL_HANDLE) {}
         VulkanLayerState::Get().NoteQueueSubmit(queue);
         NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
+        const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+        const bool paceProducer = prerenderLimit >= 0.0f &&
+                                  VulkanLayerState::Get().IsPrerenderProducerSubmit2(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
-        return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+        const VkResult result = tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+        if (result == VK_SUCCESS && paceProducer) {
+            ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit,
+                                      true);
+        }
+        return result;
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -128,8 +152,15 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
     NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
+    const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+    const bool paceProducer = prerenderLimit >= 0.0f &&
+                              VulkanLayerState::Get().IsPrerenderProducerSubmit2(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
-    return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    const VkResult result = disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    if (result == VK_SUCCESS && paceProducer) {
+        ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit, true);
+    }
+    return result;
 }
 
 // vkQueueSubmit2KHR - extension version
@@ -140,8 +171,16 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
             return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
         VulkanLayerState::Get().NoteQueueSubmit(queue);
         NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
+        const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+        const bool paceProducer = prerenderLimit >= 0.0f &&
+                                  VulkanLayerState::Get().IsPrerenderProducerSubmit2(queue, submitCount, pSubmits);
         ScopedBorrowedQueueSubmission submissionGuard(queue);
-        return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+        const VkResult result = tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+        if (result == VK_SUCCESS && paceProducer) {
+            ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit,
+                                      true);
+        }
+        return result;
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -158,8 +197,15 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
 
     VulkanLayerState::Get().NoteQueueSubmit(queue);
     NotePresentTopologyDependencies2(queue, submitCount, pSubmits);
+    const float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+    const bool paceProducer = prerenderLimit >= 0.0f &&
+                              VulkanLayerState::Get().IsPrerenderProducerSubmit2(queue, submitCount, pSubmits);
     ScopedBorrowedQueueSubmission submissionGuard(queue);
-    return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+    const VkResult result = disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+    if (result == VK_SUCCESS && paceProducer) {
+        ApplyPrerenderLimitVulkan(VulkanLayerState::Get().GetVkDeviceFromQueue(queue), queue, prerenderLimit, true);
+    }
+    return result;
 }
 
 // vkQueuePresentKHR implementation is in vulkan_layer.cpp (avoids duplicate

@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-26
+Last cross-checked: 2026-08-27
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -8,13 +8,13 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
-- `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,reflex_limiter.h,ue5_rr_override_policy.h,ue5_cvar_override_policy.h}`
+- `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,remix_frame_generation_policy.h,reflex_limiter.h,ue5_rr_override_policy.h,ue5_cvar_override_policy.h}`
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
-- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
-- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_reflex_limiter}.*`
-- `hook/vulkan_layer/vulkan_sampler_policy.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy}.cpp`
+- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
+- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,layer_hooks,vulkan_reflex_limiter}.*`
+- `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy}.h`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy}.cpp`
 
 ## Configuration contract
 
@@ -39,12 +39,18 @@ Primary sources:
   travels in `SharedGraphicsConfig::dlssFGPreset` (the slot previously retained as padding, so the layout and ABI
   signature are unchanged and a pre-feature host publishes a zero that reads as "no override").
 - `dlss_fg_factor=default|2x|3x|4x` must write both NGX contracts. Older runtimes consume
-  `FrameGenerationMultiplier=2/3/4`; current DLSS-G consumes `MultiFrameCount=1/2/3` (generated frames between real
-  frames). Parameter SetI/SetUI interception, readback interception, and initial injection cover both names. A
-  configured value is authoritative over later valid runtime values, and the FG `EvaluateFeature` boundary reasserts
-  both names because some integrations copy live menu state into the object after feature creation without calling
-  its public setters. Without a configured override, the modern generated-frame count is authoritative when both can
-  be read back, so a stale legacy value cannot make telemetry and limiter scaling claim the wrong output multiplier.
+  `FrameGenerationMultiplier=2/3/4`; current NVIDIA headers and runtimes consume the namespaced
+  `DLSSG.MultiFrameCount=1/2/3` (generated frames between real frames). Bare `MultiFrameCount` is only a compatibility
+  alias, not the modern contract. Parameter SetI/SetUI interception, readback interception, and initial injection cover
+  all three names. Those writes control each NGX evaluation and its indicator, but cannot make a host schedule another
+  generated-frame evaluation: session `20260827_155554` showed the indicator at configured 3x while changing Remix's
+  menu from 2x to 3x still raised real output FPS. RTX Remix owns that earlier decision in
+  `rtx.dlfg.maxInterpolatedFrames` (1/2/3 generated frames). Its bridge resolves the public
+  `remixapi_InitializeLibrary` interface and uses `SetConfigVariable`; CE intercepts that legitimate lookup, replaces
+  only the returned setter with a resident pass-through wrapper, and forces the scheduler option. NGX mismatch edges
+  reassert the same public option for internal Remix menu paths. CE never calls `Direct3DCreate9Ex` or initializes a
+  second Remix renderer. Without a configured override, the namespaced NGX value remains authoritative for telemetry
+  and limiter scaling, and Remix config calls pass through unchanged.
 - `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
@@ -250,10 +256,14 @@ Primary sources:
   the same lookback semantics per context. Vulkan drains and resets outstanding markers when the configured depth
   changes so a previously signaled fence is never resubmitted. A non-graphics present queue does not disable the
   setting: one-shot present-topology learning propagates graphics-producer ancestry through every submit wait/signal
-  dependency, follows the final present semaphore transitively across compute queues, caches the same-device graphics
-  queue per swapchain, and submits the depth marker there only under a same-thread/external-sync proof. This avoids
-  both a silent no-op and a new cross-engine marker; if the producer belongs to another host thread, the diagnostic
-  names that condition and CE does not race the application's externally synchronized `VkQueue`.
+  dependency, follows every final present wait transitively across compute queues, and caches the same-device graphics
+  queue per swapchain. It learns the bounded ring of exact graphics signal semaphores that feed presentation. For a
+  same-thread producer, Present appends the marker directly; for a producer owned by another host thread, the matching
+  `vkQueueSubmit*` wrapper appends the marker immediately after the application's boundary submit, before releasing
+  that thread's queue-serialization scope. This preserves Vulkan external synchronization without borrowing the queue
+  cross-thread, silently disabling the override, or inserting a marker on the compute/present engine. Dependency-map
+  learning stops after at most the swapchain image count (capped at eight); steady-state matching retains only the
+  small registered boundary set.
 - Flip-model latency waitables are requested at creation whenever `backbuffer_count` is active. Wrapped DXGI waits at
   the post-Present/next-frame boundary so simulation/render work cannot begin behind a full vsync queue.
 - **CE's D3D presentation policy applies only while CE owns presentation.** `WaitBackbufferFrameLatency`,

@@ -90,7 +90,7 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
      routes pure DLSS to `kUseStreamlineOriginalQueue`.
   3. The FG multiplier report needs the Streamline feature exports hooked.
      Talos conveys 4x MFG exclusively via `slDLSSGSetOptions(numFramesToGenerate=3)`
-     (no CreateFeature parameter carries it; `MultiFrameCount`/
+     (no CreateFeature parameter carries it; `DLSSG.MultiFrameCount`/
      `FrameGenerationMultiplier` reads on the NVNGX params cover only games
      that set them). Under late inject the game resolved the feature function
      before injection and never re-resolves, so

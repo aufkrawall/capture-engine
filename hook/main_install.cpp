@@ -15,6 +15,11 @@ void CloseCheckHooksEvent() {
 void CheckAndInstallHooks() {
   std::lock_guard<std::mutex> lock(g_HookMutex);
 
+  // RTX Remix is a D3D9-to-Vulkan renderer, but its public control interface is
+  // independent of whichever presentation path CE owns. Keep its scheduler
+  // hook active even when the Vulkan layer suppresses ordinary D3D hooks.
+  RemixHook::Install();
+
   const bool dxvkD3D11WrapperLoaded = IsDXVKD3D11WrapperLoaded();
   const bool dxvkD3D9WrapperLoaded = IsDXVKD3D9WrapperLoaded();
 

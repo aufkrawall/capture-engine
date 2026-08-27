@@ -68,6 +68,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, 
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
 
+void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presentQueue,
+                                    const VkPresentInfoKHR* presentInfo);
+
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
@@ -126,7 +129,8 @@ inline bool IsDXVKD3D11WrapperLoaded() {
     return IsDllFromProjectCached("d3d11.dll", "dxvk", vulkan_layer_g_DXVKD3D11ProbeState);
 }
 
-inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {
+inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit,
+                                      bool queueAlreadySynchronized = false) {
     if (limit < 0.0f)
         return;
     if (queue == VK_NULL_HANDLE || device == VK_NULL_HANDLE)
@@ -213,7 +217,7 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         state.submitted[currentIndex] = false;
     }
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    ScopedBorrowedQueueSubmission prerenderSubmissionGuard(queue);
+    ScopedBorrowedQueueSubmission prerenderSubmissionGuard(queue, queueAlreadySynchronized);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Prerender: marker submit failed result=%d queue=%p", static_cast<int>(submitResult), queue);

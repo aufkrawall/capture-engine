@@ -48,6 +48,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     LoadConfig(configPath, *g_pLocalConfig);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
+    // The RTX Remix bridge resolves its public interface initializer as soon as
+    // the inherited renderer resumes. Register before any other helper can arm
+    // the process-wide GetProcAddress router, so that first lookup is covered.
+    RemixHook::RegisterDynamicHooks();
     ArmManualReflexQueryHookIfConfigured("config.ini");
     ArmNgxFgPresetOverrideIfConfigured("config.ini");
 
@@ -315,6 +319,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // before VEH/UEF crash filters get control. Keep this narrow and passive:
   // one CE-owned dump for current-process fatal exits, then forward.
   FFXHook::RegisterDynamicHooks();
+  RemixHook::RegisterDynamicHooks();
+  RemixHook::Install();
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
 

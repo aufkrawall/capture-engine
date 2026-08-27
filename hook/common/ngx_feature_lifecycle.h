@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace ce::ngx_lifecycle {
 
@@ -26,10 +27,10 @@ constexpr bool IsSuccessfulResult(uint32_t result) noexcept {
 }
 
 // Resolve the DLSS frame-generation output multiplier (2x/3x/4x) for an NVNGX
-// CreateFeature call. Feature IDs 9/0xB (legacy FG) and 18 (MFG) all carry the
-// configured multiplier in the FrameGenerationMultiplier parameter; the legacy
-// FG branch must not hardcode 2x. Late injection depends on this because the
-// Streamline GetState path that keeps the multiplier fresh at startup is not
+// CreateFeature call. Feature IDs 9/0xB (legacy FG) and 18 (MFG) can expose
+// either FrameGenerationMultiplier or the namespaced generated-frame count;
+// the legacy FG branch must not hardcode 2x. Late injection depends on this
+// because the Streamline GetState path that keeps the multiplier fresh at startup is not
 // hooked when sl.dlssg was already loaded before hook installation (session
 // 20260811_222500: Talos configured for 4x MFG but the overlay showed DLSS
 // 2x). Precedence mirrors the MFG branch: a configured override wins over the
@@ -57,6 +58,25 @@ inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFram
         return legacyMultiplier;
     }
     return 0;
+}
+
+// NVIDIA's public DLSS-G headers use the namespaced `DLSSG.MultiFrameCount`
+// key. Keep accepting the unscoped spelling written by older integrations and
+// CE builds, but never mistake it for the current SDK contract.
+inline bool ResolveNVNGXFrameGenerationParameter(std::string_view name, int multiplier,
+                                                 int& value) noexcept {
+    if (multiplier < 2 || multiplier > 4) {
+        return false;
+    }
+    if (name == "FrameGenerationMultiplier") {
+        value = multiplier;
+        return true;
+    }
+    if (name == "DLSSG.MultiFrameCount" || name == "MultiFrameCount") {
+        value = multiplier - 1;
+        return true;
+    }
+    return false;
 }
 
 template <std::size_t Capacity>

@@ -107,6 +107,7 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     if (ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(base)) {
       StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
     }
+    RemixHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
   }
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
   if (g_hCheckHooksEvent)
@@ -251,6 +252,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
+  RemixHook::OnModuleLoaded(module, moduleNameOrPath);
   UE5::NotifyModuleLoaded(module);
 
   // nvngx.dll is loaded by sl.common.dll, which then resolves every NGX entry

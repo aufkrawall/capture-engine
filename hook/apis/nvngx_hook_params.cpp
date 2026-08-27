@@ -1,4 +1,5 @@
 #include "nvngx_hook_internal.h"
+#include "remix_hook.h"
 
 namespace {
 
@@ -12,17 +13,7 @@ bool ResolveConfiguredFGParameter(const char* name, int& value) {
     if (!name)
         return false;
     const int multiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
-    if (multiplier <= 0)
-        return false;
-    if (strcmp(name, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
-        value = multiplier;
-        return true;
-    }
-    if (strcmp(name, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount) == 0) {
-        value = static_cast<int>(DLSSFGMultiplierToGeneratedFrames(multiplier));
-        return true;
-    }
-    return false;
+    return ce::ngx_lifecycle::ResolveNVNGXFrameGenerationParameter(name, multiplier, value);
 }
 
 template <typename T>
@@ -58,15 +49,20 @@ int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
     }
     const int generatedFrames = static_cast<int>(DLSSFGMultiplierToGeneratedFrames(multiplier));
 
-    int observedGeneratedFrames = 0;
-    if (originals.getI) {
-        originals.getI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &observedGeneratedFrames);
-    } else if (originals.getUI) {
-        unsigned int value = 0;
-        if (originals.getUI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &value) ==
-            NVSDK_NGX_Result_Success) {
-            observedGeneratedFrames = static_cast<int>(value);
+    auto readGeneratedFrames = [&](const char* name) {
+        int value = 0;
+        if (originals.getI && originals.getI(params, name, &value) == NVSDK_NGX_Result_Success) {
+            return value;
         }
+        unsigned int unsignedValue = 0;
+        if (originals.getUI && originals.getUI(params, name, &unsignedValue) == NVSDK_NGX_Result_Success) {
+            return static_cast<int>(unsignedValue);
+        }
+        return 0;
+    };
+    int observedGeneratedFrames = readGeneratedFrames(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);
+    if (observedGeneratedFrames == 0) {
+        observedGeneratedFrames = readGeneratedFrames(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped);
     }
 
     // Use the captured originals so this is an unconditional write at the
@@ -74,11 +70,14 @@ int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
     if (originals.setI) {
         originals.setI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, multiplier);
         originals.setI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, generatedFrames);
+        originals.setI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped, generatedFrames);
     }
     if (originals.setUI) {
         originals.setUI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier,
                         static_cast<unsigned int>(multiplier));
         originals.setUI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                        static_cast<unsigned int>(generatedFrames));
+        originals.setUI(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped,
                         static_cast<unsigned int>(generatedFrames));
     }
 
@@ -88,7 +87,7 @@ int ApplyConfiguredFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
         if (logIndex < 16) {
             HookLogImportant(
                 "NVNGX FG: runtime EvaluateFeature factor changed to %dx; reasserted configured %dx "
-                "(MultiFrameCount %d -> %d)",
+                "(DLSSG.MultiFrameCount %d -> %d)",
                 observedGeneratedFrames + 1, multiplier, observedGeneratedFrames, generatedFrames);
         }
     }
@@ -153,6 +152,9 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             const auto& cfg = GetActiveGraphicsConfig();
             int desiredFGValue = 0;
             if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
+                RemixHook::ReassertFrameGenerationScheduleFromNgx(
+                    InName, static_cast<uint32_t>(InValue),
+                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfig())));
                 if (InValue != desiredFGValue) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Overriding %s via SetI -> %d (was %d; configured=%dx)",
@@ -301,6 +303,9 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
             const auto& cfg = GetActiveGraphicsConfig();
             int desiredFGValue = 0;
             if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
+                RemixHook::ReassertFrameGenerationScheduleFromNgx(
+                    InName, InValue,
+                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfig())));
                 if (InValue != static_cast<unsigned int>(desiredFGValue)) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Overriding %s via SetUI -> %u (was %u; configured=%dx)",
@@ -579,16 +584,20 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
             LogOncePerParam(NVSDK_NGX_Parameter_FrameGenerationMultiplier,
                             "NVNGX: Injecting initial FrameGenerationMultiplier = %d", fgMultiplier);
             LogOncePerParam(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
-                            "NVNGX: Injecting initial MultiFrameCount = %d (%dx output)", generatedFrames,
-                            fgMultiplier);
+                            "NVNGX: Injecting initial DLSSG.MultiFrameCount = %d (%dx output)",
+                            generatedFrames, fgMultiplier);
         }
         if (vtable[3]) {
             ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, fgMultiplier);
             ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, generatedFrames);
+            ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped,
+                                 generatedFrames);
         }
         if (vtable[4]) {
             ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, (unsigned int)fgMultiplier);
             ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                                  static_cast<unsigned int>(generatedFrames));
+            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped,
                                   static_cast<unsigned int>(generatedFrames));
         }
     }

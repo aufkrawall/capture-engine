@@ -265,35 +265,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
     VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
 
-    // Learn the render-producing queue before applying the prerender limit.
-    // RTX Remix and other renderers may present from a compute-only queue; the
-    // depth marker belongs on the graphics queue whose semaphore feeds that
-    // present, not on the final presentation queue.
-    if (sd && pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 &&
-        VulkanLayerState::Get().IsLearningPresentTopology()) {
-        const VkQueue signalQueue = VulkanLayerState::Get().GetSemaphoreSignalQueue(pPresentInfo->pWaitSemaphores[0]);
-        if (signalQueue != VK_NULL_HANDLE) {
-            const VkQueue graphicsProducerQueue =
-                VulkanLayerState::Get().GetSemaphoreGraphicsProducerQueue(pPresentInfo->pWaitSemaphores[0]);
-            const uint32_t signalFamily = VulkanLayerState::Get().GetQueueFamilyIndex(signalQueue);
-            const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-            const bool signalQueueGraphics = VulkanLayerState::Get().QueueSupportsGraphics(signalQueue);
-            const VkDevice signalDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(signalQueue);
-            const VkDevice producerDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(graphicsProducerQueue);
-            if (graphicsProducerQueue != VK_NULL_HANDLE && producerDevice == sd->device &&
-                VulkanLayerState::Get().QueueSupportsGraphics(graphicsProducerQueue)) {
-                sd->prerenderProducerQueue.store(graphicsProducerQueue, std::memory_order_release);
-            }
-            LayerLog(
-                "Vulkan Layer: Present topology - present queue family=%u, wait semaphore signalled by queue %p "
-                "(family=%u, graphics=%d), upstream graphics producer=%p (family=%u), waitSemaphoreCount=%u",
-                presentFamily, (void*)signalQueue, signalFamily, signalQueueGraphics ? 1 : 0,
-                (void*)graphicsProducerQueue,
-                VulkanLayerState::Get().GetQueueFamilyIndex(graphicsProducerQueue),
-                pPresentInfo->waitSemaphoreCount);
-            VulkanLayerState::Get().FinishPresentTopologyLearning();
-        }
-    }
+    // A compute-only present queue may be fed by a graphics queue owned by a
+    // different application thread. Learn that exact semaphore route before
+    // applying the configured queue-depth marker.
+    LearnPrerenderProducerTopology(sd, queue, pPresentInfo);
 
     const bool runtimeEligible = sd && sd->extent.width >= 320 && sd->extent.height >= 180;
     if (sd && !sd->runtimeInitialized.exchange(true, std::memory_order_acq_rel)) {
@@ -344,7 +319,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         // otherwise use the semaphore-derived queue cached above. The existing
         // same-thread check protects Vulkan's external queue synchronization.
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
-        if (prerenderLimit >= 0.0f && !asyncPresentDetected && queueDevice != VK_NULL_HANDLE) {
+        const bool paceOnProducerSubmit =
+            sd && sd->prerenderOnProducerSubmit.load(std::memory_order_acquire);
+        if (prerenderLimit >= 0.0f && !paceOnProducerSubmit && !asyncPresentDetected &&
+            queueDevice != VK_NULL_HANDLE) {
             VkQueue prerenderQueue = VK_NULL_HANDLE;
             if (VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
                 prerenderQueue = queue;
@@ -358,14 +336,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     VulkanLayerState::Get().GetQueueLastSubmitThreadId(prerenderQueue);
                 if (producerThreadId == 0 || producerThreadId == GetCurrentThreadId()) {
                     ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue, prerenderLimit);
-                } else {
-                    static std::atomic<uint32_t> s_crossThreadPrerenderLogs{0};
-                    if (s_crossThreadPrerenderLogs.fetch_add(1, std::memory_order_relaxed) == 0) {
-                        LayerLog(
-                            "Vulkan Prerender: producer queue %p is submitted by thread %u, present runs on %u; "
-                            "queue-depth marker withheld to preserve Vulkan external synchronization",
-                            (void*)prerenderQueue, producerThreadId, GetCurrentThreadId());
-                    }
                 }
             }
         }

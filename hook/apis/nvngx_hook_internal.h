@@ -110,7 +110,8 @@ typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_NVSDK_NGX_GetFeatureRequirements
 
 // DLSS Multi-Frame Generation (MFG) parameter
 #define NVSDK_NGX_Parameter_FrameGenerationMultiplier "FrameGenerationMultiplier"  // 2=2x, 3=3x, 4=4x
-#define NVSDK_NGX_DLSSG_Parameter_MultiFrameCount "MultiFrameCount"  // generated frames between real frames: 1=2x, 2=3x, 3=4x
+#define NVSDK_NGX_DLSSG_Parameter_MultiFrameCount "DLSSG.MultiFrameCount"  // official generated-frame key: 1=2x, 2=3x, 3=4x
+#define NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped "MultiFrameCount"  // compatibility alias used by older integrations
 
 // --- Typed VTable Hooks ---
 typedef void(STDMETHODCALLTYPE* PFN_SetI)(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue);

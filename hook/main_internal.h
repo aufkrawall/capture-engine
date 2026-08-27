@@ -42,6 +42,8 @@ struct ChildInjectParams;
 
 #include "apis/nvngx_hook.h"
 
+#include "apis/remix_hook.h"
+
 #include "capture/shared_capture.h"
 
 #include "common/dll_utils.h"
