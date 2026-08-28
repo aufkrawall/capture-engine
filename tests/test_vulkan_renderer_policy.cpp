@@ -124,11 +124,10 @@ TEST(VulkanRendererPolicyTest, FinalDxgiPresentArmsOnlyForResidentVulkanFifo) {
 }
 
 TEST(VulkanRendererPolicyTest, FinalDxgiFifoRequiresLiveOwnershipAndLifecycle) {
-    EXPECT_TRUE(ShouldForceFinalDxgiFifo(true, true, false, "fifo"));
-    EXPECT_FALSE(ShouldForceFinalDxgiFifo(false, true, false, "fifo"));
-    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, false, false, "fifo"));
-    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, true, true, "fifo"));
-    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, true, false, "adaptive"));
+    EXPECT_TRUE(ShouldForceFinalDxgiFifo(true, true, false));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(false, true, false));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, false, false));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, true, true));
 }
 
 TEST(VulkanRendererPolicyTest, FinalDxgiFifoUsesVblankAndForbidsTearing) {
@@ -174,16 +173,21 @@ TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing)
     EXPECT_NE(factories.find("MaybeInstallFactoryHooks"), std::string::npos);
     EXPECT_NE(install.find("RegisterDynamicFactoryHooks(vulkanLayerModuleLoaded)"),
               std::string::npos);
-    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory0))"),
-              std::string::npos);
-    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory2))"),
-              std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 10"), std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 15"), std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 16"), std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 24"), std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 8"), std::string::npos);
-    EXPECT_NE(finalPresent.find("vtable, 22"), std::string::npos);
+    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory0))"), std::string::npos);
+    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory2))"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable[10]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable[15]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable[16]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable[24]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable[8]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable1[22]"), std::string::npos);
+    EXPECT_NE(finalPresent.find("InlineHook::InstallPublished"), std::string::npos);
+    EXPECT_NE(finalPresent.find("InlineHook::InstallDeepHookPublished"), std::string::npos);
+    EXPECT_NE(finalPresent.find("COM vtable untouched"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("VTableHook::Create"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("VirtualProtect"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("DetourFactoryQueryInterface"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("DetourSwapchainQueryInterface"), std::string::npos);
     EXPECT_NE(finalPresent.find("original(swapchain, syncInterval, flags)"),
               std::string::npos);
     EXPECT_NE(finalPresent.find(

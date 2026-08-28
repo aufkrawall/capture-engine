@@ -1,18 +1,17 @@
 #include "vulkan_dxgi_fifo_present.h"
 
-#include <array>
 #include <atomic>
-#include <cstring>
 #include <mutex>
 
 #include <dxgi1_6.h>
 
+#include "../../common/log_meter.h"
 #include "../common/dxgi_shared.h"
 #include "../common/hook_common.h"
 #include "../common/overlay_compat.h"
 #include "../common/vulkan_dxgi_fifo_policy.h"
 #include "iat_hook.h"
-#include "vtable_hook.h"
+#include "inline_hook.h"
 #include "wrapper_hooks.h"
 
 namespace ce::vulkan_dxgi_fifo {
@@ -33,30 +32,25 @@ using CreateSwapChainForCompositionFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using Present1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 
-constexpr size_t kMaxFactoryVtables = 12;
-constexpr size_t kMaxSwapchainVtables = 12;
+std::atomic<CreateSwapChainFn> g_createSwapChain{nullptr};
+std::atomic<CreateSwapChainForHwndFn> g_createForHwnd{nullptr};
+std::atomic<CreateSwapChainForCoreWindowFn> g_createForCoreWindow{nullptr};
+std::atomic<CreateSwapChainForCompositionFn> g_createForComposition{nullptr};
+std::atomic<PresentFn> g_present{nullptr};
+std::atomic<Present1Fn> g_present1{nullptr};
 
-struct FactoryVtableHooks {
-    std::atomic<void**> vtable{nullptr};
-    std::atomic<CreateSwapChainFn> createSwapChain{nullptr};
-    std::atomic<CreateSwapChainForHwndFn> createForHwnd{nullptr};
-    std::atomic<CreateSwapChainForCoreWindowFn> createForCoreWindow{nullptr};
-    std::atomic<CreateSwapChainForCompositionFn> createForComposition{nullptr};
-};
+std::atomic<void*> g_createSwapChainTarget{nullptr};
+std::atomic<void*> g_createForHwndTarget{nullptr};
+std::atomic<void*> g_createForCoreWindowTarget{nullptr};
+std::atomic<void*> g_createForCompositionTarget{nullptr};
+std::atomic<void*> g_presentTarget{nullptr};
+std::atomic<void*> g_present1Target{nullptr};
 
-struct SwapchainVtableHooks {
-    std::atomic<void**> vtable{nullptr};
-    std::atomic<PresentFn> present{nullptr};
-    std::atomic<Present1Fn> present1{nullptr};
-};
-
-std::array<FactoryVtableHooks, kMaxFactoryVtables> g_factoryHooks;
-std::array<SwapchainVtableHooks, kMaxSwapchainVtables> g_swapchainHooks;
 std::mutex g_installMutex;
 std::atomic<bool> g_armed{false};
 
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* factory, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc,
-                                                IDXGISwapChain** swapchain);
+                                                 IDXGISwapChain** swapchain);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* factory, IUnknown* device, HWND window,
                                                        const DXGI_SWAP_CHAIN_DESC1* desc,
                                                        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
@@ -71,7 +65,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(IDXGIFactory2* fac
                                                               IDXGISwapChain1** swapchain);
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags);
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags,
-                                         const DXGI_PRESENT_PARAMETERS* parameters);
+                                          const DXGI_PRESENT_PARAMETERS* parameters);
 
 void** GetVtable(const void* object) {
     return object ? *reinterpret_cast<void***>(const_cast<void*>(object)) : nullptr;
@@ -85,163 +79,114 @@ bool IsSystemDxgiModule(const char* moduleBaseName, HMODULE module) {
     return GetModuleFileNameW(module, modulePath, MAX_PATH) != 0 && IATHook::IsWindowsSystemModulePath(modulePath);
 }
 
-template <typename Record, size_t Count>
-Record* FindRecord(std::array<Record, Count>& records, void** vtable) {
-    if (!vtable)
-        return nullptr;
-    for (Record& record : records) {
-        if (record.vtable.load(std::memory_order_acquire) == vtable)
-            return &record;
-    }
-    return nullptr;
-}
+bool IsSystemDxgiCode(const void* address) {
+    if (!address)
+        return false;
 
-template <typename Record, size_t Count>
-Record* FindOrReserveRecord(std::array<Record, Count>& records, void** vtable) {
-    if (Record* existing = FindRecord(records, vtable))
-        return existing;
-    for (Record& record : records) {
-        void** expected = nullptr;
-        if (record.vtable.compare_exchange_strong(expected, vtable, std::memory_order_acq_rel))
-            return &record;
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &module)) {
+        return false;
     }
-    return nullptr;
+
+    wchar_t modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(module, modulePath, MAX_PATH) || !IATHook::IsWindowsSystemModulePath(modulePath))
+        return false;
+
+    const wchar_t* baseName = wcsrchr(modulePath, L'\\');
+    baseName = baseName ? baseName + 1 : modulePath;
+    return _wcsicmp(baseName, L"dxgi.dll") == 0;
 }
 
 template <typename Fn>
-bool InstallSlot(void** vtable, size_t slot, void* detour, std::atomic<Fn>& originalOut, const char* label) {
-    void* observed = vtable[slot];
-    if (!observed)
-        return false;
+struct TrampolinePublication {
+    std::atomic<Fn>* destination;
+};
 
-    // Publish the predecessor before the slot becomes callable through CE.
-    // VTableHook's compare/exchange then verifies that the same predecessor is
-    // still current before installing the detour.
-    originalOut.store(reinterpret_cast<Fn>(observed), std::memory_order_release);
-    void* captured = observed;
-    const VTableHook::Status status = VTableHook::Create(reinterpret_cast<void*>(&vtable[slot]), detour, &captured);
-    if (status != VTableHook::Success) {
-        originalOut.store(nullptr, std::memory_order_release);
-        HookLogImportant(
-            "Vulkan DXGI FIFO: could not install %s vtable[%zu] hook "
-            "(vtable=%p status=%s)",
-            label, slot, vtable, VTableHook::StatusToString(status));
+template <typename Fn>
+void PublishTrampoline(void* trampoline, void* context) {
+    auto* publication = static_cast<TrampolinePublication<Fn>*>(context);
+    publication->destination->store(reinterpret_cast<Fn>(trampoline), std::memory_order_release);
+}
+
+template <typename Fn>
+bool InstallEntryBodyHook(void* target, void* detour, std::atomic<void*>& installedTarget,
+                          std::atomic<Fn>& trampolineOut, const char* label) {
+    if (!IsSystemDxgiCode(target)) {
+        HookLogImportant("Vulkan DXGI FIFO: refusing non-system %s body %p", label, target);
         return false;
     }
-    originalOut.store(reinterpret_cast<Fn>(captured), std::memory_order_release);
+    if (installedTarget.load(std::memory_order_acquire) == target &&
+        trampolineOut.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (installedTarget.load(std::memory_order_acquire) != nullptr) {
+        HookLogImportant("Vulkan DXGI FIFO: additional %s body %p ignored (active=%p)", label, target,
+                         installedTarget.load(std::memory_order_relaxed));
+        return false;
+    }
+
+    installedTarget.store(target, std::memory_order_release);
+    TrampolinePublication<Fn> publication{&trampolineOut};
+    void* trampoline = nullptr;
+    if (!InlineHook::InstallPublished(target, detour, &trampoline, &PublishTrampoline<Fn>, &publication)) {
+        void* recovered = nullptr;
+        if (!InlineHook::TryGetInstalledTrampoline(target, detour, &recovered) || !recovered) {
+            installedTarget.store(nullptr, std::memory_order_release);
+            HookLogImportant("Vulkan DXGI FIFO: failed to install system %s body hook at %p", label, target);
+            return false;
+        }
+        trampolineOut.store(reinterpret_cast<Fn>(recovered), std::memory_order_release);
+        trampoline = recovered;
+    }
+
+    HookLogImportant("Vulkan DXGI FIFO: system %s body hook active (target=%p trampoline=%p)", label, target,
+                     trampoline);
     return true;
 }
 
-template <typename Fn, typename Record, size_t Count>
-Fn FindOriginal(std::array<Record, Count>& records, const void* object, std::atomic<Fn> Record::* member) {
-    if (Record* record = FindRecord(records, GetVtable(object)))
-        return (record->*member).load(std::memory_order_acquire);
-    return nullptr;
-}
-
-void LogOriginalOwner(const char* label, const void* original) {
-    char modulePath[MAX_PATH] = {};
-    ce::overlay_compat::TryGetModulePathFromCodeAddress(original, modulePath, sizeof(modulePath));
-    HookLogImportant("Vulkan DXGI FIFO: installed %s hook (predecessor=%p owner=%s)", label, original,
-                     modulePath[0] ? modulePath : "unresolved");
-}
-
-bool InstallSwapchainVtable(IDXGISwapChain* swapchain, bool includePresent1, const char* source) {
-    void** vtable = GetVtable(swapchain);
-    if (!vtable)
-        return false;
-
-    std::lock_guard<std::mutex> lock(g_installMutex);
-    SwapchainVtableHooks* record = FindOrReserveRecord(g_swapchainHooks, vtable);
-    if (!record) {
-        HookLogImportant("Vulkan DXGI FIFO: swapchain-vtable registry full (vtable=%p source=%s)", vtable,
-                         source ? source : "unknown");
-        return false;
-    }
-
-    bool installed = record->present.load(std::memory_order_acquire) != nullptr;
-    if (!installed) {
-        installed = InstallSlot(vtable, 8, reinterpret_cast<void*>(&DetourPresent), record->present, "Present");
-        if (installed)
-            LogOriginalOwner("Present", reinterpret_cast<const void*>(record->present.load(std::memory_order_acquire)));
-    }
-    if (includePresent1 && record->present1.load(std::memory_order_acquire) == nullptr) {
-        if (InstallSlot(vtable, 22, reinterpret_cast<void*>(&DetourPresent1), record->present1, "Present1")) {
-            installed = true;
-            LogOriginalOwner("Present1",
-                             reinterpret_cast<const void*>(record->present1.load(std::memory_order_acquire)));
-        }
-    }
-    return installed;
-}
-
-bool InstallFactoryVtable(IUnknown* factoryInterface, bool includeFactory2, const char* source) {
-    void** vtable = GetVtable(factoryInterface);
-    if (!vtable)
-        return false;
-
-    std::lock_guard<std::mutex> lock(g_installMutex);
-    FactoryVtableHooks* record = FindOrReserveRecord(g_factoryHooks, vtable);
-    if (!record) {
-        HookLogImportant("Vulkan DXGI FIFO: factory-vtable registry full (vtable=%p source=%s)", vtable,
-                         source ? source : "unknown");
-        return false;
-    }
-
-    bool installed = false;
-    if (!record->createSwapChain.load(std::memory_order_acquire)) {
-        installed |= InstallSlot(vtable, 10, reinterpret_cast<void*>(&DetourCreateSwapChain), record->createSwapChain,
-                                 "CreateSwapChain");
-    }
-    if (includeFactory2 && !record->createForHwnd.load(std::memory_order_acquire)) {
-        installed |= InstallSlot(vtable, 15, reinterpret_cast<void*>(&DetourCreateSwapChainForHwnd),
-                                 record->createForHwnd, "CreateSwapChainForHwnd");
-    }
-    if (includeFactory2 && !record->createForCoreWindow.load(std::memory_order_acquire)) {
-        installed |= InstallSlot(vtable, 16, reinterpret_cast<void*>(&DetourCreateSwapChainForCoreWindow),
-                                 record->createForCoreWindow, "CreateSwapChainForCoreWindow");
-    }
-    if (includeFactory2 && !record->createForComposition.load(std::memory_order_acquire)) {
-        installed |= InstallSlot(vtable, 24, reinterpret_cast<void*>(&DetourCreateSwapChainForComposition),
-                                 record->createForComposition, "CreateSwapChainForComposition");
-    }
-
-    if (installed) {
-        HookLogImportant(
-            "Vulkan DXGI FIFO: captured real factory vtable=%p factory2=%d "
-            "source=%s; descriptors and factory object remain untouched",
-            vtable, includeFactory2 ? 1 : 0, source ? source : "unknown");
-    }
-    return installed;
-}
-
-void InstallSwapchainHooks(IDXGISwapChain* swapchain, const char* source) {
-    if (!swapchain)
-        return;
-
-    InstallSwapchainVtable(swapchain, false, source);
-    IDXGISwapChain1* swapchain1 = nullptr;
-    if (SUCCEEDED(swapchain->QueryInterface(IID_PPV_ARGS(&swapchain1))) && swapchain1) {
-        InstallSwapchainVtable(swapchain1, true, source);
-        swapchain1->Release();
-    }
-}
-
 template <typename Fn>
-HRESULT MissingOriginal(const char* label, Fn) {
-    static std::atomic<uint32_t> occurrence{0};
-    const uint32_t count = occurrence.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (count <= 8 || (count % 256) == 0) {
-        HookLogImportant("Vulkan DXGI FIFO: missing predecessor for %s (occurrence=%u)", label, count);
+bool InstallPresentBodyHook(void* target, void* detour, std::atomic<void*>& installedTarget,
+                            std::atomic<Fn>& trampolineOut, const char* label) {
+    if (!IsSystemDxgiCode(target)) {
+        HookLogImportant("Vulkan DXGI FIFO: refusing non-system final %s body %p", label, target);
+        return false;
     }
-    return DXGI_ERROR_INVALID_CALL;
+    if (installedTarget.load(std::memory_order_acquire) == target &&
+        trampolineOut.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (installedTarget.load(std::memory_order_acquire) != nullptr)
+        return false;
+
+    installedTarget.store(target, std::memory_order_release);
+    TrampolinePublication<Fn> publication{&trampolineOut};
+#ifdef _WIN64
+    constexpr int kForeignEntryPatchBytes = 14;
+#else
+    constexpr int kForeignEntryPatchBytes = 5;
+#endif
+    void* trampoline = InlineHook::InstallDeepHookPublished(
+        target, detour, &PublishTrampoline<Fn>, &publication, kForeignEntryPatchBytes);
+    if (!trampoline) {
+        installedTarget.store(nullptr, std::memory_order_release);
+        HookLogImportant(
+            "Vulkan DXGI FIFO: failed to install final %s below the foreign Present chain at %p; "
+            "leaving presentation untouched",
+            label, target);
+        return false;
+    }
+
+    HookLogImportant(
+        "Vulkan DXGI FIFO: final %s body hook active below foreign entry hooks "
+        "(target=%p trampoline=%p; COM vtable untouched)",
+        label, target, trampoline);
+    return true;
 }
 
 bool ShouldForceFifoNow() {
-    const auto& graphics = GetActiveGraphicsConfig();
-    return ce::vulkan_dxgi_fifo_policy::ShouldForceFinalDxgiFifo(g_armed.load(std::memory_order_acquire),
-                                                                 DXGIShared::IsVulkanActive(), HookIsShuttingDown(),
-                                                                 graphics.vsyncMode);
+    return ce::vulkan_dxgi_fifo_policy::ShouldForceFinalDxgiFifo(
+        g_armed.load(std::memory_order_acquire), DXGIShared::IsVulkanActive(), HookIsShuttingDown());
 }
 
 void ApplyAndLogPresentParameters(const char* label, UINT& syncInterval, UINT& flags) {
@@ -252,22 +197,50 @@ void ApplyAndLogPresentParameters(const char* label, UINT& syncInterval, UINT& f
 
     static std::atomic<uint32_t> occurrence{0};
     const uint32_t count = occurrence.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (count <= 24 || (count % 1024) == 0) {
+    if (ce::log_meter::ShouldLogCadence(count, 8, 1024)) {
         HookLogImportant(
-            "Vulkan DXGI FIFO: final %s #%u force=%d SyncInterval=%u->%u "
-            "Flags=0x%X->0x%X",
+            "Vulkan DXGI FIFO: final %s #%u force=%d SyncInterval=%u->%u Flags=0x%X->0x%X",
             label, count, forceFifo ? 1 : 0, incomingSyncInterval, syncInterval, incomingFlags, flags);
     }
 }
 
+void InstallFinalPresentHooks(IDXGISwapChain* swapchain, const char* source) {
+    if (!swapchain || !ShouldForceFifoNow())
+        return;
+
+    std::lock_guard<std::mutex> lock(g_installMutex);
+    void** vtable = GetVtable(swapchain);
+    const bool presentInstalled = vtable && InstallPresentBodyHook(
+        vtable[8], reinterpret_cast<void*>(&DetourPresent), g_presentTarget, g_present, "Present");
+
+    bool present1Installed = false;
+    IDXGISwapChain1* swapchain1 = nullptr;
+    if (SUCCEEDED(swapchain->QueryInterface(IID_PPV_ARGS(&swapchain1))) && swapchain1) {
+        void** vtable1 = GetVtable(swapchain1);
+        present1Installed = vtable1 && InstallPresentBodyHook(
+            vtable1[22], reinterpret_cast<void*>(&DetourPresent1), g_present1Target, g_present1, "Present1");
+        swapchain1->Release();
+    }
+
+    static std::atomic<uint32_t> observationCount{0};
+    const uint32_t count = observationCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ce::log_meter::ShouldLogCadence(count, 16, 256)) {
+        HookLogImportant(
+            "Vulkan DXGI FIFO: observed real swapchain #%u from %s "
+            "(swapchain=%p Present=%d Present1=%d); factory/swapchain vtables and descriptors remain untouched",
+            count, source ? source : "system factory", swapchain, presentInstalled ? 1 : 0,
+            present1Installed ? 1 : 0);
+    }
+}
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* factory, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc,
-                                                IDXGISwapChain** swapchain) {
-    CreateSwapChainFn original = FindOriginal(g_factoryHooks, factory, &FactoryVtableHooks::createSwapChain);
+                                                 IDXGISwapChain** swapchain) {
+    const CreateSwapChainFn original = g_createSwapChain.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("CreateSwapChain", original);
+        return DXGI_ERROR_INVALID_CALL;
     const HRESULT result = original(factory, device, desc, swapchain);
     if (SUCCEEDED(result) && swapchain && *swapchain)
-        InstallSwapchainHooks(*swapchain, "CreateSwapChain");
+        InstallFinalPresentHooks(*swapchain, "CreateSwapChain");
     return result;
 }
 
@@ -275,12 +248,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* factory, I
                                                        const DXGI_SWAP_CHAIN_DESC1* desc,
                                                        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
                                                        IDXGIOutput* restrictToOutput, IDXGISwapChain1** swapchain) {
-    CreateSwapChainForHwndFn original = FindOriginal(g_factoryHooks, factory, &FactoryVtableHooks::createForHwnd);
+    const CreateSwapChainForHwndFn original = g_createForHwnd.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("CreateSwapChainForHwnd", original);
+        return DXGI_ERROR_INVALID_CALL;
     const HRESULT result = original(factory, device, window, desc, fullscreenDesc, restrictToOutput, swapchain);
     if (SUCCEEDED(result) && swapchain && *swapchain)
-        InstallSwapchainHooks(*swapchain, "CreateSwapChainForHwnd");
+        InstallFinalPresentHooks(*swapchain, "CreateSwapChainForHwnd");
     return result;
 }
 
@@ -288,13 +261,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForCoreWindow(IDXGIFactory2* fact
                                                              const DXGI_SWAP_CHAIN_DESC1* desc,
                                                              IDXGIOutput* restrictToOutput,
                                                              IDXGISwapChain1** swapchain) {
-    CreateSwapChainForCoreWindowFn original =
-        FindOriginal(g_factoryHooks, factory, &FactoryVtableHooks::createForCoreWindow);
+    const CreateSwapChainForCoreWindowFn original = g_createForCoreWindow.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("CreateSwapChainForCoreWindow", original);
+        return DXGI_ERROR_INVALID_CALL;
     const HRESULT result = original(factory, device, window, desc, restrictToOutput, swapchain);
     if (SUCCEEDED(result) && swapchain && *swapchain)
-        InstallSwapchainHooks(*swapchain, "CreateSwapChainForCoreWindow");
+        InstallFinalPresentHooks(*swapchain, "CreateSwapChainForCoreWindow");
     return result;
 }
 
@@ -302,46 +274,86 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(IDXGIFactory2* fac
                                                               const DXGI_SWAP_CHAIN_DESC1* desc,
                                                               IDXGIOutput* restrictToOutput,
                                                               IDXGISwapChain1** swapchain) {
-    CreateSwapChainForCompositionFn original =
-        FindOriginal(g_factoryHooks, factory, &FactoryVtableHooks::createForComposition);
+    const CreateSwapChainForCompositionFn original = g_createForComposition.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("CreateSwapChainForComposition", original);
+        return DXGI_ERROR_INVALID_CALL;
     const HRESULT result = original(factory, device, desc, restrictToOutput, swapchain);
     if (SUCCEEDED(result) && swapchain && *swapchain)
-        InstallSwapchainHooks(*swapchain, "CreateSwapChainForComposition");
+        InstallFinalPresentHooks(*swapchain, "CreateSwapChainForComposition");
     return result;
 }
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags) {
-    PresentFn original = FindOriginal(g_swapchainHooks, swapchain, &SwapchainVtableHooks::present);
+    const PresentFn original = g_present.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("Present", original);
+        return DXGI_ERROR_INVALID_CALL;
     ApplyAndLogPresentParameters("Present", syncInterval, flags);
     return original(swapchain, syncInterval, flags);
 }
 
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags,
-                                         const DXGI_PRESENT_PARAMETERS* parameters) {
-    Present1Fn original = FindOriginal(g_swapchainHooks, swapchain, &SwapchainVtableHooks::present1);
+                                          const DXGI_PRESENT_PARAMETERS* parameters) {
+    const Present1Fn original = g_present1.load(std::memory_order_acquire);
     if (!original)
-        return MissingOriginal("Present1", original);
+        return DXGI_ERROR_INVALID_CALL;
     ApplyAndLogPresentParameters("Present1", syncInterval, flags);
     return original(swapchain, syncInterval, flags, parameters);
+}
+
+bool InstallFactoryBodyHooks(IUnknown* factory, const char* source) {
+    if (!factory)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_installMutex);
+    bool installed = false;
+    IDXGIFactory* factory0 = nullptr;
+    if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory0))) && factory0) {
+        void** vtable = GetVtable(factory0);
+        installed |= vtable && InstallEntryBodyHook(
+            vtable[10], reinterpret_cast<void*>(&DetourCreateSwapChain), g_createSwapChainTarget,
+            g_createSwapChain, "CreateSwapChain");
+        factory0->Release();
+    }
+
+    IDXGIFactory2* factory2 = nullptr;
+    if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory2))) && factory2) {
+        void** vtable = GetVtable(factory2);
+        if (vtable) {
+            installed |= InstallEntryBodyHook(
+                vtable[15], reinterpret_cast<void*>(&DetourCreateSwapChainForHwnd), g_createForHwndTarget,
+                g_createForHwnd, "CreateSwapChainForHwnd");
+            installed |= InstallEntryBodyHook(
+                vtable[16], reinterpret_cast<void*>(&DetourCreateSwapChainForCoreWindow),
+                g_createForCoreWindowTarget, g_createForCoreWindow, "CreateSwapChainForCoreWindow");
+            installed |= InstallEntryBodyHook(
+                vtable[24], reinterpret_cast<void*>(&DetourCreateSwapChainForComposition),
+                g_createForCompositionTarget, g_createForComposition, "CreateSwapChainForComposition");
+        }
+        factory2->Release();
+    }
+
+    static std::atomic<uint32_t> captureCount{0};
+    const uint32_t count = captureCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ce::log_meter::ShouldLogCadence(count, 8, 256)) {
+        HookLogImportant(
+            "Vulkan DXGI FIFO: system factory method-body capture #%u from %s %s; COM vtable untouched",
+            count, source ? source : "factory export", installed ? "active" : "unavailable");
+    }
+    return installed;
 }
 
 }  // namespace
 
 void RegisterDynamicFactoryHooks(bool vulkanLayerModuleLoaded) {
     const auto& graphics = GetActiveGraphicsConfig();
-    if (!ce::vulkan_dxgi_fifo_policy::ShouldArmFinalDxgiPresent(vulkanLayerModuleLoaded, graphics.vsyncMode)) {
+    const bool shouldArm =
+        ce::vulkan_dxgi_fifo_policy::ShouldArmFinalDxgiPresent(vulkanLayerModuleLoaded, graphics.vsyncMode);
+    const bool firstArm = shouldArm && !g_armed.exchange(shouldArm, std::memory_order_acq_rel);
+    if (!shouldArm)
         return;
-    }
 
-    const bool firstArm = !g_armed.exchange(true, std::memory_order_acq_rel);
-
-    // Re-registering is intentional. If renderer ownership became observable
-    // late, an earlier speculative D3D initialization may have replaced these
-    // three dynamic-router entries before standing down.
+    // Re-registering is intentional. Renderer ownership can become observable
+    // after another dynamic entry has already been published.
     IATHook::RegisterDynamicHookFiltered("CreateDXGIFactory", reinterpret_cast<void*>(&Wrapped_CreateDXGIFactory),
                                          nullptr, &IsSystemDxgiModule);
     IATHook::RegisterDynamicHookFiltered("CreateDXGIFactory1", reinterpret_cast<void*>(&Wrapped_CreateDXGIFactory1),
@@ -350,8 +362,8 @@ void RegisterDynamicFactoryHooks(bool vulkanLayerModuleLoaded) {
                                          nullptr, &IsSystemDxgiModule);
     if (firstArm) {
         HookLogImportant(
-            "Vulkan DXGI FIFO: armed narrow system-DXGI factory interception for "
-            "final vblank presentation");
+            "Vulkan DXGI FIFO: armed system method-body interception for final vblank presentation; "
+            "no driver profile or COM vtable mutation is used");
     }
 }
 
@@ -359,20 +371,9 @@ bool MaybeInstallFactoryHooks(IUnknown* factory, const char* source) {
     if (!g_armed.load(std::memory_order_acquire) || !factory)
         return false;
 
-    // Query each interface before indexing its methods. A base IDXGIFactory
-    // interface is only guaranteed through vtable[11]; the Factory2 creation
-    // methods at [15], [16], and [24] belong to its queried interface.
-    IDXGIFactory* factory0 = nullptr;
-    if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory0))) && factory0) {
-        InstallFactoryVtable(factory0, false, source);
-        factory0->Release();
-    }
-
-    IDXGIFactory2* factory2 = nullptr;
-    if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory2))) && factory2) {
-        InstallFactoryVtable(factory2, true, source);
-        factory2->Release();
-    }
+    InstallFactoryBodyHooks(factory, source);
+    // An armed Vulkan factory must remain the exact object the runtime returned,
+    // even when a body hook could not be installed on this implementation.
     return true;
 }
 

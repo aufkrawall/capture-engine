@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 650,
+    "entries": 651,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -411,6 +411,7 @@
       "hook/wrappers/root_signature_parser.cpp",
       "hook/wrappers/vk_dispatch.cpp",
       "hook/wrappers/vtable_hook.cpp",
+      "hook/wrappers/vulkan_dxgi_fifo_present.cpp",
       "hook/wrappers/wrapper_hooks.cpp",
       "hook/wrappers/wrapper_hooks_devices.cpp",
       "mediaengine/app_audio_capture.cpp",

@@ -21,6 +21,13 @@ VkResult VKAPI_CALL Hooked_Streamline_vkCreateSwapchainKHR(VkDevice device,
                                                             VkSwapchainKHR* swapchain) {
     auto original = reinterpret_cast<PFN_vkCreateSwapchainKHR>(InterlockedCompareExchangePointer(
         reinterpret_cast<void* volatile*>(&streamline_hook_g_Original_vkCreateSwapchainKHR), nullptr, nullptr));
+    static std::atomic<uint32_t> s_entryCount{0};
+    const uint32_t entryCount = s_entryCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ce::log_meter::ShouldLogCadence(entryCount, 8, 256)) {
+        HookLogImportant(
+            "Streamline Hook: vkCreateSwapchainKHR entry #%u mode=%d createInfo=%p original=%p",
+            entryCount, createInfo ? static_cast<int>(createInfo->presentMode) : -1, createInfo, original);
+    }
     if (!original) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }

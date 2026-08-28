@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-08-28 - Vulkan DLSS-G FIFO requires the final DXGI Present contract
+### 2026-08-28 - Vulkan DLSS-G FIFO shared-vtable crash and below-chain body fix
 
 Portal RTX sessions `20260828_014434` and `20260828_022342` both showed CE changing the driver-bound swapchain from
 Immediate to FIFO, yet 3x DLSS-G still arrived in three-output bursts and the latter run visibly tore. The temporary
@@ -18,15 +18,27 @@ about 158.8 FPS with repeated ~18.3 ms / ~0.2 ms / ~0.2 ms bursts. The bridge al
 `CreateDXGIFactory*` exports late. NVIDIA's Vulkan WSI is implemented over an internal DXGI flip swapchain, so the
 remaining real VSync contract is that final swapchain's `Present`/`Present1` call.
 
-For a resident CE Vulkan layer with explicit `vsync=fifo`, the hook now registers only those system-DXGI factory
-exports in the existing `GetProcAddress` router. It returns the real factory unwrapped, patches only its real
-`CreateSwapChain*` vtable methods, then patches only Present slots 8/22 on the returned real swapchain class. The
-final detours call the existing Streamline/NVIDIA predecessor with `SyncInterval=1` and
-`DXGI_PRESENT_ALLOW_TEARING` cleared. They do not modify descriptors, create probe objects, wait, set maximum frame
-latency, or run CaptureEngine's ordinary DXGI overlay/capture policy; this preserves the DOOM Eternal ICD-thread
-deadlock invariant. Logs identify the predecessor module and rate-limit the incoming/final Present arguments.
-NVIDIA still does not officially support DLSS-G VSync on Vulkan, so Portal field validation remains required; there
-is deliberately no timer/Reflex/refresh-rate cap fallback.
+The first implementation violated the Vulkan pass-through invariant by writing the shared system factory and
+swapchain vtables. Portal session `20260828_212805` falsified it immediately. All four dumps were inspected: the
+initiating x64 renderer dump has the `dxvk-dlfg-present` thread executing a null indirect call in
+`gameoverlayrenderer64!OverlayHookD3D3`; its stack contains CE `DetourPresent1` and NVIDIA Vulkan WSI. The renderer
+termination dump and both x86 `hl2.exe` dumps are post-crash teardown. `hook_debug.log` gives the decisive ordering:
+CE wrote Present/Present1 slots at 21:28:17.526, the first final Present1 arrived at 21:28:18.835, and Steam's
+uninitialized worker-thread callback failed immediately. CE changed neither argument on that call
+(`SyncInterval=1->1`, `Flags=0->0`), so COM lifetime/identity tracking cannot fix it; participating through the shared
+vtable was itself the unsafe ownership change. This matches the older `iat_hook.cpp` guard that excludes Streamline
+internal factories after the same Steam null-RIP failure mode.
+
+The replacement keeps the real factory and swapchain objects exact and never writes a COM vtable. The intercepted
+system factory export is used only to read stable system-DXGI `CreateSwapChain*` method addresses; CE inline-hooks
+those function bodies. When the real NVIDIA WSI swapchain is returned, CE installs a deep Present/Present1 body hook
+past the widest recognized foreign entry patch. Steam therefore retains its outer entry ownership and CE runs below
+that chain before the system DXGI body. The final detours force `SyncInterval=1` and clear
+`DXGI_PRESENT_ALLOW_TEARING`; the hot path reads only the armed/Vulkan/shutdown atomics. No driver profile/DRS state,
+descriptor, probe object, wait, maximum-frame-latency setting, overlay/capture route, timer limiter, or Reflex cap is
+involved. Source-policy regression coverage rejects vtable writes, QueryInterface/Release detours, and pacing
+fallbacks. Portal field validation remains required because NVIDIA officially excludes Vulkan from DLSS-G VSync
+support.
 
 ### 2026-08-27 - FPS limiter: FG-aware output-group admission fixes Portal RTX cap escape (130 configured, ~146 observed)
 

@@ -14,9 +14,8 @@ inline bool ShouldArmFinalDxgiPresent(bool vulkanLayerModuleLoaded, std::string_
     return vulkanLayerModuleLoaded && vsyncMode == "fifo";
 }
 
-inline bool ShouldForceFinalDxgiFifo(bool armed, bool vulkanPresentationActive, bool hookShuttingDown,
-                                     std::string_view vsyncMode) {
-    return armed && vulkanPresentationActive && !hookShuttingDown && vsyncMode == "fifo";
+inline bool ShouldForceFinalDxgiFifo(bool fifoRequested, bool vulkanPresentationActive, bool hookShuttingDown) {
+    return fifoRequested && vulkanPresentationActive && !hookShuttingDown;
 }
 
 // DXGI_PRESENT_ALLOW_TEARING is invalid with a non-zero synchronization
