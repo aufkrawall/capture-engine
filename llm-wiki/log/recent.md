@@ -1,19 +1,32 @@
 # llm-wiki Log
 
-### 2026-08-28 - Vulkan FIFO must reach Streamline before the Vulkan layer
+### 2026-08-28 - Vulkan DLSS-G FIFO requires the final DXGI Present contract
 
 Portal RTX sessions `20260828_014434` and `20260828_022342` both showed CE changing the driver-bound swapchain from
 Immediate to FIFO, yet 3x DLSS-G still arrived in three-output bursts and the latter run visibly tore. The temporary
 refresh-derived 144 FPS limiter merely paced one 48 Hz group at `vkAcquireNextImageKHR`; it was removed and never
 committed. Aggregate 144 FPS was not VSync and made frame pacing worse.
 
-NVIDIA's public `sl.interposer` source establishes the missed boundary: its exported `vkCreateSwapchainKHR` invokes
-DLSS-G's before hooks with the original create info, then calls the downstream Vulkan dispatch. CE's implicit layer
-therefore changed the driver copy only after Streamline had recorded Immediate. The generic fix hooks that one stable
-interposer export and substitutes guaranteed-supported FIFO before Streamline sees the call; the existing layer still
-enforces the downstream call. Bounded diagnostics prove both sides (`before Streamline DLSS-G hooks` and downstream
-`presentMode=2`). NVIDIA does not officially support DLSS-G VSync on Vulkan, so field validation remains required;
-there is deliberately no timer/Reflex/refresh-rate cap fallback.
+NVIDIA's public `sl.interposer` source established the first missed boundary: its exported `vkCreateSwapchainKHR`
+invokes DLSS-G's before hooks with the original create info, then calls the downstream Vulkan dispatch. CE now hooks
+that stable export and substitutes guaranteed-supported FIFO before Streamline sees the call; the existing layer still
+enforces the downstream call.
+
+Session `20260828_162056` then falsified the assumption that this was sufficient. Its bounded diagnostics proved FIFO
+on both sides (`before Streamline DLSS-G hooks` and downstream driver `presentMode=2`), yet generated output remained
+about 158.8 FPS with repeated ~18.3 ms / ~0.2 ms / ~0.2 ms bursts. The bridge also resolved the system
+`CreateDXGIFactory*` exports late. NVIDIA's Vulkan WSI is implemented over an internal DXGI flip swapchain, so the
+remaining real VSync contract is that final swapchain's `Present`/`Present1` call.
+
+For a resident CE Vulkan layer with explicit `vsync=fifo`, the hook now registers only those system-DXGI factory
+exports in the existing `GetProcAddress` router. It returns the real factory unwrapped, patches only its real
+`CreateSwapChain*` vtable methods, then patches only Present slots 8/22 on the returned real swapchain class. The
+final detours call the existing Streamline/NVIDIA predecessor with `SyncInterval=1` and
+`DXGI_PRESENT_ALLOW_TEARING` cleared. They do not modify descriptors, create probe objects, wait, set maximum frame
+latency, or run CaptureEngine's ordinary DXGI overlay/capture policy; this preserves the DOOM Eternal ICD-thread
+deadlock invariant. Logs identify the predecessor module and rate-limit the incoming/final Present arguments.
+NVIDIA still does not officially support DLSS-G VSync on Vulkan, so Portal field validation remains required; there
+is deliberately no timer/Reflex/refresh-rate cap fallback.
 
 ### 2026-08-27 - FPS limiter: FG-aware output-group admission fixes Portal RTX cap escape (130 configured, ~146 observed)
 

@@ -92,6 +92,8 @@ struct ChildInjectParams;
 
 #include "wrappers/wrapper_hooks.h"
 
+#include "wrappers/vulkan_dxgi_fifo_present.h"
+
 #include <algorithm>
 
 #include <atomic>

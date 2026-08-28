@@ -152,6 +152,7 @@ static DXGIFactoryRuntimeDecision EvaluateDXGIFactoryRuntimeDecision(const void*
 #include "dxgi_factory_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "iat_hook.h"
+#include "vulkan_dxgi_fifo_present.h"
 #include "wrapper_hooks.h"
 // Forward declaration from dx11_hook.cpp (after D3D11 types are available)
 extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
@@ -365,8 +366,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     if (t_inFactory) {
         static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory – calling real export (realFn=%p)", realFn);
-        if (realFn)
-            return realFn(riid, ppFactory);
+        if (realFn) {
+            const HRESULT hr = realFn(riid, ppFactory);
+            if (SUCCEEDED(hr) && ppFactory && *ppFactory)
+                ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                    static_cast<IUnknown*>(*ppFactory), "CreateDXGIFactory/reentrant");
+            return hr;
+        }
         return E_FAIL;
     }
 
@@ -389,12 +395,15 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     t_inFactory = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
+        const bool vulkanFinalFifo =
+            ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                pRealFactory, "CreateDXGIFactory");
         // Skip wrapping while a frame-generation runtime is in play. Streamline
         // and FFX create DXGI factories from both runtime and game frames during
         // mode handoff; returning a CE factory wrapper there lets us mutate
         // runtime-owned queues before the SDK has finished its own swapchain
         // wiring.
-        if (decision.bypassWrapper) {
+        if (decision.bypassWrapper || vulkanFinalFifo) {
             *ppFactory = pRealFactory;
             return hr;
         }
@@ -427,8 +436,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     if (t_inFactory1) {
         static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory1 – calling real export (realFn=%p)", realFn);
-        if (realFn)
-            return realFn(riid, ppFactory);
+        if (realFn) {
+            const HRESULT hr = realFn(riid, ppFactory);
+            if (SUCCEEDED(hr) && ppFactory && *ppFactory)
+                ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                    static_cast<IUnknown*>(*ppFactory), "CreateDXGIFactory1/reentrant");
+            return hr;
+        }
         return E_FAIL;
     }
 
@@ -444,7 +458,10 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     t_inFactory1 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
-        if (decision.bypassWrapper) {
+        const bool vulkanFinalFifo =
+            ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                pRealFactory, "CreateDXGIFactory1");
+        if (decision.bypassWrapper || vulkanFinalFifo) {
             *ppFactory = pRealFactory;
             return hr;
         }
@@ -479,8 +496,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     if (t_inFactory2) {
         static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory2 – calling real export (realFn=%p)", realFn);
-        if (realFn)
-            return realFn(Flags, riid, ppFactory);
+        if (realFn) {
+            const HRESULT hr = realFn(Flags, riid, ppFactory);
+            if (SUCCEEDED(hr) && ppFactory && *ppFactory)
+                ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                    static_cast<IUnknown*>(*ppFactory), "CreateDXGIFactory2/reentrant");
+            return hr;
+        }
         return E_FAIL;
     }
 
@@ -496,7 +518,10 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     t_inFactory2 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
-        if (decision.bypassWrapper) {
+        const bool vulkanFinalFifo =
+            ce::vulkan_dxgi_fifo::MaybeInstallFactoryHooks(
+                pRealFactory, "CreateDXGIFactory2");
+        if (decision.bypassWrapper || vulkanFinalFifo) {
             *ppFactory = pRealFactory;
             return hr;
         }

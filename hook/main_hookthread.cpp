@@ -48,6 +48,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     LoadConfig(configPath, *g_pLocalConfig);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
+    // NVIDIA's Vulkan WSI can end at an internal DXGI flip swapchain. For the
+    // explicit FIFO mode, register a narrow real-factory path that changes only
+    // final Present synchronization arguments. This must happen after config is
+    // loaded and before the process-wide GetProcAddress router is armed.
+    ce::vulkan_dxgi_fifo::RegisterDynamicFactoryHooks(vulkanLayerModuleLoaded);
     // The RTX Remix bridge resolves its public interface initializer as soon as
     // the inherited renderer resumes. Register before any other helper can arm
     // the process-wide GetProcAddress router, so that first lookup is covered.

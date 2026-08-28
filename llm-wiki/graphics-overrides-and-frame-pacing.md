@@ -235,8 +235,18 @@ Primary sources:
   tracked with the other Streamline core slots so unload/reload cannot retain a stale trampoline.
 - Runtime proof is two-sided and swapchain-scoped: `hook_debug.log` reports `before Streamline DLSS-G hooks`, while
   `vulkan_layer.log` reports `driver returned ... presentMode=2`. NVIDIA officially excludes Vulkan from DLSS-G
-  VSync support, so runtime validation must still establish whether the generated-output implementation actually
-  honors that FIFO request. No timer, Reflex cap, refresh-derived cap, or Acquire-side group pacing is a fallback.
+  VSync support, so those messages prove Vulkan mode propagation but not generated-output synchronization. Portal RTX
+  session `20260828_162056` had both messages and still produced about 158.8 FPS in three-output bursts.
+- NVIDIA's Vulkan WSI terminates in an internal DXGI flip swapchain. With a resident CE Vulkan layer and explicit
+  `vsync=fifo`, `hook/wrappers/vulkan_dxgi_fifo_present.cpp` registers only system `CreateDXGIFactory*` lookups,
+  leaves each real factory and every creation descriptor unwrapped/unchanged, and patches the real factory's four
+  creation slots (10/15/16/24). Returned swapchain classes receive only Present/Present1 slot hooks (8/22). At the
+  final call they preserve the existing Streamline/NVIDIA predecessor while forcing DXGI `SyncInterval=1` and clearing
+  `DXGI_PRESENT_ALLOW_TEARING`.
+- This is a narrowly exempted synchronization-argument path, not a revival of CE's ordinary DXGI policy under Vulkan.
+  It performs no synthetic factory/swapchain probing, descriptor changes, frame-latency configuration, waiting,
+  overlay, capture, or limiter work. The restriction preserves the ICD presenter-thread destruction invariant below.
+  No timer, Reflex cap, refresh-derived cap, or Acquire-side group pacing is a VSync fallback.
 
 ## Vulkan swapchain image count (`backbuffer_count`)
 
@@ -294,9 +304,11 @@ Primary sources:
   on `DXGIShared::IsVulkanActive()` - the same evidence-based decision `CheckAndInstallHooks` already publishes. When
   the CE Vulkan layer owns presentation, every DXGI swapchain CE can reach is the graphics runtime's WSI transport
   behind `VkSwapchainKHR`: the ICD creates it, presents it from a driver-owned thread, and *joins that thread inside
-  `vkDestroySwapchainKHR`*. Blocking it there deadlocks the game, and the layer has already applied vsync mode, image
-  count, and prerender depth on the real Vulkan swapchain, so the D3D-side copy is a second application of the same
-  setting on an object CE does not own. See `llm-wiki/log/recent.md` 2026-08-19 (DOOM Eternal).
+  `vkDestroySwapchainKHR`*. Blocking it there deadlocks the game, and the layer has already applied image count and
+  prerender depth on the real Vulkan swapchain, so descriptor/latency policy on the D3D-side copy is a second
+  application on an object CE does not own. The sole FIFO exception is the non-blocking final-DXGI path above: it
+  changes only `SyncInterval`/tearing arguments because session `20260828_162056` proved the Vulkan present mode does
+  not communicate that required generated-output contract. See `llm-wiki/log/recent.md` 2026-08-19 (DOOM Eternal).
 - **The flip-queue pacing wait is bounded and retires itself.** One implementation
   (`DXGIShared::WaitFlipQueuePacingObject`, `hook/common/dxgi_shared_present_pacing.cpp`) serves every transport; the
   Present path's inlined 16 ms copy and `CWrapDXGISwapChain::WaitFrameLatency`'s `INFINITE` copy are gone. The ceiling

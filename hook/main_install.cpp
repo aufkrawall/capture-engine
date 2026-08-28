@@ -102,6 +102,12 @@ void CheckAndInstallHooks() {
   // they agree with hook installation (a DX12 UE5 process that merely loads
   // vulkan-1.dll keeps full DXGI processing and the overlay).
   DXGIShared::SetVulkanActiveForDXGIPresentPath(s_vulkanActive);
+  if (s_vulkanActive) {
+    const bool vulkanLayerModuleLoaded =
+        GetModuleHandleW(L"VK_LAYER_CE_overlay.dll") != nullptr ||
+        GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll") != nullptr;
+    ce::vulkan_dxgi_fifo::RegisterDynamicFactoryHooks(vulkanLayerModuleLoaded);
+  }
 
   // WRAPPER-ONLY ARCHITECTURE: We use IAT-patched wrapper hooks for ALL games.
   // This is more robust than vtable hooks and avoids Steam overlay recursion

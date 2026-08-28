@@ -3,6 +3,7 @@
 #include <filesystem>
 
 #include "../hook/common/dxgi_shared.h"
+#include "../hook/common/vulkan_dxgi_fifo_policy.h"
 #include "../hook/common/vulkan_renderer_policy.h"
 #include "source_fragment_reader.h"
 
@@ -17,6 +18,9 @@ using ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile;
 using ce::vulkan_renderer_policy::ShouldPublishHookAsSource;
 using ce::vulkan_renderer_policy::ShouldSuppressSpeculativeDX12Bootstrap;
 using ce::vulkan_renderer_policy::ShouldTreatVulkanAsActiveRenderer;
+using ce::vulkan_dxgi_fifo_policy::ApplyFinalDxgiFifoParameters;
+using ce::vulkan_dxgi_fifo_policy::ShouldArmFinalDxgiPresent;
+using ce::vulkan_dxgi_fifo_policy::ShouldForceFinalDxgiFifo;
 
 // RAII restore for the process-global present-path flag.
 class ScopedVulkanPresentFlag {
@@ -109,6 +113,89 @@ TEST(VulkanRendererPolicyTest, NoVulkanModuleMeansNotVulkanActive) {
 TEST(VulkanRendererPolicyTest, ResidentCaptureLayerSuppressesSpeculativeEarlyD3DHooks) {
     EXPECT_FALSE(ShouldInstallEarlyD3DDXGIHooks(/*vulkanLayerModuleLoaded=*/true));
     EXPECT_TRUE(ShouldInstallEarlyD3DDXGIHooks(/*vulkanLayerModuleLoaded=*/false));
+}
+
+TEST(VulkanRendererPolicyTest, FinalDxgiPresentArmsOnlyForResidentVulkanFifo) {
+    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "fifo"));
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "fifo"));
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "adaptive"));
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "mailbox"));
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "off"));
+}
+
+TEST(VulkanRendererPolicyTest, FinalDxgiFifoRequiresLiveOwnershipAndLifecycle) {
+    EXPECT_TRUE(ShouldForceFinalDxgiFifo(true, true, false, "fifo"));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(false, true, false, "fifo"));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, false, false, "fifo"));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, true, true, "fifo"));
+    EXPECT_FALSE(ShouldForceFinalDxgiFifo(true, true, false, "adaptive"));
+}
+
+TEST(VulkanRendererPolicyTest, FinalDxgiFifoUsesVblankAndForbidsTearing) {
+    uint32_t syncInterval = 0;
+    uint32_t flags = 0x200u | 0x4u;
+    EXPECT_TRUE(ApplyFinalDxgiFifoParameters(true, syncInterval, flags));
+    EXPECT_EQ(syncInterval, 1u);
+    EXPECT_EQ(flags, 0x4u);
+
+    EXPECT_FALSE(ApplyFinalDxgiFifoParameters(true, syncInterval, flags));
+    syncInterval = 0;
+    flags = 0x200u;
+    EXPECT_FALSE(ApplyFinalDxgiFifoParameters(false, syncInterval, flags));
+    EXPECT_EQ(syncInterval, 0u);
+    EXPECT_EQ(flags, 0x200u);
+}
+
+TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing) {
+    namespace fs = std::filesystem;
+    const std::string hookThread =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_hookthread.cpp");
+    const std::string factories =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "wrapper_hooks.cpp");
+    const std::string install =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
+    const std::string finalPresent = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "wrappers" / "vulkan_dxgi_fifo_present.cpp");
+    ASSERT_FALSE(hookThread.empty());
+    ASSERT_FALSE(factories.empty());
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(finalPresent.empty());
+
+    const size_t configLoaded = hookThread.find("GetActiveGraphicsConfig();");
+    const size_t registerFactory =
+        hookThread.find("RegisterDynamicFactoryHooks(vulkanLayerModuleLoaded)");
+    const size_t armRouter = hookThread.find("InitializeGetProcAddressHook();");
+    ASSERT_NE(configLoaded, std::string::npos);
+    ASSERT_NE(registerFactory, std::string::npos);
+    ASSERT_NE(armRouter, std::string::npos);
+    EXPECT_LT(configLoaded, registerFactory);
+    EXPECT_LT(registerFactory, armRouter);
+
+    EXPECT_NE(factories.find("MaybeInstallFactoryHooks"), std::string::npos);
+    EXPECT_NE(install.find("RegisterDynamicFactoryHooks(vulkanLayerModuleLoaded)"),
+              std::string::npos);
+    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory0))"),
+              std::string::npos);
+    EXPECT_NE(finalPresent.find("QueryInterface(IID_PPV_ARGS(&factory2))"),
+              std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 10"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 15"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 16"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 24"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 8"), std::string::npos);
+    EXPECT_NE(finalPresent.find("vtable, 22"), std::string::npos);
+    EXPECT_NE(finalPresent.find("original(swapchain, syncInterval, flags)"),
+              std::string::npos);
+    EXPECT_NE(finalPresent.find(
+                  "original(swapchain, syncInterval, flags, parameters)"),
+              std::string::npos);
+
+    EXPECT_EQ(finalPresent.find("WaitForSingleObject"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("SetMaximumFrameLatency"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("FRAME_LATENCY_WAITABLE_OBJECT"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("FpsLimiter"), std::string::npos);
+    EXPECT_EQ(finalPresent.find("Sleep("), std::string::npos);
+    EXPECT_EQ(finalPresent.find("Portal"), std::string::npos);
 }
 
 TEST(VulkanRendererPolicyTest, D3D9BootstrapRejectsVulkanAndTranslationRuntimes) {
