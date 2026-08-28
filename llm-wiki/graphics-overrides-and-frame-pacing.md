@@ -221,6 +221,23 @@ Primary sources:
   images concurrent across graphics and compute families. `vkCreateSwapchainKHR` logs `sharingMode` and
   `imageUsage` so a real run can prove which route is valid.
 
+## Vulkan FIFO through Streamline
+
+- A Vulkan implicit layer can be too late to communicate a present-mode override to Streamline. NVIDIA's
+  [`sl.interposer` Vulkan proxy](https://github.com/NVIDIA-RTX/Streamline/blob/main/source/core/sl.interposer/vulkan/wrapper.cpp)
+  invokes its `eVulkan_CreateSwapchainKHR` **before hooks** with the application's original
+  `VkSwapchainCreateInfoKHR`, then calls the downstream Vulkan dispatch. Portal RTX sessions `20260828_014434` and
+  `20260828_022342` proved this split: Streamline received Immediate while CE's downstream layer changed only the
+  driver-bound copy to FIFO. A software rate cap cannot repair that contract and is not VSync.
+- For `vsync=fifo`, CE inline-hooks only `sl.interposer.dll!vkCreateSwapchainKHR` and substitutes FIFO before the
+  proxy invokes DLSS-G. FIFO is the only mode handled at this upstream boundary because Vulkan guarantees it; the
+  layer retains its normal validation/enforcement for the complete present-mode configuration. Hook lifetime is
+  tracked with the other Streamline core slots so unload/reload cannot retain a stale trampoline.
+- Runtime proof is two-sided and swapchain-scoped: `hook_debug.log` reports `before Streamline DLSS-G hooks`, while
+  `vulkan_layer.log` reports `driver returned ... presentMode=2`. NVIDIA officially excludes Vulkan from DLSS-G
+  VSync support, so runtime validation must still establish whether the generated-output implementation actually
+  honors that FIFO request. No timer, Reflex cap, refresh-derived cap, or Acquire-side group pacing is a fallback.
+
 ## Vulkan swapchain image count (`backbuffer_count`)
 
 - **The application's `VkSwapchainCreateInfoKHR::minImageCount` is a floor CE may raise and must never lower.**

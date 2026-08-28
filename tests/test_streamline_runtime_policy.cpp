@@ -29,6 +29,25 @@ TEST(StreamlineRuntimePolicyTest, StreamlineCoreModuleRecognitionStaysNarrow) {
     EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("nvngx_dlssg.dll"));
 }
 
+TEST(StreamlineRuntimePolicyTest, VulkanFifoOverrideReachesStreamlineBeforeItsSwapchainHooks) {
+    using ce::streamline_runtime_policy::ResolveVulkanFifoPresentModeOverride;
+
+    const auto immediate = ResolveVulkanFifoPresentModeOverride("fifo", 0);
+    EXPECT_TRUE(immediate.overrideApplied);
+    EXPECT_EQ(2, immediate.presentMode);
+
+    const auto alreadyFifo = ResolveVulkanFifoPresentModeOverride("FIFO", 2);
+    EXPECT_FALSE(alreadyFifo.overrideApplied);
+    EXPECT_EQ(2, alreadyFifo.presentMode);
+
+    const char* unchangedModes[] = {nullptr, "default", "off", "mailbox", "adaptive"};
+    for (const char* mode : unchangedModes) {
+        const auto unchanged = ResolveVulkanFifoPresentModeOverride(mode, 0);
+        EXPECT_FALSE(unchanged.overrideApplied) << (mode ? mode : "null");
+        EXPECT_EQ(0, unchanged.presentMode);
+    }
+}
+
 TEST(StreamlineRuntimePolicyTest, StreamlineModuleLoadInspectionIncludesFeatureDlls) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("sl.interposer.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:\\Game\\Plugins\\sl.dlss_g.dll"));

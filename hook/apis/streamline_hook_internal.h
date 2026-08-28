@@ -382,6 +382,8 @@ inline std::atomic<void*> streamline_hook_g_SLSetTagForFrameTarget{nullptr};
 
 inline std::atomic<void*> streamline_hook_g_SLEvaluateFeatureTarget{nullptr};
 
+inline std::atomic<void*> streamline_hook_g_VulkanCreateSwapchainTarget{nullptr};
+
 inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsTarget{nullptr};
 
 inline std::atomic<void*> streamline_hook_g_DLSSGGetStateTarget{nullptr};
@@ -413,6 +415,10 @@ inline std::atomic<bool> streamline_hook_g_SLSetTagHooked{false};
 inline std::atomic<bool> streamline_hook_g_SLSetTagForFrameHooked{false};
 
 inline std::atomic<bool> streamline_hook_g_SLEvaluateFeatureHooked{false};
+
+inline std::atomic<bool> streamline_hook_g_VulkanCreateSwapchainHooked{false};
+
+inline void* streamline_hook_g_Original_vkCreateSwapchainKHR = nullptr;
 
 inline std::atomic<uint32_t> streamline_hook_g_LastUpscalerEvaluation{0xFFFFFFFFu};
 

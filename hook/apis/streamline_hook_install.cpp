@@ -6,12 +6,48 @@
 #include "streamline_hook_v1.h"
 #include "streamline_v1_feature_probe.h"
 
+#include <vulkan/vulkan.h>
+
 namespace {
 
 using ce::streamline_api::Generation;
 
 std::atomic<int> g_streamlineApiGeneration{static_cast<int>(Generation::Unknown)};
 std::atomic<bool> g_abiSensitiveDynamicHooksRegistered{false};
+
+VkResult VKAPI_CALL Hooked_Streamline_vkCreateSwapchainKHR(VkDevice device,
+                                                            const VkSwapchainCreateInfoKHR* createInfo,
+                                                            const VkAllocationCallbacks* allocator,
+                                                            VkSwapchainKHR* swapchain) {
+    auto original = reinterpret_cast<PFN_vkCreateSwapchainKHR>(InterlockedCompareExchangePointer(
+        reinterpret_cast<void* volatile*>(&streamline_hook_g_Original_vkCreateSwapchainKHR), nullptr, nullptr));
+    if (!original) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (!createInfo) {
+        return original(device, createInfo, allocator, swapchain);
+    }
+
+    const auto& graphicsConfig = GetActiveGraphicsConfig();
+    const auto decision = ce::streamline_runtime_policy::ResolveVulkanFifoPresentModeOverride(
+        graphicsConfig.vsyncMode.c_str(), static_cast<int32_t>(createInfo->presentMode));
+    if (!decision.overrideApplied) {
+        return original(device, createInfo, allocator, swapchain);
+    }
+
+    VkSwapchainCreateInfoKHR adjustedCreateInfo = *createInfo;
+    adjustedCreateInfo.presentMode = static_cast<VkPresentModeKHR>(decision.presentMode);
+    static std::atomic<uint32_t> s_overrideCount{0};
+    const uint32_t overrideCount = s_overrideCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ce::log_meter::ShouldLogCadence(overrideCount, 16, 256)) {
+        HookLogImportant(
+            "Streamline Hook: Vulkan swapchain present mode %d -> %d (fifo) before Streamline DLSS-G hooks "
+            "(count=%u)",
+            static_cast<int>(createInfo->presentMode), static_cast<int>(adjustedCreateInfo.presentMode),
+            overrideCount);
+    }
+    return original(device, &adjustedCreateInfo, allocator, swapchain);
+}
 
 bool ExportsAnyOf(HMODULE module, const char* const* names, size_t count) {
     for (size_t i = 0; i < count; ++i) {
@@ -215,10 +251,15 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
         reinterpret_cast<PFN_slReflexSetOptions>(GetProcAddress(module, "slReflexSetOptions"));
     const auto originalReflexSetConstants =
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
+    const auto originalVulkanCreateSwapchain =
+        moduleBaseName && !_stricmp(moduleBaseName, "sl.interposer.dll")
+            ? reinterpret_cast<PFN_vkCreateSwapchainKHR>(GetProcAddress(module, "vkCreateSwapchainKHR"))
+            : nullptr;
 
     if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice && !originalSetTag &&
         !originalSetTagForFrame && !originalEvaluateFeature && !originalDLSSGSetOptions && !originalDLSSGGetState &&
-        !originalReflexSleep && !originalReflexSetOptions && !originalReflexSetConstants) {
+        !originalReflexSleep && !originalReflexSetOptions && !originalReflexSetConstants &&
+        !originalVulkanCreateSwapchain) {
         return false;
     }
 
@@ -242,7 +283,8 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                                                    targetWithinModule(streamline_hook_g_SLSetD3DDeviceTarget, module) ||
                                                    targetWithinModule(streamline_hook_g_SLSetTagTarget, module) ||
                                                    targetWithinModule(streamline_hook_g_SLSetTagForFrameTarget, module) ||
-                                                   targetWithinModule(streamline_hook_g_SLEvaluateFeatureTarget, module);
+                                                   targetWithinModule(streamline_hook_g_SLEvaluateFeatureTarget, module) ||
+                                                   targetWithinModule(streamline_hook_g_VulkanCreateSwapchainTarget, module);
         if (!ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(
                 true, anyCoreHookTargetWithinModule)) {
             return false;
@@ -271,6 +313,9 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
              reinterpret_cast<void* volatile*>(&streamline_hook_g_Original_slSetTagForFrame)},
             {"slEvaluateFeature", &streamline_hook_g_SLEvaluateFeatureTarget, &streamline_hook_g_SLEvaluateFeatureHooked,
              reinterpret_cast<void* volatile*>(&streamline_hook_g_Original_slEvaluateFeature)},
+            {"vkCreateSwapchainKHR", &streamline_hook_g_VulkanCreateSwapchainTarget,
+             &streamline_hook_g_VulkanCreateSwapchainHooked,
+             reinterpret_cast<void* volatile*>(&streamline_hook_g_Original_vkCreateSwapchainKHR)},
         };
         int healedSlots = 0;
         for (CoreSlotView& slot : coreSlots) {
@@ -301,6 +346,19 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     bool hookedAnything = false;
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_ModuleHookMutex);
+
+        if (originalVulkanCreateSwapchain) {
+            if (!streamline_hook_g_Original_vkCreateSwapchainKHR) {
+                streamline_hook_g_Original_vkCreateSwapchainKHR =
+                    reinterpret_cast<void*>(originalVulkanCreateSwapchain);
+            }
+            hookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(originalVulkanCreateSwapchain),
+                reinterpret_cast<void*>(Hooked_Streamline_vkCreateSwapchainKHR),
+                streamline_hook_g_Original_vkCreateSwapchainKHR,
+                streamline_hook_g_VulkanCreateSwapchainHooked, streamline_hook_g_VulkanCreateSwapchainTarget,
+                "vkCreateSwapchainKHR");
+        }
 
         if (shouldHookCoreExports && originalGetFeatureFunction) {
             if (!streamline_hook_g_Original_slGetFeatureFunction) {

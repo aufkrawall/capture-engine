@@ -148,8 +148,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     // which is what the reserved overlay queue guarantees; record it so a real
     // run can prove which case a title is in.
     LayerLog(
-        "Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (sharingMode=%s familyCount=%u imageUsage=0x%x)",
-        res, pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
+        "Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (presentMode=%d sharingMode=%s familyCount=%u "
+        "imageUsage=0x%x)",
+        res, static_cast<int>(pFinalCI->presentMode),
+        pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
         pCreateInfo->queueFamilyIndexCount, pCreateInfo->imageUsage);
     if (res == VK_SUCCESS) {
         auto* sd = new SwapchainData();

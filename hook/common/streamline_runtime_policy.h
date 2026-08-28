@@ -34,6 +34,11 @@ struct ReflexFrameLimitForwarding {
     bool overrideApplied = false;
 };
 
+struct VulkanFifoPresentModeOverride {
+    int32_t presentMode = 0;
+    bool overrideApplied = false;
+};
+
 struct ObserverOnlyHeuristicCleanup {
     bool clearRecentTeardownGrace = false;
     bool seedRecentTeardownGrace = false;
@@ -112,6 +117,20 @@ inline bool EqualsIgnoreCaseAscii(const char* lhs, const char* rhs) {
     }
 
     return *lhs == '\0' && *rhs == '\0';
+}
+
+inline VulkanFifoPresentModeOverride ResolveVulkanFifoPresentModeOverride(const char* configuredVsyncMode,
+                                                                          int32_t incomingPresentMode) {
+    // VkPresentModeKHR values are ABI constants. Keep this policy independent
+    // of the Vulkan SDK so the unit test can prove the upstream Streamline
+    // decision without pulling platform headers into the policy layer.
+    constexpr int32_t kFifoPresentMode = 2;
+    VulkanFifoPresentModeOverride decision{incomingPresentMode, false};
+    if (EqualsIgnoreCaseAscii(configuredVsyncMode, "fifo") && incomingPresentMode != kFifoPresentMode) {
+        decision.presentMode = kFifoPresentMode;
+        decision.overrideApplied = true;
+    }
+    return decision;
 }
 
 inline bool HasPrefixIgnoreCaseAscii(const char* value, const char* prefix) {

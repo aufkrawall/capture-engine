@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-08-28 - Vulkan FIFO must reach Streamline before the Vulkan layer
+
+Portal RTX sessions `20260828_014434` and `20260828_022342` both showed CE changing the driver-bound swapchain from
+Immediate to FIFO, yet 3x DLSS-G still arrived in three-output bursts and the latter run visibly tore. The temporary
+refresh-derived 144 FPS limiter merely paced one 48 Hz group at `vkAcquireNextImageKHR`; it was removed and never
+committed. Aggregate 144 FPS was not VSync and made frame pacing worse.
+
+NVIDIA's public `sl.interposer` source establishes the missed boundary: its exported `vkCreateSwapchainKHR` invokes
+DLSS-G's before hooks with the original create info, then calls the downstream Vulkan dispatch. CE's implicit layer
+therefore changed the driver copy only after Streamline had recorded Immediate. The generic fix hooks that one stable
+interposer export and substitutes guaranteed-supported FIFO before Streamline sees the call; the existing layer still
+enforces the downstream call. Bounded diagnostics prove both sides (`before Streamline DLSS-G hooks` and downstream
+`presentMode=2`). NVIDIA does not officially support DLSS-G VSync on Vulkan, so field validation remains required;
+there is deliberately no timer/Reflex/refresh-rate cap fallback.
+
 ### 2026-08-27 - FPS limiter: FG-aware output-group admission fixes Portal RTX cap escape (130 configured, ~146 observed)
 
 Session `20260827_211303` (build 0.1.6280, Portal with RTX Remix, `FpsLimiter.general_enabled=true`, cap 130, mode

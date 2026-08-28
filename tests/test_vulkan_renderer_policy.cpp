@@ -378,3 +378,26 @@ TEST(VulkanRendererPolicySourceTest, PresentGateConsultsSharedFlagNotModulePrese
     EXPECT_NE(dx11.find("if (DXGIShared::IsVulkanActive())"), std::string::npos);
     EXPECT_EQ(dx11.find("GetModuleHandleW(L\"vulkan-1.dll\")"), std::string::npos);
 }
+
+TEST(VulkanRendererPolicySourceTest, FifoIsAppliedBeforeStreamlineDlssgSeesSwapchainCreation) {
+    namespace fs = std::filesystem;
+    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    const fs::path layerSource = fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp";
+    ASSERT_TRUE(fs::exists(installSource));
+    ASSERT_TRUE(fs::exists(layerSource));
+
+    const std::string install = ce::test_source::ReadFile(installSource);
+    const std::string layer = ce::test_source::ReadFile(layerSource);
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(layer.empty());
+
+    EXPECT_NE(install.find("Hooked_Streamline_vkCreateSwapchainKHR"), std::string::npos);
+    EXPECT_NE(install.find("GetProcAddress(module, \"vkCreateSwapchainKHR\")"), std::string::npos);
+    EXPECT_NE(install.find("ResolveVulkanFifoPresentModeOverride"), std::string::npos);
+    EXPECT_NE(install.find("before Streamline DLSS-G hooks"), std::string::npos);
+    EXPECT_NE(install.find("InstallInlineHookOnce("), std::string::npos);
+    EXPECT_NE(layer.find("modifiedCI.presentMode = desiredMode"), std::string::npos)
+        << "the Streamline proxy hook and the downstream Vulkan layer are both required";
+    EXPECT_NE(layer.find("driver returned: %d (presentMode=%d"), std::string::npos)
+        << "runtime logs must prove which mode reached the downstream Vulkan call";
+}
