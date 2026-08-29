@@ -76,10 +76,12 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
         return original(ctx, handle, params, callback);
 
     const int expectedFeature = nvngx_hook_g_FeatureRegistry.FindFeature(const_cast<void*>(handle));
-    int configuredFGMultiplier = 0;
+    const int configuredFGMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    int evaluatedFGMultiplier = 0;
     if (IsFrameGenerationFeature(expectedFeature)) {
-        configuredFGMultiplier = ApplyConfiguredFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
-        if (configuredFGMultiplier > 0) {
+        evaluatedFGMultiplier =
+            ResolveAndApplyFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
+        if (configuredFGMultiplier > 0 && evaluatedFGMultiplier == configuredFGMultiplier) {
             static std::atomic<uint32_t> enforcementLogs{0};
             if (enforcementLogs.fetch_add(1, std::memory_order_relaxed) == 0) {
                 HookLogImportant(
@@ -91,12 +93,12 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     }
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
     if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result))) {
-        if (IsFrameGenerationFeature(expectedFeature) && configuredFGMultiplier > 0) {
-            g_FGCompat.SetDLSSFGMultiplier(configuredFGMultiplier);
+        if (IsFrameGenerationFeature(expectedFeature) && evaluatedFGMultiplier > 0) {
+            g_FGCompat.SetDLSSFGMultiplier(evaluatedFGMultiplier);
             g_FGCompat.SetDLSSFGActive(true);
             if (g_IPC && g_IPC->GetSharedMem()) {
                 auto& state = g_IPC->GetSharedMem()->dlssState;
-                state.mfgMultiplier.store(configuredFGMultiplier, std::memory_order_release);
+                state.mfgMultiplier.store(evaluatedFGMultiplier, std::memory_order_release);
                 state.fgActive.store(true, std::memory_order_release);
             }
         }

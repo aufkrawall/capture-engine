@@ -60,6 +60,17 @@ inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFram
     return 0;
 }
 
+// EvaluateFeature is the final NGX consumption boundary. A configured CE
+// override wins there; otherwise telemetry must follow the live option object
+// instead of retaining CreateFeature's conservative 2x fallback.
+inline int ResolveNVNGXEvaluatedFrameGenerationMultiplier(int configuredMultiplier,
+                                                          int modernGeneratedFrames,
+                                                          int legacyMultiplier) noexcept {
+    if (configuredMultiplier >= 2 && configuredMultiplier <= 4)
+        return configuredMultiplier;
+    return ResolveNVNGXObservedFrameGenerationMultiplier(modernGeneratedFrames, legacyMultiplier);
+}
+
 // NVIDIA's public DLSS-G headers use the namespaced `DLSSG.MultiFrameCount`
 // key. Keep accepting the unscoped spelling written by older integrations and
 // CE builds, but never mistake it for the current SDK contract.

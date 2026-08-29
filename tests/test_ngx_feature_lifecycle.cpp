@@ -49,6 +49,17 @@ TEST(NgxFeatureLifecycleTest, ModernGeneratedFrameCountOverridesLegacyMultiplier
     EXPECT_EQ(ResolveNVNGXObservedFrameGenerationMultiplier(0, 0), 0);
 }
 
+TEST(NgxFeatureLifecycleTest, EvaluateUsesLiveFactorUnlessAConfiguredOverrideWins) {
+    using ce::ngx_lifecycle::ResolveNVNGXEvaluatedFrameGenerationMultiplier;
+
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(0, 3, 2), 4);
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(0, 2, 4), 3);
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(0, 0, 4), 4);
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(0, 0, 0), 0);
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(2, 3, 4), 2);
+    EXPECT_EQ(ResolveNVNGXEvaluatedFrameGenerationMultiplier(4, 1, 2), 4);
+}
+
 TEST(NgxFeatureLifecycleTest, ResolvesOfficialAndCompatibilityFrameGenerationParameterNames) {
     using ce::ngx_lifecycle::ResolveNVNGXFrameGenerationParameter;
 
@@ -79,16 +90,21 @@ TEST(NgxFeatureLifecycleTest, NvngxHookUsesTheOfficialNamespacedMultiFrameCountK
 TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_params.cpp";
+    const fs::path factorSource =
+        fs::current_path() / "hook" / "apis" / "nvngx_hook_params_fg_factor.cpp";
     ASSERT_TRUE(fs::exists(source));
+    ASSERT_TRUE(fs::exists(factorSource));
 
-    const std::string text = ce::test_source::ReadLogicalSource(source);
+    const std::string text = ce::test_source::ReadLogicalSource(source) + ce::test_source::ReadFile(factorSource);
     ASSERT_FALSE(text.empty());
     EXPECT_NE(text.find("DLSSFGMultiplierToGeneratedFrames(fgMultiplier)"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_Parameter_FrameGenerationMultiplier"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount"), std::string::npos);
     EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped"), std::string::npos);
-    EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
+    EXPECT_NE(text.find("ResolveAndApplyFGFactorForEvaluation"), std::string::npos);
     EXPECT_NE(text.find("RemixHook::ReassertFrameGenerationScheduleFromNgx("), std::string::npos);
+    EXPECT_NE(text.find("ResolveNVNGXObservedFrameGenerationMultiplier"), std::string::npos)
+        << "default telemetry must read the factor from the live EvaluateFeature parameters";
 }
 
 TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationFactor) {
@@ -99,7 +115,9 @@ TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationF
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
     EXPECT_NE(text.find("IsFrameGenerationFeature(expectedFeature)"), std::string::npos);
-    EXPECT_NE(text.find("ApplyConfiguredFGFactorForEvaluation"), std::string::npos);
+    EXPECT_NE(text.find("ResolveAndApplyFGFactorForEvaluation"), std::string::npos);
+    EXPECT_NE(text.find("SetDLSSFGMultiplier(evaluatedFGMultiplier)"), std::string::npos)
+        << "successful evaluations must publish observed factors as well as configured overrides";
 }
 
 // Source invariant: both NVNGX CreateFeature FG branches (legacy IDs 9/0xB and
