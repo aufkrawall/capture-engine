@@ -395,6 +395,11 @@ public:
         std::atomic<uint32_t> adapterSource{0};
     } systemMetrics;
 
+    // Actual screen-change timestamps collected out of process. Presentation
+    // timing remains process-local and is used whenever this stream is not
+    // selected or not healthy.
+    SharedDisplayTiming displayTiming;
+
     // DLSS State (Hook -> Host)
     struct DLSSState {
         std::atomic<bool> srActive{false};

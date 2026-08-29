@@ -1,21 +1,23 @@
 #include "performance_metrics.h"
+
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
+
 namespace {
 constexpr int64_t kDuplicateFrameThresholdUs = 100;
+constexpr int64_t kDisplayTimingStaleThresholdUs = 2'000'000;
 
 float ComputeWorstPercentileFPS(const float* history, int historyIdx, float percentile, int minSamples) {
-    // Not value-initialized and not on the stack: HISTORY_SIZE floats is 32 KB,
-    // so `{}` was memset-ing 32 KB per call before writing over the part it
-    // actually uses, and this runs from a present hook. Only [0, count) is ever
-    // read. Thread-local because two render threads may sample concurrently.
     static thread_local std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes;
     int count = 0;
     float totalMs = 0.0f;
 
     for (int i = 0; i < PerformanceMetrics::HISTORY_SIZE; i++) {
-        int idx = (historyIdx - 1 - i + PerformanceMetrics::HISTORY_SIZE) % PerformanceMetrics::HISTORY_SIZE;
-        float ms = history[idx];
+        const int idx =
+            (historyIdx - 1 - i + PerformanceMetrics::HISTORY_SIZE) % PerformanceMetrics::HISTORY_SIZE;
+        const float ms = history[idx];
         if (ms <= 0.0001f)
             break;
         frameTimes[count++] = ms;
@@ -27,51 +29,72 @@ float ComputeWorstPercentileFPS(const float* history, int historyIdx, float perc
     if (count < minSamples)
         return 0.0f;
 
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    int percentileIdx = static_cast<int>(count * percentile);
-    if (percentileIdx >= count)
-        percentileIdx = count - 1;
-
-    int worstCount = std::max(1, percentileIdx + 1);
+    const int percentileIdx = std::min(count - 1, static_cast<int>(static_cast<float>(count) * percentile));
+    const int worstCount = std::max(1, percentileIdx + 1);
     auto begin = frameTimes.begin();
-    auto middle = begin + worstCount;
-    auto end = begin + count;
-    std::nth_element(begin, middle, end, std::greater<float>());
+    std::nth_element(begin, begin + worstCount, begin + count, std::greater<float>());
 
     float sum = 0.0f;
-    for (int i = 0; i < worstCount; i++) {
+    for (int i = 0; i < worstCount; i++)
         sum += frameTimes[i];
-    }
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    return 1000.0f / (sum / worstCount);
+    return 1000.0f / (sum / static_cast<float>(worstCount));
 }
 }  // namespace
 
-PerformanceMetrics::PerformanceMetrics() {
-    memset(m_history, 0, sizeof(m_history));
-    memset(m_frameTimeWindow, 0, sizeof(m_frameTimeWindow));
+void PerformanceMetrics::MetricSeries::Reset() {
+    std::memset(history, 0, sizeof(history));
+    std::memset(frameTimeWindow, 0, sizeof(frameTimeWindow));
+    historyIdx.store(0, std::memory_order_relaxed);
+    sampleCount.store(0, std::memory_order_relaxed);
+    lastFrameTimeUs.store(0, std::memory_order_relaxed);
+    windowIndex = 0;
+    windowFilled = false;
+    windowVariance.store(0.0, std::memory_order_relaxed);
+    windowStdDev.store(0.0, std::memory_order_relaxed);
+    recordingState = false;
+    baselineMean = 0;
+    baselineM2 = 0;
+    baselineCount = 0;
+    recordingMean = 0;
+    recordingM2 = 0;
+    recordingCount = 0;
+    lastBaselineVariance = 0;
+    stutterDetected.store(false, std::memory_order_relaxed);
 }
 
-PerformanceMetrics::~PerformanceMetrics() {}
+PerformanceMetrics::PerformanceMetrics() {
+    m_presentation.Reset();
+    m_display.Reset();
+}
+
+const PerformanceMetrics::MetricSeries& PerformanceMetrics::ActiveSeries() const {
+    return m_effectiveSource.load(std::memory_order_acquire) == FrameTimeSource::DisplayChange ? m_display
+                                                                                              : m_presentation;
+}
+
+PerformanceMetrics::MetricSeries& PerformanceMetrics::ActiveSeries() {
+    return m_effectiveSource.load(std::memory_order_acquire) == FrameTimeSource::DisplayChange ? m_display
+                                                                                              : m_presentation;
+}
 
 void PerformanceMetrics::SetRecording(bool isRecording) {
-    // Single-writer: only called from hook thread
-    if (m_isRecording != isRecording) {
-        if (isRecording) {
-            // STARTING: Snapshot baseline variance
-            if (m_baselineCount > VARIANCE_WINDOW) {
-                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                m_lastBaselineVariance = m_baselineM2 / m_baselineCount;
-            }
+    m_recordingRequested.store(isRecording, std::memory_order_release);
+}
 
-            // Reset recording stats
-            m_recordingMean = 0;
-            m_recordingM2 = 0;
-            m_recordingCount = 0;
-            m_stutterDetected.store(false, std::memory_order_relaxed);
-        }
-        m_isRecording = isRecording;
+void PerformanceMetrics::ApplyRecordingTransition(MetricSeries& series) {
+    const bool requested = m_recordingRequested.load(std::memory_order_acquire);
+    if (series.recordingState == requested)
+        return;
+
+    if (requested) {
+        if (series.baselineCount > VARIANCE_WINDOW)
+            series.lastBaselineVariance = series.baselineM2 / static_cast<double>(series.baselineCount);
+        series.recordingMean = 0;
+        series.recordingM2 = 0;
+        series.recordingCount = 0;
+        series.stutterDetected.store(false, std::memory_order_relaxed);
     }
+    series.recordingState = requested;
 }
 
 void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType) {
@@ -82,126 +105,166 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
-    // Lock-free hot path — single writer (present thread), readers use atomics.
-    int64_t lastUs = m_lastFrameTimeUs.load(std::memory_order_relaxed);
-    int64_t frameToFrameUs = 0;
-    if (lastUs > 0) {
-        frameToFrameUs = currentQpcUs - lastUs;
-    }
+    UpdateSeries(m_presentation, currentQpcUs);
+}
 
-    // Filter true duplicate hook re-entry without capping legitimate high-FPS
-    // frame pacing. A 2ms debounce incorrectly flattened real >500 FPS sessions.
-    if (lastUs > 0 && frameToFrameUs > 0 && frameToFrameUs < kDuplicateFrameThresholdUs) {
+void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs) {
+    const int64_t lastUs = series.lastFrameTimeUs.load(std::memory_order_relaxed);
+    const int64_t frameToFrameUs = lastUs > 0 ? currentQpcUs - lastUs : 0;
+
+    if (lastUs > 0 && frameToFrameUs > 0 && frameToFrameUs < kDuplicateFrameThresholdUs)
         return;
-    }
+    if (lastUs > 0 && frameToFrameUs <= 0)
+        return;
 
-    m_lastFrameTimeUs.store(currentQpcUs, std::memory_order_relaxed);
-
-    // Ignore first frame or jumps
+    series.lastFrameTimeUs.store(currentQpcUs, std::memory_order_relaxed);
     if (frameToFrameUs <= 0)
         return;
 
-    m_frameCounter++;
+    ApplyRecordingTransition(series);
 
-    // 1. Update Plot History — atomic index publish ensures readers see
-    //    consistent boundary. Individual float writes are naturally atomic on
-    //    x86/x64 for aligned 4-byte values.
-    float frameTimeMs = (float)frameToFrameUs / 1000.0f;
-    int idx = m_historyIdx.load(std::memory_order_relaxed);
-    m_history[idx] = frameTimeMs;
-    m_historyIdx.store((idx + 1) % HISTORY_SIZE, std::memory_order_release);
+    const float frameTimeMs = static_cast<float>(frameToFrameUs) / 1000.0f;
+    const double frameToFrame = static_cast<double>(frameToFrameUs);
+    const int idx = series.historyIdx.load(std::memory_order_relaxed);
+    series.history[idx] = frameTimeMs;
+    series.historyIdx.store((idx + 1) % HISTORY_SIZE, std::memory_order_release);
+    series.sampleCount.fetch_add(1, std::memory_order_relaxed);
 
-    // 3. Update Rolling Window (writer-only)
-    m_frameTimeWindow[m_windowIndex] = frameToFrameUs;
-    m_windowIndex = (m_windowIndex + 1) % VARIANCE_WINDOW;
-    if (m_windowIndex == 0)
-        m_windowFilled = true;
+    series.frameTimeWindow[series.windowIndex] = frameToFrameUs;
+    series.windowIndex = (series.windowIndex + 1) % VARIANCE_WINDOW;
+    if (series.windowIndex == 0)
+        series.windowFilled = true;
 
-    // 4. Welford's Online Variance (writer-only)
-    if (m_isRecording) {
-        m_recordingCount++;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double delta = frameToFrameUs - m_recordingMean;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        m_recordingMean += delta / m_recordingCount;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double delta2 = frameToFrameUs - m_recordingMean;
-        m_recordingM2 += delta * delta2;
+    if (series.recordingState) {
+        series.recordingCount++;
+        const double delta = frameToFrame - series.recordingMean;
+        series.recordingMean += delta / static_cast<double>(series.recordingCount);
+        const double delta2 = frameToFrame - series.recordingMean;
+        series.recordingM2 += delta * delta2;
     } else {
-        m_baselineCount++;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double delta = frameToFrameUs - m_baselineMean;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        m_baselineMean += delta / m_baselineCount;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double delta2 = frameToFrameUs - m_baselineMean;
-        m_baselineM2 += delta * delta2;
+        series.baselineCount++;
+        const double delta = frameToFrame - series.baselineMean;
+        series.baselineMean += delta / static_cast<double>(series.baselineCount);
+        const double delta2 = frameToFrame - series.baselineMean;
+        series.baselineM2 += delta * delta2;
     }
 
-    // 5. Calculate Window Variance/StdDev — publish atomically for readers
-    if (m_windowFilled || m_windowIndex > 10) {
-        int count = m_windowFilled ? VARIANCE_WINDOW : m_windowIndex;
+    if (series.windowFilled || series.windowIndex > 10) {
+        const int count = series.windowFilled ? VARIANCE_WINDOW : series.windowIndex;
         double sum = 0;
         double sumSq = 0;
         for (int i = 0; i < count; i++) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            sum += m_frameTimeWindow[i];
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            sumSq += (double)m_frameTimeWindow[i] * m_frameTimeWindow[i];
+            const double sample = static_cast<double>(series.frameTimeWindow[i]);
+            sum += sample;
+            sumSq += sample * sample;
         }
-        double mean = sum / count;
-        double var = (sumSq / count) - (mean * mean);
-        if (var < 0)
-            var = 0;
-        m_windowVariance.store(var, std::memory_order_relaxed);
-        m_windowStdDev.store(sqrt(var), std::memory_order_relaxed);
+        const double mean = sum / count;
+        const double variance = std::max(0.0, (sumSq / count) - (mean * mean));
+        series.windowVariance.store(variance, std::memory_order_relaxed);
+        series.windowStdDev.store(std::sqrt(variance), std::memory_order_relaxed);
     }
 
-    // 6. Stutter Detection Logic (writer-only, publish atomically)
-    if (m_isRecording && m_recordingCount > 240 && m_lastBaselineVariance > 1.0) {
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double currentRecVar = (m_recordingCount > 1) ? (m_recordingM2 / m_recordingCount) : 0.0;
-        double ratio = currentRecVar / m_lastBaselineVariance;
-        if (ratio > 2.0) {
-            m_stutterDetected.store(true, std::memory_order_relaxed);
-        } else if (ratio < 1.5) {
-            m_stutterDetected.store(false, std::memory_order_relaxed);
-        }
+    if (series.recordingState && series.recordingCount > 240 && series.lastBaselineVariance > 1.0) {
+        const double currentVariance = series.recordingM2 / static_cast<double>(series.recordingCount);
+        const double ratio = currentVariance / series.lastBaselineVariance;
+        if (ratio > 2.0)
+            series.stutterDetected.store(true, std::memory_order_relaxed);
+        else if (ratio < 1.5)
+            series.stutterDetected.store(false, std::memory_order_relaxed);
     }
 }
 
+void PerformanceMetrics::SetFrameTimeSource(FrameTimeSource source) {
+    m_preferredSource.store(source, std::memory_order_release);
+    if (source == FrameTimeSource::Presentation)
+        m_effectiveSource.store(FrameTimeSource::Presentation, std::memory_order_release);
+}
+
+void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing, int64_t currentQpcUs) {
+    std::lock_guard<std::mutex> lock(m_displayConsumeMutex);
+    const uint64_t generationBefore = timing.publicationGeneration.load(std::memory_order_acquire);
+    if ((generationBefore & 1u) != 0)
+        return;
+
+    const uint64_t writeSequence = timing.writeSequence.load(std::memory_order_acquire);
+    const uint64_t generationAfter = timing.publicationGeneration.load(std::memory_order_acquire);
+    if (generationBefore != generationAfter)
+        return;
+
+    if (m_displayGeneration != generationBefore) {
+        m_display.Reset();
+        m_displayGeneration = generationBefore;
+        const uint64_t earliestAvailable =
+            writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
+        m_nextDisplaySequence = earliestAvailable;
+    }
+
+    const uint64_t earliestAvailable =
+        writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
+    if (m_nextDisplaySequence < earliestAvailable)
+        m_nextDisplaySequence = earliestAvailable;
+
+    while (m_nextDisplaySequence <= writeSequence) {
+        int64_t screenTimeUs = 0;
+        if (!timing.Read(m_nextDisplaySequence, screenTimeUs))
+            break;
+        UpdateSeries(m_display, screenTimeUs);
+        ++m_nextDisplaySequence;
+    }
+
+    RefreshEffectiveSource(timing, currentQpcUs);
+}
+
+void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs) {
+    if (m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation) {
+        m_effectiveSource.store(FrameTimeSource::Presentation, std::memory_order_release);
+        return;
+    }
+
+    const int64_t lastPublishUs = timing.lastPublishQpcUs.load(std::memory_order_acquire);
+    const bool recent = lastPublishUs > 0 && currentQpcUs >= lastPublishUs &&
+                        currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs;
+    const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
+                         m_display.sampleCount.load(std::memory_order_acquire) > 0;
+    m_effectiveSource.store(healthy ? FrameTimeSource::DisplayChange : FrameTimeSource::Presentation,
+                            std::memory_order_release);
+}
+
+const float* PerformanceMetrics::GetHistoryArray() const {
+    return ActiveSeries().history;
+}
+
+int PerformanceMetrics::GetHistoryIndex() const {
+    return ActiveSeries().historyIdx.load(std::memory_order_acquire);
+}
+
 float PerformanceMetrics::GetCurrentFPS() const {
-    // Lock-free: reads from atomic history index + float array
-    const int AVERAGE_FRAMES = 60;
+    const auto& series = ActiveSeries();
+    constexpr int kAverageFrames = 60;
     float totalMs = 0.0f;
     int validFrames = 0;
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
-
-    for (int i = 0; i < AVERAGE_FRAMES; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
+    const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
+    for (int i = 0; i < kAverageFrames; i++) {
+        const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        const float ms = series.history[idx];
         if (ms > 0.0001f && ms < 100.0f) {
             totalMs += ms;
             validFrames++;
         }
     }
-
-    if (validFrames > 0 && totalMs > 0.0001f) {
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        float avgMs = totalMs / validFrames;
-        return 1000.0f / avgMs;
-    }
-    return 0.0f;
+    return validFrames > 0 && totalMs > 0.0001f
+               ? 1000.0f / (totalMs / static_cast<float>(validFrames))
+               : 0.0f;
 }
 
 float PerformanceMetrics::GetAverageFPS() const {
-    // Lock-free read
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
+    const auto& series = ActiveSeries();
+    const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     float totalMs = 0.0f;
     int count = 0;
     for (int i = 0; i < HISTORY_SIZE; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
+        const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        const float ms = series.history[idx];
         if (ms <= 0.0001f)
             break;
         totalMs += ms;
@@ -209,83 +272,73 @@ float PerformanceMetrics::GetAverageFPS() const {
         if (totalMs >= 5000.0f)
             break;
     }
-
-    if (count > 0 && totalMs > 0.0001f) {
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        return 1000.0f / (totalMs / count);
-    }
-    return 0.0f;
+    return count > 0 && totalMs > 0.0001f ? 1000.0f / (totalMs / static_cast<float>(count)) : 0.0f;
 }
 
 float PerformanceMetrics::Get1PercentLowFPS() const {
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
-    return ComputeWorstPercentileFPS(m_history, histIdx, 0.01f, 10);
+    const auto& series = ActiveSeries();
+    return ComputeWorstPercentileFPS(series.history, series.historyIdx.load(std::memory_order_acquire), 0.01f, 10);
 }
 
 float PerformanceMetrics::Get01PercentLowFPS() const {
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
-    return ComputeWorstPercentileFPS(m_history, histIdx, 0.001f, 100);
+    const auto& series = ActiveSeries();
+    return ComputeWorstPercentileFPS(series.history, series.historyIdx.load(std::memory_order_acquire), 0.001f, 100);
 }
 
 void PerformanceMetrics::GetLastHistory(float* outBuffer, int count) const {
-    // Lock-free: snapshot the atomic index, then read floats
-    if (count > HISTORY_SIZE)
-        count = HISTORY_SIZE;
-
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
+    count = std::min(count, HISTORY_SIZE);
+    const auto& series = ActiveSeries();
+    const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     for (int i = 0; i < count; i++) {
-        int idx = (histIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE;
-        outBuffer[i] = m_history[idx];
+        const int idx = (historyIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE;
+        outBuffer[i] = series.history[idx];
     }
 }
 
-void PerformanceMetrics::GetSmartScale(float& outMin, float& outMax, float minRangeMs) const {
-    // Lock-free read
-    outMin = 0.0f;
-    float maxVal = 0.0f;
-    float avgMs = 16.6f;
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
+double PerformanceMetrics::GetWindowStdDev() const {
+    return ActiveSeries().windowStdDev.load(std::memory_order_relaxed);
+}
 
+bool PerformanceMetrics::IsStutterDetected() const {
+    return ActiveSeries().stutterDetected.load(std::memory_order_relaxed);
+}
+
+void PerformanceMetrics::GetSmartScale(float& outMin, float& outMax, float minRangeMs) const {
+    const auto& series = ActiveSeries();
+    outMin = 0.0f;
+    float maxValue = 0.0f;
+    float averageMs = 16.6f;
+    const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     float totalMs = 0.0f;
     int count = 0;
     for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
-        if (ms > maxVal)
-            maxVal = ms;
+        const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        const float ms = series.history[idx];
+        maxValue = std::max(maxValue, ms);
         if (ms <= 0.0001f)
             break;
         totalMs += ms;
         count++;
     }
     if (count > 0)
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        avgMs = totalMs / count;
-
-    float dynamicMin = avgMs * 3.0f;
-    float lowerBound = std::max(minRangeMs, dynamicMin);
-
-    if (maxVal < lowerBound) {
-        outMax = lowerBound;
-    } else {
-        outMax = maxVal * 1.1f;
-    }
+        averageMs = totalMs / static_cast<float>(count);
+    const float lowerBound = std::max(minRangeMs, averageMs * 3.0f);
+    outMax = maxValue < lowerBound ? lowerBound : maxValue * 1.1f;
 }
 
 float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
-    // Lock-free read
+    const auto& series = ActiveSeries();
     float maxMs = 0.0f;
-    int histIdx = m_historyIdx.load(std::memory_order_acquire);
-    float accumTime = 0.0f;
+    float accumulatedMs = 0.0f;
+    const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     for (int i = 0; i < HISTORY_SIZE; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
+        const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        const float ms = series.history[idx];
         if (ms <= 0.0001f)
             break;
-        if (ms > maxMs)
-            maxMs = ms;
-        accumTime += ms;
-        if (accumTime >= windowSeconds * 1000.0f)
+        maxMs = std::max(maxMs, ms);
+        accumulatedMs += ms;
+        if (accumulatedMs >= windowSeconds * 1000.0f)
             break;
     }
     return maxMs;

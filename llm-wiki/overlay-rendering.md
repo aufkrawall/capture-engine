@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-08-26 (split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-08-29 (actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -8,11 +8,15 @@ Primary sources:
 - `captureengine/host_metrics.{h,cpp}`
 - `captureengine/host_metrics_policy.h`
 - `captureengine/sensor_service.cpp`
+- `captureengine/display_timing_service.{h,cpp}`
+- `captureengine/display_timing_policy.h`
+- `common/display_timing_shared.h`
 - `common/shared_defs.h`
 - `common/recording_indicator_policy.h`
 - `hook/common/custom_overlay.{h,cpp}`
 - `hook/common/custom_font.cpp`
 - `hook/common/overlay_adapter.{h,cpp}`
+- `hook/common/performance_metrics.{h,cpp}`
 - `hook/common/{presentation_color,dxgi_presentation_color}.h`
 - `hook/common/overlay_shader_{bytecode,spirv}.h`
 - `hook/vulkan_layer/vulkan_presentation_color.h`
@@ -25,6 +29,8 @@ Primary sources:
 - `hook/apis/{ddraw,dx8,dx9,opengl}_hook.cpp`
 - `tests/test_overlay_system.cpp`
 - `tests/test_host_metrics_policy.cpp`
+- `tests/test_performance_metrics.cpp`
+- `tests/test_shared_runtime_state.cpp`
 
 ## Summary
 
@@ -60,10 +66,21 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - GPU and VRAM polling is out of process and does not depend on whether the game uses DirectDraw, DX6/DX7, or a modern API. The old-API failure was adapter identification: the host previously ignored its target PID and required a nonzero hook-published LUID before initializing or filtering GPU counters.
 - A graphics-published adapter LUID is stamped with the publishing process ID. It wins when that PID is the selected game or a live direct child of it; the latter preserves the configured/injected parent as profile source while a split renderer owns final presentation. The sensor service resolves that parent relationship from the live process table instead of accepting any foreign publisher. When no trustworthy LUID is available, the host parses the target process's Windows `GPU Engine` PDH instances, selects the adapter with the highest non-video-engine load, and retains the prior process-derived adapter across a valid zero-load tie or a temporary missing sample. An ambiguous initial multi-adapter tie remains unavailable instead of guessing. This keeps multi-GPU selection deterministic without using API-specific guesses.
 - Shared GPU usage, VRAM usage, and VRAM capacity have independent validity bits. A real 0% or 0 MB sample is therefore valid, while a missing/invalid counter remains unavailable. Adapter/source metadata and an even/odd publication sequence let the hook consume one coherent snapshot and clear old values when the source PID or adapter changes.
-- All telemetry readers first validate shared-memory ABI 38's exact version, size, layout fingerprint, and discovery build identity. ABI 38 retains media's separate seqlocked screen-grab target PID/capture-device LUID for WGC/DXGI sensor attribution and adds recording-health/finalization telemetry without touching hook-owned source identity. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
+- All telemetry readers first validate the shared-memory ABI's exact version, size, and layout fingerprint. ABI 48 adds the display-timestamp stream without touching hook-owned source identity. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
 - Per-core load calculation rejects regressing kernel/user/idle counters, addition overflow, and idle-underflow before computing and clamping the busy percentage. This prevents a genuine counter discontinuity from becoming an unsigned multi-billion-percent value independently of ABI validation.
 - RAM publication is independent of CPU load. The earlier `RAM: -` case came from copying RAM only when the CPU sample was greater than zero; a valid RAM sample now updates even when CPU is unavailable or exactly 0%.
 - The DirectDraw compatibility renderer publishes the D3D9Ex helper's default-adapter LUID immediately after helper creation, including overlay-only runs where recording never creates another modern capture device. PID inference covers startup and any path that cannot publish an exact LUID.
+
+## Frame-time source and realtime publication
+
+- `[Overlay] frametime_source=display_change` is the default. It derives frame time, FPS, lows, variance, graph samples, and stutter state from consecutive visible screen-change timestamps, so generated output frames and variable-refresh scanout cadence are represented. `presentation` retains the former application-presentation timestamp behavior.
+- The sensor child owns the Windows graphics event session; no tracing or metadata decoding runs in an injected process. The session exists only while at least one injected target requests display timing. It associates runtime presents with graphics-queue submissions, direct-flip completion, multi-plane display completion, and generated-flip timestamps for either the selected source PID or its validated direct-child renderer.
+- The session requests an 8 ms flush cadence. A 24 ms chronological reorder window merges generated and application-frame events whose delivery order differs from their screen timestamps. Duplicate or regressing timestamps are dropped, association tables are age-pruned, and each shared-memory target receives a monotonic stream. Event-buffer loss is counted in the shared diagnostics and logged at most once per ten seconds.
+- ABI 48 carries a 512-slot single-producer/multi-consumer ring. Each DXGI or Vulkan overlay owns an independent cursor; the sensor never waits for readers. Generation changes reset stale history safely, slot sequence validation detects overwrite, and graph data is consumed on every overlay draw rather than at the text refresh interval.
+- `PerformanceMetrics` keeps independent display-change and presentation series. Presentation history stays warm while display timing is selected. The requested display source becomes effective only after a healthy sample arrives and automatically falls back when collection is unavailable, denied, failed, or stale for two seconds. Source transitions are rate-limited in the hook log; the sensor records startup/access failures once.
+- **A runtime present and the kernel present submission that carries it are not on the same thread.** D3D11 and D3D12 hand the packet to a runtime worker thread of the same process, so the present is keyed by process and the thread only refines the choice inside it (`SelectDisplaySubmissionPresent` in `display_timing_policy.h`: exact thread first, otherwise that process's oldest outstanding present). Measured on `dx11_test`: 865 runtime presents and 865 present-marked kernel submissions from two different threads of one process - an exact-thread-only rule associated zero of them, and the entire stream stayed empty while every overlay silently fell back to presentation timing.
+- The service logs stage counters (`runtimePresents`/`submitAssociations`/`queued`/`published`/`suppressed`/`regressed`) every ten seconds - as a warning while nothing has been published, otherwise at debug level - because a session that runs but correlates nothing is otherwise indistinguishable from one that never started. `ProcessTrace` returning anything other than success or `ERROR_CANCELLED` marks the stream failed.
+- Measured on this hardware (144 Hz VRR, NVIDIA): `VSyncDPCMultiPlane` reports `FlipEntryCount=0` and `VSyncDPC` reports `FlipFenceId=0`, so the usable completions arrive on `HSyncDPCMultiPlane` and `MMIOFlipMultiPlaneOverlay`. Stale-risk/unverified: a display path that emits neither - only `VSyncDPCMultiPlane` with a zero entry count - would need the `InterruptTargetPresentId` route, which is deliberately not implemented because it can double-count against the submit-sequence route.
 
 ## Legacy backend hot paths
 

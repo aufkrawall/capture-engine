@@ -46,6 +46,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, screenGrabTargetSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, inheritedRendererProcessPid));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, systemMetrics));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, displayTiming));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));
@@ -54,6 +55,10 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, publicationSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, vramTotal));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, maxCoreLoad));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedDisplayTiming));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, writeSequence));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, publicationGeneration));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, sourcePid));
     hash = MixSharedMemoryAbiValue(hash, sizeof(FrameRingBuffer));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameRingBuffer, writeIndex));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameRingBuffer, readIndex));

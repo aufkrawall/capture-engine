@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-08-29 - Display-change frame timing: the correlation was keyed on the wrong thread
+
+`[Overlay] frametime_source=display_change` (ABI 48) ships: the sensor child runs the graphics event session,
+correlates runtime presents with display completions, and publishes screen-change timestamps into a 512-slot
+shared ring that each DXGI and Vulkan overlay consumes with its own cursor. `PerformanceMetrics` keeps a second
+series for it and falls back to presentation timing whenever the stream is unavailable, denied, failed, or two
+seconds stale.
+
+The first end-to-end run looked like a success and was not: `[DisplayTiming] Screen-change timing service
+started` appeared, the session ran for twelve seconds against a 135 fps DX11 target, and the overlay logged
+`Frame timing source: presentation (requested=display-change sensorStatus=1)` - status never left `Starting`,
+because not one timestamp was ever published. Nothing in the log said which stage broke.
+
+A scratch ETW probe replaying the production chain stage by stage found it. Every event the design needs does
+arrive at a non-elevated session (`Present_Start` 641, `QueuePacket_Start` 987, `HSyncDPCMultiPlane` 230,
+`MMIOFlipMultiPlaneOverlay` 230 in six seconds), and every property the code reads decodes. The break was the
+join: the process emitted 865 runtime presents and 865 present-marked kernel submissions **from two different
+threads of the same process**, and the association was keyed on `ThreadId` alone, so it matched zero times.
+D3D11/D3D12 submit the present packet from a runtime worker thread, not from the thread that called Present.
+
+Fix: key the outstanding presents by process and let the thread only refine the choice within it -
+`SelectDisplaySubmissionPresent` (`captureengine/display_timing_policy.h`) prefers an exact thread match so
+several render threads keep their own order, and otherwise takes that process's oldest outstanding present.
+Same run afterwards: `runtimePresents=1348 submitAssociations=1347 queued=1338 published=1335 suppressed=0
+regressed=0`, and both overlays reached `display-change (sensorStatus=2)`. Vulkan is the same path - NVIDIA's
+WSI presents through DXGI - and correlated 1436/1436.
+
+Two things the failure taught, both now permanent: the service logs its stage counters every ten seconds (a
+warning while `published==0`, debug otherwise), and `ProcessTrace`'s return status is no longer discarded.
+Also measured on this hardware: `VSyncDPC` carries `FlipFenceId=0` and `VSyncDPCMultiPlane` carries
+`FlipEntryCount=0`, so completions come from `HSyncDPCMultiPlane`/`MMIOFlipMultiPlaneOverlay`. A display path
+offering neither would need the `InterruptTargetPresentId` route; it is deliberately not implemented, because
+it can publish a second timestamp for a flip the submit-sequence route already published.
+
+Unvalidated: real-game behaviour, and every path under frame generation - the frame-type provider produced no
+events here because nothing was generating frames, so the generated-flip and completion-suppression policy has
+unit coverage only.
+
 ### 2026-08-29 - FIFO vsync held the rate but CE's overlay ring became the frame pacer
 
 Follow-up run `20260829_153457` on the present-metering fix below. `vulkan_layer.log` confirms the mechanism

@@ -326,6 +326,11 @@ padding=10
 show_fps=true
 ; Shows the frame-time graph.
 show_frametime=true
+; display_change measures when visible screen content changes and includes
+; generated frames and variable-refresh timing. presentation measures calls
+; made by the application. The display-change source falls back automatically
+; while system timing data is unavailable.
+frametime_source=display_change
 show_cpu=true
 show_gpu=true
 show_ram=true

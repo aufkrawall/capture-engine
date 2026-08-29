@@ -29,6 +29,17 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     // Display Elements - Defaults similar to MangoHud standard
     config.overlay.showFPS = reader.GetBool("Overlay", "show_fps", true);
     config.overlay.showFrameTime = reader.GetBool("Overlay", "show_frametime", true);
+    std::string frameTimeSource = reader.GetStr("Overlay", "frametime_source", "display_change");
+    std::transform(frameTimeSource.begin(), frameTimeSource.end(), frameTimeSource.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (frameTimeSource == "presentation") {
+        config.overlay.frameTimeSource = FrameTimeSource::Presentation;
+    } else {
+        if (frameTimeSource != "display_change") {
+            LogInvalidConfigBoundary("Overlay", "frametime_source", frameTimeSource, "display_change");
+        }
+        config.overlay.frameTimeSource = FrameTimeSource::DisplayChange;
+    }
     config.overlay.showCPU = reader.GetBool("Overlay", "show_cpu", true);
     config.overlay.showGPU = reader.GetBool("Overlay", "show_gpu", true);
     config.overlay.showRAM = reader.GetBool("Overlay", "show_ram", true);

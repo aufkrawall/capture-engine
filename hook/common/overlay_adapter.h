@@ -190,5 +190,8 @@ private:
     bool hasLastFrameLayout = false;
     FrameLayoutSnapshot lastFrameLayout = {};
     OverlayConfig lastRenderedConfig = {};
+    FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
+    DWORD lastFrameTimeSourceLogTime = 0;
+    bool hasObservedFrameTimeSource = false;
 };
 extern OverlayAdapter g_OverlayAdapter;

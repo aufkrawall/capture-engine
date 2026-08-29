@@ -23,8 +23,9 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 651,
+    "entries": 655,
     "translation_units": [
+      "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
       "captureengine/host_metrics.cpp",
@@ -248,6 +249,7 @@
       "hook/apis/nvngx_hook_feature.cpp",
       "hook/apis/nvngx_hook_lifecycle.cpp",
       "hook/apis/nvngx_hook_params.cpp",
+      "hook/apis/nvngx_hook_params_fg_factor.cpp",
       "hook/apis/opengl_hook.cpp",
       "hook/apis/opengl_hook_capture.cpp",
       "hook/apis/opengl_hook_capture_frame.cpp",
@@ -376,6 +378,7 @@
       "hook/vulkan_layer/vulkan_layer_hooks.cpp",
       "hook/vulkan_layer/vulkan_layer_present.cpp",
       "hook/vulkan_layer/vulkan_layer_state.cpp",
+      "hook/vulkan_layer/vulkan_layer_swapchain.cpp",
       "hook/vulkan_layer/vulkan_reflex_limiter.cpp",
       "hook/wrappers/custom_hook.cpp",
       "hook/wrappers/d3d10_device_wrap.cpp",
@@ -673,6 +676,7 @@
       "tests/test_vulkan_fg_policy.cpp",
       "tests/test_vulkan_instance_registry.cpp",
       "tests/test_vulkan_layer_registration.cpp",
+      "tests/test_vulkan_present_metering_policy.cpp",
       "tests/test_vulkan_renderer_policy.cpp",
       "tests/test_vulkan_sampler_policy_source.cpp",
       "tests/test_vulkan_swapchain_image_policy.cpp"

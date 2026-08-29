@@ -30,6 +30,31 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         return;
     }
 
+    if (metrics) {
+        // Deliberately not PerfLogger::GetQpcUs(): this value is compared against
+        // a publication stamp produced in the sensor process, so it has to use
+        // the same conversion the producer used, including its overflow guard.
+        LARGE_INTEGER displayTimingNow = {};
+        QueryPerformanceCounter(&displayTimingNow);
+        metrics->SetFrameTimeSource(cfg.frameTimeSource);
+        metrics->ConsumeDisplayTiming(
+            sharedMem->displayTiming,
+            DisplayTimingQpcToUs(displayTimingNow.QuadPart, PerfLogger::GetQpcFrequency()));
+        const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
+        const DWORD sourceNow = GetTickCount();
+        if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
+            if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
+                HookLogImportant("[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u)",
+                                 effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                                 cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                                 static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()));
+                lastFrameTimeSourceLogTime = sourceNow;
+                lastObservedFrameTimeSource = effectiveSource;
+                hasObservedFrameTimeSource = true;
+            }
+        }
+    }
+
     // Update throttling
     DWORD now = GetTickCount();
     bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval;

@@ -3,12 +3,14 @@
 #include <tlhelp32.h>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <string_view>
 #include <vector>
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
 #include "../common/strict_integer_parse.h"
 #include "host_metrics.h"  // Reuse existing logic for native sensors
+#include "display_timing_service.h"
 #include "sensor_plugin.h"
 
 struct SensorSession {
@@ -109,6 +111,7 @@ int SensorProcessMain(const AppConfig& config) {
     bool loggedDiscMissing = false;
 
     std::map<uint32_t, SensorSession> sessions;
+    std::unique_ptr<DisplayTimingService> displayTimingService;
     static bool loggedDiscoveryAttempt = false;
 
     // In a real plugin-based system, we'd load DLLs here.
@@ -171,6 +174,7 @@ int SensorProcessMain(const AppConfig& config) {
         }
 
         // 2. Poll metrics for all active sessions
+        std::vector<DisplayTimingTarget> displayTimingTargets;
         for (auto it = sessions.begin(); it != sessions.end();) {
             SensorSession& s = it->second;
             const uint32_t hookSourcePid = s.shm->GetSourcePid();
@@ -212,6 +216,21 @@ int SensorProcessMain(const AppConfig& config) {
                 luidSourcePid != 0 && luidSourcePid != sourcePid ? QueryDirectParentProcessId(luidSourcePid) : 0;
             const bool luidPublisherEligible = scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
                 sourcePid, luidSourcePid, luidSourceParentPid);
+            const uint32_t inheritedRendererPid =
+                s.shm->runtimeState.inheritedRendererProcessPid.load(std::memory_order_acquire);
+            const uint32_t inheritedRendererParentPid =
+                inheritedRendererPid != 0 && inheritedRendererPid != sourcePid
+                    ? QueryDirectParentProcessId(inheritedRendererPid)
+                    : 0;
+            uint32_t rendererPid = 0;
+            if (inheritedRendererPid != sourcePid && inheritedRendererParentPid == sourcePid) {
+                rendererPid = inheritedRendererPid;
+            } else if (luidSourcePid != sourcePid && luidPublisherEligible) {
+                rendererPid = luidSourcePid;
+            }
+            if (!useScreenGrabTarget && s.shm->ReadOverlayConfig().frameTimeSource == FrameTimeSource::DisplayChange) {
+                displayTimingTargets.push_back({sourcePid, rendererPid, &s.shm->displayTiming});
+            }
             int64_t luid = 0;
             if (!useScreenGrabTarget && luidPublisherEligible) {
                 const uint64_t high = static_cast<uint32_t>(s.shm->GetLuidHighPart());
@@ -275,6 +294,17 @@ int SensorProcessMain(const AppConfig& config) {
                                     : scan_host::metrics_policy::AdapterResolutionSource::HookLuid);
 
             ++it;
+        }
+
+        if (!displayTimingTargets.empty()) {
+            if (!displayTimingService) {
+                displayTimingService = std::make_unique<DisplayTimingService>();
+                displayTimingService->Start();
+            }
+            displayTimingService->UpdateTargets(displayTimingTargets);
+        } else if (displayTimingService) {
+            displayTimingService->UpdateTargets({});
+            displayTimingService.reset();
         }
 
         DWORD waitMs = 1000;

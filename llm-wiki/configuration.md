@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-26
+Last cross-checked: 2026-08-29
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -105,6 +105,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - Choosing `video_capture=inject` or `dll_injection=always` can trigger anti-cheat protection. Do not use either for multiplayer/anti-cheat software unless injection is known to be permitted; `never` remains available as an explicit safety lock.
 - Desktop-overlay mode 2 is warning-only. With the shipped mode 2 profile there is no steady recording dot.
 - `[Overlay] copy_queue_priority` controls the injected D3D12 overlay's DIRECT queue priority, not a copy queue. The key name is retained for compatibility.
+- `[Overlay] frametime_source=display_change|presentation` selects the injected overlay's frame-time/FPS/variance source. `display_change` is the shipped default and includes generated output plus variable-refresh screen cadence; it falls back to presentation timing while the out-of-process timestamp stream is unavailable. `presentation` preserves the former application-presentation measurement.
 
 ## Validation boundary
 
@@ -113,6 +114,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   a 64-bit custom-spec mask and 64 type-validated values; ABI 46 added pre-injection profile-target discovery. ABI 47
   transports the four resolved NVIDIA runtime paths, DLSS indicator mode, and exact split-renderer child identity so
   the final Vulkan renderer consumes the same profile as its parent. Versioned mappings/events isolate older processes.
+- ABI 48 adds `OverlayConfig::frameTimeSource` and the sensor-to-overlay display-timestamp ring. The versioned mapping and discovery names move together with the layout.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "../build_identity.h"
+#include "../display_timing_shared.h"
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -75,17 +76,19 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 47: Added renderer-process attribution plus the process-local
 //             DLSS/Streamline path and indicator settings needed by an
 //             inherited child renderer.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 47;
+// Version 48: Added selectable display-change frame timing and its sensor-to-
+//             overlay timestamp stream.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 48;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_47_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_48_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_47";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_48";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -401,6 +404,7 @@ struct OverlayConfig {
     // Display Elements
     bool showFPS;
     bool showFrameTime;  // Frame time graph
+    FrameTimeSource frameTimeSource;
     bool showCPU;        // CPU usage %
     bool showGPU;        // GPU usage %
     bool showRAM;        // RAM usage

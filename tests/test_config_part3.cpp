@@ -498,6 +498,22 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
     EXPECT_FALSE(IsOverlayDx12FocusAnalysis(config.overlay));
 }
 
+TEST_F(ConfigTest, ParseOverlayFrameTimeSource) {
+    WriteConfig(
+        "[Overlay]\n"
+        "frametime_source=presentation\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::Presentation);
+
+    WriteConfig(
+        "[Overlay]\n"
+        "frametime_source=invalid\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::DisplayChange);
+}
+
 TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
     WriteConfig(
         "[Overlay]\n"

@@ -134,6 +134,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(sharedMemory->overlayConfig.observerOnly) << 19) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.captureIncludeOverlay) << 20) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.screenshotIncludeOverlay) << 21) ^
+        (static_cast<uint64_t>(sharedMemory->overlayConfig.frameTimeSource) << 32) ^
         (static_cast<uint64_t>(graphics.forceRayReconstruction) << 10) ^
         (static_cast<uint64_t>(graphics.rayReconstructionOptimalSettings) << 11) ^
         (static_cast<uint64_t>(graphics.disablePostProcessingEffects) << 12) ^
@@ -170,7 +171,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
-            "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
+            "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
             "runtimePaths=%d%d%d%d forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
@@ -185,7 +186,10 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             sharedMemory->overlayConfig.observerOnly, sharedMemory->overlayConfig.observerPolicyOnly,
             sharedMemory->overlayConfig.observerStartupPresentOnly,
             sharedMemory->overlayConfig.captureIncludeOverlay,
-            sharedMemory->overlayConfig.screenshotIncludeOverlay, graphics.dlssAutoExposure,
+            sharedMemory->overlayConfig.screenshotIncludeOverlay,
+            sharedMemory->overlayConfig.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change"
+                                                                                          : "presentation",
+            graphics.dlssAutoExposure,
             graphics.dlssSharpening, graphics.dlssSRPreset, graphics.dlssRRPreset,
             graphics.dlssFGPreset, graphics.dlssDebugOverlay,
             graphics.dlssSrDllPath[0] ? 1 : 0, graphics.dlssRrDllPath[0] ? 1 : 0,

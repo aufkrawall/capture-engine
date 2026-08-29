@@ -668,6 +668,7 @@ def compile_project(
                 "-lversion",
                 "-lntdll",
                 "-ladvapi32",
+                "-ltdh",
                 # FFmpeg for HDR screenshot encoding (AVIF via libaom) — delay-loaded so SetDllDirectory works
                 os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
                 os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),

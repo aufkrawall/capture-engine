@@ -114,6 +114,81 @@ TEST_F(PerformanceMetricsTest, HighFpsFramesAreNotDebouncedAway) {
     EXPECT_GT(metrics.GetCurrentFPS(), 1500.0f);
 }
 
+TEST_F(PerformanceMetricsTest, DisplayChangeTimingIncludesGeneratedOutputCadence) {
+    metrics.Update(1000000);
+    metrics.Update(1016666);
+    metrics.Update(1033332);
+
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+    timing.Publish(2000000, 3000000);
+    timing.Publish(2004167, 3001000);
+    timing.Publish(2008334, 3002000);
+    timing.Publish(2012501, 3003000);
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3004000);
+
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_EQ(metrics.GetHistoryIndex(), 3);
+    EXPECT_NEAR(metrics.GetHistoryArray()[0], 4.167f, 0.01f);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 240.0f, 1.0f);
+}
+
+TEST_F(PerformanceMetricsTest, DisplayChangeTimingDrivesFrameTimeVariance) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t screenTimeUs = 2000000;
+    timing.Publish(screenTimeUs, 3000000);
+    for (int i = 0; i < 80; ++i) {
+        screenTimeUs += 5000;
+        timing.Publish(screenTimeUs, 3000001 + i * 2);
+        screenTimeUs += 15000;
+        timing.Publish(screenTimeUs, 3000002 + i * 2);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3001000);
+
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_NEAR(metrics.GetWindowStdDev(), 5000.0, 100.0);
+}
+
+TEST_F(PerformanceMetricsTest, DisplayChangePreferenceFallsBackWhenPublicationBecomesStale) {
+    metrics.Update(1000000);
+    metrics.Update(1010000);
+
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+    timing.Publish(2000000, 3000000);
+    timing.Publish(2005000, 3001000);
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3002000);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+
+    metrics.ConsumeDisplayTiming(timing, 5001001);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 100.0f, 1.0f);
+}
+
+TEST_F(PerformanceMetricsTest, PresentationSelectionIgnoresAHealthyDisplayStream) {
+    metrics.Update(1000000);
+    metrics.Update(1020000);
+
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+    timing.Publish(2000000, 3000000);
+    timing.Publish(2004000, 3001000);
+
+    metrics.SetFrameTimeSource(FrameTimeSource::Presentation);
+    metrics.ConsumeDisplayTiming(timing, 3002000);
+
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 50.0f, 1.0f);
+}
+
 // Telemetry must keep reporting observed presentation activity - never clamp
 // it to the configured cap. A correct 3x output-group limiter under a 130 fps
 // cap produces an even ~7.7 ms callback cadence (the paced group owner waits

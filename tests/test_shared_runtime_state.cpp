@@ -8,6 +8,7 @@
 #include "../common/recording_lifecycle.h"
 #include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
+#include "../captureengine/display_timing_policy.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
     CaptureState state;
@@ -209,15 +210,114 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_47_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_47"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_48_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_48"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_47"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_47_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_47_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_47_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_47_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_48"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_48_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_48_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_48_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_48_1234ABCD"), 0);
+}
+
+TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 101, DisplayTimingStatus::Starting);
+    const uint64_t firstGeneration = timing.publicationGeneration.load(std::memory_order_acquire);
+
+    timing.Publish(1000000, 2000000);
+    timing.Publish(1005000, 2001000);
+
+    EXPECT_EQ(timing.GetStatus(), DisplayTimingStatus::Active);
+    EXPECT_EQ(timing.writeSequence.load(std::memory_order_acquire), 2u);
+    int64_t screenTimeUs = 0;
+    ASSERT_TRUE(timing.Read(1, screenTimeUs));
+    EXPECT_EQ(screenTimeUs, 1000000);
+    ASSERT_TRUE(timing.Read(2, screenTimeUs));
+    EXPECT_EQ(screenTimeUs, 1005000);
+
+    timing.Reset(200, 0, DisplayTimingStatus::Starting);
+    EXPECT_GT(timing.publicationGeneration.load(std::memory_order_acquire), firstGeneration);
+    EXPECT_EQ(timing.writeSequence.load(std::memory_order_acquire), 0u);
+    EXPECT_FALSE(timing.Read(1, screenTimeUs));
+    EXPECT_EQ(timing.sourcePid.load(std::memory_order_acquire), 200u);
+}
+
+// Producer and consumer are different processes: they must convert the counter
+// identically, and must keep doing so on a machine that has been up for a
+// while. `ticks * 1'000'000` alone overflows int64 after about ten days at a
+// 10 MHz counter, which would make every published timestamp look stale.
+TEST(SharedDisplayTimingTest, QpcConversionMatchesTheNaiveFormAndSurvivesLongUptime) {
+    constexpr int64_t kFrequency = 10'000'000;
+
+    EXPECT_EQ(DisplayTimingQpcToUs(0, kFrequency), 0);
+    EXPECT_EQ(DisplayTimingQpcToUs(-1, kFrequency), 0);
+    EXPECT_EQ(DisplayTimingQpcToUs(1000, 0), 0);
+    for (const int64_t ticks : {1LL, 9LL, 10LL, 12'345'678LL, 86'400LL * kFrequency}) {
+        EXPECT_EQ(DisplayTimingQpcToUs(ticks, kFrequency), (ticks * 1'000'000) / kFrequency) << "ticks=" << ticks;
+    }
+
+    // 30 days of uptime: the naive form has overflowed long before here.
+    constexpr int64_t kThirtyDayTicks = 30LL * 24 * 3600 * kFrequency;
+    EXPECT_EQ(DisplayTimingQpcToUs(kThirtyDayTicks, kFrequency), 30LL * 24 * 3600 * 1'000'000);
+    EXPECT_GT(DisplayTimingQpcToUs(kThirtyDayTicks, kFrequency), 0);
+}
+
+TEST(SharedDisplayTimingTest, OverwrittenSlotsRejectOldReaderSequences) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 0, DisplayTimingStatus::Starting);
+    for (std::size_t i = 0; i <= DISPLAY_TIMING_RING_SIZE; ++i)
+        timing.Publish(1000000 + static_cast<int64_t>(i), 2000000 + static_cast<int64_t>(i));
+
+    int64_t screenTimeUs = 0;
+    EXPECT_FALSE(timing.Read(1, screenTimeUs));
+    ASSERT_TRUE(timing.Read(DISPLAY_TIMING_RING_SIZE + 1, screenTimeUs));
+    EXPECT_EQ(screenTimeUs, 1000000 + static_cast<int64_t>(DISPLAY_TIMING_RING_SIZE));
+}
+
+TEST(DisplayTimingPolicyTest, ExplicitApplicationFrameSuppressesDuplicateSyncCompletion) {
+    DisplayFrameTypeState state;
+    ObserveDisplayFrameType(state, 1000, 1);
+
+    EXPECT_FALSE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, &state));
+    EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Unconditional, &state));
+}
+
+TEST(DisplayTimingPolicyTest, GeneratedFrameRetainsFollowingApplicationSyncCompletion) {
+    DisplayFrameTypeState state;
+    ObserveDisplayFrameType(state, 1000, 50);
+
+    EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, &state));
+    EXPECT_FALSE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Immediate, &state));
+}
+
+TEST(DisplayTimingPolicyTest, ExplicitApplicationFrameAfterGeneratedFrameSuppressesExtraSync) {
+    DisplayFrameTypeState state;
+    ObserveDisplayFrameType(state, 1000, 100);
+    ObserveDisplayFrameType(state, 1100, 1);
+
+    EXPECT_FALSE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, &state));
+}
+
+// Measured on a DX11 title: the process emitted 865 runtime presents and 865
+// present-marked kernel submissions, from two different threads of that same
+// process. An exact-thread-only association produced zero correlations, so the
+// whole display-timing stream stayed empty and every overlay fell back.
+TEST(DisplayTimingPolicyTest, PresentSubmissionFallsBackToTheProcessOldestPresent) {
+    const uint32_t pendingThreadIds[] = {4444, 5555};
+
+    EXPECT_EQ(SelectDisplaySubmissionPresent(pendingThreadIds, 2, 5555), 1u);
+    EXPECT_EQ(SelectDisplaySubmissionPresent(pendingThreadIds, 2, 4444), 0u);
+    // The runtime worker thread that carries the packet is neither of them.
+    EXPECT_EQ(SelectDisplaySubmissionPresent(pendingThreadIds, 2, 9999), 0u);
+}
+
+TEST(DisplayTimingPolicyTest, PresentSubmissionWithoutAnOutstandingPresentSelectsNothing) {
+    const uint32_t pendingThreadIds[] = {4444};
+
+    EXPECT_EQ(SelectDisplaySubmissionPresent(pendingThreadIds, 0, 4444), kNoPendingDisplayPresent);
+    EXPECT_EQ(SelectDisplaySubmissionPresent(nullptr, 1, 4444), kNoPendingDisplayPresent);
 }
 
 TEST(SharedDefsTest, RendererPidAndRuntimeOverrideProfileHaveIndependentStorage) {

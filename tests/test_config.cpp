@@ -51,6 +51,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.graphics.backbufferCount, -1);
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
+    EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::DisplayChange);
     EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.5f);
     EXPECT_EQ(config.overlay.fpsColor, 0xFF05FAB8u);
     EXPECT_TRUE(config.pseudoOverlay.enabled);
@@ -82,6 +83,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("frametime_source=display_change"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
     EXPECT_EQ(generatedText.find("copy_queue_priority"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);

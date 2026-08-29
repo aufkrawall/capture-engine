@@ -184,6 +184,9 @@ void OverlayAdapter::ResetStateLocked() {
     layoutDirty = true;
     hdrPaperWhiteMonitor = nullptr;
     resolvedHdrPaperWhiteNits = 203.0f;
+    lastObservedFrameTimeSource = FrameTimeSource::Presentation;
+    lastFrameTimeSourceLogTime = 0;
+    hasObservedFrameTimeSource = false;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 
