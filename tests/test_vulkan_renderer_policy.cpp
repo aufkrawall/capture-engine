@@ -473,7 +473,7 @@ TEST(VulkanRendererPolicySourceTest, PresentGateConsultsSharedFlagNotModulePrese
 TEST(VulkanRendererPolicySourceTest, FifoIsAppliedBeforeStreamlineDlssgSeesSwapchainCreation) {
     namespace fs = std::filesystem;
     const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
-    const fs::path layerSource = fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp";
+    const fs::path layerSource = fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_swapchain.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     ASSERT_TRUE(fs::exists(layerSource));
 

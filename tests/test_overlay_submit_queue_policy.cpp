@@ -365,12 +365,12 @@ TEST(OverlaySubmitQueuePolicySourceTest, TheRenderPassOwnsBothLayoutTransitions)
 // the game never had. It is not recoverable from a frame-time graph, so the
 // layer states it once per swapchain generation.
 TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapchainGeneration) {
-    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string swapchain = ReadProjectSource("hook/vulkan_layer/vulkan_layer_swapchain.cpp");
     const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
-    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(swapchain.empty());
     ASSERT_FALSE(topology.empty());
     EXPECT_NE(topology.find("Present topology - present queue family"), std::string::npos);
-    EXPECT_NE(present.find("ArmPresentTopologyLearning()"), std::string::npos)
+    EXPECT_NE(swapchain.find("ArmPresentTopologyLearning()"), std::string::npos)
         << "a swapchain recreate is exactly when a game's present topology can change";
     EXPECT_NE(topology.find("FinishPresentTopologyLearning()"), std::string::npos)
         << "learning must stop once the answer is known, so the steady state pays only an atomic load";
@@ -520,14 +520,14 @@ TEST(OverlaySubmitQueuePolicySourceTest, GeneratedPresentsUseAGlobalSubmissionSl
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentIsCapabilityGatedAndKeepsTheGraphicsFallback) {
-    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string swapchain = ReadProjectSource("hook/vulkan_layer/vulkan_layer_swapchain.cpp");
     const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
     const std::string hooks = ReadProjectSource("hook/vulkan_layer/vulkan_layer_hooks.cpp");
-    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(swapchain.empty());
     ASSERT_FALSE(render.empty());
     ASSERT_FALSE(hooks.empty());
 
-    EXPECT_NE(present.find("sd->imageUsage = pCreateInfo->imageUsage"), std::string::npos);
+    EXPECT_NE(swapchain.find("sd->imageUsage = pCreateInfo->imageUsage"), std::string::npos);
     EXPECT_NE(render.find("VK_IMAGE_USAGE_STORAGE_BIT"), std::string::npos);
     EXPECT_NE(render.find("storageImageReadWithoutFormatAvailable"), std::string::npos);
     EXPECT_NE(render.find("storageImageWriteWithoutFormatAvailable"), std::string::npos);

@@ -47,9 +47,9 @@ std::string StripComments(const std::string& source) {
     return stripped;
 }
 
-std::string ReadVulkanLayerPresentSource() {
+std::string ReadVulkanLayerSwapchainSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook" / "vulkan_layer" /
-                                              "vulkan_layer_present.cpp");
+                                              "vulkan_layer_swapchain.cpp");
 }
 
 }  // namespace
@@ -132,7 +132,7 @@ TEST(VulkanSwapchainImagePolicyTest, DeclinesTheOverrideWithoutSurfaceCapabiliti
 }
 
 TEST(VulkanSwapchainImagePolicySourceTest, SwapchainCreationRoutesThroughThePolicy) {
-    const std::string source = ReadVulkanLayerPresentSource();
+    const std::string source = ReadVulkanLayerSwapchainSource();
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("ce::vulkan_swapchain_image_policy::Decide(imagePolicyInput)"), std::string::npos);

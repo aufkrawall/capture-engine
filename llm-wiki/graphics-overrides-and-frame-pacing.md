@@ -12,7 +12,7 @@ Primary sources:
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
-- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,layer_hooks,vulkan_reflex_limiter}.*`
+- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 
