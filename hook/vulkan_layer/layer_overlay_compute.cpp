@@ -76,7 +76,7 @@ bool CreateOffscreenRenderPass(OverlayState& state, DeviceDispatch* disp) {
 
 bool CreateOffscreenTargets(OverlayState& state, DeviceDispatch* disp, uint32_t graphicsFamily,
                             uint32_t computeFamily) {
-    const size_t count = state.swapchainImages.size();
+    const size_t count = state.fences.size();
     state.offscreenImages.resize(count);
     state.offscreenMemory.resize(count);
     state.offscreenImageViews.resize(count);
@@ -208,7 +208,11 @@ bool CreateComputeDescriptors(OverlayState& state, DeviceDispatch* disp) {
     if (disp->fp_vkCreateSampler(state.device, &samplerInfo, nullptr, &state.computeSampler) != VK_SUCCESS)
         return false;
 
-    const uint32_t count = static_cast<uint32_t>(state.swapchainImages.size());
+    const uint32_t slotCount = static_cast<uint32_t>(state.fences.size());
+    const uint32_t imageCount = static_cast<uint32_t>(state.swapchainImages.size());
+    if (slotCount == 0 || imageCount == 0 || slotCount > UINT32_MAX / imageCount)
+        return false;
+    const uint32_t count = slotCount * imageCount;
     VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count},
                                      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count}};
     VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -227,28 +231,36 @@ bool CreateComputeDescriptors(OverlayState& state, DeviceDispatch* disp) {
     if (disp->fp_vkAllocateDescriptorSets(state.device, &allocation, state.computeDescriptorSets.data()) != VK_SUCCESS)
         return false;
 
-    for (uint32_t i = 0; i < count; ++i) {
-        VkDescriptorImageInfo target = {};
-        target.imageView = state.imageViews[i];
-        target.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkDescriptorImageInfo overlay = {};
-        overlay.sampler = state.computeSampler;
-        overlay.imageView = state.offscreenImageViews[i];
-        overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet writes[2] = {};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = state.computeDescriptorSets[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[0].pImageInfo = &target;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = state.computeDescriptorSets[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].pImageInfo = &overlay;
-        disp->fp_vkUpdateDescriptorSets(state.device, 2, writes, 0, nullptr);
+    // Descriptor/command state is cached for every (submission slot, target
+    // image) pair. That keeps the full-resolution offscreen allocation at one
+    // image per slot while avoiding descriptor updates and command recording
+    // when MFG makes image identity advance independently from slot identity.
+    for (uint32_t slot = 0; slot < slotCount; ++slot) {
+        for (uint32_t image = 0; image < imageCount; ++image) {
+            const uint32_t resourceIndex =
+                ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex(slot, image, imageCount);
+            VkDescriptorImageInfo target = {};
+            target.imageView = state.imageViews[image];
+            target.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            VkDescriptorImageInfo overlay = {};
+            overlay.sampler = state.computeSampler;
+            overlay.imageView = state.offscreenImageViews[slot];
+            overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet writes[2] = {};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = state.computeDescriptorSets[resourceIndex];
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[0].pImageInfo = &target;
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = state.computeDescriptorSets[resourceIndex];
+            writes[1].dstBinding = 1;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[1].pImageInfo = &overlay;
+            disp->fp_vkUpdateDescriptorSets(state.device, 2, writes, 0, nullptr);
+        }
     }
     return true;
 }
@@ -283,7 +295,13 @@ bool InitializeComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, 
         state.computePresentUnavailable = true;
         return false;
     }
-    state.computeCommandBuffers.resize(state.swapchainImages.size());
+    const size_t commandCount = state.fences.size() * state.swapchainImages.size();
+    if (commandCount == 0 || commandCount > UINT32_MAX) {
+        CleanupComputePresentOverlay(state, disp);
+        state.computePresentUnavailable = true;
+        return false;
+    }
+    state.computeCommandBuffers.resize(commandCount);
     VkCommandBufferAllocateInfo commandInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     commandInfo.commandPool = state.computeCommandPool;
     commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -301,8 +319,10 @@ bool InitializeComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, 
 
     state.computePresentInitialized = true;
     LayerLog(
-        "Vulkan Layer: Compute-present overlay ready (graphicsFamily=%u computePresentFamily=%u images=%u format=%d)",
-        graphicsFamily, computeFamily, static_cast<uint32_t>(state.swapchainImages.size()), state.format);
+        "Vulkan Layer: Compute-present overlay ready (graphicsFamily=%u computePresentFamily=%u images=%u "
+        "submissionSlots=%u cachedComposites=%u format=%d)",
+        graphicsFamily, computeFamily, static_cast<uint32_t>(state.swapchainImages.size()),
+        static_cast<uint32_t>(state.fences.size()), static_cast<uint32_t>(commandCount), state.format);
     return true;
 }
 
@@ -419,38 +439,46 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
 }
 
 bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
-                                 VkQueue presentQueue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
+                                 VkQueue presentQueue, uint32_t submissionSlot, uint32_t imageIndex,
+                                 const VkSemaphore* waitSemaphores,
                                  uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool* routeAttempted) {
     if (routeAttempted)
         *routeAttempted = false;
     const uint32_t presentFamily = VulkanLayerState::Get().GetQueueFamilyIndex(presentQueue);
     if (!InitializeComputePresentOverlay(state, disp, graphicsTarget.queueFamilyIndex, presentFamily))
         return false;
-    if (imageIndex >= state.computeCommandBuffers.size() || imageIndex >= state.computeCommandBounds.size() ||
-        imageIndex >= state.computeCommandRecorded.size() || !state.overlayAdapter)
+    const uint32_t imageCount = static_cast<uint32_t>(state.swapchainImages.size());
+    const uint32_t resourceIndex = ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex(
+        submissionSlot, imageIndex, imageCount);
+    if (submissionSlot >= state.commandBuffers.size() || submissionSlot >= state.offscreenFramebuffers.size() ||
+        submissionSlot >= state.offscreenReadySemaphores.size() || imageIndex >= imageCount ||
+        resourceIndex >= state.computeCommandBuffers.size() || resourceIndex >= state.computeCommandBounds.size() ||
+        resourceIndex >= state.computeCommandRecorded.size() || resourceIndex >= state.computeDescriptorSets.size() ||
+        !state.overlayAdapter) {
         return false;
+    }
 
     const bool phaseSampled =
         (state.computePresentDiagnostics.frames + 1) % kDiagnosticSampleInterval == 0;
     const int64_t graphicsRecordStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
 
-    VkCommandBuffer graphicsCommand = state.commandBuffers[imageIndex];
+    VkCommandBuffer graphicsCommand = state.commandBuffers[submissionSlot];
     disp->fp_vkResetCommandBuffer(graphicsCommand, 0);
     VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (disp->fp_vkBeginCommandBuffer(graphicsCommand, &begin) != VK_SUCCESS)
         return false;
     const bool writeTimestamps = state.timestampPool != VK_NULL_HANDLE && disp->fp_vkCmdResetQueryPool &&
-                                 disp->fp_vkCmdWriteTimestamp && imageIndex < state.timestampWritten.size();
+                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampWritten.size();
     if (writeTimestamps) {
-        disp->fp_vkCmdResetQueryPool(graphicsCommand, state.timestampPool, imageIndex * 2, 2);
+        disp->fp_vkCmdResetQueryPool(graphicsCommand, state.timestampPool, submissionSlot * 2, 2);
         disp->fp_vkCmdWriteTimestamp(graphicsCommand, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool,
-                                     imageIndex * 2);
+                                     submissionSlot * 2);
     }
 
     VkRenderPassBeginInfo renderPass = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     renderPass.renderPass = state.offscreenRenderPass;
-    renderPass.framebuffer = state.offscreenFramebuffers[imageIndex];
+    renderPass.framebuffer = state.offscreenFramebuffers[submissionSlot];
     renderPass.renderArea.extent = state.extent;
     disp->fp_vkCmdBeginRenderPass(graphicsCommand, &renderPass, VK_SUBPASS_CONTENTS_INLINE);
     auto* backend = state.overlayAdapter->GetBackendType() == OverlayBackendType::Vulkan
@@ -461,30 +489,30 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
         disp->fp_vkEndCommandBuffer(graphicsCommand);
         return false;
     }
-    backend->SetRenderContext(graphicsCommand, state.offscreenRenderPass, state.offscreenFramebuffers[imageIndex],
-                              state.extent, true);
+    backend->SetRenderContext(graphicsCommand, state.offscreenRenderPass,
+                              state.offscreenFramebuffers[submissionSlot], state.extent, true);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - Vulkan extents are bounded by the implementation and OverlayAdapter intentionally accepts int dimensions
     state.overlayAdapter->RenderOverlay(state.extent.width, state.extent.height);
     const VkRect2D bounds = backend->GetLastRenderBounds();
     disp->fp_vkCmdEndRenderPass(graphicsCommand);
     if (writeTimestamps) {
         disp->fp_vkCmdWriteTimestamp(graphicsCommand, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, state.timestampPool,
-                                     imageIndex * 2 + 1);
+                                     submissionSlot * 2 + 1);
     }
     if (disp->fp_vkEndCommandBuffer(graphicsCommand) != VK_SUCCESS)
         return false;
     const uint64_t graphicsRecordUs =
         phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - graphicsRecordStartUs) : 0;
 
-    VkCommandBuffer computeCommand = state.computeCommandBuffers[imageIndex];
+    VkCommandBuffer computeCommand = state.computeCommandBuffers[resourceIndex];
     const ce::overlay_submit_queue_policy::ComputeCompositeBounds currentBounds = {
         bounds.offset.x, bounds.offset.y, bounds.extent.width, bounds.extent.height};
     const bool commandReused = ce::overlay_submit_queue_policy::CanReuseComputeCompositeCommand(
-        state.computeCommandRecorded[imageIndex] != 0, state.computeCommandBounds[imageIndex], currentBounds);
+        state.computeCommandRecorded[resourceIndex] != 0, state.computeCommandBounds[resourceIndex], currentBounds);
     uint64_t computeRecordMissUs = 0;
     if (!commandReused) {
         const int64_t computeRecordStartUs = PerfLogger::GetQpcUs();
-        state.computeCommandRecorded[imageIndex] = 0;
+        state.computeCommandRecorded[resourceIndex] = 0;
         if (disp->fp_vkResetCommandBuffer(computeCommand, 0) != VK_SUCCESS)
             return false;
         VkCommandBufferBeginInfo computeBegin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -500,7 +528,7 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
             disp->fp_vkCmdBindPipeline(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE, state.computePipeline);
             disp->fp_vkCmdBindDescriptorSets(computeCommand, VK_PIPELINE_BIND_POINT_COMPUTE,
                                              state.computePipelineLayout, 0, 1,
-                                             &state.computeDescriptorSets[imageIndex], 0, nullptr);
+                                             &state.computeDescriptorSets[resourceIndex], 0, nullptr);
             disp->fp_vkCmdPushConstants(computeCommand, state.computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                         sizeof(rect), rect);
             disp->fp_vkCmdDispatch(computeCommand, (bounds.extent.width + 15) / 16,
@@ -512,8 +540,8 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
                                      VK_ACCESS_SHADER_WRITE_BIT, 0);
         if (disp->fp_vkEndCommandBuffer(computeCommand) != VK_SUCCESS)
             return false;
-        state.computeCommandBounds[imageIndex] = currentBounds;
-        state.computeCommandRecorded[imageIndex] = 1;
+        state.computeCommandBounds[resourceIndex] = currentBounds;
+        state.computeCommandRecorded[resourceIndex] = 1;
         computeRecordMissUs = static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeRecordStartUs);
     }
 
@@ -521,8 +549,11 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     graphicsSubmit.commandBufferCount = 1;
     graphicsSubmit.pCommandBuffers = &graphicsCommand;
     graphicsSubmit.signalSemaphoreCount = 1;
-    graphicsSubmit.pSignalSemaphores = &state.offscreenReadySemaphores[imageIndex];
+    graphicsSubmit.pSignalSemaphores = &state.offscreenReadySemaphores[submissionSlot];
     const int64_t graphicsSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
+    VkFence fence = state.fences[submissionSlot];
+    if (disp->fp_vkResetFences(state.device, 1, &fence) != VK_SUCCESS)
+        return false;
     {
         ScopedBorrowedQueueSubmission guard(graphicsTarget.queue);
         if (disp->fp_vkQueueSubmit(graphicsTarget.queue, 1, &graphicsSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
@@ -541,7 +572,7 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
         waits[i] = waitSemaphores[i];
         waitStages[i] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     }
-    waits[waitSemaphoreCount] = state.offscreenReadySemaphores[imageIndex];
+    waits[waitSemaphoreCount] = state.offscreenReadySemaphores[submissionSlot];
     waitStages[waitSemaphoreCount] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo computeSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     computeSubmit.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
@@ -552,13 +583,13 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     computeSubmit.signalSemaphoreCount = 1;
     computeSubmit.pSignalSemaphores = &signalSemaphore;
     const int64_t computeSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
-    if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, state.fences[imageIndex]) != VK_SUCCESS)
+    if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence) != VK_SUCCESS)
         return false;
     const uint64_t computeSubmitUs =
         phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeSubmitStartUs) : 0;
     CommitComputePresentDiagnostics(state, commandReused, phaseSampled, graphicsRecordUs, graphicsSubmitUs,
                                     computeSubmitUs, computeRecordMissUs);
     if (writeTimestamps)
-        state.timestampWritten[imageIndex] = true;
+        state.timestampWritten[submissionSlot] = true;
     return true;
 }

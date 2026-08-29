@@ -161,6 +161,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->colorSpace = pCreateInfo->imageColorSpace;
         sd->extent = pCreateInfo->imageExtent;
         sd->imageUsage = pCreateInfo->imageUsage;
+        sd->presentMode = pFinalCI->presentMode;
 
         uint32_t count = 0;
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, nullptr);
@@ -371,6 +372,55 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     uint32_t currentWaitSemaphoreCount = pPresentInfo ? pPresentInfo->waitSemaphoreCount : 0;
     std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;
+
+    // Frame-generation present metering displaces the swapchain's FIFO rate
+    // contract (see vulkan_present_metering_policy.h). Resolve it before the
+    // overlay work so the down-call is not delayed by anything avoidable: on a
+    // present that carries no metering request this is a single load and one
+    // pointer test.
+    const void* meteringFreePresentChain = nullptr;
+    bool suppressPresentMetering = false;
+    if (pPresentInfo && pPresentInfo->pNext && VulkanLayerState::Get().WantsVblankPacedPresentation()) {
+        const ce::vulkan_present_metering_policy::ChainScan scan =
+            ce::vulkan_present_metering_policy::ScanPresentChain(pPresentInfo->pNext);
+        if (scan.found) {
+            ce::vulkan_present_metering_policy::Input meteringInput = {};
+            meteringInput.vblankPacedPresentationRequested = true;
+            meteringInput.swapchainPresentModeKnown = (sd != nullptr);
+            meteringInput.swapchainPresentMode = sd ? sd->presentMode : VK_PRESENT_MODE_IMMEDIATE_KHR;
+            meteringInput.swapchainCount = pPresentInfo->swapchainCount;
+            meteringInput.meteredFramesPerBatch = scan.framesPerBatch;
+            meteringInput.meteringRequestIsChainHead = scan.isChainHead;
+            const ce::vulkan_present_metering_policy::Decision decision =
+                ce::vulkan_present_metering_policy::Decide(meteringInput);
+            if (decision.suppressMetering) {
+                meteringFreePresentChain = scan.chainWithoutMetering;
+                suppressPresentMetering = true;
+                modified = true;
+            }
+            // One line per state, not per present: activation, a frame
+            // generation multiplier change, or a chain shape CE cannot unlink.
+            if (sd) {
+                const uint32_t logState = (scan.framesPerBatch & 0xFFFFu) | (decision.suppressMetering ? 0x10000u : 0u) |
+                                          (decision.blockedByChainPosition ? 0x20000u : 0u) | 0x80000000u;
+                if (sd->presentMeteringLogState.load(std::memory_order_relaxed) != logState &&
+                    sd->presentMeteringLogState.exchange(logState, std::memory_order_acq_rel) != logState) {
+                    LayerLog(
+                        "Vulkan Layer: frame-generation present metering numFramesPerBatch=%u "
+                        "(swapchain presentMode=%d images=%u chainNodes=%u chainHead=%d) - %s",
+                        scan.framesPerBatch, static_cast<int>(sd->presentMode), sd->imageCount, scan.nodeCount,
+                        scan.isChainHead ? 1 : 0,
+                        decision.suppressMetering
+                            ? "suppressed so the swapchain's vertical-blank pacing stays authoritative"
+                            : (decision.blockedByChainPosition
+                                   ? "NOT suppressed: the request is not the chain head and unlinking it would "
+                                     "write application memory"
+                                   : "left in place: this present mode has no vertical-blank rate contract to defend"));
+                }
+            }
+        }
+    }
+
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
 
         if (sd) {
@@ -379,7 +429,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
             // OPTIMIZATION: Keep overlay/capture queue work GPU-ordered while letting config choose whether
             // screenshots and capture happen before or after overlay submission.
-            VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
+            VkSemaphore overlayDone = VK_NULL_HANDLE;
             OverlayConfig overlayCfg{};
             overlayCfg.captureIncludeOverlay = true;
             overlayCfg.screenshotIncludeOverlay = true;
@@ -406,7 +456,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 int32_t overlayGpuUs = 0;
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
-                                                     currentWaitSemaphoreCount, overlayDone, asyncPresentDetected,
+                                                     currentWaitSemaphoreCount, &overlayDone, asyncPresentDetected,
                                                      &fenceWaitUs, &overlayGpuUs);
                 perfMetrics.overlayGpuUs = overlayGpuUs;
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
@@ -499,6 +549,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
         presentInfoCopy = *pPresentInfo;
+        if (suppressPresentMetering) {
+            // Unlinking the head node needs no write to the application's own
+            // chain: CE's copy simply starts one node later.
+            presentInfoCopy.pNext = meteringFreePresentChain;
+        }
         if (currentWaitSemaphores && currentWaitSemaphoreCount > 0) {
             presentInfoCopy.waitSemaphoreCount = currentWaitSemaphoreCount;
             presentInfoCopy.pWaitSemaphores = currentWaitSemaphores;

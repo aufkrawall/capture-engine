@@ -356,13 +356,19 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
     LayerLog("Vulkan Layer: InitializeOverlay - Render pass created");
 
-    // Create framebuffers, image views, fences, semaphores
-    LayerLog("Vulkan Layer: InitializeOverlay - Creating %d framebuffers...", imageCount);
+    // Swapchain targets stay image-indexed. The command/fence/semaphore ring is
+    // selected independently per present so MFG may present one image
+    // repeatedly without forcing immediate in-flight resource reuse, and it is
+    // deeper than the image count so a generated-frame burst cannot make CE's
+    // own resource recycling the frame pacer (see ResolveSubmissionSlotCount).
+    const uint32_t slotCount = ce::overlay_submit_queue_policy::ResolveSubmissionSlotCount(imageCount);
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating %d framebuffers and %u submission slots...", imageCount,
+             slotCount);
     state.imageViews.resize(imageCount);
     state.framebuffers.resize(imageCount);
-    state.commandBuffers.resize(imageCount);
-    state.fences.resize(imageCount);
-    state.semaphores.resize(imageCount);
+    state.commandBuffers.resize(slotCount);
+    state.fences.resize(slotCount);
+    state.semaphores.resize(slotCount);
 
     for (uint32_t i = 0; i < imageCount; i++) {
         VkImageViewCreateInfo ivInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -380,7 +386,9 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         fbInfo.height = extent.height;
         fbInfo.layers = 1;
         disp->fp_vkCreateFramebuffer(device, &fbInfo, nullptr, &state.framebuffers[i]);
+    }
 
+    for (uint32_t i = 0; i < slotCount; i++) {
         VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &state.fences[i]);
@@ -389,10 +397,10 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
     }
 
-    // Timestamp pair per image index. Optional by construction: a device or a
+    // Timestamp pair per submission slot. Optional by construction: a device or a
     // queue family without usable timestamps just reports 0 for overlay GPU time
     // and everything else keeps working.
-    state.timestampWritten.assign(imageCount, false);
+    state.timestampWritten.assign(slotCount, false);
     state.lastOverlayGpuUs = 0;
     state.timestampPeriodNs = 0.0f;
     if (disp->fp_vkCreateQueryPool && disp->fp_vkCmdWriteTimestamp && disp->fp_vkCmdResetQueryPool &&
@@ -402,7 +410,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         if (props.limits.timestampPeriod > 0.0f) {
             VkQueryPoolCreateInfo queryInfo = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            queryInfo.queryCount = imageCount * 2;
+            queryInfo.queryCount = slotCount * 2;
             if (disp->fp_vkCreateQueryPool(device, &queryInfo, nullptr, &state.timestampPool) == VK_SUCCESS) {
                 state.timestampPeriodNs = props.limits.timestampPeriod;
             } else {
@@ -532,17 +540,6 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     LayerLog("Vulkan Layer: Overlay initialized successfully");
-}
-
-VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex) {
-    std::lock_guard<std::mutex> lock(g_OverlayMutex);
-    auto it = g_OverlayStates.find(device);
-    if (it != g_OverlayStates.end() && it->second.initialized) {
-        if (imageIndex < it->second.semaphores.size()) {
-            return it->second.semaphores[imageIndex];
-        }
-    }
-    return VK_NULL_HANDLE;
 }
 
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device) {

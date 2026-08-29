@@ -11,8 +11,10 @@
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
-                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
+                   uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
                    int32_t* fenceWaitUs, int32_t* overlayGpuUs) {
+    if (signalSemaphoreOut)
+        *signalSemaphoreOut = VK_NULL_HANDLE;
     // Early out if overlay is disabled (use seqlock for consistent read)
     if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
         return false;
@@ -88,6 +90,11 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         !RecreateOverlayCommandResources(state, disp, submitQueueFamily)) {
         return false;
     }
+    const uint32_t slotCount = static_cast<uint32_t>(state.fences.size());
+    if (!signalSemaphoreOut || imageIndex >= state.framebuffers.size() || imageIndex >= state.swapchainImages.size() ||
+        slotCount == 0 || state.commandBuffers.size() != slotCount || state.semaphores.size() != slotCount) {
+        return false;
+    }
 
     // Deferred window hook
     if (state.needsWindowHook) {
@@ -111,53 +118,58 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         ce::overlay_metrics::PublishDetectedOverlayFGMetrics(state.metrics, "Vulkan::RenderOverlay");
     }
 
-    // FENCE WAIT: Wait for GPU to be ready for this buffer
-    // Unlike DX12's value-based fences, Vulkan binary semaphores cannot be reused
-    // until consumed. We MUST wait for the previous overlay work to complete
-    // before we can safely signal the semaphore again.
-    //
-    // This is the only reliable way to prevent flickering with binary semaphores.
-    // The wait time is typically minimal since we use triple buffering.
-    VkFence fence = state.fences[imageIndex];
+    // Submission resources are a global ring, not properties of a swapchain
+    // image. MFG runtimes can present one image repeatedly in a generated-output
+    // burst; binding the ring to imageIndex then waits on the same in-flight
+    // slot while every other slot is idle. Probe from the round-robin cursor and
+    // block only when every slot is truly in flight.
     int64_t fenceStartUs = PerfLogger::GetQpcUs();
-
-    // Wait for GPU with a reasonable timeout (16ms = ~1 frame at 60fps)
-    // This ensures overlay appears every frame (no flickering)
-    constexpr uint64_t FENCE_TIMEOUT_NS = 16000000;  // 16ms
-    VkResult fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
-
+    VkResult probeFailure = VK_SUCCESS;
+    const auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlot(
+        slotCount, state.nextSubmissionSlot, [&](uint32_t candidate) {
+            const VkFence candidateFence = state.fences[candidate];
+            const VkResult result = disp->fp_vkWaitForFences(device, 1, &candidateFence, VK_TRUE, 0);
+            if (result != VK_SUCCESS && result != VK_TIMEOUT)
+                probeFailure = result;
+            return result == VK_SUCCESS;
+        });
+    if (!slotChoice.valid || probeFailure != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Submission-slot fence probe FAILED with result %d", probeFailure);
+        return false;
+    }
+    const uint32_t submissionSlot = slotChoice.index;
+    VkFence fence = state.fences[submissionSlot];
+    VkResult fenceResult = VK_SUCCESS;
+    if (slotChoice.waitForCompletion) {
+        const uint64_t waitNumber = ++state.submissionBackpressureWaits;
+        if (waitNumber <= 8 || (waitNumber & (waitNumber - 1)) == 0) {
+            LayerLog(
+                "Vulkan Layer: All %u overlay submission slots are in flight; waiting for slot %u "
+                "(present image=%u wait=%llu)",
+                slotCount, submissionSlot, imageIndex, static_cast<unsigned long long>(waitNumber));
+        }
+        fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    }
     int64_t fenceEndUs = PerfLogger::GetQpcUs();
     if (fenceWaitUs) {
         *fenceWaitUs = static_cast<int32_t>(fenceEndUs - fenceStartUs);
     }
 
-    if (fenceResult == VK_TIMEOUT) {
-        // Skip this overlay frame instead of force-resetting/reusing an in-flight
-        // command buffer, which can cause transient glyph artifacts.
-        static std::atomic<int> s_timeoutCount{0};
-        int timeouts = ++s_timeoutCount;
-        if (timeouts <= 5) {
-            LayerLog("Vulkan Layer: Fence wait timeout after %d us (buffer %u, timeout=%d)",
-                     static_cast<int>(fenceEndUs - fenceStartUs), imageIndex, timeouts);
-        }
+    if (fenceResult != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Submission-slot fence wait FAILED with result %d (slot %u, image %u)", fenceResult,
+                 submissionSlot, imageIndex);
         return false;
-    } else if (fenceResult != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
-        return false;
-    } else {
-        // Success - reset fence for this frame's work
-        disp->fp_vkResetFences(device, 1, &fence);
     }
+    state.nextSubmissionSlot = (submissionSlot + 1) % slotCount;
+    const VkSemaphore signalSemaphore = state.semaphores[submissionSlot];
 
-    // The fence above already proves the previous submission for this image
-    // index retired, so the timestamp pair it wrote is readable without ever
-    // blocking. Report it as this frame's overlay GPU cost: it is the same
-    // command buffer doing the same work, one trip round the swapchain ago.
-    if (state.timestampPool != VK_NULL_HANDLE && imageIndex < state.timestampWritten.size() &&
-        state.timestampWritten[imageIndex] && disp->fp_vkGetQueryPoolResults) {
+    // The fence above proves this slot's previous submission retired, so its
+    // timestamp pair is readable without another wait.
+    if (state.timestampPool != VK_NULL_HANDLE && submissionSlot < state.timestampWritten.size() &&
+        state.timestampWritten[submissionSlot] && disp->fp_vkGetQueryPoolResults) {
         uint64_t stamps[2] = {0, 0};
         const VkResult queryResult =
-            disp->fp_vkGetQueryPoolResults(device, state.timestampPool, imageIndex * 2, 2, sizeof(stamps), stamps,
+            disp->fp_vkGetQueryPoolResults(device, state.timestampPool, submissionSlot * 2, 2, sizeof(stamps), stamps,
                                            sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
         if (queryResult == VK_SUCCESS && stamps[1] > stamps[0]) {
             const double elapsedNs = static_cast<double>(stamps[1] - stamps[0]) * state.timestampPeriodNs;
@@ -171,16 +183,19 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     if (useComputePresent) {
         bool routeAttempted = false;
         const bool rendered =
-            RenderComputePresentOverlay(state, disp, submitTarget, queue, imageIndex, waitSemaphores,
+            RenderComputePresentOverlay(state, disp, submitTarget, queue, submissionSlot, imageIndex, waitSemaphores,
                                         waitSemaphoreCount, signalSemaphore, &routeAttempted);
-        if (routeAttempted)
+        if (routeAttempted) {
+            if (rendered)
+                *signalSemaphoreOut = signalSemaphore;
             return rendered;
+        }
         // Resource creation/recording failed before either queue saw work. The
         // direct graphics path below remains a safe per-frame fallback.
     }
 
     // Record command buffer
-    VkCommandBuffer cmd = state.commandBuffers[imageIndex];
+    VkCommandBuffer cmd = state.commandBuffers[submissionSlot];
     disp->fp_vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -190,10 +205,11 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return false;
 
     const bool writeTimestamps = state.timestampPool != VK_NULL_HANDLE && disp->fp_vkCmdResetQueryPool &&
-                                 disp->fp_vkCmdWriteTimestamp && imageIndex < state.timestampWritten.size();
+                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampWritten.size();
     if (writeTimestamps) {
-        disp->fp_vkCmdResetQueryPool(cmd, state.timestampPool, imageIndex * 2, 2);
-        disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool, imageIndex * 2);
+        disp->fp_vkCmdResetQueryPool(cmd, state.timestampPool, submissionSlot * 2, 2);
+        disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool,
+                                     submissionSlot * 2);
     }
 
     // No explicit layout barriers around the render pass. It declares
@@ -238,7 +254,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
 
     if (writeTimestamps) {
         disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, state.timestampPool,
-                                     imageIndex * 2 + 1);
+                                     submissionSlot * 2 + 1);
     }
 
     disp->fp_vkEndCommandBuffer(cmd);
@@ -264,17 +280,24 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     // A borrowed queue is the game's, and VkQueue is externally synchronized:
     // hold the same lock the layer's own vkQueueSubmit wrappers take for it.
     (void)borrowedSubmitQueue;
+    if (disp->fp_vkResetFences(device, 1, &fence) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Failed to reset overlay submission fence (slot %u, image %u)", submissionSlot,
+                 imageIndex);
+        return false;
+    }
     VkResult submitResult = VK_SUCCESS;
     {
         ScopedBorrowedQueueSubmission submissionGuard(submitQueue);
         submitResult = disp->fp_vkQueueSubmit(submitQueue, 1, &submitInfo, fence);
     }
     if (submitResult != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
+        LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (slot %u, image %u)", submitResult,
+                 submissionSlot, imageIndex);
         return false;
     }
     if (writeTimestamps) {
-        state.timestampWritten[imageIndex] = true;
+        state.timestampWritten[submissionSlot] = true;
     }
+    *signalSemaphoreOut = signalSemaphore;
     return true;
 }

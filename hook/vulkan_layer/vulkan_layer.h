@@ -178,6 +178,10 @@ struct SwapchainData {
     VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D extent = {0, 0};
     VkImageUsageFlags imageUsage = 0;
+    // The mode the swapchain was created with, which is CE's overridden one
+    // rather than the one the game asked for. The present hook needs it to know
+    // whether this swapchain carries a vertical-blank rate contract at all.
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
     uint32_t imageCount = 0;
     std::vector<VkImage> images;
     HWND window = nullptr;
@@ -193,6 +197,10 @@ struct SwapchainData {
     std::atomic<VkQueue> prerenderProducerQueue{VK_NULL_HANDLE};
     std::atomic<bool> prerenderOnProducerSubmit{false};
     std::atomic<uint32_t> prerenderTopologySamples{0};
+    // Last logged frame-generation present-metering state for this swapchain,
+    // so activation and multiplier changes are visible without logging a line
+    // per present. 0 means nothing has been logged yet.
+    std::atomic<uint32_t> presentMeteringLogState{0};
 };
 
 // Singleton state manager
@@ -319,6 +327,12 @@ public:
     const char* GetVsyncMode() const {
         return m_VsyncMode.c_str();
     }
+    // Snapshot of the same decision for the present hook. GetVsyncMode() hands
+    // out a pointer into a std::string that a config republish rewrites, which
+    // is fine at swapchain creation and not fine once per present.
+    bool WantsVblankPacedPresentation() const {
+        return m_VblankPacedPresentation.load(std::memory_order_acquire);
+    }
     int32_t GetBackbufferCount() const {
         return m_BackbufferCount;
     }
@@ -373,6 +387,7 @@ private:
     std::string m_MipMapping;
     std::string m_SamplerOverrideMode;
     std::string m_VsyncMode;
+    std::atomic<bool> m_VblankPacedPresentation{false};
     int32_t m_BackbufferCount;
     float m_PrerenderLimit;
 };
@@ -439,9 +454,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                        uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
-                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, bool gameSubmitsConcurrently,
+                   uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
                    int32_t* fenceWaitUs = nullptr, int32_t* overlayGpuUs = nullptr);
-VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,

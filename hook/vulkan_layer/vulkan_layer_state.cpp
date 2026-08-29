@@ -674,6 +674,8 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     // VSync mode
     m_VsyncMode = cfg.vsyncMode;
+    m_VblankPacedPresentation.store(
+        ce::vulkan_present_metering_policy::RequestsVblankPacedPresentation(m_VsyncMode), std::memory_order_release);
 
     // Backbuffer count
     m_BackbufferCount = cfg.backbufferCount;

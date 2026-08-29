@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-29 (Reflex driver interval is frame-generation aware)
+Last cross-checked: 2026-08-29 (Vulkan FIFO vs. frame-generation present metering; overlay ring depth)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -13,8 +13,8 @@ Primary sources:
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
 - `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,layer_hooks,vulkan_reflex_limiter}.*`
-- `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy}.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy}.cpp`
+- `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 
 ## Configuration contract
 
@@ -214,6 +214,27 @@ Primary sources:
   `vkQueueSubmit2`, `vkQueueSubmit2KHR` wrappers, the capture/screenshot submits and the prerender marker
   ring - passes through one lock. `ShouldSerializeQueueSubmission` makes that a single relaxed atomic load
   for every other queue in the process. Lock order is always overlay state -> borrowed queue.
+- **The submission ring must be deeper than the swapchain, or CE becomes the frame pacer.** An overlay
+  submission waits on the present's own wait semaphores and retires only once they are signalled; a
+  frame-generation runtime signals those from its pacer, one display interval apart, while handing CE the whole
+  generated group as a burst. Submissions therefore arrive at burst cadence and retire at display cadence, and a
+  ring sized at the image count is exhausted every group - with the wait sitting *before* the present down-call.
+  Portal RTX session `20260829_153457` measured it: 6 images, 6 slots, 4x MFG, `fence_wait_us` blocking the
+  game's present thread for **941 ms of every second** (7.5 ms on the first present of a group, 19-26 ms on the
+  last), and `All 6 overlay submission slots are in flight` hundreds of times. The presented rate was exactly the
+  143 Hz refresh rate, but the *rendered* frame period beat between 2 and 6 vertical blanks in a repeating
+  six-group pattern - the 6-slot ring aliasing against the 4-present group. Generated frames carry scene time, so
+  an uneven base period is visible judder even when every vertical blank receives a new image.
+  `ResolveSubmissionSlotCount` therefore sizes the ring at `imageCount + 4`: one full generated group beyond
+  everything the runtime can already have outstanding, where 4 is the DLSS multi-frame-generation maximum
+  (4 presented frames per rendered frame) rather than a tuned depth. It is deliberately small because on the
+  compute-composite path every slot also owns a full-resolution offscreen target. `framebuffers`/`imageViews`
+  stay image-indexed; `commandBuffers`/`fences`/`semaphores`/`timestampWritten` and the timestamp query pool
+  follow the slot count.
+  - Diagnosing a recurrence needs no new instrumentation: `fence_wait_us` and `pre_present_us` in the perf CSV
+    are the ground truth, and the `All N overlay submission slots are in flight` line fires on a power-of-two
+    cadence. **Stale-risk:** the depth is validated against one title at 4x MFG; a runtime that runs further
+    ahead would show the same signature again.
 - Capture and screenshots need only `VK_QUEUE_TRANSFER_BIT` and keep using the present queue.
 - Open boundary: direct-path swapchain-image transitions use `VK_QUEUE_FAMILY_IGNORED`, i.e. no queue-family
   ownership transfer, matching what a game itself does when it renders on one family and presents on another.
@@ -255,6 +276,57 @@ Primary sources:
   overlay, capture, or limiter work. The restriction preserves the ICD presenter-thread destruction invariant below.
   Its Present hot path reads only atomics. No driver profile/DRS write, timer, Reflex cap, refresh-derived cap, or
   Acquire-side group pacing is a VSync fallback.
+
+## Vulkan FIFO vs. frame-generation present metering
+
+- **The reason an accepted FIFO swapchain still ran past the refresh rate: `VK_NV_present_metering` is a second,
+  competing pacing authority for the same presents, and it wins.** The application chains `VkSetPresentConfigNV`
+  (`sType` 1000613000) onto `VkPresentInfoKHR` and asks the driver to spread `numFramesPerBatch` images evenly across
+  one *rendered* frame interval, which is how multi-frame generation places its generated frames. That interval is
+  derived from the base frame rate and knows nothing about the display, so on a metered present the driver stops
+  applying the swapchain's vertical-blank wait and the output rate becomes base x `numFramesPerBatch`.
+- Portal RTX session `20260829_022419` is the end-to-end proof, and it is the explanation for the earlier
+  `20260828_162056` result above. CE overrode Immediate to FIFO and the driver accepted it (`Overriding present mode
+  0 -> 2 (fifo)`, `vkCreateSwapchainKHR driver returned: 0 (presentMode=2 ...)`), yet `perf_metrics_29472.csv` shows
+  presents climbing to 172/s on a 143 Hz display, arriving as bursts of four inside ~700 us followed by a ~23 ms gap:
+  a 43 FPS base rate times the configured 4x MFG (`rtx.conf` has `rtx.dlfg.maxInterpolatedFrames = 3`, and
+  `hook_debug.log` reports `live EvaluateFeature parameters report 4x output`). The DXGI interception saw the switch
+  from below - with frame generation off the driver presented the FIFO swapchain with `SyncInterval=1`, and the
+  moment the DLFG swapchain went live it presented with `SyncInterval=0` plus `DXGI_PRESENT_ALLOW_TEARING`. Forcing
+  the sync interval back removed the tearing but could not reintroduce the missing wait, which is exactly the reported
+  symptom: no tearing, mailbox behavior, frame rate above the refresh rate. Counting confirms the presents are not
+  dropped anywhere in between: the interval between the DXGI `final Present1 #1024` and `#2048` cadence lines contains
+  exactly 1024 `vkQueuePresentKHR` calls, so app present, driver present, and display path are 1:1.
+- RTX Remix documents both halves of this itself, in its own binary strings: `rtx.dlfg.enablePresentMetering` is
+  "Use hardware present metering for DLSS 4.0 frame generation instead of CPU pacing", and its V-Sync option carries
+  "When Frame Generation is active, V-Sync is automatically disabled". Hardware metering therefore has a supported
+  fallback - the runtime's own `DxvkDLFGPresenter` CPU pacer - and Remix deliberately presents with Immediate under
+  frame generation, which is why CE sees the mode flip to 0 on exactly the swapchain generation DLFG creates.
+- **Fix (`hook/vulkan_layer/vulkan_present_metering_policy.h`): when the profile explicitly asks for
+  vertical-blank-paced presentation, the layer removes the metering request from the present chain.** The swapchain's
+  FIFO mode is then the single pacing authority again: the frames of a generated group land on consecutive vertical
+  blanks, which is evenly paced and rate-limited by construction, and ordinary present backpressure lowers the base
+  rate to refresh / `numFramesPerBatch`. No timer, no synthetic cap, no Reflex interval is involved.
+- Conditions, all of them required: `vsync_mode` is `fifo` or `adaptive`; the presented swapchain is one the layer
+  tracks and was created with FIFO or FIFO_RELAXED (`SwapchainData::presentMode` records the mode CE passed to the
+  driver, not the one the game asked for); `swapchainCount == 1`; and `numFramesPerBatch >= 2`. A single-frame batch
+  asks for nothing FIFO does not already guarantee, and Immediate/Mailbox have no rate contract to defend.
+- **The chain node can only be unlinked when it is the head.** A `pNext` chain is application-owned and `const`, so
+  removing a deeper node would mean writing the predecessor's `pNext` in the game's memory. CE points its own
+  `VkPresentInfoKHR` copy one node further instead, and reports the deeper case
+  (`NOT suppressed: the request is not the chain head`) rather than silently doing nothing. Remix chains the metering
+  request as the only node, so the head case is the real one.
+- The struct is mirrored locally in the policy header rather than taken from `<vulkan/vulkan.h>`: the Linux MSYS2
+  headers in this tree still predate `VK_NV_present_metering` while the Windows ones define it, and `static_assert`s
+  pin the mirror to the real declaration wherever the header has it.
+- Diagnostics: `vulkan_layer.log` logs one `frame-generation present metering numFramesPerBatch=N ... - suppressed`
+  line per state (activation, multiplier change, or a chain shape CE cannot unlink), never per present. The
+  end-to-end confirmation is on the DXGI side: `hook_debug.log`'s `Vulkan DXGI FIFO: final Present1 #N` lines should
+  report `SyncInterval=1->1 Flags=0x0->0x0` once the driver honors FIFO again, instead of `SyncInterval=0->1
+  Flags=0x200->0x0`. **Unverified claim / stale-risk:** present metering being the *only* mechanism that displaces
+  FIFO here is inferred from that `SyncInterval` transition plus Remix's own option text; Remix also marks its DLFG
+  present queue out of band (`NvLL_VK_NotifyOutOfBandQueue`), which has not been excluded. If a session still shows
+  `SyncInterval=0->1` after the metering line reports `suppressed`, that is the remaining candidate.
 
 ## Vulkan swapchain image count (`backbuffer_count`)
 

@@ -1,5 +1,67 @@
 # llm-wiki Log
 
+### 2026-08-29 - FIFO vsync held the rate but CE's overlay ring became the frame pacer
+
+Follow-up run `20260829_153457` on the present-metering fix below. `vulkan_layer.log` confirms the mechanism
+exactly as predicted - `frame-generation present metering numFramesPerBatch=4 (swapchain presentMode=2 images=6
+chainNodes=1 chainHead=1) - suppressed` - and `perf_metrics_11660.csv` now shows 143-146 presents/s against the
+143 Hz refresh instead of 172. Rate: fixed. Pacing: not yet.
+
+The residual judder is CE's own. `fence_wait_us` blocks the game's present thread for **941 ms of every second**:
+7.5 ms on the first present of each 4x generated group and 19-26 ms on the last, all of it *before* the present
+down-call (`pre_present_us` carries the same numbers, `present_call_us` stays at 40-90 us). `vulkan_layer.log`
+reports `All 6 overlay submission slots are in flight` hundreds of times. The rendered frame period then beat
+between 2 and 6 vertical blanks in a repeating six-group pattern - a 6-slot ring aliasing against a 4-present
+group - and because generated frames carry scene time, an uneven base period is judder even though every vertical
+blank received a new image.
+
+Root cause: an overlay submission waits on the present's own wait semaphores and retires only when they are
+signalled. A frame-generation runtime signals those from its pacer, one display interval apart, while handing CE
+the whole group as a burst - so submissions arrive at burst cadence and retire at display cadence, and a ring
+sized at the swapchain image count is exhausted every group. The same signature is already visible in the
+uncapped session `20260829_022419` (18% of presents blocked, up to 18.9 ms); FIFO only promoted it to the
+dominant pacing authority.
+
+Fix: `ResolveSubmissionSlotCount` sizes the ring at `imageCount + 4` - one full generated group beyond everything
+the runtime can already have outstanding, 4 being the DLSS multi-frame-generation maximum rather than a tuned
+depth, kept small because each slot also owns a full-resolution offscreen target on the compute-composite path.
+`framebuffers`/`imageViews` stay image-indexed; the command/fence/semaphore ring, `timestampWritten` and the
+timestamp query pool follow the slot count. Coverage in `tests/test_overlay_submit_queue_policy.cpp`: the sizing
+rule including the zero and overflow edges, plus a replay of the failing shape (six outstanding presents, a fresh
+4x group) asserting no slot choice asks for backpressure. Real-game verification pending; the confirmation signal
+is `fence_wait_us` collapsing to microseconds and the group period settling on 4 vertical blanks.
+
+### 2026-08-29 - Portal RTX `vsync_mode=fifo` behaved like mailbox: frame-generation present metering
+
+`vsync_mode=fifo` prevented tearing but not a frame rate above the 143 Hz refresh. Session `20260829_022419`
+settles why. CE forced Remix's Immediate swapchain to FIFO and the driver accepted it, yet
+`perf_metrics_29472.csv` climbs to 172 presents/s, delivered as bursts of four inside ~700 us with a ~23 ms gap:
+43 FPS base x the configured 4x MFG (`rtx.dlfg.maxInterpolatedFrames = 3`). The DXGI interception recorded the
+decisive transition - with frame generation off the driver presented the FIFO swapchain with `SyncInterval=1`, and
+on the swapchain generation DLFG created it presented with `SyncInterval=0` plus `DXGI_PRESENT_ALLOW_TEARING`.
+Present counts are 1:1 (exactly 1024 `vkQueuePresentKHR` calls between the `final Present1 #1024` and `#2048`
+cadence lines), so nothing was being dropped in between; the vertical-blank wait was simply not being applied.
+
+Root cause: `VK_NV_present_metering` is a competing pacing authority for the same presents. Remix chains
+`VkSetPresentConfigNV` with `numFramesPerBatch = 4` and asks the driver to spread the batch across one *rendered*
+frame interval - an interval derived from the base rate that knows nothing about the display - so the driver drops
+the swapchain's FIFO wait. Remix's own strings state both halves: `rtx.dlfg.enablePresentMetering` is "Use hardware
+present metering for DLSS 4.0 frame generation instead of CPU pacing", and its V-Sync option says "When Frame
+Generation is active, V-Sync is automatically disabled".
+
+Fix: `hook/vulkan_layer/vulkan_present_metering_policy.h` removes the metering request from the present chain when
+the profile asked for `fifo`/`adaptive` **and** the tracked swapchain really was created FIFO/FIFO_RELAXED, a single
+swapchain is presented, and `numFramesPerBatch >= 2`. FIFO is then the only pacing authority: the group's frames land
+on consecutive vertical blanks and backpressure lowers the base rate to refresh / N - no timer, cap, or Reflex
+interval. The node is unlinked only when it is the chain head, because a deeper one would mean writing the game's
+own `const` chain; that case is logged rather than forced. Hardware metering has a documented fallback (Remix's own
+`DxvkDLFGPresenter` CPU pacer), so nothing is left unpaced.
+
+Coverage: `tests/test_vulkan_present_metering_policy.cpp` (16 cases: both discriminators, every decline reason, chain
+scan including head/deeper/self-referential). Real-game verification in Portal RTX is still pending; the confirmation
+signal is `hook_debug.log` reporting `SyncInterval=1->1 Flags=0x0->0x0` on the final DXGI present once
+`vulkan_layer.log` says `frame-generation present metering ... suppressed`.
+
 ### 2026-08-29 - Reflex FPS limiter capped Portal RTX at target/multiplier
 
 `general_limiter_mode=reflex` with a 130 fps cap and 3x DLSS MFG limited Portal with RTX Remix to 43 fps;

@@ -90,6 +90,74 @@ struct ComputeCompositeBounds {
     uint32_t height = 0;
 };
 
+struct SubmissionSlotChoice {
+    uint32_t index = 0;
+    bool valid = false;
+    bool waitForCompletion = false;
+};
+
+// How deep the submission ring has to be, which is *not* the swapchain image
+// count.
+//
+// An overlay submission waits on the present's own wait semaphores and retires
+// only once they are signalled. A frame-generation runtime signals those from
+// its pacer, one display interval apart, while it hands CE the whole generated
+// group as a burst - so submissions arrive at burst cadence and retire at
+// display cadence. A ring sized at the image count is then exhausted every
+// group, and because the wait sits *before* the present down-call, CE's own
+// resource recycling becomes the frame pacer.
+//
+// Portal RTX session `20260829_153457` is that failure, measured: with 6 images,
+// 6 slots and 4x multi-frame generation, `perf_metrics_11660.csv` shows
+// `fence_wait_us` blocking the game's present thread for 941 ms of every
+// second - 7.5 ms on the first present of each group and 19-26 ms on the last -
+// and `vulkan_layer.log` reports "All 6 overlay submission slots are in flight"
+// hundreds of times. The presented rate stayed exactly at the 143 Hz refresh
+// rate, but the *rendered* frame period beat between 2 and 6 vertical blanks in
+// a repeating six-group pattern, which is the 6-slot ring aliasing against the
+// 4-present group. Generated frames carry scene time, so an uneven base period
+// is visible judder even when every vertical blank gets a new image.
+//
+// The extra depth is one full generated group beyond everything the runtime can
+// already have outstanding: a rendered frame becomes at most four presented
+// frames (DLSS multi-frame generation tops out at 4x), and those four are
+// submitted together while retiring one display interval apart. That is a
+// protocol maximum, not a tuned depth, and it is deliberately small: on the
+// compute-composite path each slot also owns a full-resolution offscreen target.
+inline constexpr uint32_t kGeneratedFrameBurstSlots = 4;
+
+inline uint32_t ResolveSubmissionSlotCount(uint32_t imageCount) noexcept {
+    if (imageCount == 0)
+        return 0;
+    if (imageCount > UINT32_MAX - kGeneratedFrameBurstSlots)
+        return UINT32_MAX;
+    return imageCount + kGeneratedFrameBurstSlots;
+}
+
+// A generated-output runtime may present the same swapchain image several
+// times in succession. Submission resources therefore cannot be selected by
+// image identity: doing so immediately reuses that image's in-flight fence,
+// command buffer and binary semaphore while every other slot sits idle.
+// Prefer the next retired slot, scan the rest only when necessary, and apply
+// backpressure to the oldest slot only when the entire ring is genuinely busy.
+template <typename IsReady>
+inline SubmissionSlotChoice ChooseSubmissionSlot(uint32_t slotCount, uint32_t nextSlot, IsReady&& isReady) {
+    if (slotCount == 0)
+        return {};
+    const uint32_t first = nextSlot % slotCount;
+    for (uint32_t offset = 0; offset < slotCount; ++offset) {
+        const uint32_t candidate = (first + offset) % slotCount;
+        if (isReady(candidate))
+            return {candidate, true, false};
+    }
+    return {first, true, true};
+}
+
+inline uint32_t ComputeCompositeResourceIndex(uint32_t submissionSlot, uint32_t imageIndex,
+                                              uint32_t imageCount) noexcept {
+    return submissionSlot * imageCount + imageIndex;
+}
+
 // The final compute command buffer contains only per-image resources and this
 // occupied rectangle. Once its fence has retired, Vulkan permits resubmitting
 // the executable command buffer without recording it again. Dynamic overlay

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "../hook/vulkan_layer/overlay_submit_queue_policy.h"
 #include "../hook/vulkan_layer/vulkan_prerender_policy.h"
@@ -23,13 +24,17 @@ namespace {
 using ce::overlay_submit_queue_policy::CanReserveOverlayQueue;
 using ce::overlay_submit_queue_policy::CanReuseComputeCompositeCommand;
 using ce::overlay_submit_queue_policy::CanWidenQueueCreateEntry;
+using ce::overlay_submit_queue_policy::ChooseSubmissionSlot;
 using ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ChooseIndependentGraphicsQueue;
+using ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex;
 using ce::overlay_submit_queue_policy::ComputeCompositeBounds;
 using ce::overlay_submit_queue_policy::ComputePresentAvailability;
 using ce::overlay_submit_queue_policy::OverlaySubmitQueue;
+using ce::overlay_submit_queue_policy::kGeneratedFrameBurstSlots;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueueIndex;
 using ce::overlay_submit_queue_policy::ReservedOverlayQueuePriority;
+using ce::overlay_submit_queue_policy::ResolveSubmissionSlotCount;
 using ce::overlay_submit_queue_policy::ShouldSerializeSubmissionsOnQueue;
 using ce::overlay_submit_queue_policy::ShouldUseComputePresent;
 using ce::overlay_submit_queue_policy::SubmitQueueAvailability;
@@ -169,6 +174,84 @@ TEST(OverlaySubmitQueuePolicyTest, ComputeCommandReuseRequiresIdenticalRecordedB
     EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 51, 640, 240}));
     EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 50, 641, 240}));
     EXPECT_FALSE(CanReuseComputeCompositeCommand(true, bounds, {100, 50, 640, 241}));
+}
+
+// Portal RTX session 20260828_231355: 4x MFG submits four generated-output
+// presents for one swapchain image. Image-indexed submission resources waited
+// on that same in-flight fence and hit the old 16 ms skip path while five slots
+// remained idle.
+TEST(OverlaySubmitQueuePolicyTest, SubmissionSlotsRotateIndependentlyFromSwapchainImages) {
+    bool ready[6] = {true, true, true, true, true, true};
+    uint32_t next = 0;
+    for (uint32_t output = 0; output < 4; ++output) {
+        const auto choice = ChooseSubmissionSlot(6, next, [&](uint32_t slot) { return ready[slot]; });
+        ASSERT_TRUE(choice.valid);
+        EXPECT_EQ(choice.index, output);
+        EXPECT_FALSE(choice.waitForCompletion);
+        ready[choice.index] = false;
+        next = (choice.index + 1) % 6;
+    }
+}
+
+TEST(OverlaySubmitQueuePolicyTest, SubmissionSlotSelectionSkipsBusySlotsAndBackpressuresOnlyWhenFull) {
+    bool someReady[4] = {false, false, true, false};
+    const auto available = ChooseSubmissionSlot(4, 0, [&](uint32_t slot) { return someReady[slot]; });
+    ASSERT_TRUE(available.valid);
+    EXPECT_EQ(available.index, 2u);
+    EXPECT_FALSE(available.waitForCompletion);
+
+    const auto full = ChooseSubmissionSlot(4, 3, [](uint32_t) { return false; });
+    ASSERT_TRUE(full.valid);
+    EXPECT_EQ(full.index, 3u);
+    EXPECT_TRUE(full.waitForCompletion);
+    EXPECT_FALSE(ChooseSubmissionSlot(0, 0, [](uint32_t) { return true; }).valid);
+}
+
+// Portal RTX session 20260829_153457: with `vsync_mode=fifo` finally holding the
+// presented rate at the 143 Hz refresh, a ring sized at the 6 swapchain images
+// blocked the game's present thread for 941 ms of every second (7.5 ms on the
+// first present of each 4x generated group, 19-26 ms on the last) and made CE
+// the frame pacer. The rendered frame period then beat between 2 and 6 vertical
+// blanks, which is visible judder because generated frames carry scene time.
+TEST(OverlaySubmitQueuePolicyTest, SubmissionRingIsDeeperThanTheSwapchainImageCount) {
+    // One full generated group of headroom beyond everything the runtime can
+    // already have outstanding.
+    EXPECT_EQ(ResolveSubmissionSlotCount(6), 6u + kGeneratedFrameBurstSlots);
+    EXPECT_EQ(ResolveSubmissionSlotCount(2), 2u + kGeneratedFrameBurstSlots);
+    EXPECT_EQ(ResolveSubmissionSlotCount(3), 3u + kGeneratedFrameBurstSlots);
+    // DLSS multi-frame generation tops out at four presented frames per rendered
+    // frame, so the headroom is a protocol maximum rather than a tuned depth.
+    EXPECT_EQ(kGeneratedFrameBurstSlots, 4u);
+    // No swapchain, no ring.
+    EXPECT_EQ(ResolveSubmissionSlotCount(0), 0u);
+    // A degenerate image count must not wrap the ring size back to nothing.
+    EXPECT_EQ(ResolveSubmissionSlotCount(UINT32_MAX), UINT32_MAX);
+}
+
+TEST(OverlaySubmitQueuePolicyTest, DeeperRingAbsorbsAFullGeneratedGroupWithoutBackpressure) {
+    // The failing shape, replayed: six presents still outstanding (their wait
+    // semaphores are released by the runtime's pacer, one display interval
+    // apart) while a fresh 4x group arrives as a burst.
+    const uint32_t slotCount = ResolveSubmissionSlotCount(6);
+    std::vector<bool> ready(slotCount, true);
+    for (uint32_t outstanding = 0; outstanding < 6; ++outstanding)
+        ready[outstanding] = false;
+
+    uint32_t next = 6;
+    for (uint32_t generated = 0; generated < 4; ++generated) {
+        const auto choice = ChooseSubmissionSlot(slotCount, next, [&](uint32_t slot) { return ready[slot]; });
+        ASSERT_TRUE(choice.valid);
+        EXPECT_FALSE(choice.waitForCompletion) << "generated frame " << generated << " stalled the present thread";
+        ready[choice.index] = false;
+        next = (choice.index + 1) % slotCount;
+    }
+}
+
+TEST(OverlaySubmitQueuePolicyTest, ComputeResourcesCacheEverySlotAndImagePair) {
+    EXPECT_EQ(ComputeCompositeResourceIndex(0, 0, 6), 0u);
+    EXPECT_EQ(ComputeCompositeResourceIndex(0, 5, 6), 5u);
+    EXPECT_EQ(ComputeCompositeResourceIndex(1, 0, 6), 6u);
+    EXPECT_EQ(ComputeCompositeResourceIndex(5, 5, 6), 35u);
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, OverlaySubmitsOnTheResolvedQueueNotThePresentQueue) {
@@ -412,6 +495,28 @@ TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentCompositesOnThePresentQue
     EXPECT_NE(spirv.find("g_ComputeCompositeShaderSpv"), std::string::npos);
     EXPECT_NE(generator.find("overlay_composite.comp"), std::string::npos)
         << "the checked-in payload must remain reproducible and SPIR-V validated";
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, GeneratedPresentsUseAGlobalSubmissionSlotRingWithoutTimeoutSkips) {
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    ASSERT_FALSE(render.empty());
+    ASSERT_FALSE(compute.empty());
+    ASSERT_FALSE(present.empty());
+
+    EXPECT_NE(render.find("ChooseSubmissionSlot"), std::string::npos);
+    EXPECT_EQ(render.find("FENCE_TIMEOUT_NS"), std::string::npos)
+        << "a healthy in-flight slot must not turn into a missing overlay frame after a wall-clock timeout";
+    EXPECT_EQ(render.find("state.fences[imageIndex]"), std::string::npos);
+    EXPECT_EQ(render.find("state.commandBuffers[imageIndex]"), std::string::npos);
+    EXPECT_NE(render.find("UINT64_MAX"), std::string::npos)
+        << "only a genuinely full slot ring applies correctness backpressure";
+    EXPECT_NE(compute.find("ComputeCompositeResourceIndex"), std::string::npos);
+    EXPECT_NE(compute.find("state.commandBuffers[submissionSlot]"), std::string::npos);
+    EXPECT_NE(compute.find("state.offscreenFramebuffers[submissionSlot]"), std::string::npos);
+    EXPECT_EQ(present.find("GetOverlaySemaphore"), std::string::npos)
+        << "the signal semaphore must come from the selected submission slot, not swapchain image identity";
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentIsCapabilityGatedAndKeepsTheGraphicsFallback) {
