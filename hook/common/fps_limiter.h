@@ -224,6 +224,7 @@ private:
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
     bool lastFGActive_ = false;                              // Include FG activation in cadence transitions
     int lastFGMultiplier_ = 1;                              // Re-arm immediately when MFG factor changes
+    int lastNativeDriverTargetFps_ = 0;                      // Interval handed to a driver-owned low-latency cap
     int nativeApiRecheckCounter_ = 0;                        // Frame counter for periodic native API re-check
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter

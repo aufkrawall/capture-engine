@@ -94,7 +94,11 @@ TEST_F(FpsLimiterTest, ExplicitNativeModeUsesApiBackendAfterPresent) {
     limiter.Shutdown();
 }
 
-TEST_F(FpsLimiterTest, VulkanNativeTargetScalesToBaseRateForMfg) {
+// The Vulkan low-latency interval belongs to the NVIDIA driver, which stretches
+// the render loop by the DLSS-G/MFG factor itself, so it takes the configured
+// OUTPUT rate. Handing it the FG-divided base target capped Portal RTX at
+// target/multiplier displayed fps.
+TEST_F(FpsLimiterTest, VulkanNativeTargetStaysTheOutputRateForMfg) {
     MockNativePacingBackend mock;
     limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -105,7 +109,7 @@ TEST_F(FpsLimiterTest, VulkanNativeTargetScalesToBaseRateForMfg) {
 
     limiter.Apply(true);
 
-    EXPECT_EQ(mock.targetFps, 30);
+    EXPECT_EQ(mock.targetFps, 90);
     limiter.CancelPostPresentPacing();
     g_FGCompat.SetDLSSFGActive(false);
     limiter.Shutdown();

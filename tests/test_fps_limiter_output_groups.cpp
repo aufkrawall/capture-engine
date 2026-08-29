@@ -234,6 +234,41 @@ TEST(FpsLimiterOutputGroupPolicyTest, ResolveHelpersClampAndGateOnCaptureSource)
     EXPECT_EQ(ResolveCadenceScaleMultiplier(true, 9, true), 4);
 }
 
+// A driver-owned low-latency interval that already accounts for NVIDIA's own
+// generated frames must be handed the OUTPUT rate, not CE's FG-divided base
+// target. Portal RTX (130 cap, 3x MFG) handed the driver 43, the driver paced
+// the render loop at 43/3 fps and the game displayed 43 fps.
+TEST(FpsLimiterOutputGroupPolicyTest, NativeDriverPacingTargetIsTheFrameGenerationAwareOutputRate) {
+    using ce::fg_runtime::RuntimeMode;
+    using ce::fps_limiter_policy::DriverLowLatencyIntervalCoversGeneratedFrames;
+    using ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps;
+
+    EXPECT_TRUE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kDLSSFG));
+    EXPECT_TRUE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kNvidiaSmoothMotion));
+    EXPECT_FALSE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kFSRFG))
+        << "the NVIDIA driver cap never sees third-party generated frames";
+    EXPECT_FALSE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kUnknown));
+    EXPECT_FALSE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(DriverLowLatencyIntervalCoversGeneratedFrames(RuntimeMode::kOff));
+
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 43, true, 3, true, true), 130)
+        << "Portal RTX: the driver interval denotes displayed frames";
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 65, true, 2, true, false), 65)
+        << "FSR FG keeps the render-loop base target";
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 130, false, 1, true, true), 130);
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 130, true, 1, true, true), 130);
+
+    // Inject capture sync configures the application-rendered rate, so the
+    // output rate the driver interval expects is base * multiplier.
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(60, 60, true, 3, false, true), 180);
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(60, 60, true, 9, false, true), 240) << "multiplier clamped to 4x";
+
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(0, 0, true, 3, true, true), 0);
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(-5, -5, true, 3, true, true), -5);
+    EXPECT_EQ(ResolveNativeDriverPacingTargetFps(INT_MAX, INT_MAX, true, 3, false, true), INT_MAX)
+        << "the output-rate multiplication must not overflow";
+}
+
 // ---------------------------------------------------------------------------
 // Integration through FpsLimiter::Apply()
 // ---------------------------------------------------------------------------
@@ -400,7 +435,7 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
 
     limiter.Apply(true, true);  // owner: arms the native backend + pending post-present sleep
     EXPECT_EQ(mock.setTargetCalls, 1);
-    EXPECT_EQ(mock.targetFps, 80) << "integer driver API keeps the floored base target";
+    EXPECT_EQ(mock.targetFps, 240) << "the DLSS-G-aware driver interval takes the output rate";
     EXPECT_EQ(mock.sleepCalls, 0);
 
     limiter.Apply(true, true);  // generated slot
@@ -454,6 +489,80 @@ TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     EXPECT_GE(injectMs, 3.0);
     EXPECT_LT(injectMs, 15.0) << "inject capture sync must not scale the cadence by the FG multiplier";
 
+    mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
+    g_FGCompat.SetDLSSFGMultiplier(0);
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+// Regression (Portal with RTX Remix): a 130 fps general cap in reflex mode with
+// DLSS MFG 3x active. CE handed the driver's own low-latency interval the
+// FG-divided base target (43), and because that interval is itself frame
+// generation aware the driver paced the render loop at 43/3 = 14.3 fps and the
+// game displayed 43 fps instead of 130.
+TEST_F(FpsLimiterTest, NativeDriverPacingReceivesOutputRateUnderDlssFrameGeneration) {
+    MockNativePacingBackendState mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(130);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    g_FGCompat.SetDLSSFGMultiplier(3);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply(true, true);
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.targetFps, 130) << "the driver stretches the render loop by the MFG factor itself";
+
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
+    g_FGCompat.SetDLSSFGMultiplier(0);
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+// Third-party frame generation is invisible to the NVIDIA driver's interval: it
+// throttles the game's own Reflex sleep, so the base render target stays right.
+TEST_F(FpsLimiterTest, NativeDriverPacingKeepsBaseRateUnderThirdPartyFrameGeneration) {
+    MockNativePacingBackendState mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(130);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    g_FGCompat.SetFSRFGActive(true);
+    ASSERT_EQ(g_FGCompat.GetFGMultiplier(), 2);
+
+    limiter.Apply(true, true);
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.targetFps, 65) << "FSR FG generated frames never reach the NVIDIA driver cap";
+
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
+    g_FGCompat.SetFSRFGActive(false);
+}
+
+// Inject capture sync configures the application-rendered rate, so the
+// FG-aware driver interval must be raised to the equivalent output rate.
+TEST_F(FpsLimiterTest, NativeDriverPacingScalesInjectCaptureSyncTargetToOutputRate) {
+    MockNativePacingBackendState mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.isRecording = true;
+    mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    g_FGCompat.SetDLSSFGMultiplier(3);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply(true, true);
+    EXPECT_EQ(mock.setTargetCalls, 1);
+    EXPECT_EQ(mock.targetFps, 180) << "60 rendered fps through a 3x output-rate driver cap";
+
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
     mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
     g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);

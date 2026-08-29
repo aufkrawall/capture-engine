@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-27 (FPS limiter output-group admission fix)
+Last cross-checked: 2026-08-29 (Reflex driver interval is frame-generation aware)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -368,8 +368,9 @@ Primary sources:
   `cadenceScale` is the FG multiplier for final-output observers (general cap, WGC-style capture sync) and 1 for
   inject capture sync, whose source contains only application-rendered frames. A 130 fps cap with 3x FG paces
   130/3 = 43.333... groups/s with zero long-term drift instead of the floored 43 (which capped output at 129). The
-  floored integer base target survives only where an integer API demands it (native/Reflex driver targets, legacy
-  non-boundary sites) and in the `effective=` log field next to the exact `group=130/3` ratio. Capture-sync late
+  floored integer base target survives only where an integer API demands it (legacy non-boundary sites) and in the
+  `effective=` log field next to the exact `group=130/3` ratio; driver-owned intervals take the output rate instead
+  (see the frame-generation-aware driver cap below). Capture-sync late
   recovery advances by whole GROUP slots on the scaled grid (`AdvanceCaptureSyncDeadlineAfterLateFrame` takes the
   scale), and the post-present Reflex cadence stays on the unscaled base interval.
 - **Pacing-boundary observability.** `hook/vulkan_layer/vulkan_present_boundary.h` (header-only sibling of
@@ -395,12 +396,29 @@ Primary sources:
   the driver-signalled timeline semaphore before the next simulation/input frame. Failure at any native stage is
   logged and leaves the existing rational-timer fallback available. Auto mode recognizes an already-active modern or
   legacy Vulkan game path without initializing a CE-owned context merely to probe it. FG state/multiplier is imported
-  from shared NGX state before mode resolution, so a 100fps output target with 3x MFG requests about 33 base fps
-  instead of 100.
+  from shared NGX state before mode resolution.
 - The configured general limiter value always denotes the final displayed/output rate, independent of `basic`,
   `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by an active 2x-4x
   FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. Inject
   capture-sync is deliberately different because its source contains only application-rendered frames.
+- **NVIDIA's driver-owned low-latency interval is itself frame-generation aware, so it must NOT be given the divided
+  base target.** `minimumIntervalUs` (`NvAPI_D3D_SetSleepMode`, `NvAPI_Vulkan_SetSleepMode`,
+  `vkSetLatencySleepModeNV`, and the Streamline `frameLimitUs` CE forwards from the same value) constrains the FINAL
+  presented rate whenever NVIDIA generates the extra frames: the driver stretches the application's render loop by the
+  DLSS-G/MFG factor itself. Portal RTX (`general_limiter_mode=reflex`, 130 cap, 3x MFG, session `20260829_015534`)
+  proved it - CE pushed `target=43 intervalUs=23256`, and `perf_metrics` then showed a 69.8 ms group period
+  (3 x 23.256 ms) with three bursted presents per group, i.e. 14.3 rendered / 43 displayed fps against a 130 cap.
+  `general_limiter_mode=basic` was unaffected because CE's own cadence paces output groups at the present boundary.
+  `ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps()` now feeds every driver-owned interval the output
+  rate (`targetFps`, or `targetFps * multiplier` for inject capture sync, whose configured value is the rendered
+  rate), while CE's local cadence, the post-present Reflex cadence and the hybrid spin keep pacing base frames.
+  Third-party generated frames (FSR FG) stay on the base target: they never reach the NVIDIA cap, which throttles the
+  game's own Reflex sleep, i.e. the render loop. `DriverLowLatencyIntervalCoversGeneratedFrames()` is the single
+  discriminator and reads one `FGCompatibility::GetRuntimeMode()` snapshot that also decides `fgActive`, so the two
+  can never disagree. The `FPS Limiter: Active (...)` line reports the value as `driver=`.
+- The hybrid Reflex spin (`ConfigureHybridPacing`) runs once per RENDERED frame and therefore takes the scaled
+  output-group period (`freq * cadenceScale / cap`); deriving it from the floored base target capped a 130 fps / 3x
+  configuration at 129.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.

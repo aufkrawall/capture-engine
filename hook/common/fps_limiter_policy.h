@@ -4,6 +4,8 @@
 #include <climits>
 #include <cstdint>
 
+#include "fg_runtime_state.h"
+
 namespace ce::fps_limiter_policy {
 
 struct ReflexPacingDecision {
@@ -77,6 +79,47 @@ inline int ResolveCadenceScaleMultiplier(bool frameGenerationActive, int frameGe
         return 1;
     }
     return std::min(frameGenerationMultiplier, 4);
+}
+
+// NVIDIA's driver-owned low-latency interval - `minimumIntervalUs` in
+// NvAPI_D3D_SetSleepMode / NvAPI_Vulkan_SetSleepMode / vkSetLatencySleepModeNV -
+// is frame-generation aware for NVIDIA's OWN generated frames: the driver
+// stretches the application's render loop by the active DLSS-G/MFG factor so
+// the interval constrains the FINAL presented rate. Third-party generated
+// frames (FSR FG) are invisible to it; there the interval throttles the game's
+// Reflex sleep, i.e. the render loop itself, and the base target is correct.
+inline bool DriverLowLatencyIntervalCoversGeneratedFrames(ce::fg_runtime::RuntimeMode runtimeMode) {
+    return runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+           runtimeMode == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
+}
+
+// Target handed to a driver-owned low-latency interval. CE's own cadence paces
+// base frames, but a frame-generation-aware driver interval must receive the
+// OUTPUT rate: giving it the FG-divided base target applies the divisor twice.
+// Portal RTX with 3x MFG under a 130 cap received 43, the driver then paced the
+// render loop at 43/3 = 14.3 fps, and the game displayed 43 fps instead of 130.
+inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseTargetFps,
+                                              bool frameGenerationActive, int multiplier,
+                                              bool scaleForFrameGeneration,
+                                              bool driverIntervalCoversGeneratedFrames) {
+    if (configuredTargetFps <= 0 || baseTargetFps <= 0) {
+        return baseTargetFps;
+    }
+    if (!frameGenerationActive || multiplier < 2 || !driverIntervalCoversGeneratedFrames) {
+        return baseTargetFps;
+    }
+    if (scaleForFrameGeneration) {
+        // The configured cap already denotes the final output rate.
+        return configuredTargetFps;
+    }
+    // Inject capture sync configures the application-rendered rate because its
+    // source carries only rendered frames; the equivalent output rate that the
+    // driver interval expects is base * multiplier.
+    const int clampedMultiplier = std::min(multiplier, 4);
+    if (configuredTargetFps > INT_MAX / clampedMultiplier) {
+        return configuredTargetFps;
+    }
+    return configuredTargetFps * clampedMultiplier;
 }
 
 // Deterministic multiplier-sized output-group admission for real final

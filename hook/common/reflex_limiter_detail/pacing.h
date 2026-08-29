@@ -35,14 +35,19 @@ inline void ReflexLimiter::SetTargetFps(int fps) {
     EnsureGameOwnedReflexHooks();
 }
 
-inline void ReflexLimiter::ConfigureHybridPacing(int64_t qpcFreq, int fps) {
-    if (qpcFreq <= 0 || fps <= 0) {
+inline void ReflexLimiter::ConfigureHybridPacing(int64_t qpcFreq, int fps, int cadenceScale) {
+    if (qpcFreq <= 0 || fps <= 0 || cadenceScale <= 0) {
         hybridIntervalTicks_.store(0, std::memory_order_release);
         hybridTargetTick_.store(0, std::memory_order_release);
         return;
     }
 
-    const int64_t newIntervalTicks = qpcFreq / fps;
+    // The hybrid spin runs once per RENDERED frame, so with frame generation
+    // its period is the scaled output-group period (freq * multiplier / cap).
+    // Deriving it from the floored base target instead capped a 130 fps / 3x
+    // configuration at 129.
+    const int64_t newIntervalTicks =
+        (qpcFreq > INT64_MAX / cadenceScale) ? (qpcFreq / fps) : (qpcFreq * cadenceScale / fps);
     const int64_t oldIntervalTicks = hybridIntervalTicks_.load(std::memory_order_acquire);
     hybridQpcFrequency_.store(qpcFreq, std::memory_order_release);
     hybridIntervalTicks_.store(newIntervalTicks, std::memory_order_release);

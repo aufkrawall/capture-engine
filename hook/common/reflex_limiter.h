@@ -119,7 +119,7 @@ public:
         return gameSleepCount_.load(std::memory_order_acquire);
     }
 
-    void ConfigureHybridPacing(int64_t qpcFreq, int fps);
+    void ConfigureHybridPacing(int64_t qpcFreq, int fps, int cadenceScale);
 
     void DisableHybridPacing() {
         hybridIntervalTicks_.store(0, std::memory_order_release);

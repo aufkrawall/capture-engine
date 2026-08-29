@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-08-29 - Reflex FPS limiter capped Portal RTX at target/multiplier
+
+`general_limiter_mode=reflex` with a 130 fps cap and 3x DLSS MFG limited Portal with RTX Remix to 43 fps;
+`basic` was correct at the same settings. Session `20260829_015534` carries the whole proof. `vulkan_layer.log`
+shows CE resolving `effective=43, group=130/3, fg=1/3x` and handing the game-owned NvAPI Vulkan context
+`driver pacing configured target=43 intervalUs=23256`. `perf_metrics_2436.csv` then shows, starting at the exact
+QPC of that push, a rigid three-present burst (~200 us / ~350 us apart) followed by a ~69.3 ms gap - a 69.8 ms
+group period, which is 3 x 23.256 ms, with `source_current_fps_x100` pinned at 4299 and `fps_limit_wait_us` at
+0-2 us (CE was not the one waiting).
+
+That arithmetic only closes one way: NVIDIA's driver applied the interval to the FINAL presented frame, stretching
+the render loop by the MFG factor itself. CE's `ResolveFrameGenerationBaseTarget()` had already divided the cap by
+the same factor, so the divisor was applied twice. The fix is
+`ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps()`: driver-owned low-latency intervals get the output
+rate, CE's own cadences keep pacing base frames. FSR FG stays on the base target because those generated frames
+never reach the NVIDIA cap - `DriverLowLatencyIntervalCoversGeneratedFrames()` is the discriminator, keyed on one
+`GetRuntimeMode()` snapshot that also decides `fgActive`. `ConfigureHybridPacing` additionally moved to the scaled
+group period, which alone had capped 130/3x at 129. `FPS Limiter: Active (...)` now reports `driver=`.
+
+Regression coverage: pure-policy cases for both discriminators plus three Apply-level fixture tests (DLSS 3x ->
+output rate, FSR FG -> base rate, inject capture sync -> base x multiplier) in
+`tests/test_fps_limiter_output_groups.cpp`; the stale `VulkanNativeTargetScalesToBaseRateForMfg` expectation was
+inverted into `VulkanNativeTargetStaysTheOutputRateForMfg`. Real-game verification in Portal RTX is still pending.
+
 ### 2026-08-28 - Vulkan DLSS-G FIFO shared-vtable crash and below-chain body fix
 
 Portal RTX sessions `20260828_014434` and `20260828_022342` both showed CE changing the driver-bound swapchain from
