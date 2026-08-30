@@ -8,6 +8,11 @@
 namespace ce::remix_fg {
 
 inline constexpr char kScheduleOption[] = "rtx.dlfg.maxInterpolatedFrames";
+// The runtime's own choice between hardware present metering and the CPU
+// pacer it uses instead: "Use hardware present metering for DLSS 4.0 frame
+// generation instead of CPU pacing".
+inline constexpr char kPresentMeteringOption[] = "rtx.dlfg.enablePresentMetering";
+inline constexpr char kPresentMeteringDisabledValue[] = "False";
 inline constexpr char kNgxGeneratedFrameParameter[] = "DLSSG.MultiFrameCount";
 inline constexpr char kNgxGeneratedFrameParameterCompat[] = "MultiFrameCount";
 inline constexpr size_t kPublicInterfacePrefixFunctionCount = 13;
@@ -39,6 +44,27 @@ inline bool IsNgxGeneratedFrameParameter(std::string_view name) noexcept {
 
 inline bool ShouldOverrideConfigVariable(std::string_view key, uint32_t configuredGeneratedFrames) noexcept {
     return configuredGeneratedFrames >= 1 && configuredGeneratedFrames <= 3 && IsScheduleOption(key);
+}
+
+inline bool IsPresentMeteringOption(std::string_view key) noexcept {
+    return key == kPresentMeteringOption;
+}
+
+// Two authorities cannot pace the same presents. When the profile asks for
+// vertical-blank-paced presentation the Vulkan layer withholds
+// VK_NV_present_metering from the renderer entirely (see
+// hook/vulkan_layer/vulkan_present_metering_policy.h), and this is the other
+// half of that same decision: a runtime whose option still says "use hardware
+// metering" keeps asking for pacing it can no longer get and never engages the
+// CPU pacer it would otherwise use, which leaves a generated group arriving in
+// one burst with nothing spreading it. Only fifo and adaptive ask for the rate
+// contract; every other vsync_mode leaves the runtime's own choice alone.
+inline bool RequestsVblankPacedPresentation(std::string_view vsyncMode) noexcept {
+    return vsyncMode == "fifo" || vsyncMode == "adaptive";
+}
+
+inline bool ShouldForcePresentMeteringOff(std::string_view key, std::string_view vsyncMode) noexcept {
+    return RequestsVblankPacedPresentation(vsyncMode) && IsPresentMeteringOption(key);
 }
 
 inline bool ShouldReassertFromNgx(std::string_view parameterName, uint32_t observedGeneratedFrames,

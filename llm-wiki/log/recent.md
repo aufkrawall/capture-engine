@@ -1,5 +1,189 @@
 # llm-wiki Log
 
+### 2026-08-30 - Suppressing the request could never restore the wait; the capability had to go
+
+Portal RTX with `vsync_mode=fifo` looked "very stuttery despite the frame time graph being flat", and forcing the same
+mode in the NVIDIA driver instead looked smooth. Session `20260830_175147`, 4x MFG, `perf_metrics_7260.csv`.
+
+The previous revision of this page's own open question answered itself. `vulkan_layer.log` reports
+`frame-generation present metering numFramesPerBatch=4 ... - suppressed` from the moment the frame-generation
+swapchain is created, and `hook_debug.log` still reports `Vulkan DXGI FIFO: final Present1 #1024 force=1
+SyncInterval=0->1 Flags=0x200->0x0` seven seconds later. **NVIDIA's Windows WSI decides how it will present a
+swapchain when the device is created**, so unlinking `VkSetPresentConfigNV` from every `VkPresentInfoKHR` removes the
+pacer and changes nothing about the vertical-blank wait.
+
+What was left is the reported symptom, and the numbers name it exactly. With no pacer, CE's forced DXGI sync interval
+quantizes an unpaced burst onto consecutive vertical blanks, so a group of four generated frames is drawn across
+4/refresh whatever the rendered frame it belongs to cost. Measured group period in that session: **21 ms to 48 ms,
+mean 27.8 ms**, against a display that consumed every group in the same 27.8 ms. Motion runs fast for a group and then
+freezes; present-side frame times stay flat because the presents really are regular. The graph was not lying.
+
+The fix withholds the capability rather than the request: `VK_NV_present_metering` is removed from
+`vkEnumerateDeviceExtensionProperties`, `presentMetering` is reported `VK_FALSE` from `vkGetPhysicalDeviceFeatures2`,
+and the name is dropped from `VkDeviceCreateInfo` (transactionally - a driver that rejects the create info because the
+application also chained the feature structure gets the extension back rather than a game that will not start). Remix's
+own `rtx.dlfg.enablePresentMetering` is set to `False` through the `SetConfigVariable` route CE already owns, because
+a runtime that still thinks it has hardware metering never engages the CPU pacer it uses instead. CE adds no timer and
+no cap of its own.
+
+Three things worth keeping:
+
+- **A burst of N present calls inside a millisecond is the normal shape of a metered batch, not a pacing failure.**
+  The 2026-08-29 entry read "bursts of four inside ~700 us" as evidence and removed the driver's pacer because of it.
+  The runtime issues the whole group at once by design; the group *period* against the display is the measurement that
+  discriminates, and it was in the same CSV all along.
+- **A capability granted at device creation is not undone by editing the calls that use it.** Reach for the
+  enumeration and the create-info list when the driver's behaviour is latched, not for the per-call structure.
+- `perf_metrics`' `fence_wait_us` is worth reading on every pacing complaint. In this session CE's own overlay
+  submission-slot ring blocked the runtime's present thread on one present in four - p90 6.8 ms, p99 28 ms, max 41 ms -
+  because the app was running far ahead of a display it was no longer synchronised to. Symptom or second defect is
+  decided by whether it collapses once presentation is paced again.
+
+**Not validated on hardware.** No session has run with the capability withheld. The confirmation is
+`Vulkan DXGI FIFO: final Present1 #N` reporting `SyncInterval=1->1 Flags=0x0->0x0` under frame generation, and the
+open risk is whether Remix's CPU pacer actually engages.
+
+### 2026-08-30 - The flat line exposed a graph that had always animated at the base frame rate
+
+With display-change timing fixed, the frame time graph animated "like a lower frame rate". It was not the new
+measurement: the graph had always advanced by sample arrival, and under frame generation sample arrival is not the
+same clock as drawn frames. The sawtooth in the line had been masking it; once the line went flat, the stepping was
+the only motion left.
+
+Measured from the real draw timestamps of the 4x MFG session (`perf_metrics_8480.csv`, 5792 draws over 45 s):
+**64.1% of overlay draws advanced the graph by zero samples**, 12.6% by three, 10.1% by four - mean 1.00, stddev
+2.18. Draw gaps p25=652us p50=804us p75=10.1ms p90=27.2ms: the runtime issues the whole group of presents within
+about two milliseconds and then idles, while the display consumes them 7.8 ms apart. So the graph updated at the
+base rate in three-to-four slot jumps while the screen updated at 128 Hz.
+
+`hook/common/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
+sample stream instead of being driven by it. Two things fell out of building it that were not obvious up front:
+
+- **The cursor must slow, never rewind.** A first version let the correction pull backwards, and a stall then
+  dragged the plot back eight slots before crawling forward again. A scrolling graph that steps backwards reads as
+  a glitch, not as a correction. Only a genuine stream restart re-arms.
+- **The trail is not a tuning constant, it is the group size.** To scroll across a burst the cursor needs N-1 slots
+  of already-received samples plus one guard; that is one base-frame interval and cannot be avoided, because the
+  samples for those frames do not exist when they are drawn. Measuring the dry streak instead of assuming a value
+  costs two slots without frame generation and settled at 4.9 under 4x MFG. Measured dry streaks never exceeded 3,
+  matching a group of four - a fixed guess would have been wrong in both directions.
+
+The user asked whether the sub-slot approach's one limitation - a partial empty slot at the right edge - could be
+worked around so the graph still looks completely intact. It can: `DrawFrameTimeGraph` now takes a guard sample past
+each edge and clips the polyline to the panel by interpolating both crossings, so the curve fills the panel exactly
+at every offset. The guard is what the trail pays for.
+
+Replaying the real draw timestamps through the production cursor, settled stretch: **99.05% of draws advance within
++/-20% of one slot** (p1 0.86, p50 0.98, p99 1.09, mean 0.9994), against 64% advancing zero before. Across the whole
+session it is 92.1%; the difference is the stretch where the FG factor was being switched between 1x and 4x, where a
+transient is the correct response to a changed group size.
+
+Method note: the replay harness reads a session's own `perf_metrics` CSV and drives the production header with it,
+so the policy was measured against real burst timing rather than a synthetic pattern. That is worth reaching for
+whenever a policy's input is something a session already records.
+
+### 2026-08-30 - The display timing was real, the timestamps were not
+
+`frametime_source=display_change` drew the presentation sawtooth under DLSS 4 MFG while RTSS
+`G=msBetweenDisplayChange` drew a flat line on the same frames. Sessions `logs/20260830_064454` and
+`logs/20260830_071302`, Talos Reawakened, `published_multiplier=4`, 144 Hz VRR.
+
+The counters said the chain was healthy, and they were right about the count: `runtimePresents=3434
+submitAssociations=3434 published=2780 suppressed=0 regressed=0`, one sample per displayed frame, no drops, no
+regressions. Streamline issues a real DXGI `Present` per generated frame, so under MFG the runtime present count
+already equals the displayed frame count. **Only the timestamp values could be wrong, and every one of them was.**
+A stage counter that tracks the expected rate is not evidence the stage is correct.
+
+`frameType(received=0)` for the whole session. The wiki claimed DLSS MFG delivers `FlipFrameType` through the
+`Intel-PresentMon` provider; it does not and never did, since that provider's frame-type enumeration names exactly
+`Intel_XEFG` (50) and `AMD_AFMF` (100) and has no NVIDIA value. Every frame took the completion fallback, which
+publishes the `MMIOFlipMultiPlaneOverlay` event timestamp - and on NVIDIA that is when the driver *programmed* the
+flip, not when it reaches the screen. Under frame generation the driver programs the paced flips within a fraction
+of a millisecond of each other and holds each until its own scheduled time, so the events burst while the frames
+scan out evenly.
+
+The driver announces that scheduled time through its own provider, `{AE4F8626-8265-40D1-A70B-11B64240E8E9}` event 1
+`FlipRequest`. **The first fix enabled it and got nowhere: `nvFlipSchedule(received=5550 undecodable=5550
+applied=0)`.** The provider has no registered manifest anywhere on this machine - nothing under `WINEVT\Publishers`,
+no NVIDIA entry among `logman query providers`' 1171, and `TdhGetEventInformation` answers `ERROR_NOT_FOUND` for
+every event - so `TdhGetProperty` can never resolve `alloc`/`vidPnSourceId`/`ts`/`token`. PresentMon reads those
+names, so its own NV path cannot work here either; porting it faithfully ported a dead code path.
+
+The payload is therefore read positionally, and the field is **located by what it is** rather than at a hardcoded
+offset: the announcement is the only slot holding a QPC near the timestamp of the event carrying it. 58 of 64
+samples must agree before a slot is locked; before that, a payload with exactly one plausible slot is already
+unambiguous and is used, so there is no uncorrected window at startup. Reads are re-validated, 64 consecutive
+rejections re-arm discovery, and eight failed windows abandon the correction rather than guess.
+
+Measured end to end against the production header, 2x DLSS-G via `dx12_dlss_fg_test`, 2768 flips, zero events lost:
+
+    A  flip event timestamp (before)   mean 7.223 ms  stddev 7.083 ms  jaggedness 14.166 ms  p1/p50/p99 0.099/0.476/14.620
+    D  with the announcement (after)   mean 7.226 ms  stddev 0.079 ms  jaggedness  0.060 ms  p1/p50/p99 6.970/7.225/7.545
+
+A's p1/p99 pair *is* the sawtooth - alternating ~0.1 ms and ~14.6 ms at a steady 138 fps. The announcements
+alternate to match: the application frame announced ~0.002 ms ahead, the generated frame ~7.07 ms ahead, both
+programmed ~0.17 ms apart. `located=1 offset=16 rejected=0 undecodable=0 applied=2768`.
+
+Three things worth keeping:
+
+- **The project has its own DLSS-G repro.** `installed/testapp/dx12_dlss_fg_test.exe` reproduces frame-generation
+  pacing locally, which turned a "please run the game again" loop into a measurement. Reach for the test apps before
+  asking for a game session.
+- A provider missing from `logman query providers` predicts nothing about `EnableTraceEx2` succeeding - it succeeded
+  and delivered 2768 events - but it does predict that TDH cannot decode them. Enablement and decodability are
+  separate questions; the earlier `logman create trace` vs `StartTraceW` note only covered the first.
+- Porting a reference implementation faithfully is not the same as porting a *working* one. PresentMon's NV path is
+  correct and inert on this machine at once.
+
+Also split out of `graphics-overrides-and-frame-pacing.md` into `display-change-timing.md`, and the ETW session
+plumbing out of `display_timing_service.cpp` into `display_timing_etw.h` / `display_timing_health.h` to stay under
+the 800-line ceiling.
+
+**Still unvalidated:** MFG factors above 2x, and the overlay end to end in a real game. The health line reports
+`completion(...)` and `nvFlipSchedule(...,fieldOffset,abandoned)` so one session settles both.
+
+### 2026-08-30 - A dead renderer's claim silenced the next game's DLSS DLL overrides
+
+Talos Reawakened crashed at startup with a null read inside `nvngx_dlssd.dll`, on the first
+`NVSDK_NGX_D3D12_CreateFeature` for feature 13 (Ray Reconstruction), reached through CE's own
+`Hooked_CreateFeature_D3D12` (session `logs/20260829_220520`, PID 164). Relaunching the game after restarting
+CaptureEngine worked with an unchanged config (`logs/20260829_221333`), which is what made it look racy.
+
+It was stale cross-process state, not timing. The same CE session had been capturing Portal RTX minutes earlier,
+where `NvRemixBridge.exe` is a direct child Vulkan renderer of `hl2.exe`; its layer published
+`inheritedRendererProcessPid = 12072` at 22:05:30. Only the publishing process can clear that field, and a
+renderer that is terminated never runs `LayerIPC_Shutdown`, so the dead PID was still there when Talos was
+injected 55 seconds later. `ShouldApplyProcessLocalRuntimeOverrides` compared Talos's PID against it, decided a
+child renderer owned the process-local overrides, and logged two lines that named no PIDs at all:
+
+    Runtime preload: skipped because an inherited child renderer owns process-local DLSS/Streamline overrides
+    DLSS indicator: skipped because an inherited child renderer owns the process-local registry probe
+
+So `dlss_rr_dll_path` never took effect: Talos loaded its own bundled `nvngx_dlssd.dll` 310.6.0 instead of the
+configured 310.7.129, while the NGX parameter hooks - which are not behind that gate - still injected the
+profile's `dlss_rr_preset=f`. The good session loads the 310.7 override and creates feature 13 successfully with
+the identical preset, so the redirect is the whole difference.
+
+Root cause: the record was a single session-wide PID with no notion of which process tree it spoke for. It now
+carries both identities - `CaptureState::inheritedRendererClaim`, renderer PID packed with the client PID the
+layer proved it against (ABI 49) - and only that client stands down. A claim from another tree, alive or dead,
+cannot suppress anything. The claim is one 64-bit value because the gate also runs inside the `LdrLoadDll`
+redirect hook under the loader lock: it must stay a single load, and a process enumeration there would be a
+deadlock hazard, so the claim answers "whose tree is this?" by itself rather than having the reader derive it.
+The sensor loop additionally reaps a claim whose renderer is absent from a *successful* process snapshot
+(`QueryDirectParentProcessId` grew a `processFound` out-param so a failed snapshot is never read as a dead
+process); that is hygiene for other readers, never the guard. Both skip messages now name the renderer and
+client PIDs - the missing detail that made this cost a crash dump to find.
+
+Regression coverage: `VulkanRendererPolicyTest.ClaimFromAnotherProcessTreeNeverSuppressesOverrides` (the exact
+PID triple from the session), the updated `ProcessLocalOverridesMoveOnlyAfterRendererPublication`,
+`SharedDefsTest.InheritedRendererClaimPacksBothIdentitiesIntoOneValue`, and source-policy guards that the layer
+publishes the client half and the host reaps only on a proven-dead process.
+
+Unvalidated: no game run yet on the fixed build. The natural check is Portal RTX followed by Talos in one CE
+session - the previous split-renderer case must still hand its overrides to `NvRemixBridge.exe`, and Talos must
+log `Runtime preload: nvngx_dlssd.dll loaded` from the override directory.
+
 ### 2026-08-30 - Display-change MFG correlation is a bounded policy, not a causal proof
 
 The display-change source now correlates DLSS MFG's independently delivered `FlipFrameType` payload with MPO
@@ -19,415 +203,3 @@ no-first-frame-loss is mathematically impossible for arbitrary delays. The reduc
 any later payload is telemetry-only (`late`) and cannot regress or duplicate history. Its duplicate/late/pending
 results and the service's stage/FrameType health counters are diagnostic anchors. Tuple uniqueness is scoped to the
 service lifetime and tracked source/PID stream; resets or identity changes clear the reducer state.
-
-### 2026-08-29 - Display-change frame timing: the correlation was keyed on the wrong thread
-
-`[Overlay] frametime_source=display_change` (ABI 48) ships: the sensor child runs the graphics event session,
-correlates runtime presents with display completions, and publishes screen-change timestamps into a 512-slot
-shared ring that each DXGI and Vulkan overlay consumes with its own cursor. `PerformanceMetrics` keeps a second
-series for it and falls back to presentation timing whenever the stream is unavailable, denied, failed, or two
-seconds stale.
-
-The first end-to-end run looked like a success and was not: `[DisplayTiming] Screen-change timing service
-started` appeared, the session ran for twelve seconds against a 135 fps DX11 target, and the overlay logged
-`Frame timing source: presentation (requested=display-change sensorStatus=1)` - status never left `Starting`,
-because not one timestamp was ever published. Nothing in the log said which stage broke.
-
-A scratch ETW probe replaying the production chain stage by stage found it. Every event the design needs does
-arrive at a non-elevated session (`Present_Start` 641, `QueuePacket_Start` 987, `HSyncDPCMultiPlane` 230,
-`MMIOFlipMultiPlaneOverlay` 230 in six seconds), and every property the code reads decodes. The break was the
-join: the process emitted 865 runtime presents and 865 present-marked kernel submissions **from two different
-threads of the same process**, and the association was keyed on `ThreadId` alone, so it matched zero times.
-D3D11/D3D12 submit the present packet from a runtime worker thread, not from the thread that called Present.
-
-Fix: key the outstanding presents by process and let the thread only refine the choice within it -
-`SelectDisplaySubmissionPresent` (`captureengine/display_timing_policy.h`) prefers an exact thread match so
-several render threads keep their own order, and otherwise takes that process's oldest outstanding present.
-Same run afterwards: `runtimePresents=1348 submitAssociations=1347 queued=1338 published=1335 suppressed=0
-regressed=0`, and both overlays reached `display-change (sensorStatus=2)`. Vulkan is the same path - NVIDIA's
-WSI presents through DXGI - and correlated 1436/1436.
-
-Two things the failure taught, both now permanent: the service logs its stage counters every ten seconds (a
-warning while `published==0`, debug otherwise), and `ProcessTrace`'s return status is no longer discarded.
-Also measured on this hardware: `VSyncDPC` carries `FlipFenceId=0` and `VSyncDPCMultiPlane` carries
-`FlipEntryCount=0`, so completions come from `HSyncDPCMultiPlane`/`MMIOFlipMultiPlaneOverlay`. A display path
-offering neither would need the `InterruptTargetPresentId` route; it is deliberately not implemented, because
-it can publish a second timestamp for a flip the submit-sequence route already published.
-
-Unvalidated: real-game behaviour, and every path under frame generation - the frame-type provider produced no
-events here because nothing was generating frames, so the generated-flip and completion-suppression policy has
-unit coverage only.
-
-### 2026-08-29 - FIFO vsync held the rate but CE's overlay ring became the frame pacer
-
-Follow-up run `20260829_153457` on the present-metering fix below. `vulkan_layer.log` confirms the mechanism
-exactly as predicted - `frame-generation present metering numFramesPerBatch=4 (swapchain presentMode=2 images=6
-chainNodes=1 chainHead=1) - suppressed` - and `perf_metrics_11660.csv` now shows 143-146 presents/s against the
-143 Hz refresh instead of 172. Rate: fixed. Pacing: not yet.
-
-The residual judder is CE's own. `fence_wait_us` blocks the game's present thread for **941 ms of every second**:
-7.5 ms on the first present of each 4x generated group and 19-26 ms on the last, all of it *before* the present
-down-call (`pre_present_us` carries the same numbers, `present_call_us` stays at 40-90 us). `vulkan_layer.log`
-reports `All 6 overlay submission slots are in flight` hundreds of times. The rendered frame period then beat
-between 2 and 6 vertical blanks in a repeating six-group pattern - a 6-slot ring aliasing against a 4-present
-group - and because generated frames carry scene time, an uneven base period is judder even though every vertical
-blank received a new image.
-
-Root cause: an overlay submission waits on the present's own wait semaphores and retires only when they are
-signalled. A frame-generation runtime signals those from its pacer, one display interval apart, while handing CE
-the whole group as a burst - so submissions arrive at burst cadence and retire at display cadence, and a ring
-sized at the swapchain image count is exhausted every group. The same signature is already visible in the
-uncapped session `20260829_022419` (18% of presents blocked, up to 18.9 ms); FIFO only promoted it to the
-dominant pacing authority.
-
-Fix: `ResolveSubmissionSlotCount` sizes the ring at `imageCount + 4` - one full generated group beyond everything
-the runtime can already have outstanding, 4 being the DLSS multi-frame-generation maximum rather than a tuned
-depth, kept small because each slot also owns a full-resolution offscreen target on the compute-composite path.
-`framebuffers`/`imageViews` stay image-indexed; the command/fence/semaphore ring, `timestampWritten` and the
-timestamp query pool follow the slot count. Coverage in `tests/test_overlay_submit_queue_policy.cpp`: the sizing
-rule including the zero and overflow edges, plus a replay of the failing shape (six outstanding presents, a fresh
-4x group) asserting no slot choice asks for backpressure. Real-game verification pending; the confirmation signal
-is `fence_wait_us` collapsing to microseconds and the group period settling on 4 vertical blanks.
-
-### 2026-08-29 - Portal RTX `vsync_mode=fifo` behaved like mailbox: frame-generation present metering
-
-`vsync_mode=fifo` prevented tearing but not a frame rate above the 143 Hz refresh. Session `20260829_022419`
-settles why. CE forced Remix's Immediate swapchain to FIFO and the driver accepted it, yet
-`perf_metrics_29472.csv` climbs to 172 presents/s, delivered as bursts of four inside ~700 us with a ~23 ms gap:
-43 FPS base x the configured 4x MFG (`rtx.dlfg.maxInterpolatedFrames = 3`). The DXGI interception recorded the
-decisive transition - with frame generation off the driver presented the FIFO swapchain with `SyncInterval=1`, and
-on the swapchain generation DLFG created it presented with `SyncInterval=0` plus `DXGI_PRESENT_ALLOW_TEARING`.
-Present counts are 1:1 (exactly 1024 `vkQueuePresentKHR` calls between the `final Present1 #1024` and `#2048`
-cadence lines), so nothing was being dropped in between; the vertical-blank wait was simply not being applied.
-
-Root cause: `VK_NV_present_metering` is a competing pacing authority for the same presents. Remix chains
-`VkSetPresentConfigNV` with `numFramesPerBatch = 4` and asks the driver to spread the batch across one *rendered*
-frame interval - an interval derived from the base rate that knows nothing about the display - so the driver drops
-the swapchain's FIFO wait. Remix's own strings state both halves: `rtx.dlfg.enablePresentMetering` is "Use hardware
-present metering for DLSS 4.0 frame generation instead of CPU pacing", and its V-Sync option says "When Frame
-Generation is active, V-Sync is automatically disabled".
-
-Fix: `hook/vulkan_layer/vulkan_present_metering_policy.h` removes the metering request from the present chain when
-the profile asked for `fifo`/`adaptive` **and** the tracked swapchain really was created FIFO/FIFO_RELAXED, a single
-swapchain is presented, and `numFramesPerBatch >= 2`. FIFO is then the only pacing authority: the group's frames land
-on consecutive vertical blanks and backpressure lowers the base rate to refresh / N - no timer, cap, or Reflex
-interval. The node is unlinked only when it is the chain head, because a deeper one would mean writing the game's
-own `const` chain; that case is logged rather than forced. Hardware metering has a documented fallback (Remix's own
-`DxvkDLFGPresenter` CPU pacer), so nothing is left unpaced.
-
-Coverage: `tests/test_vulkan_present_metering_policy.cpp` (16 cases: both discriminators, every decline reason, chain
-scan including head/deeper/self-referential). Real-game verification in Portal RTX is still pending; the confirmation
-signal is `hook_debug.log` reporting `SyncInterval=1->1 Flags=0x0->0x0` on the final DXGI present once
-`vulkan_layer.log` says `frame-generation present metering ... suppressed`.
-
-### 2026-08-29 - Reflex FPS limiter capped Portal RTX at target/multiplier
-
-`general_limiter_mode=reflex` with a 130 fps cap and 3x DLSS MFG limited Portal with RTX Remix to 43 fps;
-`basic` was correct at the same settings. Session `20260829_015534` carries the whole proof. `vulkan_layer.log`
-shows CE resolving `effective=43, group=130/3, fg=1/3x` and handing the game-owned NvAPI Vulkan context
-`driver pacing configured target=43 intervalUs=23256`. `perf_metrics_2436.csv` then shows, starting at the exact
-QPC of that push, a rigid three-present burst (~200 us / ~350 us apart) followed by a ~69.3 ms gap - a 69.8 ms
-group period, which is 3 x 23.256 ms, with `source_current_fps_x100` pinned at 4299 and `fps_limit_wait_us` at
-0-2 us (CE was not the one waiting).
-
-That arithmetic only closes one way: NVIDIA's driver applied the interval to the FINAL presented frame, stretching
-the render loop by the MFG factor itself. CE's `ResolveFrameGenerationBaseTarget()` had already divided the cap by
-the same factor, so the divisor was applied twice. The fix is
-`ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps()`: driver-owned low-latency intervals get the output
-rate, CE's own cadences keep pacing base frames. FSR FG stays on the base target because those generated frames
-never reach the NVIDIA cap - `DriverLowLatencyIntervalCoversGeneratedFrames()` is the discriminator, keyed on one
-`GetRuntimeMode()` snapshot that also decides `fgActive`. `ConfigureHybridPacing` additionally moved to the scaled
-group period, which alone had capped 130/3x at 129. `FPS Limiter: Active (...)` now reports `driver=`.
-
-Regression coverage: pure-policy cases for both discriminators plus three Apply-level fixture tests (DLSS 3x ->
-output rate, FSR FG -> base rate, inject capture sync -> base x multiplier) in
-`tests/test_fps_limiter_output_groups.cpp`; the stale `VulkanNativeTargetScalesToBaseRateForMfg` expectation was
-inverted into `VulkanNativeTargetStaysTheOutputRateForMfg`. Real-game verification in Portal RTX is still pending.
-
-### 2026-08-28 - Vulkan DLSS-G FIFO shared-vtable crash and below-chain body fix
-
-Portal RTX sessions `20260828_014434` and `20260828_022342` both showed CE changing the driver-bound swapchain from
-Immediate to FIFO, yet 3x DLSS-G still arrived in three-output bursts and the latter run visibly tore. The temporary
-refresh-derived 144 FPS limiter merely paced one 48 Hz group at `vkAcquireNextImageKHR`; it was removed and never
-committed. Aggregate 144 FPS was not VSync and made frame pacing worse.
-
-NVIDIA's public `sl.interposer` source established the first missed boundary: its exported `vkCreateSwapchainKHR`
-invokes DLSS-G's before hooks with the original create info, then calls the downstream Vulkan dispatch. CE now hooks
-that stable export and substitutes guaranteed-supported FIFO before Streamline sees the call; the existing layer still
-enforces the downstream call.
-
-Session `20260828_162056` then falsified the assumption that this was sufficient. Its bounded diagnostics proved FIFO
-on both sides (`before Streamline DLSS-G hooks` and downstream driver `presentMode=2`), yet generated output remained
-about 158.8 FPS with repeated ~18.3 ms / ~0.2 ms / ~0.2 ms bursts. The bridge also resolved the system
-`CreateDXGIFactory*` exports late. NVIDIA's Vulkan WSI is implemented over an internal DXGI flip swapchain, so the
-remaining real VSync contract is that final swapchain's `Present`/`Present1` call.
-
-The first implementation violated the Vulkan pass-through invariant by writing the shared system factory and
-swapchain vtables. Portal session `20260828_212805` falsified it immediately. All four dumps were inspected: the
-initiating x64 renderer dump has the `dxvk-dlfg-present` thread executing a null indirect call in
-`gameoverlayrenderer64!OverlayHookD3D3`; its stack contains CE `DetourPresent1` and NVIDIA Vulkan WSI. The renderer
-termination dump and both x86 `hl2.exe` dumps are post-crash teardown. `hook_debug.log` gives the decisive ordering:
-CE wrote Present/Present1 slots at 21:28:17.526, the first final Present1 arrived at 21:28:18.835, and Steam's
-uninitialized worker-thread callback failed immediately. CE changed neither argument on that call
-(`SyncInterval=1->1`, `Flags=0->0`), so COM lifetime/identity tracking cannot fix it; participating through the shared
-vtable was itself the unsafe ownership change. This matches the older `iat_hook.cpp` guard that excludes Streamline
-internal factories after the same Steam null-RIP failure mode.
-
-The replacement keeps the real factory and swapchain objects exact and never writes a COM vtable. The intercepted
-system factory export is used only to read stable system-DXGI `CreateSwapChain*` method addresses; CE inline-hooks
-those function bodies. When the real NVIDIA WSI swapchain is returned, CE installs a deep Present/Present1 body hook
-past the widest recognized foreign entry patch. Steam therefore retains its outer entry ownership and CE runs below
-that chain before the system DXGI body. The final detours force `SyncInterval=1` and clear
-`DXGI_PRESENT_ALLOW_TEARING`; the hot path reads only the armed/Vulkan/shutdown atomics. No driver profile/DRS state,
-descriptor, probe object, wait, maximum-frame-latency setting, overlay/capture route, timer limiter, or Reflex cap is
-involved. Source-policy regression coverage rejects vtable writes, QueryInterface/Release detours, and pacing
-fallbacks. Portal field validation remains required because NVIDIA officially excludes Vulkan from DLSS-G VSync
-support.
-
-### 2026-08-27 - FPS limiter: FG-aware output-group admission fixes Portal RTX cap escape (130 configured, ~146 observed)
-
-Session `20260827_211303` (build 0.1.6280, Portal with RTX Remix, `FpsLimiter.general_enabled=true`, cap 130, mode
-`basic`, DLSS FG 3x) falsified "the limiter is disabled": it resolved 130, activated in the bridge, and its clock was
-exact (~43.0 FPS local cadence) - but the callback stream reached 146.1/s (167 peak), with 92 six-callback / 31 five /
-33 four batches beside 531 clean 3-batches and `activeDedup=1458` at 600 paced frames (ideal 2 bypasses/frame = 1200;
-the ~258 excess = ~86 admitted extra groups explains the ~17-18 FPS overshoot). Root cause: while FG was active,
-`strictGrid = gateEveryPresent && !IsFGActive()` disabled serialized per-presentation admission and the time-based
-0.5-2 ms `activeDedup` window decided what "belongs to the current group" - the next real 3-frame group arriving
-inside the window was indistinguishable from generated spillover and was admitted unpaced. The submit-thread mismatch
-detection route had also switched pacing to `vkAcquireNextImageKHR` silently (no log), so acquire-time pacing was
-invisible in the session.
-
-Fix (all in the limiter + Vulkan layer, no game/executable/image-count/timing branches):
-
-- `ce::fps_limiter_policy::OutputGroupAdmission`: deterministic multiplier-ordinal classification (`pace_group` vs
-  `pass_generated_slot`) for real final-boundary callbacks; never reads a clock. Generated slots pass through a fast
-  path that never touches the cadence mutex; owners block on it. Replaces the FG-active dedup escape; FG-off strict
-  grid (Strange Brigade multi-present) and DXVK Present/PresentEx legacy dedup are unchanged.
-- Admission epoch key compared BEFORE classification: first callback after any activation/deactivation, target/source
-  change, FG on/off, multiplier change, IPC/session reset, or pacing-boundary move owns a clean slot.
-- Exact rational group cadence: interval = `QPC_frequency * cadenceScale / configured_target` with Bresenham
-  remainder (130/3 = 43.333... groups/s, zero drift); cadenceScale = FG multiplier for final-output observers, 1 for
-  inject capture sync. Floored integer target remains only for integer driver APIs and legacy sites; logs now show
-  `group=130/3`.
-- `hook/vulkan_layer/vulkan_present_boundary.h`: both async-detection routes log edge transitions (submit-thread was
-  silent), boundary-identity logs report QueuePresentKHR vs AcquireNextImageKHR with swapchain/FG/grouped, detection
-  edges reset output-group admission, 120-frame stats extended with boundary/paced/generated/resets/skips deltas and
-  a concurrentSkip invariant-violation tag.
-- Tests: new `tests/test_fps_limiter_output_groups.cpp` (pure ordinal sequences incl. the 3x six-callback burst,
-  2x/3x/4x windows, reset semantics, exact 130/3 + 100/3 + 141/4 sums, overflow guard, integration bursts, transition
-  resets, native post-present arming by owners only, capture-source scale selection, hitch recovery, 4-thread
-  concurrent admission with zero contention escapes); `GateEveryPresentDefersToDedupWhileFGActive` (the bug as a
-  requirement) replaced by `GateEveryPresentUsesGroupedAdmissionWhileFGActive` in the moved-out unit;
-  `PerformanceMetrics` trace test proves ~130 convergence and unclamped telemetry.
-
-Portal RTX matrix validation (2x/3x, non-divisible caps, toggles, VSync variants, Reflex smoke, FG-switch overlay
-capture continuity) remains required at runtime. Derived numbers: temp/fpslimitfix-notes.md (not committed).
-
-### 2026-08-27 - Portal RTX override audit: upstream Remix MFG scheduling and Vulkan-native Reflex
-
-Sessions `20260826_162652`, `20260826_225500`, and `20260826_232211` proved the split renderer received the resolved
-profile. FIFO VSync,
-forced AF, SR preset M, RR preset F, FG preset B, all four runtime folders, the process-local DLSS indicator, and the
-NVIDIA LOD-spread patch reached their real consumers. The later run gives direct application proof: both immediate
-swapchains were changed `present mode 0 -> 2 (FIFO)` and five live samplers logged their before/after 16x state. Thus
-an unblocked FIFO present call or FG output above the base rate is not evidence that CE missed the swapchain override.
-
-The runs exposed three distinct gaps. The first factor fix wrote a stale bare compatibility key; CE corrected this to
-NVIDIA's official `DLSSG.MultiFrameCount`. Session `20260827_155554` then falsified the assumption that this is the
-whole control boundary: the DLSS indicator showed configured 3x, yet changing Remix's menu 2x -> 3x still raised real
-FPS. NGX consumes one `MultiFrameIndex` per generated evaluation; changing its count cannot make the host schedule the
-missing evaluation. Remix schedules earlier through `rtx.dlfg.maxInterpolatedFrames`. Its bridge legitimately resolves
-`remixapi_InitializeLibrary` and calls the returned `SetConfigVariable`. Session `20260827_162905` then falsified the
-first interception lifecycle: CE armed its filtered lookup route at 16:29:11.593 and verified the provider at .638,
-but never captured the interface; repeated NGX mismatches showed the setter remained unavailable. Vulkan negotiation
-had already begun at .448, and Remix initializes its public API before that boundary. NVIDIA's public bridge source
-and disassembly of the shipped binary confirm the returned 0xA8-byte interface is copied into writable global image
-storage. Session `20260827_202629` falsified CE's attempted table recovery too: build 0.1.6278 repeatedly found no
-candidate, never captured a setter, and therefore only forced downstream `DLSSG.MultiFrameCount`; the raw menu change
-to one generated frame remained observable at 20:27:20.309. CE now negotiates its own private function table through
-the official initializer using exact known 0.6.4/0.5.1 API versions, validates slots 10-12 as readable code owned by
-the pinned provider, and immediately calls the returned setter. NVIDIA's source and shipped machine code both show
-that this API only fills the append-only table; it does not create a device or renderer. An isolated call against the
-shipped provider returned success for both negotiation and `rtx.dlfg.maxInterpolatedFrames=2`, while an unknown key
-correctly failed. Future-initializer interception and NGX mismatch reassertion remain; the latter also runs at the
-final `EvaluateFeature` parameter boundary because old x64 Remix helpers can bypass earlier hooked parameter setters.
-No binary offset or title/executable rule was added. Runtime confirmation of real output remains pending.
-
-Remix's paired Present samples (~21.6 ms then ~0.2 ms) also explained the odd basic limiter: logical base rendering was
-only ~46 fps, below the old unscaled 100 target, so no wait was correct even while 2x/3x output appeared near 92/138.
-Every limiter mode now treats the configured general cap as final output: 100 with 3x paces about 33 base fps. Finally,
-the present semaphore was signalled by a compute-only queue, whose own wait came from graphics. Session `232211`
-proved the remaining limiter gap explicitly: graphics producer thread 8184 differed from present thread 27228, so CE
-withheld the marker to avoid an illegal cross-thread queue borrow. Topology learning now retains the exact bounded
-graphics-signal semaphore ring, and the matching `vkQueueSubmit*` wrapper appends the prerender marker from the owning
-producer thread. Vulkan native Reflex remains preferred with timer fallback. No Portal/Remix executable-name rule was
-added.
-
-### 2026-08-25 - RTX Remix crash: synthetic D3D9 probe initialized a second renderer
-
-Portal RTX did not have a missing-whitelist or generic injector failure. Literal session enumeration found the earlier
-`20260825_190436` bridge-target run and its CE/external dumps; the later submitted `192442`/`194911` runs targeted the
-32-bit `hl2.exe` client and exited during speculative x86 DX12 bootstrap. The actual renderer process is
-`NvRemixBridge.exe`: it owns the x64 Remix `d3d9.dll`, CE Vulkan layer, Vulkan device, and WSI swapchain. The follow-up
-`20260825_202150` run proved the remaining routing failure: the profiled `hl2.exe` connected normally, but the bridge's
-layer logged `Process not whitelisted - layer dormant`, then forwarded all real swapchain calls without overlay/capture.
-
-CDB plus the layer/hook timestamps establish two generic CE violations. HookThread entered
-`GetD3D9PresentAddresses -> Direct3DCreate9Ex -> Remix d3d9` after `CheckAndInstallHooks` had already established Vulkan
-ownership. That synthetic device negotiated a second Vulkan instance/device on the hook worker while the real Remix
-renderer was still initializing; the external dump then faulted on a null read in `d3d9!remixapi_InitializeLibrary`.
-Meanwhile NVIDIA's real Vulkan WSI swapchain traversed CE's pre-installed global, inline, and deep DXGI creation hooks,
-which treated the ICD-private object as a game DX12 swapchain and began installing Present/colour-space hooks.
-
-Fix: a resident CE Vulkan-layer module suppresses speculative D3D/DXGI setup before hook IPC classification; residual
-`CreateSwapChain*` hooks exact-pass-through once layer ownership is visible; Vulkan-owned and non-system D3D9 runtimes
-never receive synthetic D3D9 factory/device probes; false-positive D3D12 runtime presence no longer starts the x86 DX12
-bootstrap over such a D3D9 translator. The Vulkan layer now owns the final overlay/capture/screenshot/limiter boundary
-for translated D3D9. Policy and source regressions cover early suppression, the Remix topology, and residual-hook gates.
-The Vulkan eligibility check now also recognizes a non-whitelisted direct child when its live parent PID equals the
-host's active source PID or its exact pre-injection profile target, and that parent executable still matches the
-published whitelist. Session `20260825_203627` falsified the first source-only implementation: the bridge checked at
-`20:36:31.904`, 41 ms before remote `LoadLibrary` finished and published the parent as `sourcePid`. The host now writes
-the selected target PID into versioned discovery memory in its pre-injection callback; that callback ran 272 ms before
-the bridge check in the falsifying session. This generic lineage proof lets a client profile follow its final child
-renderer while rejecting unrelated helpers and stale/unverified parents; there is no Portal/Remix executable-name
-exception.
-
-Build 0.1.6266 and session `20260826_020732` runtime-confirmed that Portal RTX no longer crashes and the Vulkan overlay
-is visible. The remaining `GPU --` / absent VRAM rows were a distinct provenance mismatch: `sourcePid` correctly stayed
-on profiled `hl2.exe` (PID 3944), while the live bridge (PID 22668) owned RTX 5070 LUID `0xC88E`. The Vulkan metrics
-collector stamped the bridge PID, but sensors accepted an exact LUID only from the source PID and found no GPU-engine
-evidence under the non-rendering parent, so it published validity `0x0`. Sensors now accept a graphics LUID from the
-selected source or a live direct child whose process-table parent is that source, retain the parent as config/telemetry
-publication identity, and log publisher PID, parent PID, and eligibility. This reuses the generic split-renderer lineage
-boundary rather than adding a Remix name rule.
-
-### 2026-08-24 - RoboCop NGX override crash: CE trusted a foreign GetProcAddress wrapper
-
-The build 0.1.6258 user dump is a deterministic `0xC00000FD` recursion, not an NVIDIA implementation fault.
-`_nvngx.dll` was the queried driver module, but the pre-existing `GetProcAddress` chain returned
-`NVSDK_NGX_D3D12_GetFeatureRequirements` from game-local `version.dll` 4.5.2.2. CE then inline-hooked that foreign
-wrapper as if it were the core export. The dump contains 6,011 returns through
-`Hooked_GetFeatureRequirements_D3D12`, exactly `0x7d0` stack bytes apart, across nearly the complete 12 MiB thread
-stack. `KERNELBASE!WideCharToMultiByte` was only where the exhausted stack finally faulted; the repeating chain is
-`version.dll` / Streamline / CE. The NVIDIA core and plugin frames do not own the faulting recursion.
-
-Generic coexistence fix: NGX inline installation now resolves the core image's PE export table directly instead of
-calling an interceptable `GetProcAddress`; filtered dynamic hooks preserve results owned by a different module or an
-unmapped thunk and emit a rate-limited ownership diagnostic; the requirements wrapper has a thread-local re-entry
-fuse so any future malformed interceptor chain fails the one capability query instead of crashing the game. Focused
-coverage exercises direct resolution, foreign-owner policy, and nested-gate ownership. The exact third-party proxy
-binary was unavailable after the submitted session, so same-title runtime confirmation remains manual.
-
-### 2026-08-24 - RR capability verdict is runtime-stack-dependent: full override flips Available 0->1
-
-User report (submitted diagnostic logs, kept out of the wiki by name): `force_ray_reconstruction=on` did nothing in
-RoboCop (build 0.1.6258). The CVar write held
-(writeThrough=1, never drifted), but NGX answered `GetFeatureRequirements(Feature 13) = 0xBAD00012 FAIL_NotImplemented`
-(support bitmask 16 = NotImplemented; minArch=10 is garbage - the struct is only valid on Success) and
-`SuperSamplingDenoising.Available = 0`; Feature 13 was never created while SR (1) and FG (11) created/evaluated fine.
-That profile had configured ONLY `dlss_rr_dll_path` (single-snippet DLSS Swapper-style folder); every sl.* module came
-from the game's old bundled stack.
-
-Decisive A/B on the SAME machine/driver/GPU/game: local validation session `robocopnooverlayscaling` (build 0.1.6223)
-with all four paths
-(`dlss_sr_dll_path`, `dlss_rr_dll_path`, `dlss_fg_dll_path`, `streamline_dll_path`) pinned to one complete NPI folder
-read `SuperSamplingDenoising.Available = 1` through the same GetI hook and created+evaluated Feature 13. Conclusion:
-NGX's RR capability verdict is established by whichever coherent runtime stack initializes NGX in the process, not only
-by driver/GPU; a lone modern snippet inside an otherwise-old stack does not flip it (and the requirements-probe call was
-not even observed in the healthy session). Corrections: my earlier "capability answers come from driver-store NGX core,
-overrides cannot change them" reasoning was empirically wrong; the wiki no-spoof policy stands, but "unsupported" must
-first mean "incoherent partial override" before it means impossible. Open question: the exact internal trigger inside
-NGX init (SDK-version negotiation vs snippet validation vs per-app deny list). Actionable: stage ONE complete modern
-set and point all four override paths at it.
-
-### 2026-08-23 - Manual pre-release from local packages (v0.1.6258)
-
-Published a GitHub **pre-release** from the already-built local `build/packages` archives instead of dispatching
-`release-stable` (first use of this path; stable releases keep using the action). Procedure and gotchas:
-
-- Identify provenance via `build/verification/<ts>_build_<n>/verification_manifest.json` (`package_archives: passed`),
-  not the top-level `latest_*` pointers, which may reference a later run.
-- Run-dir `verification_summary.txt` / `verification_manifest.json` written by builds predating the manifest-redaction
-  code contain raw `C:\Users\<user>` paths — never upload them as-is. Stage copies, scrub both spellings (plain and
-  JSON-escaped `\\`), rename to `latest_summary.txt` / `latest_manifest.json`, assert zero residual hits.
-- Pre-push secret/name audit of unpushed commits caught fixture data in `tests/test_log_privacy.cpp` plus wiki/comment
-  mentions of a private recording folder; rewrote the unpushed commits via fixup + autosquash before pushing (pushed
-  history must stay free of account names per project constraints).
-- `gh release create <tag> --prerelease --target <sha>` requires the FULL commit SHA; short SHAs fail with HTTP 422
-  `Release.target_commitish is invalid` even when the commit exists remotely. Archives came from `build/packages`
-  byte-identical; tag version must equal the binaries' embedded build identity (0.1.6258). Tag target: the rewritten
-  HEAD whose tree matches what the build compiled (redaction code was in the working tree at build time).
-
-### 2026-08-23 - Log privacy: account names and output paths no longer logged
-
-Users sharing diagnostic logs raised privacy concerns; auditing `installed/captureengine/logs/example` found the
-Windows account name in 43 lines across 6 files (VulkanReg manifest/baseDir paths, screenshot save path, inject
-`logsPath`/DLL-validation paths, logger session discovery, NVNGX/Streamline DLL paths, perf-CSV init,
-`session_manifest.txt` `session_dir=`) and the user-chosen recording folder (`H:\...\capture_*.mkv`) in the media
-log.
-
-Fix (all funnels covered; no call site can forget):
-
-- New header-only `common/log_privacy.h` (`ce::privacy`): `RedactUserAccountComponents` masks the account token of
-  `\users\<account>` prefixes with `*` (case-insensitive marker match, marker spelling preserved). Deliberately
-  **length-preserving**: an earlier compaction prototype corrupted adjacent bytes for accounts shorter than a
-  placeholder and could grow formatted lines past funnel buffer capacity — tests caught both. CollapsePathForLog
-  collapses user-configured output paths to root + leaf (`H:\...\capture.mkv`, UNC server/share collapsed too).
-- Wired centrally: `common/logging.cpp` `Log()` now formats into a stack buffer (heap fallback via `va_copy` for
-  oversized messages) and redacts before fwrite; `hook/common/hook_common.cpp` `LogToFileAtomic` redacts before the
-  SHM ring / direct-file fan-out (covers hook_debug.log, nvngx_debug.log, and the logger-service consumer); Vulkan
-  layer `EarlyLog`/`LayerLog`/`LayerReportIncompatibleDiscovery` redact their buffers; `session_manifest.txt`
-  redacts `session_dir=`.
-- Targeted leaf-collapse at every log site printing capture/screenshot output paths (video encoder staging/open/
-  publish/mux-close/probe/cleanup, audio-only muxer start/stop, screenshot Saved lines, reserved-capture-output
-  fallback warning `configured=`).
-- Kept deliberately: CPU/GPU model + VRAM + DPI (high diagnostic value), game process/profile names (per-game
-  diagnosis; it is CE's own config), PIDs/LUIDs/handles, timestamps. Crash dumps still contain paths by nature —
-  unchanged scope.
-- Coverage: new `tests/test_log_privacy.cpp` (13 units: masking, case-insensitivity, length preservation,
-  bounded-input safety, collapse roots incl. `\\?\`/UNC/relative/URL-ish). clang-tidy baseline scope refreshed to
-  643 TUs (0 warnings). Gates: incremental product build, full unit suite + Python self-tests, lint — all green.
-
-### 2026-08-22 - Injection DLL integrity gates wired up (audit follow-ups)
-
-A full security audit found that the injection subsystem's designed DLL-integrity protections were inactive:
-`ValidateDllSecurity` (install-dir containment + broad-writability ACL check) and `VerifyDLLHash` were dead code,
-and the early-APC path (`InjectEarly`, the primary route for launched games) skipped every check that `Inject()`
-did have. Shipped releases are built without `--production`, so `CE_PRODUCTION_BUILD` is undefined and
-signature enforcement was advisory-only anyway; README now states this explicitly (trust = GitHub attestations
-+ reproducible builds until Authenticode signing ships).
-
-Changes (commit `6f4ba8b4`, all additive, dev builds stay warn-only so local iteration is unaffected):
-
-- `ValidateDllSecurity` is now called by BOTH `Inject()` and `InjectEarly()` before any remote load.
-  Production builds fail closed on out-of-app-dir paths or broadly writable DLLs; dev logs and continues.
-- `InjectEarly()` mirrors `Inject()`'s signature gate: `CE_PRODUCTION_BUILD` refuses invalid signatures;
-  dev warns and honors `SKIP_DLL_VERIFICATION=1`.
-- `VerifyDLLSignature` converts the ANSI path with `ce::injection::AnsiPathToWide` (`CP_ACP` +
-  `MB_ERR_INVALID_CHARS`) instead of byte-wise char->wchar_t widening, which sign-extended bytes >= 0x80 and
-  would verify a mangled name on non-ASCII install paths. Empty conversion fails closed.
-- Launcher (`main_controller.cpp`) and inject child (`inject_main.cpp`) fail closed on truncated/unresolvable
-  `GetModuleFileNameA` results when deriving hook-DLL/config paths: launcher resumes without injection and
-  logs `[Launcher] Cannot resolve the application directory reliably`; inject child exits 1 with a clear log.
-- Dead code removed: `VerifyDLLHash`, the `.hash` sidecar logic, member `ComputeFileHash`, and an unused static
-  hash helper. Pure helpers now live in `captureengine/injection_path_policy.h`
-  (`IsPathInsideDirectory`, `AnsiPathToWide`) with unit coverage in `tests/test_injection_path_policy.cpp`
-  (sibling-prefix rejection like `C:\appdir2` vs `C:\appdir` is locked).
-
-Audit items deliberately deferred near release: pip hash-pinning of bootstrap lint tools (build-env change),
-trace-log default / crash-dump retention policy (user-visible product change), real Authenticode signing
-(needs cert infra), same-user named-object hardening (accepted trust boundary). x86 CFG/ASan gaps remain
-documented toolchain limitations. clang-tidy baseline scope auto-refreshed to 642 TUs (0 warnings).
-
-### 2026-08-22 - RR quality presets no longer force the RR denoiser
-
-`ray_reconstruction_optimal_settings` is now a nested `off|light|medium|full` quality preset. Light disables the
-three requested Lumen/SSR temporal reconstruction paths, medium adds full-resolution Lumen reflections, and full
-adds the former remaining Lumen/VSM/MegaLights values. `r.NGX.DLSS.DenoiserMode=1` was removed from this bundle;
-only `force_ray_reconstruction=on` selects RR. Legacy `on` remains a `full` alias.
-
-`custom_cvar_overrides` adds typed final precedence for every existing `kSpecs` CVar, including case-insensitive
-canonical names and normalized aliases such as `tonemapper_sharpen`. The host rejects unsupported/mistyped entries
-before publication and sends a spec mask plus raw typed values to the hook. This grows `SharedGraphicsConfig` from
-420 to 688 bytes and moves the shared ABI and every versioned mapping/event name from 44 to 45.

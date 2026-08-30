@@ -410,6 +410,16 @@ Capture_vkEnumeratePhysicalDeviceGroupsKHR(VkInstance instance, uint32_t* pPhysi
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice,
                                                       const VkDeviceCreateInfo* pCreateInfo,
                                                       const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
+// Capabilities the layer withholds from the application so a configured
+// graphics override stays authoritative (vulkan_layer_capabilities.cpp).
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
+                                                                            const char* pLayerName,
+                                                                            uint32_t* pPropertyCount,
+                                                                            VkExtensionProperties* pProperties);
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
+                                                                VkPhysicalDeviceFeatures2* pFeatures);
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetPhysicalDeviceFeatures2KHR(VkPhysicalDevice physicalDevice,
+                                                                   VkPhysicalDeviceFeatures2* pFeatures);
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex,
                                                     VkQueue* pQueue);

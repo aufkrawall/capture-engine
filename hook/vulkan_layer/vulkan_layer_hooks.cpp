@@ -601,11 +601,16 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         // Inject capture extensions only when the physical device actually
         // advertises the complete Win32 external-memory/fence contract. Never
         // make the game's vkCreateDevice fail merely because capture is absent.
-        std::vector<const char*> extensions;
-        extensions.reserve(pCreateInfo->enabledExtensionCount + 2);
-        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-            extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
-        }
+        //
+        // The withheld-capability filter runs first: an application that
+        // queried the device extensions before CE was configured, or that
+        // enables one without querying at all, must still not reach a device
+        // where the driver owns presentation pacing. See
+        // vulkan_layer_capabilities.cpp.
+        bool withheldExtensionRemoved = false;
+        std::vector<const char*> extensions = FilterWithheldDeviceExtensions(
+            pCreateInfo->ppEnabledExtensionNames, pCreateInfo->enabledExtensionCount, &withheldExtensionRemoved);
+        extensions.reserve(extensions.size() + 6);
 
         bool hasExtMem = false;
         bool hasExtMemWin32 = false;
@@ -676,6 +681,27 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 
         LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
         result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        if (result != VK_SUCCESS && withheldExtensionRemoved) {
+            // A driver that rejects the create info because the application
+            // also chained the matching feature structure must not turn a
+            // pacing preference into a game that cannot start. The pNext chain
+            // is application-owned and const, so the only transactional answer
+            // is to hand the extension back and let the per-present metering
+            // suppression carry the profile on its own.
+            LayerLog(
+                "Vulkan Layer: vkCreateDevice failed with the withheld device extension removed (result=%d); "
+                "restoring the application's own extension list",
+                result);
+            withheldExtensionRemoved = false;
+            for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
+                const char* name = pCreateInfo->ppEnabledExtensionNames[i];
+                if (ce::vulkan_present_metering_policy::IsPresentMeteringExtensionName(name))
+                    extensions.push_back(name);
+            }
+            modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
+            modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        }
         if (result != VK_SUCCESS && overlayQueueReservation.reserved) {
             // Never let CE's extra queue be the reason a game fails to start.
             LayerLog(

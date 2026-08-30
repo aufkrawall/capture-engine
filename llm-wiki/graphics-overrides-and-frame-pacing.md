@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-29 (Vulkan FIFO vs. frame-generation present metering; overlay ring depth)
+Last cross-checked: 2026-08-30 (NVIDIA scheduled-flip announcements for display-change timing under DLSS frame generation)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -13,7 +13,7 @@ Primary sources:
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
-- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,layer_hooks,vulkan_reflex_limiter}.*`
+- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
@@ -112,6 +112,11 @@ Primary sources:
   sampler override, which forces API sampler states rather than engine CVars.
 - Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
   exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
+
+## Display-change timing
+
+- Moved to [display-change-timing.md](display-change-timing.md): `[Overlay] frametime_source=display_change`, the
+  ETW correlation chain, NVIDIA scheduled-flip announcements under DLSS frame generation, and the health counters.
 
 ## Sampler invariants
 
@@ -244,91 +249,11 @@ Primary sources:
   images concurrent across graphics and compute families. `vkCreateSwapchainKHR` logs `sharingMode` and
   `imageUsage` so a real run can prove which route is valid.
 
-## Vulkan FIFO through Streamline
+## Forced FIFO presentation under Vulkan
 
-- A Vulkan implicit layer can be too late to communicate a present-mode override to Streamline. NVIDIA's
-  [`sl.interposer` Vulkan proxy](https://github.com/NVIDIA-RTX/Streamline/blob/main/source/core/sl.interposer/vulkan/wrapper.cpp)
-  invokes its `eVulkan_CreateSwapchainKHR` **before hooks** with the application's original
-  `VkSwapchainCreateInfoKHR`, then calls the downstream Vulkan dispatch. Portal RTX sessions `20260828_014434` and
-  `20260828_022342` proved this split: Streamline received Immediate while CE's downstream layer changed only the
-  driver-bound copy to FIFO. A software rate cap cannot repair that contract and is not VSync.
-- For `vsync=fifo`, CE inline-hooks only `sl.interposer.dll!vkCreateSwapchainKHR` and substitutes FIFO before the
-  proxy invokes DLSS-G. FIFO is the only mode handled at this upstream boundary because Vulkan guarantees it; the
-  layer retains its normal validation/enforcement for the complete present-mode configuration. Hook lifetime is
-  tracked with the other Streamline core slots so unload/reload cannot retain a stale trampoline.
-- Runtime proof is two-sided and swapchain-scoped: `hook_debug.log` reports `before Streamline DLSS-G hooks`, while
-  `vulkan_layer.log` reports `driver returned ... presentMode=2`. NVIDIA officially excludes Vulkan from DLSS-G
-  VSync support, so those messages prove Vulkan mode propagation but not generated-output synchronization. Portal RTX
-  session `20260828_162056` had both messages and still produced about 158.8 FPS in three-output bursts.
-- NVIDIA's Vulkan WSI terminates in an internal DXGI flip swapchain. With a resident CE Vulkan layer and explicit
-  `vsync=fifo`, `hook/wrappers/vulkan_dxgi_fifo_present.cpp` registers only system `CreateDXGIFactory*` lookups,
-  leaves each real factory and every creation descriptor unwrapped/unchanged, and reads its four creation-method
-  addresses (slots 10/15/16/24) without writing them. Inline hooks on those system method bodies observe the returned
-  real WSI swapchain. Present/Present1 are then intercepted with a deep body hook placed past the widest recognized
-  foreign entry patch, while slots 8/22 remain untouched. Steam and other overlays retain their outer entry-chain
-  ownership; CE runs below them and forces DXGI `SyncInterval=1` while clearing `DXGI_PRESENT_ALLOW_TEARING` before
-  the system body.
-- Never replace factory/swapchain vtable slots for this path. Portal session `20260828_212805` proved that even a
-  first Present1 whose arguments were already `1/0` crashes in Steam's DLSS-G worker path after the shared system
-  vtable is changed: the initiating x64 dump is a null indirect call in `gameoverlayrenderer64`, with CE Present1 and
-  NVIDIA WSI below it. COM identity/Release tracking does not repair an ownership violation. Factory and swapchain
-  vtables, QueryInterface/Release, object identity, and creation descriptors must remain byte-for-byte outside CE.
-- This is a narrowly exempted synchronization-argument path, not a revival of CE's ordinary DXGI policy under Vulkan.
-  It performs no synthetic factory/swapchain probing, descriptor changes, frame-latency configuration, waiting,
-  overlay, capture, or limiter work. The restriction preserves the ICD presenter-thread destruction invariant below.
-  Its Present hot path reads only atomics. No driver profile/DRS write, timer, Reflex cap, refresh-derived cap, or
-  Acquire-side group pacing is a VSync fallback.
-
-## Vulkan FIFO vs. frame-generation present metering
-
-- **The reason an accepted FIFO swapchain still ran past the refresh rate: `VK_NV_present_metering` is a second,
-  competing pacing authority for the same presents, and it wins.** The application chains `VkSetPresentConfigNV`
-  (`sType` 1000613000) onto `VkPresentInfoKHR` and asks the driver to spread `numFramesPerBatch` images evenly across
-  one *rendered* frame interval, which is how multi-frame generation places its generated frames. That interval is
-  derived from the base frame rate and knows nothing about the display, so on a metered present the driver stops
-  applying the swapchain's vertical-blank wait and the output rate becomes base x `numFramesPerBatch`.
-- Portal RTX session `20260829_022419` is the end-to-end proof, and it is the explanation for the earlier
-  `20260828_162056` result above. CE overrode Immediate to FIFO and the driver accepted it (`Overriding present mode
-  0 -> 2 (fifo)`, `vkCreateSwapchainKHR driver returned: 0 (presentMode=2 ...)`), yet `perf_metrics_29472.csv` shows
-  presents climbing to 172/s on a 143 Hz display, arriving as bursts of four inside ~700 us followed by a ~23 ms gap:
-  a 43 FPS base rate times the configured 4x MFG (`rtx.conf` has `rtx.dlfg.maxInterpolatedFrames = 3`, and
-  `hook_debug.log` reports `live EvaluateFeature parameters report 4x output`). The DXGI interception saw the switch
-  from below - with frame generation off the driver presented the FIFO swapchain with `SyncInterval=1`, and the
-  moment the DLFG swapchain went live it presented with `SyncInterval=0` plus `DXGI_PRESENT_ALLOW_TEARING`. Forcing
-  the sync interval back removed the tearing but could not reintroduce the missing wait, which is exactly the reported
-  symptom: no tearing, mailbox behavior, frame rate above the refresh rate. Counting confirms the presents are not
-  dropped anywhere in between: the interval between the DXGI `final Present1 #1024` and `#2048` cadence lines contains
-  exactly 1024 `vkQueuePresentKHR` calls, so app present, driver present, and display path are 1:1.
-- RTX Remix documents both halves of this itself, in its own binary strings: `rtx.dlfg.enablePresentMetering` is
-  "Use hardware present metering for DLSS 4.0 frame generation instead of CPU pacing", and its V-Sync option carries
-  "When Frame Generation is active, V-Sync is automatically disabled". Hardware metering therefore has a supported
-  fallback - the runtime's own `DxvkDLFGPresenter` CPU pacer - and Remix deliberately presents with Immediate under
-  frame generation, which is why CE sees the mode flip to 0 on exactly the swapchain generation DLFG creates.
-- **Fix (`hook/vulkan_layer/vulkan_present_metering_policy.h`): when the profile explicitly asks for
-  vertical-blank-paced presentation, the layer removes the metering request from the present chain.** The swapchain's
-  FIFO mode is then the single pacing authority again: the frames of a generated group land on consecutive vertical
-  blanks, which is evenly paced and rate-limited by construction, and ordinary present backpressure lowers the base
-  rate to refresh / `numFramesPerBatch`. No timer, no synthetic cap, no Reflex interval is involved.
-- Conditions, all of them required: `vsync_mode` is `fifo` or `adaptive`; the presented swapchain is one the layer
-  tracks and was created with FIFO or FIFO_RELAXED (`SwapchainData::presentMode` records the mode CE passed to the
-  driver, not the one the game asked for); `swapchainCount == 1`; and `numFramesPerBatch >= 2`. A single-frame batch
-  asks for nothing FIFO does not already guarantee, and Immediate/Mailbox have no rate contract to defend.
-- **The chain node can only be unlinked when it is the head.** A `pNext` chain is application-owned and `const`, so
-  removing a deeper node would mean writing the predecessor's `pNext` in the game's memory. CE points its own
-  `VkPresentInfoKHR` copy one node further instead, and reports the deeper case
-  (`NOT suppressed: the request is not the chain head`) rather than silently doing nothing. Remix chains the metering
-  request as the only node, so the head case is the real one.
-- The struct is mirrored locally in the policy header rather than taken from `<vulkan/vulkan.h>`: the Linux MSYS2
-  headers in this tree still predate `VK_NV_present_metering` while the Windows ones define it, and `static_assert`s
-  pin the mirror to the real declaration wherever the header has it.
-- Diagnostics: `vulkan_layer.log` logs one `frame-generation present metering numFramesPerBatch=N ... - suppressed`
-  line per state (activation, multiplier change, or a chain shape CE cannot unlink), never per present. The
-  end-to-end confirmation is on the DXGI side: `hook_debug.log`'s `Vulkan DXGI FIFO: final Present1 #N` lines should
-  report `SyncInterval=1->1 Flags=0x0->0x0` once the driver honors FIFO again, instead of `SyncInterval=0->1
-  Flags=0x200->0x0`. **Unverified claim / stale-risk:** present metering being the *only* mechanism that displaces
-  FIFO here is inferred from that `SyncInterval` transition plus Remix's own option text; Remix also marks its DLFG
-  present queue out of band (`NvLL_VK_NotifyOutOfBandQueue`), which has not been excluded. If a session still shows
-  `SyncInterval=0->1` after the metering line reports `suppressed`, that is the remaining candidate.
+- Moved to [vulkan-forced-fifo.md](vulkan-forced-fifo.md): `vsync_mode=fifo` through Streamline's Vulkan proxy, the
+  final DXGI present interception, and the frame-generation present-metering capability CE withholds so the
+  swapchain's vertical-blank rate contract stays the only pacing authority.
 
 ## Vulkan swapchain image count (`backbuffer_count`)
 
@@ -586,6 +511,18 @@ Primary sources:
   every module that loads after the snapshot (when overrides are configured), so Streamline-internal loads reach the
   redirect even without the preload. Only loader imports are touched - no graphics API wrapper is installed into
   runtime modules.
+- **Ownership: the preload and the redirect belong to exactly one process per game.** Both sit behind
+  `CurrentProcessOwnsProcessLocalRuntimeOverrides()`, which stands down when the Vulkan layer has published an
+  inherited-renderer claim naming a direct child renderer of *this* client - the split-renderer titles, e.g.
+  Portal RTX's `NvRemixBridge.exe` under `hl2.exe`. Since ABI 49 that claim carries the client PID it was proven
+  against, so it can only ever silence its own client. Before that it was one session-wide renderer PID that only
+  its publisher could clear, and a terminated renderer never clears it: in session `logs/20260829_220520` Talos
+  skipped its entire `dlss_*_dll_path` preload because Portal RTX's renderer had exited 55 s earlier without
+  clearing the field, loaded its bundled `nvngx_dlssd.dll` 310.6 instead of the configured 310.7, and NGX
+  `CreateFeature` for feature 13 crashed on a null pointer while CE still injected `dlss_rr_preset=f`. If a
+  profile's override paths look inert, read the `Runtime preload: skipped because inherited child renderer PID ...
+  owns the process-local DLSS/Streamline overrides of client PID ...` line - it names both identities. Details in
+  `dx12-injection-bootstrap.md`.
 - Diagnostics: every load of a runtime-family module (sl.*, nvngx_dlss*/nvngx core, nvapi64) now logs its **resolved
   full path** from the LdrRegisterDllNotification callback (`Loader: runtime module loaded: <name> -> <path>`), which
   covers LoadLibrary, LdrLoadDll, and dependent loads. This is the authoritative answer to "which physical DLL did the

@@ -402,6 +402,20 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
         return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDeviceGroupsKHR;
     }
 
+    // Capabilities CE withholds have to be absent from what the application can
+    // discover, not only from the calls it makes afterwards: hardware present
+    // metering replaces the swapchain's vertical-blank rate contract for the
+    // life of the device (vulkan_layer_capabilities.cpp).
+    if (strcmp(pName, "vkEnumerateDeviceExtensionProperties") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkEnumerateDeviceExtensionProperties;
+    }
+    if (strcmp(pName, "vkGetPhysicalDeviceFeatures2") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkGetPhysicalDeviceFeatures2;
+    }
+    if (strcmp(pName, "vkGetPhysicalDeviceFeatures2KHR") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkGetPhysicalDeviceFeatures2KHR;
+    }
+
     if (strcmp(pName, "vkEnumerateInstanceLayerProperties") == 0 ||
         strcmp(pName, "vkEnumerateInstanceExtensionProperties") == 0) {
         return nullptr;

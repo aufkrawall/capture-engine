@@ -15,6 +15,52 @@ TEST(RemixFrameGenerationPolicyTest, RecognizesOnlyTheUpstreamRemixScheduleOptio
     EXPECT_FALSE(ce::remix_fg::ShouldOverrideConfigVariable("rtx.dlfg.maxInterpolatedFrames", 4));
 }
 
+// The Portal RTX FIFO stutter (session 20260830_175147): CE forced
+// VK_PRESENT_MODE_FIFO_KHR and unlinked VK_NV_present_metering from every
+// present, yet the driver kept presenting the FIFO swapchain with
+// SyncInterval=0 plus DXGI_PRESENT_ALLOW_TEARING because the capability was
+// still enabled on the device. Withholding the capability is only half the
+// answer: the runtime's own option has to agree, or it never falls back to the
+// CPU pacer that spreads a generated group across the rendered frame it
+// belongs to.
+TEST(RemixFrameGenerationPolicyTest, DisablesHardwarePresentMeteringOnlyForVblankPacedProfiles) {
+    using ce::remix_fg::IsPresentMeteringOption;
+    using ce::remix_fg::RequestsVblankPacedPresentation;
+    using ce::remix_fg::ShouldForcePresentMeteringOff;
+
+    EXPECT_TRUE(IsPresentMeteringOption("rtx.dlfg.enablePresentMetering"));
+    EXPECT_FALSE(IsPresentMeteringOption("rtx.dlfg.maxInterpolatedFrames"));
+    EXPECT_FALSE(IsPresentMeteringOption("rtx.dlfg.enable"));
+
+    // The same two spellings the Vulkan layer maps onto FIFO and FIFO_RELAXED,
+    // so the layer and the runtime cannot disagree about one setting.
+    EXPECT_TRUE(RequestsVblankPacedPresentation("fifo"));
+    EXPECT_TRUE(RequestsVblankPacedPresentation("adaptive"));
+    EXPECT_FALSE(RequestsVblankPacedPresentation("mailbox"));
+    EXPECT_FALSE(RequestsVblankPacedPresentation("off"));
+    EXPECT_FALSE(RequestsVblankPacedPresentation("default"));
+    EXPECT_FALSE(RequestsVblankPacedPresentation(""));
+    EXPECT_FALSE(RequestsVblankPacedPresentation("FIFO"));
+
+    EXPECT_TRUE(ShouldForcePresentMeteringOff("rtx.dlfg.enablePresentMetering", "fifo"));
+    EXPECT_TRUE(ShouldForcePresentMeteringOff("rtx.dlfg.enablePresentMetering", "adaptive"));
+    // A profile that never asked for a rate contract keeps the runtime's own
+    // pacing choice, hardware metering included.
+    EXPECT_FALSE(ShouldForcePresentMeteringOff("rtx.dlfg.enablePresentMetering", "off"));
+    EXPECT_FALSE(ShouldForcePresentMeteringOff("rtx.dlfg.enablePresentMetering", "mailbox"));
+    EXPECT_FALSE(ShouldForcePresentMeteringOff("rtx.dlfg.enablePresentMetering", "default"));
+    // No other option is ever rewritten.
+    EXPECT_FALSE(ShouldForcePresentMeteringOff("rtx.dlfg.maxInterpolatedFrames", "fifo"));
+    EXPECT_FALSE(ShouldForcePresentMeteringOff("rtx.vsync", "fifo"));
+}
+
+TEST(RemixFrameGenerationPolicyTest, PresentMeteringIsDisabledWithTheRuntimeSpelling) {
+    // Remix parses its own config values; "False" is the spelling its own
+    // rtx.conf uses for a disabled boolean option.
+    EXPECT_STREQ(ce::remix_fg::kPresentMeteringDisabledValue, "False");
+    EXPECT_STREQ(ce::remix_fg::kPresentMeteringOption, "rtx.dlfg.enablePresentMetering");
+}
+
 TEST(RemixFrameGenerationPolicyTest, ReassertsWhenNgxAndTheUpstreamSchedulerCanDiffer) {
     using ce::remix_fg::ShouldReassertFromNgx;
 

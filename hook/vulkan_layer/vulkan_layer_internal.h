@@ -58,6 +58,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
 
+// vulkan_layer_capabilities.cpp - the enabled-extension half of the withheld
+// capability decision. Sets *removed when the returned list is shorter.
+std::vector<const char*> FilterWithheldDeviceExtensions(const char* const* names, uint32_t count, bool* removed);
+
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue);
