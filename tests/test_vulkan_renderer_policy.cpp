@@ -115,8 +115,14 @@ TEST(VulkanRendererPolicyTest, ResidentCaptureLayerSuppressesSpeculativeEarlyD3D
     EXPECT_TRUE(ShouldInstallEarlyD3DDXGIHooks(/*vulkanLayerModuleLoaded=*/false));
 }
 
-TEST(VulkanRendererPolicyTest, FinalDxgiPresentArmsOnlyForResidentVulkanFifo) {
-    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "fifo"));
+// Retired. NVIDIA's WSI picks the DXGI parameters per present on one FIFO
+// swapchain - `SyncInterval=1` for a flip that must hard-sync, `SyncInterval=0`
+// plus `DXGI_PRESENT_ALLOW_TEARING` for one the display is meant to stretch,
+// both observed on the same swapchain in session `20260830_185703`. Forcing
+// them uniformly replaces variable refresh with a fixed vertical-blank grid,
+// which is the judder this path was supposed to prevent.
+TEST(VulkanRendererPolicyTest, FinalDxgiPresentIsNeverArmed) {
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "fifo"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "fifo"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "adaptive"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "mailbox"));
@@ -250,9 +256,36 @@ TEST(VulkanRendererPolicyTest, RendererHookEligibilityIsExactAndPreservesParentS
 }
 
 TEST(VulkanRendererPolicyTest, ProcessLocalOverridesMoveOnlyAfterRendererPublication) {
-    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(41, 0));
-    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(42, 42));
-    EXPECT_FALSE(ShouldApplyProcessLocalRuntimeOverrides(41, 42));
+    // No claim published yet: ordinary single-process behavior.
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(41, 0, 0));
+    // The renderer named by the claim owns them.
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(42, 42, 41));
+    // Its own client stands down for it.
+    EXPECT_FALSE(ShouldApplyProcessLocalRuntimeOverrides(41, 42, 41));
+    // A claim that names no client cannot be scoped, so it keeps suppressing.
+    EXPECT_FALSE(ShouldApplyProcessLocalRuntimeOverrides(41, 42, 0));
+}
+
+// Regression (Talos 20260829_220520): only the publishing renderer can clear
+// its claim, so a renderer terminated without a layer shutdown leaves it set
+// for the rest of the CaptureEngine session. The next game read that dead PID
+// as "someone else owns the process-local DLSS/Streamline overrides" and
+// skipped its own DLL redirect, preload, and indicator - it then loaded its own
+// bundled nvngx_dlssd instead of the configured override and NGX CreateFeature
+// dereferenced null. A claim only ever speaks for the tree it was published in.
+TEST(VulkanRendererPolicyTest, ClaimFromAnotherProcessTreeNeverSuppressesOverrides) {
+    constexpr uint32_t kPreviousRendererPid = 12072;  // NvRemixBridge.exe
+    constexpr uint32_t kPreviousClientPid = 19796;    // hl2.exe
+    constexpr uint32_t kNextGamePid = 164;            // Talos1-Win64-Shipping.exe
+
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(kNextGamePid, kPreviousRendererPid,
+                                                        kPreviousClientPid));
+    // The split-renderer case it must keep answering: the previous client is
+    // still the only process that stands down for that renderer.
+    EXPECT_FALSE(ShouldApplyProcessLocalRuntimeOverrides(kPreviousClientPid, kPreviousRendererPid,
+                                                         kPreviousClientPid));
+    EXPECT_TRUE(ShouldApplyProcessLocalRuntimeOverrides(kPreviousRendererPid, kPreviousRendererPid,
+                                                        kPreviousClientPid));
 }
 
 TEST(VulkanRendererPolicyTest, SharedFlagFollowsPublishedDecision) {
@@ -387,11 +420,18 @@ TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverrides
     ASSERT_FALSE(hookBootstrap.empty());
     ASSERT_FALSE(hookThread.empty());
 
-    const size_t publish = layerIpc.find("inheritedRendererProcessPid.store");
+    const size_t publish = layerIpc.find("inheritedRendererClaim.store");
     const size_t bootstrap = layerIpc.find("LayerBootstrapInheritedRendererHook()", publish);
     ASSERT_NE(publish, std::string::npos);
     ASSERT_NE(bootstrap, std::string::npos);
     EXPECT_LT(publish, bootstrap);
+    // The claim must carry the client it was proven against, and the hook-side
+    // gate must consume both halves. Publishing the renderer PID alone is what
+    // let a dead claim silence the next game's runtime overrides.
+    EXPECT_NE(layerIpc.find("MakeClaim(GetCurrentProcessId()"), std::string::npos);
+    EXPECT_NE(layerIpc.find("inheritedParentPid)"), std::string::npos);
+    EXPECT_NE(hookBootstrap.find("ce::inherited_renderer::ClientPid(claim)"), std::string::npos);
+    EXPECT_NE(hookBootstrap.find("ce::inherited_renderer::RendererPid(claim)"), std::string::npos);
     EXPECT_NE(layerBootstrap.find("capture_hook_x64.dll"), std::string::npos);
     EXPECT_NE(layerBootstrap.find("CE_WaitForInheritedRendererBootstrap"), std::string::npos);
     EXPECT_NE(layerBootstrap.find("LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"), std::string::npos);

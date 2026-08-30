@@ -518,9 +518,16 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
         VkCommandBufferBeginInfo computeBegin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         if (disp->fp_vkBeginCommandBuffer(computeCommand, &computeBegin) != VK_SUCCESS)
             return false;
+        // The acquire transition has to be ordered *after* the semaphore wait,
+        // and a semaphore wait only orders the stages named in its
+        // dstStageMask. This submit waits at COMPUTE_SHADER, so a barrier whose
+        // srcStageMask is TOP_OF_PIPE - the shape this used to have - is free
+        // to retile the image while the game's own composite into it is still
+        // running. That is a per-frame race whose visible form is an overlay
+        // that appears on some presented frames and not others.
         RecordSwapchainLayoutBarrier(disp, computeCommand, state.swapchainImages[imageIndex],
                                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
-                                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
         if (bounds.extent.width > 0 && bounds.extent.height > 0) {
             const int32_t rect[4] = {bounds.offset.x, bounds.offset.y, static_cast<int32_t>(bounds.extent.width),
@@ -552,12 +559,20 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     graphicsSubmit.pSignalSemaphores = &state.offscreenReadySemaphores[submissionSlot];
     const int64_t graphicsSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
     VkFence fence = state.fences[submissionSlot];
-    if (disp->fp_vkResetFences(state.device, 1, &fence) != VK_SUCCESS)
-        return false;
     {
         ScopedBorrowedQueueSubmission guard(graphicsTarget.queue);
-        if (disp->fp_vkQueueSubmit(graphicsTarget.queue, 1, &graphicsSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
+        if (disp->fp_vkQueueSubmit(graphicsTarget.queue, 1, &graphicsSubmit, VK_NULL_HANDLE) != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: compute-present offscreen submit FAILED (slot %u, image %u)", submissionSlot,
+                     imageIndex);
             return false;
+        }
+    }
+    // Only now, immediately before the submit that carries it. Resetting a slot
+    // fence and then failing to submit leaves it unsignalled for the lifetime of
+    // the swapchain, which silently shrinks the ring one slot at a time.
+    if (disp->fp_vkResetFences(state.device, 1, &fence) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: compute-present fence reset FAILED (slot %u)", submissionSlot);
+        return false;
     }
     const uint64_t graphicsSubmitUs =
         phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - graphicsSubmitStartUs) : 0;
@@ -583,8 +598,17 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     computeSubmit.signalSemaphoreCount = 1;
     computeSubmit.pSignalSemaphores = &signalSemaphore;
     const int64_t computeSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
-    if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence) != VK_SUCCESS)
+    if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence) != VK_SUCCESS) {
+        // The fence is disarmed and nothing will signal it. Re-arm it with a
+        // fence-only submit rather than retiring this slot permanently.
+        LayerLog("Vulkan Layer: compute-present composite submit FAILED (slot %u, image %u); re-arming its fence",
+                 submissionSlot, imageIndex);
+        if (disp->fp_vkQueueSubmit(presentQueue, 0, nullptr, fence) != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] overlay submission slot %u is stranded; the ring is one slot shallower",
+                     submissionSlot);
+        }
         return false;
+    }
     const uint64_t computeSubmitUs =
         phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeSubmitStartUs) : 0;
     CommitComputePresentDiagnostics(state, commandReused, phaseSampled, graphicsRecordUs, graphicsSubmitUs,

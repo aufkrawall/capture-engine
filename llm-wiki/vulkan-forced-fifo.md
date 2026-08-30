@@ -1,6 +1,6 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-08-30 (metering withholding measured and ruled out; per-present mode selection and the overlay ring)
+Last cross-checked: 2026-08-30 (the final-DXGI override retired, the overlay ring, and the compute-composite barrier)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -10,9 +10,9 @@ device.
 
 Primary sources:
 - `hook/vulkan_layer/{vulkan_layer_swapchain,vulkan_layer_present,vulkan_layer_capabilities}.cpp`
-- `hook/vulkan_layer/{layer_overlay,layer_overlay_render}.cpp`
+- `hook/vulkan_layer/{layer_overlay,layer_overlay_render,layer_overlay_compute}.cpp`
 - `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
-- `hook/common/{vulkan_dxgi_fifo_policy.h,remix_frame_generation_policy.h}`
+- `hook/common/{vulkan_dxgi_fifo_policy.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
 - `hook/wrappers/vulkan_dxgi_fifo_present.cpp`
 - `hook/apis/{streamline_hook_api,remix_hook}.cpp`
 - `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy}.cpp`
@@ -37,8 +37,10 @@ screen.
   `vulkan_layer.log` reports `driver returned ... presentMode=2`. NVIDIA officially excludes Vulkan from DLSS-G
   VSync support, so those messages prove Vulkan mode propagation but not generated-output synchronization. Portal RTX
   session `20260828_162056` had both messages and still produced about 158.8 FPS in three-output bursts.
+- **Retired (2026-08-30), see "the DXGI override was the bug" below.** The description that follows is what the path
+  did while it was armed; `ShouldArmFinalDxgiPresent` now always returns false, so none of these hooks are installed.
 - NVIDIA's Vulkan WSI terminates in an internal DXGI flip swapchain. With a resident CE Vulkan layer and explicit
-  `vsync=fifo`, `hook/wrappers/vulkan_dxgi_fifo_present.cpp` registers only system `CreateDXGIFactory*` lookups,
+  `vsync=fifo`, `hook/wrappers/vulkan_dxgi_fifo_present.cpp` registered only system `CreateDXGIFactory*` lookups,
   leaves each real factory and every creation descriptor unwrapped/unchanged, and reads its four creation-method
   addresses (slots 10/15/16/24) without writing them. Inline hooks on those system method bodies observe the returned
   real WSI swapchain. Present/Present1 are then intercepted with a deep body hook placed past the widest recognized
@@ -136,59 +138,75 @@ screen.
   hardware present metering is not what displaces the vertical-blank wait here.
 - The withholding is kept because two pacing authorities on one set of presents is still wrong, and because it costs
   nothing when the runtime does not use the extension - but it is no longer offered as the explanation for anything.
-  See "The effective present mode is not the created one" below for where the evidence now points.
+  See "the DXGI override was the bug" below for where the evidence now points.
 
-## The effective present mode is not the created one
+## The effective present mode is the created one; the DXGI override was the bug
 
-- **The discriminator is not frame generation, it is who asked for the mode.** In `20260830_182939` the application
-  created four swapchains: two it asked for FIFO itself (`18:29:52.494`, `18:29:53.664`) and two CE overrode from
-  Immediate (`18:29:51.448`, `18:29:57.006`). DXGI swapchain #2, the application's own FIFO one, is presented with
-  `SyncInterval=1`. DXGI swapchain #3, the one CE overrode, is presented with `SyncInterval=0` plus
-  `DXGI_PRESENT_ALLOW_TEARING`. Same process, same WSI, same driver. The WSI honours FIFO; the overridden
-  swapchain's *effective* mode simply is not FIFO.
-- Remix recreates the swapchain as Immediate at `18:29:57.006`, 96 ms before `DLSS FG ACTIVATED` - the documented "V-Sync
-  is automatically disabled when Frame Generation is active" - and CE overrides that creation back to FIFO.
-- **The remaining candidate is a present-mode selection CE never sees.** `VK_EXT_swapchain_maintenance1`
-  (core-promoted as `VK_KHR_swapchain_maintenance1`) lets an application list compatible modes in
-  `VkSwapchainPresentModesCreateInfoEXT` at creation and then pick one per present with
-  `VkSwapchainPresentModeInfoEXT`, with no recreation involved. DXVK - which Remix is built on - uses it for exactly
-  that kind of switch. **Unverified:** no session has printed the chains yet.
-- `hook/vulkan_layer/vulkan_present_chain_policy.h` therefore does two things at once. It prints the `pNext` chain CE
-  was handed at `vkCreateSwapchainKHR` (once per swapchain) and at `vkQueuePresentKHR` (once per distinct shape), and
-  `vkCreateDevice` logs which presentation-relevant extensions the application requested. And when the chain does
-  carry a per-present selection that disagrees with the swapchain's created mode, CE substitutes its own head node
-  forcing the created mode back.
-- **The forced value is always the swapchain's own creation mode**, never a mode of CE's choosing: Vulkan requires a
-  per-present selection to name one of the modes the swapchain declared compatible, and the creation mode is the one
-  value guaranteed to be in that set. The substitution is head-only for the same reason the metering unlink is, and a
-  deeper node is reported rather than rewritten.
+- **The per-present-mode-selection hypothesis was measured and is dead.** Session `20260830_185703` prints what CE is
+  actually handed: `presentation-relevant device extensions requested: <none>` (no
+  `VK_EXT_swapchain_maintenance1`, no `VK_KHR_present_id`/`present_wait`, no `VK_NV_low_latency2`),
+  `vkCreateSwapchainKHR pNext chain: sType=1000255000 (nodes=1)` - a lone `VkSurfaceFullScreenExclusiveInfoEXT` - and
+  no `vkQueuePresentKHR pNext chain:` line at all, because the present chain is empty. Nothing selects a present mode
+  behind CE's back.
+- **What the same session does show is the WSI choosing the DXGI parameters per present on one FIFO swapchain**:
+  `final Present1 #1024 force=1 SyncInterval=1->1 Flags=0x0->0x0`, then `#2048 force=1 SyncInterval=0->1
+  Flags=0x200->0x0`. Same swapchain, same thread, seven seconds apart. `SyncInterval=0` plus
+  `DXGI_PRESENT_ALLOW_TEARING` is not a driver that forgot to synchronize - **it is how variable refresh is driven on
+  Windows.** A flip the display is meant to stretch must be presented that way; the panel then refreshes on the flip
+  instead of the flip waiting for the panel.
+- **So CE's final-DXGI interception was replacing variable refresh with a fixed vertical-blank grid**, and under
+  frame generation - where the rendered frame period is not constant - a fixed grid turns that variation into visible
+  stutter while every present-side frame time stays flat. It also explains the user's A/B exactly: forcing the mode in
+  the *driver* leaves `vsync_mode` at something other than `fifo`, so this path never armed, and the title is smooth.
+- **`hook/common/vulkan_dxgi_fifo_policy.h`: `ShouldArmFinalDxgiPresent` now always returns false.** Nothing registers
+  the factory hooks, nothing installs a `Present`/`Present1` body hook, and no present parameters are rewritten. The
+  swapchain's `VK_PRESENT_MODE_FIFO_KHR` is the whole contract and the same WSI honours it - the application's own
+  FIFO swapchain in that session was presented the same adaptive way. The rate escape this path was built for was
+  hardware present metering, which is now declined at device level, so the symptom no longer has a cause.
+- The machinery in `hook/wrappers/vulkan_dxgi_fifo_present.cpp` is left in place and inert; re-arming it is a one-line
+  change if a future session ever shows the presented rate exceeding the refresh rate again. **Watch for that in the
+  perf CSV**, because the `final Present1 #N` diagnostic goes away with it.
 
 ## The overlay submission ring must not pace the game
 
-- **CE's own overlay resource recycling was blocking the game's present thread on more than half of all presents.**
-  `20260830_182939`, `perf_metrics_13360.csv`: `fence_wait_us` median 2867 us, mean 3551 us, p90 7989 us, p99 14999
-  us, max 27654 us, and `vulkan_layer.log` passes `All 10 overlay submission slots are in flight ... wait=1024` in
-  twelve seconds. Four presents of a generated group carry roughly 14 ms of that inside a 29 ms rendered frame.
-- This is the 2026-08-29 finding recurring at the wider ring. Widening it from `imageCount` to `imageCount + 4` moved
-  the threshold and kept the shape: any fixed depth is a second rate limiter in the present path whose period is the
-  slot count, and beating a 10-slot ring against a 4-present group is an uneven *rendered* frame period even while
-  every vertical blank receives a new image. Generated frames carry scene time, so that is judder.
-- **Fix: the ring is extended by one slot whenever a present finds none reusable**, which costs one command buffer,
-  one fence and one binary semaphore and converges within a few frames on whatever the runtime actually keeps
-  outstanding. `kMaxSubmissionSlots` is a memory-safety bound, not a tuned depth; reaching it keeps the old blocking
-  behaviour so the failure stays bounded, and says so in the log. The compute-composite route does not grow: each of
-  its slots also owns a full-resolution offscreen target.
-- **Slot reuse needed a second fact the fence never proved.** The fence proves CE's submission retired, so its
-  command buffer may be re-recorded. It says nothing about the *binary semaphore* that submission signalled: the
-  present waiting on it is a queue operation that can still be pending long afterwards, and re-signalling a binary
-  semaphore whose wait has not executed is undefined behaviour. Under FIFO the gap between the two is several
-  vertical blanks, which is a strong candidate for the reported overlay flicker.
-- Without `VK_EXT_swapchain_maintenance1`'s present fence the sound proof is the swapchain itself:
-  `vkAcquireNextImageKHR` returning image i means the presentation engine has finished with image i, so every present
-  of image i - including the one that waited on this slot's semaphore - has executed its wait. `SwapchainData`
-  carries one acquire counter per image; a slot records the image and counter value it was used with, and is
-  reusable only once that counter has moved. It stays exact when a generated-frame runtime presents one image
-  several times without re-acquiring: those presents all complete before the image comes back.
-- Diagnostics: `overlay submission ring extended to N slots` (first eight growths, then powers of two) and, only if
-  extension is impossible, `overlay submission ring could not be extended past N slots`. The confirmation signal is
-  `fence_wait_us` collapsing to microseconds.
+- **CE's own overlay resource recycling blocks the game's present thread.** `20260830_182939` measured a
+  `fence_wait_us` median of 2867 us on more than half of all presents; `20260830_185703`, with the reuse gate below in
+  place, measures a median of 30 us but a p99 of 34 ms and a max of 65 ms - roughly 14 ms of a 29 ms rendered frame,
+  moved from a constant tax to a spiky one.
+- Widening the ring from `imageCount` to `imageCount + 4` on 2026-08-29 moved the threshold and kept the shape. **Any
+  fixed depth is a second rate limiter whose period is the slot count**, and beating a 10-slot ring against a
+  4-present generated group is an uneven *rendered* frame period even while every vertical blank receives a new image.
+  Generated frames carry scene time, so that is judder.
+- **The ring is extended by one slot whenever a present finds none reusable** - one command buffer, one fence, one
+  binary semaphore - and converges on what the runtime actually keeps outstanding. It is bounded by
+  `CustomOverlay::VulkanBackend::kFramePoolSize`, which is a correctness bound rather than a tuned depth: that pool's
+  index is free-running, so more submissions in flight than it has entries and the CPU overwrites geometry the GPU is
+  still reading. `layer_overlay_render.cpp` asserts the two constants against each other.
+- **The compute-composite route grows too.** It owns a full-resolution offscreen target per slot, and an appended slot
+  gets none - and needs none: it fails that route's own resource bounds check before either queue sees work and falls
+  through to the direct graphics path for that present. Refusing to grow there is what left `20260830_185703` logging
+  `could not be extended past 10 slots ... growths=0` past its 1024th occurrence, because Portal RTX presents from a
+  compute-only queue (`Present topology - present queue family=2 ... graphics=0`).
+- **Slot reuse needs two facts and the fence only proves one.** The fence proves CE's submission retired, so its
+  command buffer may be re-recorded. It says nothing about the binary semaphore that submission signalled: the present
+  waiting on it is a queue operation that can still be pending, and re-signalling a binary semaphore whose wait has
+  not executed is undefined behaviour. Without `VK_EXT_swapchain_maintenance1`'s present fence the sound proof is the
+  swapchain itself - `vkAcquireNextImageKHR` returning image i means every present of image i executed its wait - so
+  `SwapchainData` carries one acquire counter per image and a slot is reusable only once its image's counter moved.
+
+## Compute-composite synchronization
+
+- **A semaphore wait only orders the stages named in its `dstStageMask`.** The compute composite waits on the game's
+  own present semaphores at `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`, and its acquire barrier - the
+  `PRESENT_SRC_KHR -> GENERAL` transition - used `VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT` as its `srcStageMask`. TOP_OF_PIPE
+  is not in the wait's mask, so that transition was free to retile the image while the game's own composite into it
+  was still running. **The visible form of that race is an overlay that appears on some presented frames and not
+  others**, which is the reported flicker. The barrier now names COMPUTE_SHADER on both sides. The release barrier
+  (`GENERAL -> PRESENT_SRC_KHR`, dst BOTTOM_OF_PIPE) was already the correct present idiom, and the direct graphics
+  route was already correct too - its render pass dependency names COLOR_ATTACHMENT_OUTPUT, which is exactly what its
+  submit waits at.
+- **A slot fence is disarmed only for the submit that carries it.** `vkResetFences` used to run before the offscreen
+  graphics submit, so a failed submit left that fence unsignalled for the lifetime of the swapchain and the ring lost
+  a slot permanently and silently. The reset now sits immediately before the composite submit, and a failed composite
+  submit re-arms the fence with a fence-only submit rather than stranding the slot. Both failures are logged.
+

@@ -118,9 +118,15 @@ private:
     VkImageView fontImageView = VK_NULL_HANDLE;
 
     // Per-frame buffer pool — prevents CPU/GPU data race on host-visible buffers.
-    // Pool size matches the DX12 backend so fence guarantees that slot N is
-    // GPU-idle before the CPU reuses it.
-    static constexpr int kFramePoolSize = 16;
+    // The index is free-running, so the pool is only safe while fewer overlay
+    // submissions are in flight than it has entries. Public because it is the
+    // hard ceiling on the Vulkan layer's submission ring: the layer asserts
+    // ce::overlay_submit_queue_policy::kMaxSubmissionSlots against it. Each
+    // entry is a small host-visible vertex/index pair, so depth here is cheap.
+public:
+    static constexpr int kFramePoolSize = 32;
+
+private:
     VkBuffer vertexBuffer[kFramePoolSize] = {};
     VkDeviceMemory vertexMemory[kFramePoolSize] = {};
     VkBuffer indexBuffer[kFramePoolSize] = {};

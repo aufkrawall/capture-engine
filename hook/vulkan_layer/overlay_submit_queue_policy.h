@@ -155,7 +155,11 @@ inline uint32_t ResolveSubmissionSlotCount(uint32_t imageCount) noexcept {
 // bound rather than a tuned depth: reaching it means something is wrong (a
 // swapchain that stopped presenting, a lost device), and the old blocking
 // behaviour is retained there so the failure is bounded rather than unbounded.
-inline constexpr uint32_t kMaxSubmissionSlots = 64;
+// Bounded by the overlay backend's per-frame vertex/index pool, whose index is
+// free-running: more submissions in flight than that pool has entries and the
+// CPU overwrites geometry the GPU is still reading. The two constants are
+// asserted against each other where both headers are visible.
+inline constexpr uint32_t kMaxSubmissionSlots = 32;
 
 // **Slot reuse needs two facts, and the fence only proves one of them.** The
 // fence proves CE's own submission retired, so its command buffer may be

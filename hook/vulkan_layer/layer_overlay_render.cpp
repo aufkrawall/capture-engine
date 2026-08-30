@@ -189,7 +189,16 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
             return 0;
         return imageAcquireGeneration[slotImage].load(std::memory_order_acquire);
     };
-    const bool ringMayGrow = state.submissionRingMayGrow && !useComputePresent;
+    // The compute-composite route owns a full-resolution offscreen target per
+    // slot, so an appended slot gets none - and needs none: it fails that
+    // route's own resource bounds check before either queue sees work, and
+    // falls through to the direct graphics path below for that present. Growth
+    // therefore costs one command buffer, one fence and one semaphore on both
+    // routes, and never a second full-resolution image.
+    static_assert(static_cast<int>(ce::overlay_submit_queue_policy::kMaxSubmissionSlots) <=
+                      CustomOverlay::VulkanBackend::kFramePoolSize,
+                  "the submission ring may not outgrow the overlay backend's per-frame buffer pool");
+    const bool ringMayGrow = state.submissionRingMayGrow;
     auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlot(
         slotCount, state.nextSubmissionSlot,
         [&](uint32_t candidate) {

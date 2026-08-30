@@ -9,6 +9,10 @@
 #include "../hook/vulkan_layer/vulkan_reflex_limiter.h"
 #include "source_fragment_reader.h"
 
+#include <cstring>
+
+#include "../hook/common/custom_overlay_vk.h"
+
 // Regression coverage for the DOOM Eternal overlay disappearing after ~240
 // frames, session installed/captureengine/logs/20260819_030710.
 //
@@ -136,6 +140,74 @@ TEST(OverlaySubmitQueuePolicy, RepeatedPresentsOfOneImageShareItsAcquireProof) {
     const uint64_t generationAtUse = 12;
     EXPECT_FALSE(IsSubmissionSlotReusable(true, true, generationAtUse, generationAtUse));
     EXPECT_TRUE(IsSubmissionSlotReusable(true, true, generationAtUse, generationAtUse + 1));
+}
+
+// Portal RTX presents from a compute-only queue (family 2), so it takes the
+// compute-composite route - and that route refused to extend the ring, which is
+// why session `20260830_185703` logs "could not be extended past 10 slots ...
+// growths=0" past its 1024th occurrence while `fence_wait_us` reaches 65 ms.
+TEST(OverlaySubmitQueuePolicySourceTest, TheComputeRouteMayExtendTheRingToo) {
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    ASSERT_FALSE(render.empty());
+
+    EXPECT_EQ(render.find("state.submissionRingMayGrow && !useComputePresent"), std::string::npos)
+        << "an appended slot owns no offscreen target and falls through to the direct route, so the "
+           "compute-composite path has nothing to protect by refusing to grow";
+    EXPECT_NE(render.find("const bool ringMayGrow = state.submissionRingMayGrow;"), std::string::npos);
+    // The bound is the overlay backend's own per-frame buffer pool, not a number.
+    EXPECT_NE(render.find("kFramePoolSize"), std::string::npos);
+}
+
+TEST(OverlaySubmitQueuePolicy, TheRingIsBoundedByTheOverlayBackendsFramePool) {
+    // A free-running pool index is only safe while fewer submissions are in
+    // flight than the pool has entries, so this is a correctness bound rather
+    // than a tuning choice.
+    EXPECT_LE(static_cast<int>(kMaxSubmissionSlots), CustomOverlay::VulkanBackend::kFramePoolSize);
+}
+
+// The compute composite acquires the swapchain image from PRESENT_SRC_KHR after
+// waiting on the game's own present semaphores. A semaphore wait only orders the
+// stages named in its dstStageMask, so a layout transition at TOP_OF_PIPE can
+// retile the image while the game is still writing it - an overlay that appears
+// on some presented frames and not others.
+TEST(OverlaySubmitQueuePolicySourceTest, TheComputeAcquireBarrierIsOrderedAfterTheSemaphoreWait) {
+    const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
+    ASSERT_FALSE(compute.empty());
+
+    const size_t acquire = compute.find("VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL");
+    ASSERT_NE(acquire, std::string::npos);
+    const size_t acquireStages = compute.find("VK_PIPELINE_STAGE_", acquire);
+    ASSERT_NE(acquireStages, std::string::npos);
+    EXPECT_EQ(compute.compare(acquireStages, std::strlen("VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT"),
+                              "VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT"),
+              0)
+        << "the acquire transition must name the stage the submit waits at, not TOP_OF_PIPE";
+
+    // The release side keeps the present idiom: the transition back is ordered
+    // before the semaphore the present waits on.
+    const size_t release = compute.find("VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR");
+    ASSERT_NE(release, std::string::npos);
+    EXPECT_NE(compute.find("VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT", release), std::string::npos);
+}
+
+// A slot fence that is disarmed and then never submitted stays unsignalled for
+// the lifetime of the swapchain, so the ring silently loses a slot every time a
+// submit fails.
+TEST(OverlaySubmitQueuePolicySourceTest, TheSlotFenceIsDisarmedOnlyForTheSubmitThatCarriesIt) {
+    const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
+    ASSERT_FALSE(compute.empty());
+
+    const size_t offscreenSubmit = compute.find("fp_vkQueueSubmit(graphicsTarget.queue");
+    const size_t fenceReset = compute.find("fp_vkResetFences(state.device, 1, &fence)");
+    const size_t compositeSubmit = compute.find("fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence)");
+    ASSERT_NE(offscreenSubmit, std::string::npos);
+    ASSERT_NE(fenceReset, std::string::npos);
+    ASSERT_NE(compositeSubmit, std::string::npos);
+    EXPECT_LT(offscreenSubmit, fenceReset)
+        << "the offscreen submit can fail, and it must not leave a disarmed fence behind";
+    EXPECT_LT(fenceReset, compositeSubmit);
+    EXPECT_NE(compute.find("fp_vkQueueSubmit(presentQueue, 0, nullptr, fence)"), std::string::npos)
+        << "a failed composite submit must re-arm the fence rather than strand the slot";
 }
 
 }  // namespace
