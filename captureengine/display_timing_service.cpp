@@ -1,5 +1,8 @@
 #include "display_timing_service.h"
 #include "display_timing_correlation.h"
+#include "display_timing_etw.h"
+#include "display_timing_health.h"
+#include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
 
 #include <windows.h>
@@ -13,9 +16,7 @@
 #include <cwchar>
 #include <cstring>
 #include <deque>
-#include <initializer_list>
 #include <iterator>
-#include <limits>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -25,98 +26,13 @@
 #include "../common/display_timing_shared.h"
 #include "../common/logging.h"
 
+using namespace display_timing_etw;
+
 namespace {
-constexpr GUID kRuntimeProvider = {0xca11c036, 0x0102, 0x4a2d, {0xa6, 0xad, 0xf0, 0x3c, 0xfe, 0xd5, 0xd3, 0xc9}};
-constexpr GUID kGraphicsKernelProvider = {
-    0x802ec45a, 0x1e99, 0x4b83, {0x99, 0x20, 0x87, 0xc9, 0x82, 0x77, 0xba, 0x9d}};
-constexpr GUID kFrameTypeProvider = {
-    0xecaa4712, 0x4644, 0x442f, {0xb9, 0x4c, 0xa3, 0x2f, 0x6c, 0xf8, 0xa4, 0x99}};
-
-constexpr uint16_t kRuntimePresentStart = 0x2a;
-constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
-constexpr uint16_t kQueuePacketStart = 0xb2;
-constexpr uint16_t kMmioFlip = 0x74;
-constexpr uint16_t kMmioMpoFlip = 0x103;
-constexpr uint16_t kVsync = 0x11;
-constexpr uint16_t kVsyncMpo = 0x111;
-constexpr uint16_t kHsyncMpo = 0x17e;
-constexpr uint16_t kMpoPresentIds = 0x182;
-constexpr uint16_t kGeneratedFlip = 0x2;
-
 constexpr int64_t kTimestampReorderWindowUs = 24'000;
 constexpr std::size_t kMaxPendingPresentsPerProcess = 16;
 constexpr uint64_t kHealthLogPeriodMs = 10'000;
 constexpr DWORD kTraceFlushPeriodMs = 8;
-constexpr std::size_t kTraceSessionNameCapacity = 64;
-constexpr ULONG kEventIdFilterType = 0x80000200;
-constexpr ULONG kIgnoreZeroKeywordEvents = 0x00000010;
-
-struct EventIdFilter {
-    BOOLEAN filterIn;
-    UCHAR reserved;
-    USHORT count;
-    USHORT events[1];
-};
-
-struct alignas(EVENT_TRACE_PROPERTIES) TracePropertiesBuffer {
-    std::array<std::byte, sizeof(EVENT_TRACE_PROPERTIES) + kTraceSessionNameCapacity * sizeof(wchar_t)> storage{};
-
-    EVENT_TRACE_PROPERTIES* Get() noexcept {
-        return reinterpret_cast<EVENT_TRACE_PROPERTIES*>(storage.data());
-    }
-};
-
-template <typename T>
-bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
-                  ULONG arrayIndex = std::numeric_limits<ULONG>::max()) {
-    PROPERTY_DATA_DESCRIPTOR descriptor = {};
-    descriptor.PropertyName = reinterpret_cast<ULONGLONG>(name);
-    descriptor.ArrayIndex = arrayIndex;
-    ULONG size = sizeof(value);
-    return TdhGetProperty(const_cast<EVENT_RECORD*>(event), 0, nullptr, 1, &descriptor, size,
-                          reinterpret_cast<PBYTE>(&value)) == ERROR_SUCCESS;
-}
-
-TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
-    const std::size_t nameBytes = (std::wcslen(name) + 1) * sizeof(wchar_t);
-    TracePropertiesBuffer buffer;
-    auto* properties = buffer.Get();
-    properties->Wnode.BufferSize = static_cast<ULONG>(sizeof(EVENT_TRACE_PROPERTIES) + nameBytes);
-    properties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-    properties->Wnode.ClientContext = 1;
-    properties->BufferSize = 64;
-    properties->MinimumBuffers = 4;
-    properties->MaximumBuffers = 16;
-    properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING;
-    properties->FlushTimer = 1;
-    properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
-    std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
-    return buffer;
-}
-
-ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, ULONGLONG keywords,
-                             std::initializer_list<USHORT> eventIds) {
-    const std::size_t filterSize = offsetof(EventIdFilter, events) + eventIds.size() * sizeof(USHORT);
-    std::vector<std::byte> filterStorage(filterSize);
-    auto* filter = reinterpret_cast<EventIdFilter*>(filterStorage.data());
-    filter->filterIn = TRUE;
-    filter->reserved = 0;
-    filter->count = static_cast<USHORT>(eventIds.size());
-    std::copy(eventIds.begin(), eventIds.end(), filter->events);
-
-    EVENT_FILTER_DESCRIPTOR descriptor = {};
-    descriptor.Ptr = reinterpret_cast<ULONGLONG>(filter);
-    descriptor.Size = static_cast<ULONG>(filterStorage.size());
-    descriptor.Type = kEventIdFilterType;
-
-    ENABLE_TRACE_PARAMETERS parameters = {};
-    parameters.Version = ENABLE_TRACE_PARAMETERS_VERSION_2;
-    parameters.EnableProperty = kIgnoreZeroKeywordEvents;
-    parameters.EnableFilterDesc = &descriptor;
-    parameters.FilterDescCount = 1;
-    return EnableTraceEx2(session, &provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_VERBOSE, keywords, 0, 0,
-                          &parameters);
-}
 
 }  // namespace
 
@@ -142,18 +58,25 @@ public:
             return;
         }
 
-        status = EnableFilteredProvider(session_, kRuntimeProvider, 0x8000000000000002ull,
+        status = EnableFilteredProvider(session_, kRuntimeProvider, kRuntimeKeyword,
                                         {kRuntimePresentStart, kRuntimeMpoPresentStart});
         if (status == ERROR_SUCCESS) {
-            status = EnableFilteredProvider(session_, kGraphicsKernelProvider, 0x1,
+            status = EnableFilteredProvider(session_, kGraphicsKernelProvider, kGraphicsKernelKeyword,
                                             {kQueuePacketStart, kMmioFlip, kMmioMpoFlip, kVsync, kVsyncMpo,
                                              kHsyncMpo, kMpoPresentIds});
         }
         if (status == ERROR_SUCCESS) {
             const ULONG optionalStatus =
-                EnableFilteredProvider(session_, kFrameTypeProvider, 0x1, {kGeneratedFlip});
+                EnableFilteredProvider(session_, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
             if (optionalStatus != ERROR_SUCCESS) {
                 LogWarn("[DisplayTiming] Generated-frame timestamp events are unavailable: %lu", optionalStatus);
+            }
+            // Optional like the frame-type provider: absent on non-NVIDIA
+            // adapters, where flip event timestamps already are the screen times.
+            const ULONG nvidiaStatus = EnableFilteredProvider(session_, kNvidiaDisplayProvider, kNvidiaDisplayKeyword,
+                                                             {kNvidiaFlipRequest});
+            if (nvidiaStatus != ERROR_SUCCESS) {
+                LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", nvidiaStatus);
             }
         }
         if (status != ERROR_SUCCESS) {
@@ -308,8 +231,33 @@ private:
             return;
         }
 
+        if (IsEqualGUID(header.ProviderId, kNvidiaDisplayProvider) &&
+            header.EventDescriptor.Id == kNvidiaFlipRequest) {
+            HandleNvidiaFlipRequest(event);
+            return;
+        }
+
         if (IsEqualGUID(header.ProviderId, kFrameTypeProvider) && header.EventDescriptor.Id == kGeneratedFlip)
             HandleGeneratedFlip(event);
+    }
+
+    // The announcement carries the time the driver scheduled the flip for, which
+    // is the only screen time available while frame generation paces several
+    // flips out of one render.
+    void HandleNvidiaFlipRequest(EVENT_RECORD* event) {
+        ++nvidiaAnnouncementsReceived_;
+        uint64_t allocation = 0;
+        uint32_t displaySource = 0;
+        uint64_t proposedFlipTime = 0;
+        uint32_t token = 0;
+        if (!ReadProperty(event, L"alloc", allocation) || !ReadProperty(event, L"vidPnSourceId", displaySource) ||
+            !ReadProperty(event, L"ts", proposedFlipTime) || !ReadProperty(event, L"token", token)) {
+            ++nvidiaAnnouncementsUndecodable_;
+            return;
+        }
+        nvidiaFlips_.ObserveFlipRequest(event->EventHeader.ThreadId, displaySource, allocation,
+                                        event->EventHeader.TimeStamp.QuadPart,
+                                        static_cast<int64_t>(proposedFlipTime), token);
     }
 
     void HandleGraphicsKernelEvent(EVENT_RECORD* event) {
@@ -374,7 +322,7 @@ private:
         if (!ReadProperty(event, L"FlipFenceId", fenceId) || fenceId == 0)
             return;
         PublishForSubmit(static_cast<uint32_t>(fenceId >> 32u), event->EventHeader.TimeStamp.QuadPart,
-                         DisplayCompletionKind::Sync, true);
+                         DisplayCompletionKind::Sync, true, DisplayCompletionSource::VSyncDpc);
     }
 
     void HandleMpoSync(EVENT_RECORD* event) {
@@ -396,6 +344,7 @@ private:
                 publishedPids.begin() + publishedCount) {
                 QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
                                DisplayCompletionKind::Sync);
+                ++completionsBySource_[static_cast<std::size_t>(DisplayCompletionSource::SyncDpcMultiPlane)];
                 publishedPids[publishedCount++] = processId;
             }
             EraseSubmitAssociation(submitSequence);
@@ -470,7 +419,7 @@ private:
         if (ReadProperty(event, L"FlipSubmitSequence", submitSequence) && ReadProperty(event, L"Flags", flags) &&
             (flags & 2u) != 0) {
             PublishForSubmit(submitSequence, event->EventHeader.TimeStamp.QuadPart,
-                             DisplayCompletionKind::Immediate, true);
+                             DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateFlip);
         }
     }
 
@@ -483,17 +432,30 @@ private:
             !ReadProperty(event, L"FlipEntryStatusAfterFlip", status)) {
             return;
         }
-        if (status != 5 && status != 15)
-            PublishForSubmit(static_cast<uint32_t>(encodedSequence >> 32u), event->EventHeader.TimeStamp.QuadPart,
-                             DisplayCompletionKind::Immediate, true);
+        if (status == kFlipWaitVSync || status == kFlipWaitHSync)
+            return;  // The matching ?SyncDPC event carries this flip's screen time.
+        // Consume the announcement on every immediate flip, not only on the ones
+        // that resolve to a tracked process: an announcement left behind by a
+        // flip we do not publish would otherwise be applied to an unrelated
+        // later flip on the same driver thread.
+        const NvidiaFlipDelay announced = nvidiaFlips_.TakeFlipDelay(event->EventHeader.ThreadId);
+        if (announced.matched) {
+            ++nvidiaAnnouncementsApplied_;
+            nvidiaAnnouncedDelayTotal_ += announced.delay;
+            nvidiaAnnouncedDelayMax_ = std::max(nvidiaAnnouncedDelayMax_, announced.delay);
+        }
+        PublishForSubmit(static_cast<uint32_t>(encodedSequence >> 32u),
+                         event->EventHeader.TimeStamp.QuadPart + announced.delay,
+                         DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateMultiPlaneFlip);
     }
 
     void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
-                          bool erase) {
+                          bool erase, DisplayCompletionSource source) {
         const SubmitAssociation* association = FindSubmitAssociation(submitSequence);
         if (!association)
             return;
         QueueTimestamp(association->processId, association->associationId, timestamp, completionKind);
+        ++completionsBySource_[static_cast<std::size_t>(source)];
         if (erase)
             EraseSubmitAssociation(submitSequence);
     }
@@ -614,6 +576,7 @@ private:
             mapIt = associations.empty() ? submitAssociations_.erase(mapIt) : std::next(mapIt);
         }
         correlation_.Prune(cutoff);
+        nvidiaFlips_.PruneBefore(cutoff);
     }
 
     void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs) {
@@ -636,58 +599,67 @@ private:
         }
     }
 
+    // Returns false while the window is not due, so the caller stays a one-liner.
+    bool SnapshotHealth(DisplayTimingHealth& health) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const uint64_t now = GetTickCount64();
+        if (targets_.empty() || (lastHealthLogTime_ != 0 && now - lastHealthLogTime_ < kHealthLogPeriodMs))
+            return false;
+        const bool firstWindow = lastHealthLogTime_ == 0;
+        lastHealthLogTime_ = now;
+        if (firstWindow)
+            return false;
+        health.presents = observedRuntimePresents_;
+        health.associations = observedSubmitAssociations_;
+        health.queued = queuedTimestamps_;
+        health.published = publishedTimestamps_;
+        health.suppressed = suppressedTimestamps_;
+        health.regressed = regressedTimestamps_;
+        health.payloadReceived = frameTypePayloadReceived_;
+        health.payloadValid = frameTypePayloadValid_;
+        health.payloadCorrelated = frameTypeCorrelated_;
+        health.payloadPending = correlation_.pendingPayloads().size();
+        health.payloadPendingObserved = frameTypePendingObserved_;
+        health.authoritative = frameTypeAuthoritative_;
+        health.payloadDuplicate = frameTypePayloadDuplicate_;
+        health.payloadLate = frameTypePayloadLate_;
+        health.fallbackPublished = fallbackPublished_;
+        health.fallbackSuppressed = fallbackSuppressed_;
+        health.nvReceived = nvidiaAnnouncementsReceived_;
+        health.nvUndecodable = nvidiaAnnouncementsUndecodable_;
+        health.nvApplied = nvidiaAnnouncementsApplied_;
+        health.nvMaxDelayUs = DisplayTimingQpcToUs(nvidiaAnnouncedDelayMax_, qpcFrequency_);
+        if (health.nvApplied != 0) {
+            health.nvAverageDelayUs = DisplayTimingQpcToUs(
+                nvidiaAnnouncedDelayTotal_ / static_cast<int64_t>(health.nvApplied), qpcFrequency_);
+        }
+        health.completions = completionsBySource_;
+        return true;
+    }
+
     void LogHealthIfDue() {
-        uint64_t presents = 0, associations = 0, queued = 0, published = 0, suppressed = 0, regressed = 0;
-        uint64_t payloadReceived = 0, payloadValid = 0, payloadCorrelated = 0, payloadPending = 0,
-                 payloadPendingObserved = 0, authoritative = 0, fallbackPublished = 0, fallbackSuppressed = 0,
-                 payloadDuplicate = 0,
-                 payloadLate = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const uint64_t now = GetTickCount64();
-            if (targets_.empty() || (lastHealthLogTime_ != 0 && now - lastHealthLogTime_ < kHealthLogPeriodMs))
-                return;
-            const bool firstWindow = lastHealthLogTime_ == 0;
-            lastHealthLogTime_ = now;
-            if (firstWindow)
-                return;
-            presents = observedRuntimePresents_;
-            associations = observedSubmitAssociations_;
-            queued = queuedTimestamps_;
-            published = publishedTimestamps_;
-            suppressed = suppressedTimestamps_;
-            regressed = regressedTimestamps_;
-            payloadReceived = frameTypePayloadReceived_;
-            payloadValid = frameTypePayloadValid_;
-            payloadCorrelated = frameTypeCorrelated_;
-            payloadPending = correlation_.pendingPayloads().size();
-            authoritative = frameTypeAuthoritative_;
-            fallbackPublished = fallbackPublished_;
-            fallbackSuppressed = fallbackSuppressed_;
-            payloadPendingObserved = frameTypePendingObserved_;
-            payloadDuplicate = frameTypePayloadDuplicate_;
-            payloadLate = frameTypePayloadLate_;
-        }
-        if (published == 0) {
-            LogWarn(
-                "[DisplayTiming] No screen-change timestamp published yet: runtimePresents=%llu submitAssociations"
-                "=%llu queued=%llu suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu "
-                "matched=%llu pendingCurrent=%llu pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
-                "fallback(committed=%llu suppressed=%llu)",
-                presents, associations, queued, suppressed, regressed, payloadReceived, payloadValid,
-                payloadCorrelated, payloadPending, payloadPendingObserved, authoritative, payloadDuplicate, payloadLate,
-                fallbackPublished,
-                fallbackSuppressed);
-        } else if (Log_IsEnabled(LogLevel::Debug)) {
-            LogDebug(
-                "[DisplayTiming] runtimePresents=%llu submitAssociations=%llu queued=%llu published=%llu "
-                "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
-                "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
-                "fallback(committed=%llu suppressed=%llu)",
-                presents, associations, queued, published, suppressed, regressed, payloadReceived, payloadValid,
-                payloadCorrelated, payloadPending, payloadPendingObserved, authoritative, payloadDuplicate, payloadLate,
-                fallbackPublished, fallbackSuppressed);
-        }
+        DisplayTimingHealth health;
+        if (!SnapshotHealth(health))
+            return;
+        // A stalled window and a healthy one report the same fields so the two
+        // stay directly comparable; only the level and the prefix differ.
+        const bool stalled = health.published == 0;
+        if (!stalled && !Log_IsEnabled(LogLevel::Debug))
+            return;
+        Log(stalled ? LogLevel::Warn : LogLevel::Debug,
+            "[DisplayTiming]%s runtimePresents=%llu submitAssociations=%llu queued=%llu published=%llu "
+            "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
+            "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
+            "fallback(committed=%llu suppressed=%llu) "
+            "completion(vsyncDpc=%llu syncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
+            "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld)",
+            stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
+            health.queued, health.published, health.suppressed, health.regressed, health.payloadReceived,
+            health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
+            health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
+            health.fallbackSuppressed, health.completions[0], health.completions[1], health.completions[2],
+            health.completions[3], health.nvReceived, health.nvUndecodable, health.nvApplied,
+            static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs));
     }
 
     void FlushLoop() {
@@ -729,6 +701,7 @@ private:
             stopEvent_ = nullptr;
         }
         correlation_.Clear();
+        nvidiaFlips_.Clear();
     }
 
     std::atomic<bool> started_{false};
@@ -747,6 +720,7 @@ private:
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingRuntimePresents_;
     std::unordered_map<uint32_t, std::deque<SubmitAssociation>> submitAssociations_;
     DisplayTimingCorrelation correlation_;
+    NvidiaFlipDelayTracker nvidiaFlips_;
     std::vector<PendingTimestamp> pendingTimestamps_;
     std::unordered_map<SharedDisplayTiming*, int64_t> lastPublishedByOutput_;
     uint64_t nextAssociationId_ = 1;
@@ -770,6 +744,12 @@ private:
     uint64_t frameTypePayloadLate_ = 0;
     uint64_t fallbackPublished_ = 0;
     uint64_t fallbackSuppressed_ = 0;
+    uint64_t nvidiaAnnouncementsReceived_ = 0;
+    uint64_t nvidiaAnnouncementsUndecodable_ = 0;
+    uint64_t nvidiaAnnouncementsApplied_ = 0;
+    int64_t nvidiaAnnouncedDelayTotal_ = 0;
+    int64_t nvidiaAnnouncedDelayMax_ = 0;
+    std::array<uint64_t, static_cast<std::size_t>(DisplayCompletionSource::Count)> completionsBySource_ = {};
 };
 
 DisplayTimingService::DisplayTimingService() : impl_(std::make_unique<Impl>()) {}

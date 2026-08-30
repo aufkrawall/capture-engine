@@ -202,6 +202,11 @@ anchors that predate the split are approximate.
 - `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory
   setup/config reload orchestration, serialized resolved-config/discovery publication, and inject-overlay runtime
   handoff flags.
+- `captureengine/display_timing_service.cpp` + `display_timing_etw.h` (provider identity and real-time
+  session plumbing) + `display_timing_nvidia.h` (NVIDIA scheduled-flip announcements) +
+  `display_timing_correlation.h` (Intel/AMD FrameType correlation) + `display_timing_policy.h`
+  (present/submission selection) + `display_timing_health.h` - the screen-change timestamp source behind
+  `[Overlay] frametime_source=display_change`; see `display-change-timing.md`.
 - `hook/main.cpp` + `main_injection.cpp` - hook bootstrap and wrapper-init decisions.
 - `hook/common/dxgi_shared.cpp` (+ `dxgi_shared_present*.cpp`, `dxgi_shared_steam*.cpp`)
   - central Present routing and startup bypass behavior.
