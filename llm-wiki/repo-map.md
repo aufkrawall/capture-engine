@@ -207,6 +207,9 @@ anchors that predate the split are approximate.
   `display_timing_correlation.h` (Intel/AMD FrameType correlation) + `display_timing_policy.h`
   (present/submission selection) + `display_timing_health.h` - the screen-change timestamp source behind
   `[Overlay] frametime_source=display_change`; see `display-change-timing.md`.
+- `hook/common/graph_scroll_policy.h` + `overlay_adapter_render.cpp` + `custom_overlay.cpp` - frame time graph
+  scrolling: the cursor that advances one slot per drawn frame instead of per sample arrival, and the guard
+  samples plus edge clipping that keep the plot filling its panel at any sub-slot offset.
 - `hook/main.cpp` + `main_injection.cpp` - hook bootstrap and wrapper-init decisions.
 - `hook/common/dxgi_shared.cpp` (+ `dxgi_shared_present*.cpp`, `dxgi_shared_steam*.cpp`)
   - central Present routing and startup bypass behavior.

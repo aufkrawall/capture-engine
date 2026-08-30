@@ -285,6 +285,33 @@ float PerformanceMetrics::Get01PercentLowFPS() const {
     return ComputeWorstPercentileFPS(series.history, series.historyIdx.load(std::memory_order_acquire), 0.001f, 100);
 }
 
+uint64_t PerformanceMetrics::GetSampleCount() const {
+    return ActiveSeries().sampleCount.load(std::memory_order_acquire);
+}
+
+void PerformanceMetrics::GetHistoryEndingAt(uint64_t endIndex, float* outBuffer, int count) const {
+    if (!outBuffer || count <= 0)
+        return;
+    count = std::min(count, HISTORY_SIZE);
+    const auto& series = ActiveSeries();
+    // Sample n occupies slot n % HISTORY_SIZE, so an absolute index maps to a
+    // slot directly and the retained window is the last HISTORY_SIZE indices.
+    const uint64_t written = series.sampleCount.load(std::memory_order_acquire);
+    const uint64_t oldest =
+        written > static_cast<uint64_t>(HISTORY_SIZE) ? written - static_cast<uint64_t>(HISTORY_SIZE) : 0;
+    for (int i = 0; i < count; i++) {
+        const uint64_t age = static_cast<uint64_t>(count - 1 - i);
+        if (endIndex < age) {
+            outBuffer[i] = 0.0f;
+            continue;
+        }
+        const uint64_t index = endIndex - age;
+        outBuffer[i] = (index < oldest || index >= written)
+                           ? 0.0f
+                           : series.history[static_cast<std::size_t>(index % static_cast<uint64_t>(HISTORY_SIZE))];
+    }
+}
+
 void PerformanceMetrics::GetLastHistory(float* outBuffer, int count) const {
     count = std::min(count, HISTORY_SIZE);
     const auto& series = ActiveSeries();

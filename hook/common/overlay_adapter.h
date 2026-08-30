@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <mutex>
+#include "graph_scroll_policy.h"
 #include "../../common/recording_indicator_policy.h"
 #include "custom_overlay.h"
 #include "ipc_client.h"
@@ -180,6 +181,10 @@ private:
     DWORD lastMaxFrameTimeUpdateTime = 0;
     float cachedMaxFrameTime = 0.0f;
     float cachedAvgFrameTimeForColor = 0.0f;
+
+    // Scrolls the frame time graph by drawn frames rather than by sample
+    // arrival; see graph_scroll_policy.h.
+    GraphScrollCursor graphScroll;
 
     // Cached overlay draw data can be reused between meaningful content updates.
     int lastViewportWidth = 0;

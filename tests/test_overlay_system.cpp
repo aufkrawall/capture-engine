@@ -394,32 +394,90 @@ TEST_F(RendererTest, ShutdownCallsBackend) {
     EXPECT_FALSE(renderer.IsInitialized());
 }
 
+namespace {
+
+// The plot carries one guard sample past each edge, so `count` samples draw
+// `count - 2` visible slots.
+constexpr int kGraphVisibleSlots = 180;
+constexpr int kGraphPoints = kGraphVisibleSlots + 2;
+
+float GraphPointCenterX(const std::vector<DrawVertex>& vertices, size_t point) {
+    return (vertices[point * 4u + 1u].x + vertices[point * 4u + 2u].x) * 0.5f;
+}
+
+std::vector<DrawVertex> RenderRampGraph(Renderer& renderer, float scrollOffset) {
+    float samples[kGraphPoints];
+    for (int i = 0; i < kGraphPoints; ++i)
+        samples[i] = 5.0f + (float)i * 0.05f;
+
+    renderer.BeginFrame(3840, 2160);
+    renderer.DrawFrameTimeGraph(10.0f, 20.0f, 330.0f, 50.0f, samples, kGraphPoints, 0.0f, 33.0f, Colors::Green,
+                                scrollOffset);
+    renderer.EndFrame();
+    return renderer.GetVertices();
+}
+
+}  // namespace
+
 TEST(RendererGeometryTest, FrameGraphUsesAllSamplesWithExactMonotonicEndpointInterpolation) {
     MockBackend backend;
     Renderer renderer;
     ASSERT_TRUE(renderer.Initialize(&backend, 1.5f));
 
-    float samples[180];
-    for (int i = 0; i < 180; ++i)
-        samples[i] = 5.0f + (float)i * 0.05f;
-
-    renderer.BeginFrame(3840, 2160);
-    renderer.DrawFrameTimeGraph(10.0f, 20.0f, 330.0f, 50.0f, samples, 180, 0.0f, 33.0f, Colors::Green);
-    renderer.EndFrame();
-
-    const auto& vertices = renderer.GetVertices();
-    ASSERT_EQ(vertices.size(), 180u * 4u);
+    const std::vector<DrawVertex> vertices = RenderRampGraph(renderer, 0.0f);
+    // At offset zero the right guard falls exactly on the edge and is dropped as
+    // coincident, leaving every visible slot plus the left endpoint.
+    ASSERT_EQ(vertices.size(), (size_t)(kGraphVisibleSlots + 1) * 4u);
     float previousX = -1.0f;
-    for (int i = 0; i < 180; ++i) {
-        const float centerX = (vertices[(size_t)i * 4u + 1u].x + vertices[(size_t)i * 4u + 2u].x) * 0.5f;
+    for (size_t i = 0; i < vertices.size() / 4u; ++i) {
+        const float centerX = GraphPointCenterX(vertices, i);
         if (i > 0)
             EXPECT_GT(centerX, previousX);
         previousX = centerX;
     }
-    const float firstX = (vertices[1].x + vertices[2].x) * 0.5f;
-    const float lastX = (vertices[717].x + vertices[718].x) * 0.5f;
-    EXPECT_NEAR(firstX, 12.0f, 0.001f);
-    EXPECT_NEAR(lastX, 338.0f, 0.001f);
+    EXPECT_NEAR(GraphPointCenterX(vertices, 0), 12.0f, 0.001f);
+    EXPECT_NEAR(GraphPointCenterX(vertices, vertices.size() / 4u - 1u), 338.0f, 0.001f);
+}
+
+// A sub-slot scroll offset must still cover the panel exactly: the guards are
+// clipped to the edges rather than leaving the curve short of them.
+TEST(RendererGeometryTest, FrameGraphSpansThePanelAtEverySubSlotOffset) {
+    MockBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.5f));
+
+    for (const float offset : {0.0f, 0.25f, 0.5f, 0.75f, 0.999f}) {
+        const std::vector<DrawVertex> vertices = RenderRampGraph(renderer, offset);
+        ASSERT_GE(vertices.size(), 8u) << "offset " << offset;
+        const size_t points = vertices.size() / 4u;
+        EXPECT_NEAR(GraphPointCenterX(vertices, 0), 12.0f, 0.01f) << "offset " << offset;
+        EXPECT_NEAR(GraphPointCenterX(vertices, points - 1u), 338.0f, 0.01f) << "offset " << offset;
+        float previousX = -1.0f;
+        for (size_t i = 0; i < points; ++i) {
+            const float centerX = GraphPointCenterX(vertices, i);
+            EXPECT_GE(centerX, 12.0f - 0.01f) << "offset " << offset;
+            EXPECT_LE(centerX, 338.0f + 0.01f) << "offset " << offset;
+            if (i > 0)
+                EXPECT_GT(centerX, previousX) << "offset " << offset << " point " << i;
+            previousX = centerX;
+        }
+    }
+}
+
+// The plot must slide by the offset rather than redraw the same picture, which
+// is what turns a burst-stepped graph into a smoothly scrolling one.
+TEST(RendererGeometryTest, FrameGraphShiftsHorizontallyWithTheScrollOffset) {
+    MockBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.5f));
+
+    const std::vector<DrawVertex> atZero = RenderRampGraph(renderer, 0.0f);
+    const std::vector<DrawVertex> atHalf = RenderRampGraph(renderer, 0.5f);
+    ASSERT_GE(atZero.size(), 12u);
+    ASSERT_GE(atHalf.size(), 12u);
+    const float slotWidth = (338.0f - 12.0f) / (float)kGraphVisibleSlots;
+    // Compare an interior point away from the clipped edges.
+    EXPECT_NEAR(GraphPointCenterX(atHalf, 5) - GraphPointCenterX(atZero, 5), -0.5f * slotWidth, 0.05f);
 }
 
 TEST(RendererGeometryTest, SharpAlternatingGraphUsesBoundedBevelGeometry) {

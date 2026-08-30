@@ -238,11 +238,21 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     float valueRightEdge = x + contentWidth;
 
-    float graphData[GRAPH_SAMPLES] = {};
+    // Two guard samples, one past each edge, let the plot slide sub-slot and
+    // still cover the panel end to end.
+    constexpr int GRAPH_POINTS = GRAPH_SAMPLES + 2;
+    float graphData[GRAPH_POINTS] = {};
     float graphY = 0, graphHeight = 0, graphWidth = 0, graphX = 0;
     float graphMinVal = 0, graphMaxVal = 0;
-    if (showGraph)
-        metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
+    float graphScrollOffset = 0.0f;
+    if (showGraph) {
+        // One slot per drawn frame, gently locked to the sample stream, so a
+        // burst of display-change samples does not step the graph.
+        const double cursor = graphScroll.Advance(metrics->GetSampleCount());
+        const double cursorSlot = std::floor(cursor);
+        graphScrollOffset = static_cast<float>(cursor - cursorSlot);
+        metrics->GetHistoryEndingAt(static_cast<uint64_t>(cursorSlot) + 1, graphData, GRAPH_POINTS);
+    }
 
     // --- PASS 1: All solid geometry (background + graph) ---
     uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
@@ -263,12 +273,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if ((ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
             lastMaxFrameTimeUpdateTime = ftNow;
             int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
-            int samplesFor2Seconds = (std::min)(GRAPH_SAMPLES, samplesPerSecond * 2);
-            int startIdx = GRAPH_SAMPLES - samplesFor2Seconds;
+            int samplesFor2Seconds = (std::min)(GRAPH_POINTS, samplesPerSecond * 2);
+            int startIdx = GRAPH_POINTS - samplesFor2Seconds;
 
             float newMax = 0.0f, sum = 0.0f;
             int count = 0;
-            for (int i = startIdx; i < GRAPH_SAMPLES; i++) {
+            for (int i = startIdx; i < GRAPH_POINTS; i++) {
                 float val = graphData[i];
                 if (val > newMax)
                     newMax = val;
@@ -287,7 +297,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         // calculate a minimum that provides ~15% padding below the lowest point.
         float peakVal = 0.0f;
         float minVal = FLT_MAX;
-        for (int i = 0; i < GRAPH_SAMPLES; i++) {
+        for (int i = 0; i < GRAPH_POINTS; i++) {
             if (graphData[i] > peakVal)
                 peakVal = graphData[i];
             if (graphData[i] > 0.001f && graphData[i] < minVal)
@@ -301,7 +311,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         // context (e.g., 30fps vs 60fps threshold should be visible).
         float avgVal = 0;
         int avgCount = 0;
-        for (int i = 0; i < GRAPH_SAMPLES; i++) {
+        for (int i = 0; i < GRAPH_POINTS; i++) {
             if (graphData[i] > 0.001f) {
                 avgVal += graphData[i];
                 avgCount++;
@@ -344,7 +354,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
         uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
         renderer->DrawFrameTimeGraph(graphX, graphY + graphTopPad, graphWidth, graphHeight - graphTopPad, graphData,
-                                     GRAPH_SAMPLES, graphMinVal, graphMaxVal, graphColor);
+                                     GRAPH_POINTS, graphMinVal, graphMaxVal, graphColor, graphScrollOffset);
     }
 
     // --- PASS 2: All text (single textured batch) ---

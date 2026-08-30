@@ -91,7 +91,41 @@ timing when the stream is unavailable, denied, failed, or two seconds stale.
   `completion(vsyncDpc=36 syncDpcMpo=486 immediateFlip=0 immediateMpoFlip=4943)`. Without frame generation `VSyncDPC`
   carries `FlipFenceId=0` and `VSyncDPCMultiPlane` carries `FlipEntryCount=0`, so completions arrive via
   `HSyncDPCMultiPlane` / `MMIOFlipMultiPlaneOverlay`.
+
 - **A stage counter that matches the expected rate is not evidence the stage is correct.** The first attempt at this
   fix shipped with `runtimePresents=3434 submitAssociations=3434 published=2780 suppressed=0 regressed=0` - one
   sample per displayed frame, no drops, no regressions - while every published value was wrong. Only the timestamp
   values could be, and were.
+
+## Graph scrolling under frame generation
+
+- A scrolling graph advances one slot per drawn frame, which is automatic while every drawn frame produces exactly
+  one sample - what presentation timing does. Display-change timing decouples the two. Measured from the real draw
+  timestamps of a 4x MFG session (`perf_metrics_8480.csv`, 5792 draws over 45 s): draw gaps p25 = 652 us, p50 =
+  804 us, p75 = 10.1 ms, p90 = 27.2 ms, because the runtime issues the whole group of presents within about two
+  milliseconds and then idles, while the display consumes them 7.8 ms apart.
+- The consequence was that **64.1% of overlay draws advanced the graph by zero samples**, 12.6% by three and 10.1%
+  by four (mean 1.00, stddev 2.18). The graph therefore animated at the base frame rate in three-to-four slot jumps
+  while the screen updated at the display rate. The sawtooth in the line had been masking it; once the line went
+  flat, the stepping was the only motion left.
+- `hook/common/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
+  sample stream instead of being driven by it, so a burst no longer steps the plot. The cursor **slows but never
+  rewinds** - a graph that steps backwards reads as a glitch, not as a correction - and re-arms rather than scrolling
+  backwards when the stream itself restarts (source switch, history reset).
+- To scroll across a burst the cursor must stay far enough behind the newest sample to have somewhere to scroll
+  into: a group of N presents drawn back to back needs N-1 slots of already-received samples, plus one for the guard
+  sample. That distance is one base-frame interval by construction and **cannot be avoided** - the samples for those
+  frames do not exist when they are drawn. It is measured from the observed dry streak rather than assumed, so it
+  costs two slots without frame generation and settled at 4.9 slots (~38 ms of graph position, no metric affected)
+  under 4x MFG. Measured dry streaks in that session never exceeded 3, matching a group of four.
+- `Renderer::DrawFrameTimeGraph` takes one guard sample past each edge and clips the polyline to the panel by
+  interpolating both boundary crossings, so the curve fills the panel exactly at every sub-slot offset. Without the
+  guards a fractional offset would leave the newest sample short of the right edge by up to one slot.
+- Replaying the real draw timestamps through the production cursor, over the settled stretch of that session:
+  **99.05% of draws advance within +/-20% of one slot** (p1 = 0.86, p50 = 0.98, p99 = 1.09, mean 0.9994). Across the
+  whole session it is 92.1%, the difference being the stretch where the FG factor was being switched between 1x and
+  4x, where a transient is the correct response to a changed group size.
+- Coverage in `tests/test_graph_scroll_policy.cpp`: one-slot-per-draw under presentation timing, near-constant
+  velocity under the measured burst pattern, the arming transient, no rewind under any arrival pattern, the trail
+  staying at its floor without frame generation and growing to the observed group, the stall hold and its recovery,
+  stream restart, and the absolute-index history window the plot reads through.

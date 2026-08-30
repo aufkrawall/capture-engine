@@ -23,6 +23,7 @@
 #include "../../common/secure_dll_loading.h"
 
 #include <cfloat>  // FLT_MAX
+#include <cmath>   // std::floor
 
 // Include backends based on build context
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer

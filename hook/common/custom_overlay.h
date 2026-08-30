@@ -86,9 +86,12 @@ public:
     void DrawRectFilled(float x, float y, float w, float h, uint32_t color);
     void DrawLine(float x0, float y0, float x1, float y1, uint32_t color, float thickness = 1.0f);
 
-    // Frame time graph
+    // Frame time graph. `frameTimes` carries one guard sample past each edge of
+    // the visible span, so `count - 2` slots are drawn and `scrollOffset` (in
+    // slots, [0,1)) slides the plot smoothly between them without ever leaving
+    // the span short of a curve.
     void DrawFrameTimeGraph(float x, float y, float width, float height, const float* frameTimes, int count,
-                            float minVal, float maxVal, uint32_t color);
+                            float minVal, float maxVal, uint32_t color, float scrollOffset = 0.0f);
 
     // Debug
     void ValidateCommands();

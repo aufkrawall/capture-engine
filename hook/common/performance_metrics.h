@@ -31,6 +31,14 @@ public:
     const float* GetHistoryArray() const;
     int GetHistoryIndex() const;
     void GetLastHistory(float* outBuffer, int count) const;
+    // Total samples ever appended to the active series. Absolute indices are
+    // stable across ring wrap, which is what lets the overlay hold a scroll
+    // cursor that does not depend on when it last read.
+    uint64_t GetSampleCount() const;
+    // Reads `count` samples ending at absolute index `endIndex` (inclusive),
+    // oldest first. Indices outside the retained window read back as zero, the
+    // same as an unfilled ring.
+    void GetHistoryEndingAt(uint64_t endIndex, float* outBuffer, int count) const;
     float GetCurrentFPS() const;
 
     float GetAverageFPS() const;

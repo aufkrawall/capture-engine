@@ -591,8 +591,8 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
 }
 
 void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, const float* frameTimes, int count,
-                                  float minVal, float maxVal, uint32_t color) {
-    if (!initialized || !frameTimes || count < 2)
+                                  float minVal, float maxVal, uint32_t color, float scrollOffset) {
+    if (!initialized || !frameTimes || count < 4)
         return;
 
     float range = maxVal - minVal;
@@ -609,7 +609,15 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     const float edgeInset = (std::min)(2.0f, width * 0.25f);
     const float firstX = x + edgeInset;
     const float lastX = x + width - edgeInset;
-    const float stepX = (lastX - firstX) / (float)(count - 1);
+    // The first and last samples are guards that sit outside the span; the
+    // slots between them are what the panel shows.
+    const int visibleSlots = count - 2;
+    const float stepX = (lastX - firstX) / (float)visibleSlots;
+
+    // A sub-slot shift is what makes the plot scroll at display rate rather
+    // than jumping whenever a burst of samples lands. The guards keep the span
+    // covered at both ends for every offset in [0,1).
+    const float offset = (std::max)(0.0f, (std::min)(1.0f, scrollOffset));
 
     float xs[kMaxPoints], ys[kMaxPoints];
     const float invRange = 1.0f / range;
@@ -617,7 +625,7 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     for (int i = 0; i < count; i++) {
         float val = frameTimes[i];
         val = (std::max)(minVal, (std::min)(maxVal, val));
-        xs[i] = firstX + (float)i * stepX;
+        xs[i] = lastX - ((float)(visibleSlots - i) + offset) * stepX;
         ys[i] = y + height - ((val - minVal) * invRange) * height;
     }
 
@@ -625,17 +633,51 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     int firstValid = 0;
     while (firstValid < count - 1 && frameTimes[firstValid] <= 0.0f)
         firstValid++;
-    const int validCount = count - firstValid;
-    if (validCount < 2)
+    if (count - firstValid < 2)
         return;
 
-    const float* vxs = xs + firstValid;
-    const float* vys = ys + firstValid;
+    // Clip to the visible span so the curve fills it edge to edge at every
+    // offset instead of ending short of it. Both boundary crossings are
+    // interpolated, so nothing is drawn outside the panel and nothing is
+    // missing inside it.
+    float cxs[kMaxPoints], cys[kMaxPoints];
+    int clipped = 0;
+    for (int i = firstValid; i < count; i++) {
+        const float px = xs[i];
+        if (px < firstX) {
+            // Carry the crossing forward; the next point inside decides it.
+            if (i + 1 < count && xs[i + 1] > firstX) {
+                const float t = (firstX - px) / (xs[i + 1] - px);
+                cxs[clipped] = firstX;
+                cys[clipped] = ys[i] + (ys[i + 1] - ys[i]) * t;
+                clipped++;
+            }
+            continue;
+        }
+        if (px > lastX) {
+            // At offset zero the last visible sample already sits exactly on the
+            // edge; interpolating the guard would add a coincident point and a
+            // zero-length segment for the join geometry to divide by.
+            if (clipped > 0 && cxs[clipped - 1] < lastX) {
+                const float prevX = cxs[clipped - 1];
+                const float t = (lastX - prevX) / (px - prevX);
+                cxs[clipped] = lastX;
+                cys[clipped] = cys[clipped - 1] + (ys[i] - cys[clipped - 1]) * t;
+                clipped++;
+            }
+            break;
+        }
+        cxs[clipped] = px;
+        cys[clipped] = ys[i];
+        clipped++;
+    }
+    if (clipped < 2)
+        return;
 
     // Connected polyline with bounded miter/bevel joins + 1px AA fringe.
-    // 0.75 logical pixels at every DPI (e.g. 100%→0.75px, 200%→1.5px physical = same visual size).
+    // 0.75 logical pixels at every DPI (e.g. 100%->0.75px, 200%->1.5px physical = same visual size).
     const float lineThickness = 0.75f * dpiScale;
-    DrawGraphPolyline(vxs, vys, validCount, color, lineThickness);
+    DrawGraphPolyline(cxs, cys, clipped, color, lineThickness);
 }
 
 void Renderer::BeginWindow(float x, float y, uint32_t bgColor, float alpha) {
