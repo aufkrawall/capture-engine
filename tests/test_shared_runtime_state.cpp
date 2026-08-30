@@ -2,6 +2,7 @@
 
 #include <cwchar>
 #include <cstring>
+#include <unordered_map>
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
@@ -284,12 +285,12 @@ TEST(DisplayTimingPolicyTest, ExplicitApplicationFrameSuppressesDuplicateSyncCom
     EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Unconditional, &state));
 }
 
-TEST(DisplayTimingPolicyTest, GeneratedFrameRetainsFollowingApplicationSyncCompletion) {
+TEST(DisplayTimingPolicyTest, GeneratedPayloadPreservesApplicationCompletion) {
     DisplayFrameTypeState state;
     ObserveDisplayFrameType(state, 1000, 50);
 
     EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, &state));
-    EXPECT_FALSE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Immediate, &state));
+    EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Immediate, &state));
 }
 
 TEST(DisplayTimingPolicyTest, ExplicitApplicationFrameAfterGeneratedFrameSuppressesExtraSync) {
@@ -298,6 +299,27 @@ TEST(DisplayTimingPolicyTest, ExplicitApplicationFrameAfterGeneratedFrameSuppres
     ObserveDisplayFrameType(state, 1100, 1);
 
     EXPECT_FALSE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, &state));
+}
+
+TEST(DisplayTimingPolicyTest, MissingPayloadRetainsCompletionFallbackAfterWatermark) {
+    EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Sync, nullptr));
+    DisplayFrameTypeState unseen;
+    EXPECT_TRUE(ShouldPublishDisplayCompletion(DisplayCompletionKind::Immediate, &unseen));
+}
+
+TEST(DisplayTimingPolicyTest, FullPresentKeyKeepsMultipleInFlightLayerAssociations) {
+    using Map = std::unordered_map<DisplayLayerPresentKey, uint64_t, DisplayLayerPresentKeyHash>;
+    Map associations;
+    const DisplayLayerPresentKey first = {1, 2, 100};
+    const DisplayLayerPresentKey second = {1, 2, 101};
+    const DisplayLayerPresentKey unrelated = {1, 3, 100};
+    associations.emplace(first, 10);
+    associations.emplace(second, 11);
+
+    ASSERT_EQ(associations.size(), 2u);
+    EXPECT_EQ(associations.at(first), 10u);
+    EXPECT_EQ(associations.at(second), 11u);
+    EXPECT_EQ(associations.find(unrelated), associations.end());
 }
 
 // Measured on a DX11 title: the process emitted 865 runtime presents and 865

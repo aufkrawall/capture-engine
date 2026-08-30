@@ -1,4 +1,5 @@
 #include "display_timing_service.h"
+#include "display_timing_correlation.h"
 #include "display_timing_policy.h"
 
 #include <windows.h>
@@ -121,8 +122,8 @@ ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, ULONGLON
 
 class DisplayTimingService::Impl {
 public:
-    ~Impl() {
-        Stop();
+    ~Impl() noexcept {
+        StopNoexcept();
     }
 
     void Start() {
@@ -227,34 +228,6 @@ public:
     }
 
 private:
-    struct PendingRuntimePresent {
-        uint32_t threadId = 0;
-        int64_t timestamp = 0;
-    };
-    struct SubmitAssociation {
-        uint32_t processId = 0;
-        int64_t timestamp = 0;
-        uint64_t associationId = 0;
-    };
-    struct LayerAssociation {
-        uint64_t presentId = 0;
-        uint32_t processId = 0;
-        uint64_t associationId = 0;
-        int64_t timestamp = 0;
-    };
-    struct PendingTimestamp {
-        uint32_t processId = 0;
-        uint64_t associationId = 0;
-        int64_t timestamp = 0;
-        DisplayCompletionKind completionKind = DisplayCompletionKind::Unconditional;
-        uint64_t arrivalOrder = 0;
-    };
-    struct PendingGeneratedFlip {
-        uint64_t presentId = 0;
-        int64_t screenTime = 0;
-        int64_t eventTimestamp = 0;
-        uint8_t frameType = 0;
-    };
 
     static void WINAPI EventRecordThunk(EVENT_RECORD* event) {
         static_cast<Impl*>(event->UserContext)->HandleEvent(event);
@@ -447,24 +420,16 @@ private:
             uint64_t presentId = 0;
             uint32_t layer = 0;
             if (ReadProperty(event, L"PresentId", presentId, i) && ReadProperty(event, L"LayerIndex", layer, i)) {
-                const uint64_t layerKey = MakeLayerKey(displaySource, layer);
-                layerAssociations_[layerKey] = {
-                    presentId, association->processId, association->associationId,
-                    event->EventHeader.TimeStamp.QuadPart};
-                const auto pending = pendingGeneratedFlips_.find(layerKey);
-                if (pending != pendingGeneratedFlips_.end()) {
-                    if (pending->second.presentId == presentId) {
-                        QueueFrameTypeTimestamp(association->processId, association->associationId,
-                                                pending->second.screenTime, pending->second.eventTimestamp,
-                                                pending->second.frameType);
-                    }
-                    pendingGeneratedFlips_.erase(pending);
-                }
+                const DisplayLayerPresentKey layerKey = {displaySource, layer, presentId};
+                correlation_.Associate(layerKey, {association->processId, association->associationId,
+                                                  event->EventHeader.TimeStamp.QuadPart});
+                ConsumeCorrelationPayloads();
             }
         }
     }
 
     void HandleGeneratedFlip(EVENT_RECORD* event) {
+        ++frameTypePayloadReceived_;
         const uint8_t version = event->EventHeader.EventDescriptor.Version;
         if (version > 1)
             return;
@@ -485,16 +450,18 @@ private:
         if (screenTime == 0)
             return;
 
-        const uint64_t layerKey = MakeLayerKey(displaySource, layer);
-        const auto association = layerAssociations_.find(layerKey);
-        if (association != layerAssociations_.end() && association->second.presentId == presentId) {
-            QueueFrameTypeTimestamp(association->second.processId, association->second.associationId,
-                                    static_cast<int64_t>(screenTime), event->EventHeader.TimeStamp.QuadPart,
-                                    frameType);
-        } else {
-            pendingGeneratedFlips_[layerKey] = {
-                presentId, static_cast<int64_t>(screenTime), event->EventHeader.TimeStamp.QuadPart, frameType};
-        }
+        ++frameTypePayloadValid_;
+        const DisplayLayerPresentKey layerKey = {displaySource, layer, presentId};
+        const auto result = correlation_.ObservePayload(
+            layerKey, DisplayPendingFrameTypeFlip{static_cast<int64_t>(screenTime),
+                                                   event->EventHeader.TimeStamp.QuadPart, frameType});
+        ConsumeCorrelationPayloads();
+        if (result == DisplayTimingCorrelation::PayloadResult::Duplicate)
+            ++frameTypePayloadDuplicate_;
+        else if (result == DisplayTimingCorrelation::PayloadResult::Late)
+            ++frameTypePayloadLate_;
+        else if (result == DisplayTimingCorrelation::PayloadResult::Pending)
+            ++frameTypePendingObserved_;
     }
 
     void HandleImmediateFlip(EVENT_RECORD* event) {
@@ -533,8 +500,9 @@ private:
 
     const SubmitAssociation* FindSubmitAssociation(uint32_t submitSequence) const {
         const auto association = submitAssociations_.find(submitSequence);
-        return association == submitAssociations_.end() || association->second.empty() ? nullptr
-                                                                                       : &association->second.front();
+        if (association != submitAssociations_.end() && !association->second.empty())
+            return &association->second.front();
+        return nullptr;
     }
 
     void EraseSubmitAssociation(uint32_t submitSequence) {
@@ -546,29 +514,39 @@ private:
             submitAssociations_.erase(association);
     }
 
-    static uint64_t MakeLayerKey(uint32_t displaySource, uint32_t layer) {
-        return (static_cast<uint64_t>(displaySource) << 32u) | layer;
-    }
-
-    void QueueFrameTypeTimestamp(uint32_t processId, uint64_t associationId, int64_t screenTime,
-                                 int64_t eventTimestamp, uint8_t frameType) {
-        auto& state = frameTypeStates_[associationId];
-        ObserveDisplayFrameType(state, eventTimestamp, frameType);
-        QueueTimestamp(processId, associationId, screenTime, DisplayCompletionKind::Unconditional);
+    void ConsumeCorrelationPayloads() {
+        auto payloads = correlation_.TakePayloads();
+        for (auto& payload : payloads) {
+            pendingTimestamps_.push_back(payload);
+            ++queuedTimestamps_;
+            // This is the single transition point for both delivery orders:
+            // payload-first becomes matched when MPO association consumes it,
+            // while MPO-first reaches here immediately from ObservePayload.
+            ++frameTypeCorrelated_;
+            ++frameTypeAuthoritative_;
+        }
     }
 
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                         DisplayCompletionKind completionKind) {
         if (timestamp <= 0)
             return;
+        if (completionKind != DisplayCompletionKind::Unconditional) {
+            // The fallback itself owns the association tombstone.  This makes
+            // a later FrameType telemetry-only even when no payload preceded
+            // the fallback (the 24 ms watermark is a bounded policy, not a
+            // causal/no-late-events guarantee).
+            correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
+                                       pendingTimestamps_, nextTimestampOrder_);
+            ++queuedTimestamps_;
+            return;
+        }
         pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind, nextTimestampOrder_++});
         ++queuedTimestamps_;
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {
-        const auto state = frameTypeStates_.find(pending.associationId);
-        return ShouldPublishDisplayCompletion(pending.completionKind,
-                                              state == frameTypeStates_.end() ? nullptr : &state->second);
+        return correlation_.ShouldPublish(pending);
     }
 
     void DrainReady(int64_t nowQpc, bool force) {
@@ -585,18 +563,41 @@ private:
         const int64_t cutoff = nowQpc - (kTimestampReorderWindowUs * qpcFrequency_) / 1'000'000;
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         std::size_t consumed = 0;
-        for (const auto& pending : pendingTimestamps_) {
+        for (auto& pending : pendingTimestamps_) {
             if (!force && pending.timestamp > cutoff)
                 break;
-            if (ShouldPublish(pending))
+            if (ShouldPublish(pending)) {
                 PublishTimestamp(pending.processId, pending.timestamp, publishUs);
-            else
+                if (pending.completionKind != DisplayCompletionKind::Unconditional) {
+                    ++fallbackPublished_;
+                    correlation_.CommitFallback(pending);
+                }
+            } else {
                 ++suppressedTimestamps_;
+                if (pending.completionKind != DisplayCompletionKind::Unconditional)
+                    ++fallbackSuppressed_;
+            }
             ++consumed;
         }
         pendingTimestamps_.erase(
             pendingTimestamps_.begin(),
             pendingTimestamps_.begin() + static_cast<std::vector<PendingTimestamp>::difference_type>(consumed));
+    }
+
+    // Destruction happens after both ETW workers have stopped.  Do not run the
+    // normal fallback commit path here: CommitFallback may grow an unordered
+    // map and therefore cannot be part of a non-throwing destructor cleanup.
+    void DrainReadyNoexcept(int64_t nowQpc) noexcept {
+        if (pendingTimestamps_.empty())
+            return;
+        std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
+            return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
+        });
+        const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
+        for (const auto& pending : pendingTimestamps_)
+            if (ShouldPublish(pending))
+                PublishTimestamp(pending.processId, pending.timestamp, publishUs);
+        pendingTimestamps_.clear();
     }
 
     void PruneAssociations(int64_t cutoff) {
@@ -612,15 +613,7 @@ private:
                 associations.pop_front();
             mapIt = associations.empty() ? submitAssociations_.erase(mapIt) : std::next(mapIt);
         }
-        for (auto it = layerAssociations_.begin(); it != layerAssociations_.end();) {
-            it = it->second.timestamp < cutoff ? layerAssociations_.erase(it) : std::next(it);
-        }
-        for (auto it = pendingGeneratedFlips_.begin(); it != pendingGeneratedFlips_.end();) {
-            it = it->second.eventTimestamp < cutoff ? pendingGeneratedFlips_.erase(it) : std::next(it);
-        }
-        for (auto it = frameTypeStates_.begin(); it != frameTypeStates_.end();) {
-            it = it->second.timestamp < cutoff ? frameTypeStates_.erase(it) : std::next(it);
-        }
+        correlation_.Prune(cutoff);
     }
 
     void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs) {
@@ -643,12 +636,12 @@ private:
         }
     }
 
-    // The correlation chain is silent by nature: a session that runs but never
-    // associates a present with a display completion looks identical from the
-    // outside to one that was never started. State the stage counters so that
-    // case names the stage it broke at instead of only showing a fallback.
     void LogHealthIfDue() {
         uint64_t presents = 0, associations = 0, queued = 0, published = 0, suppressed = 0, regressed = 0;
+        uint64_t payloadReceived = 0, payloadValid = 0, payloadCorrelated = 0, payloadPending = 0,
+                 payloadPendingObserved = 0, authoritative = 0, fallbackPublished = 0, fallbackSuppressed = 0,
+                 payloadDuplicate = 0,
+                 payloadLate = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const uint64_t now = GetTickCount64();
@@ -664,17 +657,36 @@ private:
             published = publishedTimestamps_;
             suppressed = suppressedTimestamps_;
             regressed = regressedTimestamps_;
+            payloadReceived = frameTypePayloadReceived_;
+            payloadValid = frameTypePayloadValid_;
+            payloadCorrelated = frameTypeCorrelated_;
+            payloadPending = correlation_.pendingPayloads().size();
+            authoritative = frameTypeAuthoritative_;
+            fallbackPublished = fallbackPublished_;
+            fallbackSuppressed = fallbackSuppressed_;
+            payloadPendingObserved = frameTypePendingObserved_;
+            payloadDuplicate = frameTypePayloadDuplicate_;
+            payloadLate = frameTypePayloadLate_;
         }
         if (published == 0) {
             LogWarn(
                 "[DisplayTiming] No screen-change timestamp published yet: runtimePresents=%llu submitAssociations"
-                "=%llu queued=%llu suppressed=%llu regressed=%llu",
-                presents, associations, queued, suppressed, regressed);
+                "=%llu queued=%llu suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu "
+                "matched=%llu pendingCurrent=%llu pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
+                "fallback(committed=%llu suppressed=%llu)",
+                presents, associations, queued, suppressed, regressed, payloadReceived, payloadValid,
+                payloadCorrelated, payloadPending, payloadPendingObserved, authoritative, payloadDuplicate, payloadLate,
+                fallbackPublished,
+                fallbackSuppressed);
         } else if (Log_IsEnabled(LogLevel::Debug)) {
             LogDebug(
                 "[DisplayTiming] runtimePresents=%llu submitAssociations=%llu queued=%llu published=%llu "
-                "suppressed=%llu regressed=%llu",
-                presents, associations, queued, published, suppressed, regressed);
+                "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
+                "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
+                "fallback(committed=%llu suppressed=%llu)",
+                presents, associations, queued, published, suppressed, regressed, payloadReceived, payloadValid,
+                payloadCorrelated, payloadPending, payloadPendingObserved, authoritative, payloadDuplicate, payloadLate,
+                fallbackPublished, fallbackSuppressed);
         }
     }
 
@@ -697,7 +709,7 @@ private:
         }
     }
 
-    void Stop() {
+    void StopNoexcept() noexcept {
         if (stopEvent_)
             SetEvent(stopEvent_);
         if (flushThread_.joinable())
@@ -711,11 +723,12 @@ private:
         }
         LARGE_INTEGER now = {};
         QueryPerformanceCounter(&now);
-        DrainReady(now.QuadPart, true);
+        DrainReadyNoexcept(now.QuadPart);
         if (stopEvent_) {
             CloseHandle(stopEvent_);
             stopEvent_ = nullptr;
         }
+        correlation_.Clear();
     }
 
     std::atomic<bool> started_{false};
@@ -733,9 +746,7 @@ private:
     std::vector<DisplayTimingTarget> targets_;
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingRuntimePresents_;
     std::unordered_map<uint32_t, std::deque<SubmitAssociation>> submitAssociations_;
-    std::unordered_map<uint64_t, LayerAssociation> layerAssociations_;
-    std::unordered_map<uint64_t, PendingGeneratedFlip> pendingGeneratedFlips_;
-    std::unordered_map<uint64_t, DisplayFrameTypeState> frameTypeStates_;
+    DisplayTimingCorrelation correlation_;
     std::vector<PendingTimestamp> pendingTimestamps_;
     std::unordered_map<SharedDisplayTiming*, int64_t> lastPublishedByOutput_;
     uint64_t nextAssociationId_ = 1;
@@ -750,6 +761,15 @@ private:
     uint64_t publishedTimestamps_ = 0;
     uint64_t suppressedTimestamps_ = 0;
     uint64_t regressedTimestamps_ = 0;
+    uint64_t frameTypePayloadReceived_ = 0;
+    uint64_t frameTypePayloadValid_ = 0;
+    uint64_t frameTypeCorrelated_ = 0;
+    uint64_t frameTypeAuthoritative_ = 0;
+    uint64_t frameTypePendingObserved_ = 0;
+    uint64_t frameTypePayloadDuplicate_ = 0;
+    uint64_t frameTypePayloadLate_ = 0;
+    uint64_t fallbackPublished_ = 0;
+    uint64_t fallbackSuppressed_ = 0;
 };
 
 DisplayTimingService::DisplayTimingService() : impl_(std::make_unique<Impl>()) {}

@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "display_timing_correlation.h"
+
 // No outstanding runtime present of that process is waiting for a submission.
 inline constexpr std::size_t kNoPendingDisplayPresent = static_cast<std::size_t>(-1);
 
@@ -22,39 +24,4 @@ inline std::size_t SelectDisplaySubmissionPresent(const uint32_t* pendingThreadI
             return i;
     }
     return 0;
-}
-
-enum class DisplayCompletionKind : uint8_t {
-    Unconditional,
-    Sync,
-    Immediate,
-};
-
-struct DisplayFrameTypeState {
-    int64_t timestamp = 0;
-    bool explicitFrameSeen = false;
-    bool generatedFrameSeen = false;
-    bool nonGeneratedFrameSeen = false;
-};
-
-inline bool IsGeneratedDisplayFrameType(uint8_t frameType) {
-    return frameType == 50 || frameType == 100;
-}
-
-inline void ObserveDisplayFrameType(DisplayFrameTypeState& state, int64_t timestamp, uint8_t frameType) {
-    state.timestamp = timestamp;
-    state.explicitFrameSeen = true;
-    if (IsGeneratedDisplayFrameType(frameType))
-        state.generatedFrameSeen = true;
-    else
-        state.nonGeneratedFrameSeen = true;
-}
-
-inline bool ShouldPublishDisplayCompletion(DisplayCompletionKind completionKind,
-                                           const DisplayFrameTypeState* state) {
-    if (completionKind == DisplayCompletionKind::Unconditional || !state || !state->explicitFrameSeen)
-        return true;
-    if (completionKind == DisplayCompletionKind::Immediate)
-        return false;
-    return state->generatedFrameSeen && !state->nonGeneratedFrameSeen;
 }

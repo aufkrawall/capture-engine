@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-08-30 - Display-change MFG correlation is a bounded policy, not a causal proof
+
+The display-change source now correlates DLSS MFG's independently delivered `FlipFrameType` payload with MPO
+presentation data using the exact `(VidPnSourceId, LayerIndex, PresentId)` identity. This is required when multiple
+same-layer PresentIds are in flight; source/layer-only matching can overwrite one transition with another. The
+version-1 payload's `TimeStamp` QPC is the generated transition. FrameType 50 and 100 therefore remain distinct
+display transitions, while a later HSync/VSync/eligible MMIO completion represents the application's transition.
+Generated types do not suppress that completion; a non-generated explicit payload does suppress its duplicate
+fallback. Anchors: `captureengine/display_timing_service.cpp`, `captureengine/display_timing_correlation.h`, and
+`tests/test_display_timing_correlation.cpp`.
+
+The 24 ms reorder watermark is deliberately only a bounded policy. Independent providers can deliver a matching
+kernel completion or FrameType event arbitrarily late, so the watermark cannot prove that the event will never arrive.
+An actual causal distinction would require a provider-disabled state, an ordered stream watermark/flush acknowledgement,
+or a newer same-stream sequence with a documented monotonic no-late guarantee. Without one, exact no-duplicate plus
+no-first-frame-loss is mathematically impossible for arbitrary delays. The reducer commits fallback at the watermark;
+any later payload is telemetry-only (`late`) and cannot regress or duplicate history. Its duplicate/late/pending
+results and the service's stage/FrameType health counters are diagnostic anchors. Tuple uniqueness is scoped to the
+service lifetime and tracked source/PID stream; resets or identity changes clear the reducer state.
+
 ### 2026-08-29 - Display-change frame timing: the correlation was keyed on the wrong thread
 
 `[Overlay] frametime_source=display_change` (ABI 48) ships: the sensor child runs the graphics event session,
