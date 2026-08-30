@@ -112,9 +112,24 @@ inline bool ShouldPublishHookAsSource(bool inheritedRenderer) {
 // Once a child renderer is known, process-local NGX/Streamline work belongs
 // there alone. Before that evidence exists, retain the ordinary single-process
 // behavior.
+//
+// The claim only ever speaks for the process tree it was published in, so the
+// published client PID is part of the answer: only that exact client stands
+// down for its own renderer. A claim left behind by a previous game - the
+// publisher is the only party that can clear it, and a terminated renderer
+// never runs its layer shutdown - must not disarm the next game's redirect,
+// preload, and indicator. A claim without a client PID cannot be scoped, so it
+// keeps the conservative pre-scoping answer.
 inline bool ShouldApplyProcessLocalRuntimeOverrides(uint32_t currentProcessPid,
-                                                    uint32_t publishedRendererPid) {
-    return publishedRendererPid == 0 || currentProcessPid == publishedRendererPid;
+                                                    uint32_t publishedRendererPid,
+                                                    uint32_t publishedClientPid) {
+    if (publishedRendererPid == 0 || currentProcessPid == publishedRendererPid) {
+        return true;
+    }
+    if (publishedClientPid == 0) {
+        return false;
+    }
+    return currentProcessPid != publishedClientPid;
 }
 
 } // namespace ce::vulkan_renderer_policy

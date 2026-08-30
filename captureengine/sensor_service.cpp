@@ -26,7 +26,12 @@ struct SensorSession {
     uint32_t updatesSinceSummary = 0;
 };
 
-static uint32_t QueryDirectParentProcessId(uint32_t processId) {
+// `processFound` distinguishes "the process is gone" from "the snapshot did not
+// answer", which a parent PID of 0 alone cannot. Callers that reap state on a
+// dead process must not act on a failed snapshot; it stays true in that case.
+static uint32_t QueryDirectParentProcessId(uint32_t processId, bool* processFound = nullptr) {
+    if (processFound)
+        *processFound = true;
     if (processId == 0)
         return 0;
 
@@ -35,15 +40,19 @@ static uint32_t QueryDirectParentProcessId(uint32_t processId) {
         return 0;
 
     uint32_t parentProcessId = 0;
+    bool found = false;
     PROCESSENTRY32W entry = {};
     entry.dwSize = sizeof(entry);
     if (Process32FirstW(snapshot, &entry)) {
         do {
             if (entry.th32ProcessID == processId) {
                 parentProcessId = entry.th32ParentProcessID;
+                found = true;
                 break;
             }
         } while (Process32NextW(snapshot, &entry));
+        if (processFound)
+            *processFound = found;
     }
     CloseHandle(snapshot);
     return parentProcessId;
@@ -216,12 +225,29 @@ int SensorProcessMain(const AppConfig& config) {
                 luidSourcePid != 0 && luidSourcePid != sourcePid ? QueryDirectParentProcessId(luidSourcePid) : 0;
             const bool luidPublisherEligible = scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
                 sourcePid, luidSourcePid, luidSourceParentPid);
-            const uint32_t inheritedRendererPid =
-                s.shm->runtimeState.inheritedRendererProcessPid.load(std::memory_order_acquire);
+            const uint64_t inheritedRendererClaim =
+                s.shm->runtimeState.inheritedRendererClaim.load(std::memory_order_acquire);
+            const uint32_t inheritedRendererPid = ce::inherited_renderer::RendererPid(inheritedRendererClaim);
+            bool inheritedRendererAlive = true;
             const uint32_t inheritedRendererParentPid =
                 inheritedRendererPid != 0 && inheritedRendererPid != sourcePid
-                    ? QueryDirectParentProcessId(inheritedRendererPid)
+                    ? QueryDirectParentProcessId(inheritedRendererPid, &inheritedRendererAlive)
                     : 0;
+            // Only the publishing renderer clears its own claim, so a renderer
+            // terminated without a layer shutdown would otherwise leave it set
+            // for the rest of the session. Reap it here rather than leaving a
+            // dead PID for later readers to interpret. Ownership of the
+            // process-local DLSS/Streamline overrides is already scoped to the
+            // publishing client, so this is hygiene and never the guard.
+            if (inheritedRendererPid != 0 && !inheritedRendererAlive) {
+                uint64_t staleClaim = inheritedRendererClaim;
+                if (s.shm->runtimeState.inheritedRendererClaim.compare_exchange_strong(
+                        staleClaim, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    LogInfo("[Sensors] Cleared stale inherited-renderer claim: rendererPid=%u clientPid=%u",
+                            inheritedRendererPid,
+                            ce::inherited_renderer::ClientPid(inheritedRendererClaim));
+                }
+            }
             uint32_t rendererPid = 0;
             if (inheritedRendererPid != sourcePid && inheritedRendererParentPid == sourcePid) {
                 rendererPid = inheritedRendererPid;

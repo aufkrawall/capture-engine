@@ -62,15 +62,21 @@ void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory) {
       local.dlssDebugOverlay.empty() ? "default" : local.dlssDebugOverlay.c_str());
 }
 
-bool CurrentProcessOwnsProcessLocalRuntimeOverrides() {
+uint64_t PublishedInheritedRendererClaim() {
   SharedMemoryLayout* sharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-  const uint32_t rendererPid =
-      sharedMemory
-          ? sharedMemory->runtimeState.inheritedRendererProcessPid.load(
-                std::memory_order_acquire)
-          : 0;
+  return sharedMemory ? sharedMemory->runtimeState.inheritedRendererClaim.load(
+                            std::memory_order_acquire)
+                      : 0;
+}
+
+bool CurrentProcessOwnsProcessLocalRuntimeOverrides() {
+  // One load: this also runs inside the LdrLoadDll redirect hook under the
+  // loader lock, so the claim has to answer "whose tree is this?" by itself.
+  // No process enumeration is permitted here.
+  const uint64_t claim = PublishedInheritedRendererClaim();
   return ce::vulkan_renderer_policy::ShouldApplyProcessLocalRuntimeOverrides(
-      GetCurrentProcessId(), rendererPid);
+      GetCurrentProcessId(), ce::inherited_renderer::RendererPid(claim),
+      ce::inherited_renderer::ClientPid(claim));
 }
 
 extern "C" __declspec(dllexport) BOOL

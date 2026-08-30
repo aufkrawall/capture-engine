@@ -346,9 +346,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
         g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
   } else {
+    const uint64_t claim = PublishedInheritedRendererClaim();
     HookLogImportant(
-        "DLSS indicator: skipped because an inherited child renderer owns the "
-        "process-local registry probe");
+        "DLSS indicator: skipped because inherited child renderer PID %lu owns "
+        "the process-local registry probe of client PID %lu",
+        static_cast<unsigned long>(ce::inherited_renderer::RendererPid(claim)),
+        static_cast<unsigned long>(ce::inherited_renderer::ClientPid(claim)));
   }
 
   // Retain inject-side coverage for OpenGL and already-loaded ICDs. Vulkan's
@@ -572,8 +575,9 @@ bool isProcessWhitelistedFast(const char *name) {
             if (ValidateSharedMemory(sharedMemory) &&
                 ce::vulkan_renderer_policy::IsPublishedInheritedRenderer(
                     GetCurrentProcessId(),
-                    sharedMemory->runtimeState.inheritedRendererProcessPid.load(
-                        std::memory_order_acquire))) {
+                    ce::inherited_renderer::RendererPid(
+                        sharedMemory->runtimeState.inheritedRendererClaim.load(
+                            std::memory_order_acquire)))) {
               found = true;
               g_InheritedRendererProcess.store(true, std::memory_order_release);
             }

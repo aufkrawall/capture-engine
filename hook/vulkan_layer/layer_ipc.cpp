@@ -237,6 +237,21 @@ bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid) {
     return eligible;
 }
 
+// Clear the inherited-renderer claim only when this process is still the
+// renderer it names. The claim is one packed value, so the compare-exchange
+// cannot race a newer publisher into a half-cleared state.
+static void ReleaseInheritedRendererClaim(SharedMemoryLayout* sharedMemory) {
+    if (!sharedMemory)
+        return;
+    uint64_t claim = sharedMemory->runtimeState.inheritedRendererClaim.load(std::memory_order_acquire);
+    while (claim != 0 && ce::inherited_renderer::RendererPid(claim) == GetCurrentProcessId()) {
+        if (sharedMemory->runtimeState.inheritedRendererClaim.compare_exchange_weak(
+                claim, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return;
+        }
+    }
+}
+
 bool LayerIPC_Init() {
     static std::mutex initMutex;
     std::lock_guard<std::mutex> initLock(initMutex);
@@ -270,10 +285,19 @@ bool LayerIPC_Init() {
         LayerLog("Set vulkanLayerActive flag in shared memory");
 
         if (inheritedParentPid != 0) {
-            g_IPCClient.GetSharedMem()->runtimeState.inheritedRendererProcessPid.store(
-                GetCurrentProcessId(), std::memory_order_release);
-            LayerLog("Inherited renderer: published exact runtime-override PID %lu",
-                     static_cast<unsigned long>(GetCurrentProcessId()));
+            // Publish the client PID alongside our own: the claim suppresses
+            // process-local runtime overrides, and it may only ever do so for
+            // the client whose eligibility we just inherited. Every other
+            // process - including the next game in this CE session, which can
+            // still see this claim because a terminated renderer never reaches
+            // the clear below - must remain free to apply its own.
+            g_IPCClient.GetSharedMem()->runtimeState.inheritedRendererClaim.store(
+                ce::inherited_renderer::MakeClaim(GetCurrentProcessId(),
+                                                  static_cast<uint32_t>(inheritedParentPid)),
+                std::memory_order_release);
+            LayerLog("Inherited renderer: published exact runtime-override PID %lu for client PID %lu",
+                     static_cast<unsigned long>(GetCurrentProcessId()),
+                     static_cast<unsigned long>(inheritedParentPid));
             LayerBootstrapInheritedRendererHook();
         }
 
@@ -330,11 +354,7 @@ bool LayerIPC_Init() {
 
 // Shutdown layer IPC
 void LayerIPC_Shutdown() {
-    if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
-        uint32_t expected = GetCurrentProcessId();
-        sharedMemory->runtimeState.inheritedRendererProcessPid.compare_exchange_strong(
-            expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
-    }
+    ReleaseInheritedRendererClaim(g_IPCClient.GetSharedMem());
     g_IPCClient.Disconnect();
     LayerLog("Layer IPC: Shutdown");
 }
@@ -366,9 +386,7 @@ void SetLayerDormant(const char* reason) {
     if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
         sharedMemory->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
         sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
-        uint32_t expected = GetCurrentProcessId();
-        sharedMemory->runtimeState.inheritedRendererProcessPid.compare_exchange_strong(
-            expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
+        ReleaseInheritedRendererClaim(sharedMemory);
     }
     if (g_LayerDormantEvent)
         SetEvent(g_LayerDormantEvent);

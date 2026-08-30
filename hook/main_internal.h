@@ -504,6 +504,11 @@ void CompleteInheritedRendererBootstrap(bool success);
 void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory);
 bool CurrentProcessOwnsProcessLocalRuntimeOverrides();
 
+// The packed renderer/client claim behind that answer. Diagnostics only: a
+// suppressed runtime override is invisible in a session log unless the claim
+// that suppressed it is named.
+uint64_t PublishedInheritedRendererClaim();
+
 extern std::atomic<LoadLibraryA_t> OriginalLoadLibraryA;
 
 extern std::atomic<LoadLibraryW_t> OriginalLoadLibraryW;

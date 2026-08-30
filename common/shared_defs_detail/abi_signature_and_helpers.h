@@ -44,7 +44,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, sizeof(CaptureState));
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, recordingHealthFlags));
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, screenGrabTargetSequence));
-    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, inheritedRendererProcessPid));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, inheritedRendererClaim));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, systemMetrics));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, displayTiming));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));

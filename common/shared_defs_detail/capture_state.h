@@ -18,6 +18,25 @@
 
 // CaptureState: the seqlock-published live capture/recording status block.
 
+// Packing for CaptureState::inheritedRendererClaim. The renderer PID sits in
+// the low half so that the single value 0 means "no claim published" for both
+// halves at once, and a claim can be cleared with one store.
+namespace ce::inherited_renderer {
+
+inline constexpr uint64_t MakeClaim(uint32_t rendererPid, uint32_t clientPid) {
+    return (static_cast<uint64_t>(clientPid) << 32) | static_cast<uint64_t>(rendererPid);
+}
+
+inline constexpr uint32_t RendererPid(uint64_t claim) {
+    return static_cast<uint32_t>(claim & 0xFFFFFFFFull);
+}
+
+inline constexpr uint32_t ClientPid(uint64_t claim) {
+    return static_cast<uint32_t>(claim >> 32);
+}
+
+}  // namespace ce::inherited_renderer
+
 #pragma pack(push, 8)
 
 struct alignas(8) CaptureState {
@@ -154,9 +173,23 @@ struct alignas(8) CaptureState {
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     // Exact child PID whose inherited Vulkan eligibility was proven by the
-    // layer. The child hook accepts this identity without broadening the
-    // executable whitelist and leaves sourcePid_ owned by the profiled parent.
-    std::atomic<uint32_t> inheritedRendererProcessPid{0};
+    // layer, packed together with the profiled client PID the proof was made
+    // against. The child hook accepts the renderer identity without broadening
+    // the executable whitelist and leaves sourcePid_ owned by the profiled
+    // parent.
+    //
+    // The client half is what scopes the claim to one process tree. A claim is
+    // published once and cleared once, but only its own publisher can clear it,
+    // so a renderer that is terminated without running its layer shutdown
+    // leaves the slot set for the rest of the session. Without the client PID
+    // every later game read that dead renderer as "somebody else owns the
+    // process-local DLSS/Streamline overrides" and silently skipped its own
+    // DLL redirect, preload, and indicator (Talos 20260829_220520: a stale
+    // NvRemixBridge.exe claim made Talos load its bundled nvngx_dlssd 310.6
+    // instead of the configured 310.7 override, and NGX CreateFeature then
+    // dereferenced null). Both halves live in one 64-bit value so every reader
+    // observes them as a single consistent pair.
+    std::atomic<uint64_t> inheritedRendererClaim{0};
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan
     std::atomic<uint64_t> vulkanPresentTick{0};      // GetTickCount64 of last Vulkan present
 

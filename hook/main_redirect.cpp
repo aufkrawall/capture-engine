@@ -449,9 +449,12 @@ void PreloadConfiguredGraphicsRuntimeDlls() {
     return;
   }
   if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    const uint64_t claim = PublishedInheritedRendererClaim();
     HookLogImportant(
-        "Runtime preload: skipped because an inherited child renderer owns "
-        "process-local DLSS/Streamline overrides");
+        "Runtime preload: skipped because inherited child renderer PID %lu owns "
+        "the process-local DLSS/Streamline overrides of client PID %lu",
+        static_cast<unsigned long>(ce::inherited_renderer::RendererPid(claim)),
+        static_cast<unsigned long>(ce::inherited_renderer::ClientPid(claim)));
     return;
   }
   static std::atomic<bool> s_preloaded{false};

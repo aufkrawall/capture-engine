@@ -196,6 +196,21 @@ TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlySourceOrDirectChildGraphic
         << "the profiled process must remain the shared telemetry/config source";
 }
 
+// Only the publishing renderer clears its own inherited-renderer claim, so a
+// renderer that is terminated leaves the claim set for the rest of the session.
+// The host reaps it once the process is provably gone, and must never reap on a
+// snapshot that failed to answer.
+TEST(HostMetricsSourceInvariantTest, SensorReapsAnInheritedRendererClaimWhoseProcessIsGone) {
+    const std::string source = ReadProjectSource("captureengine/sensor_service.cpp");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("QueryDirectParentProcessId(inheritedRendererPid, &inheritedRendererAlive)"),
+              std::string::npos);
+    EXPECT_NE(source.find("inheritedRendererPid != 0 && !inheritedRendererAlive"), std::string::npos);
+    EXPECT_NE(source.find("inheritedRendererClaim.compare_exchange_strong"), std::string::npos);
+    EXPECT_NE(source.find("bool* processFound = nullptr"), std::string::npos)
+        << "a failed process snapshot must not be reported as a dead process";
+}
+
 TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessProvenance) {
     for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp",
                              "hook/common/system_metrics.cpp"}) {

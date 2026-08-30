@@ -78,17 +78,21 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             inherited child renderer.
 // Version 48: Added selectable display-change frame timing and its sensor-to-
 //             overlay timestamp stream.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 48;
+// Version 49: Scoped the inherited-renderer claim to the client PID it was
+//             published for, so a claim left behind by a terminated renderer
+//             can no longer suppress the next game's process-local
+//             DLSS/Streamline overrides.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 49;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_48_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_49_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_48";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_49";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)

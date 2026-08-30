@@ -211,15 +211,15 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_48_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_48"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_49_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_49"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_48"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_48_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_48_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_48_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_48_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_49"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_49_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_49_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_49_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_49_1234ABCD"), 0);
 }
 
 TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) {
@@ -342,10 +342,31 @@ TEST(DisplayTimingPolicyTest, PresentSubmissionWithoutAnOutstandingPresentSelect
     EXPECT_EQ(SelectDisplaySubmissionPresent(nullptr, 1, 4444), kNoPendingDisplayPresent);
 }
 
+// The inherited-renderer claim is one 64-bit value so that every reader sees
+// the renderer PID and the client PID it was published for as a single
+// consistent pair, and so that clearing it is one store that cannot leave a
+// half-valid record behind.
+TEST(SharedDefsTest, InheritedRendererClaimPacksBothIdentitiesIntoOneValue) {
+    const uint64_t claim = ce::inherited_renderer::MakeClaim(12072, 19796);
+    EXPECT_EQ(ce::inherited_renderer::RendererPid(claim), 12072u);
+    EXPECT_EQ(ce::inherited_renderer::ClientPid(claim), 19796u);
+
+    // An unpublished claim is zero in both halves at once.
+    EXPECT_EQ(ce::inherited_renderer::RendererPid(0), 0u);
+    EXPECT_EQ(ce::inherited_renderer::ClientPid(0), 0u);
+    EXPECT_EQ(ce::inherited_renderer::MakeClaim(0, 0), 0u);
+
+    // Neither half may bleed into the other at the top of the PID range.
+    const uint64_t wide = ce::inherited_renderer::MakeClaim(0xFFFFFFFFu, 0x80000001u);
+    EXPECT_EQ(ce::inherited_renderer::RendererPid(wide), 0xFFFFFFFFu);
+    EXPECT_EQ(ce::inherited_renderer::ClientPid(wide), 0x80000001u);
+}
+
 TEST(SharedDefsTest, RendererPidAndRuntimeOverrideProfileHaveIndependentStorage) {
     SharedMemoryLayout sharedMemory;
     sharedMemory.SetSourcePid(41);
-    sharedMemory.runtimeState.inheritedRendererProcessPid.store(42, std::memory_order_release);
+    sharedMemory.runtimeState.inheritedRendererClaim.store(ce::inherited_renderer::MakeClaim(42, 41),
+                                                           std::memory_order_release);
     std::strcpy(sharedMemory.graphicsConfig.dlssSrDllPath, "C:\\runtime\\sl");
     std::strcpy(sharedMemory.graphicsConfig.dlssRrDllPath, "C:\\runtime\\sl");
     std::strcpy(sharedMemory.graphicsConfig.dlssFgDllPath, "C:\\runtime\\sl");
@@ -353,7 +374,9 @@ TEST(SharedDefsTest, RendererPidAndRuntimeOverrideProfileHaveIndependentStorage)
     std::strcpy(sharedMemory.graphicsConfig.dlssDebugOverlay, "on");
 
     EXPECT_EQ(sharedMemory.GetSourcePid(), 41u);
-    EXPECT_EQ(sharedMemory.runtimeState.inheritedRendererProcessPid.load(std::memory_order_acquire), 42u);
+    const uint64_t claim = sharedMemory.runtimeState.inheritedRendererClaim.load(std::memory_order_acquire);
+    EXPECT_EQ(ce::inherited_renderer::RendererPid(claim), 42u);
+    EXPECT_EQ(ce::inherited_renderer::ClientPid(claim), 41u);
     EXPECT_STREQ(sharedMemory.graphicsConfig.dlssSrDllPath, "C:\\runtime\\sl");
     EXPECT_STREQ(sharedMemory.graphicsConfig.dlssRrDllPath, "C:\\runtime\\sl");
     EXPECT_STREQ(sharedMemory.graphicsConfig.dlssFgDllPath, "C:\\runtime\\sl");
