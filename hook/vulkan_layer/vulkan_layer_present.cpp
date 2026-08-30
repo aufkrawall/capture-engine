@@ -646,8 +646,21 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instan
 
     VkResult res = disp->fp_vkCreateWin32SurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
     if (res == VK_SUCCESS) {
-        VulkanLayerState::Get().RegisterSurface(*pSurface, pCreateInfo->hwnd);
+        // The owning instance is recorded with the surface so vkDestroyInstance
+        // can retire surfaces the application never destroyed explicitly.
+        VulkanLayerState::Get().RegisterSurface(*pSurface, pCreateInfo->hwnd, instance);
     }
     return res;
+}
+
+// Forwarding destroy hook so the WSI bridge can retire the surface's window:
+// without it, a recycled HWND value would stay authorized after the surface
+// that made it a Vulkan target is gone.
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surface,
+                                                       const VkAllocationCallbacks* pAllocator) {
+    InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
+    if (disp && disp->fp_vkDestroySurfaceKHR)
+        disp->fp_vkDestroySurfaceKHR(instance, surface, pAllocator);
+    VulkanLayerState::Get().UnregisterSurface(surface);
 }
 #endif

@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 660,
+    "entries": 662,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -374,6 +374,7 @@
       "hook/vulkan_layer/layer_overlay_queue.cpp",
       "hook/vulkan_layer/layer_overlay_render.cpp",
       "hook/vulkan_layer/layer_renderer_bootstrap.cpp",
+      "hook/vulkan_layer/layer_wsi_surface_bridge.cpp",
       "hook/vulkan_layer/vulkan_layer.cpp",
       "hook/vulkan_layer/vulkan_layer_capabilities.cpp",
       "hook/vulkan_layer/vulkan_layer_hooks.cpp",
@@ -676,6 +677,7 @@
       "tests/test_video_encoder_source_part2.cpp",
       "tests/test_video_format_policy.cpp",
       "tests/test_video_metadata.cpp",
+      "tests/test_vulkan_dxgi_fifo_scoping.cpp",
       "tests/test_vulkan_fg_build_policy.cpp",
       "tests/test_vulkan_fg_policy.cpp",
       "tests/test_vulkan_instance_registry.cpp",

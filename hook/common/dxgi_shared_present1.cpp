@@ -1,5 +1,7 @@
 #include "dxgi_shared_internal.h"
 
+#include "../wrappers/vulkan_dxgi_fifo_present.h"
+
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
@@ -8,6 +10,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     if (HookIsShuttingDown())
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    // Same single parameter decision as DetourPresent: the scoped Vulkan FIFO
+    // backstop is consulted once, at the top, before reentrancy/forwarding.
+    ce::vulkan_dxgi_fifo::ApplyFinalPresentPolicy(pSwapChain, SyncInterval, Flags,
+                                                  ce::vulkan_dxgi_fifo::FinalPresentVariant::kPresent1);
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
     const APIType api = DetectAPIType(pSwapChain);

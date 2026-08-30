@@ -1,5 +1,7 @@
 #include "dxgi_shared_internal.h"
 
+#include "../wrappers/vulkan_dxgi_fifo_present.h"
+
 #ifdef BUILDING_CAPTURE_HOOK
 extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
@@ -455,6 +457,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return DXGI_ERROR_INVALID_CALL;
     if (HookIsShuttingDown())
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    // Single parameter decision for the scoped Vulkan FIFO backstop: exactly one
+    // physical Present hook (this one) consults the armed/lifecycle policy and
+    // the registered live-WSI swapchain set, before any reentrancy or forwarding
+    // choice below can act on the arguments. Disarmed calls and swapchains that
+    // were never authorized pass through byte-identical.
+    ce::vulkan_dxgi_fifo::ApplyFinalPresentPolicy(pSwapChain, SyncInterval, Flags,
+                                                  ce::vulkan_dxgi_fifo::FinalPresentVariant::kPresent);
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
     // DIAGNOSTIC: time the WHOLE DetourPresent call. The ECL diagnostic proved the Alt+Tab

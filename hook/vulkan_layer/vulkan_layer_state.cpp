@@ -1,6 +1,11 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_prerender_policy.h"
 
+#include <iterator>
+
+#include "../common/vulkan_wsi_surface_table.h"
+#include "layer_wsi_surface_bridge.h"
+
 VulkanLayerState& VulkanLayerState::Get() {
     static VulkanLayerState instance;
     return instance;
@@ -28,13 +33,28 @@ void VulkanLayerState::RegisterInstance(VkInstance instance, InstanceDispatch* d
 }
 
 void VulkanLayerState::UnregisterInstance(VkInstance instance) {
-    std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    auto it = m_Instances.find(instance);
-    if (it != m_Instances.end()) {
-        delete it->second;
-        m_Instances.erase(it);
+    std::vector<HWND> windowsToRetire;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        auto it = m_Instances.find(instance);
+        if (it != m_Instances.end()) {
+            delete it->second;
+            m_Instances.erase(it);
+        }
+        m_InstanceRegistry.RemoveInstance(instance);
+        // vkDestroyInstance also destroys every surface the instance still
+        // owned, so an application that skips explicit vkDestroySurfaceKHR
+        // calls must not leave its HWNDs published as live Vulkan targets. The
+        // sweep erases the owned surfaces and selects one window per surface;
+        // retirement runs after m_Lock is released because the bridge's spin
+        // section never nests under a layer lock.
+        ce::vulkan_wsi_surfaces::SelectWindowsToRetireOnInstanceDestroy(
+            m_Surfaces, instance, std::back_inserter(windowsToRetire));
     }
-    m_InstanceRegistry.RemoveInstance(instance);
+    // The bridge refcounts per HWND: a window shared by several retired
+    // surfaces stays live until its last surface is retired.
+    for (const HWND window : windowsToRetire)
+        ce::vulkan_wsi::RetireLiveSurfaceHwnd(window);
 }
 
 InstanceDispatch* VulkanLayerState::GetInstanceDispatch(VkInstance instance) {
@@ -580,20 +600,38 @@ SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
     return nullptr;
 }
 
-void VulkanLayerState::RegisterSurface(VkSurfaceKHR surface, HWND window) {
-    std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    m_Surfaces[surface] = window;
+void VulkanLayerState::RegisterSurface(VkSurfaceKHR surface, HWND window, VkInstance instance) {
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        m_Surfaces[surface] = SurfaceRecord{window, instance};
+    }
+    // Publish the live Win32 surface HWND to the lock-free WSI bridge so the
+    // hook DLL's scoped FIFO backstop can authorize swapchains on it. Multiple
+    // surfaces on one window are refcounted by the bridge. The publish runs
+    // outside m_Lock - the bridge owns its own spin section and never calls
+    // back into this class, so bridge calls never nest under layer locks.
+    ce::vulkan_wsi::PublishLiveSurfaceHwnd(window);
 }
 
 void VulkanLayerState::UnregisterSurface(VkSurfaceKHR surface) {
-    std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    m_Surfaces.erase(surface);
+    HWND window = NULL;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        const auto it = m_Surfaces.find(surface);
+        if (it == m_Surfaces.end())
+            return;
+        window = it->second.window;
+        m_Surfaces.erase(surface);
+    }
+    // Retirement is refcounted: the window stays live while any other surface
+    // still targets it.
+    ce::vulkan_wsi::RetireLiveSurfaceHwnd(window);
 }
 
 HWND VulkanLayerState::GetSurfaceWindow(VkSurfaceKHR surface) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Surfaces.find(surface);
-    return (it != m_Surfaces.end()) ? it->second : NULL;
+    return (it != m_Surfaces.end()) ? it->second.window : NULL;
 }
 
 void VulkanLayerState::TrackPhysicalDevice(VkPhysicalDevice pd, VkInstance inst) {

@@ -36,6 +36,17 @@ bool ArePresentMethodsInterceptedBelowForeignChain();
 }
 
 namespace DXGIShared {
+// Passive install seam for the scoped Vulkan FIFO backstop
+// (hook/wrappers/vulkan_dxgi_fifo_present.cpp): ensure CE's single physical
+// dxgi!Present/Present1 inline hooks are installed, regardless of the
+// Vulkan-active present-path latch. Preserves the foreign-overlay
+// below-chain/prepend policy, is cheap once installed, and retries a refused
+// install on the next authorized swapchain event. The backstop must not own a
+// competing Present hook, so this is its only route to one.
+bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
+}
+
+namespace DXGIShared {
 // Wrapper-mode PostSL service: invoked from CWrapDXGISwapChain::Present when the wrapper is
 // the Streamline-runtime (non-retaining) one and CE left the Present entry to the foreign
 // chain. Mirrors the entry-hook routing's confirmed-standalone Streamline Present invocation

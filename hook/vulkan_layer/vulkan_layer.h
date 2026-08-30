@@ -292,7 +292,7 @@ public:
     void UnregisterSwapchain(VkSwapchainKHR swapchain);
     SwapchainData* GetSwapchainData(VkSwapchainKHR swapchain);
 
-    void RegisterSurface(VkSurfaceKHR surface, HWND window);
+    void RegisterSurface(VkSurfaceKHR surface, HWND window, VkInstance instance);
     void UnregisterSurface(VkSurfaceKHR surface);
     HWND GetSurfaceWindow(VkSurfaceKHR surface);
 
@@ -363,7 +363,15 @@ private:
     std::unordered_map<VkQueue, uint32_t> m_QueueFamilies;
     std::unordered_map<VkQueue, uint32_t> m_QueueFlags;
     std::unordered_map<VkSwapchainKHR, SwapchainData*> m_Swapchains;
-    std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
+    // Every tracked Win32 surface with the window it presents on and the
+    // instance that created it. vkDestroySurfaceKHR retires one surface;
+    // vkDestroyInstance implicitly destroys every surface the instance still
+    // owns, so the ownership is what the teardown sweep matches on.
+    struct SurfaceRecord {
+        HWND window;
+        VkInstance instance;
+    };
+    std::unordered_map<VkSurfaceKHR, SurfaceRecord> m_Surfaces;
     // Instance/physical-device ownership, including the loader dispatch-key
     // fallback that answers for handles no enumeration hook of ours produced.
     ce::vulkan_instance_registry::Registry m_InstanceRegistry;
@@ -466,6 +474,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instan
                                                                const VkWin32SurfaceCreateInfoKHR* pCreateInfo,
                                                                const VkAllocationCallbacks* pAllocator,
                                                                VkSurfaceKHR* pSurface);
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surface,
+                                                       const VkAllocationCallbacks* pAllocator);
 #endif
 }
 

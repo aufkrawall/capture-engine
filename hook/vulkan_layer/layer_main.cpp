@@ -436,6 +436,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
     // bookkeeping while dormant; the stable address can be cached before CE starts.
     if (strcmp(pName, "vkCreateWin32SurfaceKHR") == 0)
         return (PFN_vkVoidFunction)Capture_vkCreateWin32SurfaceKHR;
+    if (strcmp(pName, "vkDestroySurfaceKHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkDestroySurfaceKHR;
     if (strcmp(pName, "vkGetDeviceQueue") == 0)
         return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
     if (strcmp(pName, "vkGetDeviceQueue2") == 0)

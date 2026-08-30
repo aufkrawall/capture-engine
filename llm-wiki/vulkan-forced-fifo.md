@@ -1,6 +1,6 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-08-30 (the final-DXGI override retired, the overlay ring, and the compute-composite barrier)
+Last cross-checked: 2026-08-30 (final-DXGI vblank backstop re-armed, scoped per registered swapchain instance; the overlay ring and the compute-composite barrier fixes unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -12,10 +12,10 @@ Primary sources:
 - `hook/vulkan_layer/{vulkan_layer_swapchain,vulkan_layer_present,vulkan_layer_capabilities}.cpp`
 - `hook/vulkan_layer/{layer_overlay,layer_overlay_render,layer_overlay_compute}.cpp`
 - `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
-- `hook/common/{vulkan_dxgi_fifo_policy.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
+- `hook/common/{vulkan_dxgi_fifo_policy.h,vulkan_dxgi_fifo_registry.h,vulkan_wsi_surface_table.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
 - `hook/wrappers/vulkan_dxgi_fifo_present.cpp`
 - `hook/apis/{streamline_hook_api,remix_hook}.cpp`
-- `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy}.cpp`
+- `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy,test_vulkan_dxgi_fifo_scoping,test_vulkan_renderer_policy}.cpp`
 
 Related: [graphics-overrides-and-frame-pacing.md](graphics-overrides-and-frame-pacing.md) for the rest of the
 `[Graphics]` contract, [display-change-timing.md](display-change-timing.md) for measuring what actually reached the
@@ -37,15 +37,20 @@ screen.
   `vulkan_layer.log` reports `driver returned ... presentMode=2`. NVIDIA officially excludes Vulkan from DLSS-G
   VSync support, so those messages prove Vulkan mode propagation but not generated-output synchronization. Portal RTX
   session `20260828_162056` had both messages and still produced about 158.8 FPS in three-output bursts.
-- **Retired (2026-08-30), see "the DXGI override was the bug" below.** The description that follows is what the path
-  did while it was armed; `ShouldArmFinalDxgiPresent` now always returns false, so none of these hooks are installed.
+- **Re-armed as a scoped backstop (2026-08-30), see "the per-instance backstop" below.** The description that
+  follows is what the path does while armed; `ShouldArmFinalDxgiPresent` arms only when the resident CE Vulkan layer
+  is loaded and `vsync_mode` is `fifo` or `adaptive`, and the rewrite additionally applies only to swapchain
+  instances the creation detours registered. The earlier crash came from vtable mutation, not from the override
+  itself, and that regression stays fixed.
 - NVIDIA's Vulkan WSI terminates in an internal DXGI flip swapchain. With a resident CE Vulkan layer and explicit
   `vsync=fifo`, `hook/wrappers/vulkan_dxgi_fifo_present.cpp` registered only system `CreateDXGIFactory*` lookups,
   leaves each real factory and every creation descriptor unwrapped/unchanged, and reads its four creation-method
   addresses (slots 10/15/16/24) without writing them. Inline hooks on those system method bodies observe the returned
-  real WSI swapchain. Present/Present1 are then intercepted with a deep body hook placed past the widest recognized
+  real WSI swapchain and registers the instance pointer with the observed-swapchain registry. Present/Present1 are
+  then intercepted with a deep body hook placed past the widest recognized
   foreign entry patch, while slots 8/22 remain untouched. Steam and other overlays retain their outer entry-chain
-  ownership; CE runs below them and forces DXGI `SyncInterval=1` while clearing `DXGI_PRESENT_ALLOW_TEARING` before
+  ownership; CE runs below them and forces DXGI `SyncInterval=1` while clearing `DXGI_PRESENT_ALLOW_TEARING` and
+  `DXGI_PRESENT_DO_NOT_WAIT` before
   the system body.
 - Never replace factory/swapchain vtable slots for this path. Portal session `20260828_212805` proved that even a
   first Present1 whose arguments were already `1/0` crashes in Steam's DLSS-G worker path after the shared system
@@ -158,14 +163,52 @@ screen.
   frame generation - where the rendered frame period is not constant - a fixed grid turns that variation into visible
   stutter while every present-side frame time stays flat. It also explains the user's A/B exactly: forcing the mode in
   the *driver* leaves `vsync_mode` at something other than `fifo`, so this path never armed, and the title is smooth.
-- **`hook/common/vulkan_dxgi_fifo_policy.h`: `ShouldArmFinalDxgiPresent` now always returns false.** Nothing registers
-  the factory hooks, nothing installs a `Present`/`Present1` body hook, and no present parameters are rewritten. The
-  swapchain's `VK_PRESENT_MODE_FIFO_KHR` is the whole contract and the same WSI honours it - the application's own
-  FIFO swapchain in that session was presented the same adaptive way. The rate escape this path was built for was
-  hardware present metering, which is now declined at device level, so the symptom no longer has a cause.
-- The machinery in `hook/wrappers/vulkan_dxgi_fifo_present.cpp` is left in place and inert; re-arming it is a one-line
-  change if a future session ever shows the presented rate exceeding the refresh rate again. **Watch for that in the
-  perf CSV**, because the `final Present1 #N` diagnostic goes away with it.
+- **That conclusion rested on evidence that was too weak to keep the override dead.** The `20260830_185703` capture
+  attributed presents only through global counters (`final Present1 #N` cadence lines and
+  `vkQueuePresentKHR` counts); it proved the WSI can emit per-present DXGI parameters, but not that the
+  above-refresh rate with tearing was correct variable refresh rather than an unpaced generated group. The Remix
+  CPU pacer that CE's withholding steers to is group-aware but **is not VSync**: it spreads generated batches
+  evenly across the rendered frame interval, which says nothing about the display, so the presented output can
+  still run past the refresh rate with tearing (~190/s measured). The native vblank contract is therefore restored
+  as a scoped backstop - see "the per-instance backstop" below.
+
+## The per-instance backstop: final present scoped to registered swapchains
+
+- **Arming** (`hook/common/vulkan_dxgi_fifo_policy.h`): `ShouldArmFinalDxgiPresent` is true only when the resident
+  CE Vulkan layer is loaded and `vsync_mode` is `fifo` or `adaptive` (the canonical `RequestsVblankPacedPresentation`
+  from `vulkan_present_metering_policy.h`, included and called directly so the two policies cannot drift). `off`,
+  `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` stores the decision with an unconditional `g_armed.exchange`, so a
+  config change to a non-vblank mode disarms by storing `false`; the installed system body hooks are never
+  unpatched at runtime - the atomic gate is the disarm, and the `HookIsShuttingDown()` lifecycle gate is unchanged.
+- **The per-instance registry** (`hook/common/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
+  open-addressed table of raw swapchain instance pointers, filled by the four system creation-method detours on
+  every successful targeted creation. No COM reference is taken; a re-created instance at a recycled address
+  refreshes its slot naturally. When the table is full, registration fails closed: that instance's presents pass
+  through untouched instead of falling back to an unscoped rewrite. Membership plus `ShouldForceFifoNow()` is the
+  complete rewrite gate (`ShouldRewriteFinalPresent`), so an armed backstop never restates a pacing contract on a
+  swapchain it did not watch being created.
+- **Authorization lives in the resident layer, not in heuristics** (`hook/common/vulkan_wsi_surface_table.h`,
+  `hook/vulkan_layer/layer_wsi_surface_bridge.cpp`). The layer publishes every live Win32 surface HWND at
+  `vkCreateWin32SurfaceKHR` and retires it at `vkDestroySurfaceKHR`; the hook DLL resolves the layer's
+  `CEVulkanLayerIsLiveVulkanSurfaceHwnd` export and registers only swapchains whose target window backs a live
+  surface. The per-HWND refcount keeps a window shared by several surfaces live until its last surface retires.
+  `vkDestroyInstance` closes the same lifetime implicitly: the layer records the owning `VkInstance` with every
+  surface, and `VulkanLayerState::UnregisterInstance` sweeps the surfaces the instance still owns through
+  `SelectWindowsToRetireOnInstanceDestroy`, retiring one window per surface after its lock is released. Without
+  that sweep, an application that never calls `vkDestroySurfaceKHR` would leave its HWNDs published as live
+  Vulkan targets (and its recycled values authorized) until process exit. Retirement never runs while the layer's
+  state lock is held: the bridge's spin section never nests under a layer lock.
+- **The rewrite contract**: no force, or a `DXGI_PRESENT_TEST` (0x1) query, leaves both arguments byte-identical.
+  Otherwise `SyncInterval=1`, `DXGI_PRESENT_ALLOW_TEARING` (0x200) is cleared, and `DXGI_PRESENT_DO_NOT_WAIT` (0x8)
+  is cleared so the forced FIFO present may block on the vblank; `DXGI_PRESENT_DO_NOT_SEQUENCE` (0x2 - not 0x8) and
+  all unrelated flags are preserved. An already-correct interval=1/flags call is a byte-identical no-op.
+- **Diagnostics stay per-identity**: registration lines, per-slot present cadence (`#N swapchain=%p slot=%zu`,
+  `Present` vs `Present1`, incoming/final interval and flags) and a bounded global cadence for foreign
+  pass-throughs. The Present hot path reads only atomics - no mutex, timer, wait, max-frame-latency call, driver
+  API, or game-specific heuristic was added.
+- The prior crash (COM vtable mutation, session `20260828_212805`) and the overlay flicker (compute-composite
+  barrier stage mask, fence re-arm order, submission-ring depth) were separate bugs that are already fixed and are
+  not touched by the backstop: vtables stay unwritten and the overlay/ring subsystems are outside this path.
 
 ## The overlay submission ring must not pace the game
 

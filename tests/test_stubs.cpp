@@ -11,6 +11,7 @@
 #include "../hook/common/fg_runtime_state.h"
 #include "../hook/common/hook_common.h"
 #include "../hook/common/custom_overlay_vk.h"
+#include "../hook/wrappers/vulkan_dxgi_fifo_present.h"
 
 void LayerLog(const char*, ...) {}
 
@@ -45,6 +46,14 @@ bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain*, b
     return false;
 }
 }  // namespace DXGIShared
+
+// The scoped Vulkan FIFO backstop lives in the hook DLL's wrapper unit, which
+// the unit-test link does not compile; the DXGIShared present detours call it,
+// so tests get an identity no-op (hook/wrappers/vulkan_dxgi_fifo_present.cpp
+// owns the real decision).
+namespace ce::vulkan_dxgi_fifo {
+void ApplyFinalPresentPolicy(IDXGISwapChain*, UINT&, UINT&, FinalPresentVariant) {}
+}  // namespace ce::vulkan_dxgi_fifo
 
 // Stubs for InlineHook - need to match actual class definition
 // The real InlineHook is a class with static methods, so we provide definitions here
