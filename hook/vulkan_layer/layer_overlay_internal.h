@@ -44,8 +44,24 @@ struct OverlayState {
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkFence> fences;
     std::vector<VkSemaphore> semaphores;
+    // Per slot: the swapchain image its semaphore was presented with, and that
+    // image's acquire generation at the time. A slot may only be reused once
+    // the generation has moved on, because the fence proves the submission
+    // retired and says nothing about the present that waits on the semaphore.
+    std::vector<uint32_t> slotImageIndex;
+    std::vector<uint64_t> slotAcquireGeneration;
+    std::vector<uint8_t> slotEverUsed;
     uint32_t nextSubmissionSlot = 0;
     uint64_t submissionBackpressureWaits = 0;
+    uint64_t submissionRingGrowths = 0;
+    // Slots created up front. The timestamp query pool covers exactly these, so
+    // a slot added later reports no GPU time rather than recreating the pool on
+    // the present path.
+    uint32_t timestampSlotCapacity = 0;
+    // Growing the ring means one more command buffer, fence and semaphore. The
+    // compute-composite route also owns a full-resolution offscreen target per
+    // slot, so it keeps the fixed ring and the original backpressure.
+    bool submissionRingMayGrow = false;
     std::vector<VkSemaphore> preSignaledSemaphores;  // Always-signaled semaphores for skipped frames
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkImageView> imageViews;

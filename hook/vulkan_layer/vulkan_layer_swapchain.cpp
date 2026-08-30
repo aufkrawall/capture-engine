@@ -139,6 +139,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         VulkanLayerState::Get().UnregisterSwapchain(pCreateInfo->oldSwapchain);
     }
 
+    // CE overrides VkSwapchainCreateInfoKHR::presentMode, but that is not the
+    // only place a present mode can be selected: VK_EXT_swapchain_maintenance1
+    // lets an application list compatible modes here and then pick one per
+    // present. Portal RTX presents a swapchain CE created as FIFO through DXGI
+    // with SyncInterval=0 plus DXGI_PRESENT_ALLOW_TEARING, which is what a
+    // per-present Immediate selection would look like from below, so record the
+    // chain CE was handed rather than guessing about it again.
+    LogPresentModeSelectionChain("vkCreateSwapchainKHR", pCreateInfo->pNext);
+
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
     // The sharing mode decides whether CE may write the swapchain image from a
     // queue family other than the presenting one without an ownership transfer.
@@ -166,6 +175,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->images.resize(count);
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, sd->images.data());
         sd->imageCount = count;
+        if (count > 0) {
+            sd->imageAcquireGeneration = std::make_unique<std::atomic<uint64_t>[]>(count);
+            for (uint32_t i = 0; i < count; ++i)
+                sd->imageAcquireGeneration[i].store(0, std::memory_order_relaxed);
+        }
         // Once per swapchain, not per frame: the acquire headroom a game has is
         // `count - surfaceCaps.minImageCount`, so a session that fails inside
         // vkAcquireNextImageKHR has to be able to prove from the log whether CE

@@ -1,5 +1,67 @@
 # llm-wiki Log
 
+### 2026-08-30 - The metering fix was measured and was not the mechanism; the discriminator is who asked for the mode
+
+Follow-up run `20260830_182939` on the capability withholding below. It took effect end to end - `withholding
+VK_NV_present_metering from vkEnumerateDeviceExtensionProperties (1 of 291 device extensions)` and `set
+rtx.dlfg.enablePresentMetering=False` - and changed nothing: `Vulkan DXGI FIFO: final Present1 #1024` and `#2048`
+still report `SyncInterval=0->1 Flags=0x200->0x0`, and the base frame period distribution is the same (p25/p50/p75
+22.7/26.4/30.3 ms against 21.6/26.3/28.7 ms). Hardware present metering is not what displaces the vertical-blank
+wait in Portal RTX. Withholding it is kept, because two pacing authorities on one set of presents is still wrong,
+but it explains nothing.
+
+**The session that disproved it also named the real discriminator, and it is not frame generation.** The application
+created four swapchains: two it asked for FIFO itself, two CE overrode from Immediate. The application's own FIFO
+swapchain is presented with `SyncInterval=1`. The one CE overrode is presented with `SyncInterval=0` plus
+`DXGI_PRESENT_ALLOW_TEARING`. Same process, same WSI, same driver, 3.4 seconds apart. **The WSI honours FIFO - the
+overridden swapchain's effective mode is simply not FIFO**, which means a present-mode selection is happening
+somewhere CE does not look. `VK_EXT_swapchain_maintenance1` is exactly that: compatible modes listed at creation,
+one picked per present, no recreation. DXVK - which Remix is built on - uses it.
+
+That is a hypothesis, and the last one cost a game session, so this round ships the measurement with the fix:
+`vulkan_present_chain_policy.h` prints the `pNext` chain CE was handed at `vkCreateSwapchainKHR` (once per swapchain)
+and at `vkQueuePresentKHR` (once per distinct shape), `vkCreateDevice` prints which presentation-relevant extensions
+the application requested, and *if* the chain carries a per-present selection that disagrees with the created mode,
+CE substitutes its own head node forcing the created mode back. The forced value is always the swapchain's own
+creation mode: Vulkan requires the selection to name a declared-compatible mode, and that is the one value
+guaranteed to be in the set.
+
+**The second finding is CE's own, it is measured rather than inferred, and it is almost certainly part of the
+judder.** `perf_metrics_13360.csv`: `fence_wait_us` median **2867 us**, p90 7989 us, p99 14999 us, max 27654 us, on
+more than half of all presents - about 14 ms of a 29 ms rendered frame spent blocking the game's present thread
+inside CE's overlay submission ring. This is the 2026-08-29 finding recurring at the wider ring: widening it from
+`imageCount` to `imageCount + 4` moved the threshold and kept the shape. **Any fixed depth is a second rate limiter
+whose period is the slot count**, and beating a 10-slot ring against a 4-present generated group is an uneven
+rendered frame period even while every vertical blank receives a new image.
+
+So the depth stopped being predicted. The ring is extended by one slot whenever a present finds none reusable - one
+command buffer, one fence, one binary semaphore - and converges on whatever the runtime actually keeps outstanding.
+`kMaxSubmissionSlots` is a memory-safety bound, not a tuned depth, and reaching it keeps the old blocking behaviour
+so the failure stays bounded and logged.
+
+Building that surfaced a real correctness bug, and the best candidate yet for the reported overlay flicker: **the
+fence proved the wrong thing.** It proves CE's submission retired, so its command buffer may be re-recorded. It says
+nothing about the binary semaphore that submission signalled - the present waiting on it is a queue operation that
+can still be pending, and re-signalling a binary semaphore whose wait has not executed is undefined behaviour. Under
+FIFO those two moments are several vertical blanks apart. Without `VK_EXT_swapchain_maintenance1`'s present fence the
+sound proof is the swapchain itself: `vkAcquireNextImageKHR` returning image i means every present of image i has
+executed its wait. `SwapchainData` now carries one acquire counter per image and a slot is reusable only once the
+counter for the image it was used with has moved.
+
+Three things worth keeping:
+
+- **A counter that tracks the expected rate is not evidence a stage is correct** - and neither is a fix that took
+  effect. `withholding ... (1 of 291)` proved the code ran, not that it mattered. The measurement that discriminated
+  was two swapchains in one session differing only in who asked for the present mode.
+- **Widening a ring is not the same as removing it from the critical path.** A fixed depth just moves where the
+  aliasing starts.
+- The perf CSV had all of this in it before either game session: `fence_wait_us`, the group period, the image
+  indices. Read the columns that describe CE's own cost before theorising about the driver's.
+
+**Not validated on hardware.** The confirmation signals are, in order: the `pNext chain:` lines naming what the
+runtime actually chains, `fence_wait_us` collapsing to microseconds, `overlay submission ring extended to N slots`
+converging, and only then `final Present1 #N` reporting `SyncInterval=1->1 Flags=0x0->0x0`.
+
 ### 2026-08-30 - Suppressing the request could never restore the wait; the capability had to go
 
 Portal RTX with `vsync_mode=fifo` looked "very stuttery despite the frame time graph being flat", and forcing the same

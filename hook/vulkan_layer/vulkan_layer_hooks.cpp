@@ -438,6 +438,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         "enabledExtensionCount=%u, enabledLayerCount=%u",
         pCreateInfo->queueCreateInfoCount, pCreateInfo->enabledExtensionCount, pCreateInfo->enabledLayerCount);
 
+    LogRequestedPresentationExtensions(pCreateInfo->ppEnabledExtensionNames, pCreateInfo->enabledExtensionCount);
+
     const auto owner = VulkanLayerState::Get().ResolveInstanceForPhysicalDevice(physicalDevice);
     VkInstance instance = owner.instance;
     if (instance == VK_NULL_HANDLE) {

@@ -196,6 +196,57 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    // The present-mode selection is resolved on the chain the metering unlink
+    // already produced, so the two head-only substitutions compose instead of
+    // fighting over the same node.
+    const void* effectivePresentChain = suppressPresentMetering ? meteringFreePresentChain
+                                                                : (pPresentInfo ? pPresentInfo->pNext : nullptr);
+    ce::vulkan_present_chain::SwapchainPresentModeInfo forcedPresentModeNode = {};
+    VkPresentModeKHR forcedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    bool forcePresentModeSelection = false;
+    if (pPresentInfo && effectivePresentChain) {
+        const ce::vulkan_present_chain::ChainDescription chain =
+            ce::vulkan_present_chain::DescribeChain(effectivePresentChain, nullptr, 0);
+        if (sd) {
+            LogPresentChainIfChanged("vkQueuePresentKHR", effectivePresentChain, chain, sd->presentChainLogState,
+                                     chain.hasPresentModeSelection
+                                         ? "the application selects a present mode per present"
+                                         : "no per-present mode selection");
+        }
+        ce::vulkan_present_chain::PresentModeSelectionInput selectionInput = {};
+        selectionInput.vblankPacedPresentationRequested = VulkanLayerState::Get().WantsVblankPacedPresentation();
+        selectionInput.swapchainPresentModeKnown = (sd != nullptr);
+        selectionInput.swapchainPresentMode = sd ? sd->presentMode : VK_PRESENT_MODE_IMMEDIATE_KHR;
+        selectionInput.presentSwapchainCount = pPresentInfo->swapchainCount;
+        selectionInput.hasPresentModeSelection = chain.hasPresentModeSelection;
+        selectionInput.presentModeSelectionIsChainHead = chain.presentModeSelectionIsChainHead;
+        selectionInput.presentModeSelectionSwapchainCount = chain.presentModeSelectionSwapchainCount;
+        selectionInput.selectedPresentMode = chain.selectedPresentMode;
+        const ce::vulkan_present_chain::PresentModeSelectionDecision selectionDecision =
+            ce::vulkan_present_chain::DecidePresentModeSelection(selectionInput);
+        if (selectionDecision.forceCreatedMode) {
+            forcedPresentMode = sd->presentMode;
+            forcedPresentModeNode.sType = ce::vulkan_present_chain::kStructureTypeSwapchainPresentModeInfo;
+            forcedPresentModeNode.pNext = chain.chainWithoutPresentModeSelection;
+            forcedPresentModeNode.swapchainCount = 1;
+            forcedPresentModeNode.pPresentModes = &forcedPresentMode;
+            forcePresentModeSelection = true;
+            modified = true;
+        }
+        if (selectionDecision.forceCreatedMode || selectionDecision.blockedByChainPosition) {
+            static std::atomic<int> s_selectionLogCount{0};
+            if (s_selectionLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+                LayerLog(
+                    "Vulkan Layer: per-present mode selection %d conflicts with the swapchain's created mode %d - %s",
+                    static_cast<int>(chain.selectedPresentMode), static_cast<int>(selectionInput.swapchainPresentMode),
+                    selectionDecision.forceCreatedMode
+                        ? "forced back to the created mode"
+                        : "NOT forced: the selection is not the chain head and replacing it would write application "
+                          "memory");
+            }
+        }
+    }
+
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
 
         if (sd) {
@@ -232,7 +283,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
                                                      currentWaitSemaphoreCount, &overlayDone, asyncPresentDetected,
-                                                     &fenceWaitUs, &overlayGpuUs);
+                                                     &fenceWaitUs, &overlayGpuUs,
+                                                     sd->imageAcquireGeneration.get(), sd->imageCount);
                 perfMetrics.overlayGpuUs = overlayGpuUs;
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
                 perfMetrics.fenceWaitUs = fenceWaitUs;
@@ -329,6 +381,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             // chain: CE's copy simply starts one node later.
             presentInfoCopy.pNext = meteringFreePresentChain;
         }
+        if (forcePresentModeSelection) {
+            // Same rule, one step further: CE's copy points at its own head
+            // node, which carries the created mode and links to the rest of the
+            // application's chain unchanged.
+            presentInfoCopy.pNext = &forcedPresentModeNode;
+        }
         if (currentWaitSemaphores && currentWaitSemaphoreCount > 0) {
             presentInfoCopy.waitSemaphoreCount = currentWaitSemaphoreCount;
             presentInfoCopy.pWaitSemaphores = currentWaitSemaphores;
@@ -413,7 +471,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
         }
     }
 
-    return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
+    const VkResult acquireResult =
+        disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
+    // A successful acquire is the proof the overlay's submission ring needs
+    // that every present of this image - including the one that waited on a
+    // slot's binary semaphore - has executed its wait. See
+    // IsSubmissionSlotReusable in overlay_submit_queue_policy.h.
+    if ((acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) && sd && pImageIndex &&
+        sd->imageAcquireGeneration && *pImageIndex < sd->imageCount) {
+        sd->imageAcquireGeneration[*pImageIndex].fetch_add(1, std::memory_order_acq_rel);
+    }
+    return acquireResult;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,

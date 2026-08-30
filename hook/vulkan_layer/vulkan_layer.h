@@ -10,6 +10,7 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 #include <atomic>
+#include <memory>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -201,6 +202,16 @@ struct SwapchainData {
     // so activation and multiplier changes are visible without logging a line
     // per present. 0 means nothing has been logged yet.
     std::atomic<uint32_t> presentMeteringLogState{0};
+    // One counter per swapchain image, incremented by a successful
+    // vkAcquireNextImageKHR. A change proves the presentation engine finished
+    // with that image, which is the only evidence available without
+    // VK_EXT_swapchain_maintenance1 that a present has executed its semaphore
+    // wait - see IsSubmissionSlotReusable in overlay_submit_queue_policy.h.
+    std::unique_ptr<std::atomic<uint64_t>[]> imageAcquireGeneration;
+    // Set once per swapchain: the sTypes the application chained onto
+    // VkPresentInfoKHR. A present-mode selection CE cannot see at creation time
+    // would arrive here.
+    std::atomic<uint32_t> presentChainLogState{0};
 };
 
 // Singleton state manager
@@ -465,7 +476,9 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
-                   int32_t* fenceWaitUs = nullptr, int32_t* overlayGpuUs = nullptr);
+                   int32_t* fenceWaitUs = nullptr, int32_t* overlayGpuUs = nullptr,
+                   const std::atomic<uint64_t>* imageAcquireGeneration = nullptr,
+                   uint32_t imageAcquireGenerationCount = 0);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,

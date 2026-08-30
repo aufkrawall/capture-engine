@@ -94,6 +94,9 @@ struct SubmissionSlotChoice {
     uint32_t index = 0;
     bool valid = false;
     bool waitForCompletion = false;
+    // No slot could be reused and the ring may still be extended. The caller
+    // creates one more slot instead of blocking the game's present thread.
+    bool growRing = false;
 };
 
 // How deep the submission ring has to be, which is *not* the swapchain image
@@ -134,6 +137,50 @@ inline uint32_t ResolveSubmissionSlotCount(uint32_t imageCount) noexcept {
     return imageCount + kGeneratedFrameBurstSlots;
 }
 
+// **A fixed depth was still the wrong shape.** `20260829_153457` was answered by
+// widening the ring from `imageCount` to `imageCount + 4`, and the follow-up
+// sessions `20260830_175147` and `20260830_182939` show the same failure at the
+// wider size: with 6 images and 10 slots, `fence_wait_us` has a median of 2.9 ms
+// and a p99 of 15 ms, and `All 10 overlay submission slots are in flight` is
+// logged past its 1024th occurrence inside twelve seconds - more than half of
+// every present. Any fixed ring is a second rate limiter in the present path
+// whose period (the slot count) aliases against the generated group size, and
+// beating one against the other is exactly the uneven rendered-frame period
+// that reads as judder even while every vertical blank receives a new image.
+//
+// So the depth is no longer predicted. The ring is extended by one slot
+// whenever a present finds none reusable, which costs a command buffer, a fence
+// and a binary semaphore, and it converges within a few frames on whatever the
+// runtime actually keeps outstanding. `kMaxSubmissionSlots` is a memory-safety
+// bound rather than a tuned depth: reaching it means something is wrong (a
+// swapchain that stopped presenting, a lost device), and the old blocking
+// behaviour is retained there so the failure is bounded rather than unbounded.
+inline constexpr uint32_t kMaxSubmissionSlots = 64;
+
+// **Slot reuse needs two facts, and the fence only proves one of them.** The
+// fence proves CE's own submission retired, so its command buffer may be
+// re-recorded. It says nothing about the *binary semaphore* that submission
+// signalled: the present that waits on it is a queue operation that may still
+// be pending long after the submission itself completed, and re-signalling a
+// binary semaphore whose wait has not executed is undefined behaviour.
+//
+// Without `VK_EXT_swapchain_maintenance1`'s present fence, the only sound proof
+// available is the swapchain itself: `vkAcquireNextImageKHR` returning image i
+// means the presentation engine has finished with image i, which means every
+// present of image i - including the one that waited on this slot's semaphore -
+// has executed its wait. Comparing the image's acquire generation against the
+// value recorded when the slot was used is therefore exact, and it stays exact
+// when a generated-frame runtime presents one image several times without
+// re-acquiring it: those presents all complete before the image comes back.
+inline bool IsSubmissionSlotReusable(bool fenceRetired, bool everUsed, uint64_t acquireGenerationAtUse,
+                                     uint64_t currentAcquireGeneration) noexcept {
+    if (!fenceRetired)
+        return false;
+    if (!everUsed)
+        return true;
+    return currentAcquireGeneration != acquireGenerationAtUse;
+}
+
 // A generated-output runtime may present the same swapchain image several
 // times in succession. Submission resources therefore cannot be selected by
 // image identity: doing so immediately reuses that image's in-flight fence,
@@ -141,16 +188,19 @@ inline uint32_t ResolveSubmissionSlotCount(uint32_t imageCount) noexcept {
 // Prefer the next retired slot, scan the rest only when necessary, and apply
 // backpressure to the oldest slot only when the entire ring is genuinely busy.
 template <typename IsReady>
-inline SubmissionSlotChoice ChooseSubmissionSlot(uint32_t slotCount, uint32_t nextSlot, IsReady&& isReady) {
+inline SubmissionSlotChoice ChooseSubmissionSlot(uint32_t slotCount, uint32_t nextSlot, IsReady&& isReady,
+                                                 bool ringMayGrow = false) {
     if (slotCount == 0)
         return {};
     const uint32_t first = nextSlot % slotCount;
     for (uint32_t offset = 0; offset < slotCount; ++offset) {
         const uint32_t candidate = (first + offset) % slotCount;
         if (isReady(candidate))
-            return {candidate, true, false};
+            return {candidate, true, false, false};
     }
-    return {first, true, true};
+    if (ringMayGrow && slotCount < kMaxSubmissionSlots)
+        return {slotCount, true, false, true};
+    return {first, true, true, false};
 }
 
 inline uint32_t ComputeCompositeResourceIndex(uint32_t submissionSlot, uint32_t imageIndex,

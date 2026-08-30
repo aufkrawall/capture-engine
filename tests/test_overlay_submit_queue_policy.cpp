@@ -25,6 +25,8 @@ using ce::overlay_submit_queue_policy::CanReserveOverlayQueue;
 using ce::overlay_submit_queue_policy::CanReuseComputeCompositeCommand;
 using ce::overlay_submit_queue_policy::CanWidenQueueCreateEntry;
 using ce::overlay_submit_queue_policy::ChooseSubmissionSlot;
+using ce::overlay_submit_queue_policy::IsSubmissionSlotReusable;
+using ce::overlay_submit_queue_policy::kMaxSubmissionSlots;
 using ce::overlay_submit_queue_policy::ChooseOverlaySubmitQueue;
 using ce::overlay_submit_queue_policy::ChooseIndependentGraphicsQueue;
 using ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex;
@@ -65,6 +67,75 @@ std::string ReadProjectSource(const char* relativePath) {
     if (!fs::exists(source))
         return {};
     return ce::test_source::ReadFile(source);
+}
+
+// The ring stopped being a prediction. `20260829_153457` was answered by
+// widening it from `imageCount` to `imageCount + 4`, and `20260830_175147` and
+// `20260830_182939` show the same failure at the wider size: with 6 images and
+// 10 slots, `fence_wait_us` has a median of 2.9 ms and `All 10 overlay
+// submission slots are in flight` passes its 1024th occurrence in twelve
+// seconds. Any fixed depth is a second rate limiter whose period aliases
+// against the generated group size.
+TEST(OverlaySubmitQueuePolicy, ExtendsTheRingInsteadOfBlockingTheGame) {
+    const auto choice = ChooseSubmissionSlot(10, 3, [](uint32_t) { return false; }, /*ringMayGrow=*/true);
+    EXPECT_TRUE(choice.valid);
+    EXPECT_TRUE(choice.growRing);
+    EXPECT_FALSE(choice.waitForCompletion);
+    // The new slot is appended, so the caller can use the index directly.
+    EXPECT_EQ(choice.index, 10u);
+}
+
+TEST(OverlaySubmitQueuePolicy, PrefersAReusableSlotOverExtendingTheRing) {
+    const auto choice = ChooseSubmissionSlot(10, 3, [](uint32_t slot) { return slot == 7; }, /*ringMayGrow=*/true);
+    EXPECT_FALSE(choice.growRing);
+    EXPECT_FALSE(choice.waitForCompletion);
+    EXPECT_EQ(choice.index, 7u);
+}
+
+TEST(OverlaySubmitQueuePolicy, KeepsBackpressureWhenTheRingMayNotGrow) {
+    // The compute-composite route owns a full-resolution offscreen target per
+    // slot, so it keeps the fixed ring and the original blocking behaviour.
+    const auto choice = ChooseSubmissionSlot(10, 3, [](uint32_t) { return false; }, /*ringMayGrow=*/false);
+    EXPECT_TRUE(choice.waitForCompletion);
+    EXPECT_FALSE(choice.growRing);
+    EXPECT_EQ(choice.index, 3u);
+}
+
+TEST(OverlaySubmitQueuePolicy, StopsExtendingAtTheMemorySafetyBound) {
+    const auto choice =
+        ChooseSubmissionSlot(kMaxSubmissionSlots, 0, [](uint32_t) { return false; }, /*ringMayGrow=*/true);
+    EXPECT_FALSE(choice.growRing);
+    EXPECT_TRUE(choice.waitForCompletion);
+}
+
+// A retired fence clears the command buffer and says nothing about the binary
+// semaphore that submission signalled: the present waiting on it is a queue
+// operation that can still be pending. Re-signalling it then is undefined
+// behaviour, and the swapchain's own acquire is the only sound proof available
+// without VK_EXT_swapchain_maintenance1's present fence.
+TEST(OverlaySubmitQueuePolicy, AFenceAloneDoesNotMakeASlotReusable) {
+    EXPECT_FALSE(IsSubmissionSlotReusable(/*fenceRetired=*/false, /*everUsed=*/true, 4, 9));
+    // Fence retired, but the image this slot was presented with has not come
+    // back, so the present that waits on its semaphore may still be pending.
+    EXPECT_FALSE(IsSubmissionSlotReusable(/*fenceRetired=*/true, /*everUsed=*/true, 4, 4));
+    EXPECT_TRUE(IsSubmissionSlotReusable(/*fenceRetired=*/true, /*everUsed=*/true, 4, 5));
+}
+
+TEST(OverlaySubmitQueuePolicy, AFreshSlotNeedsNoAcquireProof) {
+    // Slots created up front, and slots appended by a growth, have signalled
+    // fences and no semaphore anyone can be waiting on.
+    EXPECT_TRUE(IsSubmissionSlotReusable(/*fenceRetired=*/true, /*everUsed=*/false, 0, 0));
+    EXPECT_FALSE(IsSubmissionSlotReusable(/*fenceRetired=*/false, /*everUsed=*/false, 0, 0));
+}
+
+TEST(OverlaySubmitQueuePolicy, RepeatedPresentsOfOneImageShareItsAcquireProof) {
+    // A generated-frame runtime may present one image several times without
+    // re-acquiring it. Both slots recorded the same generation, and both become
+    // reusable together - which is correct, because the image only comes back
+    // once every present of it has completed.
+    const uint64_t generationAtUse = 12;
+    EXPECT_FALSE(IsSubmissionSlotReusable(true, true, generationAtUse, generationAtUse));
+    EXPECT_TRUE(IsSubmissionSlotReusable(true, true, generationAtUse, generationAtUse + 1));
 }
 
 }  // namespace

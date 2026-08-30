@@ -10,6 +10,8 @@ struct FrameLimitState;
 
 #include "vulkan_present_metering_policy.h"
 
+#include "vulkan_present_chain_policy.h"
+
 #include "vulkan_swapchain_image_policy.h"
 
 #include <algorithm>
@@ -61,6 +63,15 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllo
 // vulkan_layer_capabilities.cpp - the enabled-extension half of the withheld
 // capability decision. Sets *removed when the returned list is shorter.
 std::vector<const char*> FilterWithheldDeviceExtensions(const char* const* names, uint32_t count, bool* removed);
+
+// vulkan_layer_capabilities.cpp - one line per distinct pNext shape, never one
+// per present. `logState` is the caller's own gate (a swapchain field), so a
+// creation site can pass a throwaway and a present site cannot spam.
+void LogPresentModeSelectionChain(const char* site, const void* pNext);
+void LogRequestedPresentationExtensions(const char* const* names, uint32_t count);
+void LogPresentChainIfChanged(const char* site, const void* pNext,
+                              const ce::vulkan_present_chain::ChainDescription& description,
+                              std::atomic<uint32_t>& logState, const char* note);
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
 

@@ -1,6 +1,6 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-08-30 (withholding VK_NV_present_metering so the FIFO rate contract survives frame generation)
+Last cross-checked: 2026-08-30 (metering withholding measured and ruled out; per-present mode selection and the overlay ring)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -10,11 +10,12 @@ device.
 
 Primary sources:
 - `hook/vulkan_layer/{vulkan_layer_swapchain,vulkan_layer_present,vulkan_layer_capabilities}.cpp`
-- `hook/vulkan_layer/vulkan_present_metering_policy.h`
+- `hook/vulkan_layer/{layer_overlay,layer_overlay_render}.cpp`
+- `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
 - `hook/common/{vulkan_dxgi_fifo_policy.h,remix_frame_generation_policy.h}`
 - `hook/wrappers/vulkan_dxgi_fifo_present.cpp`
 - `hook/apis/{streamline_hook_api,remix_hook}.cpp`
-- `tests/{test_vulkan_present_metering_policy,test_remix_frame_generation_policy}.cpp`
+- `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy}.cpp`
 
 Related: [graphics-overrides-and-frame-pacing.md](graphics-overrides-and-frame-pacing.md) for the rest of the
 `[Graphics]` contract, [display-change-timing.md](display-change-timing.md) for measuring what actually reached the
@@ -127,13 +128,67 @@ screen.
 - Both structs are mirrored locally in the policy header rather than taken from `<vulkan/vulkan.h>`: the Linux MSYS2
   headers in this tree still predate `VK_NV_present_metering` while the Windows ones define it, and `static_assert`s
   pin the mirrors to the real declarations wherever the header has them.
-- Diagnostics, in the order they should appear: `vulkan_layer.log` logs `withholding VK_NV_present_metering from
-  vkEnumerateDeviceExtensionProperties` and, if the application still enabled it, `removing VK_NV_present_metering
-  from vkCreateDevice`; `hook_debug.log` logs `set rtx.dlfg.enablePresentMetering=False`; and the confirmation is
-  that `Vulkan DXGI FIFO: final Present1 #N` reports `SyncInterval=1->1 Flags=0x0->0x0` under frame generation
-  instead of `SyncInterval=0->1 Flags=0x200->0x0`. **Not yet validated on hardware** (as of 2026-08-30): no session
-  has run with the capability withheld, and whether the Remix CPU pacer engages is the specific thing to check.
-- **Watch `fence_wait_us` in the same session.** In `20260830_175147` CE's own overlay submission-slot ring blocked
-  the runtime's present thread for a median 0 but a p90 of 6.8 ms and a p99 of 28 ms - one present in every group of
-  four - because the app was running far ahead of the display with the rate contract broken. That should collapse
-  once presentation is paced again; if it does not, the ring depth is a second, independent defect.
+- **Measured, and it was not the mechanism.** Session `20260830_182939` ran with the capability withheld end to end -
+  `vulkan_layer.log` reports `withholding VK_NV_present_metering from vkEnumerateDeviceExtensionProperties (1 of 291
+  device extensions)` and `hook_debug.log` reports `set rtx.dlfg.enablePresentMetering=False` - and the DXGI side did
+  not move: `final Present1 #1024` and `#2048` still report `SyncInterval=0->1 Flags=0x200->0x0`. The base frame
+  period distribution is unchanged too (p25 22.7 ms, p50 26.4 ms, p75 30.3 ms against 21.6/26.3/28.7 before). So
+  hardware present metering is not what displaces the vertical-blank wait here.
+- The withholding is kept because two pacing authorities on one set of presents is still wrong, and because it costs
+  nothing when the runtime does not use the extension - but it is no longer offered as the explanation for anything.
+  See "The effective present mode is not the created one" below for where the evidence now points.
+
+## The effective present mode is not the created one
+
+- **The discriminator is not frame generation, it is who asked for the mode.** In `20260830_182939` the application
+  created four swapchains: two it asked for FIFO itself (`18:29:52.494`, `18:29:53.664`) and two CE overrode from
+  Immediate (`18:29:51.448`, `18:29:57.006`). DXGI swapchain #2, the application's own FIFO one, is presented with
+  `SyncInterval=1`. DXGI swapchain #3, the one CE overrode, is presented with `SyncInterval=0` plus
+  `DXGI_PRESENT_ALLOW_TEARING`. Same process, same WSI, same driver. The WSI honours FIFO; the overridden
+  swapchain's *effective* mode simply is not FIFO.
+- Remix recreates the swapchain as Immediate at `18:29:57.006`, 96 ms before `DLSS FG ACTIVATED` - the documented "V-Sync
+  is automatically disabled when Frame Generation is active" - and CE overrides that creation back to FIFO.
+- **The remaining candidate is a present-mode selection CE never sees.** `VK_EXT_swapchain_maintenance1`
+  (core-promoted as `VK_KHR_swapchain_maintenance1`) lets an application list compatible modes in
+  `VkSwapchainPresentModesCreateInfoEXT` at creation and then pick one per present with
+  `VkSwapchainPresentModeInfoEXT`, with no recreation involved. DXVK - which Remix is built on - uses it for exactly
+  that kind of switch. **Unverified:** no session has printed the chains yet.
+- `hook/vulkan_layer/vulkan_present_chain_policy.h` therefore does two things at once. It prints the `pNext` chain CE
+  was handed at `vkCreateSwapchainKHR` (once per swapchain) and at `vkQueuePresentKHR` (once per distinct shape), and
+  `vkCreateDevice` logs which presentation-relevant extensions the application requested. And when the chain does
+  carry a per-present selection that disagrees with the swapchain's created mode, CE substitutes its own head node
+  forcing the created mode back.
+- **The forced value is always the swapchain's own creation mode**, never a mode of CE's choosing: Vulkan requires a
+  per-present selection to name one of the modes the swapchain declared compatible, and the creation mode is the one
+  value guaranteed to be in that set. The substitution is head-only for the same reason the metering unlink is, and a
+  deeper node is reported rather than rewritten.
+
+## The overlay submission ring must not pace the game
+
+- **CE's own overlay resource recycling was blocking the game's present thread on more than half of all presents.**
+  `20260830_182939`, `perf_metrics_13360.csv`: `fence_wait_us` median 2867 us, mean 3551 us, p90 7989 us, p99 14999
+  us, max 27654 us, and `vulkan_layer.log` passes `All 10 overlay submission slots are in flight ... wait=1024` in
+  twelve seconds. Four presents of a generated group carry roughly 14 ms of that inside a 29 ms rendered frame.
+- This is the 2026-08-29 finding recurring at the wider ring. Widening it from `imageCount` to `imageCount + 4` moved
+  the threshold and kept the shape: any fixed depth is a second rate limiter in the present path whose period is the
+  slot count, and beating a 10-slot ring against a 4-present group is an uneven *rendered* frame period even while
+  every vertical blank receives a new image. Generated frames carry scene time, so that is judder.
+- **Fix: the ring is extended by one slot whenever a present finds none reusable**, which costs one command buffer,
+  one fence and one binary semaphore and converges within a few frames on whatever the runtime actually keeps
+  outstanding. `kMaxSubmissionSlots` is a memory-safety bound, not a tuned depth; reaching it keeps the old blocking
+  behaviour so the failure stays bounded, and says so in the log. The compute-composite route does not grow: each of
+  its slots also owns a full-resolution offscreen target.
+- **Slot reuse needed a second fact the fence never proved.** The fence proves CE's submission retired, so its
+  command buffer may be re-recorded. It says nothing about the *binary semaphore* that submission signalled: the
+  present waiting on it is a queue operation that can still be pending long afterwards, and re-signalling a binary
+  semaphore whose wait has not executed is undefined behaviour. Under FIFO the gap between the two is several
+  vertical blanks, which is a strong candidate for the reported overlay flicker.
+- Without `VK_EXT_swapchain_maintenance1`'s present fence the sound proof is the swapchain itself:
+  `vkAcquireNextImageKHR` returning image i means the presentation engine has finished with image i, so every present
+  of image i - including the one that waited on this slot's semaphore - has executed its wait. `SwapchainData`
+  carries one acquire counter per image; a slot records the image and counter value it was used with, and is
+  reusable only once that counter has moved. It stays exact when a generated-frame runtime presents one image
+  several times without re-acquiring: those presents all complete before the image comes back.
+- Diagnostics: `overlay submission ring extended to N slots` (first eight growths, then powers of two) and, only if
+  extension is impossible, `overlay submission ring could not be extended past N slots`. The confirmation signal is
+  `fence_wait_us` collapsing to microseconds.

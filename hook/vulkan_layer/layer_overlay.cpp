@@ -369,6 +369,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.commandBuffers.resize(slotCount);
     state.fences.resize(slotCount);
     state.semaphores.resize(slotCount);
+    state.slotImageIndex.assign(slotCount, 0);
+    state.slotAcquireGeneration.assign(slotCount, 0);
+    state.slotEverUsed.assign(slotCount, 0);
+    state.nextSubmissionSlot = 0;
+    state.submissionRingGrowths = 0;
+    state.timestampSlotCapacity = slotCount;
+    state.submissionRingMayGrow = true;
 
     for (uint32_t i = 0; i < imageCount; i++) {
         VkImageViewCreateInfo ivInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};

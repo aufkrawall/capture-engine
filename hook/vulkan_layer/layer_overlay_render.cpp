@@ -10,9 +10,65 @@
 
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
+namespace {
+
+// One more command buffer, fence and binary semaphore. Everything else the ring
+// tracks is plain per-slot bookkeeping, so a failed allocation simply leaves the
+// ring at its current size and the caller falls back on backpressure.
+bool GrowSubmissionRing(OverlayState& state, DeviceDispatch* disp) {
+    if (state.commandPool == VK_NULL_HANDLE || !disp->fp_vkAllocateCommandBuffers || !disp->fp_vkCreateFence ||
+        !disp->fp_vkCreateSemaphore) {
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbInfo.commandPool = state.commandPool;
+    cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    if (disp->fp_vkAllocateCommandBuffers(state.device, &cbInfo, &command) != VK_SUCCESS)
+        return false;
+
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VkFence fence = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateFence(state.device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        disp->fp_vkFreeCommandBuffers(state.device, state.commandPool, 1, &command);
+        return false;
+    }
+
+    VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateSemaphore(state.device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+        disp->fp_vkDestroyFence(state.device, fence, nullptr);
+        disp->fp_vkFreeCommandBuffers(state.device, state.commandPool, 1, &command);
+        return false;
+    }
+
+    state.commandBuffers.push_back(command);
+    state.fences.push_back(fence);
+    state.semaphores.push_back(semaphore);
+    state.slotImageIndex.push_back(0);
+    state.slotAcquireGeneration.push_back(0);
+    state.slotEverUsed.push_back(0);
+    state.timestampWritten.push_back(false);
+
+    const uint64_t growth = ++state.submissionRingGrowths;
+    if (growth <= 8 || (growth & (growth - 1)) == 0) {
+        LayerLog(
+            "Vulkan Layer: overlay submission ring extended to %zu slots (growth #%llu) so CE never blocks the "
+            "game present thread for its own resource recycling",
+            state.fences.size(), static_cast<unsigned long long>(growth));
+    }
+    return true;
+}
+
+}  // namespace
+
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
-                   int32_t* fenceWaitUs, int32_t* overlayGpuUs) {
+                   int32_t* fenceWaitUs, int32_t* overlayGpuUs,
+                   const std::atomic<uint64_t>* imageAcquireGeneration, uint32_t imageAcquireGenerationCount) {
     if (signalSemaphoreOut)
         *signalSemaphoreOut = VK_NULL_HANDLE;
     // Early out if overlay is disabled (use seqlock for consistent read)
@@ -125,17 +181,47 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     // block only when every slot is truly in flight.
     int64_t fenceStartUs = PerfLogger::GetQpcUs();
     VkResult probeFailure = VK_SUCCESS;
-    const auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlot(
-        slotCount, state.nextSubmissionSlot, [&](uint32_t candidate) {
+    const auto currentAcquireGeneration = [&](uint32_t slot) -> uint64_t {
+        if (!imageAcquireGeneration || slot >= state.slotImageIndex.size())
+            return 0;
+        const uint32_t slotImage = state.slotImageIndex[slot];
+        if (slotImage >= imageAcquireGenerationCount)
+            return 0;
+        return imageAcquireGeneration[slotImage].load(std::memory_order_acquire);
+    };
+    const bool ringMayGrow = state.submissionRingMayGrow && !useComputePresent;
+    auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlot(
+        slotCount, state.nextSubmissionSlot,
+        [&](uint32_t candidate) {
             const VkFence candidateFence = state.fences[candidate];
             const VkResult result = disp->fp_vkWaitForFences(device, 1, &candidateFence, VK_TRUE, 0);
             if (result != VK_SUCCESS && result != VK_TIMEOUT)
                 probeFailure = result;
-            return result == VK_SUCCESS;
-        });
+            if (result != VK_SUCCESS)
+                return false;
+            // The fence only clears the command buffer. Without a present fence
+            // the acquire generation is the one sound proof that the present
+            // which waited on this slot's binary semaphore has executed.
+            return ce::overlay_submit_queue_policy::IsSubmissionSlotReusable(
+                true, candidate < state.slotEverUsed.size() && state.slotEverUsed[candidate] != 0,
+                candidate < state.slotAcquireGeneration.size() ? state.slotAcquireGeneration[candidate] : 0,
+                currentAcquireGeneration(candidate));
+        },
+        ringMayGrow);
     if (!slotChoice.valid || probeFailure != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Submission-slot fence probe FAILED with result %d", probeFailure);
         return false;
+    }
+    if (slotChoice.growRing) {
+        if (GrowSubmissionRing(state, disp)) {
+            slotChoice.index = static_cast<uint32_t>(state.fences.size()) - 1;
+        } else {
+            // Extending failed, so fall back on the old behaviour rather than
+            // dropping the overlay for this frame.
+            slotChoice.index = state.nextSubmissionSlot % static_cast<uint32_t>(state.fences.size());
+            slotChoice.waitForCompletion = true;
+        }
+        slotChoice.growRing = false;
     }
     const uint32_t submissionSlot = slotChoice.index;
     VkFence fence = state.fences[submissionSlot];
@@ -143,10 +229,14 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     if (slotChoice.waitForCompletion) {
         const uint64_t waitNumber = ++state.submissionBackpressureWaits;
         if (waitNumber <= 8 || (waitNumber & (waitNumber - 1)) == 0) {
+            // Reaching this now means the ring could not be extended - the
+            // memory-safety bound, or a failed allocation - so CE is back to
+            // being a pacing authority and the session should say so.
             LayerLog(
-                "Vulkan Layer: All %u overlay submission slots are in flight; waiting for slot %u "
-                "(present image=%u wait=%llu)",
-                slotCount, submissionSlot, imageIndex, static_cast<unsigned long long>(waitNumber));
+                "Vulkan Layer: overlay submission ring could not be extended past %zu slots; blocking the game's "
+                "present thread on slot %u (present image=%u wait=%llu, growths=%llu)",
+                state.fences.size(), submissionSlot, imageIndex, static_cast<unsigned long long>(waitNumber),
+                static_cast<unsigned long long>(state.submissionRingGrowths));
         }
         fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
     }
@@ -160,12 +250,21 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
                  submissionSlot, imageIndex);
         return false;
     }
-    state.nextSubmissionSlot = (submissionSlot + 1) % slotCount;
+    const uint32_t currentSlotCount = static_cast<uint32_t>(state.fences.size());
+    state.nextSubmissionSlot = (submissionSlot + 1) % currentSlotCount;
+    if (submissionSlot < state.slotImageIndex.size()) {
+        state.slotImageIndex[submissionSlot] = imageIndex;
+        state.slotAcquireGeneration[submissionSlot] =
+            (imageAcquireGeneration && imageIndex < imageAcquireGenerationCount)
+                ? imageAcquireGeneration[imageIndex].load(std::memory_order_acquire)
+                : 0;
+        state.slotEverUsed[submissionSlot] = 1;
+    }
     const VkSemaphore signalSemaphore = state.semaphores[submissionSlot];
 
     // The fence above proves this slot's previous submission retired, so its
     // timestamp pair is readable without another wait.
-    if (state.timestampPool != VK_NULL_HANDLE && submissionSlot < state.timestampWritten.size() &&
+    if (state.timestampPool != VK_NULL_HANDLE && submissionSlot < state.timestampSlotCapacity &&
         state.timestampWritten[submissionSlot] && disp->fp_vkGetQueryPoolResults) {
         uint64_t stamps[2] = {0, 0};
         const VkResult queryResult =
@@ -205,7 +304,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return false;
 
     const bool writeTimestamps = state.timestampPool != VK_NULL_HANDLE && disp->fp_vkCmdResetQueryPool &&
-                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampWritten.size();
+                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampSlotCapacity;
     if (writeTimestamps) {
         disp->fp_vkCmdResetQueryPool(cmd, state.timestampPool, submissionSlot * 2, 2);
         disp->fp_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool,
