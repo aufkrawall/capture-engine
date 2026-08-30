@@ -39,5 +39,8 @@ struct DisplayTimingHealth {
     uint64_t nvApplied = 0;
     int64_t nvAverageDelayUs = 0;
     int64_t nvMaxDelayUs = 0;
+    // Payload offset the announcement was located at, or -1 while unlocated.
+    int32_t nvFieldOffset = -1;
+    bool nvFieldAbandoned = false;
     std::array<uint64_t, static_cast<std::size_t>(DisplayCompletionSource::Count)> completions = {};
 };

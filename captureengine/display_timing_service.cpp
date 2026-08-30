@@ -49,6 +49,7 @@ public:
         LARGE_INTEGER frequency = {};
         QueryPerformanceFrequency(&frequency);
         qpcFrequency_ = frequency.QuadPart;
+        nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
         swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
         auto properties = MakeProperties(sessionName_);
 
@@ -243,21 +244,19 @@ private:
 
     // The announcement carries the time the driver scheduled the flip for, which
     // is the only screen time available while frame generation paces several
-    // flips out of one render.
+    // flips out of one render. The provider has no registered manifest, so the
+    // payload is read positionally and the field is located by value; see
+    // display_timing_nvidia.h.
     void HandleNvidiaFlipRequest(EVENT_RECORD* event) {
         ++nvidiaAnnouncementsReceived_;
-        uint64_t allocation = 0;
-        uint32_t displaySource = 0;
-        uint64_t proposedFlipTime = 0;
-        uint32_t token = 0;
-        if (!ReadProperty(event, L"alloc", allocation) || !ReadProperty(event, L"vidPnSourceId", displaySource) ||
-            !ReadProperty(event, L"ts", proposedFlipTime) || !ReadProperty(event, L"token", token)) {
+        const int64_t eventQpc = event->EventHeader.TimeStamp.QuadPart;
+        const int64_t announcedQpc =
+            nvidiaAnnouncements_.Decode(event->UserData, event->UserDataLength, eventQpc);
+        if (announcedQpc == 0) {
             ++nvidiaAnnouncementsUndecodable_;
             return;
         }
-        nvidiaFlips_.ObserveFlipRequest(event->EventHeader.ThreadId, displaySource, allocation,
-                                        event->EventHeader.TimeStamp.QuadPart,
-                                        static_cast<int64_t>(proposedFlipTime), token);
+        nvidiaFlips_.ObserveAnnouncement(event->EventHeader.ThreadId, eventQpc, announcedQpc);
     }
 
     void HandleGraphicsKernelEvent(EVENT_RECORD* event) {
@@ -628,6 +627,9 @@ private:
         health.nvReceived = nvidiaAnnouncementsReceived_;
         health.nvUndecodable = nvidiaAnnouncementsUndecodable_;
         health.nvApplied = nvidiaAnnouncementsApplied_;
+        health.nvFieldOffset = nvidiaAnnouncements_.located() ? static_cast<int32_t>(nvidiaAnnouncements_.offset())
+                                                              : -1;
+        health.nvFieldAbandoned = nvidiaAnnouncements_.abandoned();
         health.nvMaxDelayUs = DisplayTimingQpcToUs(nvidiaAnnouncedDelayMax_, qpcFrequency_);
         if (health.nvApplied != 0) {
             health.nvAverageDelayUs = DisplayTimingQpcToUs(
@@ -652,14 +654,16 @@ private:
             "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
             "fallback(committed=%llu suppressed=%llu) "
             "completion(vsyncDpc=%llu syncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
-            "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld)",
+            "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
+            "fieldOffset=%d abandoned=%d)",
             stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
             health.queued, health.published, health.suppressed, health.regressed, health.payloadReceived,
             health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
             health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
             health.fallbackSuppressed, health.completions[0], health.completions[1], health.completions[2],
             health.completions[3], health.nvReceived, health.nvUndecodable, health.nvApplied,
-            static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs));
+            static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
+            health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0);
     }
 
     void FlushLoop() {
@@ -702,6 +706,7 @@ private:
         }
         correlation_.Clear();
         nvidiaFlips_.Clear();
+        nvidiaAnnouncements_.Reset();
     }
 
     std::atomic<bool> started_{false};
@@ -720,6 +725,7 @@ private:
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingRuntimePresents_;
     std::unordered_map<uint32_t, std::deque<SubmitAssociation>> submitAssociations_;
     DisplayTimingCorrelation correlation_;
+    NvidiaFlipAnnouncementDecoder nvidiaAnnouncements_;
     NvidiaFlipDelayTracker nvidiaFlips_;
     std::vector<PendingTimestamp> pendingTimestamps_;
     std::unordered_map<SharedDisplayTiming*, int64_t> lastPublishedByOutput_;
