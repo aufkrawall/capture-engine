@@ -152,7 +152,7 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
 int64_t PerfLogger::GetQpcUs() {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    return (now.QuadPart * 1000000) / GetCachedQpcFrequency();
+    return DisplayTimingQpcToUs(now.QuadPart, GetCachedQpcFrequency());
 }
 
 int64_t PerfLogger::GetQpcFrequency() {

@@ -1,6 +1,8 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-08-30 (final-DXGI vblank backstop re-armed, scoped per registered swapchain instance; the overlay ring and the compute-composite barrier fixes unchanged)
+Last cross-checked: 2026-08-30 (session 20260830_224007 root causes fixed: the live-HWND query was missing from the
+layer's PE export table, and the first WSI factory preceded the IAT-triggered factory hooks; the overlay ring and
+the compute-composite barrier fixes unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -13,8 +15,9 @@ Primary sources:
 - `hook/vulkan_layer/{layer_overlay,layer_overlay_render,layer_overlay_compute}.cpp`
 - `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
 - `hook/common/{vulkan_dxgi_fifo_policy.h,vulkan_dxgi_fifo_registry.h,vulkan_wsi_surface_table.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
-- `hook/wrappers/vulkan_dxgi_fifo_present.cpp`
+- `hook/wrappers/vulkan_dxgi_fifo_present.cpp`, `hook/wrappers/wrapper_hooks.{h,cpp}`
 - `hook/apis/{streamline_hook_api,remix_hook}.cpp`
+- `tools/build/build_vulkan_layer.py`, `tools/tests/test_vulkan_layer_exports.py`
 - `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy,test_vulkan_dxgi_fifo_scoping,test_vulkan_renderer_policy}.cpp`
 
 Related: [graphics-overrides-and-frame-pacing.md](graphics-overrides-and-frame-pacing.md) for the rest of the
@@ -177,9 +180,16 @@ screen.
 - **Arming** (`hook/common/vulkan_dxgi_fifo_policy.h`): `ShouldArmFinalDxgiPresent` is true only when the resident
   CE Vulkan layer is loaded and `vsync_mode` is `fifo` or `adaptive` (the canonical `RequestsVblankPacedPresentation`
   from `vulkan_present_metering_policy.h`, included and called directly so the two policies cannot drift). `off`,
-  `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` stores the decision with an unconditional `g_armed.exchange`, so a
-  config change to a non-vblank mode disarms by storing `false`; the installed system body hooks are never
+  `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` installs the three system `CreateDXGIFactory*`
+  export body hooks first (see "route-agnostic first factory observation" below) and then publishes the decision
+  with an unconditional `g_armed.store`, so a
+  config change to a non-vblank mode disarms by storing `false`, arming never publishes before the export hooks
+  are live, and the installed system body hooks are never
   unpatched at runtime - the atomic gate is the disarm, and the `HookIsShuttingDown()` lifecycle gate is unchanged.
+  Armed hook-monitor calls retry an incomplete installation via `EnsureFactoryExportBodyHooksInstalled`: one
+  atomic conjunction when complete, one `GetModuleHandleA` while `dxgi.dll` is absent, and exactly one resolve/
+  install attempt per distinct loaded dxgi HMODULE (a failed attempt against an unchanged module image is
+  deterministic, so it is never re-run per poll).
 - **The per-instance registry** (`hook/common/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
   open-addressed table of raw swapchain instance pointers, filled by the four system creation-method detours on
   every successful targeted creation. No COM reference is taken; a re-created instance at a recycled address

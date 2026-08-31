@@ -703,6 +703,20 @@ TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcr
     EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);
 }
 
+TEST(OverlayLayoutPolicyTest, SystemLatencyHasAnIndependentStableRow) {
+    ce::overlay_layout::RowInputs input = {};
+
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowSystemLatency, 0u);
+
+    input.showSystemLatency = true;
+    const uint32_t latencyMask = ce::overlay_layout::BuildOverlayRowMask(input);
+    EXPECT_EQ(latencyMask, ce::overlay_layout::kRowSystemLatency);
+    EXPECT_EQ(ce::overlay_layout::CountOverlayRows(latencyMask), 1u);
+
+    input.showFPS = true;
+    EXPECT_EQ(ce::overlay_layout::CountOverlayRows(ce::overlay_layout::BuildOverlayRowMask(input)), 2u);
+}
+
 TEST(OverlayLayoutPolicyTest, MemoryValuesNeverRequireFabricatedCapacity) {
     using ce::overlay_layout::MemoryValueMode;
     using ce::overlay_layout::SelectMemoryValueMode;

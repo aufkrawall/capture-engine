@@ -7,9 +7,14 @@
 #include "display_timing_correlation.h"
 
 inline bool ShouldCollectDisplayTiming(bool useScreenGrabTarget, FrameTimeSource configuredSource,
-                                       bool injectVideoCaptureNeeded) {
+                                       bool injectVideoCaptureNeeded, bool systemLatencyRequested = false) {
     return !useScreenGrabTarget &&
-           (configuredSource == FrameTimeSource::DisplayChange || injectVideoCaptureNeeded);
+           (configuredSource == FrameTimeSource::DisplayChange || injectVideoCaptureNeeded ||
+            systemLatencyRequested);
+}
+
+inline bool ShouldStartOverlayDisplayTiming(bool showOverlay, bool showSystemLatency) {
+    return showOverlay && showSystemLatency;
 }
 
 // No outstanding runtime present of that process is waiting for a submission.

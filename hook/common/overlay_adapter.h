@@ -86,6 +86,7 @@ public:
     // Remember a known-valid game window for cross-adapter DPI resolution (file-static; see .cpp).
     static void RememberDpiReferenceHwnd(void* hwnd);
     void SetGraphicsAPI(const char* api, const char* evidenceSource = nullptr);
+    void SetLatencyDevice(void* device);
     void SetReserveInactiveFGSpace(bool reserve);
     void InvalidateCachedFrame();
     void SetDroppedFrames(uint32_t count) {
@@ -118,6 +119,7 @@ private:
         char fgLabel[16] = "";
         float fgBaseFPS = 0.0f;
         float fgOutputFPS = 0.0f;
+        ce::system_latency::Snapshot systemLatency;
         ce::recording_indicator::State recordingState = ce::recording_indicator::State::Idle;
         // Media armed a screen-grab capture pipeline that records the composited screen,
         // so this overlay's recording-start status must not be drawn into the game frames
@@ -136,6 +138,7 @@ private:
 
     bool InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
                                  const char* backendName, float dpiScale);
+    void BindLatencyDeviceLocked(void* device);
     void ApplyShutdownModeLocked(bool skipRelease);
     void DestroyResourcesLocked(bool shutdownRenderer);
     void ResetStateLocked();
@@ -150,6 +153,7 @@ private:
     PerformanceMetrics* metrics = nullptr;
     IPCClient* ipc = nullptr;
     void* hwnd = nullptr;
+    void* latencyDevice = nullptr;
     char graphicsAPI[32] = "";
     uint32_t droppedFrames = 0;
     bool isHDR = false;
@@ -166,6 +170,7 @@ private:
     float cachedAvgFPS = 0.0f;
     float cached1PercentLow = 0.0f;
     float cached01PercentLow = 0.0f;
+    ce::system_latency::Snapshot cachedSystemLatency;
     SystemMetrics cachedSystemMetrics{};
     char cachedCpuMetricsText[96] = "--";
     char cachedGpuMetricsText[96] = "--";
@@ -200,5 +205,9 @@ private:
     FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
     DWORD lastFrameTimeSourceLogTime = 0;
     bool hasObservedFrameTimeSource = false;
+    ce::system_latency::Source lastObservedSystemLatencySource = ce::system_latency::Source::Unavailable;
+    DWORD lastSystemLatencySourceLogTime = 0;
+    DWORD lastNativeLatencyQueryTime = 0;
+    bool hasObservedSystemLatencySource = false;
 };
 extern OverlayAdapter g_OverlayAdapter;

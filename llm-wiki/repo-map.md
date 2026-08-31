@@ -61,7 +61,7 @@ anchors that predate the split are approximate.
   | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
-  - `shared_defs.h` - shared-memory ABI (current version `46`).
+  - `shared_defs.h` - shared-memory ABI (current version `52`).
   - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5/streaming/face_camera.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
@@ -144,7 +144,9 @@ anchors that predate the split are approximate.
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
-    `system_metrics*.cpp` (metrics + gpu unit), `reflex_limiter.h`, `fps_limiter.h` +
+    `system_metrics*.cpp` (metrics + gpu unit), `system_latency_metrics.h`
+    (marker-enhanced/fallback PC-latency correlation), `system_latency_native_d3d.cpp`
+    (already-loaded NVAPI latency provider), `reflex_limiter.h`, `fps_limiter.h` +
     `fps_limiter_policy.h` (pure pacing policy incl. `OutputGroupAdmission` ordinal classification and
     `NextRationalGroupIntervalTicks`) + `fps_limiter_detail/{apply,frame_pacing,lifecycle}.h`
     (out-of-line inline member definitions; apply.h owns the admission-epoch key, the boundary
@@ -196,7 +198,7 @@ anchors that predate the split are approximate.
 
 ## High-Risk / High-Value Files
 
-- `common/shared_defs.h` - shared-memory ABI (version `46`, source-verified).
+- `common/shared_defs.h` - shared-memory ABI (version `52`, source-verified).
 - `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_inject.cpp` -
   host-side startup/late injection, resident target adoption, and deject acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
@@ -209,7 +211,8 @@ anchors that predate the split are approximate.
   session plumbing) + `display_timing_nvidia.h` (NVIDIA scheduled-flip announcements) +
   `display_timing_correlation.h` (Intel/AMD FrameType correlation) + `display_timing_policy.h`
   (present/submission selection) + `display_timing_health.h` - the screen-change timestamp source behind
-  `[Overlay] frametime_source=display_change`; see `display-change-timing.md`.
+  `[Overlay] frametime_source=display_change` and the Present-to-display half of the PC-latency row; see
+  `display-change-timing.md` and `overlay-rendering.md`.
 - `hook/common/graph_scroll_policy.h` + `overlay_adapter_render.cpp` + `custom_overlay.cpp` - frame time graph
   scrolling: the cursor that advances one slot per drawn frame instead of per sample arrival, and the guard
   samples plus edge clipping that keep the plot filling its panel at any sub-slot offset.

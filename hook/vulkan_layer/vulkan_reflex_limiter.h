@@ -3,6 +3,7 @@
 #include "vulkan_layer.h"
 
 #include "../common/fps_limiter.h"
+#include "../common/system_latency_metrics.h"
 #include "layer_main.h"
 
 #include <cstdint>
@@ -157,6 +158,8 @@ public:
         }
         return true;
     }
+
+    bool QueryLatencyReport(VkDevice device, ce::system_latency::NativeReport& report);
 
     void Clear() {
         std::lock_guard<std::mutex> lock(mutex_);

@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-08-31 (optional LibreHardwareMonitor telemetry, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-08-31 (optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -21,9 +21,13 @@ Primary sources:
 - `hook/common/custom_font.cpp`
 - `hook/common/overlay_adapter.{h,cpp}`
 - `hook/common/performance_metrics.{h,cpp}`
+- `hook/common/system_latency_metrics.h`
+- `hook/common/system_latency_native_d3d.cpp`
+- `hook/common/reflex_defs.h`
 - `hook/common/{presentation_color,dxgi_presentation_color}.h`
 - `hook/common/overlay_shader_{bytecode,spirv}.h`
 - `hook/vulkan_layer/vulkan_presentation_color.h`
+- `hook/vulkan_layer/vulkan_reflex_limiter.{h,cpp}`
 - `hook/vulkan_layer/shaders/overlay_{solid,textured}.frag`
 - `hook/common/system_metrics.{h,cpp}`
 - `hook/common/overlay_layout_policy.h`
@@ -35,11 +39,12 @@ Primary sources:
 - `tests/test_host_metrics_policy.cpp`
 - `tests/test_hardware_sensor_plugin.cpp`
 - `tests/test_performance_metrics.cpp`
+- `tests/test_system_latency_metrics.cpp`
 - `tests/test_shared_runtime_state.cpp`
 
 ## Summary
 
-The inject overlay deliberately keeps the existing compact appearance and shared CPU-generated draw format. Solid geometry and textured glyphs remain batched into the existing small command set; the 2026-07-16 polish is a local visual-quality, layout-consistency, and legacy-hot-path change rather than a renderer redesign. The entire overlay stack — text, metrics, and the frame-time graph — is first-party code: API-native custom renderers, a GDI-rasterized custom font atlas, and in-repo precompiled shaders, with no Dear ImGui or other third-party overlay/UI library.
+The inject overlay deliberately keeps the existing compact appearance and shared CPU-generated draw format. Solid geometry and textured glyphs remain batched into the existing small command set; the 2026-07-16 polish is a local visual-quality, layout-consistency, and legacy-hot-path change rather than a renderer redesign. The entire overlay stack — text, metrics, the PC-latency row, and the frame-time graph — is first-party code: API-native custom renderers, a GDI-rasterized custom font atlas, and in-repo precompiled shaders, with no Dear ImGui or other third-party overlay/UI library.
 
 ## HDR presentation and color invariants
 
@@ -74,7 +79,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Shared GPU usage, VRAM usage, and VRAM capacity have independent validity bits. A real 0% or 0 MB sample is therefore valid, while a missing/invalid counter remains unavailable. Adapter/source metadata and an even/odd publication sequence let the hook consume one coherent snapshot and clear old values when the source PID or adapter changes.
 - LibreHardwareMonitor is never loaded into the controller, hook, Vulkan layer, or game. The dedicated sensor service monitors the controller process lifetime, launches the first-party Windows PowerShell 5.1 bridge suspended, assigns it to a kill-on-service-close job, and only then resumes it. The launch uses an explicit inherited-handle list, NUL stdin/stderr, a bounded stdout protocol, and a random named shutdown event. The bridge enables only the requested CPU/GPU visitors. `auto` GPU selection follows the device with the highest valid `GPU Core` load and retains the previous device across a tie; an ambiguous initial tie remains unavailable, while an exact identifier can pin another sensor. The native reader rejects malformed/non-finite/out-of-range output and expires a snapshot after `max(5 seconds, 3 * poll interval)`.
 - The tested LibreHardwareMonitor 0.9.6 CPU/GPU closure is four user-supplied files from one release: `LibreHardwareMonitorLib.dll`, `System.Memory.dll`, `System.Numerics.Vectors.dll`, and `System.Runtime.CompilerServices.Unsafe.dll`. CaptureEngine installs and packages only its own bridge plus README. The package allowlist excludes every locally added plugin DLL/notice, and `tools/licenses/LibreHardwareMonitor_NOTICE.txt` records MPL-2.0/source/third-party references and the combined-redistribution boundary.
-- All telemetry readers first validate the shared-memory ABI's exact version, size, and layout fingerprint. ABI 48 added the display-timestamp stream and ABI 50 added optional hardware-sensor values. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
+- All telemetry readers first validate the shared-memory ABI's exact version, size, and layout fingerprint. ABI 48 added the display-timestamp stream, ABI 50 added optional hardware-sensor values, ABI 51 added final-output timing metadata, and ABI 52 adds `OverlayConfig::showSystemLatency`. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
 - Per-core load calculation rejects regressing kernel/user/idle counters, addition overflow, and idle-underflow before computing and clamping the busy percentage. This prevents a genuine counter discontinuity from becoming an unsigned multi-billion-percent value independently of ABI validation.
 - RAM publication is independent of CPU load. The earlier `RAM: -` case came from copying RAM only when the CPU sample was greater than zero; a valid RAM sample now updates even when CPU is unavailable or exactly 0%.
 - The DirectDraw compatibility renderer publishes the D3D9Ex helper's default-adapter LUID immediately after helper creation, including overlay-only runs where recording never creates another modern capture device. PID inference covers startup and any path that cannot publish an exact LUID.
@@ -89,6 +94,14 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - **A runtime present and the kernel present submission that carries it are not on the same thread.** D3D11 and D3D12 hand the packet to a runtime worker thread of the same process, so the present is keyed by process and the thread only refines the choice inside it (`SelectDisplaySubmissionPresent` in `display_timing_policy.h`: exact thread first, otherwise that process's oldest outstanding present). Measured on `dx11_test`: 865 runtime presents and 865 present-marked kernel submissions from two different threads of one process - an exact-thread-only rule associated zero of them, and the entire stream stayed empty while every overlay silently fell back to presentation timing.
 - The service logs stage counters (`runtimePresents`/`submitAssociations`/`queued`/`published`/`suppressed`/`regressed`) every ten seconds - as a warning while nothing has been published, otherwise at debug level - because a session that runs but correlates nothing is otherwise indistinguishable from one that never started. `ProcessTrace` returning anything other than success or `ERROR_CANCELLED` marks the stream failed.
 - Measured on this hardware (144 Hz VRR, NVIDIA): `VSyncDPCMultiPlane` reports `FlipEntryCount=0` and `VSyncDPC` reports `FlipFenceId=0`, so the usable completions arrive on `HSyncDPCMultiPlane` and `MMIOFlipMultiPlaneOverlay`. Stale-risk/unverified: a display path that emits neither - only `VSyncDPCMultiPlane` with a zero entry count - would need the `InterruptTargetPresentId` route, which is deliberately not implemented because it can double-count against the submit-sequence route.
+
+## PC latency source hierarchy
+
+- `[Overlay] show_system_latency=true` adds one independent row. A fresh marker-enhanced sample renders as `PC Latency~`, the no-marker path renders as `Latency est.`, and an unavailable sample renders as `PC Latency --`; the labels deliberately do not imply an exact end-to-end instrument reading.
+- The preferred path queries `NvAPI_D3D_GetLatency` only from an already-loaded D3D NVAPI module, or `vkGetLatencyTimingsNV` when the game exposes `VK_NV_low_latency2`. It correlates each displayed frame with simulation-start, present-start, and GPU-completion markers in the display-timing QPC domain. The native reports do not expose NVIDIA PCL's ETW input ping, so only average input wait is estimated and the tilde remains even with Reflex markers.
+- Without usable markers, the fallback combines observed Present-to-display time with one cadence-estimated simulation/render interval and average input wait. Both paths add full skipped base intervals for superseded frames and use the base-render cadence while frame generation is active, because generated output frames do not create new input-sampling points.
+- NVIDIA's average-input-wait heuristic is unsupported below 10 FPS, so both paths fail closed there. Present-to-display samples over 250 ms, totals over 500 ms, incompatible timestamp domains, clock resets, and samples stale for more than two seconds also become unavailable instead of producing a plausible-looking number.
+- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, source-transition logs are rate-limited to ten seconds, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path.
 
 ## Legacy backend hot paths
 

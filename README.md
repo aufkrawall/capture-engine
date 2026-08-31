@@ -428,10 +428,10 @@ rate, while injected capture targets the application's real rendered frames.
 ## Overlay and frame generation
 
 The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders;
-the frame-time graph is drawn by the same custom renderer and shader set.
-Its layout and font rendering support automatic Windows per-monitor DPI scaling, including fractional scale factors.
-It tracks presentation color space so SDR, scRGB, and HDR10 targets receive the appropriate transfer/gamut handling,
-so native HDR does not look oversaturated or washed out; texture format alone is not treated as proof of HDR.
+the frame-time graph and optional PC-latency row use that renderer. Reflex/PCL markers improve frame correlation
+(`PC Latency~`); without them, `Latency est.` combines measured Present-to-display timing with frame cadence.
+Neither includes peripheral latency or physical display scanout. Layout/font rendering scales per monitor, while
+presentation-color tracking keeps SDR, scRGB, and HDR10 output correct; texture format alone is not treated as HDR.
 
 The frame-time graph scales its vertical ceiling dynamically instead of using a fixed 0-to-X axis: the ceiling
 follows the recent average and minimum with at least 50% headroom above the average, a minimum 33 ms range so the

@@ -527,7 +527,7 @@ static void SwapEnd(HDC hdc) {
         }
         LARGE_INTEGER qpc;
         QueryPerformanceCounter(&qpc);
-        int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+        int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
         opengl_hook_g_PerfMetrics.Update(us);
 
         // Order capture/overlay logic was moved to SwapBegin

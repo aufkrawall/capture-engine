@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../common/display_timing_shared.h"
+#include "system_latency_metrics.h"
 
 #include <atomic>
 #include <cstdint>
@@ -23,6 +24,9 @@ public:
     // This is intentionally called from the overlay render path so the display
     // series retains a single writer in each injected process.
     void ConsumeDisplayTiming(const SharedDisplayTiming& timing, int64_t currentQpcUs);
+    void SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report);
+    ce::system_latency::Snapshot GetSystemLatency(int64_t currentQpcUs) const;
+    void ResetSystemLatency();
     void SetFrameTimeSource(FrameTimeSource source);
     FrameTimeSource GetEffectiveFrameTimeSource() const {
         return m_effectiveSource.load(std::memory_order_acquire);
@@ -126,4 +130,5 @@ private:
     std::atomic<float> m_fgBaseFPS{0.0f};
     std::atomic<int> m_fgMultiplier{1};
     std::atomic<int> m_fgType{0};
+    ce::system_latency::Tracker m_systemLatency;
 };

@@ -30,6 +30,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     const bool rowFPS = (frameLayout.rowMask & kRowFPS) != 0;
     const bool rowFGRates = (frameLayout.rowMask & kRowFGRates) != 0;
     const bool rowFPSAverages = (frameLayout.rowMask & kRowFPSAverages) != 0;
+    const bool rowSystemLatency = (frameLayout.rowMask & kRowSystemLatency) != 0;
     const bool rowFGStatus = (frameLayout.rowMask & kRowFGStatus) != 0;
     const bool rowRecording = (frameLayout.rowMask & kRowRecording) != 0;
     const bool rowNotification = (frameLayout.rowMask & kRowNotification) != 0;
@@ -153,6 +154,23 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("9999 / 9999 / 9999") + kShadowPad);
             }
+        }
+        if (rowSystemLatency) {
+            const ce::system_latency::Source latencySources[] = {
+                ce::system_latency::Source::Unavailable,
+                ce::system_latency::Source::ReflexMarkers,
+                ce::system_latency::Source::Estimated,
+            };
+            for (const auto latencySource : latencySources) {
+                maxLabelWidth = (std::max)(
+                    maxLabelWidth, MeasureTextWidth(ce::system_latency::SourceOverlayLabel(latencySource)));
+            }
+            if (frameLayout.systemLatency.valid)
+                snprintf(measureBuf, sizeof(measureBuf), "%.1f ms", frameLayout.systemLatency.milliseconds);
+            else
+                snprintf(measureBuf, sizeof(measureBuf), "--");
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("500.0 ms") + kShadowPad);
         }
         if (rowFGStatus) {
             const char* fgLabels[] = {"DLSS FG", "FSR FG", "NVIDIA SM", "FG"};
@@ -555,6 +573,26 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
             cursorY += lineHeight;
         }
+    }
+
+    // Public Reflex timing reports omit the PCL input ping, so their precisely
+    // measured pipeline is combined with an estimated average input wait and
+    // marked with a tilde. The generic markerless fallback is labelled
+    // separately.
+    if (rowSystemLatency) {
+        const char* latencyLabel = ce::system_latency::SourceOverlayLabel(frameLayout.systemLatency.source);
+        uint32_t latencyColor = Colors::Gray;
+        if (frameLayout.systemLatency.source == ce::system_latency::Source::ReflexMarkers ||
+            frameLayout.systemLatency.source == ce::system_latency::Source::Estimated) {
+            latencyColor = Colors::ValueYellow;
+        }
+        if (frameLayout.systemLatency.valid)
+            snprintf(buf, 64, "%.1f ms", frameLayout.systemLatency.milliseconds);
+        else
+            snprintf(buf, 64, "--");
+        renderer->DrawTextWithShadow(labelCol, cursorY, latencyLabel, latencyColor, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, latencyColor, shadowColor);
+        cursorY += lineHeight;
     }
 
     // FG Status line

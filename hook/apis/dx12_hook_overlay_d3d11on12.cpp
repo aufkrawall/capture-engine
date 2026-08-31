@@ -129,6 +129,9 @@ static bool InitD3D11On12(ID3D12Device* d3d12Dev, ID3D12CommandQueue* queue, IDX
         d3d11Dev->Release();
         return false;
     }
+    // The renderer uses the helper D3D11 device, but Reflex markers belong to
+    // the game's native D3D12 device. Keep telemetry bound to that device.
+    dx12_hook_g_SLFGAdapter.SetLatencyDevice(d3d12Dev);
 
     // Store everything
     dx12_hook_g_State.d3d11on12Device = d3d11Dev;

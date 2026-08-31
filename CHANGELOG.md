@@ -16,6 +16,9 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
   overlay rows. The managed library runs behind the dedicated sensor service and remains user-supplied in
   `plugins\LibreHardwareMonitor`; release packaging includes only CaptureEngine's bridge/setup files and excludes all
   locally added third-party binaries.
+- Added injected-overlay PC latency. `PC Latency~` uses D3D/Vulkan Reflex/PCL frame markers plus measured display
+  timing, while `Latency est.` provides a frame-cadence fallback without markers. Both account for dropped frames and
+  frame-generation base cadence, fail closed below the heuristic's supported rate, and exclude peripherals/scanout.
 - Added a Streamline 1.x-to-2.x upgrade bridge behind `streamline_upgrade=on`. This feature is still
   work-in-progress and currently non-functioning: it does not yet produce a working upgrade, so enabling it
   is not expected to restore Streamline features in a bridged game. The mechanism loads a complete

@@ -81,6 +81,7 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     config.overlay.showVRAM = reader.GetBool("Overlay", "show_vram", true);
     config.overlay.showRecording = reader.GetBool("Overlay", "show_recording", true);
     config.overlay.showFG = reader.GetBool("Overlay", "show_fg", true);
+    config.overlay.showSystemLatency = reader.GetBool("Overlay", "show_system_latency", true);
 
     // Layout
     config.overlay.compactMode = reader.GetBool("Overlay", "compact_mode", false);

@@ -146,17 +146,7 @@ void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicatio
 
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, publicationSource);
 
-    static int64_t qpcFreq = 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    const int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-    dxgi_shared_g_DXGIPerfMetrics.Update(us);
+    dxgi_shared_g_DXGIPerfMetrics.Update(PerfLogger::GetQpcUs());
     const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
     ce::overlay_metrics::PublishOverlayFGMetrics(&dxgi_shared_g_DXGIPerfMetrics, plan, g_FGCompat.GetOutputFPS(),
                                                  g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),

@@ -168,9 +168,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
 
     // Update metrics
     if (state.metrics) {
-        state.metrics->Update(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
-                .count());
+        state.metrics->Update(PerfLogger::GetQpcUs());
         ce::overlay_metrics::PublishDetectedOverlayFGMetrics(state.metrics, "Vulkan::RenderOverlay");
     }
 

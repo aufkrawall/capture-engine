@@ -408,6 +408,11 @@ show_vram=true
 show_recording=true
 ; Shows whether supported frame generation is active.
 show_fg=true
+; Shows PC latency. Reflex/PCL pipeline markers improve frame correlation and
+; produce "PC Latency~" because average input wait is still estimated. Without
+; markers, "Latency est." combines measured Present-to-display time with frame
+; cadence. Neither value includes peripheral or physical display-scanout delay.
+show_system_latency=true
 ; compact_mode reduces spacing. horizontal_mode puts metrics in a row instead of
 ; a vertical list.
 compact_mode=false

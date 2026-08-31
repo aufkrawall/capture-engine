@@ -514,6 +514,20 @@ TEST_F(ConfigTest, ParseOverlayFrameTimeSource) {
     EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::DisplayChange);
 }
 
+TEST_F(ConfigTest, ParseOverlaySystemLatencyOption) {
+    WriteConfig(
+        "[Overlay]\n"
+        "show_system_latency=false\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FALSE(config.overlay.showSystemLatency);
+
+    WriteConfig("[Overlay]\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_TRUE(config.overlay.showSystemLatency);
+}
+
 TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
     WriteConfig(
         "[Overlay]\n"

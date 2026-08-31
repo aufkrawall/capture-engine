@@ -43,6 +43,21 @@ Bundled FFmpeg still disables protocols by default and now allows only
 file/RTMP/RTMPS/TCP/TLS using Windows Schannel; the RTMPS wrapper now forwards
 TCP_NODELAY to its underlying socket. See `live-streaming.md`.
 
+### 2026-08-30 - Export body hooks retry while armed, cheaply
+
+Audit follow-up to the route-agnostic first factory observation: the three `CreateDXGIFactory*` export body hooks
+were installed only on the disarmed→armed transition, so a first arm that preceded the load of `dxgi.dll` (or saw
+an unresolvable target) left the observation permanently incomplete. `RegisterDynamicFactoryHooks` now calls
+`EnsureFactoryExportBodyHooksInstalled` on **every** armed hook-monitor call, still before `g_armed` publishes.
+Cost discipline (`hook/wrappers/vulkan_dxgi_fifo_present.cpp`): a complete installation is one atomic conjunction
+(`AllFactoryExportBodyHooksInstalled`), an absent module is one `GetModuleHandleA` plus a single one-shot
+diagnostic, and a failed attempt is keyed on the loaded dxgi HMODULE (`s_attemptedDxgiModule` CAS) — an unchanged
+module image never re-runs the image-mapping on-disk RVA resolve, and a new/first-loaded module re-arms exactly
+one attempt. Source guards: `VulkanRendererPolicySourceTest.ExportBodyHooksRetryWhileArmedWithoutPollWork`.
+Also inspected the export body install mode: `InlineHook::InstallPublished` already composes with foreign entry
+patches (prepend/chain through the exact foreign entry, refusal of non-chainable patches) — no deep-hook change
+needed.
+
 ### 2026-08-30 - Final-DXGI FIFO re-armed as a per-instance scoped backstop
 
 The retirement from earlier today did not survive a second look. The evidence that killed the override was

@@ -97,6 +97,21 @@ void OverlayAdapter::SetGraphicsAPI(const char* api, const char* evidenceSource)
                      graphicsAPI[0] ? graphicsAPI : "unset", evidenceSource ? evidenceSource : "unspecified");
 }
 
+void OverlayAdapter::SetLatencyDevice(void* device) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    BindLatencyDeviceLocked(device);
+}
+
+void OverlayAdapter::BindLatencyDeviceLocked(void* device) {
+    if (latencyDevice == device)
+        return;
+    latencyDevice = device;
+    cachedSystemLatency = {};
+    lastNativeLatencyQueryTime = 0;
+    if (metrics)
+        metrics->ResetSystemLatency();
+}
+
 void OverlayAdapter::SetReserveInactiveFGSpace(bool reserve) {
     std::lock_guard<std::mutex> lock(stateMutex);
     if (reserveInactiveFGSpace != reserve) {
@@ -187,6 +202,12 @@ void OverlayAdapter::ResetStateLocked() {
     lastObservedFrameTimeSource = FrameTimeSource::Presentation;
     lastFrameTimeSourceLogTime = 0;
     hasObservedFrameTimeSource = false;
+    latencyDevice = nullptr;
+    cachedSystemLatency = {};
+    lastObservedSystemLatencySource = ce::system_latency::Source::Unavailable;
+    lastSystemLatencySourceLogTime = 0;
+    lastNativeLatencyQueryTime = 0;
+    hasObservedSystemLatencySource = false;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 
@@ -202,8 +223,11 @@ bool OverlayAdapter::InitDX9(void* device) {
 
     HookLogImportant("[Overlay] Initializing DX9 backend (device=%p)", device);
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(new CustomOverlay::DX9Backend((IDirect3DDevice9*)device), OverlayBackendType::DX9,
-                                   "DX9", dpiScale);
+    const bool success = InitializeBackendLocked(new CustomOverlay::DX9Backend((IDirect3DDevice9*)device),
+                                                 OverlayBackendType::DX9, "DX9", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 #endif
     return true;
 }
@@ -220,8 +244,11 @@ bool OverlayAdapter::InitDX8(void* device) {
 
     HookLogImportant("[Overlay] Initializing DX8 backend (device=%p)", device);
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(new CustomOverlay::DX8Backend((IDirect3DDevice8*)device), OverlayBackendType::DX8,
-                                   "DX8", dpiScale);
+    const bool success = InitializeBackendLocked(new CustomOverlay::DX8Backend((IDirect3DDevice8*)device),
+                                                 OverlayBackendType::DX8, "DX8", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 #endif
     return true;
 }
@@ -238,8 +265,11 @@ bool OverlayAdapter::InitDX10(void* device) {
 
     HookLogImportant("[Overlay] Initializing DX10 backend (device=%p)", device);
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(new CustomOverlay::DX10Backend((ID3D10Device*)device), OverlayBackendType::DX10,
-                                   "DX10", dpiScale);
+    const bool success = InitializeBackendLocked(new CustomOverlay::DX10Backend((ID3D10Device*)device),
+                                                 OverlayBackendType::DX10, "DX10", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 #endif
     return true;
 }
@@ -256,8 +286,12 @@ bool OverlayAdapter::InitDX11(void* device, void* context) {
 
     HookLogImportant("[Overlay] Initializing DX11 backend (device=%p, context=%p)", device, context);
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(new CustomOverlay::DX11Backend((ID3D11Device*)device, (ID3D11DeviceContext*)context),
-                                   OverlayBackendType::DX11, "DX11", dpiScale);
+    const bool success = InitializeBackendLocked(
+        new CustomOverlay::DX11Backend((ID3D11Device*)device, (ID3D11DeviceContext*)context),
+        OverlayBackendType::DX11, "DX11", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 #endif
     return true;
 }
@@ -274,9 +308,12 @@ bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
 
     HookLogImportant("[Overlay] Initializing DX12 backend (device=%p, queue=%p, fmt=%d)", device, queue, rtvFormat);
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(
+    const bool success = InitializeBackendLocked(
         new CustomOverlay::DX12Backend((ID3D12Device*)device, (ID3D12CommandQueue*)queue, (DXGI_FORMAT)rtvFormat),
         OverlayBackendType::DX12, "DX12", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 #endif
     return true;
 }
@@ -316,7 +353,10 @@ bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uin
     }
 
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(vkBackend, OverlayBackendType::Vulkan, "Vulkan", dpiScale);
+    const bool success = InitializeBackendLocked(vkBackend, OverlayBackendType::Vulkan, "Vulkan", dpiScale);
+    if (success)
+        BindLatencyDeviceLocked(device);
+    return success;
 }
 
 bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type) {

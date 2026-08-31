@@ -46,6 +46,8 @@
 
 #include "dump_helper.h"
 
+#include "display_timing_policy.h"
+
 #include "hotkey_input_hook.h"
 
 #include "injection.h"
@@ -282,6 +284,7 @@ inline bool ShouldStartLoggerProcess(const AppConfig& config) {
 
 inline bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM ||
+           ShouldStartOverlayDisplayTiming(config.overlay.showOverlay, config.overlay.showSystemLatency) ||
            main_g_Recording;
 }
 

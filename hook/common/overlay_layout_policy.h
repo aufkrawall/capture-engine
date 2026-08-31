@@ -73,6 +73,7 @@ enum OverlayRow : uint32_t {
     kRowFGStatus = 1u << 7,
     kRowRecording = 1u << 8,
     kRowNotification = 1u << 9,
+    kRowSystemLatency = 1u << 10,
 };
 
 struct RowInputs {
@@ -82,6 +83,7 @@ struct RowInputs {
     bool showRAM = false;
     bool showFPS = false;
     bool showFPSAverages = false;
+    bool showSystemLatency = false;
     bool showFG = false;
     bool fgActive = false;
     bool reserveFGSpace = false;
@@ -108,6 +110,8 @@ inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
         if (input.showFG && (input.fgActive || input.reserveFGSpace))
             mask |= kRowFGRates;
     }
+    if (input.showSystemLatency)
+        mask |= kRowSystemLatency;
     if (input.showFG && (input.fgActive || input.reserveFGSpace))
         mask |= kRowFGStatus;
     if (input.showRecording && (input.recordingActive || input.recordingStarting))

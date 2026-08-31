@@ -395,17 +395,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     // Update performance metrics for FPS calculation
-    static int64_t qpcFreq = 0;
     const int64_t metricsUpdateStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-    DXGIShared::GetPerformanceMetrics()->Update(us);
+    DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
     if (activeDebugSample) {
         activeDebugSample->metricsUpdateUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - metricsUpdateStartUs);
     }
@@ -646,16 +637,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         ::ce::make_scope_guard([]() { DXGIShared::EndPostSLOffKeepAlivePresentScope(); });
 
     // Update performance metrics for FPS calculation
-    static int64_t qpcFreq = 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-    DXGIShared::GetPerformanceMetrics()->Update(us);
+    DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
 
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)

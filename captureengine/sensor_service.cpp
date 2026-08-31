@@ -295,7 +295,9 @@ int SensorProcessMain(const AppConfig& config) {
                 s.shm->runtimeState.IsInjectVideoCaptureRequested() ||
                 s.shm->runtimeState.GetRecordingStartIntent() == RecordingStartIntent::Video;
             if (ShouldCollectDisplayTiming(
-                    useScreenGrabTarget, overlayConfig.frameTimeSource, injectVideoTimingNeeded)) {
+                    useScreenGrabTarget, overlayConfig.frameTimeSource,
+                    injectVideoTimingNeeded,
+                    overlayConfig.showOverlay && overlayConfig.showSystemLatency)) {
                 displayTimingTargets.push_back({sourcePid, rendererPid, &s.shm->displayTiming});
             }
             int64_t luid = 0;

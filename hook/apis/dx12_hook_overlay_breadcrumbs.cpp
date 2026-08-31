@@ -76,6 +76,7 @@ if (!dx12_hook_g_DescFreeBackend) {
         dx12_hook_g_DescFreeBackendDevice = dev;
         dx12_hook_g_DescFreeBackendFormat = format;
         dx12_hook_g_D3D11On12Adapter.InitCustom(dx12_hook_g_DescFreeBackend, OverlayBackendType::DX12);
+        dx12_hook_g_D3D11On12Adapter.SetLatencyDevice(dev);
         HookLogImportant("DX12: Descriptor-free overlay backend ready (%s, device=%p fmt=%d)",
                          context ? context : "unknown", dev, static_cast<int>(format));
     } else {

@@ -30,16 +30,16 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         return;
     }
 
+    int64_t currentQpcUs = 0;
     if (metrics) {
         // Deliberately not PerfLogger::GetQpcUs(): this value is compared against
         // a publication stamp produced in the sensor process, so it has to use
         // the same conversion the producer used, including its overflow guard.
         LARGE_INTEGER displayTimingNow = {};
         QueryPerformanceCounter(&displayTimingNow);
+        currentQpcUs = DisplayTimingQpcToUs(displayTimingNow.QuadPart, PerfLogger::GetQpcFrequency());
         metrics->SetFrameTimeSource(cfg.frameTimeSource);
-        metrics->ConsumeDisplayTiming(
-            sharedMem->displayTiming,
-            DisplayTimingQpcToUs(displayTimingNow.QuadPart, PerfLogger::GetQpcFrequency()));
+        metrics->ConsumeDisplayTiming(sharedMem->displayTiming, currentQpcUs);
         const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
         const DWORD sourceNow = GetTickCount();
         if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
@@ -57,7 +57,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
     // Update throttling
     DWORD now = GetTickCount();
-    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval;
+    const bool latencyJustEnabled =
+        cfg.showSystemLatency && (!hasRenderedConfig || !lastRenderedConfig.showSystemLatency);
+    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval || latencyJustEnabled;
     if (shouldUpdate) {
         lastUpdateTime = now;
         if (metrics) {
@@ -65,6 +67,32 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             cachedAvgFPS = metrics->GetAverageFPS();
             cached1PercentLow = metrics->Get1PercentLowFPS();
             cached01PercentLow = metrics->Get01PercentLowFPS();
+            if (cfg.showSystemLatency && currentQpcUs > 0) {
+                constexpr DWORD kNativeLatencyQueryIntervalMs = 250;
+                if (latencyDevice &&
+                    (lastNativeLatencyQueryTime == 0 ||
+                     now - lastNativeLatencyQueryTime >= kNativeLatencyQueryIntervalMs)) {
+                    ce::system_latency::NativeReport nativeReport;
+                    if (ce::system_latency::QueryNativeReport(latencyDevice, nativeReport))
+                        metrics->SubmitNativeLatencyReport(nativeReport);
+                    lastNativeLatencyQueryTime = now;
+                }
+
+                cachedSystemLatency = metrics->GetSystemLatency(currentQpcUs);
+                const auto latencySource = cachedSystemLatency.source;
+                if (!hasObservedSystemLatencySource || latencySource != lastObservedSystemLatencySource) {
+                    if (!hasObservedSystemLatencySource || now - lastSystemLatencySourceLogTime >= 10000) {
+                        HookLogImportant("[Overlay] PC latency source: %s value=%.1fms samples=%u",
+                                         ce::system_latency::SourceLogLabel(latencySource),
+                                         cachedSystemLatency.milliseconds, cachedSystemLatency.sampleCount);
+                        lastObservedSystemLatencySource = latencySource;
+                        lastSystemLatencySourceLogTime = now;
+                        hasObservedSystemLatencySource = true;
+                    }
+                }
+            } else {
+                cachedSystemLatency = {};
+            }
         }
         if (cfg.showCPU || cfg.showRAM || cfg.showGPU || cfg.showVRAM) {
             SystemMetricsCollector::Get().Update();
@@ -73,6 +101,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
 
     FrameLayoutSnapshot frameLayout = {};
+    frameLayout.systemLatency = cachedSystemLatency;
     frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
     frameLayout.reserveFGSpace = cfg.showFG && reserveInactiveFGSpace;
     if (frameLayout.fgActive && metrics) {
@@ -148,6 +177,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     rowInputs.showRAM = cfg.showRAM;
     rowInputs.showFPS = cfg.showFPS;
     rowInputs.showFPSAverages = cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f;
+    rowInputs.showSystemLatency = cfg.showSystemLatency;
     rowInputs.showFG = cfg.showFG;
     rowInputs.fgActive = frameLayout.fgActive;
     rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;

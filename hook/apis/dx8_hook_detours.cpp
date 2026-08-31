@@ -239,7 +239,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
     }
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
-    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+    int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
     dx8_hook_g_PerfMetrics.Update(us);
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;

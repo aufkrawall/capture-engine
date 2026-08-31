@@ -358,7 +358,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
         // Update performance metrics AFTER limiter — the post-blocking QPC ensures
         // inter-frame intervals reflect the limited rate (e.g. 120fps, not 144fps).
         {
-            int64_t us = (limiterQpc.QuadPart * 1000000) / limiterFreq;
+            int64_t us = DisplayTimingQpcToUs(limiterQpc.QuadPart, limiterFreq);
             dx9_hook_g_PerfMetrics.Update(us);
         }
 

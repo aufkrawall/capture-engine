@@ -112,6 +112,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - Desktop-overlay mode 2 is warning-only. With the shipped mode 2 profile there is no steady recording dot.
 - `[Overlay] copy_queue_priority` controls the injected D3D12 overlay's DIRECT queue priority, not a copy queue. The key name is retained for compatibility.
 - `[Overlay] frametime_source=display_change|presentation` selects the injected overlay's frame-time/FPS/variance source. `display_change` is the shipped default and includes generated output plus variable-refresh screen cadence; it falls back to presentation timing while the out-of-process timestamp stream is unavailable. `presentation` preserves the former application-presentation measurement.
+- `[Overlay] show_system_latency=true` enables the injected PC-latency row. `PC Latency~` uses Reflex/PCL frame markers but still estimates average input wait; `Latency est.` is the marker-free Present-to-display plus frame-cadence fallback. Neither includes peripherals or physical display scanout, and unsupported/stale measurements render unavailable.
 
 ## Validation boundary
 
@@ -122,6 +123,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   the final Vulkan renderer consumes the same profile as its parent. Versioned mappings/events isolate older processes.
 - ABI 48 adds `OverlayConfig::frameTimeSource` and the sensor-to-overlay display-timestamp ring. The versioned mapping and discovery names move together with the layout.
 - ABI 50 adds five optional hardware-sensor values plus independent validity bits to `SharedSystemMetrics`. They are controller configuration, not `OverlayConfig`; no managed code or selector string crosses into an injected process.
+- ABI 51 adds final-presented-output and expected-display timing metadata to each `FrameSlot`.
+- ABI 52 adds `OverlayConfig::showSystemLatency`.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.
@@ -135,6 +138,6 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 ## Verification
 
-- The focused config/profile/pseudo-overlay/injected-overlay gate covers generated-template parity, the fullscreen-focus blackout default/global/profile parsing and warning annotation, source-driven WGC/DXGI behavior, injection overrides, safe invalid-value fallback, compatibility-key precedence, overlay-only profiles, legacy behavior, and all three commented examples. Focused config plus encoder-option coverage additionally passes the NVENC split-encode parser/default and planning matrix.
+- The focused config/profile/pseudo-overlay/injected-overlay gate covers generated-template parity, the system-latency default/parser, hardware-sensor defaults/bounds/identifier validation, the fullscreen-focus blackout default/global/profile parsing and warning annotation, source-driven WGC/DXGI behavior, injection overrides, safe invalid-value fallback, compatibility-key precedence, overlay-only profiles, legacy behavior, and all three commented examples. Focused config plus encoder-option coverage additionally passes the NVENC split-encode parser/default and planning matrix.
 - Clean product build `0.1.5105` passed x64/x86 hooks, MediaEngine/CaptureEngine, 149 unit-test objects, 30 test apps, both Vulkan layers, packaging, import closure, PE mitigations, effective CFG, architecture, and PDB checks.
 - The exact `0.1.5105` no-build gate passed the complete native suite and all six Python tool self-tests.

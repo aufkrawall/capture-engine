@@ -102,10 +102,24 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
     m_fgBaseFPS.store(baseFPS, std::memory_order_relaxed);
     m_fgMultiplier.store(multiplier, std::memory_order_relaxed);
     m_fgType.store(fgType, std::memory_order_relaxed);
+    m_systemLatency.SetFrameGeneration(baseFPS, multiplier);
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
+    m_systemLatency.ObservePresent(currentQpcUs);
     UpdateSeries(m_presentation, currentQpcUs);
+}
+
+void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {
+    m_systemLatency.SubmitNativeReport(report);
+}
+
+ce::system_latency::Snapshot PerformanceMetrics::GetSystemLatency(int64_t currentQpcUs) const {
+    return m_systemLatency.GetSnapshot(currentQpcUs);
+}
+
+void PerformanceMetrics::ResetSystemLatency() {
+    m_systemLatency.ResetDisplayHistory();
 }
 
 void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs) {
@@ -193,6 +207,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
 
     if (m_displayGeneration != generationBefore) {
         m_display.Reset();
+        m_systemLatency.ResetDisplayHistory();
         m_displayGeneration = generationBefore;
         const uint64_t earliestAvailable =
             writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
@@ -208,6 +223,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         int64_t screenTimeUs = 0;
         if (!timing.Read(m_nextDisplaySequence, screenTimeUs))
             break;
+        m_systemLatency.ObserveDisplay(screenTimeUs);
         UpdateSeries(m_display, screenTimeUs);
         ++m_nextDisplaySequence;
     }
