@@ -52,7 +52,7 @@ Every key follows the normal `ConfigReader` override contract, for example `Face
 - If the driver supplies a compatible BGRA/BGRX/RGBA DXGI buffer on that device, the immutable `IMFSample` retains the GPU resource until the encoder uploads it.
 - Otherwise the worker copies the sample into a tightly packed BGRA vector. The encoder performs one `UpdateSubresource` per new camera frame; blending and final conversion remain GPU-only.
 - The worker publishes through an atomic `shared_ptr`. There is no camera queue, polling delay, frame wait, or sleep on the encoder/game path.
-- Stop flushes and shuts down the active source before joining the worker. Device references and retained samples are released before the encoder D3D device is destroyed.
+- Stop first asks the Source Reader to flush its selected video stream, which is the Media Foundation operation that cancels a pending synchronous `ReadSample`. The active-reader publication stays locked through that synchronous flush so the released worker cannot race ahead to source shutdown. Stop then joins the worker; only that owning worker shuts down the media source it created. Never call `IMFMediaSource::Shutdown` cross-thread before flushing the reader: the 2026-08-31 `20260831_060838` session deadlocked finalization in that inverted order. Device references and retained samples are released before the encoder D3D device is destroyed.
 
 Camera failure is deliberately non-fatal to the main video. It is reported with bounded diagnostics, and a stale last frame follows `stale_timeout_ms`.
 
@@ -84,8 +84,8 @@ This pre-encode placement also means any recording or live-stream output that co
 
 ## Diagnostics and validation
 
-High-signal logs cover selected mode, GPU versus CPU transport, renderer allocation, first composite, periodic composite/upload counts, stale hiding, device startup/read errors, and bounded transfer failures. Logs do not print the configured device identity.
+High-signal logs cover selected mode, GPU versus CPU transport, renderer allocation, first composite, periodic composite/upload counts, stale hiding, device startup/read errors, bounded transfer failures, and the Source Reader flush plus worker-join phases at stop. Logs do not print the configured device identity.
 
 The policy tests cover parsing, invalid-value fallback, process-profile overrides, placement under output scaling, circle cropping, custom-position clamping, template documentation, runtime shader compilation, latest-frame-only source structure, draw ordering, and accepted-frame-only repeat-cache publication.
 
-Runtime stale-risk remains medium: test GPU-resident and CPU-fallback webcams, device disconnect/reconnect between recordings, SDR/scRGB/HDR10 output, output scaling, WGC/DXGI and inject capture, and CFR repeats on representative Intel/AMD/NVIDIA systems.
+The 2026-08-31 hardware smoke on the same default camera as session `20260831_060838` validated the GPU-resident WGC/DXGI path through a 25.2-second recording: reader flush returned `S_OK` in 16 ms, the worker joined in 297 ms, and mux publication completed. Runtime stale-risk remains medium: test CPU-fallback webcams, device disconnect/reconnect between recordings, scRGB/HDR10 output, output scaling, inject capture, and CFR repeats on representative Intel/AMD/NVIDIA systems.

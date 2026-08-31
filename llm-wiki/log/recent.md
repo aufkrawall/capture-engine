@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-08-31 - Face-camera teardown cancels the reader before source shutdown
+
+Session `20260831_060838` recorded and GPU-composited the face camera successfully, then stopped logging immediately
+before `VideoEncoder::Stop` could emit its first line. The preceding audio-resource destruction placed the stall in
+`StopFaceCamera`. That path inverted Media Foundation's cancellation ownership: the finalization thread called
+`IMFMediaSource::Shutdown` while the camera worker was blocked in synchronous `ReadSample`, and only afterward called
+the Source Reader operation documented to cancel pending reads. Stop now sets the stop intent, flushes the active
+reader, joins the released worker, and leaves media-source shutdown exclusively on the worker that created it. Bounded
+phase logs distinguish a future flush stall from a join/cleanup stall. A hardware smoke on the same default camera
+recorded and GPU-composited for 25.2 seconds; flush returned `S_OK` in 16 ms, the worker joined in 297 ms, the mux
+closed, and async finalization completed. See `face-camera-overlay.md`.
+
 ### 2026-08-31 - Optional hardware sensors stay outside the game and release package
 
 Added `[HardwareSensors]` polling for CPU/GPU temperature, package power, and GPU fan RPM through

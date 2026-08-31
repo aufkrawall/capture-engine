@@ -83,6 +83,32 @@ TEST(FaceCameraSourceTest, SourceReaderUsesGpuCompatibleProcessingWithOptionalCp
     EXPECT_NE(capture.find("immediateContext->QueryInterface"), std::string::npos);
 }
 
+TEST(FaceCameraSourceTest, StopCancelsPendingReadBeforeWorkerOwnedSourceShutdown) {
+    const std::string capture = ReadFaceCameraSource("face_camera_capture.cpp");
+    const std::string header = ReadFaceCameraSource("face_camera_capture.h");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(header.empty());
+
+    const size_t stopBegin = capture.find("void FaceCameraCapture::Stop() {");
+    const size_t stopEnd = capture.find("std::shared_ptr<const FaceCameraFrame> FaceCameraCapture::LatestFrame()",
+                                        stopBegin);
+    ASSERT_NE(stopBegin, std::string::npos);
+    ASSERT_NE(stopEnd, std::string::npos);
+    const std::string stop = capture.substr(stopBegin, stopEnd - stopBegin);
+    const size_t flush = stop.find("reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM)");
+    const size_t join = stop.find("captureThread_.join()");
+    ASSERT_NE(flush, std::string::npos);
+    ASSERT_NE(join, std::string::npos);
+    EXPECT_LT(flush, join);
+    EXPECT_NE(stop.find("Keep publication locked through the synchronous flush"), std::string::npos);
+    EXPECT_EQ(stop.find("source->Shutdown()"), std::string::npos);
+    EXPECT_EQ(header.find("activeSource_"), std::string::npos);
+
+    const size_t workerBegin = capture.find("void FaceCameraCapture::CaptureThreadMain() {");
+    ASSERT_NE(workerBegin, std::string::npos);
+    EXPECT_NE(capture.find("source->Shutdown()", workerBegin), std::string::npos);
+}
+
 TEST(FaceCameraSourceTest, RendererTransfersOnlyNewCameraFramesAndUsesOneGpuDraw) {
     const std::string renderer = ReadFaceCameraSource("face_camera_renderer.cpp");
     ASSERT_FALSE(renderer.empty());

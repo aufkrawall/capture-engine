@@ -309,26 +309,29 @@ void FaceCameraCapture::Stop() {
         return;
     stopRequested_.store(true, std::memory_order_release);
     IMFSourceReader* reader = nullptr;
-    IMFMediaSource* source = nullptr;
     {
+        // Keep publication locked through the synchronous flush. Once a cancelled
+        // ReadSample returns, the worker must not pass ClearActiveReader and shut
+        // down its source until the reader has finished cancelling that request.
         std::lock_guard<std::mutex> lock(activeSourceMutex_);
         reader = activeReader_;
-        source = activeSource_;
-        if (reader)
+        if (reader) {
             reader->AddRef();
-        if (source)
-            source->AddRef();
+            DLL_Log("[FaceCamera] Stop requested; cancelling the pending source-reader sample before worker join");
+            const uint64_t flushStartMs = GetTickCount64();
+            const HRESULT flushHr = reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+            DLL_Log("[FaceCamera] Source-reader flush finished: HR=%x elapsed=%llums", flushHr,
+                    static_cast<unsigned long long>(GetTickCount64() - flushStartMs));
+        }
     }
-    if (source) {
-        source->Shutdown();
-        source->Release();
-    }
-    if (reader) {
-        reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+    if (reader)
         reader->Release();
-    }
-    if (captureThread_.joinable())
+    if (captureThread_.joinable()) {
+        const uint64_t joinStartMs = GetTickCount64();
         captureThread_.join();
+        DLL_Log("[FaceCamera] Camera worker joined: elapsed=%llums",
+                static_cast<unsigned long long>(GetTickCount64() - joinStartMs));
+    }
     state_.store(State::kStopped, std::memory_order_release);
     std::atomic_store_explicit(&latestFrame_, std::shared_ptr<const FaceCameraFrame>(), std::memory_order_release);
     if (device_) {
@@ -346,18 +349,15 @@ bool FaceCameraCapture::MayProduceFrames() const {
     return state == State::kNotStarted || state == State::kStarting || state == State::kRunning;
 }
 
-void FaceCameraCapture::PublishActiveSource(IMFSourceReader* reader, IMFMediaSource* source) {
+void FaceCameraCapture::PublishActiveReader(IMFSourceReader* reader) {
     std::lock_guard<std::mutex> lock(activeSourceMutex_);
     activeReader_ = reader;
-    activeSource_ = source;
 }
 
-void FaceCameraCapture::ClearActiveSource(IMFSourceReader* reader, IMFMediaSource* source) {
+void FaceCameraCapture::ClearActiveReader(IMFSourceReader* reader) {
     std::lock_guard<std::mutex> lock(activeSourceMutex_);
     if (activeReader_ == reader)
         activeReader_ = nullptr;
-    if (activeSource_ == source)
-        activeSource_ = nullptr;
 }
 
 bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride) {
@@ -478,7 +478,7 @@ void FaceCameraCapture::CaptureThreadMain() {
     bool gpuTransportLogged = false;
     bool cpuTransportLogged = false;
     if (SUCCEEDED(setupHr) && !stopRequested_.load(std::memory_order_acquire)) {
-        PublishActiveSource(reader.get(), source.get());
+        PublishActiveReader(reader.get());
         state_.store(State::kRunning, std::memory_order_release);
         DLL_Log("[FaceCamera] Camera worker ready; encoder sampling is nonblocking and latest-frame-only");
         while (!stopRequested_.load(std::memory_order_acquire)) {
@@ -527,7 +527,7 @@ void FaceCameraCapture::CaptureThreadMain() {
                             static_cast<unsigned long long>(extractFailures));
             }
         }
-        ClearActiveSource(reader.get(), source.get());
+        ClearActiveReader(reader.get());
     } else if (!stopRequested_.load(std::memory_order_acquire)) {
         DLL_Log("[FaceCamera] Camera startup failed; main video continues without camera: HR=%x", setupHr);
     }

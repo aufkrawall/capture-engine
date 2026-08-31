@@ -52,8 +52,8 @@ private:
 
     void CaptureThreadMain();
     bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride);
-    void PublishActiveSource(IMFSourceReader* reader, IMFMediaSource* source);
-    void ClearActiveSource(IMFSourceReader* reader, IMFMediaSource* source);
+    void PublishActiveReader(IMFSourceReader* reader);
+    void ClearActiveReader(IMFSourceReader* reader);
 
     ce::face_camera::Config config_;
     ID3D11Device* device_ = nullptr;
@@ -66,5 +66,4 @@ private:
     std::atomic<uint64_t> nextSequence_{1};
     std::mutex activeSourceMutex_;
     IMFSourceReader* activeReader_ = nullptr;
-    IMFMediaSource* activeSource_ = nullptr;
 };
