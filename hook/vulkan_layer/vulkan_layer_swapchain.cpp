@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_present_boundary.h"
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
                                                      VkQueue* pQueue) {
@@ -251,4 +252,79 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, 
     if (!disp || !disp->fp_vkGetSwapchainImagesKHR)
         return VK_ERROR_INITIALIZATION_FAILED;
     return disp->fp_vkGetSwapchainImagesKHR(device, swapchain, pSwapchainImageCount, pSwapchainImages);
+}
+
+namespace {
+
+// Shared by both acquire entry points. `vkAcquireNextImage2KHR` is not a
+// convenience wrapper an application may or may not use interchangeably: it is
+// the only acquire a device-group-aware renderer calls, and every acquire that
+// bypasses CE leaves `imageAcquireGeneration` frozen. Two things then break at
+// once - the overlay's submission ring can never prove a slot's binary
+// semaphore was consumed (IsSubmissionSlotReusable in
+// overlay_submit_queue_policy.h) and grows to its safety bound before blocking
+// the game's present thread, and the repeat-present guard in RenderOverlay
+// loses its only evidence. The generation must therefore be maintained by
+// whichever acquire the application actually calls.
+SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
+    SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(swapchain);
+    if (!sd)
+        return nullptr;
+    sd->lastAcquireThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+    sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
+    if (sd->asyncPresentDetected.load(std::memory_order_acquire)) {
+        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        // Async-present games acquire from a different thread than they
+        // present on, so the present-time wait cannot throttle production;
+        // gate every acquire on the cadence grid instead.
+        const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
+        ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
+        g_SharedFpsLimiter.Apply(false, groupedAdmission);
+    }
+    return sd;
+}
+
+// A successful acquire is the proof the overlay's submission ring needs that
+// every present of this image - including the one that waited on a slot's
+// binary semaphore - has executed its wait, and the proof RenderOverlay needs
+// that the image the runtime is presenting is not the one it already
+// composited into.
+void EndAcquireBoundary(SwapchainData* sd, VkResult acquireResult, const uint32_t* pImageIndex) {
+    if ((acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) && sd && pImageIndex &&
+        sd->imageAcquireGeneration && *pImageIndex < sd->imageCount) {
+        sd->imageAcquireGeneration[*pImageIndex].fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+}  // namespace
+
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                             uint64_t timeout, VkSemaphore semaphore, VkFence fence,
+                                                             uint32_t* pImageIndex) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp || !disp->fp_vkAcquireNextImageKHR)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
+        return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
+
+    SwapchainData* sd = BeginAcquireBoundary(swapchain);
+    const VkResult acquireResult =
+        disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
+    EndAcquireBoundary(sd, acquireResult, pImageIndex);
+    return acquireResult;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImage2KHR(VkDevice device,
+                                                              const VkAcquireNextImageInfoKHR* pAcquireInfo,
+                                                              uint32_t* pImageIndex) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp || !disp->fp_vkAcquireNextImage2KHR)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    if (!g_LayerState.whitelisted.load(std::memory_order_acquire) || !pAcquireInfo)
+        return disp->fp_vkAcquireNextImage2KHR(device, pAcquireInfo, pImageIndex);
+
+    SwapchainData* sd = BeginAcquireBoundary(pAcquireInfo->swapchain);
+    const VkResult acquireResult = disp->fp_vkAcquireNextImage2KHR(device, pAcquireInfo, pImageIndex);
+    EndAcquireBoundary(sd, acquireResult, pImageIndex);
+    return acquireResult;
 }

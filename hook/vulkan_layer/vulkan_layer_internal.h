@@ -88,6 +88,8 @@ void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presen
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
 
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* pAcquireInfo, uint32_t* pImageIndex);
+
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR swapchain,

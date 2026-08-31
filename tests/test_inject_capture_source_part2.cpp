@@ -129,7 +129,10 @@ TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyi
     const std::string dx11 = ReadSource("hook/apis/dx11_hook_present.cpp");
     const std::string dx9 = ReadSource("hook/apis/dx9_hook_device.cpp");
     const std::string vulkanHooks = ReadSource("hook/vulkan_layer/vulkan_layer_hooks.cpp");
-    const std::string vulkan = ReadSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    // The logical layer source, not one sibling unit: the acquire wrappers moved
+    // to vulkan_layer_swapchain.cpp when vkAcquireNextImage2KHR joined them, and
+    // this invariant is about the entry points, not about which unit holds them.
+    const std::string vulkan = ReadSource("hook/vulkan_layer/vulkan_layer.cpp");
     ASSERT_FALSE(dx11.empty());
     ASSERT_FALSE(dx9.empty());
     ASSERT_FALSE(vulkanHooks.empty());
@@ -159,13 +162,24 @@ TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyi
     ASSERT_NE(dx9Override, std::string::npos);
     EXPECT_LT(dx9Dormant, dx9Override);
 
-    const size_t acquire = vulkan.find("Capture_vkAcquireNextImageKHR(");
+    const size_t acquire = vulkan.find("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(");
     const size_t acquireDormant = vulkan.find("!g_LayerState.whitelisted.load", acquire);
-    const size_t acquireTracking = vulkan.find("GetSwapchainData", acquire);
+    const size_t acquireTracking = vulkan.find("BeginAcquireBoundary(", acquire);
     ASSERT_NE(acquire, std::string::npos);
     ASSERT_NE(acquireDormant, std::string::npos);
     ASSERT_NE(acquireTracking, std::string::npos);
     EXPECT_LT(acquireDormant, acquireTracking);
+
+    // The device-group acquire is the same mutation-sensitive entry point and
+    // maintains the same per-image acquire generation, so it forwards dormant
+    // before it touches CE's swapchain bookkeeping too.
+    const size_t acquire2 = vulkan.find("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImage2KHR(");
+    const size_t acquire2Dormant = vulkan.find("!g_LayerState.whitelisted.load", acquire2);
+    const size_t acquire2Tracking = vulkan.find("BeginAcquireBoundary(", acquire2);
+    ASSERT_NE(acquire2, std::string::npos);
+    ASSERT_NE(acquire2Dormant, std::string::npos);
+    ASSERT_NE(acquire2Tracking, std::string::npos);
+    EXPECT_LT(acquire2Dormant, acquire2Tracking);
 
     const size_t sampler = vulkan.find("Capture_vkCreateSampler(");
     const size_t samplerDormant = vulkan.find("!g_LayerState.whitelisted.load", sampler);

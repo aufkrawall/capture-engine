@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 684,
+    "entries": 685,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -646,6 +646,7 @@
       "tests/test_ngx_module_policy.cpp",
       "tests/test_nv_lod_spread_override.cpp",
       "tests/test_overlay_compat.cpp",
+      "tests/test_overlay_composite_route_growth.cpp",
       "tests/test_overlay_fg_status_publication.cpp",
       "tests/test_overlay_submit_queue_policy.cpp",
       "tests/test_overlay_system.cpp",

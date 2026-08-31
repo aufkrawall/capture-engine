@@ -23,7 +23,10 @@ static std::string TempPath(const char* suffix) {
 }
 
 static void WriteFuzzFile(const std::string& path, const std::vector<char>& data) {
-    HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Shared like WriteTextFile in test_config_shared.h: an exclusive open in the
+    // build tree fails whenever a real-time scanner holds a transient handle.
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     ASSERT_NE(h, INVALID_HANDLE_VALUE);
     DWORD written = 0;
     if (!data.empty())

@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-07-29
+Last cross-checked: 2026-08-31 (Vulkan-layer shared-memory mirror ungated from the FPS limiter path)
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -77,6 +77,19 @@ This page records how the current tree publishes visible FG status to the overla
 - Talos `installed/captureengine/logs/20260425_173428` showed a different stale-visible-state route during `FSR FG -> DLSS FG` in the 2D menu: CE did publish DLSS FG internally from `slDLSSGGetState`, but the overlay disappeared because PostSL stayed pending with `safeBootstrap=0`. The current DX12 policy now considers the fresh runtime-owned Streamline swapchain queue safe when it is also the live command queue and CE has a tracked ECL submit path for that queue. Fresh authoritative Streamline handoffs also become pending immediately, so the queue-change heuristic cannot briefly repaint the handoff as `FSR_FG` before DLSS FG wins.
 - Talos `installed/captureengine/logs/20260425_181251` showed no final authoritative OFF evidence after a menu-side `DLSS FG -> all FG off` request: Streamline `GetState` remained active and PostSL kept submitting, so publication correctly retained the last known DLSS FG runtime state. The current diagnostics now log fresh `sl.*.dll` load inspection, `slGetFeatureFunction` lookup outcomes, returned-wrapper fallback use, proactive hook gaps, and sampled `slDLSSGGetState` options/state so the next repro can distinguish a missed hook seam from the game simply delaying the real Streamline OFF call until 3D rendering resumes.
 - Talos `installed/captureengine/logs/20260425_191325` proved the next upstream stale-label seam: after a captured `slDLSSGSetOptions(ON)` on viewport `1`, the later menu-side off surfaced as an authoritative `slDLSSGGetState(optionsMode=off)` with capability and fence evidence on viewport `0`, not as another captured `SetOptions(OFF)`. The Streamline viewport aggregator now clears all cached DLSSG viewport runtime states on successful non-suppressed `SetOptions(OFF)` and on evidence-backed disabled `GetState` readbacks, so a stale active sibling viewport cannot keep the visible overlay label on `DLSS FG` in a 2D menu.
+- **The Vulkan layer is a separate DLL, so its FG detector is not the hook DLL's.** `g_FGCompat` in
+  `VK_LAYER_CE_overlay` is mirrored from `SharedMemory::dlssState` (`fgActive`, `mfgMultiplier`) on the present path,
+  and `PublishDetectedOverlayFGMetrics` snapshots that mirror. Until 2026-08-31 the mirror sat inside the FPS
+  limiter's `if (!asyncPresentDetected)` block in `Capture_vkQueuePresentKHR`, which is dead for the rest of the
+  session once that latch trips. Portal RTX session `20260831_054801`: the latch tripped 7.5 s in
+  (`Async present detected ... submit=4624 present=30768`), the user changed DLSS FG from 4x to 3x in the game's
+  menu at 05:49:03, `hook_debug.log` recorded `NVNGX FG: live EvaluateFeature parameters report 3x output
+  (DLSSG.MultiFrameCount=2)` and `FG: DLSS FG multiplier 4 -> 3`, and `vulkan_layer.log` never moved past its startup
+  `FG: DLSS FG multiplier 0 -> 4`. The overlay showed the factor the game was started with for the whole run. The
+  mirror now runs on every present, independently of limiter state.
+- The NGX side of that path is `ProcessEvaluateFeature`: every successful frame-generation `EvaluateFeature` writes
+  the observed factor to both `g_FGCompat` and `dlssState.mfgMultiplier`, so an in-game MFG change is authoritative at
+  the next evaluation. `DLSSG.MultiFrameCount` counts *generated* frames, so the visible factor is that value plus one.
 - Current tests explicitly require:
   - `FSR FG` to publish as `FSR FG`
   - `DLSS FG` to publish as `DLSS FG`

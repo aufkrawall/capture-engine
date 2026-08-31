@@ -112,6 +112,39 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - A valid OpenGL 2.1 fixed-function matrix path prefers client-side vertex/color/UV arrays and one `glDrawElements` per shared command. VBO/EBO, VAO, active/client texture unit, client-array enables, matrix mode, viewport, texture, blend, depth, and cull state are restored. Capability decisions are per backend/context; a one-time error probe retains immediate mode for incompatible injected contexts. Per-Present error draining and success heartbeat logs were removed.
 - DirectDraw/DX6/DX7 keep their compatibility architecture: lock/copy the full source surface, render through the D3D9Ex helper, and present the helper surface. They inherit the optimized DX9 backend, but the full-surface transfer is inherently much more expensive than a native in-device overlay and was not replaced in this targeted patch.
 
+## Vulkan compute-composite route (compute-only present queues)
+
+- When the game presents from a queue family without `VK_QUEUE_GRAPHICS_BIT`, the layer renders the overlay into a
+  per-submission-slot offscreen image on a graphics queue and alpha-composites only its occupied rectangle onto the
+  swapchain image from the present queue itself (`layer_overlay_compute.cpp`). The direct render-pass route would
+  force a compute -> graphics -> compute round trip through the present dependency chain.
+- **Every submission-ring slot must own a complete composite route.** Slot/target-image pair resources are indexed
+  slot-major by `ComputeCompositeResourceIndex`, so resources sized for the ring's *initial* depth leave every
+  appended slot out of range. Before 2026-08-31 those slots failed the compute route's own bounds check and silently
+  fell through to the direct render-pass route, so the two routes alternated from present to present with the ring's
+  period. Portal RTX session `20260831_054801` measured it: 6 images, 10 initial slots, 60 cached composites, the ring
+  extended to 12 under 4x DLSS multi-frame generation, `Compute-present CPU summary` counting 2048 composites per
+  15.9-17.1 s window against 143 Hz presents in `perf_metrics_28608.csv` - 83-90% of presents on one route.
+- `GrowSubmissionRing` is therefore all-or-nothing: it appends the slot, then `AppendComputePresentSlot`, and pops the
+  slot again if that fails. A declined growth falls back on the ring's existing bounded backpressure, which is the
+  documented safe behaviour; it never produces a slot with half a route.
+- Descriptor sets use one pool per slot, so extending the ring adds a pool instead of reallocating every existing set.
+  The timestamp query pool still covers only the slots that existed at initialization, so both routes gate timestamp
+  writes on `timestampSlotCapacity` rather than on the per-slot bookkeeping vectors, which do grow.
+- **A composite is a blend, so it is not idempotent.** Compositing twice into one swapchain image blends the panel's
+  own alpha onto itself and shows a more opaque overlay on that present - on screen, the overlay's translucency
+  flickering rather than the overlay blinking. `ShouldSkipRepeatPresentComposite` suppresses the second composite when
+  the image's acquire generation has not moved since CE last composited into it: a generated-output runtime may
+  present one image several times without the application re-acquiring it, and an application may not alter a
+  presented image before it re-acquires it, so an unchanged generation proves both the content and CE's overlay are
+  still there. Generation `0` means CE observed no acquire at all and the guard fails open.
+- That guard and the ring's slot-reuse proof both depend on the acquire generation being exact, so **both**
+  `vkAcquireNextImageKHR` and `vkAcquireNextImage2KHR` are hooked and maintain it. An unhooked acquire would strand the
+  ring at its safety bound (no slot can ever be proven reusable) and blind the repeat-present guard.
+- Known cost, not yet addressed: each slot's offscreen target is a full-resolution image. At 4K/`R8G8B8A8` that is
+  about 33 MB per slot, so the measured 12-slot ring holds roughly 400 MB. The per-growth log reports the running
+  total so a pathological ring is visible in a session.
+
 ## Performance and diagnostics
 
 - Performance probes must launch old-API apps through CaptureEngine without recording. Those APIs cannot use the native zero-copy recording route, so a recording run would benchmark capture/conversion as well as the overlay.

@@ -366,6 +366,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
              slotCount);
     state.imageViews.resize(imageCount);
     state.framebuffers.resize(imageCount);
+    state.imageCompositeAcquireGeneration.assign(imageCount, 0);
     state.commandBuffers.resize(slotCount);
     state.fences.resize(slotCount);
     state.semaphores.resize(slotCount);

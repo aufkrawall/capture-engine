@@ -144,6 +144,7 @@ struct DeviceDispatch {
     PFN_vkDestroySwapchainKHR fp_vkDestroySwapchainKHR = nullptr;
     PFN_vkGetSwapchainImagesKHR fp_vkGetSwapchainImagesKHR = nullptr;
     PFN_vkAcquireNextImageKHR fp_vkAcquireNextImageKHR = nullptr;
+    PFN_vkAcquireNextImage2KHR fp_vkAcquireNextImage2KHR = nullptr;
     PFN_vkQueuePresentKHR fp_vkQueuePresentKHR = nullptr;
     PFN_vkGetSwapchainTimingPropertiesEXT fp_vkGetSwapchainTimingPropertiesEXT = nullptr;
     PFN_vkGetSwapchainTimeDomainPropertiesEXT fp_vkGetSwapchainTimeDomainPropertiesEXT = nullptr;
@@ -492,6 +493,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                              uint64_t timeout, VkSemaphore semaphore, VkFence fence,
                                                              uint32_t* pImageIndex);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImage2KHR(VkDevice device,
+                                                              const VkAcquireNextImageInfoKHR* pAcquireInfo,
+                                                              uint32_t* pImageIndex);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);

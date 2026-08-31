@@ -137,6 +137,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkDestroySwapchainKHR = (PFN_vkDestroySwapchainKHR)gdpa(device, "vkDestroySwapchainKHR");
     dispatch->fp_vkGetSwapchainImagesKHR = (PFN_vkGetSwapchainImagesKHR)gdpa(device, "vkGetSwapchainImagesKHR");
     dispatch->fp_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)gdpa(device, "vkAcquireNextImageKHR");
+    dispatch->fp_vkAcquireNextImage2KHR = (PFN_vkAcquireNextImage2KHR)gdpa(device, "vkAcquireNextImage2KHR");
     dispatch->fp_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)gdpa(device, "vkQueuePresentKHR");
     PopulatePresentTimingDeviceDispatch(dispatch, device, gdpa);
     dispatch->fp_vkSetLatencySleepModeNV =

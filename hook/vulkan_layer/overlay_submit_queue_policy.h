@@ -212,6 +212,48 @@ inline uint32_t ComputeCompositeResourceIndex(uint32_t submissionSlot, uint32_t 
     return submissionSlot * imageCount + imageIndex;
 }
 
+// The pair index above is slot-major, so the composite route's per-pair
+// resources are complete only while it holds one full row per *current* ring
+// slot - not per slot the ring happened to start with.
+//
+// Portal RTX session `20260831_054801` is what the difference looks like on
+// screen. Six images gave ten initial slots and 60 cached composites; 4x
+// multi-frame generation then extended the ring to twelve, and the two
+// appended slots indexed past the end of every compute-route array. They failed
+// that route's bounds check and silently took the direct render-pass route
+// instead - the compute -> graphics -> compute round trip the compositor exists
+// to remove on a compute-only present queue. `Compute-present CPU summary`
+// counted 2048 composites per 15.9-17.1 s window while `perf_metrics_28608.csv`
+// recorded presents at 143 Hz: 83-90% of presents on one route and the rest on
+// the other, alternating with the ring's period. Growing the ring must
+// therefore extend this route with it, or not grow at all.
+inline uint32_t RequiredComputeCompositeResourceCount(uint32_t slotCount, uint32_t imageCount) noexcept {
+    if (slotCount == 0 || imageCount == 0)
+        return 0;
+    if (slotCount > UINT32_MAX / imageCount)
+        return UINT32_MAX;
+    return slotCount * imageCount;
+}
+
+// **A composite is a blend, and a blend is not idempotent.** Compositing the
+// overlay into one swapchain image twice blends the panel's own alpha onto
+// itself, so that present shows a more opaque overlay than its neighbours -
+// read on screen as the overlay's translucency flickering rather than the
+// overlay blinking.
+//
+// A generated-output runtime may present one image several times without the
+// application re-acquiring it, and the application may not alter a presented
+// image before it re-acquires it. An acquire generation unchanged since CE's
+// last composite into that image therefore proves two things at once: the image
+// still holds the same frame, and it still holds the overlay CE already blended
+// into it. Generation 0 means CE has observed no acquire for the image at all,
+// which is no evidence either way - the guard stays out of the way there rather
+// than suppressing the overlay on a guess.
+inline bool ShouldSkipRepeatPresentComposite(uint64_t currentAcquireGeneration,
+                                             uint64_t compositedAcquireGeneration) noexcept {
+    return currentAcquireGeneration != 0 && currentAcquireGeneration == compositedAcquireGeneration;
+}
+
 // The final compute command buffer contains only per-image resources and this
 // occupied rectangle. Once its fence has retired, Vulkan permits resubmitting
 // the executable command buffer without recording it again. Dynamic overlay

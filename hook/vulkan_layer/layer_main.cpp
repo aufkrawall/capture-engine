@@ -456,6 +456,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
         return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
     if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
         return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkAcquireNextImage2KHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkAcquireNextImage2KHR;
     if (strcmp(pName, "vkQueuePresentKHR") == 0)
         return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
     if (strcmp(pName, "vkCreateSampler") == 0)
@@ -496,6 +498,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
         return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
     if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
         return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkAcquireNextImage2KHR") == 0)
+        return (PFN_vkVoidFunction)Capture_vkAcquireNextImage2KHR;
     if (strcmp(pName, "vkQueuePresentKHR") == 0)
         return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
     if (strcmp(pName, "vkQueueSubmit") == 0)

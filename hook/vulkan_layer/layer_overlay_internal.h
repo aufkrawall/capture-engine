@@ -51,6 +51,15 @@ struct OverlayState {
     std::vector<uint32_t> slotImageIndex;
     std::vector<uint64_t> slotAcquireGeneration;
     std::vector<uint8_t> slotEverUsed;
+    // Per swapchain image: the acquire generation the overlay was last
+    // composited into it at. A frame-generation runtime may present one image
+    // again without the application re-acquiring it, and an application may not
+    // alter a presented image before it does, so an unchanged generation proves
+    // the overlay CE already blended in is still there. Compositing a second
+    // time would blend the overlay's own alpha onto itself and show a more
+    // opaque panel on those presents.
+    std::vector<uint64_t> imageCompositeAcquireGeneration;
+    uint64_t repeatPresentComposites = 0;
     uint32_t nextSubmissionSlot = 0;
     uint64_t submissionBackpressureWaits = 0;
     uint64_t submissionRingGrowths = 0;
@@ -58,9 +67,14 @@ struct OverlayState {
     // a slot added later reports no GPU time rather than recreating the pool on
     // the present path.
     uint32_t timestampSlotCapacity = 0;
-    // Growing the ring means one more command buffer, fence and semaphore. The
-    // compute-composite route also owns a full-resolution offscreen target per
-    // slot, so it keeps the fixed ring and the original backpressure.
+    // Growing the ring means one more command buffer, fence and semaphore - and,
+    // while the compute-composite route is in use, that route's own per-slot
+    // resources too. A slot without them would have to fall back to the direct
+    // render-pass route for its presents, which is exactly the compute ->
+    // graphics -> compute round trip the compositor exists to remove, and which
+    // alternates composite routes from present to present on a compute-only
+    // present queue. Growth is therefore all-or-nothing: see
+    // AppendComputePresentSlot.
     bool submissionRingMayGrow = false;
     std::vector<VkSemaphore> preSignaledSemaphores;  // Always-signaled semaphores for skipped frames
     std::vector<VkFramebuffer> framebuffers;
@@ -96,12 +110,17 @@ struct OverlayState {
     bool computePresentInitialized = false;
     bool computePresentUnavailable = false;
     uint32_t computeQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t computeGraphicsQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     VkRenderPass offscreenRenderPass = VK_NULL_HANDLE;
     std::vector<VkImage> offscreenImages;
     std::vector<VkDeviceMemory> offscreenMemory;
     std::vector<VkImageView> offscreenImageViews;
     std::vector<VkFramebuffer> offscreenFramebuffers;
     std::vector<VkSemaphore> offscreenReadySemaphores;
+    // One full-resolution offscreen target per submission slot is the real
+    // cost of this route, so a session can see it grow with the ring.
+    uint64_t offscreenMemoryBytes = 0;
+    uint64_t offscreenSlotBytes = 0;
     VkCommandPool computeCommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> computeCommandBuffers;
     std::vector<ce::overlay_submit_queue_policy::ComputeCompositeBounds> computeCommandBounds;
@@ -109,7 +128,9 @@ struct OverlayState {
     std::vector<VkSemaphore> computeWaitSemaphores;
     std::vector<VkPipelineStageFlags> computeWaitStages;
     VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
+    // One pool per submission slot, so extending the ring only adds a pool
+    // instead of having to reallocate every existing descriptor set.
+    std::vector<VkDescriptorPool> computeDescriptorPools;
     std::vector<VkDescriptorSet> computeDescriptorSets;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
     VkPipeline computePipeline = VK_NULL_HANDLE;
@@ -123,6 +144,9 @@ extern std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 void SyncOverlayActiveFlagLocked();
 bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex);
 void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp);
+// Extends the compute-composite route by exactly one submission slot. Called
+// while the ring grows so every slot keeps a complete composite route.
+bool AppendComputePresentSlot(OverlayState& state, DeviceDispatch* disp);
 bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
                                  VkQueue presentQueue, uint32_t submissionSlot, uint32_t imageIndex,
                                  const VkSemaphore* waitSemaphores,

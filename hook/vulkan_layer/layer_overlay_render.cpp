@@ -12,9 +12,33 @@
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 namespace {
 
-// One more command buffer, fence and binary semaphore. Everything else the ring
-// tracks is plain per-slot bookkeeping, so a failed allocation simply leaves the
-// ring at its current size and the caller falls back on backpressure.
+// Releases the slot GrowSubmissionRing just appended, so a growth that could
+// not be completed leaves the ring exactly as it was.
+void PopSubmissionRingSlot(OverlayState& state, DeviceDispatch* disp) {
+    if (state.fences.empty())
+        return;
+    disp->fp_vkDestroySemaphore(state.device, state.semaphores.back(), nullptr);
+    disp->fp_vkDestroyFence(state.device, state.fences.back(), nullptr);
+    disp->fp_vkFreeCommandBuffers(state.device, state.commandPool, 1, &state.commandBuffers.back());
+    state.timestampWritten.pop_back();
+    state.slotEverUsed.pop_back();
+    state.slotAcquireGeneration.pop_back();
+    state.slotImageIndex.pop_back();
+    state.semaphores.pop_back();
+    state.fences.pop_back();
+    state.commandBuffers.pop_back();
+}
+
+// One more command buffer, fence and binary semaphore - plus, while the
+// compute-composite route is live, that route's own per-slot resources. A slot
+// without them would silently fall back to the direct render-pass route for its
+// presents, so the two routes would alternate from present to present on a
+// compute-only present queue. Portal RTX session 20260831_054801 is that state
+// measured: 6 images, 10 slots created, the ring extended to 12 under 4x
+// multi-frame generation, and the compute route's own diagnostics counting only
+// 83-90% of the presents the perf CSV recorded. Growth is therefore
+// all-or-nothing; a failed allocation leaves the ring at its current size and
+// the caller falls back on bounded backpressure.
 bool GrowSubmissionRing(OverlayState& state, DeviceDispatch* disp) {
     if (state.commandPool == VK_NULL_HANDLE || !disp->fp_vkAllocateCommandBuffers || !disp->fp_vkCreateFence ||
         !disp->fp_vkCreateSemaphore) {
@@ -53,6 +77,15 @@ bool GrowSubmissionRing(OverlayState& state, DeviceDispatch* disp) {
     state.slotEverUsed.push_back(0);
     state.timestampWritten.push_back(false);
 
+    if (state.computePresentInitialized && !AppendComputePresentSlot(state, disp)) {
+        LayerLog(
+            "Vulkan Layer: overlay submission ring could not be extended past %zu slots because the "
+            "compute-composite route has no resources left for another one; keeping every present on one route",
+            state.fences.size() - 1);
+        PopSubmissionRingSlot(state, disp);
+        return false;
+    }
+
     const uint64_t growth = ++state.submissionRingGrowths;
     if (growth <= 8 || (growth & (growth - 1)) == 0) {
         LayerLog(
@@ -61,6 +94,11 @@ bool GrowSubmissionRing(OverlayState& state, DeviceDispatch* disp) {
             state.fences.size(), static_cast<unsigned long long>(growth));
     }
     return true;
+}
+
+void RecordOverlayComposite(OverlayState& state, uint32_t imageIndex, uint64_t acquireGeneration) {
+    if (imageIndex < state.imageCompositeAcquireGeneration.size())
+        state.imageCompositeAcquireGeneration[imageIndex] = acquireGeneration;
 }
 
 }  // namespace
@@ -172,6 +210,34 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         ce::overlay_metrics::PublishDetectedOverlayFGMetrics(state.metrics, "Vulkan::RenderOverlay");
     }
 
+    // Compositing the overlay is a blend, so doing it twice into one image is
+    // not idempotent: the panel's own alpha is blended onto itself and that
+    // present shows a more opaque overlay than its neighbours. A
+    // generated-output runtime may present one swapchain image several times
+    // without the application re-acquiring it, and an application may not alter
+    // a presented image before it re-acquires it - so an acquire generation
+    // unchanged since CE's last composite into this image proves both that the
+    // image content is the same and that CE's overlay is still in it.
+    // Zero means CE has seen no acquire for this image at all (the counter is
+    // maintained by both acquire entry points), and the guard stays out of the
+    // way rather than guessing.
+    const uint64_t acquireGeneration = (imageAcquireGeneration && imageIndex < imageAcquireGenerationCount)
+                                           ? imageAcquireGeneration[imageIndex].load(std::memory_order_acquire)
+                                           : 0;
+    if (imageIndex < state.imageCompositeAcquireGeneration.size() &&
+        ce::overlay_submit_queue_policy::ShouldSkipRepeatPresentComposite(
+            acquireGeneration, state.imageCompositeAcquireGeneration[imageIndex])) {
+        const uint64_t repeats = ++state.repeatPresentComposites;
+        if (repeats <= 8 || (repeats & (repeats - 1)) == 0) {
+            LayerLog(
+                "Vulkan Layer: image %u presented again at acquire generation %llu; the overlay CE already "
+                "composited into it is still there and a second blend would darken it (repeat #%llu)",
+                imageIndex, static_cast<unsigned long long>(acquireGeneration),
+                static_cast<unsigned long long>(repeats));
+        }
+        return false;
+    }
+
     // Submission resources are a global ring, not properties of a swapchain
     // image. MFG runtimes can present one image repeatedly in a generated-output
     // burst; binding the ring to imageIndex then waits on the same in-flight
@@ -188,11 +254,13 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return imageAcquireGeneration[slotImage].load(std::memory_order_acquire);
     };
     // The compute-composite route owns a full-resolution offscreen target per
-    // slot, so an appended slot gets none - and needs none: it fails that
-    // route's own resource bounds check before either queue sees work, and
-    // falls through to the direct graphics path below for that present. Growth
-    // therefore costs one command buffer, one fence and one semaphore on both
-    // routes, and never a second full-resolution image.
+    // slot, so growth extends that route too and costs one of those images on
+    // top of the command buffer, fence and semaphore. It has to: a slot without
+    // one would fall through to the direct graphics path for its presents, and
+    // two composite routes alternating on a compute-only present queue is a
+    // per-present difference on screen. When the extension cannot be made,
+    // GrowSubmissionRing declines the growth and the ring falls back on its
+    // bounded backpressure instead.
     static_assert(static_cast<int>(ce::overlay_submit_queue_policy::kMaxSubmissionSlots) <=
                       CustomOverlay::VulkanBackend::kFramePoolSize,
                   "the submission ring may not outgrow the overlay backend's per-frame buffer pool");
@@ -292,9 +360,21 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
             RenderComputePresentOverlay(state, disp, submitTarget, queue, submissionSlot, imageIndex, waitSemaphores,
                                         waitSemaphoreCount, signalSemaphore, &routeAttempted);
         if (routeAttempted) {
-            if (rendered)
+            if (rendered) {
                 *signalSemaphoreOut = signalSemaphore;
+                RecordOverlayComposite(state, imageIndex, acquireGeneration);
+            }
             return rendered;
+        }
+        static std::atomic<uint64_t> s_directFallbacks{0};
+        const uint64_t fallbacks = s_directFallbacks.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (fallbacks <= 8 || (fallbacks & (fallbacks - 1)) == 0) {
+            // Every ring slot owns a complete compute route, so this is a
+            // resource failure rather than the routine shape it used to be.
+            LayerLog(
+                "Vulkan Layer: compute-composite route unavailable for slot %u image %u; this present falls back "
+                "to the direct render pass (occurrence #%llu)",
+                submissionSlot, imageIndex, static_cast<unsigned long long>(fallbacks));
         }
         // Resource creation/recording failed before either queue saw work. The
         // direct graphics path below remains a safe per-frame fallback.
@@ -405,5 +485,6 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         state.timestampWritten[submissionSlot] = true;
     }
     *signalSemaphoreOut = signalSemaphore;
+    RecordOverlayComposite(state, imageIndex, acquireGeneration);
     return true;
 }

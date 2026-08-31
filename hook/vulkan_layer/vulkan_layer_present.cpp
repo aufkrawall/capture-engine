@@ -100,6 +100,29 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    // The DLSS-G runtime state lives in the hook DLL's NGX/Streamline hooks and
+    // reaches this DLL only through shared memory, so mirroring it into the
+    // layer's own detector is what the overlay's "DLSS FG 4x" label is made of.
+    // It is not limiter work and must not sit inside the limiter block below:
+    // `asyncPresentDetected` latches for the rest of the session the first time
+    // the game acquires and presents from different threads, and Portal RTX
+    // session 20260831_054801 latched it 7.5 s into the run. From that present
+    // on, the mirror never ran again - the hook DLL logged the in-game 4x -> 3x
+    // change ("FG: DLSS FG multiplier 4 -> 3") while the layer's detector, and
+    // therefore the overlay, stayed frozen on the factor the game started with.
+    const bool sharedDLSSFGActive = shm && shm->dlssState.fgActive.load(std::memory_order_acquire);
+    const int sharedDLSSFGMultiplier =
+        shm ? shm->dlssState.mfgMultiplier.load(std::memory_order_acquire) : 0;
+    if (shm) {
+        if (sharedDLSSFGActive) {
+            g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier, 2, 4));
+            g_FGCompat.SetDLSSFGActive(true);
+        } else if (g_FGCompat.IsDLSSFGApiActive()) {
+            g_FGCompat.SetDLSSFGActive(false);
+            g_FGCompat.SetDLSSFGMultiplier(0);
+        }
+    }
+
     // FPS limiter: pace EVERY present, not only the first one entering the hook.
     // Strange Brigade Vulkan presents several swapchain images per frame period
     // (concurrent present streams); gating only the first present let the other
@@ -116,17 +139,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (!asyncPresentDetected) {
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
-        if (shm) {
-            const bool sharedDLSSFGActive = shm->dlssState.fgActive.load(std::memory_order_acquire);
-            const int sharedDLSSFGMultiplier = shm->dlssState.mfgMultiplier.load(std::memory_order_acquire);
-            if (sharedDLSSFGActive) {
-                g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier, 2, 4));
-                g_FGCompat.SetDLSSFGActive(true);
-            } else if (g_FGCompat.IsDLSSFGApiActive()) {
-                g_FGCompat.SetDLSSFGActive(false);
-                g_FGCompat.SetDLSSFGMultiplier(0);
-            }
-        }
         g_VulkanReflexLimiter.SetDevice(queueDevice, disp);
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
         g_SharedFpsLimiter.SetNativePacingBackend(GetVulkanNativeFpsPacingBackend());
@@ -158,10 +170,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
          (injectCaptureRequested || wantsVblankPacedPresentation))
             ? ce::vulkan_present_metering_policy::ScanPresentChain(pPresentInfo->pNext)
             : ce::vulkan_present_metering_policy::ChainScan{};
-    const bool sharedDLSSFGActive =
-        shm && shm->dlssState.fgActive.load(std::memory_order_acquire);
-    const int sharedDLSSFGMultiplier =
-        shm ? shm->dlssState.mfgMultiplier.load(std::memory_order_acquire) : 0;
     const uint32_t newMeteredBatchSize =
         presentMeteringScan.found && presentMeteringScan.framesPerBatch >= 2
             ? presentMeteringScan.framesPerBatch
@@ -523,43 +531,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     return res;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
-                                                             uint64_t timeout, VkSemaphore semaphore, VkFence fence,
-                                                             uint32_t* pImageIndex) {
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-    if (!disp || !disp->fp_vkAcquireNextImageKHR)
-        return VK_ERROR_INITIALIZATION_FAILED;
-    if (!g_LayerState.whitelisted.load(std::memory_order_acquire))
-        return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
-
-    SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(swapchain);
-    if (sd) {
-        sd->lastAcquireThreadId.store(GetCurrentThreadId(), std::memory_order_release);
-        sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
-        if (sd->asyncPresentDetected.load(std::memory_order_acquire)) {
-            g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-            // Async-present games acquire from a different thread than they
-            // present on, so the present-time wait cannot throttle production;
-            // gate every acquire on the cadence grid instead.
-            const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
-            ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
-            g_SharedFpsLimiter.Apply(false, groupedAdmission);
-        }
-    }
-
-    const VkResult acquireResult =
-        disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
-    // A successful acquire is the proof the overlay's submission ring needs
-    // that every present of this image - including the one that waited on a
-    // slot's binary semaphore - has executed its wait. See
-    // IsSubmissionSlotReusable in overlay_submit_queue_policy.h.
-    if ((acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) && sd && pImageIndex &&
-        sd->imageAcquireGeneration && *pImageIndex < sd->imageCount) {
-        sd->imageAcquireGeneration[*pImageIndex].fetch_add(1, std::memory_order_acq_rel);
-    }
-    return acquireResult;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,

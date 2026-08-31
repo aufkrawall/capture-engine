@@ -42,7 +42,16 @@ std::string DefaultTemplatePath() {
 }
 
 void WriteTextFile(const std::string& path, const std::string& content) {
-    HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Share read/write/delete rather than demanding exclusivity. These files are
+    // written into the build tree, where a real-time scanner routinely holds a
+    // transient handle on a file it has just seen created; an exclusive open
+    // turns that into ERROR_SHARING_VIOLATION and fails whichever ConfigTest
+    // happened to run at that moment. Two consecutive `--verify` runs on
+    // 2026-08-31 failed on two different ConfigTest cases this way. Nothing here
+    // needs exclusive access: the name already carries the process id.
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
     ASSERT_NE(file, INVALID_HANDLE_VALUE);
     DWORD written = 0;
     ASSERT_TRUE(WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr));
@@ -51,7 +60,8 @@ void WriteTextFile(const std::string& path, const std::string& content) {
 }
 
 std::string ReadTextFile(const std::string& path) {
-    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
     EXPECT_NE(file, INVALID_HANDLE_VALUE);
     if (file == INVALID_HANDLE_VALUE) {

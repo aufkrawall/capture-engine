@@ -74,17 +74,18 @@ bool CreateOffscreenRenderPass(OverlayState& state, DeviceDispatch* disp) {
     return disp->fp_vkCreateRenderPass(state.device, &info, nullptr, &state.offscreenRenderPass) == VK_SUCCESS;
 }
 
-bool CreateOffscreenTargets(OverlayState& state, DeviceDispatch* disp, uint32_t graphicsFamily,
-                            uint32_t computeFamily) {
-    const size_t count = state.fences.size();
-    state.offscreenImages.resize(count);
-    state.offscreenMemory.resize(count);
-    state.offscreenImageViews.resize(count);
-    state.offscreenFramebuffers.resize(count);
-    state.offscreenReadySemaphores.resize(count);
+// One slot's offscreen target, appended at the end of the per-slot vectors so
+// the slot index stays the vector index for both initial creation and growth.
+bool AppendOffscreenTarget(OverlayState& state, DeviceDispatch* disp, uint32_t graphicsFamily,
+                           uint32_t computeFamily) {
     const uint32_t families[2] = {graphicsFamily, computeFamily};
-
-    for (size_t i = 0; i < count; ++i) {
+    state.offscreenImages.push_back(VK_NULL_HANDLE);
+    state.offscreenMemory.push_back(VK_NULL_HANDLE);
+    state.offscreenImageViews.push_back(VK_NULL_HANDLE);
+    state.offscreenFramebuffers.push_back(VK_NULL_HANDLE);
+    state.offscreenReadySemaphores.push_back(VK_NULL_HANDLE);
+    const size_t i = state.offscreenImages.size() - 1;
+    {
         // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - Vulkan structs require zero initialization before their enum fields are assigned
         VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -114,6 +115,8 @@ bool CreateOffscreenTargets(OverlayState& state, DeviceDispatch* disp, uint32_t 
                 VK_SUCCESS) {
             return false;
         }
+        state.offscreenMemoryBytes += requirements.size;
+        state.offscreenSlotBytes = requirements.size;
 
         VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = state.offscreenImages[i];
@@ -142,6 +145,31 @@ bool CreateOffscreenTargets(OverlayState& state, DeviceDispatch* disp, uint32_t 
         }
     }
     return true;
+}
+
+// The last appended slot's offscreen target, released so a failed growth leaves
+// the compute route exactly as complete as it was.
+void PopOffscreenTarget(OverlayState& state, DeviceDispatch* disp) {
+    if (state.offscreenImages.empty())
+        return;
+    const size_t i = state.offscreenImages.size() - 1;
+    if (state.offscreenReadySemaphores[i] != VK_NULL_HANDLE)
+        disp->fp_vkDestroySemaphore(state.device, state.offscreenReadySemaphores[i], nullptr);
+    if (state.offscreenFramebuffers[i] != VK_NULL_HANDLE)
+        disp->fp_vkDestroyFramebuffer(state.device, state.offscreenFramebuffers[i], nullptr);
+    if (state.offscreenImageViews[i] != VK_NULL_HANDLE)
+        disp->fp_vkDestroyImageView(state.device, state.offscreenImageViews[i], nullptr);
+    if (state.offscreenImages[i] != VK_NULL_HANDLE)
+        disp->fp_vkDestroyImage(state.device, state.offscreenImages[i], nullptr);
+    if (state.offscreenMemory[i] != VK_NULL_HANDLE) {
+        disp->fp_vkFreeMemory(state.device, state.offscreenMemory[i], nullptr);
+        state.offscreenMemoryBytes -= std::min(state.offscreenMemoryBytes, state.offscreenSlotBytes);
+    }
+    state.offscreenReadySemaphores.pop_back();
+    state.offscreenFramebuffers.pop_back();
+    state.offscreenImageViews.pop_back();
+    state.offscreenMemory.pop_back();
+    state.offscreenImages.pop_back();
 }
 
 bool CreateComputePipeline(OverlayState& state, DeviceDispatch* disp) {
@@ -196,7 +224,7 @@ bool CreateComputePipeline(OverlayState& state, DeviceDispatch* disp) {
     return result == VK_SUCCESS;
 }
 
-bool CreateComputeDescriptors(OverlayState& state, DeviceDispatch* disp) {
+bool CreateComputeSampler(OverlayState& state, DeviceDispatch* disp) {
     VkSamplerCreateInfo samplerInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     samplerInfo.magFilter = VK_FILTER_NEAREST;
     samplerInfo.minFilter = VK_FILTER_NEAREST;
@@ -205,62 +233,116 @@ bool CreateComputeDescriptors(OverlayState& state, DeviceDispatch* disp) {
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.maxLod = 0.0f;
-    if (disp->fp_vkCreateSampler(state.device, &samplerInfo, nullptr, &state.computeSampler) != VK_SUCCESS)
-        return false;
+    return disp->fp_vkCreateSampler(state.device, &samplerInfo, nullptr, &state.computeSampler) == VK_SUCCESS;
+}
 
-    const uint32_t slotCount = static_cast<uint32_t>(state.fences.size());
+// Descriptor/command state is cached for every (submission slot, target image)
+// pair, which keeps the full-resolution offscreen allocation at one image per
+// slot while avoiding descriptor updates and command recording when MFG makes
+// image identity advance independently from slot identity. The pair index is
+// slot-major (ComputeCompositeResourceIndex), so one slot's worth appended at
+// the end keeps every existing index valid.
+bool AppendComputeDescriptorSetsForSlot(OverlayState& state, DeviceDispatch* disp, uint32_t slot) {
     const uint32_t imageCount = static_cast<uint32_t>(state.swapchainImages.size());
-    if (slotCount == 0 || imageCount == 0 || slotCount > UINT32_MAX / imageCount)
+    if (imageCount == 0 || state.imageViews.size() < imageCount || state.offscreenImageViews.size() <= slot ||
+        state.computeDescriptorSetLayout == VK_NULL_HANDLE) {
         return false;
-    const uint32_t count = slotCount * imageCount;
-    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count},
-                                     {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count}};
+    }
+    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount},
+                                     {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageCount}};
     VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = count;
+    poolInfo.maxSets = imageCount;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = sizes;
-    if (disp->fp_vkCreateDescriptorPool(state.device, &poolInfo, nullptr, &state.computeDescriptorPool) != VK_SUCCESS)
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateDescriptorPool(state.device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
         return false;
 
-    std::vector<VkDescriptorSetLayout> layouts(count, state.computeDescriptorSetLayout);
-    state.computeDescriptorSets.resize(count);
+    std::vector<VkDescriptorSetLayout> layouts(imageCount, state.computeDescriptorSetLayout);
+    std::vector<VkDescriptorSet> sets(imageCount, VK_NULL_HANDLE);
     VkDescriptorSetAllocateInfo allocation = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocation.descriptorPool = state.computeDescriptorPool;
-    allocation.descriptorSetCount = count;
+    allocation.descriptorPool = pool;
+    allocation.descriptorSetCount = imageCount;
     allocation.pSetLayouts = layouts.data();
-    if (disp->fp_vkAllocateDescriptorSets(state.device, &allocation, state.computeDescriptorSets.data()) != VK_SUCCESS)
+    if (disp->fp_vkAllocateDescriptorSets(state.device, &allocation, sets.data()) != VK_SUCCESS) {
+        disp->fp_vkDestroyDescriptorPool(state.device, pool, nullptr);
         return false;
+    }
 
-    // Descriptor/command state is cached for every (submission slot, target
-    // image) pair. That keeps the full-resolution offscreen allocation at one
-    // image per slot while avoiding descriptor updates and command recording
-    // when MFG makes image identity advance independently from slot identity.
-    for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        for (uint32_t image = 0; image < imageCount; ++image) {
-            const uint32_t resourceIndex =
-                ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex(slot, image, imageCount);
-            VkDescriptorImageInfo target = {};
-            target.imageView = state.imageViews[image];
-            target.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            VkDescriptorImageInfo overlay = {};
-            overlay.sampler = state.computeSampler;
-            overlay.imageView = state.offscreenImageViews[slot];
-            overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            VkWriteDescriptorSet writes[2] = {};
-            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[0].dstSet = state.computeDescriptorSets[resourceIndex];
-            writes[0].dstBinding = 0;
-            writes[0].descriptorCount = 1;
-            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            writes[0].pImageInfo = &target;
-            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[1].dstSet = state.computeDescriptorSets[resourceIndex];
-            writes[1].dstBinding = 1;
-            writes[1].descriptorCount = 1;
-            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[1].pImageInfo = &overlay;
-            disp->fp_vkUpdateDescriptorSets(state.device, 2, writes, 0, nullptr);
-        }
+    state.computeDescriptorPools.push_back(pool);
+    state.computeDescriptorSets.insert(state.computeDescriptorSets.end(), sets.begin(), sets.end());
+    for (uint32_t image = 0; image < imageCount; ++image) {
+        const uint32_t resourceIndex =
+            ce::overlay_submit_queue_policy::ComputeCompositeResourceIndex(slot, image, imageCount);
+        VkDescriptorImageInfo target = {};
+        target.imageView = state.imageViews[image];
+        target.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo overlay = {};
+        overlay.sampler = state.computeSampler;
+        overlay.imageView = state.offscreenImageViews[slot];
+        overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[2] = {};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = state.computeDescriptorSets[resourceIndex];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &target;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = state.computeDescriptorSets[resourceIndex];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].pImageInfo = &overlay;
+        disp->fp_vkUpdateDescriptorSets(state.device, 2, writes, 0, nullptr);
+    }
+    return true;
+}
+
+bool AppendComputeCommandBuffersForSlot(OverlayState& state, DeviceDispatch* disp) {
+    const uint32_t imageCount = static_cast<uint32_t>(state.swapchainImages.size());
+    if (imageCount == 0 || state.computeCommandPool == VK_NULL_HANDLE)
+        return false;
+    std::vector<VkCommandBuffer> commands(imageCount, VK_NULL_HANDLE);
+    VkCommandBufferAllocateInfo commandInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    commandInfo.commandPool = state.computeCommandPool;
+    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandInfo.commandBufferCount = imageCount;
+    if (disp->fp_vkAllocateCommandBuffers(state.device, &commandInfo, commands.data()) != VK_SUCCESS)
+        return false;
+    state.computeCommandBuffers.insert(state.computeCommandBuffers.end(), commands.begin(), commands.end());
+    state.computeCommandBounds.resize(state.computeCommandBuffers.size());
+    state.computeCommandRecorded.resize(state.computeCommandBuffers.size(), 0);
+    return true;
+}
+
+bool CreateComputeCommandPool(OverlayState& state, DeviceDispatch* disp, uint32_t computeFamily) {
+    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    poolInfo.queueFamilyIndex = computeFamily;
+    return disp->fp_vkCreateCommandPool(state.device, &poolInfo, nullptr, &state.computeCommandPool) == VK_SUCCESS;
+}
+
+// Transactional: on failure nothing of this slot is left behind, so the caller
+// may keep using the route at its current depth.
+bool AppendComputePresentSlotLocked(OverlayState& state, DeviceDispatch* disp) {
+    const uint32_t slot = static_cast<uint32_t>(state.offscreenImages.size());
+    if (!AppendOffscreenTarget(state, disp, state.computeGraphicsQueueFamilyIndex,
+                               state.computeQueueFamilyIndex)) {
+        PopOffscreenTarget(state, disp);
+        return false;
+    }
+    if (!AppendComputeDescriptorSetsForSlot(state, disp, slot)) {
+        PopOffscreenTarget(state, disp);
+        return false;
+    }
+    if (!AppendComputeCommandBuffersForSlot(state, disp)) {
+        // The descriptor pool owns its sets; destroying it frees them all.
+        disp->fp_vkDestroyDescriptorPool(state.device, state.computeDescriptorPools.back(), nullptr);
+        state.computeDescriptorPools.pop_back();
+        state.computeDescriptorSets.resize(static_cast<size_t>(slot) * state.swapchainImages.size());
+        PopOffscreenTarget(state, disp);
+        return false;
     }
     return true;
 }
@@ -278,42 +360,23 @@ bool InitializeComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, 
     }
 
     state.computeQueueFamilyIndex = computeFamily;
-    if (!CreateOffscreenRenderPass(state, disp) ||
-        !CreateOffscreenTargets(state, disp, graphicsFamily, computeFamily) || !CreateComputePipeline(state, disp) ||
-        !CreateComputeDescriptors(state, disp)) {
+    state.computeGraphicsQueueFamilyIndex = graphicsFamily;
+    const size_t slotCount = state.fences.size();
+    const size_t imageCount = state.swapchainImages.size();
+    bool created = ce::overlay_submit_queue_policy::RequiredComputeCompositeResourceCount(
+                       static_cast<uint32_t>(slotCount), static_cast<uint32_t>(imageCount)) != 0 &&
+                   slotCount <= UINT32_MAX / std::max<size_t>(imageCount, 1) &&
+                   CreateOffscreenRenderPass(state, disp) && CreateComputePipeline(state, disp) &&
+                   CreateComputeSampler(state, disp) && CreateComputeCommandPool(state, disp, computeFamily);
+    for (size_t slot = 0; created && slot < slotCount; ++slot) {
+        created = AppendComputePresentSlotLocked(state, disp);
+    }
+    if (!created) {
         CleanupComputePresentOverlay(state, disp);
         state.computePresentUnavailable = true;
         LayerLog("Vulkan Layer: Compute-present overlay resource creation failed; retaining graphics fallback");
         return false;
     }
-
-    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    poolInfo.queueFamilyIndex = computeFamily;
-    if (disp->fp_vkCreateCommandPool(state.device, &poolInfo, nullptr, &state.computeCommandPool) != VK_SUCCESS) {
-        CleanupComputePresentOverlay(state, disp);
-        state.computePresentUnavailable = true;
-        return false;
-    }
-    const size_t commandCount = state.fences.size() * state.swapchainImages.size();
-    if (commandCount == 0 || commandCount > UINT32_MAX) {
-        CleanupComputePresentOverlay(state, disp);
-        state.computePresentUnavailable = true;
-        return false;
-    }
-    state.computeCommandBuffers.resize(commandCount);
-    VkCommandBufferAllocateInfo commandInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    commandInfo.commandPool = state.computeCommandPool;
-    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandInfo.commandBufferCount = static_cast<uint32_t>(state.computeCommandBuffers.size());
-    if (disp->fp_vkAllocateCommandBuffers(state.device, &commandInfo, state.computeCommandBuffers.data()) !=
-        VK_SUCCESS) {
-        CleanupComputePresentOverlay(state, disp);
-        state.computePresentUnavailable = true;
-        return false;
-    }
-    state.computeCommandBounds.resize(state.computeCommandBuffers.size());
-    state.computeCommandRecorded.assign(state.computeCommandBuffers.size(), 0);
     state.computeWaitSemaphores.reserve(2);
     state.computeWaitStages.reserve(2);
 
@@ -321,8 +384,8 @@ bool InitializeComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, 
     LayerLog(
         "Vulkan Layer: Compute-present overlay ready (graphicsFamily=%u computePresentFamily=%u images=%u "
         "submissionSlots=%u cachedComposites=%u format=%d)",
-        graphicsFamily, computeFamily, static_cast<uint32_t>(state.swapchainImages.size()),
-        static_cast<uint32_t>(state.fences.size()), static_cast<uint32_t>(commandCount), state.format);
+        graphicsFamily, computeFamily, static_cast<uint32_t>(imageCount), static_cast<uint32_t>(slotCount),
+        static_cast<uint32_t>(state.computeCommandBuffers.size()), state.format);
     return true;
 }
 
@@ -386,8 +449,10 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
         disp->fp_vkDestroyPipeline(state.device, state.computePipeline, nullptr);
     if (state.computePipelineLayout != VK_NULL_HANDLE)
         disp->fp_vkDestroyPipelineLayout(state.device, state.computePipelineLayout, nullptr);
-    if (state.computeDescriptorPool != VK_NULL_HANDLE)
-        disp->fp_vkDestroyDescriptorPool(state.device, state.computeDescriptorPool, nullptr);
+    for (VkDescriptorPool pool : state.computeDescriptorPools) {
+        if (pool != VK_NULL_HANDLE)
+            disp->fp_vkDestroyDescriptorPool(state.device, pool, nullptr);
+    }
     if (state.computeDescriptorSetLayout != VK_NULL_HANDLE)
         disp->fp_vkDestroyDescriptorSetLayout(state.device, state.computeDescriptorSetLayout, nullptr);
     if (state.computeSampler != VK_NULL_HANDLE)
@@ -418,7 +483,7 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
         disp->fp_vkDestroyRenderPass(state.device, state.offscreenRenderPass, nullptr);
     state.computePipeline = VK_NULL_HANDLE;
     state.computePipelineLayout = VK_NULL_HANDLE;
-    state.computeDescriptorPool = VK_NULL_HANDLE;
+    state.computeDescriptorPools.clear();
     state.computeDescriptorSetLayout = VK_NULL_HANDLE;
     state.computeSampler = VK_NULL_HANDLE;
     state.computeCommandPool = VK_NULL_HANDLE;
@@ -434,8 +499,22 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp) {
     state.offscreenImages.clear();
     state.offscreenMemory.clear();
     state.offscreenReadySemaphores.clear();
+    state.offscreenMemoryBytes = 0;
+    state.computeGraphicsQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     state.computePresentInitialized = false;
     state.computePresentDiagnostics = {};
+}
+
+bool AppendComputePresentSlot(OverlayState& state, DeviceDispatch* disp) {
+    if (!disp || !state.computePresentInitialized)
+        return false;
+    if (!AppendComputePresentSlotLocked(state, disp))
+        return false;
+    LayerLog(
+        "Vulkan Layer: compute-composite route extended to %zu slots so every present keeps one composite route "
+        "(%llu MB of offscreen overlay targets)",
+        state.offscreenImages.size(), static_cast<unsigned long long>(state.offscreenMemoryBytes / (1024 * 1024)));
+    return true;
 }
 
 bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
@@ -468,8 +547,12 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (disp->fp_vkBeginCommandBuffer(graphicsCommand, &begin) != VK_SUCCESS)
         return false;
+    // The query pool was sized for the slots that existed at initialization.
+    // A slot the ring added later has no queries reserved, so it reports the
+    // last measured GPU time instead of writing outside the pool.
     const bool writeTimestamps = state.timestampPool != VK_NULL_HANDLE && disp->fp_vkCmdResetQueryPool &&
-                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampWritten.size();
+                                 disp->fp_vkCmdWriteTimestamp && submissionSlot < state.timestampSlotCapacity &&
+                                 submissionSlot < state.timestampWritten.size();
     if (writeTimestamps) {
         disp->fp_vkCmdResetQueryPool(graphicsCommand, state.timestampPool, submissionSlot * 2, 2);
         disp->fp_vkCmdWriteTimestamp(graphicsCommand, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state.timestampPool,

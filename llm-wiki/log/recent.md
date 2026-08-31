@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-08-31 - Vulkan overlay under 4x MFG: one composite route, and a live FG factor
+
+Portal RTX session `20260831_054801` reported two separate defects under 4x DLSS multi-frame generation.
+
+The overlay's FG factor froze on the value the game started with. The Vulkan layer is its own DLL, so it mirrors the
+hook DLL's DLSS-G state out of shared memory - and that mirror sat inside the FPS limiter's
+`if (!asyncPresentDetected)` block, which latches off permanently the first time the game acquires and presents from
+different threads (7.5 s into this run). `hook_debug.log` recorded the in-game 4x -> 3x change; `vulkan_layer.log`
+never left `multiplier 0 -> 4`. The mirror now runs on every present. See `overlay-fg-status.md`.
+
+The overlay's translucency flickered because two composite routes alternated per present. Compute-route resources are
+indexed slot-major per (submission slot, target image), and they were sized once for the ring's initial depth: 6
+images, 10 slots, 60 cached composites. 4x MFG extended the ring to 12, and the two appended slots indexed past every
+compute-route array, failed that route's bounds check, and fell through to the direct render-pass route - the
+compute -> graphics -> compute round trip the compositor exists to remove on a compute-only present queue.
+`Compute-present CPU summary` counted 2048 composites per 15.9-17.1 s window against 143 Hz presents in
+`perf_metrics_28608.csv`. Ring growth now extends the compute route with it or declines the growth and falls back on
+the existing bounded backpressure. Also added: a repeat-present guard (a blend is not idempotent, so one image must
+not be composited into twice while its acquire generation is unchanged) and a `vkAcquireNextImage2KHR` hook, since
+both that guard and the ring's slot-reuse proof read the acquire generation. See `overlay-rendering.md`.
+
+Hardware validation of both fixes is pending.
+
 ### 2026-08-31 - Face-camera teardown cancels the reader before source shutdown
 
 Session `20260831_060838` recorded and GPU-composited the face camera successfully, then stopped logging immediately
