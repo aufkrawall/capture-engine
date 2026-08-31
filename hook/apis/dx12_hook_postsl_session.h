@@ -63,10 +63,10 @@ private:
     bool usingPinnedPostFSRWrapperQueue;
     bool crossQueueSynced;
     bool extendRuntimeStateStabilization;
+    DX12FinalOutputCapturePlan finalOutputCapture{};
 
     PostSLFlow Chunk0();
     PostSLFlow Chunk1();
     PostSLFlow Chunk2();
     PostSLFlow Chunk3();
 };
-
