@@ -249,8 +249,11 @@ def print_triage_report(report):
             "  inject_drop_pace={drop_pace} inject_dup_src={dup_src} stale_trim={stale_trim} "
             "target_select={target_select} superseded={superseded} target_hold={target_hold} "
             "hold_with_candidate={hold_candidate} cap_trim={cap_trim} residual_max={residual}us "
+            "phase_reserve_peak={phase_reserve} phase_shift_max={phase_shift}us "
+            "preserve_front_trim={preserve_front} display_path_transitions={path_transitions} "
             "inject_source_fps={fps_min:.2f}..{fps_max:.2f} matched_pressure={matched_rows}/{matched_run} "
-            "matched_hold_drop={matched_hold}/{matched_superseded}".format(
+            "matched_hold_drop={matched_hold}/{matched_superseded} "
+            "retention_pressure={retention_rows}/{retention_hold}".format(
                 drop_pace=inject_pacing["drop_pace"],
                 dup_src=inject_pacing["summary_dup_src"],
                 stale_trim=inject_pacing["summary_stale_trim"],
@@ -260,12 +263,18 @@ def print_triage_report(report):
                 hold_candidate=inject_pacing["target_hold_with_candidate"],
                 cap_trim=inject_pacing["buffer_cap_trim"],
                 residual=inject_pacing["target_residual_max_us"],
+                phase_reserve=inject_pacing["phase_reserve_peak"],
+                phase_shift=inject_pacing["phase_shift_max_us"],
+                preserve_front=inject_pacing["preserve_front_trim"],
+                path_transitions=inject_pacing["display_path_transitions"],
                 fps_min=inject_pacing["source_fps_min"],
                 fps_max=inject_pacing["source_fps_max"],
                 matched_rows=inject_pacing["matched_rate_pressure_rows"],
                 matched_run=inject_pacing["matched_rate_longest_run"],
                 matched_hold=inject_pacing["matched_rate_hold_with_candidate"],
                 matched_superseded=inject_pacing["matched_rate_superseded"],
+                retention_rows=inject_pacing["clean_retention_pressure_rows"],
+                retention_hold=inject_pacing["clean_retention_hold_with_candidate"],
             )
         )
     if evidence["cfr_phase_lock_summary"]:

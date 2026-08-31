@@ -278,6 +278,18 @@ struct FinalOutputTimestampOrderState {
     int64_t accumulatedShiftQpc = 0;
 };
 
+// Rebase a newly selected capture path exactly once when it enters a timestamp
+// domain behind the preceding path (display-correlated final output -> CPU
+// base-Present is the common case). The fixed segment offset preserves cadence
+// without allowing ordinary encoder backlog to masquerade as a path change.
+inline int64_t GetCapturePathContinuityOffsetQpc(int64_t previousAdjustedQpc,
+                                                int64_t firstRawQpc) {
+    if (previousAdjustedQpc <= 0 || firstRawQpc <= 0 || previousAdjustedQpc < firstRawQpc) {
+        return 0;
+    }
+    return previousAdjustedQpc - firstRawQpc + 1;
+}
+
 // A delayed display sample can move the pending source timeline behind a frame
 // the encoder already committed. Shift the remaining buffered run as a unit so
 // order stays strict without compressing its generated-output intervals.

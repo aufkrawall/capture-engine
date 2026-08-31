@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <deque>
+
 #include "../common/capture_pipeline_policy.h"
 #include "../captureengine/display_timing_policy.h"
 #include "../hook/common/capture_pacing.h"
@@ -170,6 +172,100 @@ TEST(FinalOutputCaptureTimingTest, LateDisplayPhaseShiftPreservesCommittedOrderA
 
     EXPECT_EQ(first, 1'001);
     EXPECT_EQ(second, 1'101);
+}
+
+TEST(FinalOutputCaptureTimingTest, FinalOutputToBasePathKeepsTimestampContinuity) {
+    const int64_t offset = policy::GetCapturePathContinuityOffsetQpc(
+        /*previousAdjustedQpc=*/1'070, /*firstRawQpc=*/1'000);
+
+    EXPECT_EQ(offset, 71);
+    EXPECT_EQ(1'000 + offset, 1'071);
+    EXPECT_EQ(policy::GetCapturePathContinuityOffsetQpc(1'000, 1'100), 0);
+}
+
+TEST(CapturePipelinePolicyTest, InjectTimestampRetentionCoversDisplayPhaseJump) {
+    constexpr size_t baseline = 13;
+    constexpr size_t reserve = 1;
+    constexpr int64_t contentDelay = 316'667;
+    constexpr int64_t cutsceneDisplayPhase = 700'000;
+
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  baseline, reserve, contentDelay,
+                  /*sourceIntervalQpc=*/83'333, /*maximumAdaptiveLimit=*/28),
+              baseline);
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  baseline, reserve, contentDelay + cutsceneDisplayPhase,
+                  /*sourceIntervalQpc=*/83'333, /*maximumAdaptiveLimit=*/28),
+              16u);
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  baseline, reserve, contentDelay + cutsceneDisplayPhase + /*virtualLeadQpc=*/300'000,
+                  /*sourceIntervalQpc=*/83'333, /*maximumAdaptiveLimit=*/28),
+              19u);
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  baseline, reserve, contentDelay + cutsceneDisplayPhase,
+                  /*sourceIntervalQpc=*/41'667, /*maximumAdaptiveLimit=*/28),
+              28u);
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  baseline, reserve, /*requiredTimestampSpanQpc=*/5'000'000,
+                  /*sourceIntervalQpc=*/41'667, /*maximumAdaptiveLimit=*/28),
+              28u);
+}
+
+TEST(CapturePipelinePolicyTest, InjectCapPreservesNearOrFutureFrontForSelection) {
+    constexpr int64_t target = 1'000;
+    constexpr int64_t leadTolerance = 50;
+
+    EXPECT_TRUE(policy::ShouldPreserveInjectFrontAtBufferCap(
+        /*frontTimestampQpc=*/1'051, target, leadTolerance));
+    EXPECT_TRUE(policy::ShouldPreserveInjectFrontAtBufferCap(
+        /*frontTimestampQpc=*/1'050, target, leadTolerance));
+    EXPECT_TRUE(policy::ShouldPreserveInjectFrontAtBufferCap(
+        /*frontTimestampQpc=*/950, target, leadTolerance));
+    EXPECT_FALSE(policy::ShouldPreserveInjectFrontAtBufferCap(
+        /*frontTimestampQpc=*/949, target, leadTolerance));
+}
+
+TEST(CapturePipelinePolicyTest, InjectDisplayPhaseStepCannotLatchRepeatLoop) {
+    auto run = [](size_t bufferLimit, bool preserveFutureFront) {
+        std::deque<int64_t> sourceFrames;
+        int emits = 0;
+        int64_t lastEmitted = 0;
+        for (int tick = 0; tick < 80; ++tick) {
+            const int64_t target = 10'000 + static_cast<int64_t>(tick) * 100;
+            sourceFrames.push_back(target + 1'500);
+            while (sourceFrames.size() > bufferLimit) {
+                const bool preserve =
+                    preserveFutureFront &&
+                    policy::ShouldPreserveInjectFrontAtBufferCap(
+                        sourceFrames.front(), target, /*leadToleranceQpc=*/50);
+                if (preserve) {
+                    sourceFrames.pop_back();
+                } else {
+                    sourceFrames.pop_front();
+                }
+            }
+            if (!sourceFrames.empty()) {
+                const auto decision = policy::DecideCfrNearestPlayout(
+                    sourceFrames.front(), target, /*leadToleranceQpc=*/50, lastEmitted);
+                if (decision.emit) {
+                    lastEmitted = sourceFrames.front();
+                    sourceFrames.pop_front();
+                    ++emits;
+                }
+            }
+        }
+        return emits;
+    };
+
+    constexpr size_t undersizedLegacyLimit = 13;
+    const size_t adaptiveLimit = policy::GetInjectTimestampRetentionLimit(
+        undersizedLegacyLimit, /*injectReserveFrames=*/1,
+        /*requiredTimestampSpanQpc=*/1'500, /*sourceIntervalQpc=*/100,
+        /*maximumAdaptiveLimit=*/28);
+
+    EXPECT_EQ(run(undersizedLegacyLimit, false), 0);
+    EXPECT_GT(run(adaptiveLimit, false), 60);
+    EXPECT_GT(run(undersizedLegacyLimit, true), 30);
 }
 
 TEST(FinalOutputCaptureTimingTest, DisplayWatermarkAndMinimumSequencePreventSampleReuse) {

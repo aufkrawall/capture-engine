@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <limits>
 
 #include "encoder_priority_and_routing.h"
 
@@ -255,6 +256,54 @@ inline size_t GetInjectBufferedHeadroom(bool recordingOutputLive, uint64_t recor
 inline size_t GetMaxBufferedInjectFrames(size_t injectReserveFrames, bool recordingOutputLive,
                                          uint64_t recordingLiveTick, uint64_t nowTick) {
     return injectReserveFrames + GetInjectBufferedHeadroom(recordingOutputLive, recordingLiveTick, nowTick);
+}
+
+// Display-correlated inject timestamps can legitimately move ahead when the
+// presentation queue deepens (for example, a DLSS-G cutscene transition).
+// Retain enough source samples to span from the newest adjusted timestamp back
+// to the current CFR playout target; that direct span includes virtual-clock
+// lead, display phase, and fixed A/V content delay. Otherwise the count cap can
+// delete the oldest future sample every tick, preventing it from ever aging
+// into the target and turning one transient into a permanent repeat loop.
+inline size_t GetInjectTimestampRetentionLimit(size_t baselineLimit, size_t injectReserveFrames,
+                                               int64_t requiredTimestampSpanQpc,
+                                               int64_t sourceIntervalQpc,
+                                               size_t maximumAdaptiveLimit) {
+    if (sourceIntervalQpc <= 0 || maximumAdaptiveLimit <= baselineLimit) {
+        return baselineLimit;
+    }
+
+    const uint64_t retentionQpc =
+        static_cast<uint64_t>(std::max<int64_t>(0, requiredTimestampSpanQpc));
+    const uint64_t intervalQpc = static_cast<uint64_t>(sourceIntervalQpc);
+    uint64_t timestampFrames = retentionQpc / intervalQpc;
+    if (retentionQpc % intervalQpc != 0) {
+        ++timestampFrames;
+    }
+
+    const uint64_t fixedFrames = static_cast<uint64_t>(injectReserveFrames) + 2ull;
+    const uint64_t requiredFrames =
+        timestampFrames > std::numeric_limits<uint64_t>::max() - fixedFrames
+            ? std::numeric_limits<uint64_t>::max()
+            : timestampFrames + fixedFrames;
+    const size_t boundedRequired = static_cast<size_t>(
+        std::min<uint64_t>(requiredFrames, static_cast<uint64_t>(maximumAdaptiveLimit)));
+    return std::max(baselineLimit, boundedRequired);
+}
+
+inline bool ShouldPreserveInjectFrontAtBufferCap(int64_t frontTimestampQpc,
+                                                 int64_t playoutTargetQpc,
+                                                 int64_t leadToleranceQpc) {
+    if (frontTimestampQpc <= 0 || playoutTargetQpc <= 0 || leadToleranceQpc < 0) {
+        return false;
+    }
+    if (playoutTargetQpc < std::numeric_limits<int64_t>::min() + leadToleranceQpc) {
+        return true;
+    }
+    // Cap enforcement precedes selection. Keep both a future frame that still
+    // needs to age in and a near-target frame that is ready on this exact tick;
+    // only a front genuinely behind the target is disposable backlog.
+    return frontTimestampQpc >= playoutTargetQpc - leadToleranceQpc;
 }
 
 inline int64_t GetInjectLiveMaxFrameAgeQpc(bool recordingOutputLive, bool encoderBottlenecked,

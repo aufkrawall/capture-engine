@@ -340,6 +340,10 @@ def parse_media_triage(media_text):
                     "hold_with_candidate": parse_int(inject_quality_match.group(4)),
                     "buffer_cap_trim": parse_int(inject_quality_match.group(5)),
                     "target_residual_max_us": parse_int(inject_quality_match.group(6)),
+                    "phase_reserve_peak": parse_int(inject_quality_match.group(7)),
+                    "phase_shift_max_us": parse_int(inject_quality_match.group(8)),
+                    "preserve_front_trim": parse_int(inject_quality_match.group(9)),
+                    "display_path_transitions": parse_int(inject_quality_match.group(10)),
                     "line": line,
                 }
             )

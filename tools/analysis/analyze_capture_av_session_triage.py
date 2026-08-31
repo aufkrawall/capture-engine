@@ -197,10 +197,13 @@ def classify_session_triage(
         verdicts.append("ce_capture_pacer_limited")
     inject_cfr_playout_churn = has_inject_cfr_playout_churn(inject_pacing)
     inject_target_policy_hold_fault = has_inject_target_policy_hold_fault(inject_pacing)
+    inject_timestamp_retention_fault = has_inject_timestamp_retention_fault(inject_pacing)
     if inject_cfr_playout_churn:
         verdicts.append("inject_cfr_playout_churn")
     if inject_target_policy_hold_fault:
         verdicts.append("inject_cfr_target_policy_hold")
+    if inject_timestamp_retention_fault:
+        verdicts.append("inject_cfr_timestamp_retention_fault")
 
     audio_fault_counts = {}
     visual_fault_counts = {}
@@ -475,6 +478,7 @@ def classify_session_triage(
         or "ce_capture_pacer_limited" in verdicts
         or inject_cfr_playout_churn
         or inject_target_policy_hold_fault
+        or inject_timestamp_retention_fault
         or wgc_encoder_limited_judder
         or wgc_encoder_overload_policy_fault
         or wgc_av_sync_delay_risk
@@ -578,6 +582,7 @@ def classify_session_triage(
             "audio_app_latency_elevated": "audio_app_latency_elevated" in verdicts,
             "inject_cfr_playout_churn": inject_cfr_playout_churn,
             "inject_cfr_target_policy_hold": inject_target_policy_hold_fault,
+            "inject_cfr_timestamp_retention_fault": inject_timestamp_retention_fault,
             "post_mux_probe_hang": post_mux_probe_hang,
             "post_mux_probe_timeout": post_mux_probe_timeout,
             "recording_output_not_saved": recording_finalization_failed,

@@ -13,6 +13,10 @@ constexpr uint32_t kRecordingWarmupMaxMs = 350;
 constexpr size_t kInjectWarmupCommitFloorFrames = 3;
 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
+// Leave room in the shared 32-slot inject ring for the producer, ingest handoff,
+// and the frame currently owned by the encoder when timestamp-phase retention
+// expands the live jitter buffer.
+constexpr size_t kInjectFrameRingSafetySlots = 4;
 constexpr uint32_t kMaxInjectDeferredFrameRetries = 3;
 constexpr uint32_t kInjectCfrPublicationHeadroomPermille = 4000;
 // A final presented-output stream already has an ordered display cadence. Two

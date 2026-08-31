@@ -177,6 +177,7 @@ def summarize_inject_pacing(media_evidence):
     quality_rows = media_evidence.get("inject_quality_summary", [])
     pressure_rows = media_evidence.get("inject_repeat_pressure", [])
     matched_pressure_rows = []
+    clean_retention_rows = []
     for row in pressure_rows:
         expected_fps = row.get("tick_emit", 0)
         source_fps = row.get("source_fps", 0.0)
@@ -190,6 +191,12 @@ def summarize_inject_pacing(media_evidence):
             and row.get("overload_flags", 0) == 0
         ):
             matched_pressure_rows.append(row)
+        if (
+            expected_fps >= 30
+            and row.get("overload_flags", 0) == 0
+            and row.get("hold_with_candidate", 0) >= max(6, math.ceil(expected_fps * 0.20))
+        ):
+            clean_retention_rows.append(row)
 
     longest_matched_run = 0
     current_matched_run = 0
@@ -240,6 +247,12 @@ def summarize_inject_pacing(media_evidence):
         "target_hold_with_candidate": sum(row["hold_with_candidate"] for row in quality_rows),
         "buffer_cap_trim": sum(row["buffer_cap_trim"] for row in quality_rows),
         "target_residual_max_us": max((row["target_residual_max_us"] for row in quality_rows), default=0),
+        "phase_reserve_peak": max((row.get("phase_reserve_peak", 0) for row in quality_rows), default=0),
+        "phase_shift_max_us": max((row.get("phase_shift_max_us", 0) for row in quality_rows), default=0),
+        "preserve_front_trim": sum(row.get("preserve_front_trim", 0) for row in quality_rows),
+        "display_path_transitions": sum(
+            row.get("display_path_transitions", 0) for row in quality_rows
+        ),
         "pressure_rows": len(pressure_rows),
         "pressure_hold_with_candidate": sum(row.get("hold_with_candidate", 0) for row in pressure_rows),
         "matched_rate_pressure_rows": len(matched_pressure_rows),
@@ -248,6 +261,10 @@ def summarize_inject_pacing(media_evidence):
         ),
         "matched_rate_superseded": sum(row.get("target_superseded", 0) for row in matched_pressure_rows),
         "matched_rate_longest_run": longest_matched_run,
+        "clean_retention_pressure_rows": len(clean_retention_rows),
+        "clean_retention_hold_with_candidate": sum(
+            row.get("hold_with_candidate", 0) for row in clean_retention_rows
+        ),
     }
 
 
@@ -311,6 +328,20 @@ def has_inject_target_policy_hold_fault(inject_pacing):
         inject_pacing["matched_rate_longest_run"] >= 3
         and inject_pacing["matched_rate_hold_with_candidate"] >= 6
         and inject_pacing["matched_rate_superseded"] >= 3
+    )
+
+
+def has_inject_timestamp_retention_fault(inject_pacing):
+    live = inject_pacing["summary_live"]
+    hold_with_candidate = inject_pacing["target_hold_with_candidate"]
+    cap_trim = inject_pacing["buffer_cap_trim"]
+    if live <= 0:
+        return False
+    fault_floor = max(12, math.ceil(live * 0.02))
+    return (
+        min(hold_with_candidate, cap_trim) >= fault_floor
+        and inject_pacing["clean_retention_pressure_rows"] >= 1
+        and inject_pacing["clean_retention_hold_with_candidate"] >= fault_floor
     )
 
 

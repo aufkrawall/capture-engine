@@ -239,6 +239,15 @@ bool MediaEncoderSession::Init() {
     injectDisplayTimingFallbackCount = 0;
     injectDisplayTimingPendingCount = 0;
     injectDisplayTimingLastLog = GetTickCount();
+    injectTimestampPathKnown = false;
+    injectTimestampFinalOutputPathActive = false;
+    injectNonFinalTimestampOffsetQpc = 0;
+    injectTimestampPathTransitionCount = 0;
+    injectTimestampRetentionLimit = 0;
+    injectTimestampPhaseReservePeak = 0;
+    injectTimestampPhaseCurrentQpc = 0;
+    injectTimestampPhaseMaxQpc = 0;
+    injectFrontPreserveTrimTotal = 0;
     injectCfrRecoveryActive = false;
     injectEncoderServiceTooSlowCurrent = false;
     injectCfrRecoveryEpisodesThisWindow = 0;

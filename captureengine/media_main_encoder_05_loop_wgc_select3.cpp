@@ -1,6 +1,10 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 
+#include <cmath>
+#include <cstddef>
+#include <limits>
+
 void MediaEncoderSession::SelectInjectFrame() {
 if (!bufferedWgcFrames.empty()) {
     ClearBufferedWgcFrames();
@@ -77,16 +81,84 @@ if (!config.video.useVFR) {
     // churn even when the game supplies one fresh frame per CFR tick.
     const size_t protectedInjectTailFrames =
         ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
-    const size_t maxBufferedInjectFrames =
+    int64_t livePlayoutTargetQpc = 0;
+    const int64_t leadToleranceQpc =
+        ce::capture_policy::GetInjectCfrSelectionLeadToleranceQpc(targetIntervalTicks);
+    if (recordingOutputLive && encoderGridStartQpc > 0 && targetIntervalTicks > 0) {
+        const int64_t liveTargetQpc =
+            scheduledOutputQpc > 0
+                ? scheduledOutputQpc
+                : ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks);
+        const int64_t basePlayoutTargetQpc =
+            ComputeDelayedContentGridStartQpc(liveTargetQpc, avContentDelayQpc);
+        const int64_t phaseReferenceQpc =
+            bufferedInjectFrames.empty() ? 0 : bufferedInjectFrames.back().timestamp;
+        livePlayoutTargetQpc = applyCaptureSyncPhaseTarget(
+            "inject", injectCfrPhaseLock, basePlayoutTargetQpc, phaseReferenceQpc);
+    }
+
+    const size_t baselineMaxBufferedInjectFrames =
         std::max(ce::capture_policy::GetMaxBufferedInjectFrames(injectReserveFrames, recordingOutputLive,
                                                                 recordingLiveTick, GetTickCount64()),
                  injectReserveFrames + injectContentDelayFrames + 2);
+    int64_t timestampPhaseQpc = 0;
+    for (const auto& queuedFrame : bufferedInjectFrames) {
+        if (queuedFrame.rawTimestamp > 0 && queuedFrame.timestamp > queuedFrame.rawTimestamp) {
+            timestampPhaseQpc =
+                std::max(timestampPhaseQpc, queuedFrame.timestamp - queuedFrame.rawTimestamp);
+        }
+    }
+    const int64_t predictedSourceIntervalQpc =
+        injectInputPredictor.IsCalibrated()
+            ? std::max<int64_t>(1, static_cast<int64_t>(std::llround(
+                                       injectInputPredictor.SmoothedIntervalQpc())))
+            : std::max<int64_t>(1, targetIntervalTicks);
+    int64_t requiredTimestampSpanQpc = 0;
+    if (livePlayoutTargetQpc > 0 && !bufferedInjectFrames.empty()) {
+        const int64_t newestTimestampQpc = bufferedInjectFrames.back().timestamp;
+        const int64_t latestEligibleQpc =
+            livePlayoutTargetQpc <= std::numeric_limits<int64_t>::max() - leadToleranceQpc
+                ? livePlayoutTargetQpc + leadToleranceQpc
+                : std::numeric_limits<int64_t>::max();
+        if (newestTimestampQpc > latestEligibleQpc) {
+            requiredTimestampSpanQpc = newestTimestampQpc - latestEligibleQpc;
+        }
+    }
+    const size_t maximumAdaptiveLimit =
+        FRAME_RING_SIZE > static_cast<int>(ce::capture_policy::kInjectFrameRingSafetySlots)
+            ? static_cast<size_t>(FRAME_RING_SIZE) - ce::capture_policy::kInjectFrameRingSafetySlots
+            : static_cast<size_t>(FRAME_RING_SIZE);
+    const size_t maxBufferedInjectFrames =
+        recordingOutputLive
+            ? ce::capture_policy::GetInjectTimestampRetentionLimit(
+                  baselineMaxBufferedInjectFrames, injectReserveFrames, requiredTimestampSpanQpc,
+                  predictedSourceIntervalQpc, maximumAdaptiveLimit)
+            : baselineMaxBufferedInjectFrames;
+    injectTimestampRetentionLimit = maxBufferedInjectFrames;
+    injectTimestampPhaseCurrentQpc = timestampPhaseQpc;
+    injectTimestampPhaseMaxQpc = std::max(injectTimestampPhaseMaxQpc, timestampPhaseQpc);
+    injectTimestampPhaseReservePeak =
+        std::max(injectTimestampPhaseReservePeak,
+                 maxBufferedInjectFrames > baselineMaxBufferedInjectFrames
+                     ? maxBufferedInjectFrames - baselineMaxBufferedInjectFrames
+                     : 0);
     maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
     uint32_t trimmedInjectFrames = 0;
     while (bufferedInjectFrames.size() > maxBufferedInjectFrames) {
-        QueuedFrame staleFrame = std::move(bufferedInjectFrames.front());
-        bufferedInjectFrames.pop_front();
+        const bool preserveFront =
+            ce::capture_policy::ShouldPreserveInjectFrontAtBufferCap(
+                bufferedInjectFrames.front().timestamp, livePlayoutTargetQpc, leadToleranceQpc);
+        const size_t trimIndex =
+            preserveFront && bufferedInjectFrames.size() > protectedInjectTailFrames + 1
+                ? bufferedInjectFrames.size() - protectedInjectTailFrames - 1
+                : 0;
+        auto trimIt = bufferedInjectFrames.begin() + static_cast<std::ptrdiff_t>(trimIndex);
+        QueuedFrame staleFrame = std::move(*trimIt);
+        bufferedInjectFrames.erase(trimIt);
         DiscardQueuedFrame(staleFrame);
+        if (trimIndex != 0) {
+            ++injectFrontPreserveTrimTotal;
+        }
         ++trimmedInjectFrames;
         ++injectBufferCapTrimTotal;
     }
@@ -109,9 +181,14 @@ if (!config.video.useVFR) {
     if (pendingInjectTrimmedLogCount > 0 && now - lastInjectTrimLog >= 1000) {
         LogInfo(
             "[EncoderThread] Trimmed %u inject frame(s) at the hard buffer cap "
-            "(peak=%zu cap=%zu fenceTail=%zu delayFrames=%zu total=%llu)",
+            "(peak=%zu cap=%zu fenceTail=%zu delayFrames=%zu phaseUs=%lld requiredSpanUs=%lld "
+            "sourceIntervalUs=%lld preserveFrontTotal=%llu total=%llu)",
             pendingInjectTrimmedLogCount, maxBufferedInjectDepthSinceLog, maxBufferedInjectFrames,
             protectedInjectTailFrames, injectContentDelayFrames,
+            static_cast<long long>(qpcToUs(timestampPhaseQpc)),
+            static_cast<long long>(qpcToUs(requiredTimestampSpanQpc)),
+            static_cast<long long>(qpcToUs(predictedSourceIntervalQpc)),
+            static_cast<unsigned long long>(injectFrontPreserveTrimTotal),
             static_cast<unsigned long long>(injectBufferCapTrimTotal));
         pendingInjectTrimmedLogCount = 0;
         maxBufferedInjectDepthSinceLog = bufferedInjectFrames.size();
@@ -162,18 +239,7 @@ if (!config.video.useVFR) {
         }
     } else {
         const size_t availableCount = eligibleInjectFrameCount();
-        const int64_t liveTargetQpc =
-            scheduledOutputQpc > 0
-                ? scheduledOutputQpc
-                : ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks);
-        const int64_t basePlayoutTargetQpc =
-            ComputeDelayedContentGridStartQpc(liveTargetQpc, avContentDelayQpc);
-        const int64_t phaseReferenceQpc =
-            bufferedInjectFrames.empty() ? 0 : bufferedInjectFrames.back().timestamp;
-        const int64_t playoutTargetQpc = applyCaptureSyncPhaseTarget(
-            "inject", injectCfrPhaseLock, basePlayoutTargetQpc, phaseReferenceQpc);
-        const int64_t leadToleranceQpc =
-            ce::capture_policy::GetInjectCfrSelectionLeadToleranceQpc(targetIntervalTicks);
+        const int64_t playoutTargetQpc = livePlayoutTargetQpc;
         auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
             return isFreshInjectCandidate(candidate) &&
                    !MatchesInjectFrameLineage(candidate, lastDeferredLineage);

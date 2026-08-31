@@ -190,6 +190,15 @@ private:
     uint64_t injectDisplayTimingFallbackCount;
     uint64_t injectDisplayTimingPendingCount;
     DWORD injectDisplayTimingLastLog;
+    bool injectTimestampPathKnown;
+    bool injectTimestampFinalOutputPathActive;
+    int64_t injectNonFinalTimestampOffsetQpc;
+    uint64_t injectTimestampPathTransitionCount;
+    size_t injectTimestampRetentionLimit;
+    size_t injectTimestampPhaseReservePeak;
+    int64_t injectTimestampPhaseCurrentQpc;
+    int64_t injectTimestampPhaseMaxQpc;
+    uint64_t injectFrontPreserveTrimTotal;
     uint32_t injectWorstSourceFpsX100;
     uint32_t injectBestSourceFpsX100;
     uint32_t injectWorstSourceJitterUs;

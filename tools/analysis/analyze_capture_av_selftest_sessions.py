@@ -502,6 +502,34 @@ if False:
         assert report["evidence"]["inject_pacing"]["matched_rate_longest_run"] == 3
         assert report["evidence"]["cfr_phase_lock_summary"][0]["offset_us"] == 4012
 
+        inject_cutscene_phase_retention = make_session(
+            "inject_cutscene_phase_retention",
+            media=(
+                "[Inject CFR SUMMARY] Live=3092 Dup=809 DupPct=26.1% "
+                "DupReason(src=783 def=1 timer=25 drain=0) FreshCatchup=0 RepeatCatchup=0 "
+                "StaleTrim=0 Recovery=0/0\n"
+                "[Inject CFR SUMMARY] SourceFps=114.46..159.77 JitterMax=1203us SelMax=34323us\n"
+                "[Inject CFR QUALITY SUMMARY] TargetSelect=2282 Superseded=313 TargetHold=808 "
+                "HoldWithCandidate=803 BufferCapTrim=786 TargetResidualMax=54452us "
+                "PhaseReservePeak=8 PhaseShiftMax=81001us PreserveFrontTrim=120 "
+                "DisplayPathTransitions=2\n"
+                "[2026-08-31 07:46:33.000] [INFO] [Inject CFR] Repeat pressure: dup=111 srcLimited=111 "
+                "targetSelect=11 targetSuperseded=1 targetHold=111 holdWithCandidate=111 tickEmit=122 "
+                "unique=11 sourceFps=121.44 overload=0x0\n"
+                "[2026-08-31 07:46:34.000] [INFO] [Inject CFR] Repeat pressure: dup=112 srcLimited=112 "
+                "targetSelect=18 targetSuperseded=1 targetHold=112 holdWithCandidate=112 tickEmit=130 "
+                "unique=18 sourceFps=121.44 overload=0x0\n"
+                "[2026-08-31 07:46:35.000] [INFO] [Inject CFR] Repeat pressure: dup=116 srcLimited=116 "
+                "targetSelect=16 targetSuperseded=0 targetHold=116 holdWithCandidate=116 tickEmit=132 "
+                "unique=16 sourceFps=120.77 overload=0x0\n"
+            ),
+        )
+        report = classify_session_triage(inject_cutscene_phase_retention)
+        assert "inject_cfr_timestamp_retention_fault" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert report["evidence"]["inject_pacing"]["phase_shift_max_us"] == 81001
+        assert report["evidence"]["inject_pacing"]["display_path_transitions"] == 2
+
         inject_variable_rate_resampling = make_session(
             "inject_variable_rate_resampling",
             media=(

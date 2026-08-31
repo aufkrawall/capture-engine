@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-08-31 - Cutscene display-phase jump cannot latch inject CFR into repeats
+
+Session `gothicimprovedbutstilldied` contained a real but brief game/encoder stall: at 07:46:31 the game Present gap
+reached 66.896 ms and one encoder service reached 180.098 ms, with a 7.05 ms EMA. By the next second encoder EMA was
+0.88 ms with no overload, DLSS MFG remained active at 4x, and inject still supplied about 120 final outputs per second.
+The subsequent static-looking capture was therefore not sustained NVENC overload or an FG-off interval.
+
+The cutscene moved display-correlation phase from roughly 14-22 ms to 67-81 ms. With a fixed 13-frame live cap,
+media trimmed the oldest future candidate immediately before it aged into the CFR target, then repeated while another
+candidate was available; the session ended with 803 such holds and 786 cap trims. Since source and target advanced at
+the same rate, the old policy would remain latched while that phase persisted.
+
+Live inject retention now derives its cap from the actual newest-to-target timestamp span (bounded to 28 of the 32
+ring slots). At the cap it preserves a future/target-adjacent front and trims the newest eligible frame before the
+fence tail; stale encoder backlog still trims from the front. Final-output/base-Present transitions reset outgoing
+correlation, freeze older path segments, and rebase the new base segment once for monotonic continuity. New telemetry
+and `inject_cfr_timestamp_retention_fault` distinguish this failure from ongoing overload. See `cfr-capture-sync.md`.
+
 ### 2026-08-31 - DLSS 4x capture clock cannot inherit a stale worker-handoff phase
 
 DX12 inject session `20260831_070957` published thousands of changing final Streamline outputs, but media encoded a
