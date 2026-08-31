@@ -61,6 +61,18 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
         copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
         log("Copied license files to installed/captureengine/")
 
+    # Install only CaptureEngine's first-party LHM bridge/support text. Never
+    # clear this directory: users place their separately licensed LHM files here.
+    lhm_support_src = os.path.join(PROJECT_ROOT, "plugins", "LibreHardwareMonitor")
+    lhm_support_dst = os.path.join(BIN_DIR, "plugins", "LibreHardwareMonitor")
+    os.makedirs(lhm_support_dst, exist_ok=True)
+    for filename in ("CaptureEngine.LibreHardwareMonitor.ps1", "README.txt"):
+        source = os.path.join(lhm_support_src, filename)
+        destination = os.path.join(lhm_support_dst, filename)
+        if not safe_copy_file(source, destination):
+            raise RuntimeError(f"Failed to install LibreHardwareMonitor bridge support file: {filename}")
+    log("Copied optional LibreHardwareMonitor bridge support files")
+
     assert_no_obsolete_process_loopback_helper_artifacts()
 
     # Keep runtime DLLs in tests/ current so unit_tests.exe can run directly
@@ -157,10 +169,10 @@ def scrub_and_verify_privacy_paths() -> None:
     closure DLLs (which embed local recipe build paths) are scrubbed in place."""
     if not profile_path_spellings():
         return
-    # Mirror the packaging boundary (build_packaging.py: at the captureengine
-    # root only ffmpeg/ and licenses/ subdirectories are walked; elsewhere
-    # bak/captures/logs/screenshots and the excluded suffixes stay local).
-    # Only artifacts that actually ship may fail the scan.
+    # Mirror the binary packaging boundary. The plugins directory has a separate
+    # text-only allowlist in build_packaging.py, and tracked-source privacy tests
+    # cover those two first-party support files without reading user-supplied DLLs.
+    # Elsewhere bak/captures/logs/screenshots and excluded suffixes stay local.
     excluded_dirs = {"bak", "captures", "logs", "screenshots"}
     excluded_suffixes = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
     included_root_dirs = {"ffmpeg", "licenses"}

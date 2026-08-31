@@ -8,6 +8,10 @@
 #include "../common/shared_defs.h"
 #include "host_metrics_policy.h"
 
+namespace ce::hardware_sensors {
+struct HardwareSensorSnapshot;
+}
+
 #ifdef _MSC_VER
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -61,6 +65,7 @@ struct HostMetricsState {
 // knownLuid: A directly observed capture/hook adapter, or zero for process-engine inference.
 void UpdateSystemMetrics(
     SharedMemoryLayout* shm, uint32_t targetPid, int64_t knownLuid,
-    metrics_policy::AdapterResolutionSource knownSource = metrics_policy::AdapterResolutionSource::HookLuid);
+    metrics_policy::AdapterResolutionSource knownSource,
+    const ce::hardware_sensors::HardwareSensorSnapshot& hardwareSensors);
 
 }  // namespace scan_host

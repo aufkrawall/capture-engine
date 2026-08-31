@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 
 namespace ce::overlay_layout {
 
@@ -14,6 +16,50 @@ inline MemoryValueMode SelectMemoryValueMode(bool usageValid, uint64_t usedBytes
     if (!usageValid && usedBytes == 0)
         return MemoryValueMode::Unavailable;
     return totalBytes != 0 ? MemoryValueMode::UsedAndTotal : MemoryValueMode::UsedOnly;
+}
+
+inline void FormatCpuMetricsValue(char* output, size_t outputSize, float usage, float maxCoreUsage,
+                                  bool temperatureValid, float temperatureC, bool powerValid, float powerW) {
+    if (!output || outputSize == 0)
+        return;
+    int length = snprintf(output, outputSize, "%.0f%% (%.0f%%)", usage, maxCoreUsage);
+    if (length < 0 || static_cast<size_t>(length) >= outputSize)
+        return;
+    if (temperatureValid) {
+        const size_t remaining = outputSize - static_cast<size_t>(length);
+        const int appended = snprintf(output + length, remaining, "  %.0f C", temperatureC);
+        if (appended < 0 || static_cast<size_t>(appended) >= remaining)
+            return;
+        length += appended;
+    }
+    if (powerValid)
+        snprintf(output + length, outputSize - static_cast<size_t>(length), "  %.0f W", powerW);
+}
+
+inline void FormatGpuMetricsValue(char* output, size_t outputSize, bool usageValid, float usage,
+                                  bool temperatureValid, float temperatureC, bool powerValid, float powerW,
+                                  bool fanValid, float fanRpm) {
+    if (!output || outputSize == 0)
+        return;
+    int length = usageValid ? snprintf(output, outputSize, "%.0f%%", usage) : snprintf(output, outputSize, "--");
+    if (length < 0 || static_cast<size_t>(length) >= outputSize)
+        return;
+    if (temperatureValid) {
+        const size_t remaining = outputSize - static_cast<size_t>(length);
+        const int appended = snprintf(output + length, remaining, "  %.0f C", temperatureC);
+        if (appended < 0 || static_cast<size_t>(appended) >= remaining)
+            return;
+        length += appended;
+    }
+    if (powerValid) {
+        const size_t remaining = outputSize - static_cast<size_t>(length);
+        const int appended = snprintf(output + length, remaining, "  %.0f W", powerW);
+        if (appended < 0 || static_cast<size_t>(appended) >= remaining)
+            return;
+        length += appended;
+    }
+    if (fanValid)
+        snprintf(output + length, outputSize - static_cast<size_t>(length), "  %.0f RPM", fanRpm);
 }
 
 enum OverlayRow : uint32_t {

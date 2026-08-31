@@ -55,6 +55,11 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, publicationSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, vramTotal));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, maxCoreLoad));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, cpuTemperatureC));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, gpuTemperatureC));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, cpuPackagePowerW));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, gpuPackagePowerW));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, gpuFanRpm));
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedDisplayTiming));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, writeSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, publicationGeneration));

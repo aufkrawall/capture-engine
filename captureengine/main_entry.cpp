@@ -249,7 +249,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
-                        SyncLoggerAndSensorProcesses(main_g_Config);
+                        SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig);
                         SyncLimiterProcess(main_g_Config);
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }

@@ -283,6 +283,16 @@ inline bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
+inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
+    const HardwareSensorsConfig& left = lhs.hardwareSensors;
+    const HardwareSensorsConfig& right = rhs.hardwareSensors;
+    return lhs.overlay.showCPU == rhs.overlay.showCPU && lhs.overlay.showGPU == rhs.overlay.showGPU &&
+           left.enabled == right.enabled && left.pollIntervalMs == right.pollIntervalMs &&
+           left.cpuTemperature == right.cpuTemperature && left.gpuTemperature == right.gpuTemperature &&
+           left.cpuPackagePower == right.cpuPackagePower && left.gpuPackagePower == right.gpuPackagePower &&
+           left.gpuFan == right.gpuFan;
+}
+
 inline std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
     std::vector<PseudoOverlayApplicationConfig> profiles;
     profiles.reserve(baseConfig.applicationProfiles.size());
@@ -543,13 +553,15 @@ inline void SyncLimiterProcess(const AppConfig& config) {
     }
 }
 
-inline void SyncLoggerAndSensorProcesses(const AppConfig& config) {
+inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {
     const bool wantLogger = ShouldStartLoggerProcess(config);
     const bool wantSensor = ShouldStartSensorProcess(config);
     const bool loggerRunning = IsProcessRunning(main_g_hLoggerProcess);
     const bool sensorRunning = IsProcessRunning(main_g_hSensorProcess);
+    const bool sensorConfigChanged = previousConfig && sensorRunning && wantSensor &&
+                                     !HardwareSensorServiceConfigEquals(*previousConfig, config);
 
-    if (loggerRunning == wantLogger && sensorRunning == wantSensor) {
+    if (loggerRunning == wantLogger && sensorRunning == wantSensor && !sensorConfigChanged) {
         if (!loggerRunning) {
             CloseProcessHandle(main_g_hLoggerProcess);
         }

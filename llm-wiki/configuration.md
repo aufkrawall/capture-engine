@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-29
+Last cross-checked: 2026-08-31
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -9,6 +9,7 @@ Primary sources:
 - `common/config.{h,cpp}`
 - `common/config_load_core.cpp`
 - `common/config_load_ue5.cpp`
+- `common/config_load_overlay.cpp`
 - `captureengine/inject_config.cpp`
 - `captureengine/inject_config_publication.cpp`
 - `common/monitor_selection.{h,cpp}`
@@ -19,6 +20,7 @@ Primary sources:
 - `tests/test_config.cpp`
 - `tests/test_config_ue5.cpp`
 - `tests/test_config_override.cpp`
+- `tests/test_config_hardware_sensors.cpp`
 - `tests/test_monitor_selection.cpp`
 - `testapp/run_tests.py`
 
@@ -38,7 +40,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 ## Current section layout and compatibility
 
-- Fresh configs group capture selection in `[Capture]`, ordinary WGC behavior in `[WGC]` (including `wgc_same_device_capture`; it lives here, not in `[Diagnostics]`), file locations/container in `[Output]`, scaling in `[VideoScaling]`, UE engine overrides in `[UE5]`, NVIDIA runtime overrides in `[DLSS]`, audio timing in `[AudioSync]`, logging in `[Logging]`, and troubleshooting switches in `[Diagnostics]`.
+- Fresh configs group capture selection in `[Capture]`, ordinary WGC behavior in `[WGC]` (including `wgc_same_device_capture`; it lives here, not in `[Diagnostics]`), file locations/container in `[Output]`, scaling in `[VideoScaling]`, UE engine overrides in `[UE5]`, NVIDIA runtime overrides in `[DLSS]`, audio timing in `[AudioSync]`, optional LibreHardwareMonitor overlay telemetry in `[HardwareSensors]`, logging in `[Logging]`, and troubleshooting switches in `[Diagnostics]`.
 - `[DesktopOverlay]` is the canonical name for the non-injected screen-corner window. `[Overlay]` remains the injected overlay. Any `[DesktopOverlay]` setting can be qualified inside a process-backed application profile, for example `DesktopOverlay.mode=1`.
 - `[Audio]` contains shared encoding defaults. `[SystemAudio]` and `[SystemAudio.N]` describe render-output sources; `[Microphone]` / `[Microphone.N]` describe inputs. New per-application audio belongs in the application's `[Profile.*]` section beside its video/injection route and setting overrides. `[AppAudio.N]` remains readable for existing configs.
 - Existing locations remain aliases: `[General]`, `[Scaling]`, `[Screenshot]`, `[pseudo-overlay]`, `[Audio]` source keys, `[Audio.N]`, DLSS keys in `[Graphics]`, and `copy_queue_priority` in `[Performance]`. The new location wins when both are present, including an intentionally empty canonical value.
@@ -63,6 +65,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - `sample_rate=default` means 48000 Hz; Opus always uses 48000 Hz. `bit_depth=default` means 24-bit for ALAC, FLAC, and PCM, while AAC and Opus ignore it. `downmix=false` preserves the main source layout and `true` converts the track to stereo.
 - Video `color_space=auto` follows the captured source contract. Explicit `bt709` defines an SDR file and tone-maps HDR/scRGB or packed PQ input before BT.709 encoding; it never only relabels HDR pixels. Explicit `bt2020` preserves an HDR source as BT.2020/PQ but selects SDR BT.2020 transfer characteristics for an SDR source rather than falsely tagging those pixels as PQ. Fresh configs use `bit_depth=auto`, which selects 10-bit for HDR and 8-bit for ordinary SDR; old files are not auto-migrated. HDR output requires HEVC or AV1 through NVENC/AMF/QSV, while H.264 HDR and Media Foundation HDR fail closed. `[Video] hdr_nominal_peak_nits=1000` is the configurable 100-10000-nit mastering/content-light compatibility ceiling. It is intentionally nominal because composed screen capture has no measured mastering/MaxCLL/MaxFALL data.
 - `[Screenshot] color_space=auto|bt709` is independent of the video setting. `auto` preserves HDR as 10-bit BT.2020/PQ AVIF and saves SDR as PNG; `bt709` tone-maps any HDR source to an ordinary BT.709/sRGB PNG. Missing or invalid values fall back to `auto`. The option is present in the first-run template, but existing configs are intentionally not auto-merged; add the section explicitly when migrating an installed config.
+- `[HardwareSensors] enabled=off|auto|on` controls the optional LibreHardwareMonitor bridge. `auto` silently retains native CPU/GPU/RAM/VRAM usage telemetry when the separately supplied files are absent; `on` additionally warns with only the missing safe filenames. `poll_interval_ms` accepts 250-10000; an active bridge also lowers the dedicated sensor-service wake interval to that value below one second, so sub-second sampling is actually published rather than accumulating in its pipe. Each metric selector is `off`, `auto`, or a bounded exact LibreHardwareMonitor identifier containing only ASCII letters, digits, `/`, `_`, `-`, and `.`; malformed values fall back independently. Temperatures default to `auto`; CPU/GPU package power and GPU fan RPM default off. Existing `[Overlay] show_cpu` and `show_gpu` remain the row/display toggles. A live change to any effective hardware-sensor option restarts the long-lived sensor service (and the logger sharing its shutdown event), so selectors do not remain latched until the next application launch.
 - NVENC `lookahead` is deliberately not Boolean: it accepts `off`, `auto`, or a depth from `1` through `31`. `spatial_aq` and `temporal_aq` are independent Booleans, and `aq_strength` applies only to spatial AQ (`0` asks NVENC to choose, otherwise `1..15`).
 - NVENC `split_encode=0..4` controls native single-session split-frame encoding for HEVC and AV1. `0` explicitly disables it and is the fresh/default policy; `1` forces splitting when multiple engines exist and lets the driver choose the strip count; `2..4` request that many physical encoder strips when available. H.264 accepts only `0`. The former `auto`, `disabled`, and `forced` spellings remain compatibility inputs for existing configs, where `auto` retains NVIDIA's preset/tuning/resolution policy. Splitting favors throughput over a small amount of compression efficiency; it is not multiple independent recordings or GOP concatenation.
 - NVIDIA Smooth Motion compatibility is detected and applied automatically. There is no user-facing compatibility switch; failures must be fixed in the detection/compatibility code.
@@ -115,6 +118,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   transports the four resolved NVIDIA runtime paths, DLSS indicator mode, and exact split-renderer child identity so
   the final Vulkan renderer consumes the same profile as its parent. Versioned mappings/events isolate older processes.
 - ABI 48 adds `OverlayConfig::frameTimeSource` and the sensor-to-overlay display-timestamp ring. The versioned mapping and discovery names move together with the layout.
+- ABI 50 adds five optional hardware-sensor values plus independent validity bits to `SharedSystemMetrics`. They are controller configuration, not `OverlayConfig`; no managed code or selector string crosses into an injected process.
 - Audio track lists accept unique IDs from `1` through `255`; invalid entries are ignored and an entirely invalid list uses its section default.
 - Overlay padding, font size, corner radius, alpha, outline thickness, and text-update interval have finite documented bounds. Pseudo-overlay geometry/mode/grace values also fall back rather than being silently clamped to a different edge value.
 - Overlay colors are exactly six hexadecimal RGB digits with an optional leading `#`; malformed strings use the documented palette fallback.

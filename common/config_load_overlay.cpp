@@ -1,5 +1,40 @@
 #include "config_load_internal.h"
 
+namespace {
+
+bool IsAsciiAlphaNumeric(unsigned char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+std::string ParseHardwareSensorMode(std::string value) {
+    value = NormalizeConfigToken(value);
+    if (value == "off" || value == "auto" || value == "on")
+        return value;
+    LogInvalidConfigBoundary("HardwareSensors", "enabled", value, "auto");
+    return "auto";
+}
+
+bool IsSafeHardwareSensorIdentifier(const std::string& value) {
+    if (value.size() < 2 || value.size() > 255 || value.front() != '/')
+        return false;
+    return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return IsAsciiAlphaNumeric(ch) || ch == '/' || ch == '_' || ch == '-' || ch == '.';
+    });
+}
+
+std::string ParseHardwareSensorSelector(ConfigReader& reader, const char* key, const char* defaultValue) {
+    std::string value = reader.GetStr("HardwareSensors", key, defaultValue);
+    std::string normalized = NormalizeConfigToken(value);
+    if (normalized == "off" || normalized == "auto")
+        return normalized;
+    if (IsSafeHardwareSensorIdentifier(value))
+        return value;
+    LogInvalidConfigBoundary("HardwareSensors", key, value, defaultValue);
+    return defaultValue;
+}
+
+}  // namespace
+
 void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     // Overlay
     config.overlay.showOverlay = reader.GetBool("Overlay", "enabled", true);
@@ -108,6 +143,20 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
             config.overlay.hdrPaperWhite = 0.0f;
         }
     }
+
+    config.hardwareSensors.enabled =
+        ParseHardwareSensorMode(reader.GetStr("HardwareSensors", "enabled", "auto"));
+    config.hardwareSensors.pollIntervalMs = static_cast<uint32_t>(
+        reader.GetBoundedInt("HardwareSensors", "poll_interval_ms", 1000, 250, 10000));
+    config.hardwareSensors.cpuTemperature =
+        ParseHardwareSensorSelector(reader, "cpu_temperature", "auto");
+    config.hardwareSensors.gpuTemperature =
+        ParseHardwareSensorSelector(reader, "gpu_temperature", "auto");
+    config.hardwareSensors.cpuPackagePower =
+        ParseHardwareSensorSelector(reader, "cpu_package_power", "off");
+    config.hardwareSensors.gpuPackagePower =
+        ParseHardwareSensorSelector(reader, "gpu_package_power", "off");
+    config.hardwareSensors.gpuFan = ParseHardwareSensorSelector(reader, "gpu_fan", "off");
 
 }
 

@@ -464,6 +464,23 @@ struct PseudoOverlayApplicationConfig {
     bool captureUsesInjection = false;
 };
 
+// Optional LibreHardwareMonitor bridge. The third-party managed library stays
+// in the controller installation and is never loaded into an injected process.
+struct HardwareSensorsConfig {
+    // off: never launch; auto: launch when the required files exist; on: also
+    // report a warning when the optional files are missing.
+    std::string enabled = "auto";
+    uint32_t pollIntervalMs = 1000;
+
+    // Each selector is off, auto, or an exact LibreHardwareMonitor sensor
+    // identifier such as /gpu-nvidia/0/temperature/0.
+    std::string cpuTemperature = "auto";
+    std::string gpuTemperature = "auto";
+    std::string cpuPackagePower = "off";
+    std::string gpuPackagePower = "off";
+    std::string gpuFan = "off";
+};
+
 struct AppConfig {
     // General
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
@@ -525,6 +542,9 @@ struct AppConfig {
 
     // Overlay
     OverlayConfig overlay;
+
+    // Optional out-of-process hardware telemetry used by the overlay.
+    HardwareSensorsConfig hardwareSensors;
 
     // Pseudo-overlay (for WGC capture, no injection)
     PseudoOverlayConfig pseudoOverlay;

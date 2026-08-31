@@ -6,6 +6,10 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- Added optional LibreHardwareMonitor polling for CPU/GPU temperature, package power, and GPU fan RPM in the existing
+  overlay rows. The managed library runs behind the dedicated sensor service and remains user-supplied in
+  `plugins\LibreHardwareMonitor`; release packaging includes only CaptureEngine's bridge/setup files and excludes all
+  locally added third-party binaries.
 - Added a Streamline 1.x-to-2.x upgrade bridge behind `streamline_upgrade=on`. This feature is still
   work-in-progress and currently non-functioning: it does not yet produce a working upgrade, so enabling it
   is not expected to restore Streamline features in a bridged game. The mechanism loads a complete

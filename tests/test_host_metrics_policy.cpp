@@ -171,6 +171,20 @@ TEST(SharedSystemMetricsTest, PublicationSequenceDistinguishesStableAndUpdatingS
     EXPECT_EQ(sharedMemory.systemMetrics.publicationSequence.load(std::memory_order_acquire) & 1u, 0u);
 }
 
+TEST(SharedSystemMetricsTest, OptionalHardwareValuesKeepValidZeroPowerAndFanReadings) {
+    SharedMemoryLayout sharedMemory;
+    sharedMemory.systemMetrics.cpuPackagePowerW.store(0.0f, std::memory_order_relaxed);
+    sharedMemory.systemMetrics.gpuFanRpm.store(0.0f, std::memory_order_relaxed);
+    sharedMemory.systemMetrics.validityMask.store(
+        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_FAN_VALID, std::memory_order_release);
+
+    const uint32_t validity = sharedMemory.systemMetrics.validityMask.load(std::memory_order_acquire);
+    EXPECT_NE(validity & SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID, 0u);
+    EXPECT_NE(validity & SYSTEM_METRIC_GPU_FAN_VALID, 0u);
+    EXPECT_FLOAT_EQ(sharedMemory.systemMetrics.cpuPackagePowerW.load(std::memory_order_relaxed), 0.0f);
+    EXPECT_FLOAT_EQ(sharedMemory.systemMetrics.gpuFanRpm.load(std::memory_order_relaxed), 0.0f);
+}
+
 TEST(HostMetricsSourceInvariantTest, HookConsumesValidityInsteadOfNonzeroHeuristics) {
     const std::string source = ReadProjectSource("hook/common/system_metrics.cpp");
     const std::string overlay = ReadProjectSource("hook/common/overlay_adapter.cpp");

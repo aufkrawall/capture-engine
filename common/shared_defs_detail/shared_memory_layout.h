@@ -388,6 +388,11 @@ public:
         std::atomic<float> vramUsage{0.0f};    // MB
         std::atomic<uint64_t> vramTotal{0};    // Bytes
         std::atomic<uint32_t> maxCoreLoad{0};  // NEW: Max single core load
+        std::atomic<float> cpuTemperatureC{0.0f};
+        std::atomic<float> gpuTemperatureC{0.0f};
+        std::atomic<float> cpuPackagePowerW{0.0f};
+        std::atomic<float> gpuPackagePowerW{0.0f};
+        std::atomic<float> gpuFanRpm{0.0f};
         std::atomic<uint32_t> validityMask{0};
         std::atomic<uint32_t> sourcePid{0};
         std::atomic<int32_t> adapterLuidLow{0};

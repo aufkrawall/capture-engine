@@ -67,6 +67,11 @@ static void ResetGpuTelemetryForSource(SharedMemoryLayout* shm, uint32_t sourceP
     metrics.gpuUsage.store(0.0f, std::memory_order_relaxed);
     metrics.vramUsage.store(0.0f, std::memory_order_relaxed);
     metrics.vramTotal.store(0, std::memory_order_relaxed);
+    metrics.cpuTemperatureC.store(0.0f, std::memory_order_relaxed);
+    metrics.gpuTemperatureC.store(0.0f, std::memory_order_relaxed);
+    metrics.cpuPackagePowerW.store(0.0f, std::memory_order_relaxed);
+    metrics.gpuPackagePowerW.store(0.0f, std::memory_order_relaxed);
+    metrics.gpuFanRpm.store(0.0f, std::memory_order_relaxed);
     metrics.adapterLuidLow.store(0, std::memory_order_relaxed);
     metrics.adapterLuidHigh.store(0, std::memory_order_relaxed);
     metrics.adapterSource.store(SYSTEM_METRICS_ADAPTER_UNAVAILABLE, std::memory_order_relaxed);
@@ -106,12 +111,25 @@ int SensorProcessMain(const AppConfig& config) {
         }
     }
 
-    // Create/open shutdown event keyed to controller PID
-    HANDLE hShutdownEvent = INVALID_HANDLE_VALUE;
+    // Create/open shutdown event keyed to controller PID and monitor the
+    // controller handle so a hard parent exit cannot orphan this service.
+    HANDLE hShutdownEvent = nullptr;
+    HANDLE hControllerProcess = nullptr;
     if (controllerPid != 0) {
         wchar_t eventName[64];
         GenerateShutdownEventName(eventName, 64, controllerPid);
         hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
+        if (!hShutdownEvent) {
+            LogError("[Sensors] Cannot create the controller shutdown event (error=%lu)", GetLastError());
+            return 1;
+        }
+        hControllerProcess = OpenProcess(SYNCHRONIZE, FALSE, controllerPid);
+        if (!hControllerProcess) {
+            LogError("[Sensors] Cannot monitor controller PID %u lifetime (error=%lu)", controllerPid,
+                     GetLastError());
+            CloseHandle(hShutdownEvent);
+            return 1;
+        }
     }
 
     // Cache DiscoveryInfo handle/mapping once, avoid kernel calls per iteration
@@ -122,12 +140,29 @@ int SensorProcessMain(const AppConfig& config) {
     std::map<uint32_t, SensorSession> sessions;
     std::unique_ptr<DisplayTimingService> displayTimingService;
     static bool loggedDiscoveryAttempt = false;
-
-    // In a real plugin-based system, we'd load DLLs here.
-    // For now, we reuse the scan_host logic but we will encapsulate it better.
+    HardwareSensorsConfig effectiveHardwareSensors = config.hardwareSensors;
+    if (!config.overlay.showCPU) {
+        effectiveHardwareSensors.cpuTemperature = "off";
+        effectiveHardwareSensors.cpuPackagePower = "off";
+    }
+    if (!config.overlay.showGPU) {
+        effectiveHardwareSensors.gpuTemperature = "off";
+        effectiveHardwareSensors.gpuPackagePower = "off";
+        effectiveHardwareSensors.gpuFan = "off";
+    }
+    ce::hardware_sensors::LibreHardwareMonitorPlugin hardwareSensorPlugin(effectiveHardwareSensors);
+    const bool hardwareSensorPluginActive = hardwareSensorPlugin.Start();
+    const DWORD serviceWaitMs =
+        hardwareSensorPluginActive && effectiveHardwareSensors.pollIntervalMs < 1000
+            ? effectiveHardwareSensors.pollIntervalMs
+            : 1000;
+    bool loggedWaitFailure = false;
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (g_SensorRunning.load(std::memory_order_acquire)) {
+        hardwareSensorPlugin.Poll();
+        const ce::hardware_sensors::HardwareSensorSnapshot hardwareSensors = hardwareSensorPlugin.GetSnapshot();
+
         // 1. Discover new sessions (cached handle, open/map once)
         if (hDisc == INVALID_HANDLE_VALUE) {
             hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
@@ -300,14 +335,19 @@ int SensorProcessMain(const AppConfig& config) {
                 const auto& metrics = s.shm->systemMetrics;
                 LogInfo(
                     "[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u cpu=%.1f maxCore=%u "
-                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu validity=0x%X publisherPid=%u publisherParentPid=%u "
-                    "publisherEligible=%d",
+                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu cpuTemp=%.1f gpuTemp=%.1f cpuW=%.1f gpuW=%.1f "
+                    "gpuFan=%.0f validity=0x%X publisherPid=%u publisherParentPid=%u publisherEligible=%d",
                     it->first, sourcePid, effectiveLuid, s.updatesSinceSummary,
                     metrics.cpuUsage.load(std::memory_order_relaxed),
                     metrics.maxCoreLoad.load(std::memory_order_relaxed),
                     metrics.gpuUsage.load(std::memory_order_relaxed),
                     metrics.vramUsage.load(std::memory_order_relaxed),
                     metrics.vramTotal.load(std::memory_order_relaxed) / (1024 * 1024),
+                    metrics.cpuTemperatureC.load(std::memory_order_relaxed),
+                    metrics.gpuTemperatureC.load(std::memory_order_relaxed),
+                    metrics.cpuPackagePowerW.load(std::memory_order_relaxed),
+                    metrics.gpuPackagePowerW.load(std::memory_order_relaxed),
+                    metrics.gpuFanRpm.load(std::memory_order_relaxed),
                     metrics.validityMask.load(std::memory_order_relaxed), luidSourcePid, luidSourceParentPid,
                     luidPublisherEligible ? 1 : 0);
                 s.updatesSinceSummary = 0;
@@ -317,7 +357,8 @@ int SensorProcessMain(const AppConfig& config) {
             scan_host::UpdateSystemMetrics(
                 s.shm, sourcePid, effectiveLuid,
                 useScreenGrabTarget ? scan_host::metrics_policy::AdapterResolutionSource::CaptureDeviceLuid
-                                    : scan_host::metrics_policy::AdapterResolutionSource::HookLuid);
+                                    : scan_host::metrics_policy::AdapterResolutionSource::HookLuid,
+                hardwareSensors);
 
             ++it;
         }
@@ -333,19 +374,43 @@ int SensorProcessMain(const AppConfig& config) {
             displayTimingService.reset();
         }
 
-        DWORD waitMs = 1000;
-        if (hShutdownEvent != INVALID_HANDLE_VALUE) {
-            DWORD waitResult = WaitForSingleObject(hShutdownEvent, waitMs);
-            if (waitResult == WAIT_OBJECT_0) {
+        HANDLE waitHandles[2] = {};
+        DWORD waitCount = 0;
+        DWORD shutdownIndex = MAXDWORD;
+        DWORD controllerIndex = MAXDWORD;
+        if (hShutdownEvent) {
+            shutdownIndex = waitCount;
+            waitHandles[waitCount++] = hShutdownEvent;
+        }
+        if (hControllerProcess) {
+            controllerIndex = waitCount;
+            waitHandles[waitCount++] = hControllerProcess;
+        }
+        if (waitCount == 0) {
+            Sleep(serviceWaitMs);
+            continue;
+        }
+        const DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, serviceWaitMs);
+        if (waitResult < WAIT_OBJECT_0 + waitCount) {
+            const DWORD signaledIndex = waitResult - WAIT_OBJECT_0;
+            if (signaledIndex == shutdownIndex)
                 LogInfo("[Sensors] Shutdown signal received, exiting");
-                break;
+            else if (signaledIndex == controllerIndex)
+                LogInfo("[Sensors] Controller exited; stopping the sensor service and optional bridge");
+            break;
+        }
+        if (waitResult == WAIT_FAILED) {
+            if (!loggedWaitFailure) {
+                LogWarn("[Sensors] Lifetime wait failed (error=%lu); retaining bounded polling", GetLastError());
+                loggedWaitFailure = true;
             }
-        } else {
-            Sleep(waitMs);
+            Sleep(serviceWaitMs);
         }
     }
 
-    if (hShutdownEvent != INVALID_HANDLE_VALUE)
+    if (hControllerProcess)
+        CloseHandle(hControllerProcess);
+    if (hShutdownEvent)
         CloseHandle(hShutdownEvent);
 
     // Cleanup cached DiscoveryInfo handles

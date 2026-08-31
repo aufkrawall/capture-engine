@@ -68,11 +68,28 @@ class PackagingTests(unittest.TestCase):
             destination = root / "stage" / "captureengine"
             clean_config = root / "config.ini.template"
             (source / "ffmpeg").mkdir(parents=True)
+            (source / "licenses").mkdir(parents=True)
+            (source / "plugins" / "LibreHardwareMonitor").mkdir(parents=True)
             (source / "logs" / "session").mkdir(parents=True)
             (source / "bak").mkdir()
             (source / "captureengine.exe").write_bytes(b"exe")
             (source / "captureengine.pdb").write_bytes(b"pdb")
             (source / "ffmpeg" / "avcodec.dll").write_bytes(b"dll")
+            (source / "licenses" / "LibreHardwareMonitor_NOTICE.txt").write_text(
+                "first-party integration notice", encoding="utf-8"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "CaptureEngine.LibreHardwareMonitor.ps1").write_text(
+                "first-party bridge", encoding="utf-8"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "README.txt").write_text(
+                "setup", encoding="utf-8"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll").write_bytes(
+                b"user-supplied"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "LICENSE.txt").write_text(
+                "user-supplied", encoding="utf-8"
+            )
             (source / "logs" / "session" / "captureengine.log").write_text("private", encoding="utf-8")
             (source / "bak" / "config.ini").write_text("private", encoding="utf-8")
             (source / "config.ini").write_text("user-specific", encoding="utf-8")
@@ -84,10 +101,17 @@ class PackagingTests(unittest.TestCase):
 
             self.assertIn("captureengine.exe", copied)
             self.assertIn("ffmpeg/avcodec.dll", copied)
+            self.assertIn("licenses/LibreHardwareMonitor_NOTICE.txt", copied)
+            self.assertIn("plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1", copied)
+            self.assertIn("plugins/LibreHardwareMonitor/README.txt", copied)
             self.assertEqual((destination / "config.ini").read_text(encoding="utf-8"), "clean-default")
             self.assertFalse((destination / "logs").exists())
             self.assertFalse((destination / "bak").exists())
             self.assertFalse((destination / "captureengine.exe.old.123").exists())
+            self.assertFalse(
+                (destination / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll").exists()
+            )
+            self.assertFalse((destination / "plugins" / "LibreHardwareMonitor" / "LICENSE.txt").exists())
             self.assertNotIn("nul", copied)
             self.assertNotIn("nul", [path.name.lower() for path in destination.iterdir()])
 

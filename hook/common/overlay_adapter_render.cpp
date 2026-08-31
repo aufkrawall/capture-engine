@@ -35,6 +35,22 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     const bool rowNotification = (frameLayout.rowMask & kRowNotification) != 0;
     const bool vramTelemetryAvailable = cachedSystemMetrics.vramUsageValid;
 
+    if (refreshLayout) {
+        if (rowGPU) {
+            FormatGpuMetricsValue(cachedGpuMetricsText, sizeof(cachedGpuMetricsText),
+                                  cachedSystemMetrics.gpuUsageValid, cachedSystemMetrics.gpuUsage,
+                                  cachedSystemMetrics.gpuTemperatureValid, cachedSystemMetrics.gpuTemperatureC,
+                                  cachedSystemMetrics.gpuPackagePowerValid, cachedSystemMetrics.gpuPackagePowerW,
+                                  cachedSystemMetrics.gpuFanValid, cachedSystemMetrics.gpuFanRpm);
+        }
+        if (rowCPU) {
+            FormatCpuMetricsValue(cachedCpuMetricsText, sizeof(cachedCpuMetricsText), cachedSystemMetrics.cpuUsage,
+                                  cachedSystemMetrics.cpuMaxCoreUsage, cachedSystemMetrics.cpuTemperatureValid,
+                                  cachedSystemMetrics.cpuTemperatureC, cachedSystemMetrics.cpuPackagePowerValid,
+                                  cachedSystemMetrics.cpuPackagePowerW);
+        }
+    }
+
     // Adaptive overlay width: measure visible labels/values and size to content.
     const float kShadowPad = 1.0f;
     const float kBgLeftPad = 4.0f * dpiScale;
@@ -68,19 +84,13 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         char measureBuf[96];
 
         if (rowGPU) {
-            if (cachedSystemMetrics.gpuUsageValid)
-                snprintf(measureBuf, sizeof(measureBuf), "%.0f%%", cachedSystemMetrics.gpuUsage);
-            else
-                snprintf(measureBuf, sizeof(measureBuf), "--");
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(SystemMetricsCollector::Get().GetGPUName()));
-            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(cachedGpuMetricsText) + kShadowPad);
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("100%") + kShadowPad);
         }
         if (rowCPU) {
-            snprintf(measureBuf, sizeof(measureBuf), "%.0f%% (%.0f%%)", cachedSystemMetrics.cpuUsage,
-                     cachedSystemMetrics.cpuMaxCoreUsage);
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(SystemMetricsCollector::Get().GetCPUName()));
-            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(cachedCpuMetricsText) + kShadowPad);
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("100% (100%)") + kShadowPad);
         }
         if (rowVRAM) {
@@ -408,24 +418,19 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // GPU - Name in green, % in yellow (based on load)
     if (rowGPU) {
-        if (cachedSystemMetrics.gpuUsageValid)
-            snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.gpuUsage);
-        else
-            snprintf(buf, 64, "--");
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetGPUName(), Colors::LabelGreen,
                                      shadowColor);
         const uint32_t gpuValueColor =
             cachedSystemMetrics.gpuUsageValid ? GetLoadColor(cachedSystemMetrics.gpuUsage) : Colors::Gray;
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, gpuValueColor, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedGpuMetricsText, gpuValueColor, shadowColor);
         cursorY += lineHeight;
     }
 
     // CPU - Name in green, % (maxCore%) in cyan
     if (rowCPU) {
-        snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedSystemMetrics.cpuUsage, cachedSystemMetrics.cpuMaxCoreUsage);
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetCPUName(), Colors::LabelGreen,
                                      shadowColor);
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueCyan, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedCpuMetricsText, Colors::ValueCyan, shadowColor);
         cursorY += lineHeight;
     }
 

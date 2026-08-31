@@ -14,8 +14,18 @@ struct SystemMetrics {
     uint64_t vramUsed;      // Bytes (local video memory)
     uint64_t vramTotal;     // Bytes
     float gpuUsage;         // 0-100%
+    float cpuTemperatureC;
+    float gpuTemperatureC;
+    float cpuPackagePowerW;
+    float gpuPackagePowerW;
+    float gpuFanRpm;
     bool gpuUsageValid;     // True if gpuUsage is real
     bool vramUsageValid;    // True if vramUsed is real, including a valid zero
+    bool cpuTemperatureValid;
+    bool gpuTemperatureValid;
+    bool cpuPackagePowerValid;
+    bool gpuPackagePowerValid;
+    bool gpuFanValid;
 };
 
 class SystemMetricsCollector {

@@ -416,6 +416,29 @@ For non-injected WGC or DXGI sessions, a small desktop overlay window can show r
 when the configured target is not being captured, and live encoder-overload/recovery/degraded health warnings. It is a
 separate corner window that never requires the hook DLL; see `[DesktopOverlay]` in `config.ini`.
 
+### Optional LibreHardwareMonitor sensors
+
+CPU/GPU temperature, package power, and GPU fan RPM can be appended to the existing CPU/GPU rows through the optional
+LibreHardwareMonitor bridge. The dedicated sensor service owns a contained PowerShell child that loads the managed
+library; no LibreHardwareMonitor code enters the game or hook DLL. CaptureEngine does not bundle the third-party
+binaries.
+
+Download the official [LibreHardwareMonitor 0.9.6 release](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6)
+and copy these four matching files from that one release into
+`plugins\LibreHardwareMonitor` beside `captureengine.exe`:
+
+- `LibreHardwareMonitorLib.dll`
+- `System.Memory.dll`
+- `System.Numerics.Vectors.dll`
+- `System.Runtime.CompilerServices.Unsafe.dll`
+
+No other release files are used by this CPU/GPU-only bridge. Restart CaptureEngine after copying the files.
+`[HardwareSensors] enabled=auto` activates the bridge when those files exist; temperatures default to `auto`, while
+package power and fan RPM are opt-in. A selector may instead contain an exact LibreHardwareMonitor identifier. Some
+low-level sensors require CaptureEngine to be started as administrator, but CaptureEngine never elevates itself and
+never substitutes a guessed value. See the installed plugin `README.txt` and `config.ini` for the complete setup and
+selector behavior.
+
 ## Known issues and limitations
 
 The following issues are currently known. They are not hidden by the feature descriptions elsewhere in this
@@ -692,7 +715,6 @@ and clang-tidy/file-size findings are content-addressed and ratcheted so regress
 These are exploratory directions, not promises or a release schedule. Items are only implemented if they prove
 feasible:
 
-- LibreHardwareMonitor integration for proper hardware sensor data in the overlay and session logs
 - PresentMon plug-in support
 - managed loading of OptiScaler, ReShade, or Special K DLLs as add-ons
 - proper late inject / early deject support
@@ -739,4 +761,6 @@ or damage to your system, data, or hardware. Injected features carry additional 
 
 CaptureEngine is licensed under the [MIT License](LICENSE). Bundled FFmpeg components and the FFmpeg patches retain
 their applicable LGPL licensing; see [tools/licenses/](tools/licenses/) and
-[tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md).
+[tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md). The optional, user-supplied LibreHardwareMonitor
+library is MPL-2.0 and is not included in CaptureEngine archives; its separation and redistribution references are
+documented in [LibreHardwareMonitor_NOTICE.txt](tools/licenses/LibreHardwareMonitor_NOTICE.txt).

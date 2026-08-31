@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-08-29 (actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-08-31 (optional LibreHardwareMonitor telemetry, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -8,6 +8,10 @@ Primary sources:
 - `captureengine/host_metrics.{h,cpp}`
 - `captureengine/host_metrics_policy.h`
 - `captureengine/sensor_service.cpp`
+- `captureengine/sensor_plugin.{h,cpp}`
+- `plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1`
+- `tools/build/build_{project_finalize,packaging}.py`
+- `tools/licenses/LibreHardwareMonitor_NOTICE.txt`
 - `captureengine/display_timing_service.{h,cpp}`
 - `captureengine/display_timing_policy.h`
 - `common/display_timing_shared.h`
@@ -29,6 +33,7 @@ Primary sources:
 - `hook/apis/{ddraw,dx8,dx9,opengl}_hook.cpp`
 - `tests/test_overlay_system.cpp`
 - `tests/test_host_metrics_policy.cpp`
+- `tests/test_hardware_sensor_plugin.cpp`
 - `tests/test_performance_metrics.cpp`
 - `tests/test_shared_runtime_state.cpp`
 
@@ -60,13 +65,16 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   intentionally preserves that font atlas, so correct initialization is the boundary that survives Alt+Tab and
   fullscreen recovery.
 - RAM/VRAM never use fabricated capacity values. A valid used value renders even when total capacity is unavailable; RAM capacity is queried once with `GlobalMemoryStatusEx`, and unavailable GPU/VRAM telemetry renders as `--` rather than a false zero.
+- Optional LibreHardwareMonitor values append compact ASCII suffixes (`C`, `W`, `RPM`) to the existing CPU/GPU rows; they never add rows or introduce a second layout path. Measurement and drawing consume the same cached formatting output, recomputed on a layout/text refresh rather than on every rendered frame, so values cannot clip merely because a sensor becomes valid. Temperature zero is unavailable; zero watts or zero RPM can be a valid stopped/idle reading.
 
 ## Host telemetry and adapter identity
 
 - GPU and VRAM polling is out of process and does not depend on whether the game uses DirectDraw, DX6/DX7, or a modern API. The old-API failure was adapter identification: the host previously ignored its target PID and required a nonzero hook-published LUID before initializing or filtering GPU counters.
 - A graphics-published adapter LUID is stamped with the publishing process ID. It wins when that PID is the selected game or a live direct child of it; the latter preserves the configured/injected parent as profile source while a split renderer owns final presentation. The sensor service resolves that parent relationship from the live process table instead of accepting any foreign publisher. When no trustworthy LUID is available, the host parses the target process's Windows `GPU Engine` PDH instances, selects the adapter with the highest non-video-engine load, and retains the prior process-derived adapter across a valid zero-load tie or a temporary missing sample. An ambiguous initial multi-adapter tie remains unavailable instead of guessing. This keeps multi-GPU selection deterministic without using API-specific guesses.
 - Shared GPU usage, VRAM usage, and VRAM capacity have independent validity bits. A real 0% or 0 MB sample is therefore valid, while a missing/invalid counter remains unavailable. Adapter/source metadata and an even/odd publication sequence let the hook consume one coherent snapshot and clear old values when the source PID or adapter changes.
-- All telemetry readers first validate the shared-memory ABI's exact version, size, and layout fingerprint. ABI 48 adds the display-timestamp stream without touching hook-owned source identity. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
+- LibreHardwareMonitor is never loaded into the controller, hook, Vulkan layer, or game. The dedicated sensor service monitors the controller process lifetime, launches the first-party Windows PowerShell 5.1 bridge suspended, assigns it to a kill-on-service-close job, and only then resumes it. The launch uses an explicit inherited-handle list, NUL stdin/stderr, a bounded stdout protocol, and a random named shutdown event. The bridge enables only the requested CPU/GPU visitors. `auto` GPU selection follows the device with the highest valid `GPU Core` load and retains the previous device across a tie; an ambiguous initial tie remains unavailable, while an exact identifier can pin another sensor. The native reader rejects malformed/non-finite/out-of-range output and expires a snapshot after `max(5 seconds, 3 * poll interval)`.
+- The tested LibreHardwareMonitor 0.9.6 CPU/GPU closure is four user-supplied files from one release: `LibreHardwareMonitorLib.dll`, `System.Memory.dll`, `System.Numerics.Vectors.dll`, and `System.Runtime.CompilerServices.Unsafe.dll`. CaptureEngine installs and packages only its own bridge plus README. The package allowlist excludes every locally added plugin DLL/notice, and `tools/licenses/LibreHardwareMonitor_NOTICE.txt` records MPL-2.0/source/third-party references and the combined-redistribution boundary.
+- All telemetry readers first validate the shared-memory ABI's exact version, size, and layout fingerprint. ABI 48 added the display-timestamp stream and ABI 50 added optional hardware-sensor values. Version/fingerprint isolation prevents an old reader from interpreting shifted fields; range/finite/validity checks remain a second line of defense.
 - Per-core load calculation rejects regressing kernel/user/idle counters, addition overflow, and idle-underflow before computing and clamping the busy percentage. This prevents a genuine counter discontinuity from becoming an unsigned multi-billion-percent value independently of ABI validation.
 - RAM publication is independent of CPU load. The earlier `RAM: -` case came from copying RAM only when the CPU sample was greater than zero; a valid RAM sample now updates even when CPU is unavailable or exactly 0%.
 - The DirectDraw compatibility renderer publishes the D3D9Ex helper's default-adapter LUID immediately after helper creation, including overlay-only runs where recording never creates another modern capture device. PID inference covers startup and any path that cannot publish an exact LUID.
@@ -98,7 +106,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - The DirectDraw7 app used about 45.7% of one CPU core with the overlay disabled versus about 64.7-68.6% enabled in short probes. Disabling the graph did not materially improve it, confirming that the 4K full-surface compatibility composite, not graph geometry, dominates this route. These are diagnostic short runs, not a formal 10,000-frame acceptance baseline.
 - On this machine, the DX6 test failed `QueryInterface(IDirect3D3)` (`0x80004002`) and fell back to DirectDraw; DX7 failed `IDirect3D7::CreateDevice` (`0x88760082`) and fell back to DirectDraw; DX8 device creation failed (`0x8876086C`) and the app fell back to GDI. Their poor pacing therefore primarily characterizes the fallback test apps, with measurable CE DirectDraw composite cost on top. The old zero/unavailable GPU and VRAM readings were a separate adapter-identity/validity bug fixed by the host-telemetry changes above, not an old-API sensor limitation.
 - Final no-recording DirectDraw7 smoke runs covered both installed x64 and x86 binaries at 4K/150% scaling. Both visibly reported `RTX 5070`, numeric GPU load, about 1.76 GB VRAM usage of 11.66 GB, and about 13 GB RAM usage of 31.93 GB. In both sessions the sensor log first resolved LUID `0xBAB1` from the target PID, then atomically switched to `source=hook LUID` with `luidPublisherPid` equal to the DirectDraw process after the D3D9Ex helper became available.
-- Debug sensor summaries include the complete CPU/max-core/GPU/VRAM/validity snapshot, adapter LUID, publisher PID/direct parent/eligibility, and ABI signature so future field-shift or source-validity failures are diagnosable without inferring values from the rendered overlay.
+- Debug sensor summaries include the complete CPU/max-core/GPU/VRAM/temperature/power/fan/validity snapshot, adapter LUID, publisher PID/direct parent/eligibility, and ABI signature so future field-shift or source-validity failures are diagnosable without inferring values from the rendered overlay. Selected LibreHardwareMonitor identifiers log only when they change; plugin filesystem paths and exception messages are not logged.
 
 ## Validation and stale-risk
 
@@ -106,6 +114,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Focused deterministic coverage pins draw-data notifications versus cache hits, failed-upload dirtiness, DX8/DX9 state-block reuse structure, DX10 constant invalidation, OpenGL array/fallback selection and state sentinels, glyph gutters, graph geometry, text-origin snapping, dynamic row sequences, and memory-value policy.
 - Live 4K validation covered native DX9 plus DirectDraw7 x64/x86 and showed valid RAM consumption rather than the unavailable marker, with the full overlay and graph rendered. Required build `0.1.4989` completed x64/x86 hooks and test apps, Vulkan layers, packaging/import closure, PE hardening, and PDB checks. All 14 focused host-telemetry tests pass. The no-build gate passed the remaining 1,644 native tests; the sole excluded cursor-bitmap test depends on the shared `IDC_ARROW`, which was temporarily transparent while the ChatGPT Windows-control session was active, consistent with cursor substitution and unrelated to overlay telemetry.
 - True hardware/runtime validation of the DX6/DX7/DX8 native paths remains unavailable on the current driver because the test apps fall back before reaching those devices. A genuine OpenGL 2.1 implementation is also still needed to runtime-exercise the legacy array path; unit/source invariants currently cover it.
+- LibreHardwareMonitor 0.9.6 was smoke-tested from the four-file directory on the current Ryzen/NVIDIA machine: the bridge reached ready state, emitted the real GPU Core temperature, and stopped through its event with exit code 0. The non-elevated run correctly omitted CPU temperature. AMD/Intel GPU selection and elevated CPU/power readings remain runtime-validation stale-risk; parser/config/layout/package behavior is deterministic-test covered.
 - The ABI-34 core built successfully into x64/x86 hooks and Vulkan layers as build `0.1.5028`; metadata `0.1.5029` passed the full native suite and Python self-tests. Final ABI-36 build `0.1.5032` and metadata/test gate `0.1.5033` passed. Ordinary-account Vulkan session `20260717_152124` resolved the hook-published adapter, published the correct 11,943 MB capacity, initialized/rendered the overlay, and completed inject recording with 534 output frames.
 - DirectDraw's full-surface transfer is the remaining known legacy cost boundary. Replacing it would be an architectural compatibility project, not a safe extension of this targeted polish.
 - HDR shader/policy regressions are covered offline across DirectX and Vulkan, and both SPIR-V payloads are compiled and validated from their checked-in GLSL sources. The secondary-DX12 contract regression proves all four render sites synchronize HDR/format state, and packed 320-nit Rec.709 green round-trips through the production PQ/Rec.2020 contract without losing chroma. Per the user, fresh visual validation of SDR-R10, scRGB, HDR10/PQ, Streamline UI, and FFX UI/backbuffer routes remains manual; this change did not launch CaptureEngine, games, or interactive test applications.

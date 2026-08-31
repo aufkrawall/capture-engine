@@ -60,14 +60,21 @@ struct HostMetricsPublication {
     float vramUsageMB = 0.0f;
     uint64_t vramTotal = 0;
     uint32_t maxCoreLoad = 0;
+    float cpuTemperatureC = 0.0f;
+    float gpuTemperatureC = 0.0f;
+    float cpuPackagePowerW = 0.0f;
+    float gpuPackagePowerW = 0.0f;
+    float gpuFanRpm = 0.0f;
     uint32_t validityMask = 0;
     uint32_t sourcePid = 0;
     LUID adapterLuid = {0, 0};
 };
 
 bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
-    constexpr uint32_t kKnownValidity = SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID |
-                                        SYSTEM_METRIC_VRAM_TOTAL_VALID;
+    constexpr uint32_t kKnownValidity =
+        SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID |
+        SYSTEM_METRIC_CPU_TEMPERATURE_VALID | SYSTEM_METRIC_GPU_TEMPERATURE_VALID |
+        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_FAN_VALID;
     if (!std::isfinite(publication.cpuUsage) || publication.cpuUsage < 0.0f || publication.cpuUsage > 100.0f ||
         !std::isfinite(publication.ramUsageGB) || publication.ramUsageGB < 0.0f ||
         publication.ramUsageGB > 1048576.0f || publication.maxCoreLoad > 100u ||
@@ -85,6 +92,31 @@ bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
     }
     if ((publication.validityMask & SYSTEM_METRIC_VRAM_TOTAL_VALID) != 0 &&
         (publication.vramTotal == 0 || publication.vramTotal > (1ull << 60))) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_CPU_TEMPERATURE_VALID) != 0 &&
+        (!std::isfinite(publication.cpuTemperatureC) || publication.cpuTemperatureC <= 0.0f ||
+         publication.cpuTemperatureC > 250.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_TEMPERATURE_VALID) != 0 &&
+        (!std::isfinite(publication.gpuTemperatureC) || publication.gpuTemperatureC <= 0.0f ||
+         publication.gpuTemperatureC > 250.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID) != 0 &&
+        (!std::isfinite(publication.cpuPackagePowerW) || publication.cpuPackagePowerW < 0.0f ||
+         publication.cpuPackagePowerW > 5000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID) != 0 &&
+        (!std::isfinite(publication.gpuPackagePowerW) || publication.gpuPackagePowerW < 0.0f ||
+         publication.gpuPackagePowerW > 5000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_FAN_VALID) != 0 &&
+        (!std::isfinite(publication.gpuFanRpm) || publication.gpuFanRpm < 0.0f ||
+         publication.gpuFanRpm > 100000.0f)) {
         return false;
     }
     if ((publication.validityMask & (SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID)) ==
@@ -111,6 +143,11 @@ bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublic
         publication.vramUsageMB = metrics.vramUsage.load(std::memory_order_relaxed);
         publication.vramTotal = metrics.vramTotal.load(std::memory_order_relaxed);
         publication.maxCoreLoad = metrics.maxCoreLoad.load(std::memory_order_relaxed);
+        publication.cpuTemperatureC = metrics.cpuTemperatureC.load(std::memory_order_relaxed);
+        publication.gpuTemperatureC = metrics.gpuTemperatureC.load(std::memory_order_relaxed);
+        publication.cpuPackagePowerW = metrics.cpuPackagePowerW.load(std::memory_order_relaxed);
+        publication.gpuPackagePowerW = metrics.gpuPackagePowerW.load(std::memory_order_relaxed);
+        publication.gpuFanRpm = metrics.gpuFanRpm.load(std::memory_order_relaxed);
         publication.adapterLuid.LowPart = static_cast<DWORD>(metrics.adapterLuidLow.load(std::memory_order_relaxed));
         publication.adapterLuid.HighPart = static_cast<LONG>(metrics.adapterLuidHigh.load(std::memory_order_relaxed));
         publication.validityMask = metrics.validityMask.load(std::memory_order_relaxed);
@@ -237,6 +274,12 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
         current.vramUsed = 0;
         current.vramUsageValid = false;
         current.vramTotal = 0;
+        current.gpuTemperatureC = 0.0f;
+        current.gpuTemperatureValid = false;
+        current.gpuPackagePowerW = 0.0f;
+        current.gpuPackagePowerValid = false;
+        current.gpuFanRpm = 0.0f;
+        current.gpuFanValid = false;
         snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh,
                  (unsigned int)luidLow);
 
@@ -309,6 +352,16 @@ bool SystemMetricsCollector::UpdateFromHost() {
         current.vramUsageValid ? static_cast<uint64_t>((std::max)(0.0f, publication.vramUsageMB) * 1024.0 * 1024.0) : 0;
     if ((publication.validityMask & SYSTEM_METRIC_VRAM_TOTAL_VALID) != 0)
         current.vramTotal = publication.vramTotal;
+    current.cpuTemperatureValid = (publication.validityMask & SYSTEM_METRIC_CPU_TEMPERATURE_VALID) != 0;
+    current.cpuTemperatureC = current.cpuTemperatureValid ? publication.cpuTemperatureC : 0.0f;
+    current.gpuTemperatureValid = (publication.validityMask & SYSTEM_METRIC_GPU_TEMPERATURE_VALID) != 0;
+    current.gpuTemperatureC = current.gpuTemperatureValid ? publication.gpuTemperatureC : 0.0f;
+    current.cpuPackagePowerValid = (publication.validityMask & SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID) != 0;
+    current.cpuPackagePowerW = current.cpuPackagePowerValid ? publication.cpuPackagePowerW : 0.0f;
+    current.gpuPackagePowerValid = (publication.validityMask & SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID) != 0;
+    current.gpuPackagePowerW = current.gpuPackagePowerValid ? publication.gpuPackagePowerW : 0.0f;
+    current.gpuFanValid = (publication.validityMask & SYSTEM_METRIC_GPU_FAN_VALID) != 0;
+    current.gpuFanRpm = current.gpuFanValid ? publication.gpuFanRpm : 0.0f;
     return true;
 }
 

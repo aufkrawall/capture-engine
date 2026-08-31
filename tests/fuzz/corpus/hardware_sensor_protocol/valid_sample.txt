@@ -1,0 +1,1 @@
+CE_LHM_SAMPLE	17	58.25	/cpu/0/temperature/0	63	/gpu-nvidia/0/temperature/0	0	/cpu/0/power/0	241.5	/gpu-nvidia/0/power/0	1450	/gpu-nvidia/0/fan/0

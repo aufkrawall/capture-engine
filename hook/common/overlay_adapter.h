@@ -166,7 +166,9 @@ private:
     float cachedAvgFPS = 0.0f;
     float cached1PercentLow = 0.0f;
     float cached01PercentLow = 0.0f;
-    SystemMetrics cachedSystemMetrics;
+    SystemMetrics cachedSystemMetrics{};
+    char cachedCpuMetricsText[96] = "--";
+    char cachedGpuMetricsText[96] = "--";
 
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;

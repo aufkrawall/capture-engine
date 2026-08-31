@@ -1,33 +1,63 @@
 #pragma once
+
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 
-struct SensorData {
-    float cpuUsage;
-    float ramUsage;  // GB
-    float gpuUsage;
-    float vramUsage;  // MB
-    uint64_t vramTotal;
-    uint32_t maxCoreLoad;
+struct HardwareSensorsConfig;
+
+namespace ce::hardware_sensors {
+
+struct SensorValue {
+    float value = 0.0f;
+    bool valid = false;
+    std::string identifier;
 };
 
-class ISensorPlugin {
+struct HardwareSensorSnapshot {
+    SensorValue cpuTemperature;
+    SensorValue gpuTemperature;
+    SensorValue cpuPackagePower;
+    SensorValue gpuPackagePower;
+    SensorValue gpuFan;
+    uint32_t sequence = 0;
+    uint64_t receivedTickMs = 0;
+};
+
+enum class BridgeMessageKind : uint8_t {
+    Invalid = 0,
+    Ready,
+    Sample,
+    Error,
+};
+
+struct BridgeMessage {
+    BridgeMessageKind kind = BridgeMessageKind::Invalid;
+    std::string detail;
+    HardwareSensorSnapshot snapshot;
+};
+
+// Parses the deliberately small, tab-delimited protocol emitted by the
+// first-party PowerShell bridge. Every field is bounded before it reaches IPC.
+bool ParseBridgeMessage(std::string_view line, BridgeMessage& message);
+bool IsSnapshotFresh(const HardwareSensorSnapshot& snapshot, uint64_t nowTickMs, uint32_t pollIntervalMs);
+
+class LibreHardwareMonitorPlugin {
 public:
-    virtual ~ISensorPlugin() = default;
+    explicit LibreHardwareMonitorPlugin(const HardwareSensorsConfig& config);
+    ~LibreHardwareMonitorPlugin();
 
-    // Initialize the plugin
-    virtual bool Initialize() = 0;
+    LibreHardwareMonitorPlugin(const LibreHardwareMonitorPlugin&) = delete;
+    LibreHardwareMonitorPlugin& operator=(const LibreHardwareMonitorPlugin&) = delete;
 
-    // Poll for new data
-    virtual bool Poll(SensorData& data) = 0;
+    bool Start();
+    void Poll();
+    HardwareSensorSnapshot GetSnapshot() const;
 
-    // Cleanup
-    virtual void Shutdown() = 0;
-
-    // Plugin Metadata
-    virtual const char* GetName() const = 0;
-    virtual const char* GetVersion() const = 0;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
-// Exported function signature to create the plugin instance
-typedef ISensorPlugin* (*PFN_CreateSensorPlugin)();
+}  // namespace ce::hardware_sensors

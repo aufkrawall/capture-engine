@@ -378,6 +378,8 @@ TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
     "pseudo_overlay_sync.cpp",
 )
 
+TESTS_ONLY_SENSOR_SOURCES = ("sensor_plugin.cpp",)
+
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
@@ -540,7 +542,11 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
 
     captureengine_test_objs = []
-    for name in sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES):
+    for name in (
+        sorted(STRICT_FP_SCREENSHOT_SOURCES)
+        + list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
+        + list(TESTS_ONLY_SENSOR_SOURCES)
+    ):
         extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
         obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
         compile_tasks.append((test_cflags + extra, os.path.join(PROJECT_ROOT, "captureengine", name), obj))

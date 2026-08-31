@@ -370,6 +370,25 @@ load_color_high=FF0000
 ; auto matches the Windows SDR-white calibration of the game's current monitor.
 ; Otherwise enter an explicit 1-10000 nit overlay paper white.
 hdr_paper_white=auto
+
+[HardwareSensors]
+; Optional LibreHardwareMonitor bridge for CPU/GPU temperature, package power,
+; and GPU fan RPM. A contained child owned by the dedicated sensor service loads
+; it, never the injected game process. auto uses it when all required plugin
+; files exist; on additionally warns when they are missing; off disables it.
+enabled=auto
+; Polling interval in milliseconds (250-10000).
+poll_interval_ms=1000
+; Each value is off, auto, or an exact LibreHardwareMonitor identifier such as
+; /gpu-nvidia/0/temperature/0. Auto GPU selection follows the GPU with the
+; highest reported GPU Core load. Values are appended to the existing CPU/GPU
+; overlay rows, so [Overlay] show_cpu/show_gpu remain the display toggles.
+cpu_temperature=auto
+gpu_temperature=auto
+cpu_package_power=off
+gpu_package_power=off
+gpu_fan=off
+
 [DesktopOverlay]
 ; This small screen-corner window works without injection and is useful with WGC
 ; or DXGI capture.

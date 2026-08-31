@@ -1,0 +1,31 @@
+LibreHardwareMonitor optional integration notice
+================================================
+
+CaptureEngine does not include or redistribute LibreHardwareMonitor binaries.
+The optional integration is activated only when a user separately places the
+required files in plugins/LibreHardwareMonitor. CaptureEngine's bridge script is
+original CaptureEngine code and is licensed under the project's MIT license.
+
+LibreHardwareMonitor is available under the Mozilla Public License 2.0 (MPL-2.0):
+
+  Project: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+  Source:  https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/v0.9.6
+  License: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/v0.9.6/LICENSE
+  Notices: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/v0.9.6/THIRD-PARTY-NOTICES.txt
+
+CaptureEngine's tested setup uses LibreHardwareMonitor 0.9.6 and the matching
+System.Memory.dll, System.Numerics.Vectors.dll, and
+System.Runtime.CompilerServices.Unsafe.dll files from that official release.
+Those dependency DLLs retain their respective upstream licenses.
+
+CaptureEngine's package staging has an explicit first-party allowlist for the
+plugins directory. It ships only CaptureEngine.LibreHardwareMonitor.ps1 and its
+README.txt; all DLLs and other files a user adds locally are excluded. Therefore
+the official CaptureEngine archive contains no LibreHardwareMonitor/MPL-covered
+files. CaptureEngine's own bridge remains MIT-licensed; other bundled components
+retain the licenses documented by their respective notices.
+
+Anyone redistributing a combined installation containing LibreHardwareMonitor
+or its dependencies is responsible for satisfying the applicable MPL-2.0 and
+dependency-license requirements, including carrying the upstream license and
+third-party notices and meeting any corresponding-source obligations.

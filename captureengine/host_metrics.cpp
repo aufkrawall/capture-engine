@@ -6,6 +6,7 @@
 #include <thread>
 #include "../common/logging.h"
 #include "host_metrics_policy.h"
+#include "sensor_plugin.h"
 
 // For NTQuerySystemInformation
 #include <winternl.h>
@@ -289,7 +290,8 @@ uint32_t AdapterSourceClass(metrics_policy::AdapterResolutionSource source) {
 }  // namespace
 
 void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t knownLuid,
-                         metrics_policy::AdapterResolutionSource knownSource) {
+                         metrics_policy::AdapterResolutionSource knownSource,
+                         const ce::hardware_sensors::HardwareSensorSnapshot& hardwareSensors) {
     if (!shm)
         return;
 
@@ -413,6 +415,16 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
         validity |= SYSTEM_METRIC_VRAM_USAGE_VALID;
     if (vramTotal > 0)
         validity |= SYSTEM_METRIC_VRAM_TOTAL_VALID;
+    if (hardwareSensors.cpuTemperature.valid)
+        validity |= SYSTEM_METRIC_CPU_TEMPERATURE_VALID;
+    if (hardwareSensors.gpuTemperature.valid)
+        validity |= SYSTEM_METRIC_GPU_TEMPERATURE_VALID;
+    if (hardwareSensors.cpuPackagePower.valid)
+        validity |= SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID;
+    if (hardwareSensors.gpuPackagePower.valid)
+        validity |= SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID;
+    if (hardwareSensors.gpuFan.valid)
+        validity |= SYSTEM_METRIC_GPU_FAN_VALID;
 
     auto& published = shm->systemMetrics;
     published.publicationSequence.fetch_add(1, std::memory_order_acq_rel);
@@ -425,6 +437,11 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
     published.vramUsage.store(static_cast<float>(static_cast<double>(vramUsed) / (1024.0 * 1024.0)),
                               std::memory_order_relaxed);
     published.vramTotal.store(vramTotal, std::memory_order_relaxed);
+    published.cpuTemperatureC.store(hardwareSensors.cpuTemperature.value, std::memory_order_relaxed);
+    published.gpuTemperatureC.store(hardwareSensors.gpuTemperature.value, std::memory_order_relaxed);
+    published.cpuPackagePowerW.store(hardwareSensors.cpuPackagePower.value, std::memory_order_relaxed);
+    published.gpuPackagePowerW.store(hardwareSensors.gpuPackagePower.value, std::memory_order_relaxed);
+    published.gpuFanRpm.store(hardwareSensors.gpuFan.value, std::memory_order_relaxed);
     published.adapterLuidLow.store(static_cast<int32_t>(low), std::memory_order_relaxed);
     published.adapterLuidHigh.store(static_cast<int32_t>(high), std::memory_order_relaxed);
     published.adapterSource.store(static_cast<uint32_t>(adapter.source), std::memory_order_relaxed);

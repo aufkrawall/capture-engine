@@ -26,8 +26,12 @@ PACKAGED_X86_TEST_APPS = tuple(
 )
 CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES = {"bak", "captures", "logs", "screenshots"}
 CAPTURE_PACKAGE_EXCLUDED_SUFFIXES = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
-CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses"}
+CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses", "plugins"}
 CAPTURE_PACKAGE_ROOT_SUFFIXES = (".dll", ".exe", ".json", ".pdb")
+CAPTURE_PACKAGE_PLUGIN_FILES = {
+    "plugins/librehardwaremonitor/captureengine.librehardwaremonitor.ps1",
+    "plugins/librehardwaremonitor/readme.txt",
+}
 
 
 def _validate_workspace_cleanup_target(path: str) -> str:
@@ -57,6 +61,10 @@ def _capture_package_file_allowed(relative_path: str) -> bool:
     filename = parts[-1].lower()
     if filename in {"config.ini", "nul"} or ".old." in filename:
         return False
+    if parts[0].lower() == "plugins":
+        # Optional third-party files are user-supplied and must never leak into
+        # a CaptureEngine archive assembled from a local installation.
+        return normalized.lower() in CAPTURE_PACKAGE_PLUGIN_FILES
     if len(parts) == 1 and not filename.endswith(CAPTURE_PACKAGE_ROOT_SUFFIXES):
         return False
     return not filename.endswith(CAPTURE_PACKAGE_EXCLUDED_SUFFIXES)
@@ -488,6 +496,7 @@ def run_sanitizer_regression_pass(ccache_flag: bool, jobs: Optional[int] = None)
 # unnoticed: they were never built, never run, and their corpora were empty.
 FUZZ_TARGET_CORPUS = {
     "fuzz_config_parser.cpp": "config",
+    "fuzz_hardware_sensor_protocol.cpp": "hardware_sensor_protocol",
     "fuzz_ipc_deserialize.cpp": "ipc",
 }
 
@@ -580,6 +589,13 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
         compile_tasks.append((base_cflags, src, obj))
         harness_objs[src] = obj
 
+    # ParseBridgeMessage is intentionally owned by the controller-side plugin
+    # implementation rather than the common/ tree linked into every product.
+    sensor_plugin_obj = os.path.join(obj_dir, "captureengine", "sensor_plugin.fuzz.o").replace("\\", "/")
+    compile_tasks.append(
+        (base_cflags, os.path.join(PROJECT_ROOT, "captureengine", "sensor_plugin.cpp"), sensor_plugin_obj)
+    )
+
     # These sanitizer/coverage compilations must not reach compile_commands.json:
     # they cover the same common/*.cpp files as the product build and would replace
     # the real product flags in the LSP and clang-tidy view of those sources.
@@ -614,7 +630,10 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
     for src, obj in harness_objs.items():
         name = os.path.splitext(os.path.basename(src))[0]
         exe = os.path.join(out_dir, name + ".exe")
-        run_command([clang_exe, obj] + common_objs + [fuzzer_archive] + fuzz_ldflags + ["-o", exe], env=env)
+        support_objs = [sensor_plugin_obj] if name == "fuzz_hardware_sensor_protocol" else []
+        run_command(
+            [clang_exe, obj] + support_objs + common_objs + [fuzzer_archive] + fuzz_ldflags + ["-o", exe], env=env
+        )
         executables[src] = exe
     log(f"Fuzz targets built: {len(executables)}")
 
