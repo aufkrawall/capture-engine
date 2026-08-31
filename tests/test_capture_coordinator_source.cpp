@@ -141,7 +141,7 @@ TEST(CaptureCoordinatorSourceTest, SplitDeviceKeyedMutexLifecycleCoversDiscarded
     EXPECT_NE(capture.find("keyedMutexAbandonedReclaimCount_"), std::string::npos);
     EXPECT_NE(capture.find("const uint64_t releaseKey = copySucceeded ? 1 : 0"), std::string::npos);
 
-    // Cursor-aware CFR repeats make a second source read after fresh-frame
+    // Dynamic-overlay CFR repeats make a second source read after fresh-frame
     // conversion returned the shared surface to key 0. That cache copy must
     // reacquire key 0 or the repeat texture can be black/stale.
     const size_t cacheBegin = encoder.find("bool VideoEncoder::CacheRepeatSourceFrameTexture");
