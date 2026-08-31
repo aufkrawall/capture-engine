@@ -51,6 +51,7 @@ void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance, P
         (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
     dispatch->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR =
         (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    PopulatePresentTimingInstanceDispatch(dispatch, instance, gipa);
     dispatch->fp_vkGetPhysicalDeviceSurfaceFormatsKHR =
         (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
     dispatch->fp_vkGetPhysicalDeviceSurfacePresentModesKHR =
@@ -137,6 +138,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkGetSwapchainImagesKHR = (PFN_vkGetSwapchainImagesKHR)gdpa(device, "vkGetSwapchainImagesKHR");
     dispatch->fp_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)gdpa(device, "vkAcquireNextImageKHR");
     dispatch->fp_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)gdpa(device, "vkQueuePresentKHR");
+    PopulatePresentTimingDeviceDispatch(dispatch, device, gdpa);
     dispatch->fp_vkSetLatencySleepModeNV =
         (PFN_vkSetLatencySleepModeNV)gdpa(device, "vkSetLatencySleepModeNV");
     dispatch->fp_vkLatencySleepNV = (PFN_vkLatencySleepNV)gdpa(device, "vkLatencySleepNV");
@@ -225,6 +227,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
     PFN_vkCreateInstance create_fn = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
 
     VkResult res = VK_SUCCESS;
+    bool presentTimingSurfaceQueriesEnabled = false;
 
     if (!g_LayerState.whitelisted) {
         // Passthrough: call next layer directly without modification
@@ -232,7 +235,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
     } else {
         // Inject required extensions
         std::vector<const char*> extensions;
-        extensions.reserve(pCreateInfo->enabledExtensionCount + 2);
+        extensions.reserve(pCreateInfo->enabledExtensionCount + 3);
         for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
             extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
         }
@@ -250,6 +253,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
             extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
         if (!hasExtMemCaps)
             extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+        const size_t extensionCountBeforePresentTiming = extensions.size();
+        bool presentTimingSurfaceQueryExtensionAdded = false;
+        presentTimingSurfaceQueriesEnabled = EnablePresentTimingSurfaceQueries(
+            gipa, VulkanLayerState::Get().WantsVblankPacedPresentation(), extensions,
+            &presentTimingSurfaceQueryExtensionAdded);
 
         VkInstanceCreateInfo modifiedCreateInfo = *pCreateInfo;
         modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
@@ -294,6 +302,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
 
         LayerLog("Vulkan Layer: Calling next vkCreateInstance...");
         res = create_fn(&modifiedCreateInfo, pAllocator, pInstance);
+        if (res != VK_SUCCESS && presentTimingSurfaceQueryExtensionAdded) {
+            LayerLog("Vulkan Layer: vkCreateInstance rejected CE's optional native present-timing query "
+                     "extension (result=%d); retrying without it", res);
+            extensions.resize(extensionCountBeforePresentTiming);
+            modifiedCreateInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+            modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+            presentTimingSurfaceQueriesEnabled = false;
+            res = create_fn(&modifiedCreateInfo, pAllocator, pInstance);
+        }
     }
 
     LayerLog("Vulkan Layer: next vkCreateInstance returned %d", res);
@@ -306,6 +323,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
 
     auto* dispatch = new InstanceDispatch();
     PopulateInstanceDispatch(dispatch, *pInstance, gipa);
+    dispatch->presentTimingSurfaceQueriesEnabled = presentTimingSurfaceQueriesEnabled;
     VulkanLayerState::Get().RegisterInstance(*pInstance, dispatch);
 
     LayerLog("Vulkan Layer: Capture_vkCreateInstance END - success, instance=%p", (void*)*pInstance);
@@ -497,6 +515,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     bool formatFeatureFlags2Available = false;
     bool storageImageReadWithoutFormatAvailable = false;
     bool storageImageWriteWithoutFormatAvailable = false;
+    PresentTimingDeviceEnablement presentTimingEnablement;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
     const VkPhysicalDeviceFeatures* requestedCoreFeatures = pCreateInfo->pEnabledFeatures;
@@ -604,15 +623,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         // advertises the complete Win32 external-memory/fence contract. Never
         // make the game's vkCreateDevice fail merely because capture is absent.
         //
-        // The withheld-capability filter runs first: an application that
-        // queried the device extensions before CE was configured, or that
-        // enables one without querying at all, must still not reach a device
-        // where the driver owns presentation pacing. See
-        // vulkan_layer_capabilities.cpp.
-        bool withheldExtensionRemoved = false;
-        std::vector<const char*> extensions = FilterWithheldDeviceExtensions(
-            pCreateInfo->ppEnabledExtensionNames, pCreateInfo->enabledExtensionCount, &withheldExtensionRemoved);
-        extensions.reserve(extensions.size() + 6);
+        // Preserve every application-requested extension, including NVIDIA's
+        // generated-frame metering signal. Native relative timing adds the
+        // independent display-rate ceiling below.
+        std::vector<const char*> extensions;
+        extensions.reserve(pCreateInfo->enabledExtensionCount + 9);
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
+            extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
 
         bool hasExtMem = false;
         bool hasExtMemWin32 = false;
@@ -663,6 +680,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             modifiedCreateInfo.pNext = &timelineFeatures;
         }
 
+        PreparePresentTimingDevice(instanceDispatch, physicalDevice, *pCreateInfo, availableExtensions,
+                                   extensions, modifiedCreateInfo, presentTimingEnablement);
+
         if (!captureInteropEnabled) {
             LayerLog(
                 "Vulkan Layer: Win32 external capture unavailable; creating device without capture-only "
@@ -682,28 +702,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         }
 
         LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
-        result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
-        if (result != VK_SUCCESS && withheldExtensionRemoved) {
-            // A driver that rejects the create info because the application
-            // also chained the matching feature structure must not turn a
-            // pacing preference into a game that cannot start. The pNext chain
-            // is application-owned and const, so the only transactional answer
-            // is to hand the extension back and let the per-present metering
-            // suppression carry the profile on its own.
-            LayerLog(
-                "Vulkan Layer: vkCreateDevice failed with the withheld device extension removed (result=%d); "
-                "restoring the application's own extension list",
-                result);
-            withheldExtensionRemoved = false;
-            for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-                const char* name = pCreateInfo->ppEnabledExtensionNames[i];
-                if (ce::vulkan_present_metering_policy::IsPresentMeteringExtensionName(name))
-                    extensions.push_back(name);
-            }
-            modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
-            modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
-            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
-        }
+        result = CreateDeviceWithPresentTimingFallback(create_fn, physicalDevice, extensions,
+                                                       modifiedCreateInfo, presentTimingEnablement,
+                                                       pAllocator, pDevice);
         if (result != VK_SUCCESS && overlayQueueReservation.reserved) {
             // Never let CE's extra queue be the reason a game fails to start.
             LayerLog(
@@ -713,7 +714,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             overlayQueueReservation = OverlayQueueReservation{};
             modifiedCreateInfo.queueCreateInfoCount = pCreateInfo->queueCreateInfoCount;
             modifiedCreateInfo.pQueueCreateInfos = pCreateInfo->pQueueCreateInfos;
-            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+            result = CreateDeviceWithPresentTimingFallback(create_fn, physicalDevice, extensions,
+                                                           modifiedCreateInfo, presentTimingEnablement,
+                                                           pAllocator, pDevice);
         }
     }
 
@@ -728,6 +731,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->formatFeatureFlags2Available = formatFeatureFlags2Available;
     dispatch->storageImageReadWithoutFormatAvailable = storageImageReadWithoutFormatAvailable;
     dispatch->storageImageWriteWithoutFormatAvailable = storageImageWriteWithoutFormatAvailable;
+    dispatch->relativePresentTimingEnabled = presentTimingEnablement.enabled;
     dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);

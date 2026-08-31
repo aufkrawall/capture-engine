@@ -103,11 +103,11 @@ static bool IsLayerDebugLoggingEnabled() {
 // game freeze caused entirely by CE diagnostics. Every line already reaches
 // vulkan_layer_early.log / vulkan_layer.log, OutputDebugString, and the IPC log,
 // so staying out of the host's streams loses no diagnostic.
-static void EarlyLog(const char* fmt, ...) {
+static void LayerEarlyLog(const char* fmt, ...) {
     if (!IsLayerDebugLoggingEnabled())
         return;
 
-    // One initialization, not a check-then-assign: EarlyLog runs on several
+    // One initialization, not a check-then-assign: LayerEarlyLog runs on several
     // threads before the IPC log exists, and two of them racing on the same
     // std::string is a data race, not a harmless duplicate assignment.
     static const std::string logPath = GetSessionLogsDirectory() + "\\vulkan_layer_early.log";
@@ -195,7 +195,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
                                 reinterpret_cast<LPCWSTR>(hInst), &pinnedLayer)) {
             return FALSE;
         }
-        EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
+        LayerEarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
     } else if (reason == DLL_PROCESS_DETACH) {
         // Never call IPC, logging, Vulkan, or C++ cleanup while the loader lock is
         // held. Cooperative host deactivation is performed by the lifecycle
@@ -254,7 +254,7 @@ void LayerLog(const char* fmt, ...) {
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
 
-    // Deliberately no write to the host process's stdout/stderr - see EarlyLog.
+    // Deliberately no write to the host process's stdout/stderr - see LayerEarlyLog.
 
     // Also to log file
     if (g_LogFile) {
@@ -277,22 +277,22 @@ void LayerLog(const char* fmt, ...) {
 
 extern "C" __declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
-    EarlyLog("NegotiateLoaderLayerInterfaceVersion called");
+    LayerEarlyLog("NegotiateLoaderLayerInterfaceVersion called");
 
     if (!pVersionStruct) {
-        EarlyLog("ERROR: pVersionStruct is NULL");
+        LayerEarlyLog("ERROR: pVersionStruct is NULL");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
     uint32_t requestedVersion = pVersionStruct->loaderLayerInterfaceVersion;
-    EarlyLog("Loader interface version requested: %u", requestedVersion);
+    LayerEarlyLog("Loader interface version requested: %u", requestedVersion);
     LayerLog(
         "Vulkan Layer: vkNegotiateLoaderLayerInterfaceVersion called, "
         "requested version=%u, sType=%u, struct size=%zu",
         requestedVersion, pVersionStruct->sType, sizeof(*pVersionStruct));
 
     if (pVersionStruct->loaderLayerInterfaceVersion < 2) {
-        EarlyLog("Interface version too low (need >= 2, got %u)", pVersionStruct->loaderLayerInterfaceVersion);
+        LayerEarlyLog("Interface version too low (need >= 2, got %u)", pVersionStruct->loaderLayerInterfaceVersion);
         LayerLog(
             "Vulkan Layer: Negotiation FAILED - interface version %u too old, "
             "minimum required is 2",
@@ -300,24 +300,24 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    EarlyLog("Checking whitelist...");
+    LayerEarlyLog("Checking whitelist...");
     if (!PerformEarlyWhitelistCheck()) {
-        EarlyLog("Process not whitelisted - layer entering passthrough mode");
+        LayerEarlyLog("Process not whitelisted - layer entering passthrough mode");
         LayerLog("Vulkan Layer: Process not whitelisted - entering passthrough mode");
         // Do NOT return error, just set flag (already done by check)
     } else {
         LayerLog("Vulkan Layer: Process whitelisted - full layer mode enabled");
     }
 
-    EarlyLog("Initializing IPC...");
+    LayerEarlyLog("Initializing IPC...");
     if (!LayerIPC_Init()) {
         if (g_LayerState.whitelisted) {
-            EarlyLog("IPC connection failed - layer dormant");
+            LayerEarlyLog("IPC connection failed - layer dormant");
             LayerLog("Vulkan Layer: IPC initialization FAILED - layer will be dormant");
             g_LayerState.whitelisted = false;
             // Do NOT return error, continue as passthrough
         } else {
-            EarlyLog("Skipping IPC connection in passthrough mode (not whitelisted)");
+            LayerEarlyLog("Skipping IPC connection in passthrough mode (not whitelisted)");
             LayerLog("Vulkan Layer: Passthrough mode active (process not whitelisted)");
         }
     } else {
@@ -325,7 +325,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     }
 
     if (LayerIPC_IsConnected()) {
-        EarlyLog("IPC connected, initializing layer functions...");
+        LayerEarlyLog("IPC connected, initializing layer functions...");
     }
 
     pVersionStruct->loaderLayerInterfaceVersion = 2;
@@ -352,14 +352,14 @@ static bool PerformEarlyWhitelistCheck() {
     DWORD inheritedParentPid = 0;
     g_LayerState.whitelisted = LayerIPC_IsProcessEligibleByCurrentHost(&inheritedParentPid);
     if (inheritedParentPid != 0) {
-        EarlyLog("Process inherited Vulkan eligibility from published parent target/source PID %lu",
+        LayerEarlyLog("Process inherited Vulkan eligibility from published parent target/source PID %lu",
                  inheritedParentPid);
         LayerLog("Vulkan Layer: Inherited profile eligibility from published parent target/source PID %lu",
                  inheritedParentPid);
     }
 
     if (!g_LayerState.whitelisted) {
-        EarlyLog("Process not whitelisted - layer dormant");
+        LayerEarlyLog("Process not whitelisted - layer dormant");
     }
 
     return g_LayerState.whitelisted;

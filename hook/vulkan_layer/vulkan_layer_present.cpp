@@ -1,5 +1,6 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_boundary.h"
+#include "vulkan_present_timing_policy.h"
 #include "vulkan_reflex_limiter.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
@@ -148,62 +149,56 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;
 
-    // Frame-generation present metering displaces the swapchain's FIFO rate
-    // contract (see vulkan_present_metering_policy.h). Resolve it before the
-    // overlay work so the down-call is not delayed by anything avoidable: on a
-    // present that carries no metering request this is a single load and one
-    // pointer test.
-    const void* meteringFreePresentChain = nullptr;
-    bool suppressPresentMetering = false;
-    if (pPresentInfo && pPresentInfo->pNext && VulkanLayerState::Get().WantsVblankPacedPresentation()) {
-        const ce::vulkan_present_metering_policy::ChainScan scan =
-            ce::vulkan_present_metering_policy::ScanPresentChain(pPresentInfo->pNext);
-        if (scan.found) {
+    const bool wantsVblankPacedPresentation =
+        VulkanLayerState::Get().WantsVblankPacedPresentation();
+    const ce::vulkan_present_metering_policy::ChainScan presentMeteringScan =
+        (pPresentInfo && pPresentInfo->pNext && wantsVblankPacedPresentation)
+            ? ce::vulkan_present_metering_policy::ScanPresentChain(pPresentInfo->pNext)
+            : ce::vulkan_present_metering_policy::ChainScan{};
+
+    // Preserve NVIDIA's generated-frame spacing signal. Native relative timing
+    // adds the display-rate ceiling later without unlinking application-owned
+    // VK_NV_present_metering state (session 20260830_234347).
+    if (pPresentInfo && pPresentInfo->pNext && wantsVblankPacedPresentation) {
+        if (presentMeteringScan.found) {
             ce::vulkan_present_metering_policy::Input meteringInput = {};
             meteringInput.vblankPacedPresentationRequested = true;
             meteringInput.swapchainPresentModeKnown = (sd != nullptr);
             meteringInput.swapchainPresentMode = sd ? sd->presentMode : VK_PRESENT_MODE_IMMEDIATE_KHR;
             meteringInput.swapchainCount = pPresentInfo->swapchainCount;
-            meteringInput.meteredFramesPerBatch = scan.framesPerBatch;
-            meteringInput.meteringRequestIsChainHead = scan.isChainHead;
+            meteringInput.meteredFramesPerBatch = presentMeteringScan.framesPerBatch;
             const ce::vulkan_present_metering_policy::Decision decision =
                 ce::vulkan_present_metering_policy::Decide(meteringInput);
-            if (decision.suppressMetering) {
-                meteringFreePresentChain = scan.chainWithoutMetering;
-                suppressPresentMetering = true;
-                modified = true;
-            }
             // One line per state, not per present: activation, a frame
-            // generation multiplier change, or a chain shape CE cannot unlink.
+            // generation multiplier change, or a chain shape change.
             if (sd) {
-                const uint32_t logState = (scan.framesPerBatch & 0xFFFFu) | (decision.suppressMetering ? 0x10000u : 0u) |
-                                          (decision.blockedByChainPosition ? 0x20000u : 0u) | 0x80000000u;
+                const uint32_t logState =
+                    (presentMeteringScan.framesPerBatch & 0xFFFFu) |
+                    (decision.preserveMetering ? 0x10000u : 0u) |
+                    (presentMeteringScan.isChainHead ? 0x20000u : 0u) | 0x80000000u;
                 if (sd->presentMeteringLogState.load(std::memory_order_relaxed) != logState &&
                     sd->presentMeteringLogState.exchange(logState, std::memory_order_acq_rel) != logState) {
                     LayerLog(
                         "Vulkan Layer: frame-generation present metering numFramesPerBatch=%u "
                         "(swapchain presentMode=%d images=%u chainNodes=%u chainHead=%d) - %s",
-                        scan.framesPerBatch, static_cast<int>(sd->presentMode), sd->imageCount, scan.nodeCount,
-                        scan.isChainHead ? 1 : 0,
-                        decision.suppressMetering
-                            ? "suppressed so the swapchain's vertical-blank pacing stays authoritative"
-                            : (decision.blockedByChainPosition
-                                   ? "NOT suppressed: the request is not the chain head and unlinking it would "
-                                     "write application memory"
-                                   : "left in place: this present mode has no vertical-blank rate contract to defend"));
+                        presentMeteringScan.framesPerBatch, static_cast<int>(sd->presentMode), sd->imageCount,
+                        presentMeteringScan.nodeCount, presentMeteringScan.isChainHead ? 1 : 0,
+                        decision.preserveMetering
+                            ? "preserved for generated-frame spacing; native relative timing owns the display ceiling"
+                            : "left in place unchanged");
                 }
             }
         }
     }
 
-    // The present-mode selection is resolved on the chain the metering unlink
-    // already produced, so the two head-only substitutions compose instead of
-    // fighting over the same node.
-    const void* effectivePresentChain = suppressPresentMetering ? meteringFreePresentChain
-                                                                : (pPresentInfo ? pPresentInfo->pNext : nullptr);
+    // CE never rewrites the application's metering request. Present-mode
+    // selection and native timing compose by adding CE-owned head nodes.
+    const void* effectivePresentChain = pPresentInfo ? pPresentInfo->pNext : nullptr;
+    const void* finalPresentChain = effectivePresentChain;
+    bool fifoPresentModeActive =
+        sd && ce::vulkan_present_timing_policy::IsFifoPresentMode(sd->presentMode);
     ce::vulkan_present_chain::SwapchainPresentModeInfo forcedPresentModeNode = {};
     VkPresentModeKHR forcedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    bool forcePresentModeSelection = false;
     if (pPresentInfo && effectivePresentChain) {
         const ce::vulkan_present_chain::ChainDescription chain =
             ce::vulkan_present_chain::DescribeChain(effectivePresentChain, nullptr, 0);
@@ -214,7 +209,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                                          : "no per-present mode selection");
         }
         ce::vulkan_present_chain::PresentModeSelectionInput selectionInput = {};
-        selectionInput.vblankPacedPresentationRequested = VulkanLayerState::Get().WantsVblankPacedPresentation();
+        selectionInput.vblankPacedPresentationRequested = wantsVblankPacedPresentation;
         selectionInput.swapchainPresentModeKnown = (sd != nullptr);
         selectionInput.swapchainPresentMode = sd ? sd->presentMode : VK_PRESENT_MODE_IMMEDIATE_KHR;
         selectionInput.presentSwapchainCount = pPresentInfo->swapchainCount;
@@ -230,8 +225,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             forcedPresentModeNode.pNext = chain.chainWithoutPresentModeSelection;
             forcedPresentModeNode.swapchainCount = 1;
             forcedPresentModeNode.pPresentModes = &forcedPresentMode;
-            forcePresentModeSelection = true;
+            finalPresentChain = &forcedPresentModeNode;
             modified = true;
+        } else if (chain.hasPresentModeSelection) {
+            // If CE could not replace a conflicting application-owned node,
+            // schedule only when its actual per-present selection is still a
+            // FIFO mode. Injecting a non-zero timing target for any other mode
+            // violates VK_EXT_present_timing's valid-usage contract.
+            fifoPresentModeActive =
+                pPresentInfo->swapchainCount == 1 &&
+                chain.presentModeSelectionSwapchainCount == 1 &&
+                ce::vulkan_present_timing_policy::IsFifoPresentMode(chain.selectedPresentMode);
         }
         if (selectionDecision.forceCreatedMode || selectionDecision.blockedByChainPosition) {
             static std::atomic<int> s_selectionLogCount{0};
@@ -372,21 +376,23 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    VkPresentTimingInfoEXT relativeTimingInfo = {};
+    VkPresentTimingsInfoEXT relativeTimingsInfo = {};
+    if (pPresentInfo && sd && BuildRelativePresentTiming(disp, sd, *pPresentInfo, fifoPresentModeActive,
+                                                         finalPresentChain,
+                                                         relativeTimingInfo, relativeTimingsInfo)) {
+        finalPresentChain = &relativeTimingsInfo;
+        modified = true;
+    }
+
     // Create modified PresentInfo with chained semaphore
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
         presentInfoCopy = *pPresentInfo;
-        if (suppressPresentMetering) {
-            // Unlinking the head node needs no write to the application's own
-            // chain: CE's copy simply starts one node later.
-            presentInfoCopy.pNext = meteringFreePresentChain;
-        }
-        if (forcePresentModeSelection) {
-            // Same rule, one step further: CE's copy points at its own head
-            // node, which carries the created mode and links to the rest of the
-            // application's chain unchanged.
-            presentInfoCopy.pNext = &forcedPresentModeNode;
-        }
+        // Every CE-owned head node was assembled above without writing the
+        // application's const chain: the preserved application nodes, optional
+        // forced created mode, then native relative present timing.
+        presentInfoCopy.pNext = finalPresentChain;
         if (currentWaitSemaphores && currentWaitSemaphoreCount > 0) {
             presentInfoCopy.waitSemaphoreCount = currentWaitSemaphoreCount;
             presentInfoCopy.pWaitSemaphores = currentWaitSemaphores;

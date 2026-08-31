@@ -24,6 +24,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     // Apply config overrides
     VkSwapchainCreateInfoKHR modifiedCI = *pCreateInfo;
     bool modified = false;
+    PresentTimingSwapchainEnablement presentTiming = {};
 
     if (g_LayerState.whitelisted) {
         // VSync / Present mode override
@@ -126,6 +127,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         }
     }
 
+    presentTiming = PreparePresentTimingSwapchain(disp, *pCreateInfo, modifiedCI);
+    modified |= presentTiming.enabled;
+
     const VkSwapchainCreateInfoKHR* pFinalCI = modified ? &modifiedCI : pCreateInfo;
 
     // CRITICAL: Clean up old swapchain resources before creating new one
@@ -149,6 +153,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     LogPresentModeSelectionChain("vkCreateSwapchainKHR", pCreateInfo->pNext);
 
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
+    if (res != VK_SUCCESS && presentTiming.flagAdded) {
+        LayerLog("Vulkan Layer: vkCreateSwapchainKHR rejected CE's optional native present-timing flag "
+                 "(result=%d); retrying without it", res);
+        modifiedCI.flags &= ~VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT;
+        presentTiming.enabled = false;
+        res = disp->fp_vkCreateSwapchainKHR(device, &modifiedCI, pAllocator, pSwapchain);
+    }
     // The sharing mode decides whether CE may write the swapchain image from a
     // queue family other than the presenting one without an ownership transfer.
     // EXCLUSIVE is fine as long as CE uses the family the game rendered on,
@@ -156,10 +167,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     // run can prove which case a title is in.
     LayerLog(
         "Vulkan Layer: vkCreateSwapchainKHR driver returned: %d (presentMode=%d sharingMode=%s familyCount=%u "
-        "imageUsage=0x%x)",
+        "imageUsage=0x%x flags=0x%x nativeTiming=%d)",
         res, static_cast<int>(pFinalCI->presentMode),
         pCreateInfo->imageSharingMode == VK_SHARING_MODE_CONCURRENT ? "concurrent" : "exclusive",
-        pCreateInfo->queueFamilyIndexCount, pCreateInfo->imageUsage);
+        pCreateInfo->queueFamilyIndexCount, pCreateInfo->imageUsage, pFinalCI->flags,
+        presentTiming.enabled ? 1 : 0);
     if (res == VK_SUCCESS) {
         auto* sd = new SwapchainData();
         sd->swapchain = *pSwapchain;
@@ -169,6 +181,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->extent = pCreateInfo->imageExtent;
         sd->imageUsage = pCreateInfo->imageUsage;
         sd->presentMode = pFinalCI->presentMode;
+        sd->relativePresentTimingEnabled = presentTiming.enabled;
+        InitializePresentTimingSwapchain(disp, sd);
 
         uint32_t count = 0;
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, nullptr);

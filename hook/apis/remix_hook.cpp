@@ -140,44 +140,6 @@ uint32_t ConfiguredGeneratedFrames() {
     return DLSSFGMultiplierToGeneratedFrames(GetActiveGraphicsConfig().parsed.dlssFGFactor);
 }
 
-std::string ConfiguredVsyncMode() {
-    return GetActiveGraphicsConfig().vsyncMode;
-}
-
-std::atomic<bool> g_presentMeteringDisabled{false};
-
-// The Vulkan layer withholds VK_NV_present_metering from the renderer when the
-// profile asks for vertical-blank-paced presentation; this makes Remix's own
-// option agree, so the runtime engages the CPU pacer it uses when hardware
-// metering is unavailable instead of asking for pacing it can no longer get.
-void ApplyPresentMeteringOverride(const char* source) {
-    if (!ce::remix_fg::RequestsVblankPacedPresentation(ConfiguredVsyncMode()))
-        return;
-    RemixSetConfigVariable original = g_originalSetConfigVariable.load(std::memory_order_acquire);
-    if (!original || g_insideSetConfigVariable)
-        return;
-
-    g_insideSetConfigVariable = true;
-    const RemixErrorCode result =
-        original(ce::remix_fg::kPresentMeteringOption, ce::remix_fg::kPresentMeteringDisabledValue);
-    g_insideSetConfigVariable = false;
-    const bool alreadyReported = g_presentMeteringDisabled.exchange(result == kRemixSuccess,
-                                                                    std::memory_order_acq_rel);
-    if (result == kRemixSuccess) {
-        if (!alreadyReported) {
-            HookLogImportant(
-                "RTX Remix FG: set %s=%s (source=%s) so the runtime's CPU pacer spreads a generated group; "
-                "CE withheld the hardware metering capability for vsync_mode=fifo/adaptive",
-                ce::remix_fg::kPresentMeteringOption, ce::remix_fg::kPresentMeteringDisabledValue,
-                source ? source : "unknown");
-        }
-    } else {
-        HookLogImportant("RTX Remix FG: FAILED to set %s=%s (result=%u source=%s)",
-                         ce::remix_fg::kPresentMeteringOption, ce::remix_fg::kPresentMeteringDisabledValue, result,
-                         source ? source : "unknown");
-    }
-}
-
 bool IsRemixApiModule(const char* moduleBaseName, HMODULE module) {
     if (!module || !moduleBaseName || _stricmp(moduleBaseName, "d3d9.dll") != 0)
         return false;
@@ -225,15 +187,9 @@ RemixErrorCode WINAPI HookedSetConfigVariable(const char* key, const char* value
     const uint32_t generatedFrames = ConfiguredGeneratedFrames();
     const bool overrideSchedule = key && value &&
         ce::remix_fg::ShouldOverrideConfigVariable(key, generatedFrames);
-    // The runtime re-writes its options from its own menu, so an interception
-    // is what keeps the metering choice from coming back after CE set it.
-    const bool overrideMetering =
-        key && value && ce::remix_fg::ShouldForcePresentMeteringOff(key, ConfiguredVsyncMode());
     const char* forwardedValue = value;
     if (overrideSchedule)
         forwardedValue = ce::remix_fg::GeneratedFrameCountString(generatedFrames);
-    else if (overrideMetering)
-        forwardedValue = ce::remix_fg::kPresentMeteringDisabledValue;
 
     g_insideSetConfigVariable = true;
     const RemixErrorCode result = original(key, forwardedValue);
@@ -252,15 +208,6 @@ RemixErrorCode WINAPI HookedSetConfigVariable(const char* key, const char* value
     } else if (overrideSchedule && result != kRemixSuccess) {
         HookLogImportant("RTX Remix FG: SetConfigVariable override FAILED for %s=%s (result=%u)",
                          key, forwardedValue, result);
-    } else if (overrideMetering && result == kRemixSuccess && strcmp(value, forwardedValue) != 0) {
-        static std::atomic<uint32_t> meteringValueLogs{0};
-        const uint32_t logIndex = meteringValueLogs.fetch_add(1, std::memory_order_relaxed);
-        if (logIndex < 8 || (logIndex % 256) == 0) {
-            HookLogImportant(
-                "RTX Remix FG: intercepted SetConfigVariable %s=%s -> %s (vsync_mode asks for vertical-blank "
-                "pacing, log=%u)",
-                key, value, forwardedValue, logIndex + 1);
-        }
     }
     return result;
 }
@@ -293,7 +240,6 @@ RemixErrorCode WINAPI HookedInitializeLibrary(const void* info, void* outInterfa
             static_cast<void*>(owner), generatedFrames);
         if (generatedFrames > 0)
             ApplyScheduleOverride(generatedFrames, "remixapi_InitializeLibrary");
-        ApplyPresentMeteringOverride("remixapi_InitializeLibrary");
     }
     return result;
 }
@@ -333,7 +279,6 @@ void InstallForModule(HMODULE module, const char* moduleNameOrPath) {
             g_lastAppliedGeneratedFrames.load(std::memory_order_acquire) != generatedFrames) {
             ApplyScheduleOverride(generatedFrames, "official public-interface negotiation");
         }
-        ApplyPresentMeteringOverride("official public-interface negotiation");
     }
 }
 

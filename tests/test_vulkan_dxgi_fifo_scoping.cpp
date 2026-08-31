@@ -35,12 +35,12 @@ const auto hwnd = [](uintptr_t value) { return reinterpret_cast<HWND>(value); };
 
 } // namespace
 
-// Scoped backstop: only the resident CE Vulkan layer's WSI presents may be
-// rewritten, and only for the two configured modes that explicitly ask for
-// vblank pacing. Everything else - no layer, any other mode - stays untouched.
-TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentArmsOnlyForLayerOwnedVblankPacedModes) {
-    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "fifo"));
-    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "adaptive"));
+// The final-DXGI SyncInterval=1 backstop is intentionally retired. It replaced
+// VRR with a fixed refresh grid below Vulkan and caused 4x generated groups to
+// run fast and then freeze. Native VK_EXT_present_timing now owns the ceiling.
+TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentNeverArms) {
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "fifo"));
+    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "adaptive"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "fifo"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "adaptive"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "mailbox"));

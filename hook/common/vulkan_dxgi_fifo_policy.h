@@ -3,16 +3,6 @@
 #include <cstdint>
 #include <string_view>
 
-// The canonical `RequestsVblankPacedPresentation` lives in the layer's present
-// metering policy and is included here rather than duplicated: the two modes
-// that arm this backstop are exactly the two the layer's metering withholding
-// keys on, so one implementation is the only way they cannot drift apart. The
-// header is leaf-only (<vulkan/vulkan.h> plus the standard library), and every
-// consumer of this header (the hook DLL wrapper target and the unit tests)
-// already compiles Vulkan headers, so the shared include adds no new build
-// dependency.
-#include "../vulkan_layer/vulkan_present_metering_policy.h"
-
 namespace ce::vulkan_dxgi_fifo_policy {
 
 inline constexpr uint32_t kDxgiPresentTest = 0x1u;
@@ -21,26 +11,20 @@ inline constexpr uint32_t kDxgiPresentRestart = 0x4u;
 inline constexpr uint32_t kDxgiPresentDoNotWait = 0x8u;
 inline constexpr uint32_t kDxgiPresentAllowTearing = 0x200u;
 
-// **Scoped backstop: restore the final native DXGI vblank contract.**
+// **Retired fallback: the Vulkan presentation engine owns scheduling.**
 //
-// Arming requires the resident CE Vulkan layer - its WSI is the only caller
-// whose final presents this path may rewrite - and a configured mode that
-// explicitly asks for vertical-blank pacing (the canonical
-// RequestsVblankPacedPresentation from the metering policy, included above).
-// Under Portal RTX / RTX Remix 4x MFG the group-aware Remix CPU pacer spreads
-// generated groups evenly across the rendered frame interval; that is a
-// frame-time pacer, not VSync, and the presented output then runs past the
-// refresh rate with tearing (~190 presents per second in the measured
-// session). CE already forces VK_PRESENT_MODE_FIFO_KHR at swapchain creation,
-// withholds VK_NV_present_metering at device level and sets
-// rtx.dlfg.enablePresentMetering=False so that pacer engages; arming here
-// re-creates the missing native guarantee one layer down: the final system
-// DXGI present waits for the vertical blank and is not allowed to tear.
-// `off`, `mailbox` and `default` deliberately never arm, so this backstop
-// never touches a swapchain whose contract CE did not configure as
-// vblank-paced.
+// Forcing SyncInterval=1 below NVIDIA's WSI replaced VRR with a fixed grid.
+// With 4x MFG, a variable-duration generated group was then consumed in exactly
+// four refreshes, producing the measured fast-then-freeze judder and apparent
+// overlay flicker. The layer now uses VK_EXT_present_timing relative scheduling:
+// the presentation engine retains the generated group's native spacing while
+// its reported minimum refresh duration supplies the maximum-rate ceiling.
+// Keeping this hook path disarmed is essential; it must not restate that native
+// schedule as a uniform DXGI interval one layer below Vulkan.
 inline bool ShouldArmFinalDxgiPresent(bool vulkanLayerModuleLoaded, std::string_view vsyncMode) {
-    return vulkanLayerModuleLoaded && ce::vulkan_present_metering_policy::RequestsVblankPacedPresentation(vsyncMode);
+    (void)vulkanLayerModuleLoaded;
+    (void)vsyncMode;
+    return false;
 }
 
 inline bool ShouldForceFinalDxgiFifo(bool fifoRequested, bool vulkanPresentationActive, bool hookShuttingDown) {
