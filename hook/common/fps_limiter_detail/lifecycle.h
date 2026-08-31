@@ -120,8 +120,12 @@ inline void FpsLimiter::Shutdown() {
     lastTargetFps_ = 0;
     lastUsedCaptureSync_ = false;
     lastEffectiveMode_ = LimiterModeValues::kAuto;
+    lastCaptureOutputEquivalentFps_ = 0;
+    lastGeneralConstraintFps_ = 0;
+    lastCaptureSourceFinalOutput_ = false;
     lastApplyReturnQpc = 0;
     isActivelyLimiting_.store(false, std::memory_order_relaxed);
+    injectFinalOutputCaptureAvailable_.store(false, std::memory_order_release);
     localTargetTime_ = 0;
     localIntervalFps_ = 0;
     localIntervalRemainder_ = 0;

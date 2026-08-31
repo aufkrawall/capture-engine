@@ -50,37 +50,27 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         HookLog("FPS Limiter: Published Session ID: %u", sid);
     }
 
-    // Check if limiter should be active
-    bool limiterActive = false;
-    int targetFps = 0;
-    bool usingCaptureSync = false;
-    uint32_t configuredMode = LimiterModeValues::kAuto;
+    // One detection snapshot drives constraint arbitration, multiplier math,
+    // and the driver interval so they cannot disagree about the FG runtime.
+    const ce::fg_runtime::RuntimeMode fgRuntimeMode = g_FGCompat.GetRuntimeMode();
+    bool fgActive = ce::fg_runtime::IsRuntimeFGActive(fgRuntimeMode);
+    int fgMultiplier = fgActive ? g_FGCompat.GetFGMultiplier() : 1;
+    if (fgActive && fgMultiplier < 2)
+        fgMultiplier = 2;
+    if (fgMultiplier > 4)
+        fgMultiplier = 4;
 
-    if (captureRequested && captureSyncEnabled) {
-        if (captureFps > 0 && captureSyncMultiplier >= 1 && captureSyncMultiplier <= 8) {
-            limiterActive = true;
-            targetFps = captureFps * captureSyncMultiplier;
-            usingCaptureSync = true;
-            configuredMode = captureSyncMode;
-        }
-    } else if (generalEnabled && generalFps > 0) {
-        limiterActive = true;
-        targetFps = generalFps;
-        configuredMode = generalMode;
-    }
-
-    // VFR only makes capture-grid synchronization meaningless. A separately
-    // configured general cap must remain active.
-    if (useVFR && usingCaptureSync) {
-        usingCaptureSync = false;
-        if (generalEnabled && generalFps > 0) {
-            limiterActive = true;
-            targetFps = generalFps;
-            configuredMode = generalMode;
-        } else {
-            limiterActive = false;
-        }
-    }
+    const bool injectVideoCaptureRequested = shm->runtimeState.IsInjectVideoCaptureRequested();
+    const bool injectFinalOutputAvailable =
+        injectFinalOutputCaptureAvailable_.load(std::memory_order_acquire);
+    const auto targetSelection = ce::fps_limiter_policy::ResolveLimiterTargetSelection(
+        captureRequested, captureSyncEnabled, captureFps, captureSyncMultiplier, useVFR,
+        generalEnabled, generalFps, fgActive, fgMultiplier, injectVideoCaptureRequested,
+        injectFinalOutputAvailable);
+    const bool limiterActive = targetSelection.IsActive();
+    const int targetFps = targetSelection.targetFps;
+    const bool usingCaptureSync = targetSelection.UsesCaptureSync();
+    const uint32_t configuredMode = usingCaptureSync ? captureSyncMode : generalMode;
 
     if (!limiterActive) {
         // The cadence lock serializes this cleanup against a concurrent owner
@@ -150,21 +140,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // Non-boundary call sites keep the floored base-frame target and legacy
     // dedup semantics.
     // =====================================================================
-    // One detection snapshot drives both the multiplier math and the driver
-    // interval semantics below, so they cannot disagree about the FG runtime.
-    const ce::fg_runtime::RuntimeMode fgRuntimeMode = g_FGCompat.GetRuntimeMode();
-    bool fgActive = ce::fg_runtime::IsRuntimeFGActive(fgRuntimeMode);
-    int fgMultiplier = fgActive ? g_FGCompat.GetFGMultiplier() : 1;
-    // FG implies at least 2x output (1 real + 1 interpolated per base frame).
-    // Pattern detection may determine higher (3x/4x for multi-frame gen),
-    // but 2x is the safe minimum when FG is API-confirmed.
-    if (fgActive && fgMultiplier < 2)
-        fgMultiplier = 2;
-    if (fgMultiplier > 4)
-        fgMultiplier = 4;
-
     const bool scaleForFrameGeneration = ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
-        usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested());
+        usingCaptureSync, injectVideoCaptureRequested, injectFinalOutputAvailable);
     int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
         targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
     const int cadenceScale = ce::fps_limiter_policy::ResolveCadenceScaleMultiplier(
@@ -352,7 +329,10 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
         lastEffectiveMode_ != effectiveMode || lastFGActive_ != fgActive || lastFGMultiplier_ != fgMultiplier ||
         lastCadenceTargetFps_ != cadenceTargetFps || lastCadenceScale_ != cadenceScale ||
-        lastNativeDriverTargetFps_ != nativeDriverTargetFps) {
+        lastNativeDriverTargetFps_ != nativeDriverTargetFps ||
+        lastCaptureOutputEquivalentFps_ != targetSelection.captureOutputEquivalentFps ||
+        lastGeneralConstraintFps_ != targetSelection.generalTargetFps ||
+        lastCaptureSourceFinalOutput_ != targetSelection.captureSourceIsFinalOutput) {
         // Reset pacing cadence immediately when FPS or mode changes so hot
         // config reloads apply on the next frame instead of riding stale state.
         // The output-group ordinal was already re-based by the admission epoch
@@ -392,15 +372,19 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
             !externalNativeAvailable)
             availNote = " [API UNAVAILABLE - will fallback]";
 
-        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d driver=%d",
+        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d driver=%d "
+                 "captureEq=%d general=%d captureSource=%s",
                  usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
-                 cadenceScale, fgActive ? 1 : 0, fgMultiplier, nativeDriverTargetFps);
+                 cadenceScale, fgActive ? 1 : 0, fgMultiplier, nativeDriverTargetFps,
+                 targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
+                 targetSelection.captureSourceIsFinalOutput ? "final" : "base");
         HookLog(
             "FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, group=%d/%d, fg=%d/%dx, "
-            "driver=%d, capReq=%d)%s",
+            "driver=%d, capReq=%d, constraints=capture:%d/output general:%d, captureSource=%s)%s",
             usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
             cadenceScale, fgActive ? 1 : 0, fgMultiplier, nativeDriverTargetFps, captureRequested ? 1 : 0,
-            availNote);
+            targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
+            targetSelection.captureSourceIsFinalOutput ? "final" : "base", availNote);
         loggedActive_ = true;
         lastTargetFps_ = effectiveTargetFps;
         lastUsedCaptureSync_ = usingCaptureSync;
@@ -410,6 +394,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         lastCadenceTargetFps_ = cadenceTargetFps;
         lastCadenceScale_ = cadenceScale;
         lastNativeDriverTargetFps_ = nativeDriverTargetFps;
+        lastCaptureOutputEquivalentFps_ = targetSelection.captureOutputEquivalentFps;
+        lastGeneralConstraintFps_ = targetSelection.generalTargetFps;
+        lastCaptureSourceFinalOutput_ = targetSelection.captureSourceIsFinalOutput;
     }
 
     // =====================================================================

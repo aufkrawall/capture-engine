@@ -17,8 +17,14 @@ inline ReflexPacingDecision ResolveReflexPacingDecision(bool explicitReflexMode,
                                                         bool gameSleepRecent, uint32_t freshSleepCount,
                                                         bool recentPresentGap) {
     ReflexPacingDecision decision;
-    (void)gameSleepObserved;
-    decision.useGameSleepHandoff = gameSleepRecent && freshSleepCount >= 3 && !recentPresentGap;
+    (void)recentPresentGap;
+    // The caller re-bases freshSleepCount at the edge of a Present gap. Once
+    // three successful Sleep calls have occurred after that edge, extending
+    // the local fallback for the whole gap-grace window only overlays a second
+    // cadence on the newly healthy native one. That showed up as temporal
+    // jitter around cutscene/FG transitions. Fresh post-gap Sleep evidence is
+    // the recovery proof; a merely old observed Sleep is still insufficient.
+    decision.useGameSleepHandoff = gameSleepObserved && gameSleepRecent && freshSleepCount >= 3;
     decision.useExplicitLocalCadence = explicitReflexMode && !decision.useGameSleepHandoff;
     return decision;
 }
@@ -42,10 +48,84 @@ inline bool IsManualReflexLimiterConfigured(bool generalEnabled, int generalFps,
            (captureSyncEnabled && captureSyncMode == nativeModeValue);
 }
 
-inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool injectVideoCaptureRequested) {
-    // Inject capture publishes only application-rendered frames, while WGC/DXGI
-    // observe the final presented stream including generated frames.
-    return !usingCaptureSync || !injectVideoCaptureRequested;
+inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool injectVideoCaptureRequested,
+                                                bool injectFinalOutputAvailable) {
+    // Ordinary inject capture publishes application-rendered frames, while
+    // WGC/DXGI and the explicit DX12/Vulkan final-output routes observe the
+    // presented stream including generated frames.
+    return !usingCaptureSync || !injectVideoCaptureRequested || injectFinalOutputAvailable;
+}
+
+enum class LimiterConstraintSource : uint8_t {
+    kNone,
+    kCaptureSync,
+    kGeneral,
+};
+
+struct LimiterTargetSelection {
+    LimiterConstraintSource source = LimiterConstraintSource::kNone;
+    int targetFps = 0;
+    int captureTargetFps = 0;
+    int captureOutputEquivalentFps = 0;
+    int generalTargetFps = 0;
+    bool captureSourceIsFinalOutput = false;
+
+    bool IsActive() const {
+        return source != LimiterConstraintSource::kNone;
+    }
+
+    bool UsesCaptureSync() const {
+        return source == LimiterConstraintSource::kCaptureSync;
+    }
+};
+
+inline int SaturatingPositiveProduct(int value, int multiplier) {
+    if (value <= 0 || multiplier <= 0) {
+        return 0;
+    }
+    if (value > INT_MAX / multiplier) {
+        return INT_MAX;
+    }
+    return value * multiplier;
+}
+
+// Capture sync and the general limiter are simultaneous constraints, not a
+// priority list. Compare them in the final-output domain so starting a base-
+// frame inject capture cannot silently replace a stricter displayed-rate cap.
+// Equal constraints prefer capture sync to retain its stable CFR grid phase.
+inline LimiterTargetSelection ResolveLimiterTargetSelection(
+    bool captureRequested, bool captureSyncEnabled, int captureFps, int captureSyncMultiplier,
+    bool useVfr, bool generalEnabled, int generalFps, bool frameGenerationActive,
+    int frameGenerationMultiplier, bool injectVideoCaptureRequested,
+    bool injectFinalOutputAvailable) {
+    LimiterTargetSelection selection;
+    const bool captureAvailable = captureRequested && captureSyncEnabled && !useVfr &&
+                                  captureFps > 0 && captureSyncMultiplier >= 1 &&
+                                  captureSyncMultiplier <= 8;
+    const bool generalAvailable = generalEnabled && generalFps > 0;
+
+    selection.generalTargetFps = generalAvailable ? generalFps : 0;
+    if (captureAvailable) {
+        selection.captureTargetFps = SaturatingPositiveProduct(captureFps, captureSyncMultiplier);
+        selection.captureSourceIsFinalOutput =
+            !injectVideoCaptureRequested || injectFinalOutputAvailable;
+        selection.captureOutputEquivalentFps = selection.captureTargetFps;
+        if (frameGenerationActive && frameGenerationMultiplier >= 2 &&
+            !selection.captureSourceIsFinalOutput) {
+            selection.captureOutputEquivalentFps = SaturatingPositiveProduct(
+                selection.captureTargetFps, std::min(frameGenerationMultiplier, 4));
+        }
+    }
+
+    if (captureAvailable &&
+        (!generalAvailable || selection.captureOutputEquivalentFps <= generalFps)) {
+        selection.source = LimiterConstraintSource::kCaptureSync;
+        selection.targetFps = selection.captureTargetFps;
+    } else if (generalAvailable) {
+        selection.source = LimiterConstraintSource::kGeneral;
+        selection.targetFps = generalFps;
+    }
+    return selection;
 }
 
 inline int ResolveFrameGenerationBaseTarget(int outputTargetFps, bool frameGenerationActive, int multiplier,
@@ -71,8 +151,8 @@ inline int ResolveOutputGroupAdmissionMultiplier(bool frameGenerationActive, int
 // frequency * cadenceScale / configuredTarget. Final-output observers scale by
 // the FG multiplier so target/multiplier groups per second yield exactly the
 // configured output rate (130/3 = 43.333... groups/s under a 130 cap), while
-// inject capture-sync keeps scale 1 because its source contains only
-// application-rendered frames and its target already IS the base rate.
+// ordinary/base inject capture-sync keeps scale 1 because that source contains
+// only application-rendered frames and its target already IS the base rate.
 inline int ResolveCadenceScaleMultiplier(bool frameGenerationActive, int frameGenerationMultiplier,
                                          bool scaleForFrameGeneration) {
     if (!frameGenerationActive || !scaleForFrameGeneration || frameGenerationMultiplier < 2) {
@@ -112,9 +192,10 @@ inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseT
         // The configured cap already denotes the final output rate.
         return configuredTargetFps;
     }
-    // Inject capture sync configures the application-rendered rate because its
-    // source carries only rendered frames; the equivalent output rate that the
-    // driver interval expects is base * multiplier.
+    // Ordinary/base inject capture sync configures the application-rendered
+    // rate; the equivalent output rate that the driver interval expects is
+    // base * multiplier. Explicit final-output inject routes take the
+    // scaleForFrameGeneration branch above instead.
     const int clampedMultiplier = std::min(multiplier, 4);
     if (configuredTargetFps > INT_MAX / clampedMultiplier) {
         return configuredTargetFps;

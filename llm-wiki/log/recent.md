@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-08-31 - Capture startup cannot remove a concurrent final-output cap under MFG
+
+Session `gothicfglimitlogs` showed both a real brief encoder overload and an avoidable pacing transition. Before
+recording, the 120-fps general Reflex cap correctly asked NVIDIA for 120 displayed fps under 4x MFG. Media's delayed
+inject handshake then gave capture sync unconditional priority and changed the request to 120 base fps / 480
+displayed fps. Source load rose, a cutscene produced a 44.648 ms Present gap, encoder pressure briefly accumulated
+67 ms of CFR debt, and the unchanged media timeline recovered it in the following healthy window.
+
+Capture sync and the general limiter now compose in the final-output domain. Explicit DX12/Vulkan final-output inject
+routes publish that domain before the media handshake; an ordinary base route is multiplied only for constraint
+comparison. The stricter 120-fps general cap therefore remains 120 through effective game-selected or overridden
+2x/3x/4x factors, while equal final-output constraints retain the phase-preserving capture grid. Diagnostics report
+both constraints and `captureSource=base|final`. A Present gap still resets Reflex Sleep evidence, but three fresh
+successful game Sleep calls now restore native ownership without layering CE's local cadence for the full 500 ms
+diagnostic grace. CFR PTS, audio, and overload recovery policy are unchanged. Fresh game validation is pending.
+
 ### 2026-08-31 - Cutscene display-phase jump cannot latch inject CFR into repeats
 
 Session `gothicimprovedbutstilldied` contained a real but brief game/encoder stall: at 07:46:31 the game Present gap
@@ -161,68 +177,3 @@ contract is back, scoped instead of global.
   `vkDestroySurfaceKHR` retirement is unchanged, retirement never runs under the layer's state lock, and the
   `RequestsVblankPacedPresentation` duplicate in `vulkan_dxgi_fifo_policy.h` now calls the canonical helper from
   `vulkan_present_metering_policy.h` instead of drifting next to it.
-
-### 2026-08-30 - CE was forcing fixed vsync onto a variable-refresh display, and the flicker was a barrier
-
-Third round on the Portal RTX judder, and this time the diagnostics shipped last round answered it. Session
-`20260830_185703`.
-
-**The measurement killed my own hypothesis first.** `presentation-relevant device extensions requested: <none>` -
-no `VK_EXT_swapchain_maintenance1`, no `present_id`/`present_wait`, no `low_latency2`. The swapchain chain is a lone
-`VkSurfaceFullScreenExclusiveInfoEXT`, and there is no `vkQueuePresentKHR pNext chain:` line at all because the
-present chain is empty. Nothing selects a present mode behind CE's back. Two rounds, two dead hypotheses, both
-retired by evidence rather than argument.
-
-**What the same log shows is the answer.** On one FIFO swapchain, seven seconds apart, the same thread:
-
-    final Present1 #1024 force=1 SyncInterval=1->1 Flags=0x0->0x0
-    final Present1 #2048 force=1 SyncInterval=0->1 Flags=0x200->0x0
-
-`SyncInterval=0` plus `DXGI_PRESENT_ALLOW_TEARING` is not a driver that forgot to synchronize. **It is how variable
-refresh is driven on Windows**: a flip the display is meant to stretch has to be presented that way, so the panel
-refreshes on the flip instead of the flip waiting for the panel. The WSI was picking per present. CE was overwriting
-every one of them with fixed vertical-blank pacing - which is precisely why the same title is smooth when the
-*driver* forces the mode (`vsync_mode` is then not `fifo`, so this path never armed) and judders when CE does. Under
-frame generation the rendered frame period is not constant, and a fixed grid turns that variation into stutter while
-every present-side frame time stays flat.
-
-`ShouldArmFinalDxgiPresent` now always returns false. No factory hooks, no `Present`/`Present1` body hooks, no
-parameter rewriting. `VK_PRESENT_MODE_FIFO_KHR` on the swapchain is the whole contract, and the same WSI honours it -
-the application's own FIFO swapchain in that session was presented the same adaptive way. The rate escape the path
-was built for was hardware present metering, declined at device level since 0.1.6324.
-
-**The flicker was a real synchronization bug on the route this game takes.** Portal RTX presents from a compute-only
-queue (`Present topology - present queue family=2 ... graphics=0`), so CE uses the compute-composite route. That
-route waits on the game's present semaphores at `COMPUTE_SHADER` and then acquired the swapchain image with a barrier
-whose `srcStageMask` was `TOP_OF_PIPE`. **A semaphore wait only orders the stages named in its `dstStageMask`**, so
-the `PRESENT_SRC_KHR -> GENERAL` transition was free to retile the image while the game's own composite into it was
-still running. An overlay that appears on some presented frames and not others is exactly what that looks like. The
-direct graphics route was already correct - its render-pass dependency names `COLOR_ATTACHMENT_OUTPUT`, which is what
-its submit waits at.
-
-Two more things fell out of the same file:
-
-- **A slot fence was disarmed before a submit that could fail.** `vkResetFences` ran before the offscreen graphics
-  submit, so a failure left that fence unsignalled for the lifetime of the swapchain and the ring lost a slot
-  permanently and silently. The reset now sits immediately before the submit that carries it, a failed composite
-  submit re-arms the fence with a fence-only submit, and both failures are logged.
-- **The compute route refused to extend the ring**, which is why the log reads `could not be extended past 10 slots
-  ... growths=0` past its 1024th occurrence while `fence_wait_us` reaches 65 ms. An appended slot owns no offscreen
-  target - and needs none: it fails that route's own bounds check before either queue sees work and falls through to
-  the direct path for that present. The ring now grows on both routes, bounded by
-  `CustomOverlay::VulkanBackend::kFramePoolSize`, which is a correctness bound and not a depth: that pool's index is
-  free-running, so more submissions in flight than it has entries and the CPU overwrites geometry the GPU is still
-  reading. The two constants are asserted against each other.
-
-Worth keeping:
-
-- **A diagnostic that prints what you were handed beats three rounds of argument about it.** The extension list and
-  the two `pNext` chains cost about forty lines and closed two hypotheses in one session.
-- **`force=1 SyncInterval=0->1` was in the log for three sessions and I read it as the driver misbehaving.** It was
-  CE's own value on the right of the arrow. An override's log line shows what CE did, not what was wrong.
-- Retiring a mechanism is a fix. The DXGI path answered a symptom whose cause was removed a layer up, and kept
-  charging rent.
-
-**Not validated on hardware.** Watch: the presented rate staying at or below the refresh rate now that nothing forces
-the sync interval (the perf CSV, since the `final Present1` diagnostic goes away with the path), `fence_wait_us`
-collapsing, `overlay submission ring extended to N slots` converging, and the flicker.

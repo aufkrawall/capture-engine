@@ -122,6 +122,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             g_FGCompat.SetDLSSFGMultiplier(0);
         }
     }
+    const bool meteredFinalOutputAvailable =
+        sd && sd->finalOutputMeteredBatchSize.load(std::memory_order_acquire) >= 2;
+    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(
+        sharedDLSSFGActive || meteredFinalOutputAvailable);
 
     // FPS limiter: pace EVERY present, not only the first one entering the hook.
     // Strange Brigade Vulkan presents several swapchain images per frame period

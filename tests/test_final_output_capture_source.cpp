@@ -73,6 +73,12 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(timing.find("UpdateFinalOutputCaptureEpoch"), std::string::npos);
     EXPECT_NE(present.find("UpdateFinalOutputCaptureEpoch"), std::string::npos)
         << "an inactive recording must retire the prior Vulkan capture epoch even when doCapture is not called";
+    const size_t routePublication = present.find("SetInjectFinalOutputCaptureAvailable");
+    const size_t limiterApply = present.find("g_SharedFpsLimiter.Apply");
+    ASSERT_NE(routePublication, std::string::npos);
+    ASSERT_NE(limiterApply, std::string::npos);
+    EXPECT_LT(routePublication, limiterApply)
+        << "limiter source semantics must be known before pacing and the media inject handshake";
 
     const std::string correlator =
         ReadSource("captureengine/media_main_encoder_inject_display_timing.cpp");
@@ -96,8 +102,14 @@ TEST(FinalOutputCaptureSourceTest, DX12RecordingStartsWithFreshFinalOutputClock)
     ASSERT_NE(captureCandidate, std::string::npos);
     ASSERT_NE(epochReset, std::string::npos);
     ASSERT_NE(timestamp, std::string::npos);
+    const size_t routePublication = plan.find("DX12_ShouldUseStreamlineFinalOutputCapture");
+    ASSERT_NE(routePublication, std::string::npos);
+    EXPECT_LT(routePublication, captureCandidate)
+        << "source-domain publication must precede the delayed media handshake";
     EXPECT_LT(captureCandidate, epochReset);
     EXPECT_LT(epochReset, timestamp);
+    EXPECT_NE(timing.find("SetInjectFinalOutputCaptureAvailable"), std::string::npos)
+        << "the final-output route must publish its limiter domain before recording starts";
 }
 
 TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSensorOverlayRows) {

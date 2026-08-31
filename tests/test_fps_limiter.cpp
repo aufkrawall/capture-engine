@@ -267,10 +267,11 @@ TEST_F(FpsLimiterTest, VfrCaptureStillHonorsConfiguredGeneralLimiter) {
 }
 
 TEST(FpsLimiterPolicyTest, FrameGenerationScalingMatchesCaptureSource) {
-    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, false));
-    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, true));
-    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, false));
-    EXPECT_FALSE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, true));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, false, false));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, true, false));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, false, false));
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, true, false));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, true, true));
 }
 
 TEST(FpsLimiterPolicyTest, RationalIntervalsPreserveExactLongTermCadence) {
@@ -486,27 +487,27 @@ TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexLocalCadenceSurvivesPresentGapWit
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, false));
 }
 
-TEST(ReflexFpsLimiterPolicyTest, GameOwnedReflexHandoffStillRequiresFreshStableSleepWithoutGap) {
+TEST(ReflexFpsLimiterPolicyTest, GameOwnedReflexHandoffAcceptsFreshStableSleepAfterGap) {
     auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 2, false);
     EXPECT_FALSE(decision.useExplicitLocalCadence);
     EXPECT_FALSE(decision.useGameSleepHandoff);
 
     decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, true);
-    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
 
     decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, false);
     EXPECT_TRUE(decision.useGameSleepHandoff);
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
 }
 
-TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexUsesLocalCadenceUntilGameSleepHandoffIsStable) {
+TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexUsesLocalCadenceUntilFreshSleepHandoffIsStable) {
     auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 2, false);
     EXPECT_TRUE(decision.useExplicitLocalCadence);
     EXPECT_FALSE(decision.useGameSleepHandoff);
 
     decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 3, true);
-    EXPECT_TRUE(decision.useExplicitLocalCadence);
-    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
 
     decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 3, false);
     EXPECT_FALSE(decision.useExplicitLocalCadence);

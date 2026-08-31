@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-30 (NVIDIA scheduled-flip announcements for display-change timing under DLSS frame generation)
+Last cross-checked: 2026-08-31 (composed capture/general limiter constraints, explicit final-output inject source semantics, and post-gap Reflex handoff)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -364,8 +364,9 @@ Primary sources:
   the transition.
 - **The group cadence is an exact rational rate.** The local grid interval is
   `QPC_frequency * cadenceScale / configured_target` (`NextRationalGroupIntervalTicks`, Bresenham remainder), where
-  `cadenceScale` is the FG multiplier for final-output observers (general cap, WGC-style capture sync) and 1 for
-  inject capture sync, whose source contains only application-rendered frames. A 130 fps cap with 3x FG paces
+  `cadenceScale` is the FG multiplier for final-output observers (general cap, WGC/DXGI capture sync, and explicit
+  DX12/Vulkan final-output inject capture) and 1 for an ordinary/base inject route whose source contains only
+  application-rendered frames. A 130 fps cap with 3x FG paces
   130/3 = 43.333... groups/s with zero long-term drift instead of the floored 43 (which capped output at 129). The
   floored integer base target survives only where an integer API demands it (legacy non-boundary sites) and in the
   `effective=` log field next to the exact `group=130/3` ratio; driver-owned intervals take the output rate instead
@@ -398,8 +399,22 @@ Primary sources:
   from shared NGX state before mode resolution.
 - The configured general limiter value always denotes the final displayed/output rate, independent of `basic`,
   `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by an active 2x-4x
-  FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. Inject
-  capture-sync is deliberately different because its source contains only application-rendered frames.
+  FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. A capture-sync
+  target is interpreted in the source domain: WGC/DXGI and explicit DX12/Vulkan final-output inject routes include
+  generated outputs, while an ordinary/base inject route contains only application-rendered frames.
+- **Capture sync and the general limiter are concurrent constraints, not a priority list.**
+  `ResolveLimiterTargetSelection()` expresses both in the final-output domain and selects the lower rate. The capture
+  constraint is `captureFps * capture_sync_multiplier`; an ordinary/base inject route multiplies that value by the
+  effective 2x-4x FG factor for comparison, while a final-output source does not. Equal constraints prefer capture
+  sync so its phase-preserving CFR grid remains active. Thus a 120-fps general cap remains 120 displayed fps when a
+  120-fps base-inject capture starts under 2x/3x/4x FG instead of being replaced by a 240/360/480-fps driver request;
+  an explicit final-output route keeps the same 120-fps capture grid and driver request. FG suspension likewise keeps
+  the 120-fps contract. Both the game's selected factor and `dlss_fg_factor=` override converge into the same effective
+  `FGCompatibility` multiplier before this decision, so limiter behavior is independent of factor provenance.
+- DX12/Vulkan publish final-output inject-route availability directly to the process-local limiter before media's
+  delayed inject handshake. The handshake says that inject transport is requested; it cannot by itself say whether
+  that transport currently publishes base application frames or final generated outputs. Active-state diagnostics
+  report both constraints and `captureSource=base|final`, making future route/factor transitions auditable.
 - **NVIDIA's driver-owned low-latency interval is itself frame-generation aware, so it must NOT be given the divided
   base target.** `minimumIntervalUs` (`NvAPI_D3D_SetSleepMode`, `NvAPI_Vulkan_SetSleepMode`,
   `vkSetLatencySleepModeNV`, and the Streamline `frameLimitUs` CE forwards from the same value) constrains the FINAL
@@ -409,8 +424,8 @@ Primary sources:
   (3 x 23.256 ms) with three bursted presents per group, i.e. 14.3 rendered / 43 displayed fps against a 130 cap.
   `general_limiter_mode=basic` was unaffected because CE's own cadence paces output groups at the present boundary.
   `ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps()` now feeds every driver-owned interval the output
-  rate (`targetFps`, or `targetFps * multiplier` for inject capture sync, whose configured value is the rendered
-  rate), while CE's local cadence, the post-present Reflex cadence and the hybrid spin keep pacing base frames.
+  rate (`targetFps`, or `targetFps * multiplier` for ordinary/base inject capture sync whose configured value is the
+  rendered rate), while CE's local cadence, the post-present Reflex cadence and the hybrid spin keep pacing base frames.
   Third-party generated frames (FSR FG) stay on the base target: they never reach the NVIDIA cap, which throttles the
   game's own Reflex sleep, i.e. the render loop. `DriverLowLatencyIntervalCoversGeneratedFrames()` is the single
   discriminator and reads one `FGCompatibility::GetRuntimeMode()` snapshot that also decides `fgActive`, so the two
@@ -418,11 +433,17 @@ Primary sources:
 - The hybrid Reflex spin (`ConfigureHybridPacing`) runs once per RENDERED frame and therefore takes the scaled
   output-group period (`freq * cadenceScale / cap`); deriving it from the floored base target capped a 130 fps / 3x
   configuration at 129.
+- A large Present gap re-bases the game-Sleep evidence counter. Three recent successful game Reflex Sleep calls after
+  that edge now prove native pacing has recovered even while the 500 ms gap-diagnostic grace is still active. Waiting
+  out the entire grace window layered CE's local cadence over an already healthy game-owned cadence during cutscene/FG
+  transitions and could add temporal jitter; old pre-gap Sleep observations still cannot trigger a handoff.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.
-- Frame-generation scaling depends on the captured source. WGC/DXGI see final presented/generated frames and scale the
-  base target; inject capture publishes application-rendered frames and does not divide its capture-sync target.
+- Frame-generation scaling depends on the captured source. WGC/DXGI and explicit DX12/Vulkan final-output inject
+  routes see presented/generated frames and scale the base target; only ordinary/base inject capture keeps its
+  application-rendered capture-sync target undivided.
+
 ## DLSS on-screen indicator
 
 - The modules that read `ShowDlssIndicator` are `nvngx_dlss.dll` (super resolution) and `nvngx_dlssg.dll` (frame

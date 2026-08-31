@@ -55,6 +55,11 @@ void DX12_NoteSkippedStreamlineFinalOutput() {
 DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
                                                                  const OverlayConfig& overlayConfig) {
     DX12FinalOutputCapturePlan plan;
+    // Publish route capability before captureRequested becomes live. Media's
+    // inject handshake can arrive several seconds after capture sync begins;
+    // deriving source semantics from that handshake made the limiter retarget
+    // from final-output 120 to base-frame 120 (driver 480 under 4x MFG).
+    DX12_ShouldUseStreamlineFinalOutputCapture();
     if (!DXGIShared::IsPostSLFinalOutputPresentCallback() ||
         !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
         return plan;
@@ -147,14 +152,18 @@ void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason) {
     g_finalOutputCadenceGate.Reset();
     g_skippedFinalOutputs.store(0, std::memory_order_release);
     g_finalOutputMultiplier.store(0, std::memory_order_release);
+    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(false);
     HookLogImportant("DX12: Reset final Streamline output capture timing (%s)", reason ? reason : "state change");
 }
 
 bool DX12_ShouldUseStreamlineFinalOutputCapture() {
-    return DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
-           dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) &&
-           dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) &&
-           dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire) &&
-           DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr &&
-           !HookOverlayObserverOnlyEnabled() && !dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire);
+    const bool available =
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+        dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) &&
+        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) &&
+        dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire) &&
+        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr &&
+        !HookOverlayObserverOnlyEnabled() && !dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire);
+    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(available);
+    return available;
 }

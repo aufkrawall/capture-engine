@@ -44,7 +44,99 @@ TEST(FpsLimiterPolicyTest, EveryGeneralLimiterModeTargetsFinalFrameGeneratedRate
     EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 2, true), 50);
     EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, false, 3, true), 100);
     EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 3, false), 100)
-        << "inject capture-sync targets application frames, unlike the general output cap";
+        << "ordinary/base inject capture-sync targets application frames, unlike the general output cap";
+}
+
+TEST(FpsLimiterPolicyTest, GeneralCapRemainsAConcurrentConstraintDuringBaseInjectCapture) {
+    using ce::fps_limiter_policy::LimiterConstraintSource;
+    using ce::fps_limiter_policy::ResolveLimiterTargetSelection;
+
+    for (int effectiveMultiplier = 2; effectiveMultiplier <= 4; ++effectiveMultiplier) {
+        const auto selected = ResolveLimiterTargetSelection(
+            true, true, 120, 1, false, true, 120, true, effectiveMultiplier,
+            true, false);
+        EXPECT_EQ(selected.source, LimiterConstraintSource::kGeneral)
+            << "effective game/override multiplier " << effectiveMultiplier;
+        EXPECT_EQ(selected.targetFps, 120);
+        EXPECT_EQ(selected.captureOutputEquivalentFps, 120 * effectiveMultiplier);
+        EXPECT_FALSE(selected.captureSourceIsFinalOutput);
+    }
+
+    const auto fgSuspended = ResolveLimiterTargetSelection(
+        true, true, 120, 1, false, true, 120, false, 1, true, false);
+    EXPECT_EQ(fgSuspended.source, LimiterConstraintSource::kCaptureSync);
+    EXPECT_EQ(fgSuspended.captureOutputEquivalentFps, 120);
+}
+
+TEST(FpsLimiterPolicyTest, FinalOutputInjectRouteKeepsCaptureGridAtDisplayedRate) {
+    using ce::fps_limiter_policy::LimiterConstraintSource;
+    using ce::fps_limiter_policy::ResolveLimiterTargetSelection;
+
+    const auto finalOutput = ResolveLimiterTargetSelection(
+        true, true, 120, 1, false, true, 120, true, 4, true, true);
+    EXPECT_EQ(finalOutput.source, LimiterConstraintSource::kCaptureSync);
+    EXPECT_EQ(finalOutput.targetFps, 120);
+    EXPECT_EQ(finalOutput.captureOutputEquivalentFps, 120);
+    EXPECT_TRUE(finalOutput.captureSourceIsFinalOutput);
+
+    const auto looserGeneral = ResolveLimiterTargetSelection(
+        true, true, 60, 1, false, true, 240, true, 3, true, false);
+    EXPECT_EQ(looserGeneral.source, LimiterConstraintSource::kCaptureSync);
+    EXPECT_EQ(looserGeneral.captureOutputEquivalentFps, 180);
+
+    const auto vfr = ResolveLimiterTargetSelection(
+        true, true, 60, 1, true, true, 120, true, 3, true, false);
+    EXPECT_EQ(vfr.source, LimiterConstraintSource::kGeneral);
+}
+
+TEST_F(FpsLimiterTest, ReflexGeneralCapSurvivesCaptureAndEffectiveMfgFactorChanges) {
+    MockNativePacingBackend mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.isRecording = true;
+    mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(120);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+
+    for (int effectiveMultiplier : {2, 3, 4}) {
+        g_FGCompat.SetDLSSFGMultiplier(effectiveMultiplier);
+        g_FGCompat.SetDLSSFGActive(true);
+        limiter.Apply(true);
+        EXPECT_EQ(mock.targetFps, 120)
+            << "game-selected and overridden factors share the published effective multiplier";
+        limiter.CancelPostPresentPacing();
+    }
+
+    g_FGCompat.SetDLSSFGActive(false);
+    limiter.Apply(true);
+    EXPECT_EQ(mock.targetFps, 120) << "temporary FG suspension keeps the same displayed-rate contract";
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, ReflexFinalOutputInjectRouteUsesDisplayedCaptureTarget) {
+    MockNativePacingBackend mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    limiter.SetInjectFinalOutputCaptureAvailable(true);
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    g_FGCompat.SetDLSSFGMultiplier(3);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply(true);
+
+    EXPECT_EQ(mock.targetFps, 60) << "the final-output route must not be multiplied to 180";
+    limiter.CancelPostPresentPacing();
+    limiter.Shutdown();
 }
 
 // Basic mode has the same final-output target semantics as native/FG-fallback

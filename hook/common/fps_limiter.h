@@ -171,6 +171,14 @@ public:
         nativePacingBackend_ = backend;
     }
 
+    // API hooks publish whether their active inject route contains final
+    // presented outputs (including generated frames) rather than only base
+    // application frames. This is process-local state, so it does not extend
+    // the shared-memory ABI and cannot be delayed by media startup handshakes.
+    void SetInjectFinalOutputCaptureAvailable(bool available) {
+        injectFinalOutputCaptureAvailable_.store(available, std::memory_order_release);
+    }
+
     // Called each frame before present. DXGI/DX12 call sites can allow explicit
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
@@ -225,6 +233,9 @@ private:
     bool lastFGActive_ = false;                              // Include FG activation in cadence transitions
     int lastFGMultiplier_ = 1;                              // Re-arm immediately when MFG factor changes
     int lastNativeDriverTargetFps_ = 0;                      // Interval handed to a driver-owned low-latency cap
+    int lastCaptureOutputEquivalentFps_ = 0;                 // Capture constraint expressed as displayed FPS
+    int lastGeneralConstraintFps_ = 0;                       // Concurrent configured displayed-rate constraint
+    bool lastCaptureSourceFinalOutput_ = false;              // Route-domain transition diagnostic
     int nativeApiRecheckCounter_ = 0;                        // Frame counter for periodic native API re-check
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
@@ -262,6 +273,7 @@ private:
     int64_t localStatsMaxLateUs_ = 0;              // Worst late frame time in current interval
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
+    std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
     uint32_t applyActiveDedupCount_ = 0;
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;

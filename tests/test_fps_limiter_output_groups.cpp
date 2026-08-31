@@ -229,7 +229,8 @@ TEST(FpsLimiterOutputGroupPolicyTest, ResolveHelpersClampAndGateOnCaptureSource)
     EXPECT_EQ(ResolveOutputGroupAdmissionMultiplier(true, 7), 4) << "clamped to the supported 2-4 range";
 
     EXPECT_EQ(ResolveCadenceScaleMultiplier(true, 3, true), 3);
-    EXPECT_EQ(ResolveCadenceScaleMultiplier(true, 3, false), 1) << "inject capture sync keeps the base rate";
+    EXPECT_EQ(ResolveCadenceScaleMultiplier(true, 3, false), 1)
+        << "ordinary/base inject capture sync keeps the base rate";
     EXPECT_EQ(ResolveCadenceScaleMultiplier(false, 3, true), 1);
     EXPECT_EQ(ResolveCadenceScaleMultiplier(true, 9, true), 4);
 }
@@ -258,8 +259,8 @@ TEST(FpsLimiterOutputGroupPolicyTest, NativeDriverPacingTargetIsTheFrameGenerati
     EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 130, false, 1, true, true), 130);
     EXPECT_EQ(ResolveNativeDriverPacingTargetFps(130, 130, true, 1, true, true), 130);
 
-    // Inject capture sync configures the application-rendered rate, so the
-    // output rate the driver interval expects is base * multiplier.
+    // Ordinary/base inject capture sync configures the application-rendered
+    // rate, so the output rate the driver interval expects is base * multiplier.
     EXPECT_EQ(ResolveNativeDriverPacingTargetFps(60, 60, true, 3, false, true), 180);
     EXPECT_EQ(ResolveNativeDriverPacingTargetFps(60, 60, true, 9, false, true), 240) << "multiplier clamped to 4x";
 
@@ -455,9 +456,9 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
 }
 
 // Capture semantics: a general/WGC final-output cap paces scaled output groups
-// (interval = freq * multiplier / configured target), while inject capture sync
-// keeps one base group at the requested capture rate because its source
-// contains only application-rendered frames.
+// (interval = freq * multiplier / configured target), while ordinary/base
+// inject capture sync keeps one base group at the requested capture rate
+// because its source contains only application-rendered frames.
 TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -476,8 +477,9 @@ TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     QueryPerformanceCounter(&end);
     EXPECT_GE(ElapsedMs(start, end, freq), 15.0);
 
-    // Inject capture sync publishes only application-rendered frames: the
-    // target stays the 60 fps base rate (~8.3 ms first slot).
+    // This test leaves the explicit final-output route unavailable, so inject
+    // capture publishes only application-rendered frames and the target stays
+    // the 60 fps base rate (~8.3 ms first slot).
     mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
     mockShm->fpsLimiter.SetGeneralEnabled(false);
     LARGE_INTEGER start2, end2;
@@ -542,8 +544,8 @@ TEST_F(FpsLimiterTest, NativeDriverPacingKeepsBaseRateUnderThirdPartyFrameGenera
     g_FGCompat.SetFSRFGActive(false);
 }
 
-// Inject capture sync configures the application-rendered rate, so the
-// FG-aware driver interval must be raised to the equivalent output rate.
+// Ordinary/base inject capture sync configures the application-rendered rate,
+// so the FG-aware driver interval must be raised to the equivalent output rate.
 TEST_F(FpsLimiterTest, NativeDriverPacingScalesInjectCaptureSyncTargetToOutputRate) {
     MockNativePacingBackendState mock;
     limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
