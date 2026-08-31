@@ -1,6 +1,7 @@
 #include "video_encoder_internal.h"
 
 void VideoEncoder::CleanupResources() {
+    StopFaceCamera();
     // Check if we should preserve encoder-owned textures (DXVK zero-copy path).
     // The Vulkan layer imported our KMT handles — destroying them invalidates the pipeline.
     bool preserveEncoderTextures =
@@ -123,7 +124,7 @@ void VideoEncoder::CleanupResources() {
     outputFrameCount = 0;
     skippedFrameCount = 0;
     duplicatedFrameCount = 0;
-    cursorAwareRepeatRenderCount = 0;
+    overlayAwareRepeatRenderCount = 0;
     encodeFrameCounter = 0;
     lastLogFrameCount = 0;
     nextOutputTime_ms = -1;
@@ -197,6 +198,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
     sharedCaptureTextureFormat = 0;
 
     // Release D3D11 device and all resources that depend on it
+    StopFaceCamera();
     CleanupVideoProcessor();
     if (bgraStagingTexture) {
         bgraStagingTexture->Release();
@@ -231,6 +233,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     recordingRequested = false;
+    StopFaceCamera();
     bool writerStillOwnsEncoderResources = false;
 
     if (wasRecording) {
@@ -244,9 +247,9 @@ void VideoEncoder::Stop() {
             pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
         DLL_Log(
             "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s "
-            "live=%u drain=%u cursorAwareRepeatRenders=%lld backpressure=%u peakMux=%uKB peakPkts=%u",
+            "live=%u drain=%u overlayAwareRepeatRenders=%lld backpressure=%u peakMux=%uKB peakPkts=%u",
             inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount,
-            CapturePipelinePhaseToString(phase), liveFrames, drainFrames, cursorAwareRepeatRenderCount,
+            CapturePipelinePhaseToString(phase), liveFrames, drainFrames, overlayAwareRepeatRenderCount,
             muxBackpressureCount.load(std::memory_order_relaxed),
             peakQueueBytes.load(std::memory_order_relaxed) / 1024u, peakQueuePackets.load(std::memory_order_relaxed));
 

@@ -254,6 +254,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     LoadWhitelist(reader, config, path, pseudoProcessListSet);
     LoadOverlay(reader, config);
     LoadVideo(reader, config);
+    LoadFaceCamera(reader, config);
     LoadAudio(reader, config, path);
     ApplyStreamingSettings(reader, config);
     LoadDesktopOverlayAndHotkeys(reader, config, pseudoProcessListSet);

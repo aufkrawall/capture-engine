@@ -57,6 +57,12 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
         cursorRenderer = std::make_unique<CursorRenderer>();
         DLL_Log("[VideoEncoder] Cursor capture enabled (renderer created)");
     }
+    if (config.faceCamera.enabled) {
+        faceCameraRenderer = std::make_unique<FaceCameraRenderer>(config.faceCamera);
+        DLL_Log("[FaceCamera] Enabled for recording output; capture starts asynchronously with the session");
+    } else {
+        faceCameraRenderer.reset();
+    }
 
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
     // Native RTMP diagnostics can include the publish playpath (normally the stream key), and
@@ -203,6 +209,7 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         bgraStagingTexture = nullptr;
     }
 
+    StopFaceCamera();
     CleanupVideoProcessor();
     if (cursorRenderer) {
         cursorRenderer->Cleanup();

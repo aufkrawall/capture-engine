@@ -36,6 +36,7 @@ expectations](#bug-reports-and-support-expectations).
 - NVENC, AMD AMF, Intel Quick Sync/oneVPL, and Media Foundation encoders
 - Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
+- Optional USB/webcam face-camera overlay with GPU-composited positioning, cropping, shapes, borders, and HDR mapping
 - Low-latency YouTube, Twitch, and custom RTMP/RTMPS streaming through the same CFR/audio synchronization pipeline
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
   and NVIDIA Smooth Motion (driver-based frame generation) status, plus a non-injected desktop recording indicator
@@ -98,6 +99,19 @@ whole streaming session with an explicit failure instead of blocking capture, dr
 letting audio and video clocks drift apart. The full option reference and service bitrate defaults are in the generated
 `config.ini`. Completion feedback says whether the stream ended, ended with degraded video, or failed; it never claims
 that a stream-only session was saved as a local recording.
+
+### Face-camera overlay
+
+Set `[FaceCamera] enabled=true` to add the default Windows camera to recorded or streamed video. Camera capture runs on
+an independent worker and publishes only its newest frame, so a slow, missing, or disconnected camera never stalls the
+game capture or CFR clock. The encoder transfers a new camera image only at camera cadence and composites it with one
+D3D11 shader draw; there is no CPU frame blending or GPU readback.
+
+The generated `config.ini` documents exact device selection, resolution/FPS, nine anchors or custom placement,
+output-relative size and margin, rectangle/rounded/circle masks, aspect-preserving crop or stretch, mirroring, opacity,
+border, and frozen-frame timeout. The same pre-encode compositor is shared by WGC/DXGI and inject capture and by local
+recording and live output. Camera and cursor state are redrawn on CFR repeated game frames, so the face camera does not
+freeze when an overloaded game frame must be held.
 
 ### Release verification
 
@@ -744,7 +758,6 @@ feasible:
 - PresentMon plug-in support
 - managed loading of OptiScaler, ReShade, or Special K DLLs as add-ons
 - proper late inject / early deject support
-- webcam overlay support (exploratory)
 - improved compatibility with further third-party overlays, such as RTSS
 - XeSS frame generation support
 - evaluating Unreal Engine settings overrides

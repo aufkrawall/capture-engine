@@ -281,7 +281,8 @@ int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
 
 bool VideoEncoder::CanRepeatLastFrame() const {
     return recordingRequested &&
-           (repeatFrameTexture != nullptr || (repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture != nullptr));
+           (repeatFrameTexture != nullptr ||
+            (repeatSourceNeedsOverlayRecompose && repeatSourceFrameTexture != nullptr));
 }
 
 void VideoEncoder::ResetRepeatFrameCache() {
@@ -292,7 +293,7 @@ void VideoEncoder::ResetRepeatFrameCache() {
     }
     InvalidateRepeatSourceFrameTexture();
     repeatSourceCacheFailureLogged = false;
-    repeatCursorRecomposeFallbackLogged = false;
+    repeatOverlayRecomposeFallbackLogged = false;
     repeatSourceCacheKeyedMutexLogged = false;
     repeatSourceCacheKeyedAcquireFailCount = 0;
     if (hadCachedContent) {

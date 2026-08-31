@@ -62,10 +62,10 @@ anchors that predate the split are approximate.
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
   - `shared_defs.h` - shared-memory ABI (current version `46`).
-  - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5/streaming.cpp`) -
+  - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5/streaming/face_camera.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
-    fail-closed RTMP/RTMPS profile.
+    fail-closed RTMP/RTMPS profile and `face_camera_config.h` owns face-camera parsing/layout policy.
   - `process_ipc.h/.cpp` + `process_ipc_client.cpp` - private IPC channels.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
@@ -163,7 +163,9 @@ anchors that predate the split are approximate.
     app-audio (activation/loop/monitor/queue units), process-loopback capture.
   - `video_encoder*.cpp` - encoder pipeline units (options, backend_options,
     configure, conversion, convert_bgra/shaders, encode, encode_input, finalize,
-    format, framegrab, lifecycle, start, streaming, textures, write, codec, options_bitrate).
+    face_camera, format, framegrab, lifecycle, start, streaming, textures, write,
+    codec, options_bitrate); `face_camera_capture/renderer/shader.*` implement the
+    asynchronous camera source and GPU composition layer.
 - `tests/`
   - Google Test sources (`test_*.cpp`, including source-policy tests that read the
     logical unit: stem + `<stem>_internal.h` + sorted `<stem>_*.cpp` siblings) and

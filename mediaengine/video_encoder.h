@@ -32,6 +32,8 @@ extern "C" {
 }
 
 class CursorRenderer;  // Forward declaration
+class FaceCameraRenderer;
+enum class FaceCameraColorMode : uint32_t;
 struct FrameStats;     // Forward declaration (defined in video_encoder_internal.h)
 
 // Logging interval constants (in frames)
@@ -160,6 +162,12 @@ private:
         return captureCursor && !cursorCompositionSuppressed.load(std::memory_order_relaxed);
     }
 
+    bool FaceCameraCompositionActive() const;
+
+    bool DynamicOverlayRecompositionActive() const {
+        return FaceCameraCompositionActive() || (CursorCompositionActive() && cursorRenderer != nullptr);
+    }
+
     void BeginDeferredRecording();
     bool AdoptTextureDevice(ID3D11Texture2D* texture);
     void ReleaseInjectDeviceStateForScreenGrab();
@@ -263,6 +271,7 @@ private:
     uint64_t gpuPriorityPressureSinceMs = 0;
     uint64_t gpuPriorityHealthySinceMs = 0;
     std::unique_ptr<CursorRenderer> cursorRenderer;  // GPU cursor compositing
+    std::unique_ptr<FaceCameraRenderer> faceCameraRenderer;
     std::string outputFilename;
     ce::capture_output::ReservedCaptureOutput outputReservation;
 
@@ -289,7 +298,7 @@ private:
     int64_t inputFrameCount = 0;       // Number of frames received from hook
     int64_t skippedFrameCount = 0;     // Encoder-side skips
     int64_t duplicatedFrameCount = 0;  // Encoder-side duplicates
-    int64_t cursorAwareRepeatRenderCount = 0;  // Re-rendered from uncomposited RGB source
+    int64_t overlayAwareRepeatRenderCount = 0;  // Re-rendered from uncomposited RGB source
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)
@@ -354,19 +363,26 @@ private:
     // even when source shared-handle slots have already been reused.
     ID3D11Texture2D* repeatFrameTexture = nullptr;
     ID3D11Texture2D* repeatSourceFrameTexture = nullptr;
-    bool repeatSourceNeedsCursorRecompose = false;
+    ID3D11Texture2D* pendingRepeatSourceFrameTexture = nullptr;
+    bool pendingRepeatSourceFrameValid = false;
+    bool repeatSourceNeedsOverlayRecompose = false;
     uint32_t repeatSourceFrameWidth = 0;
     uint32_t repeatSourceFrameHeight = 0;
     bool repeatSourceFrameIsHDR = false;
     int repeatSourceCaptureOriginX = 0;
     int repeatSourceCaptureOriginY = 0;
     bool repeatSourceCacheFailureLogged = false;
-    bool repeatCursorRecomposeFallbackLogged = false;
+    bool repeatSourceRenderTargetFallbackLogged = false;
+    bool repeatOverlayRecomposeFallbackLogged = false;
     bool repeatSourceCacheKeyedMutexLogged = false;
     uint64_t repeatSourceCacheKeyedAcquireFailCount = 0;
 
     bool CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture, uint32_t frameWidth, uint32_t frameHeight,
                                        bool isHDR, int captureOriginX, int captureOriginY);
+    bool StageRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture);
+    void CommitStagedRepeatSourceFrameTexture(uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
+                                              int captureOriginX, int captureOriginY);
+    void DiscardStagedRepeatSourceFrameTexture();
     void InvalidateRepeatSourceFrameTexture();
     bool PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame);
 
@@ -489,15 +505,39 @@ private:
 
         ~CursorSourceRestore();
     };
+
+    struct FaceCameraSourceRestore {
+        ID3D11DeviceContext* context = nullptr;
+        ID3D11Texture2D* target = nullptr;
+        ID3D11Texture2D* backup = nullptr;
+        UINT destinationX = 0;
+        UINT destinationY = 0;
+        UINT width = 0;
+        UINT height = 0;
+        bool active = false;
+
+        ~FaceCameraSourceRestore();
+    };
     ID3D11Texture2D* cursorRestoreTexture = nullptr;
     ID3D11Texture2D* cursorCompositeTexture = nullptr;
     bool cursorPrecompositionLogged = false;
     bool cursorFullCopyFallbackLogged = false;
     uint32_t cursorPrecompositionFailureLogs = 0;
     ce::cursor::CaptureState cursorCaptureState;
+    ID3D11Texture2D* faceCameraRestoreTexture = nullptr;
+    ID3D11Texture2D* faceCameraCompositeTexture = nullptr;
+    bool faceCameraPrecompositionLogged = false;
+    bool faceCameraFullCopyFallbackLogged = false;
+    uint32_t faceCameraPrecompositionFailureLogs = 0;
 
     bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor, CursorSourceRestore* restore,
                                           ID3D11Texture2D** preparedSource);
+    bool PrepareVideoProcessorFaceCameraInput(ID3D11Texture2D* source, FaceCameraSourceRestore* restore,
+                                              ID3D11Texture2D** preparedSource);
+    bool CompositeFaceCameraOntoRgb(ID3D11Texture2D* target, FaceCameraColorMode colorMode, float paperWhiteNits);
+    void EnsureFaceCameraStarted();
+    void StopFaceCamera();
+    void CleanupFaceCameraCompositionResources();
     void CleanupCursorCompositionResources();
     bool ConfigureAndOpenCodec();
     AVFrame* PrepareEncoderInputFrame(AVFrame* d3d11Frame);

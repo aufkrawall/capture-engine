@@ -131,9 +131,19 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         keyedMutexGuard.acquired = true;
     }
 
+    // Camera is drawn first and the cursor remains topmost. The restore guards
+    // unwind in reverse order so overlapping rectangles recover the exact
+    // source pixels before ownership returns to the capture producer.
+    FaceCameraSourceRestore faceCameraSourceRestore;
+    ID3D11Texture2D* preparedFaceCameraSource = bgraTexture;
+    if (!PrepareVideoProcessorFaceCameraInput(bgraTexture, &faceCameraSourceRestore,
+                                              &preparedFaceCameraSource)) {
+        return false;
+    }
     CursorSourceRestore cursorSourceRestore;
-    ID3D11Texture2D* preparedCursorSource = bgraTexture;
-    if (!PrepareVideoProcessorCursorInput(bgraTexture, overlayCursor, &cursorSourceRestore, &preparedCursorSource)) {
+    ID3D11Texture2D* preparedCursorSource = preparedFaceCameraSource;
+    if (!PrepareVideoProcessorCursorInput(preparedFaceCameraSource, overlayCursor, &cursorSourceRestore,
+                                          &preparedCursorSource)) {
         return false;
     }
 

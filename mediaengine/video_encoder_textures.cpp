@@ -97,6 +97,14 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
         return false;
     }
 
+    const FaceCameraColorMode faceCameraColorMode =
+        ShouldEncodeHdrOutput() && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM
+            ? FaceCameraColorMode::Hdr10Pq
+            : FaceCameraColorMode::Sdr;
+    const float faceCameraPaperWhiteNits =
+        faceCameraColorMode == FaceCameraColorMode::Sdr ? 80.0f : sdrWhiteNits;
+    CompositeFaceCameraOntoRgb(normalizedTexture, faceCameraColorMode, faceCameraPaperWhiteNits);
+
     if (overlayCursor && captureCursor && cursorRenderer) {
         if (!cursorRenderer->Init(d3d11Device, d3d11Context)) {
             static bool cursorInitLogged = false;
@@ -170,12 +178,175 @@ void VideoEncoder::InvalidateRepeatSourceFrameTexture() {
         repeatSourceFrameTexture->Release();
         repeatSourceFrameTexture = nullptr;
     }
-    repeatSourceNeedsCursorRecompose = false;
+    if (pendingRepeatSourceFrameTexture) {
+        pendingRepeatSourceFrameTexture->Release();
+        pendingRepeatSourceFrameTexture = nullptr;
+    }
+    pendingRepeatSourceFrameValid = false;
+    repeatSourceNeedsOverlayRecompose = false;
     repeatSourceFrameWidth = 0;
     repeatSourceFrameHeight = 0;
     repeatSourceFrameIsHDR = false;
     repeatSourceCaptureOriginX = 0;
     repeatSourceCaptureOriginY = 0;
+}
+
+namespace {
+
+void ConfigureRepeatSourceCacheDesc(D3D11_TEXTURE2D_DESC* desc) {
+    if (!desc)
+        return;
+    desc->BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc->MiscFlags = 0;
+    desc->CPUAccessFlags = 0;
+    desc->Usage = D3D11_USAGE_DEFAULT;
+
+    // Repeat sources are encoder-owned, unlike the producer's shared capture
+    // texture. Give compatible single-sample RGB caches render-target binding
+    // so camera/cursor CFR recomposition can use small transactional restores
+    // instead of allocating and copying another full frame on every repeat.
+    const DXGI_FORMAT viewFormat = ce::video_format::GetRgbShaderResourceViewFormat(desc->Format);
+    if (desc->SampleDesc.Count == 1 && viewFormat != DXGI_FORMAT_UNKNOWN) {
+        desc->BindFlags |= D3D11_BIND_RENDER_TARGET;
+    }
+}
+
+bool RepeatSourceTextureMatches(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& wanted) {
+    if (!texture)
+        return false;
+    D3D11_TEXTURE2D_DESC existing = {};
+    texture->GetDesc(&existing);
+    constexpr UINT kRenderTargetBind = D3D11_BIND_RENDER_TARGET;
+    const bool compatibleBindFlags =
+        existing.BindFlags == wanted.BindFlags ||
+        ((wanted.BindFlags & kRenderTargetBind) != 0 &&
+         existing.BindFlags == (wanted.BindFlags & ~kRenderTargetBind));
+    return existing.Width == wanted.Width && existing.Height == wanted.Height && existing.Format == wanted.Format &&
+           compatibleBindFlags && existing.ArraySize == wanted.ArraySize &&
+           existing.MipLevels == wanted.MipLevels && existing.SampleDesc.Count == wanted.SampleDesc.Count &&
+           existing.SampleDesc.Quality == wanted.SampleDesc.Quality;
+}
+
+HRESULT CreateRepeatSourceTexture(ID3D11Device* device, D3D11_TEXTURE2D_DESC* desc,
+                                  ID3D11Texture2D** texture, bool* usedRenderTargetFallback) {
+    if (!device || !desc || !texture)
+        return E_INVALIDARG;
+    *texture = nullptr;
+    if (usedRenderTargetFallback)
+        *usedRenderTargetFallback = false;
+    HRESULT hr = device->CreateTexture2D(desc, nullptr, texture);
+    constexpr UINT kRenderTargetBind = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(hr) && (desc->BindFlags & kRenderTargetBind) != 0) {
+        if (*texture) {
+            (*texture)->Release();
+            *texture = nullptr;
+        }
+        desc->BindFlags &= ~kRenderTargetBind;
+        hr = device->CreateTexture2D(desc, nullptr, texture);
+        if (SUCCEEDED(hr) && usedRenderTargetFallback)
+            *usedRenderTargetFallback = true;
+    }
+    if (FAILED(hr) && *texture) {
+        (*texture)->Release();
+        *texture = nullptr;
+    }
+    return hr;
+}
+
+struct RepeatSourceKeyedGuard {
+    IDXGIKeyedMutex* mutex = nullptr;
+    bool acquired = false;
+
+    ~RepeatSourceKeyedGuard() {
+        if (!mutex)
+            return;
+        if (acquired)
+            mutex->ReleaseSync(0);
+        mutex->Release();
+    }
+};
+
+bool AcquireRepeatSource(ID3D11Texture2D* sourceTexture, RepeatSourceKeyedGuard* guard) {
+    if (!sourceTexture || !guard)
+        return false;
+    sourceTexture->QueryInterface(IID_PPV_ARGS(&guard->mutex));
+    if (!guard->mutex)
+        return true;
+    const HRESULT hr = guard->mutex->AcquireSync(0, 0);
+    guard->acquired = hr == S_OK;
+    return guard->acquired;
+}
+
+}  // namespace
+
+bool VideoEncoder::StageRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture) {
+    pendingRepeatSourceFrameValid = false;
+    if (!sourceTexture || !d3d11Device || !d3d11Context)
+        return false;
+
+    RepeatSourceKeyedGuard keyedSourceGuard;
+    if (!AcquireRepeatSource(sourceTexture, &keyedSourceGuard)) {
+        ++repeatSourceCacheKeyedAcquireFailCount;
+        if (repeatSourceCacheKeyedAcquireFailCount <= 5) {
+            DLL_Log("[VideoEncoder] Staged dynamic-overlay source keyed-mutex acquire failed: failures=%llu",
+                    static_cast<unsigned long long>(repeatSourceCacheKeyedAcquireFailCount));
+        }
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC cacheDesc = {};
+    sourceTexture->GetDesc(&cacheDesc);
+    ConfigureRepeatSourceCacheDesc(&cacheDesc);
+    if (!RepeatSourceTextureMatches(pendingRepeatSourceFrameTexture, cacheDesc)) {
+        if (pendingRepeatSourceFrameTexture) {
+            pendingRepeatSourceFrameTexture->Release();
+            pendingRepeatSourceFrameTexture = nullptr;
+        }
+        bool usedRenderTargetFallback = false;
+        const HRESULT hr = CreateRepeatSourceTexture(d3d11Device, &cacheDesc, &pendingRepeatSourceFrameTexture,
+                                                     &usedRenderTargetFallback);
+        if (FAILED(hr)) {
+            if (!repeatSourceCacheFailureLogged) {
+                DLL_Log("[VideoEncoder] Failed to stage dynamic-overlay repeat source: HR=%x fmt=%d %ux%u", hr,
+                        cacheDesc.Format, cacheDesc.Width, cacheDesc.Height);
+                repeatSourceCacheFailureLogged = true;
+            }
+            return false;
+        }
+        if (usedRenderTargetFallback && !repeatSourceRenderTargetFallbackLogged) {
+            DLL_Log(
+                "[VideoEncoder] Dynamic-overlay repeat source lacks render-target support; "
+                "CFR overlay updates use the full-frame GPU compatibility path");
+            repeatSourceRenderTargetFallbackLogged = true;
+        }
+    }
+
+    {
+        D3D11ScopedLock lock;
+        d3d11Context->CopyResource(pendingRepeatSourceFrameTexture, sourceTexture);
+        if (keyedSourceGuard.acquired)
+            d3d11Context->Flush();
+    }
+    pendingRepeatSourceFrameValid = true;
+    return true;
+}
+
+void VideoEncoder::CommitStagedRepeatSourceFrameTexture(uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
+                                                        int captureOriginX, int captureOriginY) {
+    if (!pendingRepeatSourceFrameValid || !pendingRepeatSourceFrameTexture)
+        return;
+    std::swap(repeatSourceFrameTexture, pendingRepeatSourceFrameTexture);
+    pendingRepeatSourceFrameValid = false;
+    repeatSourceNeedsOverlayRecompose = true;
+    repeatSourceFrameWidth = frameWidth;
+    repeatSourceFrameHeight = frameHeight;
+    repeatSourceFrameIsHDR = isHDR;
+    repeatSourceCaptureOriginX = captureOriginX;
+    repeatSourceCaptureOriginY = captureOriginY;
+}
+
+void VideoEncoder::DiscardStagedRepeatSourceFrameTexture() {
+    pendingRepeatSourceFrameValid = false;
 }
 
 bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture, uint32_t frameWidth,
@@ -215,7 +386,7 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
             ++repeatSourceCacheKeyedAcquireFailCount;
             if (repeatSourceCacheKeyedAcquireFailCount <= 5) {
                 DLL_Log(
-                    "[VideoEncoder] Cursor-aware repeat source cache keyed-mutex acquire failed: "
+                    "[VideoEncoder] Dynamic-overlay repeat source cache keyed-mutex acquire failed: "
                     "HR=%x failures=%llu",
                     kmHr, static_cast<unsigned long long>(repeatSourceCacheKeyedAcquireFailCount));
             }
@@ -223,39 +394,38 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
         }
         keyedSourceGuard.acquired = true;
         if (!repeatSourceCacheKeyedMutexLogged) {
-            DLL_Log("[VideoEncoder] Cursor-aware repeat source cache synchronized at keyed mutex 0->0");
+            DLL_Log("[VideoEncoder] Dynamic-overlay repeat source cache synchronized at keyed mutex 0->0");
             repeatSourceCacheKeyedMutexLogged = true;
         }
     }
 
     D3D11_TEXTURE2D_DESC cacheDesc = srcDesc;
-    cacheDesc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
-    cacheDesc.MiscFlags = 0;
-    cacheDesc.CPUAccessFlags = 0;
-    cacheDesc.Usage = D3D11_USAGE_DEFAULT;
+    ConfigureRepeatSourceCacheDesc(&cacheDesc);
 
-    bool needsRecreate = true;
-    if (repeatSourceFrameTexture) {
-        D3D11_TEXTURE2D_DESC existingDesc = {};
-        repeatSourceFrameTexture->GetDesc(&existingDesc);
-        needsRecreate = existingDesc.Width != cacheDesc.Width || existingDesc.Height != cacheDesc.Height ||
-                        existingDesc.Format != cacheDesc.Format || existingDesc.BindFlags != cacheDesc.BindFlags ||
-                        existingDesc.ArraySize != cacheDesc.ArraySize ||
-                        existingDesc.MipLevels != cacheDesc.MipLevels ||
-                        existingDesc.SampleDesc.Count != cacheDesc.SampleDesc.Count ||
-                        existingDesc.SampleDesc.Quality != cacheDesc.SampleDesc.Quality;
-    }
+    const bool needsRecreate = !RepeatSourceTextureMatches(repeatSourceFrameTexture, cacheDesc);
 
     if (needsRecreate) {
-        InvalidateRepeatSourceFrameTexture();
-        HRESULT hr = d3d11Device->CreateTexture2D(&cacheDesc, nullptr, &repeatSourceFrameTexture);
+        if (repeatSourceFrameTexture) {
+            repeatSourceFrameTexture->Release();
+            repeatSourceFrameTexture = nullptr;
+        }
+        repeatSourceNeedsOverlayRecompose = false;
+        bool usedRenderTargetFallback = false;
+        const HRESULT hr = CreateRepeatSourceTexture(d3d11Device, &cacheDesc, &repeatSourceFrameTexture,
+                                                     &usedRenderTargetFallback);
         if (FAILED(hr)) {
             if (!repeatSourceCacheFailureLogged) {
-                DLL_Log("[VideoEncoder] Failed to create cursor-aware repeat source texture: HR=%x fmt=%d %ux%u", hr,
+                DLL_Log("[VideoEncoder] Failed to create dynamic-overlay repeat source texture: HR=%x fmt=%d %ux%u", hr,
                         cacheDesc.Format, cacheDesc.Width, cacheDesc.Height);
                 repeatSourceCacheFailureLogged = true;
             }
             return false;
+        }
+        if (usedRenderTargetFallback && !repeatSourceRenderTargetFallbackLogged) {
+            DLL_Log(
+                "[VideoEncoder] Dynamic-overlay repeat source lacks render-target support; "
+                "CFR overlay updates use the full-frame GPU compatibility path");
+            repeatSourceRenderTargetFallbackLogged = true;
         }
     }
 
@@ -270,7 +440,7 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
 
     }
 
-    repeatSourceNeedsCursorRecompose = true;
+    repeatSourceNeedsOverlayRecompose = true;
     repeatSourceFrameWidth = frameWidth;
     repeatSourceFrameHeight = frameHeight;
     repeatSourceFrameIsHDR = isHDR;
@@ -280,14 +450,14 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
 }
 
 bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
-    if (!d3d11Frame || !repeatSourceFrameTexture || !repeatSourceNeedsCursorRecompose) {
+    if (!d3d11Frame || !repeatSourceFrameTexture || !repeatSourceNeedsOverlayRecompose) {
         return false;
     }
 
     const AVPixelFormat activeSwFormat = GetActiveD3D11SwFormat();
     const bool useDirectRgbPath = IsDirectRgbD3D11SwFormat(activeSwFormat);
 
-    if (!useDirectRgbPath && captureCursor && !videoProcessorInit) {
+    if (!useDirectRgbPath && !videoProcessorInit) {
         if (!InitVideoProcessor()) {
             return false;
         }

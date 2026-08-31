@@ -56,6 +56,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     std::chrono::high_resolution_clock::time_point afterFence;
     if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex, stats, afterFence))
         return false;
+    ce::ComGuard<ID3D11Texture2D> bgraTextureGuard(bgraTex);
 
     auto afterOpen = PerfTimer::now();
     const AVPixelFormat activeSwFormat = GetActiveD3D11SwFormat();
@@ -63,14 +64,22 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     std::chrono::high_resolution_clock::time_point afterConvert;
     AVFrame* d3d11Frame = nullptr;
-    if (!ConvertFrameToYuv(bgraTex, useDirectRgbPath, &d3d11Frame, stats, afterConvert))
+    if (!ConvertFrameToYuv(bgraTextureGuard.get(), useDirectRgbPath, &d3d11Frame, stats, afterConvert))
         return false;
+
+    // Inject capture historically repeats the already converted frame. Retain
+    // that zero-extra-copy default unless the face camera actually needs to
+    // advance independently of the game frame.
+    const bool recomposeOverlaysForRepeats = FaceCameraCompositionActive();
+    const bool stagedDynamicOverlaySource =
+        recomposeOverlaysForRepeats && StageRepeatSourceFrameTexture(bgraTextureGuard.get());
 
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
     const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
     const bool encodeSuccess = SubmitFrameForEncode(d3d11Frame, timestamp, effectiveStartPts, frameStart,
                                                     afterOpen, afterConvert, afterFence, stats);
     if (!encodeSuccess) {
+        DiscardStagedRepeatSourceFrameTexture();
         av_frame_free(&d3d11Frame);
         return false;
     }
@@ -85,7 +94,22 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Update global stats
     video_encoder_g_framesEncoded++;
     outputFrameCount++;
-    CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    if (stagedDynamicOverlaySource) {
+        CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height), isHDR, 0,
+                                             0);
+        // Seed one converted fallback without adding a second copy to every
+        // accepted frame. Successful dynamic repeats refresh it thereafter.
+        if (!repeatFrameTexture)
+            CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    } else {
+        // A stale/failed camera can retire itself during this frame's
+        // composition, making recomposeOverlaysForRepeats false. Drop any
+        // older RGB repeat source now that the accepted converted frame is a
+        // camera-free fallback; otherwise it would linger until a later CFR
+        // repeat happened to consume it.
+        InvalidateRepeatSourceFrameTexture();
+        CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    }
     video_encoder_g_totalFenceWait += stats.fenceWaitMs;
     video_encoder_g_totalColorConvert += stats.colorConvertMs;
     video_encoder_g_totalEncode += stats.encodeMs;
@@ -390,7 +414,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
     if (!useDirectRgbPath && !videoProcessorInit) {
         if (!InitVideoProcessor()) {
             DLL_Log("[VideoEncoder] Frame %d: VP init failed", encodeFrameCounter);
-            bgraTex->Release();
             return false;
         }
     }
@@ -398,7 +421,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
     auto beforeConvert = PerfTimer::now();
     d3d11Frame = av_frame_alloc();
     if (!d3d11Frame) {
-        bgraTex->Release();
         return false;
     }
     d3d11Frame->format = AV_PIX_FMT_D3D11;
@@ -411,7 +433,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
         if (frameRet < 0 || !d3d11Frame->data[0]) {
             DLL_Log("[VideoEncoder] Frame %d: Failed to allocate D3D11 HW frame for direct RGB path: %d",
                     encodeFrameCounter, frameRet);
-            bgraTex->Release();
             av_frame_free(&d3d11Frame);
             return false;
         }
@@ -419,7 +440,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
         if (!PrepareD3D11TextureForEncode(bgraTex, (ID3D11Texture2D*)d3d11Frame->data[0], CursorCompositionActive(), 0,
                                           0)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
-            bgraTex->Release();
             av_frame_free(&d3d11Frame);
             return false;
         }
@@ -428,7 +448,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
         // deterministic RGB stream to NV12/P010 on the GPU.
         if (!ConvertBGRAtoNV12(bgraTex, d3d11Frame, CursorCompositionActive(), true)) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
-            bgraTex->Release();
             av_frame_free(&d3d11Frame);
             return false;
         }
@@ -439,7 +458,6 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
 
     afterConvert = PerfTimer::now();
     stats.colorConvertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
-    bgraTex->Release();
     if (!ApplyFrameColorMetadata(d3d11Frame, codecCtx, savedConfig.hdrNominalPeakNits)) {
         av_frame_free(&d3d11Frame);
         return false;

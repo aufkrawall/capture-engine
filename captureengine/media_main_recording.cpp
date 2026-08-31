@@ -176,8 +176,8 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
            lhs.splitEncode == rhs.splitEncode && lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead &&
            lhs.spatialAq == rhs.spatialAq && lhs.temporalAq == rhs.temporalAq &&
            lhs.aqStrength == rhs.aqStrength && lhs.bFrames == rhs.bFrames && lhs.bRefMode == rhs.bRefMode &&
-           lhs.customOptions == rhs.customOptions &&
-           lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.amfUsage == rhs.amfUsage &&
+           lhs.customOptions == rhs.customOptions && lhs.captureCursor == rhs.captureCursor &&
+           lhs.faceCamera == rhs.faceCamera && lhs.qp == rhs.qp && lhs.amfUsage == rhs.amfUsage &&
            lhs.amfPreset == rhs.amfPreset && lhs.amfQp == rhs.amfQp && lhs.amfAsyncDepth == rhs.amfAsyncDepth &&
            lhs.amfPreencode == rhs.amfPreencode && lhs.amfPreanalysis == rhs.amfPreanalysis &&
            lhs.amfLookahead == rhs.amfLookahead && lhs.amfSpatialAq == rhs.amfSpatialAq &&

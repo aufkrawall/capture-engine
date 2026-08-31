@@ -86,6 +86,8 @@ struct FrameStats;
 
 #include "cursor_renderer.h"
 
+#include "face_camera_renderer.h"
+
 enum WriterFinalizePhase : uint32_t {
     kWriterPhaseRunning = 0,
     kWriterPhaseFinalizeStarting = 1,

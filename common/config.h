@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "face_camera_config.h"
 #include "shared_defs.h"
 
 static constexpr int kMaxAudioSections = 8;
@@ -76,6 +77,7 @@ struct VideoConfig {
     std::string bRefMode = "auto";
     std::string customOptions;
     bool captureCursor = true;  // Include mouse cursor in recording
+    ce::face_camera::Config faceCamera;
 
     // NVENC-specific settings
     int qp = 23;  // Quality value used for NVENC CQ/CQP modes (valid range depends on codec/mode)

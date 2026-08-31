@@ -6,6 +6,9 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- Added an opt-in USB/webcam face-camera overlay for WGC/DXGI and inject capture. Camera ingest is nonblocking and
+  latest-frame-only; a one-draw D3D11 compositor provides configurable placement, size, crop, mirroring, opacity,
+  rectangle/rounded/circle masks, borders, SDR/HDR mapping, and moving camera content on CFR repeated game frames.
 - Added opt-in, stream-only YouTube, Twitch, and custom RTMP/RTMPS output. It reuses CaptureEngine's CFR/audio timing,
   selects a low-latency H.264/AAC compatibility profile on the configured hardware backend, redacts stream keys, and
   stops the session on bounded network/queue failure instead of sacrificing A/V synchronization.

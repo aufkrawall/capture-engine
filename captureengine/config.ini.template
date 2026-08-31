@@ -154,6 +154,47 @@ chroma_subsampling=auto
 ; compatibility value is written consistently to the encoder and container.
 hdr_nominal_peak_nits=1000
 
+[FaceCamera]
+; Optional camera overlay blended into the recorded frame on the encoder GPU.
+; Camera capture runs independently and never blocks game capture or CFR output;
+; a missing, late, or disconnected camera therefore cannot stall the recording.
+; A camera's microphone is configured separately under [Microphone].
+enabled=false
+; default selects the first Windows video-capture device. Otherwise use the
+; exact friendly name or symbolic-link ID reported by the device/driver.
+device=default
+; auto leaves resolution unconstrained while still preferring the requested FPS.
+; A fixed WxH requests the closest native mode and converts it to GPU-ready BGRA.
+; 720p30 is a good low-overhead face-cam default even for high-rate game capture.
+resolution=1280x720
+fps=30
+; top_left, top_center, top_right, center_left, center, center_right,
+; bottom_left, bottom_center, bottom_right, or custom.
+position=bottom_right
+; custom maps x/y from 0 (left/top) to 100 (right/bottom) while keeping the
+; complete camera inside the configured margin.
+x_percent=100
+y_percent=100
+; Width is a percentage of the recorded frame width; outer margin is a
+; percentage of its shorter edge. The camera's native aspect ratio is
+; preserved; circle uses a centered square crop.
+width_percent=24
+margin_percent=2
+; rectangle, rounded, or circle. Rounded corners and borders are analytic GPU
+; masks with antialiased edges, not CPU-generated bitmaps.
+shape=rounded
+corner_radius_percent=12
+; fill preserves aspect ratio and center-crops when needed; stretch uses the
+; complete camera image. Mirroring is horizontal only.
+crop=fill
+mirror=true
+opacity_percent=100
+; Border width is a percentage of the camera overlay's shorter edge.
+border_width_percent=0.75
+border_color=#FFFFFF
+; Hide a frozen camera after this many milliseconds. 0 keeps the last frame.
+stale_timeout_ms=2000
+
 [NVENC]
 ; p1 is fastest; p7 spends the most time on quality.
 preset=p1

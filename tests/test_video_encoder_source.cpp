@@ -226,7 +226,8 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionBacksUpOnlyTouchedRgbRegionOnNo
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
-    EXPECT_NE(source.find("PrepareVideoProcessorCursorInput(bgraTexture, overlayCursor"), std::string::npos);
+    EXPECT_NE(source.find("PrepareVideoProcessorCursorInput(preparedFaceCameraSource, overlayCursor"),
+              std::string::npos);
     EXPECT_NE(source.find("(sourceDesc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0"), std::string::npos);
     EXPECT_NE(source.find("CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source"), std::string::npos);
     EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"), std::string::npos);
@@ -273,8 +274,8 @@ TEST(VideoEncoderSourceTest, CursorColorCalibrationAndRepeatRenderingAreDiagnosa
     EXPECT_NE(rendererSource.find("std::clamp(std::isfinite(paperWhiteNits)"), std::string::npos);
     EXPECT_NE(rendererSource.find("[Cursor Color] SDR cursor mapping"), std::string::npos);
     EXPECT_NE(rendererSource.find("calibration=%s alpha=straight"), std::string::npos);
-    EXPECT_NE(encoderSource.find("cursorAwareRepeatRenderCount++;"), std::string::npos);
-    EXPECT_NE(encoderSource.find("cursorAwareRepeatRenders=%lld"), std::string::npos);
+    EXPECT_NE(encoderSource.find("overlayAwareRepeatRenderCount++;"), std::string::npos);
+    EXPECT_NE(encoderSource.find("overlayAwareRepeatRenders=%lld"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {

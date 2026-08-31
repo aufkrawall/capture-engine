@@ -371,6 +371,7 @@ bool VideoEncoder::Start() {
     }
 
     BeginDeferredRecording();
+    EnsureFaceCameraStarted();
 
     return true;
 }

@@ -140,8 +140,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    const bool recomposeCursorForRepeats = CursorCompositionActive() && cursorRenderer;
-    if (!recomposeCursorForRepeats && repeatSourceNeedsCursorRecompose) {
+    const bool recomposeOverlaysForRepeats = DynamicOverlayRecompositionActive();
+    if (!recomposeOverlaysForRepeats && repeatSourceNeedsOverlayRecompose) {
         InvalidateRepeatSourceFrameTexture();
     }
 
@@ -284,11 +284,21 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         if (success) {
             lastAssignedVideoPts = d3d11Frame->pts;
             outputFrameCount++;
-            CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
-            if (recomposeCursorForRepeats &&
-                !CacheRepeatSourceFrameTexture(bgraTexture, frameWidth, frameHeight, isHDR, captureLeft, captureTop)) {
-                repeatSourceNeedsCursorRecompose = false;
+            const bool cachedDynamicOverlaySource =
+                recomposeOverlaysForRepeats && CacheRepeatSourceFrameTexture(
+                                                   bgraTexture, frameWidth, frameHeight, isHDR, captureLeft, captureTop);
+            if (recomposeOverlaysForRepeats && !cachedDynamicOverlaySource) {
+                repeatSourceNeedsOverlayRecompose = false;
             }
+            // Keep one full-frame cache copy per accepted frame. Dynamic
+            // overlays retain the uncomposited RGB source so camera/cursor
+            // state can advance on CFR repeats; the ordinary path retains the
+            // already converted frame.
+            // Dynamic composition keeps the larger RGB source. Seed one
+            // converted fallback, then refresh it only when a repeat is
+            // actually rendered, avoiding a second full copy per fresh frame.
+            if (!cachedDynamicOverlaySource || !repeatFrameTexture)
+                CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
         }
     } else {
         success = false;
@@ -357,8 +367,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     lastFrameDeferred.store(false, std::memory_order_relaxed);
 
-    const bool recomposeCursorForRepeat = repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture;
-    if (!repeatFrameTexture && !recomposeCursorForRepeat) {
+    const bool recomposeOverlaysForRepeat = repeatSourceNeedsOverlayRecompose && repeatSourceFrameTexture;
+    if (!repeatFrameTexture && !recomposeOverlaysForRepeat) {
         DLL_Log("[VideoEncoder] RepeatLastFrame requested without cached frame");
         return false;
     }
@@ -430,12 +440,12 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     auto beforeConvert = PerfTimer::now();
     bool populatedFromRepeatSource = false;
-    if (recomposeCursorForRepeat) {
+    if (recomposeOverlaysForRepeat) {
         populatedFromRepeatSource = PopulateD3D11FrameFromRepeatSource(d3d11Frame);
         if (!populatedFromRepeatSource) {
-            if (!repeatCursorRecomposeFallbackLogged) {
-                DLL_Log("[VideoEncoder] Cursor-aware repeat recompose failed; falling back to cached duplicate frame");
-                repeatCursorRecomposeFallbackLogged = true;
+            if (!repeatOverlayRecomposeFallbackLogged) {
+                DLL_Log("[VideoEncoder] Dynamic-overlay repeat recompose failed; falling back to cached frame");
+                repeatOverlayRecomposeFallbackLogged = true;
             }
             av_frame_free(&d3d11Frame);
             if (!repeatFrameTexture) {
@@ -559,8 +569,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     video_encoder_g_framesEncoded++;
     outputFrameCount++;
     if (populatedFromRepeatSource) {
-        cursorAwareRepeatRenderCount++;
+        overlayAwareRepeatRenderCount++;
         CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        if (!DynamicOverlayRecompositionActive())
+            InvalidateRepeatSourceFrameTexture();
     }
     video_encoder_g_totalFenceWait += stats.fenceWaitMs;
     video_encoder_g_totalColorConvert += stats.colorConvertMs;

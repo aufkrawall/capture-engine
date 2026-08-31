@@ -284,6 +284,7 @@ void LoadFpsLimiter(ConfigReader& reader, AppConfig& config) ;
 void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& path, bool& pseudoProcessListSet) ;
 void LoadOverlay(ConfigReader& reader, AppConfig& config) ;
 void LoadVideo(ConfigReader& reader, AppConfig& config) ;
+void LoadFaceCamera(ConfigReader& reader, AppConfig& config) ;
 void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path) ;
 void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) ;
 void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool pseudoProcessListSet) ;

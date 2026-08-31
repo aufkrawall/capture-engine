@@ -460,6 +460,7 @@ void VideoEncoder::CleanupVideoProcessor() {
     }
     hdrP010OutputViewCache.clear();
 
+    CleanupFaceCameraCompositionResources();
     CleanupCursorCompositionResources();
 
     if (inputView) {
