@@ -163,6 +163,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
     const bool injectCaptureRequested =
         shm && shm->runtimeState.IsInjectVideoCaptureRequested();
+    if (sd && !injectCaptureRequested) {
+        ce::capture_policy::UpdateFinalOutputCaptureEpoch(
+            sd->finalOutputCapture.timeline, false);
+    }
     const bool wantsVblankPacedPresentation =
         VulkanLayerState::Get().WantsVblankPacedPresentation();
     const ce::vulkan_present_metering_policy::ChainScan presentMeteringScan =
@@ -409,12 +413,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     if (captureCount <= 10 || (captureCount % 600) == 0) {
                         LayerLog(
                             "Vulkan Layer: captured generated final output #%llu "
-                            "(timestamp=%lld displaySequence=%llu/%u skipped=%u outputFps=%.1f multiplier=%d)",
+                            "(timestamp=%lld displaySequence=%llu/%u skipped=%u outputFps=%.1f multiplier=%d "
+                            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu)",
                             static_cast<unsigned long long>(captureCount),
                             static_cast<long long>(captureMetadata->timestampQpc),
                             static_cast<unsigned long long>(captureMetadata->displayTimingSequence),
                             captureMetadata->displayTimingGeneration, finalOutputPlan.skippedOutputs,
-                            finalOutputFps, finalOutputMultiplier);
+                            finalOutputFps, finalOutputMultiplier,
+                            static_cast<long long>(finalOutputPlan.virtualLeadUs),
+                            static_cast<unsigned long long>(sd->finalOutputCapture.timeline.sourceGroupExpiryCount.load(
+                                std::memory_order_relaxed)),
+                            static_cast<unsigned long long>(sd->finalOutputCapture.timeline.virtualLeadClampCount.load(
+                                std::memory_order_relaxed)));
                     }
                 }
             };

@@ -70,6 +70,9 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(timing.find("AdjustFinalOutputTimelineForMultiplierChange"), std::string::npos);
     EXPECT_NE(timing.find("kFinalOutputCfrPublicationHeadroomPermille"), std::string::npos);
     EXPECT_NE(timing.find("std::try_to_lock"), std::string::npos);
+    EXPECT_NE(timing.find("UpdateFinalOutputCaptureEpoch"), std::string::npos);
+    EXPECT_NE(present.find("UpdateFinalOutputCaptureEpoch"), std::string::npos)
+        << "an inactive recording must retire the prior Vulkan capture epoch even when doCapture is not called";
 
     const std::string correlator =
         ReadSource("captureengine/media_main_encoder_inject_display_timing.cpp");
@@ -77,6 +80,24 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(correlator.find("queuedFrame.frameIndex == observation.frameIndex"),
               std::string::npos)
         << "delayed display evidence must not retime a reused ring slot";
+}
+
+TEST(FinalOutputCaptureSourceTest, DX12RecordingStartsWithFreshFinalOutputClock) {
+    const std::string timing = ReadSource("hook/apis/dx12_hook_final_output_capture.cpp");
+    ASSERT_FALSE(timing.empty());
+
+    const std::string plan = FunctionBody(
+        timing, "DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(",
+        "bool DX12_TryClaimStreamlineFinalOutputCapture(");
+    ASSERT_FALSE(plan.empty());
+    const size_t captureCandidate = plan.find("plan.captureCandidate =");
+    const size_t epochReset = plan.find("UpdateFinalOutputCaptureEpoch");
+    const size_t timestamp = plan.find("NextFinalOutputTimestampQpc");
+    ASSERT_NE(captureCandidate, std::string::npos);
+    ASSERT_NE(epochReset, std::string::npos);
+    ASSERT_NE(timestamp, std::string::npos);
+    EXPECT_LT(captureCandidate, epochReset);
+    EXPECT_LT(epochReset, timestamp);
 }
 
 TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSensorOverlayRows) {

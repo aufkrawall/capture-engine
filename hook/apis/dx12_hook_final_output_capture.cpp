@@ -21,6 +21,13 @@ int64_t GetCurrentQpc() {
     return value.QuadPart;
 }
 
+int64_t QpcDeltaToUs(int64_t deltaQpc, int64_t qpcFrequency) {
+    if (qpcFrequency <= 0)
+        return 0;
+    return (deltaQpc / qpcFrequency) * 1'000'000 +
+           ((deltaQpc % qpcFrequency) * 1'000'000) / qpcFrequency;
+}
+
 float GetObservedFinalOutputFps() {
     if (auto* metrics = DXGIShared::GetPerformanceMetrics()) {
         const float presentationFps = metrics->GetCurrentFPS();
@@ -52,6 +59,17 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
         !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
         return plan;
 
+    plan.captureCandidate = shm && g_IPC && g_IPC->IsRecording() &&
+                            shm->runtimeState.IsInjectVideoCaptureRequested();
+    plan.includeOverlay = overlayConfig.showOverlay && overlayConfig.captureIncludeOverlay;
+    if (ce::capture_policy::UpdateFinalOutputCaptureEpoch(g_finalOutputTimeline,
+                                                           plan.captureCandidate)) {
+        g_finalOutputCadenceGate.Reset();
+        g_skippedFinalOutputs.store(0, std::memory_order_release);
+        g_finalOutputMultiplier.store(0, std::memory_order_release);
+        HookLogImportant("DX12: Final Streamline output clock reset for new recording capture epoch");
+    }
+
     const int64_t qpcFrequency = GetQpcFrequency();
     const int64_t callbackQpc = GetCurrentQpc();
     const float outputFps = GetObservedFinalOutputFps();
@@ -61,7 +79,7 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
     if (previousMultiplier >= 2 && previousMultiplier != currentMultiplier) {
         ce::capture_policy::AdjustFinalOutputTimelineForMultiplierChange(
             g_finalOutputTimeline, static_cast<uint32_t>(previousMultiplier),
-            static_cast<uint32_t>(currentMultiplier));
+            static_cast<uint32_t>(currentMultiplier), callbackQpc);
         HookLogImportant("DX12: Final-output clock adjusted for DLSS MFG multiplier %dx -> %dx",
                          previousMultiplier, currentMultiplier);
     }
@@ -82,20 +100,24 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
             plan.metadata.captureFlags |= SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
         }
     }
-    plan.captureCandidate = shm && g_IPC && g_IPC->IsRecording() &&
-                            shm->runtimeState.IsInjectVideoCaptureRequested();
-    plan.includeOverlay = overlayConfig.showOverlay && overlayConfig.captureIncludeOverlay;
-
     static std::atomic<uint64_t> s_planCount{0};
     const uint64_t planCount = s_planCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (planCount <= 10 || (planCount % 600) == 0) {
+        const int64_t virtualLeadQpc = plan.metadata.timestampQpc - callbackQpc;
+        const int64_t virtualLeadUs = QpcDeltaToUs(virtualLeadQpc, qpcFrequency);
         HookLogImportant(
             "DX12: Final Streamline output #%llu planned (capture=%d includeOverlay=%d timestamp=%lld "
-            "displayWatermark=%llu generation=%u skippedCallbacks=%u outputFps=%.1f multiplier=%d)",
+            "displayWatermark=%llu generation=%u skippedCallbacks=%u outputFps=%.1f multiplier=%d "
+            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu)",
             static_cast<unsigned long long>(planCount), plan.captureCandidate ? 1 : 0,
             plan.includeOverlay ? 1 : 0, static_cast<long long>(plan.metadata.timestampQpc),
             static_cast<unsigned long long>(plan.metadata.displayTimingSequence),
-            plan.metadata.displayTimingGeneration, skippedOutputs, outputFps, currentMultiplier);
+            plan.metadata.displayTimingGeneration, skippedOutputs, outputFps, currentMultiplier,
+            static_cast<long long>(virtualLeadUs),
+            static_cast<unsigned long long>(
+                g_finalOutputTimeline.sourceGroupExpiryCount.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_finalOutputTimeline.virtualLeadClampCount.load(std::memory_order_relaxed)));
     }
     return plan;
 }

@@ -37,6 +37,77 @@ TEST(FinalOutputCaptureTimingTest, CpuBurstIsSpreadAcrossOutputIntervals) {
     EXPECT_NEAR(third - second, kFrequency / 144.0, 2.0);
 }
 
+TEST(FinalOutputCaptureTimingTest, ValidFourOutputBurstDoesNotHitVirtualLeadGuard) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kCallbackQpc = 100'000'000;
+
+    int64_t timestamp = 0;
+    for (int output = 0; output < 4; ++output) {
+        timestamp = policy::NextFinalOutputTimestampQpc(
+            state, kCallbackQpc + output * 100, kFrequency, 144.0f);
+    }
+
+    EXPECT_GT(timestamp, kCallbackQpc);
+    EXPECT_EQ(state.virtualLeadClampCount.load(), 0u);
+}
+
+TEST(FinalOutputCaptureTimingTest, RecordingEpochDiscardsIdleVirtualClockPhase) {
+    policy::FinalOutputTimelineState state;
+    state.lastTimestampQpc.store(200'000'000);
+    state.estimatedIntervalQpc.store(152'770);
+    state.lastSourcePresentQpc.store(100'000'000);
+    state.callbacksSinceSourcePresent.store(99);
+    state.sourceGroupIntervalValid.store(true);
+    state.sourceGroupExpiryCount.store(2);
+    state.virtualLeadClampCount.store(3);
+
+    EXPECT_FALSE(policy::UpdateFinalOutputCaptureEpoch(state, false));
+    EXPECT_TRUE(policy::UpdateFinalOutputCaptureEpoch(state, true));
+    EXPECT_EQ(state.lastTimestampQpc.load(), 0);
+    EXPECT_EQ(state.estimatedIntervalQpc.load(), 0);
+    EXPECT_EQ(state.lastSourcePresentQpc.load(), 0);
+    EXPECT_EQ(state.sourceGroupAuthorityQpc.load(), 0);
+    EXPECT_EQ(state.callbacksSinceSourcePresent.load(), 0u);
+    EXPECT_FALSE(state.sourceGroupIntervalValid.load());
+    EXPECT_EQ(state.sourceGroupExpiryCount.load(), 0u);
+    EXPECT_EQ(state.virtualLeadClampCount.load(), 0u);
+    EXPECT_FALSE(policy::UpdateFinalOutputCaptureEpoch(state, true));
+    EXPECT_FALSE(policy::UpdateFinalOutputCaptureEpoch(state, false));
+}
+
+TEST(FinalOutputCaptureTimingTest, StaleSourceGroupCannotRunVirtualClockIntoFuture) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kFirstCallbackQpc = 100'000'000;
+    constexpr int64_t kActualOutputIntervalQpc = 72'000;
+    constexpr int64_t kStaleSourceIntervalQpc = 152'770;
+    constexpr float kObservedOutputFps =
+        static_cast<float>(kFrequency) / static_cast<float>(kActualOutputIntervalQpc);
+
+    state.lastTimestampQpc.store(kFirstCallbackQpc);
+    state.estimatedIntervalQpc.store(kStaleSourceIntervalQpc);
+    state.lastSourcePresentQpc.store(kFirstCallbackQpc);
+    state.sourceGroupAuthorityQpc.store(kFirstCallbackQpc);
+    state.sourceGroupIntervalValid.store(true);
+
+    int64_t previousTimestamp = kFirstCallbackQpc;
+    int64_t callbackQpc = kFirstCallbackQpc;
+    for (int output = 1; output <= 1200; ++output) {
+        callbackQpc = kFirstCallbackQpc + output * kActualOutputIntervalQpc;
+        const int64_t timestamp = policy::NextFinalOutputTimestampQpc(
+            state, callbackQpc, kFrequency, kObservedOutputFps);
+        EXPECT_GT(timestamp, previousTimestamp);
+        previousTimestamp = timestamp;
+    }
+
+    EXPECT_GE(state.sourceGroupExpiryCount.load(), 1u);
+    EXPECT_GE(state.virtualLeadClampCount.load(), 1u);
+    EXPECT_FALSE(state.sourceGroupIntervalValid.load());
+    EXPECT_NEAR(state.estimatedIntervalQpc.load(), kActualOutputIntervalQpc, 1000);
+    EXPECT_LE(previousTimestamp - callbackQpc, state.estimatedIntervalQpc.load() * 4);
+}
+
 TEST(FinalOutputCaptureTimingTest, CompletedSourceGroupRefinesUnknownOutputRate) {
     policy::FinalOutputTimelineState state;
     constexpr int64_t kFrequency = 10'000'000;
@@ -172,13 +243,31 @@ TEST(FinalOutputCaptureTimingTest, MultiplierChangeScalesStrongIntervalWithoutLo
     state.lastSourcePresentQpc.store(99'900'000);
     state.callbacksSinceSourcePresent.store(1);
 
-    policy::AdjustFinalOutputTimelineForMultiplierChange(state, 2, 4);
+    policy::AdjustFinalOutputTimelineForMultiplierChange(state, 2, 4, 100'000'000);
 
     EXPECT_EQ(state.estimatedIntervalQpc.load(), 41'666);
     EXPECT_EQ(state.lastTimestampQpc.load(), 100'000'000);
     EXPECT_EQ(state.lastSourcePresentQpc.load(), 99'900'000);
+    EXPECT_EQ(state.sourceGroupAuthorityQpc.load(), 100'000'000);
     EXPECT_EQ(state.callbacksSinceSourcePresent.load(), 1u);
     EXPECT_TRUE(state.sourceGroupIntervalValid.load());
+}
+
+TEST(FinalOutputCaptureTimingTest, MultiplierTransitionAuthorityExpiresWithoutSourceBoundary) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kTransitionQpc = 100'000'000;
+    state.lastTimestampQpc.store(kTransitionQpc);
+    state.estimatedIntervalQpc.store(83'333);
+
+    policy::AdjustFinalOutputTimelineForMultiplierChange(
+        state, 2, 4, kTransitionQpc);
+    policy::NextFinalOutputTimestampQpc(
+        state, kTransitionQpc + 3'000'000, kFrequency, 144.0f);
+
+    EXPECT_FALSE(state.sourceGroupIntervalValid.load());
+    EXPECT_EQ(state.sourceGroupExpiryCount.load(), 1u);
+    EXPECT_NEAR(state.estimatedIntervalQpc.load(), kFrequency / 144.0, 2.0);
 }
 
 TEST(FinalOutputCaptureTimingTest, VulkanMeteringConfigurationCoversEveryPresentInBatch) {

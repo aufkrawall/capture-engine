@@ -17,6 +17,7 @@ struct VulkanFinalOutputCaptureState {
 
 struct VulkanFinalOutputCapturePlan {
     FrameCaptureMetadata metadata;
+    int64_t virtualLeadUs = 0;
     uint32_t skippedOutputs = 0;
     bool shouldCapture = false;
 };

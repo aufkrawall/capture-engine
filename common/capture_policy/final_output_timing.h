@@ -18,8 +18,12 @@ struct FinalOutputTimelineState {
     std::atomic<int64_t> lastTimestampQpc{0};
     std::atomic<int64_t> estimatedIntervalQpc{0};
     std::atomic<int64_t> lastSourcePresentQpc{0};
+    std::atomic<int64_t> sourceGroupAuthorityQpc{0};
     std::atomic<uint32_t> callbacksSinceSourcePresent{0};
     std::atomic<bool> sourceGroupIntervalValid{false};
+    std::atomic<bool> captureEpochActive{false};
+    std::atomic<uint64_t> sourceGroupExpiryCount{0};
+    std::atomic<uint64_t> virtualLeadClampCount{0};
 };
 
 // Kept in the common policy layer so final-output producers can embed the
@@ -35,12 +39,34 @@ struct FinalOutputCadenceState {
     }
 };
 
-inline void ResetFinalOutputTimeline(FinalOutputTimelineState& state) {
+inline void ResetFinalOutputTimelineClock(FinalOutputTimelineState& state) {
     state.lastTimestampQpc.store(0, std::memory_order_release);
     state.estimatedIntervalQpc.store(0, std::memory_order_release);
     state.lastSourcePresentQpc.store(0, std::memory_order_release);
+    state.sourceGroupAuthorityQpc.store(0, std::memory_order_release);
     state.callbacksSinceSourcePresent.store(0, std::memory_order_release);
     state.sourceGroupIntervalValid.store(false, std::memory_order_release);
+    state.sourceGroupExpiryCount.store(0, std::memory_order_release);
+    state.virtualLeadClampCount.store(0, std::memory_order_release);
+}
+
+inline void ResetFinalOutputTimeline(FinalOutputTimelineState& state) {
+    ResetFinalOutputTimelineClock(state);
+    state.captureEpochActive.store(false, std::memory_order_release);
+}
+
+// Final-output callbacks also service the visible overlay while recording is
+// idle. Never carry that idle clock phase into a later recording: a stale
+// source-group estimate can otherwise place the first captured frame far in the
+// future before media has any opportunity to calibrate it against display ETW.
+inline bool UpdateFinalOutputCaptureEpoch(FinalOutputTimelineState& state, bool captureActive) {
+    const bool wasActive = state.captureEpochActive.exchange(captureActive, std::memory_order_acq_rel);
+    if (!captureActive || wasActive)
+        return false;
+
+    ResetFinalOutputTimelineClock(state);
+    state.captureEpochActive.store(true, std::memory_order_release);
+    return true;
 }
 
 // A fixed/dynamic MFG factor change should not leave the virtual clock one
@@ -49,7 +75,8 @@ inline void ResetFinalOutputTimeline(FinalOutputTimelineState& state) {
 // group remains authoritative and will replace this transition estimate.
 inline void AdjustFinalOutputTimelineForMultiplierChange(FinalOutputTimelineState& state,
                                                          uint32_t previousMultiplier,
-                                                         uint32_t currentMultiplier) {
+                                                         uint32_t currentMultiplier,
+                                                         int64_t adjustmentQpc) {
     if (previousMultiplier < 2 || currentMultiplier < 2 || previousMultiplier == currentMultiplier)
         return;
 
@@ -59,8 +86,12 @@ inline void AdjustFinalOutputTimelineForMultiplierChange(FinalOutputTimelineStat
     const int64_t scaledInterval = std::max<int64_t>(
         1, previousInterval * static_cast<int64_t>(previousMultiplier) /
                static_cast<int64_t>(currentMultiplier));
+    const int64_t authorityQpc = adjustmentQpc > 0
+                                     ? adjustmentQpc
+                                     : state.lastTimestampQpc.load(std::memory_order_acquire);
     state.estimatedIntervalQpc.store(scaledInterval, std::memory_order_release);
-    state.sourceGroupIntervalValid.store(true, std::memory_order_release);
+    state.sourceGroupAuthorityQpc.store(authorityQpc, std::memory_order_release);
+    state.sourceGroupIntervalValid.store(authorityQpc > 0, std::memory_order_release);
 }
 
 // VkSetPresentConfigNV is carried only on the first call of a metered batch,
@@ -118,13 +149,30 @@ inline int64_t NextFinalOutputTimestampQpc(FinalOutputTimelineState& state, int6
         state.callbacksSinceSourcePresent.fetch_add(1, std::memory_order_relaxed);
 
     const int64_t observedInterval = FinalOutputIntervalFromFps(qpcFrequency, observedOutputFps);
+    bool sourceGroupExpired = false;
+    if (qpcFrequency > 0 && state.sourceGroupIntervalValid.load(std::memory_order_acquire)) {
+        const int64_t authorityQpc = state.sourceGroupAuthorityQpc.load(std::memory_order_acquire);
+        const int64_t currentEstimate = state.estimatedIntervalQpc.load(std::memory_order_acquire);
+        const int64_t authorityTimeout =
+            std::max<int64_t>(qpcFrequency / 4, std::max<int64_t>(1, currentEstimate) * 8);
+        if (authorityQpc > 0 && callbackQpc > authorityQpc &&
+            callbackQpc - authorityQpc > authorityTimeout) {
+            bool expected = true;
+            if (state.sourceGroupIntervalValid.compare_exchange_strong(
+                    expected, false, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                state.sourceGroupExpiryCount.fetch_add(1, std::memory_order_relaxed);
+                sourceGroupExpired = true;
+            }
+        }
+    }
     // Presentation metrics are only a startup fallback. Streamline can issue
     // its runtime Presents in a CPU burst, so those metrics can temporarily
-    // resemble the base rate or an arbitrarily high rate. Once a complete
-    // source group provides both elapsed time and the actual output count, it
-    // is the authoritative interval until the FG transition resets the state.
+    // resemble the base rate or an arbitrarily high rate. A complete source
+    // group is authoritative only while source boundaries keep arriving. Some
+    // Streamline topologies hand every later Present to a worker, so a last
+    // transition-era group must expire instead of owning the clock forever.
     if (observedInterval > 0 && !state.sourceGroupIntervalValid.load(std::memory_order_acquire))
-        RefineFinalOutputInterval(state, observedInterval, qpcFrequency, 7);
+        RefineFinalOutputInterval(state, observedInterval, qpcFrequency, sourceGroupExpired ? 0 : 7);
 
     int64_t interval = state.estimatedIntervalQpc.load(std::memory_order_acquire);
     if (interval <= 0)
@@ -133,15 +181,31 @@ inline int64_t NextFinalOutputTimestampQpc(FinalOutputTimelineState& state, int6
     int64_t previous = state.lastTimestampQpc.load(std::memory_order_acquire);
     for (;;) {
         int64_t next = callbackQpc;
+        bool clampedVirtualLead = false;
         if (previous > 0) {
             next = previous + interval;
             // A real source stall starts a new phase. Ordinary Streamline burst
             // gaps remain below this threshold and retain the virtual cadence.
-            if (callbackQpc > next + interval * 8)
+            if (callbackQpc > next + interval * 8) {
                 next = callbackQpc;
+            } else if (callbackQpc > 0) {
+                // DLSS 4x can burst at most four outputs for one source frame.
+                // One extra interval of slack covers boundary jitter, but no
+                // physically meaningful schedule can run arbitrarily ahead of
+                // the callback that supplied its pixels. Keep timestamps
+                // monotonic while compressing any already-invalid lead.
+                const int64_t maximumVirtualLead = std::max<int64_t>(1, interval * 4);
+                const int64_t latestAllowedTimestamp = callbackQpc + maximumVirtualLead;
+                if (next > latestAllowedTimestamp) {
+                    next = std::max(previous + 1, latestAllowedTimestamp);
+                    clampedVirtualLead = true;
+                }
+            }
         }
         if (state.lastTimestampQpc.compare_exchange_weak(previous, next, std::memory_order_acq_rel,
                                                          std::memory_order_acquire)) {
+            if (clampedVirtualLead)
+                state.virtualLeadClampCount.fetch_add(1, std::memory_order_relaxed);
             return next;
         }
     }
@@ -165,6 +229,7 @@ inline void ObserveFinalOutputSourcePresent(FinalOutputTimelineState& state, int
     // A completed source group supplies an exact count/time observation and is
     // stronger than the presentation-FPS fallback used during startup.
     RefineFinalOutputInterval(state, outputInterval, qpcFrequency, 0);
+    state.sourceGroupAuthorityQpc.store(sourcePresentQpc, std::memory_order_release);
     state.sourceGroupIntervalValid.store(true, std::memory_order_release);
 }
 

@@ -19,6 +19,13 @@ int64_t GetCurrentQpc() {
     return value.QuadPart;
 }
 
+int64_t QpcDeltaToUs(int64_t deltaQpc, int64_t qpcFrequency) {
+    if (qpcFrequency <= 0)
+        return 0;
+    return (deltaQpc / qpcFrequency) * 1'000'000 +
+           ((deltaQpc % qpcFrequency) * 1'000'000) / qpcFrequency;
+}
+
 }  // namespace
 
 VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptureState& state,
@@ -46,6 +53,14 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
 
     const int64_t qpcFrequency = GetQpcFrequency();
     const int64_t callbackQpc = GetCurrentQpc();
+    if (ce::capture_policy::UpdateFinalOutputCaptureEpoch(
+            state.timeline, sharedMemory &&
+                                sharedMemory->runtimeState.IsInjectVideoCaptureRequested())) {
+        state.cadenceGate.Reset();
+        state.observedMultiplier.store(0, std::memory_order_release);
+        state.skippedOutputs.store(0, std::memory_order_release);
+        LayerLog("Vulkan Layer: final-output clock reset for new recording capture epoch");
+    }
     if (startsMeteredBatch) {
         ce::capture_policy::ObserveFinalOutputSourcePresent(state.timeline, callbackQpc,
                                                             qpcFrequency);
@@ -54,7 +69,7 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
         state.observedMultiplier.exchange(currentMultiplier, std::memory_order_acq_rel);
     ce::capture_policy::AdjustFinalOutputTimelineForMultiplierChange(
         state.timeline, static_cast<uint32_t>(previousMultiplier),
-        static_cast<uint32_t>(currentMultiplier));
+        static_cast<uint32_t>(currentMultiplier), callbackQpc);
     plan.skippedOutputs = state.skippedOutputs.exchange(0, std::memory_order_acq_rel);
     for (uint32_t index = 0; index < plan.skippedOutputs; ++index) {
         ce::capture_policy::NextFinalOutputTimestampQpc(state.timeline, callbackQpc, qpcFrequency,
@@ -63,6 +78,7 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
     plan.metadata.timestampQpc = ce::capture_policy::NextFinalOutputTimestampQpc(
         state.timeline, callbackQpc, qpcFrequency, observedOutputFps,
         meteredBatchOutput);
+    plan.virtualLeadUs = QpcDeltaToUs(plan.metadata.timestampQpc - callbackQpc, qpcFrequency);
     plan.metadata.captureFlags = SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT;
     if (sharedMemory) {
         const auto watermark =

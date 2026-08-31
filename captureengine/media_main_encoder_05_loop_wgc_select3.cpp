@@ -234,6 +234,25 @@ if (!config.video.useVFR) {
                 ++injectTargetHoldTotal;
                 ++injectTargetHoldWithCandidateThisWindow;
                 ++injectTargetHoldWithCandidateTotal;
+                const int64_t futureLeadQpc = selectedTimestamp - playoutTargetQpc;
+                if (qpcFreq.QuadPart > 0 && futureLeadQpc > qpcFreq.QuadPart / 4) {
+                    static uint64_t s_largeFutureHoldLogCount = 0;
+                    ++s_largeFutureHoldLogCount;
+                    if (s_largeFutureHoldLogCount <= 5 ||
+                        (s_largeFutureHoldLogCount % 120ull) == 0ull) {
+                        const QueuedFrame& heldFrame = bufferedInjectFrames[bestIdx];
+                        LogWarn(
+                            "[EncoderThread] Inject candidate held far in the future: leadUs=%lld "
+                            "targetQpc=%lld frame=%u tex=%d timestamp=%lld rawTimestamp=%lld "
+                            "captureFlags=0x%X avail=%zu fenceTail=%zu count=%llu",
+                            static_cast<long long>(qpcToUs(futureLeadQpc)),
+                            static_cast<long long>(playoutTargetQpc), heldFrame.frameIndex,
+                            heldFrame.textureIndex, static_cast<long long>(heldFrame.timestamp),
+                            static_cast<long long>(heldFrame.rawTimestamp), heldFrame.captureFlags,
+                            availableCount, protectedInjectTailFrames,
+                            static_cast<unsigned long long>(s_largeFutureHoldLogCount));
+                    }
+                }
             }
         } else {
             ++injectTargetHoldThisWindow;
