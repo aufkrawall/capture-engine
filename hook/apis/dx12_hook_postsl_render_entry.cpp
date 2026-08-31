@@ -9,6 +9,7 @@ static std::atomic<int> s_postSLSkipOther{0};
 const bool normalRouteDrawPendingAtEntry = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
                                            dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
 if (!dx12_hook_g_PostSLRenderMutex.try_lock()) {
+    DX12_NoteSkippedStreamlineFinalOutput();
     s_postSLSkipLock.fetch_add(1, std::memory_order_relaxed);
     NoteDX12OverlayCoverageGate("postsl-render-lock");
     static int s_lockSkip = 0;
@@ -17,6 +18,9 @@ if (!dx12_hook_g_PostSLRenderMutex.try_lock()) {
         return PostSLFlow::kReturn;
 }
 auto renderLockGuard = ce::make_scope_guard([]() { dx12_hook_g_PostSLRenderMutex.unlock(); });
+SharedMemoryLayout* finalOutputShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+finalOutputCapture =
+    DX12_PlanStreamlineFinalOutputCapture(finalOutputShm, GetActiveDX12OverlayConfig(finalOutputShm));
 entryLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 cachedSLFGActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;

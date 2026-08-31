@@ -174,6 +174,22 @@ private:
     InputFrameRatePredictor injectInputPredictor{};
     ce::capture_policy::CfrCadencePhaseLockState injectCfrPhaseLock{};
     ce::capture_policy::CfrCadencePhaseLockState wgcCfrPhaseLock{};
+    struct InjectDisplayTimingObservation {
+        uint64_t publicationWatermark = 0;
+        uint32_t generation = 0;
+        int64_t virtualTimestampQpc = 0;
+        uint32_t ringIndex = 0;
+        uint32_t frameIndex = 0;
+    };
+    std::deque<InjectDisplayTimingObservation> injectDisplayTimingObservations{};
+    uint32_t injectDisplayTimingActiveGeneration;
+    uint64_t injectDisplayTimingLastMatchedSequence;
+    bool injectDisplayTimingOffsetValid;
+    int64_t injectDisplayTimingOffsetQpc;
+    uint64_t injectDisplayTimingResolvedCount;
+    uint64_t injectDisplayTimingFallbackCount;
+    uint64_t injectDisplayTimingPendingCount;
+    DWORD injectDisplayTimingLastLog;
     uint32_t injectWorstSourceFpsX100;
     uint32_t injectBestSourceFpsX100;
     uint32_t injectWorstSourceJitterUs;
@@ -747,6 +763,7 @@ private:
     void SelectWgcFrameUniformTail();
     void SelectWgcFrameUniformVfr();
     void SelectInjectFrame();
+    void RefreshInjectFinalOutputDisplayTiming(size_t firstNewBufferedFrame);
     void CommitWarmupSync();
     void CommitWarmupReset();
     // tryPopBufferedWgcFrameForTarget selection chunks (parameterless; they read the

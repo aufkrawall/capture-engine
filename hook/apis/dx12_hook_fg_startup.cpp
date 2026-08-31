@@ -10,7 +10,10 @@ bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapC
 
     const uint64_t drawsBefore = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
     dx12_hook_g_RequireExactPostSLStartupTransportDraw = true;
-    postSLCallback(pSwapChain);
+    // This explicit draw is immediately followed by the real startup-handoff
+    // Present below the caller. Unlike the retained-swapchain activation
+    // service later in this file, it represents one genuine output ordinal.
+    DXGIShared::InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
     dx12_hook_g_RequireExactPostSLStartupTransportDraw = false;
     const bool drawn = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) != drawsBefore;
 

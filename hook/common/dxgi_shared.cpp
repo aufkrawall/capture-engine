@@ -106,6 +106,22 @@ std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback{nullptr};
 }
 
 namespace DXGIShared {
+thread_local uint32_t s_postSLFinalOutputPresentCallbackDepth = 0;
+
+void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, IDXGISwapChain* swapChain) {
+    if (!callback)
+        return;
+    ++s_postSLFinalOutputPresentCallbackDepth;
+    auto scope = ce::make_scope_guard([]() { --s_postSLFinalOutputPresentCallbackDepth; });
+    callback(swapChain);
+}
+
+bool IsPostSLFinalOutputPresentCallback() {
+    return s_postSLFinalOutputPresentCallbackDepth != 0;
+}
+}
+
+namespace DXGIShared {
 // Post-SL startup activation service (set by dx12_hook.cpp).
 std::atomic<PostSLStartupActivationServiceFn> g_PostSLStartupActivationService{nullptr};
 }

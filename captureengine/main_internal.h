@@ -281,7 +281,8 @@ inline bool ShouldStartLoggerProcess(const AppConfig& config) {
 }
 
 inline bool ShouldStartSensorProcess(const AppConfig& config) {
-    return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
+    return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM ||
+           main_g_Recording;
 }
 
 inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
@@ -513,6 +514,10 @@ inline bool EnsureMediaProcessReady(DWORD timeoutMs) {
 inline bool EnsureLimiterProcessReady(DWORD timeoutMs) {
     return EnsureChildProcessConnected(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), timeoutMs,
                                        "limiter");
+}
+
+inline bool EnsureSensorProcessReady() {
+    return EnsureChildProcessConnected(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, 0, "sensor");
 }
 
 inline bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,

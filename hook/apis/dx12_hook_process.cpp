@@ -50,7 +50,11 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     ++dx12_hook_g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
     const bool isInterpolatedFrame = (count == 0);
-    bool processCapture = !isInterpolatedFrame;
+    if (applicationSourcePresent && !isInterpolatedFrame &&
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        DX12_ObserveStreamlineSourcePresentTiming();
+    }
+    bool processCapture = !isInterpolatedFrame && !DX12_ShouldUseStreamlineFinalOutputCapture();
     if (processCapture && ShouldSkipCaptureForTargetCadence()) {
         processCapture = false;
     }
@@ -357,6 +361,9 @@ if (PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSamp
 UINT currentBackBufferIdx = sc3->GetCurrentBackBufferIndex();
 
 bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+if (streamlineFGRunning && applicationSourcePresent && !isInterpolatedFrame) {
+    DX12_ObserveStreamlineSourcePresentTiming();
+}
 
 // [OVERLAY COVERAGE] account this top-level processed present on every exit
 // path (function-scope guard so all skip returns below are included).
@@ -696,7 +703,8 @@ if (!isInterpolatedFrame &&
     sc3->Release();
     return;
 }
-bool processCapture = !isInterpolatedFrame && !protectedOfficialFFXStartupOverlayOnly;
+bool processCapture = !isInterpolatedFrame && !protectedOfficialFFXStartupOverlayOnly &&
+                      !DX12_ShouldUseStreamlineFinalOutputCapture();
 if (processCapture && ShouldSkipCaptureForTargetCadence()) {
     processCapture = false;
 }

@@ -8,7 +8,18 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         "vkFormat=%d)",
         device, imageCount, extent.width, extent.height, format);
 
-    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+    std::unique_lock<std::mutex> lock(layer_capture_g_CaptureMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        if (auto* mem = g_IPCClient.GetSharedMem())
+            mem->runtimeState.injectProducerCaptureLockDrops.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<uint64_t> s_initializeContentionCount{0};
+        const uint64_t count = s_initializeContentionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 10 || (count % 1000) == 0) {
+            LayerLog("Vulkan Layer: non-blocking capture initialization deferred by state contention #%llu",
+                     static_cast<unsigned long long>(count));
+        }
+        return;
+    }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp) {
@@ -438,7 +449,9 @@ bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain)
     if (!g_IPCClient.GetSharedMem())
         return false;
 
-    std::lock_guard<std::mutex> captureLock(layer_capture_g_CaptureMutex);
+    std::unique_lock<std::mutex> captureLock(layer_capture_g_CaptureMutex, std::try_to_lock);
+    if (!captureLock.owns_lock())
+        return false;
     auto stateIt = layer_capture_g_CaptureStates.find(device);
     if (stateIt == layer_capture_g_CaptureStates.end() || !stateIt->second.initialized ||
         stateIt->second.swapchain != swapchain) {
@@ -448,7 +461,9 @@ bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain)
     VulkanCaptureState& state = stateIt->second;
     bool publishedTextures = false;
     {
-        std::lock_guard<std::mutex> textureLock(layer_capture_g_InteropMutex);
+        std::unique_lock<std::mutex> textureLock(layer_capture_g_InteropMutex, std::try_to_lock);
+        if (!textureLock.owns_lock())
+            return false;
         for (const SharedTextureEntry& entry : layer_capture_g_TextureCache) {
             if (!entry.valid || entry.vkDevice != device || entry.luidKey != state.luidKey ||
                 entry.width != state.captureWidth || entry.height != state.captureHeight ||
@@ -479,33 +494,6 @@ bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain)
     LayerLog("[InjectLifecycle] Republished Vulkan capture transport for host generation (swapchain=%p)",
              swapchain);
     return true;
-}
-
-void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex) {
-    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
-    auto current = layer_capture_g_CaptureStates.find(device);
-    if (current == layer_capture_g_CaptureStates.end() || current->second.swapchain != swapchain ||
-        imageIndex >= current->second.presentedImages.size()) {
-        return;
-    }
-
-    const bool imageWasPresented = current->second.presentedImages[imageIndex];
-    current->second.presentedImages[imageIndex] = true;
-    if (!imageWasPresented)
-        return;
-
-    // Reacquiring and presenting the same image proves its preceding present
-    // wait was consumed. At that point capture semaphores from older swapchains
-    // can no longer be referenced by the presentation engine.
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-    for (auto retired = layer_capture_g_RetiredCaptureStates.begin(); retired != layer_capture_g_RetiredCaptureStates.end();) {
-        if (retired->device == device && CaptureStateCopiesComplete(*retired, disp)) {
-            DestroyCaptureStateResources(*retired, disp);
-            retired = layer_capture_g_RetiredCaptureStates.erase(retired);
-        } else {
-            ++retired;
-        }
-    }
 }
 
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
@@ -567,15 +555,4 @@ void CleanupCapture(VkDevice device) {
             LayerLog("Vulkan Layer: Cleared useEncoderTextures on vkDestroyDevice");
         }
     }
-}
-
-VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex) {
-    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
-    auto it = layer_capture_g_CaptureStates.find(device);
-    if (it != layer_capture_g_CaptureStates.end() && it->second.initialized && it->second.swapchain == swapchain) {
-        if (imageIndex < it->second.signalSemaphores.size()) {
-            return it->second.signalSemaphores[imageIndex];
-        }
-    }
-    return VK_NULL_HANDLE;
 }

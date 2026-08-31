@@ -29,9 +29,13 @@ TEST(InjectCaptureSourceTest, VulkanPresentWaitIsRewiredOnlyAfterCaptureSubmissi
     const std::string body = FunctionBody(source, "auto doCapture = [&]()", "auto doScreenshot = [&]()");
     ASSERT_FALSE(body.empty());
 
-    EXPECT_NE(body.find("const bool captureSubmitted"), std::string::npos);
+    EXPECT_NE(body.find("bool captureSubmitted"), std::string::npos);
     EXPECT_NE(body.find("if (captureSubmitted && captureDone != VK_NULL_HANDLE)"), std::string::npos);
     EXPECT_EQ(body.find("if (captureDone != VK_NULL_HANDLE)"), std::string::npos);
+    EXPECT_EQ(body.find("GetCaptureSemaphore"), std::string::npos)
+        << "the Present path must not take a separate blocking capture-state lock";
+    EXPECT_EQ(body.find("NoteCaptureSwapchainImagePresented"), std::string::npos)
+        << "image reuse bookkeeping belongs inside the single try-locked capture transaction";
 }
 
 TEST(InjectCaptureSourceTest, VulkanCaptureFailureCannotPoisonFenceOrPublishUnsubmittedFrame) {
@@ -89,6 +93,7 @@ TEST(InjectCaptureSourceTest, VulkanSwapchainInitIsNonPollingAndGenerationScoped
     ASSERT_FALSE(body.empty());
 
     EXPECT_EQ(body.find("Sleep("), std::string::npos);
+    EXPECT_NE(body.find("std::try_to_lock"), std::string::npos);
     EXPECT_NE(body.find("it->second.swapchain == swapchain"), std::string::npos);
     EXPECT_NE(body.find("captureWidth == extent.width"), std::string::npos);
     EXPECT_NE(body.find("Failed to create capture fence"), std::string::npos);

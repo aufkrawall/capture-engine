@@ -35,16 +35,24 @@ const OverlayConfig overlayFreeCfg = GetActiveDX12OverlayConfig(overlayFreeShm);
 uint64_t overlayFreeRequestId = 0;
 if (!overlayFreeCfg.screenshotIncludeOverlay && PostSLOwnsThisFramesOverlayDraw(overlayFreeCfg))
     overlayFreeRequestId = GetPendingScreenshotRequestId(overlayFreeShm);
-auto captureOverlayFreeScreenshot = [&](ID3D12CommandQueue* overlaySubmitQueue) {
-    if (overlayFreeRequestId == 0 || !overlaySubmitQueue)
+auto captureBeforeOverlay = [&](ID3D12CommandQueue* overlaySubmitQueue,
+                                ExecuteCommandListsPtr captureExecuteCommandLists) {
+    if (!overlaySubmitQueue)
         return;
-    CaptureRequestedDX12Screenshot(sc3, overlayFreeShm, overlayFreeRequestId, overlaySubmitQueue);
-    overlayFreeRequestId = 0;
+    if (overlayFreeRequestId != 0) {
+        CaptureRequestedDX12Screenshot(sc3, overlayFreeShm, overlayFreeRequestId, overlaySubmitQueue);
+        overlayFreeRequestId = 0;
+    }
+    if (!finalOutputCapture.includeOverlay && DX12_TryClaimStreamlineFinalOutputCapture(finalOutputCapture)) {
+        PublishDX12CapturedFrame(pSwapChain, overlayFreeShm, overlaySubmitQueue, true, bufIdx,
+                                 &finalOutputCapture.metadata, captureExecuteCommandLists);
+    }
 };
 bool usedRealECL = false;
 bool usedOrigECL = false;
 bool usedVirtualCall = false;
 ID3D12CommandQueue* submittedQueue = queue;
+ExecuteCommandListsPtr submittedECL = nullptr;
 {
     auto* preSubmitDev = g_Device.load(std::memory_order_acquire);
     HRESULT preSubmitHr = preSubmitDev ? preSubmitDev->GetDeviceRemovedReason() : E_FAIL;
@@ -130,7 +138,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // queue behind the wrapper for diagnostics and later promotion.
             submittedQueue = slQueue;
             dx12_hook_s_insidePostSLOverlayECL = true;
-            captureOverlayFreeScreenshot(slQueue);
+            captureBeforeOverlay(slQueue, nullptr);
             slQueue->ExecuteCommandLists(1, lists);
             dx12_hook_s_insidePostSLOverlayECL = false;
             usedVirtualCall = true;
@@ -151,11 +159,13 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // reintroduces the cross-queue handoff we are trying to avoid.
             submittedQueue = queue;
             if (selectedQueueOrigECL) {
-                captureOverlayFreeScreenshot(queue);
+                submittedECL = selectedQueueOrigECL;
+                captureBeforeOverlay(queue, submittedECL);
                 selectedQueueOrigECL(queue, 1, lists);
                 usedOrigECL = true;
             } else {
-                captureOverlayFreeScreenshot(queue);
+                submittedECL = realECL;
+                captureBeforeOverlay(queue, submittedECL);
                 realECL(queue, 1, lists);
                 usedRealECL = true;
             }
@@ -174,7 +184,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // different late-captured "wrapper" queue for the first rendered
             // frame; stay on the queue that already passed our probes.
             submittedQueue = queue;
-            captureOverlayFreeScreenshot(queue);
+            submittedECL = selectedQueueOrigECL;
+            captureBeforeOverlay(queue, submittedECL);
             selectedQueueOrigECL(queue, 1, lists);
             usedOrigECL = true;
 
@@ -191,7 +202,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // resolves to the real/original D3D12 ECL entrypoint, avoid bouncing
             // back through the queue's current virtual dispatch.
             submittedQueue = queue;
-            captureOverlayFreeScreenshot(queue);
+            submittedECL = selectedQueueOrigECL;
+            captureBeforeOverlay(queue, submittedECL);
             selectedQueueOrigECL(queue, 1, lists);
             usedOrigECL = true;
 
@@ -208,7 +220,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
             submittedQueue = scQueue;
             dx12_hook_s_insidePostSLOverlayECL = true;
-            captureOverlayFreeScreenshot(scQueue);
+            captureBeforeOverlay(scQueue, nullptr);
             scQueue->ExecuteCommandLists(1, lists);
             dx12_hook_s_insidePostSLOverlayECL = false;
             usedVirtualCall = true;
@@ -222,7 +234,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // Direct submission: bypass SL's wrapper entirely
             submittedQueue = realQ;
             dx12_hook_s_insidePostSLOverlayECL = true;
-            captureOverlayFreeScreenshot(realQ);
+            submittedECL = realECL;
+            captureBeforeOverlay(realQ, submittedECL);
             realECL(realQ, 1, lists);
             dx12_hook_s_insidePostSLOverlayECL = false;
             usedRealECL = true;
@@ -242,7 +255,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                 // submit path, so execute it exactly once and do not fall through
                 // into the virtual bootstrap path.
                 submittedQueue = queue;
-                captureOverlayFreeScreenshot(queue);
+                submittedECL = selectedQueueOrigECL;
+                captureBeforeOverlay(queue, submittedECL);
                 selectedQueueOrigECL(queue, 1, lists);
                 usedOrigECL = true;
                 static int s_pureDLSSBootstrapFallbackLog = 0;
@@ -272,7 +286,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                 if (slQueue) {
                     submittedQueue = slQueue;
                     dx12_hook_s_insidePostSLOverlayECL = true;
-                    captureOverlayFreeScreenshot(slQueue);
+                    captureBeforeOverlay(slQueue, nullptr);
                     slQueue->ExecuteCommandLists(1, lists);
                     dx12_hook_s_insidePostSLOverlayECL = false;
                     usedVirtualCall = true;
@@ -294,7 +308,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                     if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
                         selectedQueueOrigECL) {
                         submittedQueue = queue;
-                        captureOverlayFreeScreenshot(queue);
+                        submittedECL = selectedQueueOrigECL;
+                        captureBeforeOverlay(queue, submittedECL);
                         selectedQueueOrigECL(queue, 1, lists);
                         usedOrigECL = true;
                         static int s_noWrapperDirectSelectedQueueLog = 0;
@@ -308,7 +323,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                         s_noWrapperDirectSelectedQueueLog++;
                     } else {
                         dx12_hook_s_insidePostSLOverlayECL = true;
-                        captureOverlayFreeScreenshot(queue);
+                        captureBeforeOverlay(queue, nullptr);
                         queue->ExecuteCommandLists(1, lists);
                         dx12_hook_s_insidePostSLOverlayECL = false;
                         usedVirtualCall = true;
@@ -322,29 +337,39 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
     } else if (isSLWrapperQ) {
         ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
         if (origECL) {
-            captureOverlayFreeScreenshot(queue);
+            submittedECL = origECL;
+            captureBeforeOverlay(queue, submittedECL);
             origECL(queue, 1, lists);
             usedOrigECL = true;
         } else {
-            captureOverlayFreeScreenshot(queue);
+            captureBeforeOverlay(queue, nullptr);
             queue->ExecuteCommandLists(1, lists);
             usedVirtualCall = true;
         }
     } else if (realECL) {
-        captureOverlayFreeScreenshot(queue);
+        submittedECL = realECL;
+        captureBeforeOverlay(queue, submittedECL);
         realECL(queue, 1, lists);
         usedRealECL = true;
     } else {
         ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
         if (origECL) {
-            captureOverlayFreeScreenshot(queue);
+            submittedECL = origECL;
+            captureBeforeOverlay(queue, submittedECL);
             origECL(queue, 1, lists);
             usedOrigECL = true;
         } else {
-            captureOverlayFreeScreenshot(queue);
+            captureBeforeOverlay(queue, nullptr);
             queue->ExecuteCommandLists(1, lists);
             usedVirtualCall = true;
         }
+    }
+    // Even if this output had no drawable overlay content, it is still a final
+    // Streamline output. Capture after the submitted overlay list so the
+    // include-overlay preference never turns a transient no-draw into a hole.
+    if (finalOutputCapture.includeOverlay && DX12_TryClaimStreamlineFinalOutputCapture(finalOutputCapture)) {
+        PublishDX12CapturedFrame(pSwapChain, overlayFreeShm, submittedQueue, true, bufIdx,
+                                 &finalOutputCapture.metadata, submittedECL);
     }
 }
 const int submitPathCount = (usedRealECL ? 1 : 0) + (usedOrigECL ? 1 : 0) + (usedVirtualCall ? 1 : 0);
@@ -380,11 +405,6 @@ if (rendered) {
     NoteDX12OverlayRendered(DX12OverlayRenderRoute::kPostSL);
     SharedMemoryLayout* postSLShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig postSLOverlayCfg = GetActiveDX12OverlayConfig(postSLShm);
-    bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-    if (postSLShm && g_IPC && g_IPC->IsRecording() && isRealFrame && postSLOverlayCfg.showOverlay &&
-        postSLOverlayCfg.captureIncludeOverlay) {
-        PublishDX12CapturedFrame(pSwapChain, postSLShm, submittedQueue, true, bufIdx);
-    }
     const uint64_t postSLScreenshotRequestId = GetPendingScreenshotRequestId(postSLShm);
     if (postSLScreenshotRequestId != 0 && postSLOverlayCfg.showOverlay &&
         postSLOverlayCfg.screenshotIncludeOverlay) {

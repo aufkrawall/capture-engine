@@ -310,10 +310,13 @@ public:
 
         // Write frame metadata
         slot.timestamp = timestamp;
+        slot.displayTimingSequence = 0;
         slot.textureIndex = textureIndex;
         slot.fenceValue = gpuFenceValue;
         slot.frameIndex = wIdx;
         slot.sourcePid = GetCurrentProcessId();
+        slot.captureFlags = SHARED_FRAME_CAPTURE_NONE;
+        slot.displayTimingGeneration = 0;
 
         slot.valid.store(1, std::memory_order_release);
 

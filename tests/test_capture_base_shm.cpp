@@ -77,6 +77,10 @@ TEST(CaptureBaseShmTest, SignalFrameReadyWritesRingWithValidFlag) {
 
     SharedMemoryLayout shm{};
     InitShm(shm);
+    shm.frameRing.slots[0].displayTimingSequence = 77;
+    shm.frameRing.slots[0].captureFlags = SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT |
+                                          SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
+    shm.frameRing.slots[0].displayTimingGeneration = 12;
 
     bool transitioned = false;
     bool result = capture.SignalFrameReady(&shm, 0, 12345, 1, &transitioned);
@@ -86,6 +90,9 @@ TEST(CaptureBaseShmTest, SignalFrameReadyWritesRingWithValidFlag) {
     EXPECT_EQ(shm.frameRing.slots[0].timestamp, 12345);
     EXPECT_EQ(shm.frameRing.slots[0].fenceValue, 1u);
     EXPECT_EQ(shm.frameRing.slots[0].textureIndex, 0);
+    EXPECT_EQ(shm.frameRing.slots[0].displayTimingSequence, 0u);
+    EXPECT_EQ(shm.frameRing.slots[0].captureFlags, SHARED_FRAME_CAPTURE_NONE);
+    EXPECT_EQ(shm.frameRing.slots[0].displayTimingGeneration, 0u);
     EXPECT_EQ(shm.frameRing.slots[0].valid.load(std::memory_order_acquire), 1);
 }
 

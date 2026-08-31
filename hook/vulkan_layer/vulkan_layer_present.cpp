@@ -149,12 +149,46 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;
 
+    const bool injectCaptureRequested =
+        shm && shm->runtimeState.IsInjectVideoCaptureRequested();
     const bool wantsVblankPacedPresentation =
         VulkanLayerState::Get().WantsVblankPacedPresentation();
     const ce::vulkan_present_metering_policy::ChainScan presentMeteringScan =
-        (pPresentInfo && pPresentInfo->pNext && wantsVblankPacedPresentation)
+        (pPresentInfo && pPresentInfo->pNext &&
+         (injectCaptureRequested || wantsVblankPacedPresentation))
             ? ce::vulkan_present_metering_policy::ScanPresentChain(pPresentInfo->pNext)
             : ce::vulkan_present_metering_policy::ChainScan{};
+    const bool sharedDLSSFGActive =
+        shm && shm->dlssState.fgActive.load(std::memory_order_acquire);
+    const int sharedDLSSFGMultiplier =
+        shm ? shm->dlssState.mfgMultiplier.load(std::memory_order_acquire) : 0;
+    const uint32_t newMeteredBatchSize =
+        presentMeteringScan.found && presentMeteringScan.framesPerBatch >= 2
+            ? presentMeteringScan.framesPerBatch
+            : 0;
+    if (sd && newMeteredBatchSize >= 2) {
+        sd->finalOutputMeteredBatchSize.store(newMeteredBatchSize, std::memory_order_release);
+    }
+    const bool meteredBatchOutput =
+        sd && ce::capture_policy::ConsumeFinalOutputMeteredBatchPresent(
+                  sd->finalOutputMeteredPresentsRemaining, newMeteredBatchSize);
+    const bool finalGeneratedOutput = sharedDLSSFGActive || meteredBatchOutput;
+    const int meteredBatchMultiplier =
+        sd ? static_cast<int>(sd->finalOutputMeteredBatchSize.load(std::memory_order_acquire)) : 0;
+    const int finalOutputMultiplier = std::clamp(
+        sharedDLSSFGActive ? sharedDLSSFGMultiplier : meteredBatchMultiplier,
+        2, 4);
+    auto getObservedFinalOutputFps = [&]() {
+        if (auto* metrics = GetOverlayPerformanceMetrics(queueDevice)) {
+            const float presentationFps = metrics->GetCurrentFPS();
+            if (presentationFps >= 10.0f && presentationFps <= 1000.0f)
+                return presentationFps;
+        }
+        const float detectedOutputFps = g_FGCompat.GetOutputFPS();
+        if (detectedOutputFps >= 10.0f && detectedOutputFps <= 1000.0f)
+            return detectedOutputFps;
+        return 60.0f * static_cast<float>(finalOutputMultiplier);
+    };
 
     // Preserve NVIDIA's generated-frame spacing signal. Native relative timing
     // adds the display-rate ceiling later without unlinking application-owned
@@ -267,7 +301,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 overlayCfg = shm->ReadOverlayConfig();
             }
             const bool overlayEnabled = shm && overlayCfg.showOverlay;
-            const bool captureRequested = shm && shm->runtimeState.IsInjectVideoCaptureRequested();
+            const bool captureRequested = injectCaptureRequested;
             const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
             const bool screenshotRequested = screenshotRequestId != 0;
             const bool captureAfterOverlay = captureRequested && overlayEnabled && overlayCfg.captureIncludeOverlay;
@@ -306,27 +340,50 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             auto doCapture = [&]() {
                 if (!captureRequested || !shm)
                     return;
+                VulkanFinalOutputCapturePlan finalOutputPlan;
+                const FrameCaptureMetadata* captureMetadata = nullptr;
+                float finalOutputFps = 0.0f;
+                if (finalGeneratedOutput) {
+                    finalOutputFps = getObservedFinalOutputFps();
+                    finalOutputPlan = PlanVulkanFinalOutputCapture(
+                        sd->finalOutputCapture, shm, finalOutputFps,
+                        newMeteredBatchSize >= 2, meteredBatchOutput,
+                        finalOutputMultiplier);
+                    captureMetadata = &finalOutputPlan.metadata;
+                }
+                // A generated output consumes its virtual ordinal even
+                // while capture is throttled or this candidate loses cadence;
+                // otherwise the next successful texture inherits an older
+                // generated output's timestamp.
                 if (shm->throttleCapture.load(std::memory_order_acquire)) {
                     return;
                 }
-                if (ShouldSkipCaptureForTargetCadence(shm, "Vulkan")) {
+                if (finalGeneratedOutput && !finalOutputPlan.shouldCapture) {
+                    return;
+                }
+                if (!finalGeneratedOutput && ShouldSkipCaptureForTargetCadence(shm, "Vulkan")) {
                     return;
                 }
 
                 int64_t captureStartUs = PerfLogger::GetQpcUs();
-                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, sd->swapchain, idx);
-                if (captureDone == VK_NULL_HANDLE) {
+                VkSemaphore captureDone = VK_NULL_HANDLE;
+                bool captureStateMissing = false;
+                bool captureSubmitted =
+                    CaptureFrame(sd->device, sd->swapchain, queue, sd->images[idx], idx,
+                                 currentWaitSemaphores, currentWaitSemaphoreCount, &captureDone,
+                                 &captureStateMissing, captureMetadata);
+                if (!captureSubmitted && captureStateMissing) {
                     // Initialization may have been deferred while the previous
-                    // swapchain generation's media leases drained. Retry without
-                    // blocking the present path.
+                    // swapchain generation's media leases drained. Initialization
+                    // and the retry both use try-locks on the Present path.
                     InitializeCapture(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent,
                                       sd->imageCount);
-                    captureDone = GetCaptureSemaphore(sd->device, sd->swapchain, idx);
+                    captureStateMissing = false;
+                    captureSubmitted =
+                        CaptureFrame(sd->device, sd->swapchain, queue, sd->images[idx], idx,
+                                     currentWaitSemaphores, currentWaitSemaphoreCount, &captureDone,
+                                     &captureStateMissing, captureMetadata);
                 }
-                NoteCaptureSwapchainImagePresented(sd->device, sd->swapchain, idx);
-                const bool captureSubmitted =
-                    CaptureFrame(sd->device, sd->swapchain, queue, sd->images[idx], currentWaitSemaphores,
-                                 currentWaitSemaphoreCount, captureDone);
                 perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
                 // Capture may intentionally skip before queue submission (for
                 // example while its non-blocking fence is busy). Preserve the
@@ -336,6 +393,21 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     currentWaitSemaphores = chainedWaitSemaphores.data();
                     currentWaitSemaphoreCount = 1;
                     modified = true;
+                }
+                if (captureSubmitted && captureMetadata) {
+                    static std::atomic<uint64_t> s_finalOutputCaptureCount{0};
+                    const uint64_t captureCount =
+                        s_finalOutputCaptureCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (captureCount <= 10 || (captureCount % 600) == 0) {
+                        LayerLog(
+                            "Vulkan Layer: captured generated final output #%llu "
+                            "(timestamp=%lld displaySequence=%llu/%u skipped=%u outputFps=%.1f multiplier=%d)",
+                            static_cast<unsigned long long>(captureCount),
+                            static_cast<long long>(captureMetadata->timestampQpc),
+                            static_cast<unsigned long long>(captureMetadata->displayTimingSequence),
+                            captureMetadata->displayTimingGeneration, finalOutputPlan.skippedOutputs,
+                            finalOutputFps, finalOutputMultiplier);
+                    }
                 }
             };
 

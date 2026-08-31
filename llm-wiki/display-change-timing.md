@@ -1,12 +1,14 @@
 # Display-change frame timing
 
-Last verified: 2026-08-30 (NVIDIA scheduled-flip announcements under DLSS frame generation)
+Last verified: 2026-08-31 (NVIDIA scheduled-flip announcements and inject-recording correlation under DLSS frame generation)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
-overlay reports FPS, frame time, lows and variance from. The sensor child collects them and publishes into a
-512-slot shared ring (`common/display_timing_shared.h`); the source defaults on and falls back to presentation
-timing when the stream is unavailable, denied, failed, or two seconds stale.
+overlay reports FPS, frame time, lows and variance from. Inject recording also activates this collector regardless
+of the overlay's selected source so final DLSS-G output frames can be correlated to scheduled screen time without
+changing the displayed metric. The sensor child publishes into a 512-slot shared ring
+(`common/display_timing_shared.h`); the overlay source defaults on and falls back to presentation timing when the
+stream is unavailable, denied, failed, or two seconds stale.
 
 ## Correlation and providers
 

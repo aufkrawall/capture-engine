@@ -87,6 +87,12 @@ extern std::mutex g_SharedMutex;
 // Callback for post-SL FG overlay rendering (set by dx12_hook.cpp).
 extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
 
+// Marks callbacks invoked for a real Streamline runtime Present. PostSL also
+// has retained-swapchain startup/warmup service calls that may draw successfully
+// but do not represent a new final output and therefore must not be recorded.
+void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, IDXGISwapChain* swapChain);
+bool IsPostSLFinalOutputPresentCallback();
+
 // Service for forcing a pending PostSL startup activation with a valid retained
 // swapchain when the normal ProcessFrame path has stalled behind Streamline.
 extern std::atomic<PostSLStartupActivationServiceFn> g_PostSLStartupActivationService;

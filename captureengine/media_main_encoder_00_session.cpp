@@ -230,6 +230,15 @@ bool MediaEncoderSession::Init() {
     injectTargetHoldWithCandidateTotal = 0;
     injectBufferCapTrimTotal = 0;
     injectTargetResidualMaxUs = 0;
+    injectDisplayTimingObservations.clear();
+    injectDisplayTimingActiveGeneration = 0;
+    injectDisplayTimingLastMatchedSequence = 0;
+    injectDisplayTimingOffsetValid = false;
+    injectDisplayTimingOffsetQpc = 0;
+    injectDisplayTimingResolvedCount = 0;
+    injectDisplayTimingFallbackCount = 0;
+    injectDisplayTimingPendingCount = 0;
+    injectDisplayTimingLastLog = GetTickCount();
     injectCfrRecoveryActive = false;
     injectEncoderServiceTooSlowCurrent = false;
     injectCfrRecoveryEpisodesThisWindow = 0;

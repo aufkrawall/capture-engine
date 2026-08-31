@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-08-31 (latched recording-level capacity health without policy mutation, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, measured WGC/DXGI overload repeat pacing, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, dynamic cursor/face-camera repeat rendering, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, and exact codec-decoded endpoints)
+Last cross-checked: 2026-08-31 (latched recording-level capacity health without policy mutation, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, measured WGC/DXGI overload repeat pacing, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, dynamic cursor/face-camera repeat rendering, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, exact codec-decoded endpoints, and final-output DLSS multi-frame-generation capture)
 Stale-risk: low
 
 ## Inject contention invariants (2026-07-12)
@@ -13,12 +13,18 @@ Session triage distinguishes upstream screen-source starvation, proven DXGI Dupl
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
+- `common/capture_policy/final_output_timing.h`
 - `common/capture_policy/recording_health.h`
 - `common/recording_lifecycle.h`
 - `common/wgc_pool_lease.h`
 - `common/inject_frame_ring_lease.h`
 - `common/frame_queue.h`
 - `captureengine/media_main.cpp`
+- `captureengine/media_main_encoder_inject_display_timing.cpp`
+- `hook/apis/dx12_hook_final_output_capture.cpp`
+- `hook/apis/dx12_hook_postsl_render_submit.cpp`
+- `hook/vulkan_layer/vulkan_final_output_capture.{h,cpp}`
+- `hook/vulkan_layer/{vulkan_layer_present,layer_capture_capture,layer_ipc}.cpp`
 - `hook/common/fps_limiter.h`
 - `hook/common/fps_limiter_policy.h`
 - `mediaengine/mediaengine_impl*.cpp`
@@ -30,6 +36,7 @@ Primary sources:
 - `mediaengine/mux_invariants.h`
 - `llm-wiki/multi-audio-capture.md`
 - `tests/test_capture_pipeline_policy.cpp`
+- `tests/test_final_output_capture_timing.cpp`
 - `tests/test_recording_health.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_recording_start_feedback.cpp`
@@ -50,6 +57,20 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### DLSS multi-frame-generation final-output capture (2026-08-31)
+
+DLSS-G is an asynchronous presentation pipeline, not merely extra game renders. NVIDIA documents that 4x mode can present three interpolated frames plus the application frame for one application `Present`, and that its pacer may issue those runtime presents in a CPU burst while the driver holds them for evenly spaced display times. Consequently, neither application command-list activity nor CPU `Present` intervals are a sufficient recording clock. OBS's DXGI game-capture hook copies the application backbuffer around the intercepted application `Present`, which explains why it commonly records only base frames. NVIDIA's programming guide explicitly says display-change timing, rather than internal-present timing, is the pacing-quality authority: <https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_G.md>.
+
+DX12 inject capture therefore has a dedicated **final presented-output route** at CE's already-proven PostSL callback, immediately before each real Streamline runtime `Present`. It captures the exact final swapchain backbuffer after DLSS interpolation; overlay-excluded recordings copy immediately before CE's overlay command list, and overlay-included recordings copy immediately after it. Both copies use the same selected command queue and exact raw `ExecuteCommandLists` path as the overlay when available. The explicit startup-handoff draw immediately before a real transport `Present` is included, while retained-swapchain startup/warmup service callbacks are outside the final-output-present scope, so a successful synthetic overlay service call cannot manufacture a duplicate recording frame. Once this route is confirmed, the ordinary ProcessFrame path yields instead of publishing base-only frames.
+
+Streamline's callbacks can arrive in a sub-millisecond burst even though their images scan out across successive refresh intervals. `FinalOutputTimelineState` assigns every callback a monotonic virtual output timestamp without sleeping or waiting, then refines the DX12 interval from complete application-frame groups. Once a complete group supplies both elapsed source time and the actual number of output callbacks, that interval stays authoritative until the FG transition resets it; burst-shaped presentation metrics are only a startup fallback and cannot overwrite it. The hook publishes at most twice the requested CFR rate: this retains a before/after candidate for nearest-timestamp selection without copying every 4K frame at 4x/240 Hz. Mutex, ring, or GPU-slot contention drops the new candidate instead of blocking a Present thread; skipped callback ordinals still advance the virtual clock.
+
+Vulkan DLSS/Remix has a different interception topology but the same timing problem. The implicit layer already receives one final `vkQueuePresentKHR` image per measured generated output, so no later backbuffer hook is needed; however, the old capture gate used the sub-millisecond CPU burst and discarded the interpolated images as "too early." A swapchain-local final-output planner now activates from shared DLSS-G state or `VK_NV_present_metering` with `numFramesPerBatch >= 2`, virtualizes those present timestamps, snapshots the display-publication watermark, and passes the metadata through Vulkan's capture transport. The metering node occurs only on the first call but applies to the next `numFramesPerBatch` Presents, so a swapchain-local atomic cursor retains the whole batch even if shared Streamline state is temporarily absent; successive batch boundaries also refine the interval from the exact call count. Planning and capture are try-only. Semaphore lookup, swapchain-image reuse bookkeeping, retired-generation reclamation, and the copy submit share one capture-state transaction, so contention becomes a visible CFR source drop/repeat rather than separate waits in `vkQueuePresentKHR`.
+
+For exact pacing, a video-recording start launches the existing display-timing ETW child even when no sensor overlay row is enabled, and the published recording-start intent arms collection before inject capture becomes live. The ABI-51 change attaches the stable `SharedDisplayTiming` generation and the pre-Present publication watermark to each final-output `FrameSlot`. The watermark is intentionally not treated as an expected sequence: the 24 ms ETW reorder window can publish older Presents after the callback. Media keeps the smooth virtual timestamp as `rawTimestamp`, searches only newer ordered samples for the timestamp-nearest screen change, prevents sample reuse, learns a smoothed virtual-to-display phase for pending frames, and preserves monotonic order. Initial calibration accepts up to 250 ms because NVIDIA's hardware pacer can hold several already-Presented images; after a phase exists, a sample more than 20 ms from the phase-adjusted target is rejected as a likely drop/stall. If ETW is unavailable, stale, reset, denied, overrun, or arrives too late, the virtual output clock remains the graceful fallback; capture never waits for ETW. This is the same scheduled-display-time distinction measured in `llm-wiki/display-change-timing.md`.
+
+The policy is generic across fixed 2x/3x/4x and dynamic MFG because it counts actual final runtime presents, not merely the requested multiplier. A runtime may drop an interpolated output; only a DX12 callback in the real runtime-Present scope or an actual Vulkan WSI present consumes a recording ordinal. Fixed/dynamic multiplier changes preserve the virtual phase while scaling its strongest interval estimate by the exact old/new ratio, then the next complete output group replaces that transition estimate. Focused regression coverage pins burst spreading, source-group refinement, multiplier transitions, full Vulkan metering-batch retention, generation-safe delayed nearest matching past an ETW backlog, ordered no-reuse correlation, synthetic-callback exclusion, two-candidate CFR headroom, both overlay inclusion modes, recording-time collector startup, Vulkan metadata transport, and single-transaction nonblocking capture contention. Real hardware validation must still compare a recorded motion sequence against NVIDIA scheduled-display events while switching all-FG-off, DLSS 2x/3x/4x, and FSR/DLSS in both directions; static/unit coverage cannot prove a proprietary driver emits the same callback/ETW topology on every version.
 
 ### Recording-level capacity health (2026-08-01)
 

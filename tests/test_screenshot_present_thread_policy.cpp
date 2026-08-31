@@ -246,7 +246,7 @@ std::vector<std::string> SplitLines(const std::string& text) {
 
 }  // namespace
 
-TEST(ScreenshotPresentThreadPolicyTest, EveryPostSLOverlaySubmitCopiesTheOverlayFreeFrameFirst) {
+TEST(ScreenshotPresentThreadPolicyTest, EveryPostSLOverlaySubmitCapturesTheOverlayFreeFrameFirst) {
     const std::string source =
         ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
     ASSERT_FALSE(source.empty());
@@ -259,10 +259,11 @@ TEST(ScreenshotPresentThreadPolicyTest, EveryPostSLOverlaySubmitCopiesTheOverlay
             continue;
         ++submits;
         ASSERT_GT(index, 0u);
-        // The copy has to be submitted on the same queue, immediately ahead of
-        // the overlay list; anything else lets the overlay land in a screenshot
-        // that asked to exclude it.
-        EXPECT_EQ(TrimAscii(lines[index - 1]), "captureOverlayFreeScreenshot(" + queue + ");")
+        // Overlay-free screenshots and final-output recording copies have to be
+        // submitted on the same queue, immediately ahead of the overlay list.
+        // Anything else lets the overlay land in an output that asked to exclude it.
+        const std::string capture = TrimAscii(lines[index - 1]);
+        EXPECT_EQ(capture.find("captureBeforeOverlay(" + queue + ","), 0u)
             << "unguarded overlay submit at line " << (index + 1) << ": " << TrimAscii(lines[index]);
     }
     EXPECT_GT(submits, 10u) << "the submit-path scan found suspiciously few branches";
@@ -282,4 +283,41 @@ TEST(ScreenshotPresentThreadPolicyTest, ProcessFrameYieldsBothScreenshotVariants
         ++guarded;
     }
     EXPECT_EQ(guarded, 2u) << "both ProcessFrameExternal overloads must yield to PostSL";
+}
+
+TEST(ScreenshotPresentThreadPolicyTest, FinalStreamlineRecordingCoversGeneratedOutputsAndBothOverlayModes) {
+    const std::string submit =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+    const std::string process = ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process.cpp");
+    const std::string finalRoute =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_final_output_capture.cpp");
+    const std::string startup =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_fg_startup.cpp");
+    ASSERT_FALSE(submit.empty());
+    ASSERT_FALSE(process.empty());
+    ASSERT_FALSE(finalRoute.empty());
+    ASSERT_FALSE(startup.empty());
+
+    EXPECT_NE(submit.find("if (!finalOutputCapture.includeOverlay &&"), std::string::npos);
+    EXPECT_NE(submit.find("if (finalOutputCapture.includeOverlay &&"), std::string::npos);
+    EXPECT_EQ(submit.find("rendered && finalOutputCapture.includeOverlay"), std::string::npos)
+        << "an output with no drawable overlay content still has to be recorded";
+    EXPECT_EQ(submit.find("IsCurrentFrameReal"), std::string::npos)
+        << "generated Streamline outputs are the frames this route exists to retain";
+    EXPECT_NE(finalRoute.find("IsPostSLFinalOutputPresentCallback"), std::string::npos);
+    const size_t exactHandoff = startup.find("bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent");
+    const size_t retainedService = startup.find("bool DX12_TryInvokePostSLStartupActivationCallback(");
+    ASSERT_NE(exactHandoff, std::string::npos);
+    ASSERT_NE(retainedService, std::string::npos);
+    EXPECT_NE(startup.find("InvokePostSLCallbackForFinalOutputPresent", exactHandoff), std::string::npos)
+        << "the explicit draw immediately before a real handoff Present is a genuine output";
+    EXPECT_EQ(startup.find("InvokePostSLCallbackForFinalOutputPresent", retainedService), std::string::npos)
+        << "retained startup/warmup service callbacks must not manufacture recording frames";
+
+    size_t routedBaseCaptures = 0;
+    for (size_t at = process.find("!DX12_ShouldUseStreamlineFinalOutputCapture()"); at != std::string::npos;
+         at = process.find("!DX12_ShouldUseStreamlineFinalOutputCapture()", at + 1)) {
+        ++routedBaseCaptures;
+    }
+    EXPECT_EQ(routedBaseCaptures, 2u) << "both ProcessFrameExternal overloads must yield base capture to PostSL";
 }

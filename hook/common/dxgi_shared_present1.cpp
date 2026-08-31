@@ -259,7 +259,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     DX12_RetainStreamlineStartupActivationSwapchain(
                         pSwapChain, "DetourPresent1: startup normal-route PostSL callback");
                 }
-                postSLCallback(pSwapChain);
+                InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
             }
         } else {
             static std::atomic<int> s_skipPostSLCallbackLogCount1{0};
@@ -344,7 +344,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal,
                     currentThreadId);
             }
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }
 
         if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
@@ -370,7 +370,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount1{0};
             const int logCount = s_postSLOffKeepAliveNestedDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
@@ -476,7 +476,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount1{0};
             const int logCount = s_postSLOffKeepAliveRecursiveDedupLogCount1.fetch_add(1, std::memory_order_relaxed);

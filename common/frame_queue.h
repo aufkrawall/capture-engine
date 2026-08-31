@@ -45,6 +45,12 @@ struct QueuedFrame {
             other.frameIndex = 0;
             textureIndex = other.textureIndex;
             other.textureIndex = -1;
+            displayTimingSequence = other.displayTimingSequence;
+            other.displayTimingSequence = 0;
+            displayTimingGeneration = other.displayTimingGeneration;
+            other.displayTimingGeneration = 0;
+            captureFlags = other.captureFlags;
+            other.captureFlags = SHARED_FRAME_CAPTURE_NONE;
             injectRingLease = std::move(other.injectRingLease);
             wgcPoolSlot = other.wgcPoolSlot;
             other.wgcPoolSlot = std::numeric_limits<uint32_t>::max();
@@ -102,6 +108,9 @@ struct QueuedFrame {
     uint32_t ringIndex = 0;  // Index in the SharedMemory ring buffer
     uint32_t frameIndex = 0;
     int32_t textureIndex = -1;
+    uint64_t displayTimingSequence = 0;
+    uint32_t displayTimingGeneration = 0;
+    uint32_t captureFlags = SHARED_FRAME_CAPTURE_NONE;
     ce::InjectFrameRingLease injectRingLease;
     uint32_t wgcPoolSlot = std::numeric_limits<uint32_t>::max();
     uint64_t wgcPoolGeneration = 0;

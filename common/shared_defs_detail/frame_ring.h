@@ -20,14 +20,30 @@
 
 #pragma pack(push, 8)
 
+enum SharedFrameCaptureFlags : uint32_t {
+    SHARED_FRAME_CAPTURE_NONE = 0,
+    SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT = 1u << 0,
+    SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK = 1u << 1,
+    SHARED_FRAME_CAPTURE_DISPLAY_TIMING_RESOLVED = 1u << 2,
+};
+
+struct FrameCaptureMetadata {
+    int64_t timestampQpc = 0;
+    uint64_t displayTimingSequence = 0;
+    uint32_t displayTimingGeneration = 0;
+    uint32_t captureFlags = SHARED_FRAME_CAPTURE_NONE;
+};
+
 struct alignas(8) FrameSlot {
-    uint64_t fenceValue;             // GPU fence value for synchronization
-    int64_t timestamp;               // QPC timestamp (ticks, not ms - use QPCToMs for conversion)
-    uint32_t frameIndex;             // Sequential frame number from hook
-    int32_t textureIndex;            // Index of shared texture (0..SHARED_TEXTURE_SLOT_COUNT-1)
-    uint32_t sourcePid;              // Source process ID (required for OpenProcess/DuplicateHandle)
-    std::atomic<uint32_t> valid{0};  // 1 if slot has unread data, 0 if empty/consumed
-    uint32_t padding;                // Explicit padding to reach 32 bytes (8+8+4+4+4+4=32)
+    uint64_t fenceValue;                  // GPU fence value for synchronization
+    int64_t timestamp;                    // QPC timestamp (ticks, not ms - use QPCToMs for conversion)
+    uint64_t displayTimingSequence;       // SharedDisplayTiming publication watermark
+    uint32_t frameIndex;                  // Sequential frame number from hook
+    int32_t textureIndex;                 // Index of shared texture (0..SHARED_TEXTURE_SLOT_COUNT-1)
+    uint32_t sourcePid;                   // Source process ID (required for OpenProcess/DuplicateHandle)
+    uint32_t captureFlags;                // SharedFrameCaptureFlags
+    uint32_t displayTimingGeneration;     // Low 32 bits of the publication generation
+    std::atomic<uint32_t> valid{0};       // 1 if slot has unread data, 0 if empty/consumed
 };
 
 // Ring buffer for frame metadata (lock-free SPSC)

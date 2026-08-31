@@ -151,7 +151,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     DX12_RetainStreamlineStartupActivationSwapchain(
                         pSwapChain, "DetourPresent: startup normal-route PostSL callback");
                 }
-                postSLCallback(pSwapChain);
+                InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
             }
         } else {
             static std::atomic<int> s_skipPostSLCallbackLogCount{0};
@@ -248,7 +248,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     logCount, ctx.postSLConfirmedButStartupSettling ? 1 : 0, ctx.presentOwner, ctx.presentDepthVal,
                     ctx.currentThreadId);
             }
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }
 
         if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
@@ -282,7 +282,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         auto postSLCallback =
             ctx.observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount{0};
             const int logCount = s_postSLOffKeepAliveNestedDedupLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -433,7 +433,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         auto postSLCallback =
             ctx.observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
-            postSLCallback(pSwapChain);
+            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount{0};
             const int logCount = s_postSLOffKeepAliveRecursiveDedupLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -639,6 +639,6 @@ void MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent(IDXGISwapChain* pSw
             streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0, startupFamilyActive ? 1 : 0,
             source ? source : "wrapped runtime Present", invokeNum + 1);
     }
-    postSLCallback(pSwapChain);
+    InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
 }
 }

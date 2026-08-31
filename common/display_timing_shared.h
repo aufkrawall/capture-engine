@@ -30,6 +30,13 @@ inline int64_t DisplayTimingQpcToUs(int64_t ticks, int64_t frequency) {
     return (ticks / frequency) * 1'000'000 + ((ticks % frequency) * 1'000'000) / frequency;
 }
 
+inline int64_t DisplayTimingUsToQpc(int64_t microseconds, int64_t frequency) {
+    if (microseconds <= 0 || frequency <= 0)
+        return 0;
+    return (microseconds / 1'000'000) * frequency +
+           ((microseconds % 1'000'000) * frequency) / 1'000'000;
+}
+
 #pragma pack(push, 8)
 
 struct DisplayTimingSample {

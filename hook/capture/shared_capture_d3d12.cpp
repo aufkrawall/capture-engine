@@ -407,7 +407,8 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
     return true;
 }
 
-bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex) {
+bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex, int64_t timestampQpc,
+                                     SharedCaptureExecuteCommandListsPtr executeCommandLists) {
     std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
     if (!stateLock.owns_lock())
         return false;
@@ -548,12 +549,20 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
 
     // Timestamp the source frame before queue submission so PTS reflects the
     // frame's visual time, not GPU copy latency.
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    LARGE_INTEGER qpc{};
+    if (timestampQpc > 0) {
+        qpc.QuadPart = timestampQpc;
+    } else {
+        QueryPerformanceCounter(&qpc);
+    }
 
     // Execute
     ID3D12CommandList* cmdLists[] = {m_CommandList.Get()};
-    pCommandQueue->ExecuteCommandLists(1, cmdLists);
+    if (executeCommandLists) {
+        executeCommandLists(pCommandQueue, 1, cmdLists);
+    } else {
+        pCommandQueue->ExecuteCommandLists(1, cmdLists);
+    }
 
     // Signal fence
     UINT64 fenceVal = m_FenceValue.fetch_add(1, std::memory_order_relaxed) + 1;

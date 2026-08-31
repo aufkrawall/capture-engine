@@ -635,10 +635,14 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
     uint32_t slot = wIdx % FRAME_RING_SIZE;
     if (slot < FRAME_RING_SIZE) {
         ring.slots[slot].timestamp = (int64_t)timestamp;
+        ring.slots[slot].displayTimingSequence = 0;
         ring.slots[slot].frameIndex = wIdx;
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         ring.slots[slot].textureIndex = wIdx % g_PublishedTextureCount;  // Use tracked count
         ring.slots[slot].sourcePid = GetCurrentProcessId();
+        ring.slots[slot].fenceValue = 0;
+        ring.slots[slot].captureFlags = SHARED_FRAME_CAPTURE_NONE;
+        ring.slots[slot].displayTimingGeneration = 0;
         ring.slots[slot].valid.store(1, std::memory_order_release);
     }
 
@@ -676,7 +680,8 @@ void LayerIPC_SetFence(HANDLE fenceHandle) {
 }
 
 // Signal frame ready for SHMEM mode (textureIndex >= 100)
-void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_t timestampQpc) {
+void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_t timestampQpc,
+                               const FrameCaptureMetadata* metadata) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;
@@ -704,10 +709,13 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     }
 
     ring.slots[slot].timestamp = timestampQpc;
+    ring.slots[slot].displayTimingSequence = metadata ? metadata->displayTimingSequence : 0;
     ring.slots[slot].frameIndex = wIdx;
     ring.slots[slot].textureIndex = textureIndex;  // >= 100 indicates SHMEM mode
     ring.slots[slot].sourcePid = GetCurrentProcessId();
     ring.slots[slot].fenceValue = fenceValue;
+    ring.slots[slot].captureFlags = metadata ? metadata->captureFlags : SHARED_FRAME_CAPTURE_NONE;
+    ring.slots[slot].displayTimingGeneration = metadata ? metadata->displayTimingGeneration : 0;
     ring.slots[slot].valid.store(1, std::memory_order_release);
 
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);

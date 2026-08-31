@@ -11,6 +11,7 @@
 #include "../common/strict_integer_parse.h"
 #include "host_metrics.h"  // Reuse existing logic for native sensors
 #include "display_timing_service.h"
+#include "display_timing_policy.h"
 #include "sensor_plugin.h"
 
 struct SensorSession {
@@ -289,7 +290,12 @@ int SensorProcessMain(const AppConfig& config) {
             } else if (luidSourcePid != sourcePid && luidPublisherEligible) {
                 rendererPid = luidSourcePid;
             }
-            if (!useScreenGrabTarget && s.shm->ReadOverlayConfig().frameTimeSource == FrameTimeSource::DisplayChange) {
+            const OverlayConfig overlayConfig = s.shm->ReadOverlayConfig();
+            const bool injectVideoTimingNeeded =
+                s.shm->runtimeState.IsInjectVideoCaptureRequested() ||
+                s.shm->runtimeState.GetRecordingStartIntent() == RecordingStartIntent::Video;
+            if (ShouldCollectDisplayTiming(
+                    useScreenGrabTarget, overlayConfig.frameTimeSource, injectVideoTimingNeeded)) {
                 displayTimingTargets.push_back({sourcePid, rendererPid, &s.shm->displayTiming});
             }
             int64_t luid = 0;

@@ -24,15 +24,20 @@ if (!config.video.useVFR) {
             discardActivePathMismatchFrame(temp, "inject CFR queue", true);
             continue;
         }
-        if (temp.isInjectMode && temp.timestamp > 0) {
-            injectInputPredictor.Update(temp.timestamp, qpcFreq.QuadPart);
-            observeCaptureSyncPhaseSource("inject", injectCfrPhaseLock, temp.timestamp);
-        }
         drainedInjectFrames.push_back(std::move(temp));
     }
 
+    const size_t firstNewBufferedFrame = bufferedInjectFrames.size();
     for (auto& drainedFrame : drainedInjectFrames) {
         bufferedInjectFrames.push_back(std::move(drainedFrame));
+    }
+    RefreshInjectFinalOutputDisplayTiming(firstNewBufferedFrame);
+    for (size_t index = firstNewBufferedFrame; index < bufferedInjectFrames.size(); ++index) {
+        const QueuedFrame& queuedFrame = bufferedInjectFrames[index];
+        if (queuedFrame.isInjectMode && queuedFrame.timestamp > 0) {
+            injectInputPredictor.Update(queuedFrame.timestamp, qpcFreq.QuadPart);
+            observeCaptureSyncPhaseSource("inject", injectCfrPhaseLock, queuedFrame.timestamp);
+        }
     }
 
     // Track frame arrival rate for source-health telemetry. Use a short

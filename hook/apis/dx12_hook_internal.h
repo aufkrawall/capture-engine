@@ -539,7 +539,23 @@ bool IsDX12ObserverStartupPresentOnlyModeActive(SharedMemoryLayout* shm);
 void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow = false);
 bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg);
 void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLayout* shm, uint64_t requestId, ID3D12CommandQueue* queueOverride = nullptr);
-void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx, UINT currentBackBufferIdx);
+struct DX12FinalOutputCapturePlan {
+    FrameCaptureMetadata metadata{};
+    bool captureCandidate = false;
+    bool includeOverlay = false;
+    bool claimEvaluated = false;
+};
+void DX12_NoteSkippedStreamlineFinalOutput();
+DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
+                                                                 const OverlayConfig& overlayConfig);
+bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan);
+void DX12_ObserveStreamlineSourcePresentTiming();
+void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason);
+bool DX12_ShouldUseStreamlineFinalOutputCapture();
+bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
+                             ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
+                             UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata = nullptr,
+                             ExecuteCommandListsPtr executeCommandLists = nullptr);
 
 const char* DX12WaitResultName(DWORD waitResult);;
 bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr);

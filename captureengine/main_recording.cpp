@@ -73,6 +73,14 @@ void ToggleRecording() {
         PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
         LogInfo("[Controller] Starting recording...");
 
+        // Inject recording uses the sensor child even when no sensor overlay
+        // rows are enabled: it publishes exact screen-change timestamps for
+        // final DLSS-G outputs. Failure is non-fatal because the hook's virtual
+        // output clock remains a smooth fallback.
+        if (!EnsureSensorProcessReady()) {
+            LogWarn("[Controller] Display-timing sensor unavailable; inject recording will use virtual final-output timing");
+        }
+
         if (!EnsureMediaProcessReady(10000)) {
             LogError("[Controller] Media process is not ready, cannot start recording");
             main_g_Recording = false;
@@ -468,7 +476,7 @@ void CheckChildProcessHealth() {
                              bool expected, bool& recoveryFailureReported) {
         if (!expected)
             return;
-        if (process && IsProcessRunning(process) && client && client->IsConnected()) {
+        if (process && IsProcessRunning(process) && (!client || client->IsConnected())) {
             recoveryFailureReported = false;
             return;
         }
@@ -487,11 +495,14 @@ void CheckChildProcessHealth() {
     static bool injectRecoveryFailure = false;
     static bool mediaRecoveryFailure = false;
     static bool limiterRecoveryFailure = false;
+    static bool sensorRecoveryFailure = false;
     recoverProcess(ProcessMode::Inject, main_g_hInjectProcess, main_g_InjectClient.get(), "inject", true, injectRecoveryFailure);
     recoverProcess(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), "media", main_g_hMediaProcess != nullptr,
                    mediaRecoveryFailure);
     recoverProcess(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter",
                    main_g_hLimiterProcess != nullptr, limiterRecoveryFailure);
+    recoverProcess(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, "sensor",
+                   ShouldStartSensorProcess(main_g_Config), sensorRecoveryFailure);
 }
 
 bool CompleteControllerStartup() {

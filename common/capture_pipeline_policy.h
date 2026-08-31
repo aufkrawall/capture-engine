@@ -18,3 +18,4 @@
 #include "capture_policy/ingress_and_active_delay.h"
 #include "capture_policy/cfr_repeat_metrics.h"
 #include "capture_policy/cfr_nearest_playout.h"
+#include "capture_policy/final_output_timing.h"

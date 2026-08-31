@@ -23,6 +23,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+using SharedCaptureExecuteCommandListsPtr =
+    void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+
 // ============================================================================
 // Shared Frame Descriptor
 // ============================================================================
@@ -123,7 +126,8 @@ public:
     bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain);
 
     // Call before Present to capture the frame using the specified command queue
-    bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex);
+    bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex, int64_t timestampQpc = 0,
+                      SharedCaptureExecuteCommandListsPtr executeCommandLists = nullptr);
 
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.

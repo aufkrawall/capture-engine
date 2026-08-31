@@ -1,12 +1,26 @@
 #include "layer_capture_internal.h"
 
 bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
-                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore) {
-    std::lock_guard<std::mutex> lock(layer_capture_g_CaptureMutex);
+                  uint32_t swapchainImageIndex, const VkSemaphore* waitSemaphores,
+                  uint32_t waitSemaphoreCount, VkSemaphore* signaledSemaphore,
+                  bool* captureStateMissing, const FrameCaptureMetadata* metadata) {
+    if (signaledSemaphore)
+        *signaledSemaphore = VK_NULL_HANDLE;
+    if (captureStateMissing)
+        *captureStateMissing = false;
+    std::unique_lock<std::mutex> lock(layer_capture_g_CaptureMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        if (auto* mem = g_IPCClient.GetSharedMem())
+            mem->runtimeState.injectProducerCaptureLockDrops.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
 
     auto it = layer_capture_g_CaptureStates.find(device);
-    if (it == layer_capture_g_CaptureStates.end() || !it->second.initialized || it->second.swapchain != swapchain)
+    if (it == layer_capture_g_CaptureStates.end() || !it->second.initialized || it->second.swapchain != swapchain) {
+        if (captureStateMissing)
+            *captureStateMissing = true;
         return false;
+    }
 
     // Check if we should throttle capture (encoder is falling behind)
     if (g_IPCClient.GetSharedMem()) {
@@ -19,8 +33,30 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)
         return false;
+    if (swapchainImageIndex >= state.signalSemaphores.size() ||
+        swapchainImageIndex >= state.presentedImages.size()) {
+        return false;
+    }
+    const VkSemaphore signalSemaphore = state.signalSemaphores[swapchainImageIndex];
     if (signalSemaphore == VK_NULL_HANDLE || srcImage == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
         return false;
+    }
+
+    const bool imageWasPresented = state.presentedImages[swapchainImageIndex];
+    state.presentedImages[swapchainImageIndex] = true;
+    if (imageWasPresented) {
+        // Reacquiring the image proves its preceding present wait was consumed,
+        // so retired capture semaphores can be reclaimed under this same
+        // non-blocking state lock instead of taking two more hot-path locks.
+        for (auto retired = layer_capture_g_RetiredCaptureStates.begin();
+             retired != layer_capture_g_RetiredCaptureStates.end();) {
+            if (retired->device == device && CaptureStateCopiesComplete(*retired, disp)) {
+                DestroyCaptureStateResources(*retired, disp);
+                retired = layer_capture_g_RetiredCaptureStates.erase(retired);
+            } else {
+                ++retired;
+            }
+        }
     }
 
     const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
@@ -70,7 +106,12 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         if (ImportEncoderKmtTextures(device, disp, state.luidKey, state.captureWidth, state.captureHeight,
                                      state.captureFormat, mem, &encoderEntry, kmtHandles)) {
             {
-                std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
+                std::unique_lock<std::mutex> texLock(layer_capture_g_InteropMutex, std::try_to_lock);
+                if (!texLock.owns_lock()) {
+                    DestroySharedTextureEntryResources(encoderEntry, disp);
+                    state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
+                    return false;
+                }
                 for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
                     if (textureIt->vkDevice == device && textureIt->luidKey == state.luidKey &&
                         textureIt->width == state.captureWidth && textureIt->height == state.captureHeight &&
@@ -168,7 +209,11 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     }
     const uint32_t slotIndex = static_cast<uint32_t>(availableSlot);
     LARGE_INTEGER sourceQpc = {};
-    QueryPerformanceCounter(&sourceQpc);
+    if (metadata && metadata->timestampQpc > 0) {
+        sourceQpc.QuadPart = metadata->timestampQpc;
+    } else {
+        QueryPerformanceCounter(&sourceQpc);
+    }
 
     // Fence/command-buffer ownership follows the destination texture slot.
     // Swapchains may have more images than the capture ring; indexing these by
@@ -364,6 +409,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         return false;
     }
     state.sharedImageInitialized[slotIndex] = true;
+    if (signaledSemaphore)
+        *signaledSemaphore = signalSemaphore;
 
     // IPC relay: D3D11 Wait/CopyResource/Signal to copy from KMT texture to NT IPC texture
     if (doRelay) {
@@ -394,7 +441,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     }
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    LayerIPC_SignalFrameReady(slotIndex, encoderFenceValue, sourceQpc.QuadPart);
+    LayerIPC_SignalFrameReady(slotIndex, encoderFenceValue, sourceQpc.QuadPart, metadata);
     return true;
 }
 

@@ -51,15 +51,14 @@ enum class VulkanCaptureInteropMode {
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace, VkExtent2D extent, uint32_t imageCount);
 bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
 
-void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
-
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 
 void CleanupCapture(VkDevice device);
 
-VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
-
-bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage, const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
+bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
+                  uint32_t swapchainImageIndex, const VkSemaphore* waitSemaphores,
+                  uint32_t waitSemaphoreCount, VkSemaphore* signaledSemaphore,
+                  bool* captureStateMissing, const FrameCaptureMetadata* metadata);
 
 bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width, uint32_t height, VkFormat format, VkColorSpaceKHR colorSpace, const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId);
 

@@ -17,9 +17,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"
 
 struct SharedMemoryLayout;
+struct FrameCaptureMetadata;
 
 // Reentrancy guard shared with other hooks
 extern thread_local bool g_InPresentHook;
@@ -231,6 +233,15 @@ struct SwapchainData {
     std::atomic<uint32_t> presentTimingQueryFailureCount{0};
     std::atomic<uint32_t> presentTimingDomainQueryFailureCount{0};
     std::atomic<bool> presentTimingActiveLogged{false};
+    // VkSetPresentConfigNV applies to a whole run of subsequent Presents even
+    // though only the first call carries the pNext node. Retain that run and
+    // multiplier independently of shared Streamline-state publication.
+    std::atomic<uint32_t> finalOutputMeteredPresentsRemaining{0};
+    std::atomic<uint32_t> finalOutputMeteredBatchSize{0};
+    // DLSS/Remix can call vkQueuePresentKHR for every generated image in a CPU
+    // burst. Keep a swapchain-local virtual/display-correlated recording clock;
+    // the planning mutex is always acquired with try_lock on the Present path.
+    VulkanFinalOutputCaptureState finalOutputCapture;
 };
 
 // Singleton state manager
@@ -513,12 +524,12 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                        VkExtent2D extent,
                        uint32_t imageCount);
 bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
-void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 void CleanupCapture(VkDevice device);
 bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
-                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
-VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
+                  uint32_t swapchainImageIndex, const VkSemaphore* waitSemaphores,
+                  uint32_t waitSemaphoreCount, VkSemaphore* signaledSemaphore,
+                  bool* captureStateMissing, const FrameCaptureMetadata* metadata = nullptr);
 
 bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
                           uint32_t height, VkFormat format, VkColorSpaceKHR colorSpace,

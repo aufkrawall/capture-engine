@@ -345,12 +345,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     captureShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
     captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
-    captureUsePostSL = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
-                                  PostSLOwnsThisFramesOverlayDraw(captureOverlayCfg);
+    // Once PostSL has proved the final Streamline route, both overlay variants
+    // are captured there so generated outputs are preserved. processCapture is
+    // already false on this outer/base-frame path in that state.
+    captureUsePostSL = g_IPC && g_IPC->IsRecording() && DX12_ShouldUseStreamlineFinalOutputCapture();
     captureAfterOverlay = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
                                      !captureUsePostSL && !holdFocusLossBackbufferWork;
     captureBeforeOverlay =
-        processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay && !holdFocusLossBackbufferWork;
+        processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay && !captureUsePostSL &&
+        !holdFocusLossBackbufferWork;
     delayOverlayRenderAfterSyncInit = false;
     suppressOverlayRenderForLoadedStartupOverlay = false;
     delayOverlayRenderAfterResourcePrime = false;

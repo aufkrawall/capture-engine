@@ -3,6 +3,7 @@
 
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
+    DX12_ResetStreamlineFinalOutputCaptureTiming(active ? "Streamline FG ON" : "Streamline FG OFF");
     const auto visibleRuntimeMode = active ? ce::fg_runtime::RuntimeMode::kDLSSFG : g_FGCompat.GetRuntimeMode();
     const bool visibleFGActive = active ? true : g_FGCompat.IsFGActive();
     HookUpdatePreferredOverlayFGPublicationState(visibleFGActive, visibleRuntimeMode,
@@ -660,4 +661,3 @@ const char* DescribeFocusLossPostPresentFenceSkip(
         return "zero-fence-value";
     return "policy";
 }
-

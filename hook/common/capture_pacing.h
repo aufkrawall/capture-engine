@@ -27,10 +27,14 @@
 // A small early slack absorbs QPC/source jitter so a 240 Hz source is not
 // accidentally reduced to every third frame for a 240 Hz publication cap.
 //
-// Each binary (hook DLL, Vulkan layer DLL) gets its own set of static atomics,
-// which is correct since only one graphics API is active per process.
+// Each binary (hook DLL, Vulkan layer DLL) gets its own default state. A final
+// output route can provide a separate state so a base-frame fallback never
+// consumes its cadence budget.
+using CaptureCadenceGateState = ce::capture_policy::FinalOutputCadenceState;
 
-inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const char* apiTag) {
+inline bool ShouldSkipCaptureForTargetCadenceAtUs(
+    SharedMemoryLayout* shm, const char* apiTag, int64_t nowUs, CaptureCadenceGateState& gate,
+    uint32_t headroomPermille = ce::capture_policy::kInjectCfrPublicationHeadroomPermille) {
     if (!shm) {
         return false;
     }
@@ -44,27 +48,22 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
         return false;
     }
 
-    const uint32_t publicationFps =
-        ce::capture_policy::GetInjectCfrSourcePublicationFps(static_cast<uint32_t>(captureFps));
-    const int64_t targetIntervalUs =
-        ce::capture_policy::GetInjectCfrSourcePublicationIntervalUs(static_cast<uint32_t>(captureFps));
+    const uint32_t publicationFps = ce::capture_policy::GetInjectCfrSourcePublicationFps(
+        static_cast<uint32_t>(captureFps), headroomPermille);
+    const int64_t targetIntervalUs = ce::capture_policy::GetInjectCfrSourcePublicationIntervalUs(
+        static_cast<uint32_t>(captureFps), headroomPermille);
     if (publicationFps == 0 || targetIntervalUs <= 0) {
         return false;
     }
     const int64_t minSpacingUs = ce::capture_policy::GetInjectCfrPublicationMinSpacingUs(targetIntervalUs);
     const int64_t earlySlackUs = ce::capture_policy::GetInjectCfrPublicationEarlySlackUs(targetIntervalUs);
     const int64_t resetThresholdUs = targetIntervalUs * 8;
-    const int64_t nowUs = PerfLogger::GetQpcUs();
-
-    static std::atomic<int64_t> s_lastCaptureUs{0};
-    static std::atomic<uint64_t> s_pacedCaptureSkipCount{0};
-
-    int64_t lastCaptureUs = s_lastCaptureUs.load(std::memory_order_acquire);
+    int64_t lastCaptureUs = gate.lastCaptureUs.load(std::memory_order_acquire);
     for (;;) {
         // Rebase on first frame, time jump, or a long source stall.
         if (lastCaptureUs == 0 || nowUs < lastCaptureUs || nowUs - lastCaptureUs > resetThresholdUs) {
-            if (s_lastCaptureUs.compare_exchange_weak(lastCaptureUs, nowUs, std::memory_order_acq_rel,
-                                                      std::memory_order_acquire)) {
+            if (gate.lastCaptureUs.compare_exchange_weak(lastCaptureUs, nowUs, std::memory_order_acq_rel,
+                                                         std::memory_order_acquire)) {
                 return false;  // Capture this frame
             }
             continue;
@@ -72,7 +71,7 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
 
         const int64_t elapsedUs = nowUs - lastCaptureUs;
         if (elapsedUs < minSpacingUs) {
-            uint64_t skipCount = s_pacedCaptureSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            uint64_t skipCount = gate.pacedCaptureSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (skipCount <= 10 || (skipCount % 1000) == 0) {
                 HookLogImportant(
                     "%s: Pacing capture skip #%llu (until=%lldus interval=%lldus minSpacing=%lldus slack=%lldus "
@@ -85,9 +84,14 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
             return true;  // Skip
         }
 
-        if (s_lastCaptureUs.compare_exchange_weak(lastCaptureUs, nowUs, std::memory_order_acq_rel,
-                                                  std::memory_order_acquire)) {
+        if (gate.lastCaptureUs.compare_exchange_weak(lastCaptureUs, nowUs, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire)) {
             return false;  // Capture this frame
         }
     }
+}
+
+inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const char* apiTag) {
+    static CaptureCadenceGateState s_defaultGate;
+    return ShouldSkipCaptureForTargetCadenceAtUs(shm, apiTag, PerfLogger::GetQpcUs(), s_defaultGate);
 }

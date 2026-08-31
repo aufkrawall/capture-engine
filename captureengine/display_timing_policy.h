@@ -3,7 +3,14 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../common/display_timing_shared.h"
 #include "display_timing_correlation.h"
+
+inline bool ShouldCollectDisplayTiming(bool useScreenGrabTarget, FrameTimeSource configuredSource,
+                                       bool injectVideoCaptureNeeded) {
+    return !useScreenGrabTarget &&
+           (configuredSource == FrameTimeSource::DisplayChange || injectVideoCaptureNeeded);
+}
 
 // No outstanding runtime present of that process is waiting for a submission.
 inline constexpr std::size_t kNoPendingDisplayPresent = static_cast<std::size_t>(-1);

@@ -195,8 +195,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.ringIndex = localReadIndex;
                     qf.frameIndex = slot.frameIndex;
                     qf.textureIndex = texIdx;
+                    qf.displayTimingSequence = slot.displayTimingSequence;
+                    qf.displayTimingGeneration = slot.displayTimingGeneration;
+                    qf.captureFlags = slot.captureFlags;
                     qf.injectRingLease = injectRingLeaseState->Acquire(localReadIndex);
                     qf.timestamp = slot.timestamp;
+                    qf.rawTimestamp = slot.timestamp;
                     LARGE_INTEGER enqueueQpc;
                     QueryPerformanceCounter(&enqueueQpc);
                     qf.enqueueQpc = enqueueQpc.QuadPart;
