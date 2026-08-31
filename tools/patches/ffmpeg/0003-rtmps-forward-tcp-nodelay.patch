@@ -1,0 +1,13 @@
+diff --git a/libavformat/rtmpproto.c b/libavformat/rtmpproto.c
+--- a/libavformat/rtmpproto.c
++++ b/libavformat/rtmpproto.c
+@@ -2736,7 +2736,8 @@ static int rtmp_open(URLContext *s, const char *uri, int flags, AVDictionary **
+         /* open the tls connection */
+         if (port < 0)
+             port = RTMPS_DEFAULT_PORT;
+-        ff_url_join(buf, sizeof(buf), "tls", NULL, hostname, port, NULL);
++        ff_url_join(buf, sizeof(buf), "tls", NULL, hostname, port,
++                    "?tcp_nodelay=%d", rt->tcp_nodelay);
+     } else if (!strcmp(proto, "rtmpe") || (!strcmp(proto, "rtmpte"))) {
+         if (!strcmp(proto, "rtmpte"))
+             av_dict_set(opts, "ffrtmpcrypt_tunneling", "1", 1);

@@ -309,6 +309,20 @@ TEST(PseudoOverlayVisibilityTest, RecordingFailureIsDistinctFromSaved) {
     EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::RecordingFailed);
 }
 
+TEST(PseudoOverlayVisibilityTest, StreamingCompletionKindsRemainDistinctFromRecordingFiles) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingNotifyUntilMs = in.nowMs + 7000;
+
+    in.recordingNotification = pov::RecordingNotificationKind::StreamEnded;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::StreamingEnded);
+    in.recordingNotification = pov::RecordingNotificationKind::StreamEndedDegraded;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::StreamingEndedDegraded);
+    in.recordingNotification = pov::RecordingNotificationKind::StreamFailed;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::StreamingFailed);
+}
+
 TEST(PseudoOverlayVisibilityTest, RecordingSavedNotificationShowsOnlyAfterCompletionKindArrives) {
     auto in = Base();
     in.mode = 2;

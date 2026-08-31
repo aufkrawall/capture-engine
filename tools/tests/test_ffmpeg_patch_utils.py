@@ -29,9 +29,13 @@ class FfmpegCustomPatchTest(unittest.TestCase):
         patches = [
             PATCH_DIR / "0001-matroska-add-timestamp-precision-option.patch",
             PATCH_DIR / "0002-nvenc-bframe-cfr-improvements.patch",
+            PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch",
+            PATCH_DIR / "0004-schannel-guard-disabled-dtls-helpers.patch",
         ]
         targets = [
             Path("libavformat/matroskaenc.c"),
+            Path("libavformat/rtmpproto.c"),
+            Path("libavformat/tls_schannel.c"),
             Path("libavcodec/nvenc.c"),
             Path("libavcodec/nvenc.h"),
             Path("libavcodec/nvenc_av1.c"),
@@ -72,9 +76,11 @@ class FfmpegCustomPatchTest(unittest.TestCase):
 
             nvenc = (root / "libavcodec/nvenc.c").read_text(encoding="utf-8")
             matroska = (root / "libavformat/matroskaenc.c").read_text(encoding="utf-8")
+            rtmp = (root / "libavformat/rtmpproto.c").read_text(encoding="utf-8")
             self.assertIn("Automatic B-reference mode", nvenc)
             self.assertIn("max_qp_b is ignored in constant-QP mode", nvenc)
             self.assertIn("timestamp_precision", matroska)
+            self.assertIn('"?tcp_nodelay=%d", rt->tcp_nodelay', rtmp)
 
     def test_matroska_patch_preserves_exact_timebase_and_block_range(self) -> None:
         patch_text = (PATCH_DIR / "0001-matroska-add-timestamp-precision-option.patch").read_text(
@@ -109,6 +115,24 @@ class FfmpegCustomPatchTest(unittest.TestCase):
         self.assertNotIn("ff_nvenc_receive_packet", added)
         self.assertNotIn("capability not reported for AV1, attempting anyway", added)
         self.assertNotIn("treating as P-frame", added)
+
+    def test_rtmps_patch_forwards_low_latency_socket_policy(self) -> None:
+        patch_text = (PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch").read_text(
+            encoding="utf-8"
+        )
+        added = added_patch_lines(patch_text)
+
+        self.assertIn('"?tcp_nodelay=%d", rt->tcp_nodelay', added)
+
+    def test_schannel_patch_keeps_stream_tls_linkable_without_udp_protocol(self) -> None:
+        patch_text = (PATCH_DIR / "0004-schannel-guard-disabled-dtls-helpers.patch").read_text(
+            encoding="utf-8"
+        )
+        added = added_patch_lines(patch_text)
+
+        self.assertIn("#if CONFIG_DTLS_PROTOCOL", added)
+        self.assertIn("ff_udp_get_last_recv_addr", patch_text)
+        self.assertIn("ff_udp_set_remote_addr", patch_text)
 
     def test_crlf_target_is_normalized_before_strict_git_apply(self) -> None:
         git = shutil.which("git")

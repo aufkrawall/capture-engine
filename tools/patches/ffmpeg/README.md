@@ -1,7 +1,7 @@
 # FFmpeg Patches
 
-Custom FFmpeg patches used by CaptureEngine for precise Matroska timestamps and
-NVENC game-capture behavior.
+Custom FFmpeg patches used by CaptureEngine for precise Matroska timestamps,
+NVENC game-capture behavior, and low-latency RTMPS publishing.
 
 ## License
 
@@ -63,6 +63,23 @@ defaults for callers that omit an option:
 
 The patch deliberately keeps FFmpeg's upstream lookahead surface margin,
 weighted-prediction capability checks, and normal send/receive flush contract.
+
+### 0003-rtmps-forward-tcp-nodelay.patch
+
+Forwards native RTMP's `tcp_nodelay` option through its nested TLS URL. The
+plain RTMP branch already adds the option to its TCP URL, but the RTMPS branch
+previously dropped it while constructing `tls://host:port`. FFmpeg's TLS layer
+passes unknown query options through to its underlying TCP URL, so this keeps
+encrypted and unencrypted publishing on the same low-latency socket policy.
+
+### 0004-schannel-guard-disabled-dtls-helpers.patch
+
+Guards Schannel's UDP-only handshake address helpers with
+`CONFIG_DTLS_PROTOCOL`. FFmpeg's Schannel probe can otherwise pull DTLS and UDP
+back into a protocol-minimized build, while explicitly disabling UDP leaves two
+unconditional helper references in the ordinary stream-TLS object. CaptureEngine
+uses Schannel only for RTMPS stream TLS, so the guard preserves that path without
+registering DTLS or UDP protocols.
 
 ### AV1 NVENC timecode safety boundary
 

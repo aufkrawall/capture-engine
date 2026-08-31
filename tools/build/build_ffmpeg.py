@@ -627,7 +627,15 @@ class FFmpegBuilder:
             "--disable-parsers",
             "--disable-bsfs",
             "--disable-protocols",
-            "--enable-protocol=file",
+            # Keep the protocol surface narrow. Native RTMP uses TCP; RTMPS
+            # layers FFmpeg's TLS protocol over it. Schannel uses the Windows
+            # trust store and avoids adding an OpenSSL/GnuTLS runtime.
+            "--enable-schannel",
+            "--enable-protocol=file,rtmp,rtmps,tcp,tls",
+            # FFmpeg's Schannel feature probe can auto-enable DTLS and its UDP
+            # dependency even after --disable-protocols. Publishing uses only
+            # stream TLS; the local Schannel patch makes that closure linkable.
+            "--disable-protocol=dtls,udp,udplite",
             "--enable-bsf=hevc_metadata,av1_metadata",
             "--enable-muxer=mp4,matroska,mov,flv,ts,avif",
             "--enable-demuxer=concat,matroska,mov,mp4",
@@ -663,7 +671,7 @@ def _is_commit_ref(ref):
     return bool(re.fullmatch(r"[0-9a-fA-F]{40}", ref or ""))
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 10
+FFMPEG_BUILD_CONFIGURATION_VERSION = 12
 
 
 def ffmpeg_build_configuration_fingerprint():

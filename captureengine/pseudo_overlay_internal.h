@@ -194,6 +194,12 @@ inline ce::pseudo_overlay::RecordingNotificationKind ToPseudoRecordingNotificati
             return ce::pseudo_overlay::RecordingNotificationKind::Canceled;
         case OverlayNotificationType::RecordingFailed:
             return ce::pseudo_overlay::RecordingNotificationKind::Failed;
+        case OverlayNotificationType::StreamingEnded:
+            return ce::pseudo_overlay::RecordingNotificationKind::StreamEnded;
+        case OverlayNotificationType::StreamingEndedDegraded:
+            return ce::pseudo_overlay::RecordingNotificationKind::StreamEndedDegraded;
+        case OverlayNotificationType::StreamingFailed:
+            return ce::pseudo_overlay::RecordingNotificationKind::StreamFailed;
         default:
             return ce::pseudo_overlay::RecordingNotificationKind::None;
     }

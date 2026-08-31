@@ -157,7 +157,7 @@ void VideoEncoder::CleanupResources() {
     asyncWriteErrorCount = 0;
     if (outputReservation.CleanupOwnedFile()) {
         DLL_Log("[VideoEncoder] Removed unpublished staging output during cleanup: %s",
-                ce::privacy::CollapsePathForLog(outputFilename).c_str());
+                OutputTargetForLog().c_str());
     }
 }
 
@@ -347,9 +347,12 @@ void VideoEncoder::Stop() {
             if (finalDurationUs > 0) {
                 LogPacketTimelineSummary(finalDurationUs);
             }
+            ArmOutputIoDeadline();
             const int trailerResult = av_write_trailer(fmtCtx);
+            ClearOutputIoDeadline();
             if (trailerResult < 0) {
                 DLL_Log("[VideoEncoder] Sync Stop: ERROR av_write_trailer failed: %d", trailerResult);
+                RequestLiveOutputFailure("write_trailer", trailerResult);
             }
             if (finalDurationUs > 0) {
                 LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
@@ -360,16 +363,19 @@ void VideoEncoder::Stop() {
             }
             int closeResult = 0;
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                ArmOutputIoDeadline();
                 closeResult = avio_closep(&fmtCtx->pb);
+                ClearOutputIoDeadline();
                 if (closeResult < 0) {
                     DLL_Log("[VideoEncoder] Sync Stop: ERROR avio_closep failed: %d", closeResult);
+                    RequestLiveOutputFailure("close", closeResult);
                 }
             }
             fileOpened = false;
             const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
-            DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld",
-                    ce::privacy::CollapsePathForLog(outputFilename).c_str(), (long long)finalDurationUs);
-            if (published && finalDurationUs > 0) {
+            DLL_Log("[VideoEncoder] mux_closed target='%s' finalDurationUs=%lld", OutputTargetForLog().c_str(),
+                    (long long)finalDurationUs);
+            if (published && finalDurationUs > 0 && !liveOutput) {
                 RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,
                                 video_encoder_kPostMuxProbeTimeoutMs);
             }
@@ -406,7 +412,7 @@ void VideoEncoder::AsyncWriteLoop() {
 
             lock.unlock();  // Release lock while doing I/O
 
-            if (fileOpened && fmtCtx) {
+            if (fileOpened && fmtCtx && !(liveOutput && liveOutputFailed.load(std::memory_order_acquire))) {
                 // Log last few audio/video packets to verify PTS alignment
                 if (pkt->stream_index != stream->index) {
                     ++audioWriteLogCount;
@@ -432,12 +438,13 @@ void VideoEncoder::AsyncWriteLoop() {
                 const int writtenSampleRate = fmtCtx->streams[pkt->stream_index]->codecpar
                                                   ? fmtCtx->streams[pkt->stream_index]->codecpar->sample_rate
                                                   : 0;
-                int ret = av_interleaved_write_frame(fmtCtx, pkt);
+                int ret = WriteInterleavedPacket(pkt);
                 if (ret >= 0) {
                     RecordWrittenPacketTimeline(writtenStreamIndex, writtenPts, writtenDts, writtenDuration,
                                                 writtenTimeBase, writtenTerminalDiscardSamples, writtenSampleRate);
                 }
                 if (ret < 0) {
+                    RequestLiveOutputFailure("write_packet", ret);
                     if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
                         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -528,9 +535,12 @@ void VideoEncoder::AsyncWriteLoop() {
                     const int64_t flushedDts = pkt->dts;
                     const int64_t flushedDuration = pkt->duration;
                     const AVRational flushedTimeBase = stream->time_base;
-                    if (av_interleaved_write_frame(fmtCtx, pkt) >= 0) {
+                    const int flushWriteResult = WriteInterleavedPacket(pkt);
+                    if (flushWriteResult >= 0) {
                         RecordWrittenPacketTimeline(flushedStreamIndex, flushedPts, flushedDts, flushedDuration,
                                                     flushedTimeBase, 0, 0);
+                    } else {
+                        RequestLiveOutputFailure("flush_packet", flushWriteResult);
                     }
                     av_packet_unref(pkt);
                     flushedCount++;
@@ -549,9 +559,12 @@ void VideoEncoder::AsyncWriteLoop() {
                     DLL_Log("[VideoEncoder] Async Finalize: packet-derived duration target was %lld us",
                             finalDurationUs);
                 }
+                ArmOutputIoDeadline();
                 const int trailerResult = av_write_trailer(fmtCtx);
+                ClearOutputIoDeadline();
                 if (trailerResult < 0) {
                     DLL_Log("[VideoEncoder] Async Finalize: ERROR av_write_trailer failed: %d", trailerResult);
+                    RequestLiveOutputFailure("write_trailer", trailerResult);
                 }
                 if (finalDurationUs > 0) {
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
@@ -581,16 +594,19 @@ void VideoEncoder::AsyncWriteLoop() {
                 }
                 int closeResult = 0;
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                    ArmOutputIoDeadline();
                     closeResult = avio_closep(&fmtCtx->pb);
+                    ClearOutputIoDeadline();
                     if (closeResult < 0) {
                         DLL_Log("[VideoEncoder] Async Finalize: ERROR avio_closep failed: %d", closeResult);
+                        RequestLiveOutputFailure("close", closeResult);
                     }
                 }
                 fileOpened = false;
                 const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
-                DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld",
-                        ce::privacy::CollapsePathForLog(outputFilename).c_str(), (long long)finalDurationUs);
-                if (published && finalDurationUs > 0) {
+                DLL_Log("[VideoEncoder] mux_closed target='%s' finalDurationUs=%lld", OutputTargetForLog().c_str(),
+                        (long long)finalDurationUs);
+                if (published && finalDurationUs > 0 && !liveOutput) {
                     writerFinalizePhase.store(kWriterPhasePostMuxProbe, std::memory_order_release);
                     RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,
                                 video_encoder_kPostMuxProbeTimeoutMs);

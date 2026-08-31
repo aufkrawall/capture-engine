@@ -86,7 +86,7 @@ bool ConnectToChildProcesses(DWORD);
 
 void SendCommandToAll(ProcessCommand cmd);
 
-void PublishRecordingFailureOverlayNotification(const char* reason);
+void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming = false);
 
 void CheckRecordingFailureState();
 
@@ -114,6 +114,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 inline bool main_g_Running = true;
 
 inline bool main_g_Recording = false;
+inline bool main_g_LiveStreamRecording = false;
 
 inline uint32_t main_g_RecordingSerial = 0;
 

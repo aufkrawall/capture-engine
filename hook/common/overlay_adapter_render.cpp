@@ -407,6 +407,17 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 notifText = "Recording failed";
                 notifColor = Colors::Red;
                 break;
+            case static_cast<uint32_t>(OverlayNotificationType::StreamingEnded):
+                notifText = "Stream ended";
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::StreamingEndedDegraded):
+                notifText = "Stream ended - video degraded";
+                notifColor = Colors::Red;
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::StreamingFailed):
+                notifText = "Stream failed";
+                notifColor = Colors::Red;
+                break;
             default:
                 break;
         }

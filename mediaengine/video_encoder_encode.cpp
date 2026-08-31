@@ -128,14 +128,14 @@ bool VideoEncoder::ReinitForFormatModeChange(bool isHDR, bool wants10BitInput, i
                 outputReservation = std::move(preservedOutputReservation);
                 outputFilename = preservedOutputFilename;
                 DLL_Log("[VideoEncoder] Preserving output filename across format mode re-init: %s",
-                        outputFilename.c_str());
+                        OutputTargetForLog().c_str());
             }
             BeginDeferredRecording();
         } else if (!preservedOutputFilename.empty()) {
             outputReservation = std::move(preservedOutputReservation);
             outputFilename = preservedOutputFilename;
             DLL_Log("[VideoEncoder] Restored deferred staging output for first frame: %s",
-                    outputFilename.c_str());
+                    OutputTargetForLog().c_str());
             BeginDeferredRecording();
         }
     }
@@ -187,97 +187,110 @@ bool VideoEncoder::HandleResolutionChange(int newWidth, int newHeight) {
 }
 
 bool VideoEncoder::OpenOutputAndWriteHeader() {
-    if (!fileOpened) {
-        DLL_Log("[VideoEncoder] Opening Output File: %s", ce::privacy::CollapsePathForLog(outputFilename).c_str());
-        if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-            if (!outputReservation.ReleaseToWriter()) {
-                DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before mux open: %s",
-                        ce::privacy::CollapsePathForLog(outputFilename).c_str());
-                return false;
-            }
-            // Use 256KB buffer for better performance on slow storage (HDD/network)
-            // Default is 32KB which causes many small writes
-            int ret = avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE, nullptr, nullptr);
-            if (ret < 0) {
-                DLL_Log("Failed to open output file: %d", ret);
-                return false;
-            }
+    if (fileOpened)
+        return true;
 
-            // Allocate custom buffer (256KB) for improved write performance
-            const int bufferSize = 256 * 1024;
-            [[maybe_unused]] unsigned char* buffer = nullptr;
+    DLL_Log("[VideoEncoder] Opening output target: %s", OutputTargetForLog().c_str());
+    auto closeRejectedOutput = [this](const char* reason) {
+        if (!(fmtCtx->oformat->flags & AVFMT_NOFILE) && fmtCtx->pb) {
+            ArmOutputIoDeadline();
+            const int closeResult = avio_closep(&fmtCtx->pb);
+            ClearOutputIoDeadline();
+            if (closeResult < 0)
+                DLL_Log("[VideoEncoder] ERROR: Failed to close %s output: %d", reason, closeResult);
         }
+    };
 
-        // Debug: Log stream info before write_header
-        DLL_Log("[VideoEncoder] fmtCtx has %d streams before write_header", fmtCtx->nb_streams);
-        for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
-            AVStream* s = fmtCtx->streams[i];
-            AVCodecParameters* cp = s->codecpar;
-            DLL_Log(
-                "[VideoEncoder] Stream %d: type=%d codec_id=%d w=%d h=%d "
-                "extradata=%p extradata_size=%d",
-                i, cp->codec_type, cp->codec_id, cp->width, cp->height, cp->extradata, cp->extradata_size);
-        }
-
-        // Pre-allocate space for MKV cues (seek index) at the front of the file.
-        // Without this, cues are written at the END and many players can't seek
-        // or show correct duration without reading the whole file first.
-        if (fmtCtx->priv_data) {
-            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);  // 2MB
-        }
-        if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
-            DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close rejected output: %d", closeResult);
-            }
+    if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+        AVDictionary* ioOptions = nullptr;
+        if (liveOutput) {
+            fmtCtx->interrupt_callback.callback = InterruptOutputIo;
+            fmtCtx->interrupt_callback.opaque = this;
+            fmtCtx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
+            fmtCtx->max_delay = 0;
+            fmtCtx->max_interleave_delta = 100000;
+            ConfigureLiveMuxTimestampOffset();
+            av_dict_set(&ioOptions, "rw_timeout", "5000000", 0);
+            av_dict_set(&ioOptions, "tcp_nodelay", "1", 0);
+            if (outputFilename.rfind("rtmps://", 0) == 0)
+                av_dict_set(&ioOptions, "tls_verify", "1", 0);
+        } else if (!outputReservation.ReleaseToWriter()) {
+            DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before mux open: %s",
+                    OutputTargetForLog().c_str());
             return false;
         }
 
-        if (!ValidateFormatContextForHeader(fmtCtx)) {
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close invalid output context: %d", closeResult);
-            }
+        ArmOutputIoDeadline();
+        const AVIOInterruptCB* interruptCallback = liveOutput ? &fmtCtx->interrupt_callback : nullptr;
+        const int openResult = avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE,
+                                          interruptCallback, &ioOptions);
+        ClearOutputIoDeadline();
+        av_dict_free(&ioOptions);
+        if (openResult < 0) {
+            DLL_Log("[VideoEncoder] Failed to open output target: %d", openResult);
+            RequestLiveOutputFailure("open", openResult);
             return false;
         }
-
-        int ret = avformat_write_header(fmtCtx, nullptr);
-        if (ret < 0) {
-            char errbuf[256];
-            av_strerror(ret, errbuf, sizeof(errbuf));
-            DLL_Log("Failed to write header: %d (%s)", ret, errbuf);
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close output after header failure: %d", closeResult);
-            }
-            return false;
-        }
-
-        // Log actual stream time_base after muxer init (MKV may override)
-        DLL_Log("[VideoEncoder] Stream time_base after write_header: %d/%d (codec: %d/%d)", stream->time_base.num,
-                stream->time_base.den, codecCtx->time_base.num, codecCtx->time_base.den);
-
-        // Force header to hit disk immediately. This prevents 0KB files when
-        // subsequent writes fail and makes I/O errors surface at the true failure
-        // point.
-        if (fmtCtx->pb) {
-            avio_flush(fmtCtx->pb);
-            if (fmtCtx->pb->error < 0) {
-                DLL_Log("Failed to flush header: %d", fmtCtx->pb->error);
-                if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                    const int closeResult = avio_closep(&fmtCtx->pb);
-                    if (closeResult < 0)
-                        DLL_Log("[VideoEncoder] ERROR: Failed to close output after flush failure: %d", closeResult);
-                }
-                return false;
-            }
-        }
-        fileOpened = true;
     }
+
+    DLL_Log("[VideoEncoder] fmtCtx has %d streams before write_header", fmtCtx->nb_streams);
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
+        AVStream* currentStream = fmtCtx->streams[i];
+        AVCodecParameters* parameters = currentStream->codecpar;
+        DLL_Log(
+            "[VideoEncoder] Stream %d: type=%d codec_id=%d w=%d h=%d extradata=%p extradata_size=%d",
+            i, parameters->codec_type, parameters->codec_id, parameters->width, parameters->height,
+            parameters->extradata, parameters->extradata_size);
+    }
+
+    if (fmtCtx->priv_data) {
+        if (liveOutput) {
+            av_opt_set(fmtCtx->priv_data, "flvflags", "no_duration_filesize", 0);
+        } else {
+            // Pre-allocate space for MKV cues at the front of seekable recordings.
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);
+        }
+    }
+    if (!liveOutput && !ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
+        DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
+        closeRejectedOutput("rejected");
+        return false;
+    }
+    if (!ValidateFormatContextForHeader(fmtCtx)) {
+        closeRejectedOutput("invalid");
+        return false;
+    }
+
+    ArmOutputIoDeadline();
+    const int headerResult = avformat_write_header(fmtCtx, nullptr);
+    ClearOutputIoDeadline();
+    if (headerResult < 0) {
+        char error[AV_ERROR_MAX_STRING_SIZE] = {};
+        av_strerror(headerResult, error, sizeof(error));
+        DLL_Log("[VideoEncoder] Failed to write output header: %d (%s)", headerResult, error);
+        RequestLiveOutputFailure("write_header", headerResult);
+        closeRejectedOutput("header-failed");
+        return false;
+    }
+
+    DLL_Log("[VideoEncoder] Stream time_base after write_header: %d/%d (codec: %d/%d)", stream->time_base.num,
+            stream->time_base.den, codecCtx->time_base.num, codecCtx->time_base.den);
+    if (fmtCtx->pb) {
+        ArmOutputIoDeadline();
+        avio_flush(fmtCtx->pb);
+        ClearOutputIoDeadline();
+        if (fmtCtx->pb->error < 0) {
+            const int flushError = fmtCtx->pb->error;
+            DLL_Log("[VideoEncoder] Failed to flush output header: %d", flushError);
+            RequestLiveOutputFailure("flush_header", flushError);
+            closeRejectedOutput("flush-failed");
+            return false;
+        }
+    }
+
+    fileOpened = true;
+    DLL_Log("[VideoEncoder] Output header accepted target=%s mode=%s", OutputTargetForLog().c_str(),
+            liveOutput ? "live" : "recording");
     return true;
 }
 

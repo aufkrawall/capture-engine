@@ -145,6 +145,8 @@ ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoCo
 }
 
 int AllocateOutputContextForContainer(AVFormatContext** formatContext, const VideoConfig& config) {
+    if (ce::live_stream::IsLiveStreamTarget(config.outputDir))
+        return avformat_alloc_output_context2(formatContext, nullptr, "flv", nullptr);
     const std::string formatHint = "capture." + config.container;
     return avformat_alloc_output_context2(formatContext, nullptr, nullptr, formatHint.c_str());
 }

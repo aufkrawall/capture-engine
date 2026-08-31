@@ -57,14 +57,14 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
                 outputReservation = std::move(preservedOutputReservation);
                 outputFilename = preservedOutputFilename;
                 DLL_Log("[VideoEncoder] Preserving output filename across WGC mode re-init: %s",
-                        outputFilename.c_str());
+                        OutputTargetForLog().c_str());
             }
             BeginDeferredRecording();
         } else if (!preservedOutputFilename.empty()) {
             outputReservation = std::move(preservedOutputReservation);
             outputFilename = preservedOutputFilename;
             DLL_Log("[VideoEncoder] Restored deferred staging output for first WGC frame: %s",
-                    outputFilename.c_str());
+                    OutputTargetForLog().c_str());
             BeginDeferredRecording();
         }
     }
@@ -73,55 +73,7 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     if (!EnsureDevice())
         return false;
 
-    if (!fileOpened) {
-        DLL_Log("[VideoEncoder] Opening Output File: %s", ce::privacy::CollapsePathForLog(outputFilename).c_str());
-        if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-            if (!outputReservation.ReleaseToWriter()) {
-                DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before WGC mux open: %s",
-                        ce::privacy::CollapsePathForLog(outputFilename).c_str());
-                return false;
-            }
-            int ret = avio_open(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE);
-            if (ret < 0) {
-                DLL_Log("Failed to open output file: %d", ret);
-                return false;
-            }
-        }
-        if (fmtCtx->priv_data) {
-            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);
-        }
-        if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
-            DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close rejected WGC output: %d", closeResult);
-            }
-            return false;
-        }
-        if (!ValidateFormatContextForHeader(fmtCtx)) {
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close invalid WGC output context: %d", closeResult);
-            }
-            return false;
-        }
-
-        const int headerResult = avformat_write_header(fmtCtx, nullptr);
-        if (headerResult < 0) {
-            DLL_Log("Failed to write header: %d", headerResult);
-            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                const int closeResult = avio_closep(&fmtCtx->pb);
-                if (closeResult < 0)
-                    DLL_Log("[VideoEncoder] ERROR: Failed to close WGC output after header failure: %d", closeResult);
-            }
-            return false;
-        }
-        fileOpened = true;
-    }
-
-    return true;
+    return OpenOutputAndWriteHeader();
 }
 
 bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,

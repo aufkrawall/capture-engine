@@ -26,6 +26,8 @@ bool VideoEncoder::NormalizeHdrPacketIfNeeded(AVPacket* packet) {
 void VideoEncoder::WriteFrame(AVPacket* pkt) {
     if (!fileOpened || !fmtCtx)
         return;
+    if (liveOutput && liveOutputFailed.load(std::memory_order_acquire))
+        return;
 
     if (!NormalizeHdrPacketIfNeeded(pkt)) {
         return;
@@ -157,10 +159,11 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 qSize = packetQueue.size();
             }
-            DLL_Log("[VideoEncoder] QUEUE STATS: Count=%zu Bytes=%zu (Max=%zu)", qSize, qBytes, MAX_QUEUE_BYTES);
+            const size_t queueLimit = ActiveQueueLimitBytes();
+            DLL_Log("[VideoEncoder] QUEUE STATS: Count=%zu Bytes=%zu (Max=%zu)", qSize, qBytes, queueLimit);
 
             // Memory safety check
-            if (qBytes > MAX_QUEUE_BYTES) {
+            if (qBytes > queueLimit) {
                 DLL_Log("[VideoEncoder] CRITICAL: Queue exceeds limit! Dropping disabled?");
             }
         }
@@ -249,14 +252,33 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
 
     // ASYNC WRITE: Push to queue instead of writing directly
 
-    // IMPORTANT: Never drop encoded packets, it causes visible corruption.
-    // Instead apply backpressure to the encode thread.
+    // A recording preserves bitstream validity with backpressure. A live stream
+    // cannot do that: blocking capture would move video away from the existing
+    // audio/CFR clocks. If two seconds of encoded output cannot drain, fail the
+    // session as a unit rather than dropping packets into a corrupt stream.
+    const size_t queueLimit = ActiveQueueLimitBytes();
+    const size_t packetBytes = static_cast<size_t>(std::max(pkt->size, 0)) + sizeof(AVPacket);
+    if (liveOutput) {
+        const size_t queueBytes = currentQueueBytes.load(std::memory_order_relaxed);
+        if (ce::live_stream::ExceedsQueueBudget(queueBytes, packetBytes, queueLimit)) {
+            lastMuxOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+            muxBackpressureCount.fetch_add(1, std::memory_order_relaxed);
+            PublishRuntimeState();
+            DLL_Log("[LiveStream] Encoded output queue exceeded its bounded latency budget (%zu/%zu bytes)",
+                    queueBytes, queueLimit);
+            RequestLiveOutputFailure("queue_budget", AVERROR_BUFFER_TOO_SMALL);
+            return;
+        }
+    }
+
+    // IMPORTANT: Never drop encoded packets from a recording, because that
+    // causes visible corruption. Apply backpressure to the encode thread.
     // If storage is extremely slow, this will manifest as stutter/dropped input
     // frames (FrameQueue will drop/duplicate), but the bitstream stays valid.
     uint64_t backpressureWaitUs = 0;
-    for (;;) {
+    while (!liveOutput) {
         size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
-        if (qBytes <= MAX_QUEUE_BYTES) {
+        if (qBytes <= queueLimit) {
             break;
         }
 
@@ -276,7 +298,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         const auto waitStart = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(queueMutex);
         queueCV.wait_for(lock, std::chrono::milliseconds(2), [this] {
-            return currentQueueBytes.load(std::memory_order_relaxed) <= MAX_QUEUE_BYTES || isStopping || !writerRunning;
+            return currentQueueBytes.load(std::memory_order_relaxed) <= ActiveQueueLimitBytes() || isStopping ||
+                   !writerRunning;
         });
         backpressureWaitUs += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - waitStart)
@@ -293,16 +316,31 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
 
     AVPacket* clonePkt = av_packet_clone(pkt);
     if (clonePkt) {
+        bool rejectedByLiveBudget = false;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            packetQueue.push(clonePkt);
-            currentQueueBytes += clonePkt->size + sizeof(AVPacket);
-            currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
+            const size_t queuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
+            const size_t clonedBytes = static_cast<size_t>(std::max(clonePkt->size, 0)) + sizeof(AVPacket);
+            rejectedByLiveBudget =
+                liveOutput && (liveOutputFailed.load(std::memory_order_acquire) ||
+                               ce::live_stream::ExceedsQueueBudget(queuedBytes, clonedBytes, queueLimit));
+            if (!rejectedByLiveBudget) {
+                packetQueue.push(clonePkt);
+                currentQueueBytes += clonedBytes;
+                currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
+            }
+        }
+        if (rejectedByLiveBudget) {
+            av_packet_free(&clonePkt);
+            RequestLiveOutputFailure("queue_budget", AVERROR_BUFFER_TOO_SMALL);
+            return;
         }
         UpdateAtomicPeak(peakQueueBytes, SaturatingToUint32(currentQueueBytes.load(std::memory_order_relaxed)));
         UpdateAtomicPeak(peakQueuePackets, currentQueuePackets.load(std::memory_order_relaxed));
         PublishRuntimeState();
         queueCV.notify_one();
+    } else if (liveOutput) {
+        RequestLiveOutputFailure("clone_packet", AVERROR(ENOMEM));
     }
 }
 

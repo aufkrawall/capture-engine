@@ -150,9 +150,12 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
         self.assertIn('"--enable-decoder=libaom_av1"', build_source)
         self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)
         self.assertIn('"--enable-bsf=hevc_metadata,av1_metadata"', build_source)
+        self.assertIn('"--enable-schannel"', build_source)
+        self.assertIn('"--enable-protocol=file,rtmp,rtmps,tcp,tls"', build_source)
+        self.assertIn('"--disable-protocol=dtls,udp,udplite"', build_source)
         # Deliberate tripwire: changing the configure flags above must come with a
         # cache-version bump, so this pin is updated by hand when that happens.
-        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 10", build_source)
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 12", build_source)
 
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):

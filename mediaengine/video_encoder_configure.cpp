@@ -1,5 +1,14 @@
 #include "video_encoder_internal.h"
 
+namespace {
+bool InitializeLiveNetwork() {
+    static std::once_flag once;
+    static int result = AVERROR_UNKNOWN;
+    std::call_once(once, [] { result = avformat_network_init(); });
+    return result >= 0;
+}
+}  // namespace
+
 bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fps,
                         std::function<void(AVPacket*)> packetCallback) {
     // Clear handle failure cache from previous recording session
@@ -17,6 +26,30 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     this->captureCursor = config.captureCursor;
     this->gpuPriority = config.gpuPriority;
     this->onPacket = std::move(packetCallback);
+    savedConfig = config;
+    liveOutput = ce::live_stream::IsLiveStreamTarget(config.outputDir);
+    liveOutputFailed.store(false, std::memory_order_relaxed);
+    outputIoAbort.store(false, std::memory_order_relaxed);
+    outputIoDeadlineMs.store(0, std::memory_order_relaxed);
+    liveQueueLimitBytes = ce::live_stream::ComputeQueueBudgetBytes(0);
+    if (liveOutput && ce::live_stream::IsValidLiveStreamTarget(config.outputDir)) {
+        if (!InitializeLiveNetwork()) {
+            DLL_Log("[LiveStream] Failed to initialize FFmpeg network support");
+            return false;
+        }
+        int64_t videoBitsPerSecond = 0;
+        std::string bitrateError;
+        if (ce::video::ParseBitrateString(config.bitrate, &videoBitsPerSecond, &bitrateError)) {
+            constexpr int64_t kAudioAndMuxOverheadBitsPerSecond = 512000;
+            const int64_t totalBitsPerSecond =
+                videoBitsPerSecond <= INT64_MAX - kAudioAndMuxOverheadBitsPerSecond
+                    ? videoBitsPerSecond + kAudioAndMuxOverheadBitsPerSecond
+                    : INT64_MAX;
+            liveQueueLimitBytes = ce::live_stream::ComputeQueueBudgetBytes(totalBitsPerSecond);
+        }
+        DLL_Log("[LiveStream] Network output initialized endpoint=<redacted> queueBudget=%zuKB",
+                liveQueueLimitBytes / 1024);
+    }
     hdrPacketMetadataLogged = false;
 
     // Initialize cursor renderer if cursor capture enabled
@@ -26,7 +59,10 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     }
 
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
-    av_log_set_level(AV_LOG_WARNING);
+    // Native RTMP diagnostics can include the publish playpath (normally the stream key), and
+    // provider-generated error text is not under our control. Live failures are reported through
+    // the redacted operation/error-code path instead. Local recordings retain FFmpeg warnings.
+    av_log_set_level(liveOutput ? AV_LOG_QUIET : AV_LOG_WARNING);
 
     DLL_Log("[VideoEncoder] Step 3: Deferring staging output reservation until recording start");
     outputReservation.CleanupOwnedFile();
@@ -54,9 +90,6 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
         return false;
     }
     DLL_Log("[VideoEncoder] Step 6 done, codecCtx=%p", (void*)codecCtx);
-
-    // Store config for use in EnsureDevice()
-    savedConfig = config;
 
     DLL_Log("[VideoEncoder] Init Complete - returning true");
     // Defer device creation to EnsureDevice()

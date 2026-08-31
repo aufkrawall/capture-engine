@@ -255,5 +255,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     LoadOverlay(reader, config);
     LoadVideo(reader, config);
     LoadAudio(reader, config, path);
+    ApplyStreamingSettings(reader, config);
     LoadDesktopOverlayAndHotkeys(reader, config, pseudoProcessListSet);
 }

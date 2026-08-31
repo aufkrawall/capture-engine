@@ -20,6 +20,8 @@ struct FrameStats;
 
 #include "../common/log_privacy.h"
 
+#include "../common/live_stream_config.h"
+
 #include "../common/path_utils.h"
 
 #include "../common/raii_helpers.h"

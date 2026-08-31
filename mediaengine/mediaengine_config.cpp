@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 
+#include "../common/live_stream_config.h"
+
 
 void MediaEngine::SetSourcePrefers10BitHint(bool prefer10Bit) {
 
@@ -48,8 +50,10 @@ void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
 
 
         const std::filesystem::path exeDir = ce::capture_output::GetExecutableDirectory();
+        const std::string audioOnlyOutputDir =
+            ce::live_stream::IsLiveStreamTarget(config->video.outputDir) ? std::string() : config->video.outputDir;
         const std::filesystem::path outDir =
-            ce::capture_output::ResolveCaptureDirectory(config->video.outputDir, exeDir);
+            ce::capture_output::ResolveCaptureDirectory(audioOnlyOutputDir, exeDir);
         audioOnlyOutputReservation =
             ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
         if (!audioOnlyOutputReservation) {

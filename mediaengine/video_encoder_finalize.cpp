@@ -621,6 +621,20 @@ uint64_t VideoEncoder::GetWrittenVideoPacketCount() const {
 bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs) {
     outputPublished.store(false, std::memory_order_relaxed);
     const uint64_t writtenVideoPackets = GetWrittenVideoPacketCount();
+    if (liveOutput) {
+        const bool succeeded = ce::live_stream::IsSuccessfulSession(
+            discardOutputRequested.load(std::memory_order_acquire),
+            liveOutputFailed.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
+            writtenVideoPackets);
+        DLL_Log(
+            "[LiveStream] session_closed success=%d endpoint=<redacted> durationUs=%lld videoPackets=%llu "
+            "trailer=%d close=%d",
+            succeeded ? 1 : 0, static_cast<long long>(finalDurationUs),
+            static_cast<unsigned long long>(writtenVideoPackets), trailerResult, closeResult);
+        outputPublished.store(succeeded, std::memory_order_release);
+        return succeeded;
+    }
+
     const auto disposition = ce::mux::SelectVideoOutputDisposition(
         discardOutputRequested.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
         writtenVideoPackets);
@@ -631,7 +645,7 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
             "removed=%d staging='%s'",
             ce::mux::VideoOutputDispositionToString(disposition), static_cast<long long>(finalDurationUs),
             static_cast<unsigned long long>(writtenVideoPackets), trailerResult, closeResult, removed ? 1 : 0,
-            outputFilename.c_str());
+            OutputTargetForLog().c_str());
         return false;
     }
 
@@ -645,7 +659,7 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
             "[VideoEncoder] output_renamed_to_staging error=%lu durationUs=%lld videoPackets=%llu "
             "staging='%s' (file is playable but was not renamed to final name)",
             publishError, static_cast<long long>(finalDurationUs),
-            static_cast<unsigned long long>(writtenVideoPackets), outputFilename.c_str());
+            static_cast<unsigned long long>(writtenVideoPackets), OutputTargetForLog().c_str());
         outputPublished.store(true, std::memory_order_release);
         return true;
     }

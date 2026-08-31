@@ -332,6 +332,7 @@ inline constexpr double media_main_kBottleneckExitRatio = 0.75;   // smoothedEnc
 extern std::atomic<bool> media_main_g_Running;
 
 extern std::atomic<bool> media_main_g_Recording;
+extern std::atomic<bool> media_main_g_LiveStreamRecording;
 
 extern std::atomic<bool> media_main_g_EncoderRunning;
 

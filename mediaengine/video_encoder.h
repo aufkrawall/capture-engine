@@ -172,6 +172,17 @@ private:
     uint64_t GetWrittenVideoPacketCount() const;
     bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
     bool NormalizeHdrPacketIfNeeded(AVPacket* packet);
+    bool IsLiveOutput() const {
+        return liveOutput;
+    }
+    std::string OutputTargetForLog() const;
+    void ArmOutputIoDeadline();
+    void ClearOutputIoDeadline();
+    void ConfigureLiveMuxTimestampOffset();
+    int WriteInterleavedPacket(AVPacket* packet);
+    void RequestLiveOutputFailure(const char* operation, int errorCode);
+    size_t ActiveQueueLimitBytes() const;
+    static int InterruptOutputIo(void* opaque);
     // EncodeFrame phase helpers (keep EncodeFrame itself a semantic unit).
     bool ReinitForFormatModeChange(bool isHDR, bool wants10BitInput, int width, int height);
     bool HandleResolutionChange(int width, int height);
@@ -224,6 +235,11 @@ private:
     bool hdrPacketMetadataLogged = false;
     std::atomic<bool> discardOutputRequested{false};
     std::atomic<bool> outputPublished{false};
+    bool liveOutput = false;
+    std::atomic<bool> liveOutputFailed{false};
+    std::atomic<bool> outputIoAbort{false};
+    std::atomic<uint64_t> outputIoDeadlineMs{0};
+    size_t liveQueueLimitBytes = 1024 * 1024;
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"
     std::atomic<int64_t> startPts{-1};      // First frame PTS for relative timestamps

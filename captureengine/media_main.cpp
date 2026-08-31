@@ -3,6 +3,7 @@
 std::atomic<bool> media_main_g_Running{true};
 
 std::atomic<bool> media_main_g_Recording{false};
+std::atomic<bool> media_main_g_LiveStreamRecording{false};
 
 std::atomic<bool> media_main_g_EncoderRunning{false};
 

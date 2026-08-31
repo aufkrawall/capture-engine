@@ -4,10 +4,10 @@ Game capture, recording, overlays, graphics overrides, and frame pacing for Wind
 
 ![CaptureEngine recording screenshot](.github/crrec.png)
 
-CaptureEngine records game video and multiple audio sources to Matroska files. It supports non-injected Windows
-Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-aware capture path. The project includes
-custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application profiles, and native FPS
-limiter integrations.
+CaptureEngine records game video and multiple audio sources to Matroska files or sends low-latency RTMP/RTMPS live
+streams. It supports non-injected Windows Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected,
+API-aware capture path. The project includes custom overlay renderers, constant-frame-rate scheduling, hardware
+encoding, per-application profiles, and native FPS limiter integrations.
 
 The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
 container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay and its frame-time
@@ -36,6 +36,7 @@ expectations](#bug-reports-and-support-expectations).
 - NVENC, AMD AMF, Intel Quick Sync/oneVPL, and Media Foundation encoders
 - Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
+- Low-latency YouTube, Twitch, and custom RTMP/RTMPS streaming through the same CFR/audio synchronization pipeline
 - Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
   and NVIDIA Smooth Motion (driver-based frame generation) status, plus a non-injected desktop recording indicator
   for WGC/DXGI sessions
@@ -72,6 +73,31 @@ The default configuration records through WGC or DXGI Desktop Duplication withou
 desktop overlay can show recording status while those paths are active. Before enabling injected capture, overlays, or
 graphics overrides with any software, read [Anti-cheat safety](#anti-cheat-safety) and the [app profile
 example](#app-profile-example) below; the generated `config.ini` also ends with more safe/unsafe profile examples.
+
+### Live streaming
+
+Set `[Streaming] enabled=true`, choose `service=youtube` or `service=twitch`, and copy the ingest server and stream key
+from that service's encoder setup page into `server` and `stream_key`. A complete `rtmp://` or `rtmps://` publishing
+URL can instead be placed in `url`; it takes precedence. Prefer RTMPS whenever the service offers it. The stream key is
+stored in `config.ini` like a password, while logs always replace the complete publishing destination with a redacted
+label.
+
+The normal recording hotkey then starts and stops a stream instead of creating a local video file. This first version
+is intentionally stream-only, so it does not encode a second archival file in parallel. The audio-only hotkey still
+writes a local MKA file. CaptureEngine keeps the configured hardware backend but selects its interoperable H.264
+variant, CBR, a two-second GOP, 8-bit BT.709 4:2:0, and bounded low-latency encoder/mux settings. All enabled system,
+microphone, and application sources are mixed into one 48 kHz stereo AAC stream on the existing synchronized audio
+timeline.
+
+Playback latency also depends on the latency mode selected in the provider's
+creator dashboard; choose its low- or ultra-low-latency mode where available.
+That service-side viewer buffer cannot be selected through the RTMP publisher.
+
+Network output is interruptible and has a two-second encoded-packet budget. A stalled connection therefore stops the
+whole streaming session with an explicit failure instead of blocking capture, dropping arbitrary encoded packets, or
+letting audio and video clocks drift apart. The full option reference and service bitrate defaults are in the generated
+`config.ini`. Completion feedback says whether the stream ended, ended with degraded video, or failed; it never claims
+that a stream-only session was saved as a local recording.
 
 ### Release verification
 
@@ -720,7 +746,6 @@ feasible:
 - proper late inject / early deject support
 - webcam overlay support (exploratory)
 - improved compatibility with further third-party overlays, such as RTSS
-- investigating YouTube/Twitch live-streaming support
 - XeSS frame generation support
 - evaluating Unreal Engine settings overrides
 - evaluating a standalone GUI or an in-overlay GUI

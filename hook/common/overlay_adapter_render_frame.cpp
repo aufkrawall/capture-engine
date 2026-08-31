@@ -136,7 +136,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
     const bool recordingFinalizationNotification =
         frameLayout.notificationType >= static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing) &&
-        frameLayout.notificationType <= static_cast<uint32_t>(OverlayNotificationType::RecordingFailed);
+        frameLayout.notificationType <= static_cast<uint32_t>(OverlayNotificationType::StreamingFailed);
     frameLayout.notificationVisible =
         notificationExpiry > nowTick64 && frameLayout.notificationType != 0 &&
         (!recordingFinalizationNotification || frameLayout.recordingState == ce::recording_indicator::State::Idle);

@@ -1,0 +1,27 @@
+diff --git a/libavformat/tls_schannel.c b/libavformat/tls_schannel.c
+--- a/libavformat/tls_schannel.c
++++ b/libavformat/tls_schannel.c
+@@ -861,21 +861,23 @@ static int tls_handshake_loop(URLContext *h, int initial)
+             ret = ffurl_read(uc, c->enc_buf + c->enc_buf_offset, c->enc_buf_size - c->enc_buf_offset);
+             if (ret < 0) {
+                 av_log(h, AV_LOG_ERROR, "Failed to read handshake response\n");
+                 goto fail;
+             }
+             c->enc_buf_offset += ret;
++#if CONFIG_DTLS_PROTOCOL
+             if (s->is_dtls && !recv_addr_len) {
+                 ff_udp_get_last_recv_addr(uc, &recv_addr, &recv_addr_len);
+ 
+                 if (s->listen) {
+                     ret = ff_udp_set_remote_addr(uc, (struct sockaddr *)&recv_addr, recv_addr_len, 1);
+                     if (ret < 0) {
+                         av_log(h, AV_LOG_ERROR, "Failed connecting udp context\n");
+                         goto fail;
+                     }
+                     av_log(h, AV_LOG_TRACE, "Set UDP remote addr on UDP socket, now 'connected'\n");
+                 }
+             }
++#endif
+         }
+ 
+         /* input buffers */

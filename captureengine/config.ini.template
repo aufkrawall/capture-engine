@@ -80,6 +80,35 @@ screenshot_dir=
 ; if recording is interrupted.
 container=mkv
 
+[Streaming]
+; Stream-only mode for YouTube, Twitch, or a custom RTMP service. It is disabled
+; by default. When enabled, the normal recording hotkey starts/stops the stream;
+; no local video file is written at the same time. Audio-only capture remains a
+; local MKA recording.
+enabled=false
+; youtube, twitch, or custom. The service selects conservative bitrate defaults.
+service=twitch
+; Copy the ingest server from the service's encoder setup page. Include its app
+; path, for example rtmps://ingest.example/app. RTMPS is preferred when offered.
+server=
+; Treat this like a password. It is stored in this config file, but CaptureEngine
+; redacts the destination and key from its logs.
+stream_key=
+; Optional complete rtmp:// or rtmps:// publishing URL. When set, this overrides
+; server and stream_key.
+url=
+; Kbps. 0 selects 12000/128 for YouTube and 6000/160 for Twitch/custom.
+video_bitrate=0
+audio_bitrate=0
+; Live output is capped at 60 fps. A lower [Video] fps remains unchanged.
+max_fps=60
+; 0 gives the lowest encode latency; 1-2 trades some latency for compression.
+b_frames=0
+; Streaming preserves the selected hardware backend but uses its H.264 encoder,
+; CBR, a two-second keyframe interval, 8-bit BT.709 4:2:0, and low-latency
+; backend settings. All enabled audio sources are mixed through the existing
+; synchronized timeline into one 48 kHz stereo AAC track.
+
 [Screenshot]
 ; auto saves an HDR source as a native 10-bit BT.2020/PQ AVIF and an SDR source
 ; as PNG. bt709 always saves PNG and tone-maps HDR using the Windows SDR white

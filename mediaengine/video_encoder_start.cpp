@@ -202,6 +202,9 @@ void VideoEncoder::BeginDeferredRecording() {
     writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
     discardOutputRequested.store(false, std::memory_order_relaxed);
     outputPublished.store(false, std::memory_order_relaxed);
+    liveOutputFailed.store(false, std::memory_order_relaxed);
+    outputIoAbort.store(false, std::memory_order_relaxed);
+    outputIoDeadlineMs.store(0, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
@@ -273,6 +276,12 @@ bool VideoEncoder::Start() {
             DLL_Log("[VideoEncoder] Start: Waiting for previous recording to finalize...");
             writerThread.join();
         }
+    }
+
+    if (liveOutput && !ce::live_stream::IsValidLiveStreamTarget(savedConfig.outputDir)) {
+        DLL_Log("[LiveStream] Refusing to start because the configured endpoint is invalid (endpoint=<redacted>)");
+        RequestLiveOutputFailure("validate_endpoint", AVERROR(EINVAL));
+        return false;
     }
 
     // If fmtCtx was freed by Stop(), recreate it for the new recording
@@ -347,14 +356,18 @@ bool VideoEncoder::Start() {
         }
     }
 
-    if (!outputReservation) {
+    if (liveOutput) {
+        outputReservation.CleanupOwnedFile();
+        outputFilename = savedConfig.outputDir;
+        DLL_Log("[LiveStream] Prepared live output endpoint=<redacted>");
+    } else if (!outputReservation) {
         outputReservation = ReserveOutputStagingFile(savedConfig);
         if (!outputReservation) {
             return false;
         }
         outputFilename = outputReservation.Utf8Path();
         DLL_Log("[VideoEncoder] Reserved staging output for recording: %s",
-                ce::privacy::CollapsePathForLog(outputFilename).c_str());
+                OutputTargetForLog().c_str());
     }
 
     BeginDeferredRecording();

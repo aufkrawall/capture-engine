@@ -1,5 +1,7 @@
 #include "media_main_internal.h"
 
+#include "../common/live_stream_config.h"
+
 int MediaProcessSession::Run(const AppConfig& initialConfig) {
     config = initialConfig;
     media_main_g_RecordingManifestLogPath =
@@ -317,6 +319,7 @@ bool StartRecording(const AppConfig& config) {
     if (media_main_g_Recording)
         return true;
 
+    media_main_g_LiveStreamRecording.store(false, std::memory_order_release);
     media_main_g_PrivacyFailClosedStopRequested.store(false, std::memory_order_release);
     ResetRecordingHealthPublication();
     LogInfo("[Media] Starting recording...");
@@ -356,6 +359,9 @@ bool StartRecording(const AppConfig& config) {
         LogInfo("[Media] Audio-only recording active");
         return true;
     }
+
+    media_main_g_LiveStreamRecording.store(
+        ce::live_stream::IsLiveStreamTarget(config.video.outputDir), std::memory_order_release);
 
     if (IsVideoCaptureDisabledMethod(config.captureMethod)) {
         LogError("[Media] Video recording is disabled by the active application profile");
@@ -470,6 +476,8 @@ bool StartRecording(const AppConfig& config) {
     }
 
     media_main_g_Recording = true;
+    media_main_g_LiveStreamRecording.store(
+        ce::live_stream::IsLiveStreamTarget(config.video.outputDir), std::memory_order_release);
     media_main_g_EncoderRunning = true;
     media_main_g_RecordingUsesVfr.store(config.video.useVFR, std::memory_order_release);
     media_main_g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);

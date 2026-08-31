@@ -544,6 +544,10 @@ void PseudoOverlay::UpdateOverlay() {
         textKind == ce::pseudo_overlay::OverlayTextKind::RecordingSavedDegraded;
     const bool showRecordingCanceled = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingCanceled;
     const bool showRecordingFailed = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingFailed;
+    const bool showStreamingEnded = textKind == ce::pseudo_overlay::OverlayTextKind::StreamingEnded;
+    const bool showStreamingEndedDegraded =
+        textKind == ce::pseudo_overlay::OverlayTextKind::StreamingEndedDegraded;
+    const bool showStreamingFailed = textKind == ce::pseudo_overlay::OverlayTextKind::StreamingFailed;
     const char* msg = showStarting ? ce::recording_indicator::GetStartingText(recordingState)
                        : showScreenshot ? (screenshotSucceeded ? "Screenshot saved!" : "Screenshot failed!")
                        : showRecordingFinalizing ? "Finalizing recording..."
@@ -551,6 +555,9 @@ void PseudoOverlay::UpdateOverlay() {
                        : showRecordingSavedDegraded ? "Recording saved - video degraded"
                        : showRecordingCanceled ? "Recording canceled"
                        : showRecordingFailed ? "Recording failed"
+                       : showStreamingEnded ? "Stream ended"
+                       : showStreamingEndedDegraded ? "Stream ended - video degraded"
+                       : showStreamingFailed ? "Stream failed"
                       : showOverload   ? overloadMsg.c_str()
                                        : "NOT RECORDING";
     if (ghostActive) {
@@ -634,8 +641,11 @@ void PseudoOverlay::UpdateOverlay() {
             SetTextColor(hdcWarn_, showStarting   ? pseudo_overlay_kColStarting
                                    : showScreenshot ? (screenshotSucceeded ? pseudo_overlay_kColScreenshotText
                                                                             : pseudo_overlay_kColScreenshotFailureText)
-                                    : (showRecordingSavedDegraded || showRecordingFailed) ? pseudo_overlay_kColWarnText
-                                    : (showRecordingFinalizing || showRecordingSaved || showRecordingCanceled)
+                                    : (showRecordingSavedDegraded || showRecordingFailed ||
+                                       showStreamingEndedDegraded || showStreamingFailed)
+                                        ? pseudo_overlay_kColWarnText
+                                    : (showRecordingFinalizing || showRecordingSaved || showRecordingCanceled ||
+                                       showStreamingEnded)
                                         ? pseudo_overlay_kColScreenshotText
                                         : pseudo_overlay_kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);

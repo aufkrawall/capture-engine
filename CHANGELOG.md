@@ -6,6 +6,9 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- Added opt-in, stream-only YouTube, Twitch, and custom RTMP/RTMPS output. It reuses CaptureEngine's CFR/audio timing,
+  selects a low-latency H.264/AAC compatibility profile on the configured hardware backend, redacts stream keys, and
+  stops the session on bounded network/queue failure instead of sacrificing A/V synchronization.
 - Added optional LibreHardwareMonitor polling for CPU/GPU temperature, package power, and GPU fan RPM in the existing
   overlay rows. The managed library runs behind the dedicated sensor service and remains user-supplied in
   `plugins\LibreHardwareMonitor`; release packaging includes only CaptureEngine's bridge/setup files and excludes all

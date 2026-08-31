@@ -1,5 +1,7 @@
 #include "media_main_internal.h"
 
+#include "../common/live_stream_config.h"
+
 void StampAvSyncStatus(AppConfig& config, const char* confidence, const char* reason, float resolvedMs,
                               bool usedAudioProbe) {
     config.avSyncConfidence = confidence ? confidence : "low";
@@ -384,6 +386,7 @@ void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& heal
 }
 
 void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
+    const bool liveStream = media_main_g_LiveStreamRecording.exchange(false, std::memory_order_acq_rel);
     const uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
     const uint32_t currentDebtMs = media_main_g_RecordingTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t peakDebtMs = media_main_g_RecordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
@@ -392,8 +395,9 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const char* healthStatus = ce::capture_policy::GetRecordingHealthStatus(healthFlags);
     const char* healthCause = ce::capture_policy::GetRecordingHealthCause(healthFlags);
     LogInfo(
-        "[RECORDING FINALIZATION] status=%s health=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
+        "[RECORDING FINALIZATION] mode=%s status=%s health=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
         "capacityDebtMs=%u outputSaved=%d finalizationComplete=1 settingsChanged=0",
+        liveStream ? "stream" : "recording",
         canceled ? "canceled" : (outputSaved ? "media_finalized" : "failed"), healthStatus, healthCause,
         healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
     FinalizeRecordingManifest(media_main_g_RecordingManifestLogPath, canceled, outputSaved, healthStatus, healthCause,
@@ -414,10 +418,7 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const bool degraded = ce::capture_policy::HasRecordingHealthFlag(
         healthFlags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
     const OverlayNotificationType notification =
-        canceled    ? OverlayNotificationType::RecordingCanceled
-        : !outputSaved ? OverlayNotificationType::RecordingFailed
-        : degraded ? OverlayNotificationType::RecordingSavedDegraded
-                   : OverlayNotificationType::RecordingSaved;
+        ce::live_stream::SelectOutputCompletionNotification(liveStream, canceled, outputSaved, degraded);
     state.notificationType.store(static_cast<uint32_t>(notification), std::memory_order_release);
     state.notificationExpiry.store(GetTickCount64() + ((degraded || !outputSaved) ? 7000ULL : 3000ULL),
                                    std::memory_order_release);
@@ -510,6 +511,7 @@ void SetRecordingVisibleState(bool enabled) {
 }
 
 void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* reason) {
+    const bool liveStream = media_main_g_LiveStreamRecording.load(std::memory_order_acquire);
     if (media_main_g_pSharedMem) {
         ReleaseStatusOverlayDarkForCapture("recording start failure");
         media_main_g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
@@ -521,11 +523,14 @@ void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* 
         // show the notification only in the idle state, which the intent and
         // isRecording resets above have already established.
         media_main_g_pSharedMem->runtimeState.notificationType.store(
-            static_cast<uint32_t>(OverlayNotificationType::RecordingFailed), std::memory_order_release);
+            static_cast<uint32_t>(liveStream ? OverlayNotificationType::StreamingFailed
+                                             : OverlayNotificationType::RecordingFailed),
+            std::memory_order_release);
         media_main_g_pSharedMem->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
         SignalStatusOverlaySync();
     }
-    LogError("[Media] Recording start failed: %s (code=%u)", reason ? reason : "unspecified",
+    LogError("[Media] %s start failed: %s (code=%u)", liveStream ? "Stream" : "Recording",
+             reason ? reason : "unspecified",
              static_cast<uint32_t>(failureCode));
 }
 

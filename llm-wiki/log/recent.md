@@ -15,6 +15,24 @@ MPL-2.0/source/notices boundary. A live four-file 0.9.6 smoke published NVIDIA t
 native tests, packaging isolation, warning-profile syntax checks, and 60-second ASan/libFuzzer runs for config, sensor
 protocol, and IPC passed. See `configuration.md`, `overlay-rendering.md`, and `fuzzing.md`.
 
+### 2026-08-31 - RTMP/RTMPS live streaming reuses CFR/audio timing and fails as a unit
+
+Added opt-in stream-only `[Streaming]` output for YouTube, Twitch, and custom
+RTMP services. The config policy preserves the selected NVENC/AMF/QSV/MF
+backend while selecting H.264 CBR, a two-second GOP, low-latency backend
+settings, BT.709 8-bit 4:2:0, and one mixed 48 kHz stereo AAC track. The FLV
+mux path is shared by injected and WGC/DXGI output and retains the normal CFR,
+audio-reservoir, timestamp, and packet-timeline contracts. Live protocol calls
+have a five-second interrupt deadline and terminal-failure abort; the packet queue
+has an approximately two-second bitrate-derived budget. A stall/overflow fails
+the session and requests orderly stop instead of applying wall-clock-breaking
+backpressure or dropping predictive packets. Destinations/keys are redacted.
+FFmpeg's raw logger is silenced only in live mode because RTMP diagnostics can
+include the publish playpath; operation/error-code diagnostics remain active.
+Bundled FFmpeg still disables protocols by default and now allows only
+file/RTMP/RTMPS/TCP/TLS using Windows Schannel; the RTMPS wrapper now forwards
+TCP_NODELAY to its underlying socket. See `live-streaming.md`.
+
 ### 2026-08-30 - Final-DXGI FIFO re-armed as a per-instance scoped backstop
 
 The retirement from earlier today did not survive a second look. The evidence that killed the override was

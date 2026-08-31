@@ -334,6 +334,7 @@ enum class RecordingFailureCode : uint32_t {
     ProcessLoopbackTransportIntegrity = 1,
     SharedMemoryProtocolIntegrity = 2,
     RecordingStartFailed = 3,
+    LiveStreamOutputFailed = 4,
 };
 
 enum class ScreenshotRequestStatus : uint32_t {
@@ -359,6 +360,9 @@ enum class OverlayNotificationType : uint32_t {
     RecordingSavedDegraded = 5,
     RecordingCanceled = 6,
     RecordingFailed = 7,
+    StreamingEnded = 8,
+    StreamingEndedDegraded = 9,
+    StreamingFailed = 10,
 };
 
 enum class ScreenshotPixelFormat : uint32_t {
