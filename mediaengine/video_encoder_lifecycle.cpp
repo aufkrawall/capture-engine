@@ -125,6 +125,7 @@ void VideoEncoder::CleanupResources() {
     skippedFrameCount = 0;
     duplicatedFrameCount = 0;
     overlayAwareRepeatRenderCount = 0;
+    dynamicOverlayRepeatState.Reset();
     encodeFrameCounter = 0;
     lastLogFrameCount = 0;
     nextOutputTime_ms = -1;
@@ -247,9 +248,12 @@ void VideoEncoder::Stop() {
             pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
         DLL_Log(
             "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s "
-            "live=%u drain=%u overlayAwareRepeatRenders=%lld backpressure=%u peakMux=%uKB peakPkts=%u",
+            "live=%u drain=%u overlayAwareRepeatRenders=%lld frozenOverlayRepeats=%llu "
+            "overlayDegradeEpisodes=%llu backpressure=%u peakMux=%uKB peakPkts=%u",
             inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount,
             CapturePipelinePhaseToString(phase), liveFrames, drainFrames, overlayAwareRepeatRenderCount,
+            static_cast<unsigned long long>(dynamicOverlayRepeatState.frozenRepeats),
+            static_cast<unsigned long long>(dynamicOverlayRepeatState.episodes),
             muxBackpressureCount.load(std::memory_order_relaxed),
             peakQueueBytes.load(std::memory_order_relaxed) / 1024u, peakQueuePackets.load(std::memory_order_relaxed));
 

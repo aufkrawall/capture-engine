@@ -295,8 +295,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             // state can advance on CFR repeats; the ordinary path retains the
             // already converted frame.
             // Dynamic composition keeps the larger RGB source. Seed one
-            // converted fallback, then refresh it only when a repeat is
-            // actually rendered, avoiding a second full copy per fresh frame.
+            // converted fallback, then normally refresh it only when a repeat
+            // is rendered. Overload degradation refreshes it from each fresh
+            // accepted frame so a held slot can never jump to old content.
             if (!cachedDynamicOverlaySource || !repeatFrameTexture)
                 CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
         }
@@ -356,8 +357,41 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
+    ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
     av_frame_free(&d3d11Frame);
     return true;
+}
+
+void VideoEncoder::ObserveFreshFrameDynamicOverlayPressure(ID3D11Texture2D* acceptedConvertedFrame) {
+    const double freshServiceMs = static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0;
+    const double intervalMs = 1000.0 / static_cast<double>(std::max(savedConfig.fps, 1));
+    const auto decision = ce::capture_policy::UpdateCfrDynamicOverlayRepeatState(
+        dynamicOverlayRepeatState, DynamicOverlayRecompositionActive(), freshServiceMs, intervalMs);
+    if (decision.frozen &&
+        (!acceptedConvertedFrame || !CacheRepeatFrameTexture(acceptedConvertedFrame))) {
+        // An old fallback is not a safe degradation surface: replaying it after
+        // this accepted fresh frame would itself create a temporal regression.
+        if (decision.entered && dynamicOverlayRepeatState.episodes > 0) {
+            --dynamicOverlayRepeatState.episodes;
+        }
+        dynamicOverlayRepeatState.frozen = false;
+        dynamicOverlayRepeatState.overloadConfirmFrames = 0;
+        dynamicOverlayRepeatState.recoveryConfirmFrames = 0;
+        return;
+    }
+    if (decision.entered) {
+        DLL_Log(
+            "[VideoEncoder] Dynamic-overlay repeat degradation entered: fresh=%.2fms interval=%.2fms "
+            "episodes=%llu (held CFR slots reuse fully composited pixels)",
+            freshServiceMs, intervalMs,
+            static_cast<unsigned long long>(dynamicOverlayRepeatState.episodes));
+    } else if (decision.exited) {
+        DLL_Log(
+            "[VideoEncoder] Dynamic-overlay repeat degradation exited: fresh=%.2fms interval=%.2fms "
+            "frozenRepeats=%llu",
+            freshServiceMs, intervalMs,
+            static_cast<unsigned long long>(dynamicOverlayRepeatState.frozenRepeats));
+    }
 }
 
 bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline) {
@@ -367,7 +401,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     lastFrameDeferred.store(false, std::memory_order_relaxed);
 
-    const bool recomposeOverlaysForRepeat = repeatSourceNeedsOverlayRecompose && repeatSourceFrameTexture;
+    const bool dynamicRepeatSourceAvailable = repeatSourceNeedsOverlayRecompose && repeatSourceFrameTexture;
+    const bool freezeDynamicOverlaysForRepeat =
+        dynamicOverlayRepeatState.frozen && dynamicRepeatSourceAvailable && repeatFrameTexture;
+    const bool recomposeOverlaysForRepeat = dynamicRepeatSourceAvailable && !freezeDynamicOverlaysForRepeat;
     if (!repeatFrameTexture && !recomposeOverlaysForRepeat) {
         DLL_Log("[VideoEncoder] RepeatLastFrame requested without cached frame");
         return false;
@@ -571,8 +608,14 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     if (populatedFromRepeatSource) {
         overlayAwareRepeatRenderCount++;
         CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
-        if (!DynamicOverlayRecompositionActive())
-            InvalidateRepeatSourceFrameTexture();
+    } else if (freezeDynamicOverlaysForRepeat) {
+        ++dynamicOverlayRepeatState.frozenRepeats;
+    }
+    if (!DynamicOverlayRecompositionActive()) {
+        InvalidateRepeatSourceFrameTexture();
+        dynamicOverlayRepeatState.frozen = false;
+        dynamicOverlayRepeatState.overloadConfirmFrames = 0;
+        dynamicOverlayRepeatState.recoveryConfirmFrames = 0;
     }
     video_encoder_g_totalFenceWait += stats.fenceWaitMs;
     video_encoder_g_totalColorConvert += stats.colorConvertMs;

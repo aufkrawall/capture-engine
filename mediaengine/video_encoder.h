@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../common/config.h"
+#include "../common/capture_policy/cfr_overload_recovery.h"
 #include "../common/cursor_capture_state.h"
 #include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
@@ -167,6 +168,7 @@ private:
     bool DynamicOverlayRecompositionActive() const {
         return FaceCameraCompositionActive() || (CursorCompositionActive() && cursorRenderer != nullptr);
     }
+    void ObserveFreshFrameDynamicOverlayPressure(ID3D11Texture2D* acceptedConvertedFrame);
 
     void BeginDeferredRecording();
     bool AdoptTextureDevice(ID3D11Texture2D* texture);
@@ -299,6 +301,7 @@ private:
     int64_t skippedFrameCount = 0;     // Encoder-side skips
     int64_t duplicatedFrameCount = 0;  // Encoder-side duplicates
     int64_t overlayAwareRepeatRenderCount = 0;  // Re-rendered from uncomposited RGB source
+    ce::capture_policy::CfrDynamicOverlayRepeatState dynamicOverlayRepeatState{};
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)

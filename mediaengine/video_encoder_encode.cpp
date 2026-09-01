@@ -98,7 +98,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height), isHDR, 0,
                                              0);
         // Seed one converted fallback without adding a second copy to every
-        // accepted frame. Successful dynamic repeats refresh it thereafter.
+        // accepted frame. Successful dynamic repeats normally refresh it;
+        // overload degradation refreshes it from each accepted fresh frame.
         if (!repeatFrameTexture)
             CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
     } else {
@@ -120,6 +121,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
 
     LogFramePerformance(stats, expectedFrameMs, fpsLogIntervalFrames);
+    ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
 
     av_frame_free(&d3d11Frame);  // Releases D3D11 Tex
 

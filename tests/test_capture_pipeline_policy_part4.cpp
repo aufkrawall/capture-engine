@@ -521,7 +521,7 @@ TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerRequiresMeasuredUsefulRepe
     auto decision = policy::UpdateWgcOverloadRepeatPacer(
         state, true, true, true, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples - 1u, kSamples);
     EXPECT_FALSE(decision.active);
-    EXPECT_STREQ(decision.reason, "warming_service_samples");
+    EXPECT_STREQ(decision.reason, "warming_fresh_service");
 
     decision = policy::UpdateWgcOverloadRepeatPacer(
         state, true, false, true, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);

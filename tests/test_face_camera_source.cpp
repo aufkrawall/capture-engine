@@ -190,6 +190,11 @@ TEST(FaceCameraSourceTest, CfrRepeatSourceIsCommittedOnlyAfterAcceptedInjectFram
     ASSERT_FALSE(repeatTextures.empty());
     EXPECT_NE(integration.find("NeedsDynamicRepeatSource"), std::string::npos);
     EXPECT_NE(repeat.find("if (!DynamicOverlayRecompositionActive())"), std::string::npos);
+    EXPECT_NE(repeat.find("freezeDynamicOverlaysForRepeat"), std::string::npos);
+    EXPECT_NE(repeat.find("UpdateCfrDynamicOverlayRepeatState"), std::string::npos);
+    EXPECT_NE(repeat.find("CacheRepeatFrameTexture(acceptedConvertedFrame)"), std::string::npos);
+    EXPECT_NE(repeat.find("temporal regression"), std::string::npos);
+    EXPECT_NE(encode.find("ObserveFreshFrameDynamicOverlayPressure"), std::string::npos);
     EXPECT_NE(repeatTextures.find("small transactional restores"), std::string::npos);
 }
 

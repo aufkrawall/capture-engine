@@ -258,6 +258,11 @@ if (!config.video.useVFR) {
             const auto decision = ce::capture_policy::DecideCfrNearestPlayout(
                 selectedTimestamp, playoutTargetQpc, leadToleranceQpc, lastEmittedInjectSourceQpc);
             if (decision.emit) {
+                if (updateInjectOverloadRepeatPacer(true).repeat) {
+                    // Keep every candidate for a later immutable output slot.
+                    // The scheduled slot is emitted from the cached frame.
+                    return;
+                }
                 if (bestIdx > 0) {
                     ++selectionLogCounter;
                     if (selectionLogCounter <= 12 || (selectionLogCounter % 240) == 0) {
@@ -296,6 +301,7 @@ if (!config.video.useVFR) {
                         std::max(injectTargetResidualMaxUs, SaturatingToUint32(residualUs));
                 }
             } else if (decision.hold) {
+                updateInjectOverloadRepeatPacer(false);
                 ++injectTargetHoldThisWindow;
                 ++injectTargetHoldTotal;
                 ++injectTargetHoldWithCandidateThisWindow;
@@ -319,8 +325,11 @@ if (!config.video.useVFR) {
                             static_cast<unsigned long long>(s_largeFutureHoldLogCount));
                     }
                 }
+            } else {
+                updateInjectOverloadRepeatPacer(false);
             }
         } else {
+            updateInjectOverloadRepeatPacer(false);
             ++injectTargetHoldThisWindow;
             ++injectTargetHoldTotal;
         }
@@ -562,6 +571,7 @@ void MediaEncoderSession::releaseWgcLeaseAfterMediaEngineCopy(QueuedFrame& encod
 if (encodedFrame.isInjectMode || !encodedFrame.wgcPoolLease.IsValid()) {
     return;
 }
+
 if (!hasRepeatLastFramePath) {
     static bool s_loggedHeldForFallback = false;
     if (!s_loggedHeldForFallback) {
@@ -591,4 +601,62 @@ if (s_releaseLogCount <= 5 || (s_releaseLogCount % 1000ull) == 0ull) {
         static_cast<unsigned long long>(s_releaseLogCount));
 }
 
+}
+
+ce::capture_policy::CfrOverloadRepeatPacerDecision
+MediaEncoderSession::updateInjectOverloadRepeatPacer(bool freshCandidateAvailable) {
+    auto& runtime = injectOverloadRepeatRuntime;
+    const double targetFps = static_cast<double>(std::max(config.video.fps, 1));
+    const double predictedFps = injectInputPredictor.GetPredictedFps(qpcFreq.QuadPart);
+    // Never spend a scarce source frame to relieve encoder pressure. This
+    // drops out quickly when FG/MFG is suspended for a cutscene, while a 2x ->
+    // 4x transition remains comfortably above the near-target floor.
+    const bool sourceHealthy = ce::capture_policy::IsCfrSourceHealthyForOverloadPacing(
+        smoothedInputPerTick, injectInputPredictor.IsCalibrated(), predictedFps, targetFps);
+    const bool repeatAvailable =
+        media_main_g_HasLastFrame && media_main_g_LastFrame.isInjectMode &&
+        MediaEngine_RepeatLastFrame && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+    const uint32_t overloadFlags = loadEncoderOverloadFlags();
+    const bool capacityPressure =
+        outputShortfallTicks > 0 || overloadFlags != 0 ||
+        media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+    const auto decision = ce::capture_policy::UpdateCfrOverloadRepeatPacer(
+        runtime.pacer, recordingOutputLive && !activeScreenGrab && !config.video.useVFR,
+        sourceHealthy, capacityPressure, freshCandidateAvailable, repeatAvailable,
+        runtime.freshServiceMs, runtime.repeatServiceMs, frameIntervalMs,
+        runtime.freshServiceSamples, runtime.repeatServiceSamples);
+    injectProactiveOverloadRepeatThisTick = decision.repeat;
+
+    if (decision.entered || decision.exited) {
+        LogInfo(
+            "[Inject CFR] Overload repeat pacer %s: reason=%s fresh=%.2fms/%u repeat=%.2fms/%u "
+            "budget=%.2fms freshFraction=%.3f shortfall=%u buffered=%zu source=%.1ffps/%.2f "
+            "repeats=%llu probes=%llu (CFR PTS and audio timeline unchanged)",
+            decision.entered ? "entered" : "exited", decision.reason,
+            runtime.freshServiceMs, runtime.freshServiceSamples, runtime.repeatServiceMs,
+            runtime.repeatServiceSamples, decision.serviceBudgetMs, decision.freshFraction,
+            outputShortfallTicks, bufferedInjectFrames.size(), predictedFps, smoothedInputPerTick,
+            static_cast<unsigned long long>(runtime.pacer.proactiveRepeats),
+            static_cast<unsigned long long>(runtime.pacer.probeRepeats));
+    } else if (decision.probing &&
+               (runtime.pacer.probeRepeats <= 3 || (runtime.pacer.probeRepeats % 8ull) == 0ull)) {
+        LogInfo(
+            "[Inject CFR] Measuring cached-repeat service: probe=%llu fresh=%.2fms/%u "
+            "shortfall=%u buffered=%zu",
+            static_cast<unsigned long long>(runtime.pacer.probeRepeats), runtime.freshServiceMs,
+            runtime.freshServiceSamples, outputShortfallTicks, bufferedInjectFrames.size());
+    }
+    return decision;
+}
+
+void MediaEncoderSession::observeInjectFreshService(double wallServiceMs, double pureServiceMs) {
+    ce::capture_policy::UpdateCfrServiceTimeEma(
+        wallServiceMs, pureServiceMs, media_main_kEncodeEmaAlpha,
+        injectOverloadRepeatRuntime.freshServiceMs, injectOverloadRepeatRuntime.freshServiceSamples);
+}
+
+void MediaEncoderSession::observeInjectRepeatService(double wallServiceMs, double pureServiceMs) {
+    ce::capture_policy::UpdateCfrServiceTimeEma(
+        wallServiceMs, pureServiceMs, media_main_kEncodeEmaAlpha,
+        injectOverloadRepeatRuntime.repeatServiceMs, injectOverloadRepeatRuntime.repeatServiceSamples);
 }

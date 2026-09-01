@@ -1,6 +1,6 @@
 # Face-camera overlay
 
-Last verified: 2026-08-31
+Last verified: 2026-09-01
 
 ## Summary
 
@@ -11,6 +11,7 @@ The compositor is D3D11-native. A new camera frame is copied or uploaded to the 
 Primary sources:
 
 - `common/face_camera_config.h`
+- `common/capture_policy/cfr_overload_recovery.h`
 - `common/config_load_face_camera.cpp`
 - `mediaengine/face_camera_capture.{h,cpp}`
 - `mediaengine/face_camera_renderer.{h,cpp}`
@@ -74,9 +75,10 @@ The video-processor path modifies only the camera rectangle when the capture tex
 - Camera transfer and mip generation happen only when the published camera sequence changes, normally 30 times per second even for a 60/120/240 fps recording.
 - Optimized shader bytecode is compiled once when the renderer is configured, outside the video-frame path. Inject capture also creates its fixed device resources during session startup while camera negotiation proceeds asynchronously. WGC/DXGI waits until the encoder has adopted MediaEngine's actual shared frame-grab device, then creates only the lightweight device objects; it never guesses the route or creates an incompatible second device.
 - Each output uses one small overlay draw; there is no CPU frame blending or readback.
-- When camera or cursor state can change, the repeat cache retains one uncomposited RGB source per accepted game frame. Encoder-owned compatible RGB caches gain render-target binding, so CFR duplicates normally update only transactional overlay rectangles before rerunning the existing GPU conversion instead of making another full-frame compatibility copy. The camera therefore continues moving while the game frame is repeated.
+- When camera or cursor state can change, the repeat cache retains one uncomposited RGB source per accepted game frame. Encoder-owned compatible RGB caches gain render-target binding, so CFR duplicates normally update only transactional overlay rectangles before rerunning the existing GPU conversion instead of making another full-frame compatibility copy. Outside the explicit overload-degradation mode below, the camera therefore continues moving while the game frame is repeated.
 - Inject capture stages the source cache before encoder submission but publishes it only after the frame is accepted. A failed encoder submission cannot replace the last valid repeat source.
 - The first accepted dynamic source also seeds one converted fallback. Later successful dynamic repeats refresh it, so a transient recompose failure still preserves CFR continuity without paying for two full-frame cache copies on every fresh frame.
+- Under sustained encoder pressure, two consecutive fresh submissions above 95% of the CFR interval temporarily make repeat slots reuse that fully composited fallback instead of redrawing the camera/cursor and reconverting the frame. Fresh game frames always update the overlays and refresh that fallback before release while degradation is entering/active; a failed fallback copy disarms the mode rather than permitting an old-frame temporal regression. Eight fresh submissions below 75% restore normal dynamic-repeat rendering, so overload recovery is hysteretic and lasting rather than toggling on individual spikes.
 - While the camera is starting, repeat-source retention is enabled for the greater of five seconds or `stale_timeout_ms`, so it can appear during a run of CFR-held game frames without a hung/no-frame driver imposing a permanent RGB-copy cost. A stale retained image is retired only during one camera-free recomposition, which first refreshes the converted fallback; a later camera sample is picked up on the next fresh game frame. After startup definitively fails or that retirement completes, the encoder returns to the smaller standard repeat cache instead of freezing the stale image or paying a permanent RGB-copy cost.
 - Static-overlay-disabled recording retains the existing already-converted repeat texture path.
 
@@ -84,7 +86,7 @@ This pre-encode placement also means any recording or live-stream output that co
 
 ## Diagnostics and validation
 
-High-signal logs cover selected mode, GPU versus CPU transport, renderer allocation, first composite, periodic composite/upload counts, stale hiding, device startup/read errors, bounded transfer failures, and the Source Reader flush plus worker-join phases at stop. Logs do not print the configured device identity.
+High-signal logs cover selected mode, GPU versus CPU transport, renderer allocation, first composite, periodic composite/upload counts, overload-degradation entry/exit and frozen-repeat totals, stale hiding, device startup/read errors, bounded transfer failures, and the Source Reader flush plus worker-join phases at stop. Logs do not print the configured device identity.
 
 The policy tests cover parsing, invalid-value fallback, process-profile overrides, placement under output scaling, circle cropping, custom-position clamping, template documentation, runtime shader compilation, latest-frame-only source structure, draw ordering, and accepted-frame-only repeat-cache publication.
 

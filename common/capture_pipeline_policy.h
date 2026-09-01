@@ -9,6 +9,7 @@
 
 #include "capture_policy/constants.h"
 #include "capture_policy/cfr_scheduling.h"
+#include "capture_policy/cfr_overload_recovery.h"
 #include "capture_policy/cfr_startup.h"
 #include "capture_policy/encoder_priority_and_routing.h"
 #include "capture_policy/recording_health.h"

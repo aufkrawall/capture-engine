@@ -205,6 +205,7 @@ private:
     uint32_t injectWorstSelectionErrorUs;
     double smoothedEncCycleMs;
     double smoothedInjectServiceMs;
+    ce::capture_policy::CfrOverloadRepeatRuntime injectOverloadRepeatRuntime{};
     uint32_t injectServiceMaxUs;
     uint32_t encCycleMaxMs;
     uint32_t encodeSpikeCountThisSecond;
@@ -590,6 +591,7 @@ private:
     bool wgcReserveAvailableAtTickStart;
     bool wgcSelectionDelayAppliedThisTick;
     bool wgcProactiveOverloadRepeatThisTick;
+    bool injectProactiveOverloadRepeatThisTick;
     bool wgcDelayRealizationRecordedThisTick;
     QueuedFrame* frameToProcess;
     bool isDuplicate;
@@ -772,6 +774,9 @@ private:
     void SelectWgcFrameUniformTail();
     void SelectWgcFrameUniformVfr();
     void SelectInjectFrame();
+    ce::capture_policy::CfrOverloadRepeatPacerDecision updateInjectOverloadRepeatPacer(bool freshCandidateAvailable);
+    void observeInjectFreshService(double wallServiceMs, double pureServiceMs);
+    void observeInjectRepeatService(double wallServiceMs, double pureServiceMs);
     void RefreshInjectFinalOutputDisplayTiming(size_t firstNewBufferedFrame);
     void CommitWarmupSync();
     void CommitWarmupReset();

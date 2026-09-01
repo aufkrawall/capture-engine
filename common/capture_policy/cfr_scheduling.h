@@ -414,10 +414,12 @@ struct WgcOverloadRepeatPacerState {
     double freshFraction = 1.0;
     double minimumFreshFraction = 1.0;
     uint32_t recoveryConfirmTicks = 0;
+    uint32_t repeatProbeTicks = 0;
     uint32_t consecutiveProactiveRepeats = 0;
     uint32_t maxConsecutiveProactiveRepeats = 0;
     uint64_t episodes = 0;
     uint64_t proactiveRepeats = 0;
+    uint64_t probeRepeats = 0;
     uint64_t emittedRepeats = 0;
     uint64_t freshGrants = 0;
 
@@ -435,6 +437,7 @@ struct WgcOverloadRepeatPacerDecision {
     bool repeat = false;
     bool entered = false;
     bool exited = false;
+    bool probing = false;
     double freshFraction = 1.0;
     double serviceBudgetMs = 0.0;
     const char* reason = "inactive";
@@ -450,34 +453,50 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
             ? frameIntervalMs * kWgcOverloadRepeatPacerBudgetRatio
             : 0.0;
 
-    const auto deactivate = [&](const char* reason) {
+    const auto deactivate = [&](const char* reason, bool resetProbe) {
         decision.exited = state.active;
         decision.freshFraction = state.freshFraction;
         decision.reason = reason;
         state.ResetActivePacing();
+        if (resetProbe) {
+            state.repeatProbeTicks = 0;
+        }
     };
     if (!liveCfr) {
-        deactivate("not_live_cfr");
+        deactivate("not_live_cfr", true);
         return decision;
     }
     if (!sourceHealthy) {
-        deactivate("source_not_healthy");
+        deactivate("source_not_healthy", true);
         return decision;
     }
     if (!repeatAvailable) {
-        deactivate("repeat_unavailable");
+        deactivate("repeat_unavailable", true);
         return decision;
     }
     if (freshServiceSamples < kWgcOverloadRepeatPacerMinSamples ||
-        repeatServiceSamples < kWgcOverloadRepeatPacerMinSamples) {
-        deactivate("warming_service_samples");
+        !std::isfinite(freshServiceMs) || decision.serviceBudgetMs <= 0.0 || freshServiceMs <= 0.0) {
+        deactivate("warming_fresh_service", true);
         return decision;
     }
-    if (!std::isfinite(freshServiceMs) || !std::isfinite(repeatServiceMs) ||
-        decision.serviceBudgetMs <= 0.0 || freshServiceMs <= 0.0 || repeatServiceMs <= 0.0) {
-        deactivate("invalid_service_samples");
+    if (repeatServiceSamples < kWgcOverloadRepeatPacerMinSamples ||
+        !std::isfinite(repeatServiceMs) || repeatServiceMs <= 0.0) {
+        deactivate("warming_repeat_service", false);
+        if (capacityPressure && freshCandidateAvailable && freshServiceMs > decision.serviceBudgetMs &&
+            ++state.repeatProbeTicks >= kCfrOverloadRepeatProbeIntervalTicks) {
+            state.repeatProbeTicks = 0;
+            decision.repeat = true;
+            decision.probing = true;
+            decision.reason = "measuring_repeat_service";
+            ++state.proactiveRepeats;
+            ++state.probeRepeats;
+            ++state.consecutiveProactiveRepeats;
+            state.maxConsecutiveProactiveRepeats =
+                std::max(state.maxConsecutiveProactiveRepeats, state.consecutiveProactiveRepeats);
+        }
         return decision;
     }
+    state.repeatProbeTicks = 0;
 
     if (repeatServiceMs < frameIntervalMs) {
         const double marginalBudgetMs =
@@ -488,13 +507,13 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
     const double minimumAdvantageMs = frameIntervalMs * kWgcOverloadRepeatPacerMinAdvantageRatio;
     const bool repeatHasUsefulAdvantage = freshServiceMs - repeatServiceMs >= minimumAdvantageMs;
     if (!repeatHasUsefulAdvantage) {
-        deactivate("repeat_not_cheaper");
+        deactivate("repeat_not_cheaper", true);
         return decision;
     }
     const bool freshNeedsPacing = freshServiceMs > decision.serviceBudgetMs;
     if (state.active && !freshNeedsPacing) {
         if (++state.recoveryConfirmTicks >= kWgcOverloadRepeatPacerRecoveryConfirmTicks) {
-            deactivate("service_recovered");
+            deactivate("service_recovered", true);
             return decision;
         }
     } else {
@@ -567,6 +586,23 @@ inline void UpdateWgcServiceTimeEma(double wallServiceMs, double pureServiceMs, 
                             ? serviceMs
                             : smoothedServiceMs * (1.0 - smoothingAlpha) + serviceMs * smoothingAlpha;
     serviceSamples = serviceSamples < UINT32_MAX ? serviceSamples + 1u : UINT32_MAX;
+}
+
+using CfrOverloadRepeatPacerState = WgcOverloadRepeatPacerState;
+using CfrOverloadRepeatPacerDecision = WgcOverloadRepeatPacerDecision;
+
+inline CfrOverloadRepeatPacerDecision UpdateCfrOverloadRepeatPacer(
+    CfrOverloadRepeatPacerState& state, bool liveCfr, bool sourceHealthy, bool capacityPressure,
+    bool freshCandidateAvailable, bool repeatAvailable, double freshServiceMs, double repeatServiceMs,
+    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples) {
+    return UpdateWgcOverloadRepeatPacer(
+        state, liveCfr, sourceHealthy, capacityPressure, freshCandidateAvailable, repeatAvailable,
+        freshServiceMs, repeatServiceMs, frameIntervalMs, freshServiceSamples, repeatServiceSamples);
+}
+
+inline void UpdateCfrServiceTimeEma(double wallServiceMs, double pureServiceMs, double smoothingAlpha,
+                                    double& smoothedServiceMs, uint32_t& serviceSamples) {
+    UpdateWgcServiceTimeEma(wallServiceMs, pureServiceMs, smoothingAlpha, smoothedServiceMs, serviceSamples);
 }
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,

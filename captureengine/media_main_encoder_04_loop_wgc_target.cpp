@@ -18,6 +18,7 @@ void MediaEncoderSession::LoopWgcTarget() {
         wgcReserveAvailableAtTickStart = false;
         wgcSelectionDelayAppliedThisTick = false;
         wgcProactiveOverloadRepeatThisTick = false;
+        injectProactiveOverloadRepeatThisTick = false;
         wgcDelayRealizationRecordedThisTick = false;
 
 }

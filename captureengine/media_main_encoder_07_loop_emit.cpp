@@ -87,6 +87,11 @@ void MediaEncoderSession::LoopEmit() {
                     ce::capture_policy::UpdateWgcServiceTimeEma(
                         currentEncodeMs, pureEncodeMs, media_main_kEncodeEmaAlpha, smoothedWgcRepeatServiceMs,
                         wgcRepeatServiceSamples);
+                } else {
+                    observeInjectRepeatService(currentEncodeMs, pureEncodeMs);
+                    if (injectProactiveOverloadRepeatThisTick) {
+                        ++injectOverloadRepeatRuntime.pacer.emittedRepeats;
+                    }
                 }
                 UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                             ce::capture_policy::IsEncoderStartupWindow(
@@ -113,7 +118,7 @@ void MediaEncoderSession::LoopEmit() {
                 }
                 recordDuplicate(nullptr, duplicateLineage.IsValid() ? &duplicateLineage : nullptr, duplicateFromDrain,
                                 repeatDuplicateFromDeferred, repeatDuplicateFromTimerRebase, false,
-                                wgcProactiveOverloadRepeatThisTick);
+                                wgcProactiveOverloadRepeatThisTick || injectProactiveOverloadRepeatThisTick);
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
                 cadenceCounters.holdTicksRunning++;
@@ -361,6 +366,9 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                         smoothedEncodeMs =
                             smoothedEncodeMs * (1.0 - media_main_kEncodeEmaAlpha) + pureEncodeMs * media_main_kEncodeEmaAlpha;
                     }
+                }
+                if (catchupEncodeSucceeded && !catchupEncodeDeferred) {
+                    observeInjectFreshService(currentEncodeMs, pureEncodeMs);
                 }
                 UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                             ce::capture_policy::IsEncoderStartupWindow(
@@ -730,6 +738,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
         ce::capture_policy::UpdateWgcServiceTimeEma(
             currentEncodeMs, pureEncodeMs, media_main_kEncodeEmaAlpha, smoothedWgcRepeatServiceMs,
             wgcRepeatServiceSamples);
+    } else {
+        observeInjectRepeatService(currentEncodeMs, pureEncodeMs);
     }
     UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                 ce::capture_policy::IsEncoderStartupWindow(

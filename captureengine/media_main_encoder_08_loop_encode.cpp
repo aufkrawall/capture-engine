@@ -101,6 +101,8 @@ void MediaEncoderSession::LoopEncode() {
             const bool attemptedFreshCandidate = popped && frameToProcess == &frame && !isDuplicate;
             const bool attemptedFreshWgcCandidate =
                 attemptedFreshCandidate && frameToProcess && !frameToProcess->isInjectMode;
+            const bool attemptedFreshInjectCandidate =
+                attemptedFreshCandidate && frameToProcess && frameToProcess->isInjectMode;
             encodeCurrentFrame();
             const bool recoveredFreshEncodeFailure =
                 !encodeSucceeded &&
@@ -173,6 +175,9 @@ void MediaEncoderSession::LoopEncode() {
             if (attemptedFreshWgcCandidate && encodeSucceeded && !recoveredFreshEncodeFailure) {
                 ce::capture_policy::UpdateWgcServiceTimeEma(currentEncodeMs, pureEncodeMs, media_main_kEncodeEmaAlpha,
                                                             smoothedWgcFreshServiceMs, wgcFreshServiceSamples);
+            }
+            if (attemptedFreshInjectCandidate && encodeSucceeded && !recoveredFreshEncodeFailure) {
+                observeInjectFreshService(currentEncodeMs, pureEncodeMs);
             }
             const bool encoderStartupWindowActive =
                 ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64());

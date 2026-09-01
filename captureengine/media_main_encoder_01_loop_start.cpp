@@ -301,6 +301,13 @@ void MediaEncoderSession::LoopCatchup() {
                 std::max(smoothedEncodeMs, smoothedInjectServiceMs), frameIntervalMs, targetOutputFpsForPolicy);
             const bool encoderCatchupBottleneckedCurrent =
                 encoderTooSlowForTargetCurrent || media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+            const uint32_t catchupOverloadFlags = loadEncoderOverloadFlags();
+            const bool injectRepeatCatchupHeadroom =
+                ce::capture_policy::ShouldAllowCfrRepeatCatchupUnderFreshPressure(
+                    injectOverloadRepeatRuntime.pacer.active,
+                    (catchupOverloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0,
+                    injectOverloadRepeatRuntime.repeatServiceMs, frameIntervalMs,
+                    injectOverloadRepeatRuntime.repeatServiceSamples);
             const bool nextInjectCfrRecoveryActive = ce::capture_policy::GetInjectCfrRecoveryActive(
                 injectCfrRecoveryActive, recordingOutputLive && !activeScreenGrab, config.video.useVFR,
                 outputShortfallTicks);
@@ -353,7 +360,7 @@ void MediaEncoderSession::LoopCatchup() {
                     LogWarn(
                         "[Inject CFR] Recovery still active: duration=%llums debt=%u start=%u best=%u "
                         "fresh=%llu repeat=%llu enc=%.2fms service=%.2fms cycle=%.2fms buffered=%zu credit=%.2f "
-                        "bottleneck=%d serviceSlow=%d",
+                        "bottleneck=%d serviceSlow=%d repeatHeadroom=%d",
                         static_cast<unsigned long long>(recoveryNowTick - injectCfrRecoveryStartTick),
                         outputShortfallTicks, injectCfrRecoveryStartDebt, injectCfrRecoveryBestDebt,
                         static_cast<unsigned long long>(injectFreshCatchupTotal - injectCfrRecoveryStartFreshCatchup),
@@ -361,7 +368,7 @@ void MediaEncoderSession::LoopCatchup() {
                         smoothedEncodeMs, smoothedInjectServiceMs, smoothedEncCycleMs, bufferedInjectFrames.size(),
                         frameCreditAccumulator,
                         media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
-                        injectEncoderServiceTooSlowCurrent ? 1 : 0);
+                        injectEncoderServiceTooSlowCurrent ? 1 : 0, injectRepeatCatchupHeadroom ? 1 : 0);
                     injectCfrRecoveryLastProgressLogTick = recoveryNowTick;
                 }
             }
@@ -382,9 +389,12 @@ void MediaEncoderSession::LoopCatchup() {
                     wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive,
                     wgcAudioLeadExcessMsCurrent);
             } else {
+                const bool injectCatchupBlocked =
+                    (catchupOverloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0 ||
+                    (!injectRepeatCatchupHeadroom &&
+                     (encoderCatchupBottleneckedCurrent || injectEncoderServiceTooSlowCurrent));
                 catchupTicksThisLoop = ce::capture_policy::GetInjectCfrCatchupTicksThisLoop(
-                    outputShortfallTicks, injectCfrRecoveryActive,
-                    encoderCatchupBottleneckedCurrent || injectEncoderServiceTooSlowCurrent);
+                    outputShortfallTicks, injectCfrRecoveryActive, injectCatchupBlocked);
             }
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(

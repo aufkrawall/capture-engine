@@ -195,6 +195,7 @@ wgcInputPredictor.Reset();
 wgcCfrPhaseLock.Reset();
 smoothedEncCycleMs = 0.0;
 smoothedInjectServiceMs = 0.0;
+injectOverloadRepeatRuntime = {};
 smoothedWgcFreshServiceMs = 0.0;
 smoothedWgcRepeatServiceMs = 0.0;
 wgcFreshServiceSamples = wgcRepeatServiceSamples = 0;

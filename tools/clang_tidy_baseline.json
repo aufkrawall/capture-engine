@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 685,
+    "entries": 686,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -550,6 +550,7 @@
       "tests/test_capture_pipeline_policy_part2.cpp",
       "tests/test_capture_pipeline_policy_part3.cpp",
       "tests/test_capture_pipeline_policy_part4.cpp",
+      "tests/test_capture_pipeline_policy_part5.cpp",
       "tests/test_config.cpp",
       "tests/test_config_fuzz.cpp",
       "tests/test_config_hardware_sensors.cpp",

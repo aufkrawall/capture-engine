@@ -193,6 +193,7 @@ bool MediaEncoderSession::Init() {
     injectWorstSelectionErrorUs = 0;
     smoothedEncCycleMs = 0.0;
     smoothedInjectServiceMs = 0.0;
+    injectOverloadRepeatRuntime = {};
     injectServiceMaxUs = 0;
     encCycleMaxMs = 0;
     encodeSpikeCountThisSecond = 0;

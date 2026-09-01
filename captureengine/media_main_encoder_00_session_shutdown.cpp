@@ -139,11 +139,12 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(wgcRepeatCatchupTotal), smoothedWgcFreshServiceMs,
                 ce::capture_policy::kWgcFreshCatchupServiceBudgetRatio);
             LogInfo(
-                "[WGC CFR OVERLOAD PACER] Episodes=%llu RepeatDecisions=%llu Emitted=%llu FreshGrants=%llu MaxRepeatRun=%u "
+                "[WGC CFR OVERLOAD PACER] Episodes=%llu RepeatDecisions=%llu Probes=%llu Emitted=%llu FreshGrants=%llu MaxRepeatRun=%u "
                 "MinFreshFraction=%.3f FreshSvcEma=%.2fms/%u RepeatSvcEma=%.2fms/%u BudgetRatio=%.2f "
                 "PtsGrid=immutable AudioTimeline=unchanged",
                 static_cast<unsigned long long>(wgcOverloadRepeatPacer.episodes),
                 static_cast<unsigned long long>(wgcOverloadRepeatPacer.proactiveRepeats),
+                static_cast<unsigned long long>(wgcOverloadRepeatPacer.probeRepeats),
                 static_cast<unsigned long long>(wgcOverloadRepeatPacer.emittedRepeats),
                 static_cast<unsigned long long>(wgcOverloadRepeatPacer.freshGrants),
                 wgcOverloadRepeatPacer.maxConsecutiveProactiveRepeats,
@@ -659,6 +660,19 @@ void MediaEncoderSession::Shutdown() {
                 captureSessionSummary.minEncoderSustainFps == std::numeric_limits<double>::max()
                     ? 0.0
                     : captureSessionSummary.minEncoderSustainFps);
+            LogInfo(
+                "[Inject CFR OVERLOAD PACER] Episodes=%llu RepeatDecisions=%llu Probes=%llu Emitted=%llu "
+                "FreshGrants=%llu MaxRepeatRun=%u MinFreshFraction=%.3f FreshSvcEma=%.2fms/%u "
+                "RepeatSvcEma=%.2fms/%u PtsGrid=immutable AudioTimeline=unchanged",
+                static_cast<unsigned long long>(injectOverloadRepeatRuntime.pacer.episodes),
+                static_cast<unsigned long long>(injectOverloadRepeatRuntime.pacer.proactiveRepeats),
+                static_cast<unsigned long long>(injectOverloadRepeatRuntime.pacer.probeRepeats),
+                static_cast<unsigned long long>(injectOverloadRepeatRuntime.pacer.emittedRepeats),
+                static_cast<unsigned long long>(injectOverloadRepeatRuntime.pacer.freshGrants),
+                injectOverloadRepeatRuntime.pacer.maxConsecutiveProactiveRepeats,
+                injectOverloadRepeatRuntime.pacer.minimumFreshFraction,
+                injectOverloadRepeatRuntime.freshServiceMs, injectOverloadRepeatRuntime.freshServiceSamples,
+                injectOverloadRepeatRuntime.repeatServiceMs, injectOverloadRepeatRuntime.repeatServiceSamples);
             LogInfo(
                 "[Inject CFR QUALITY SUMMARY] TargetSelect=%llu Superseded=%llu TargetHold=%llu "
                 "HoldWithCandidate=%llu BufferCapTrim=%llu TargetResidualMax=%uus "

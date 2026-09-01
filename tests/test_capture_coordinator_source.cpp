@@ -332,7 +332,26 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabOverloadPacingRepeatsWithoutMovingT
     EXPECT_EQ(source.find("UpdateWgcOverloadRepeatPacer(", pacerCall + 1), std::string::npos);
     EXPECT_NE(source.find("++wgcOverloadRepeatPacer.emittedRepeats"), std::string::npos);
     EXPECT_NE(source.find("else if (!duplicateFromCapacityPacerReason)"), std::string::npos);
-    EXPECT_NE(source.find("wgcProactiveOverloadRepeatThisTick);"), std::string::npos);
+    EXPECT_NE(source.find("wgcProactiveOverloadRepeatThisTick || injectProactiveOverloadRepeatThisTick"),
+              std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, InjectOverloadPacingRetainsCandidatesAndRepaysDebtWithMeasuredRepeats) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t pacerDecision = source.find("if (updateInjectOverloadRepeatPacer(true).repeat)");
+    const size_t supersededDrop = source.find("for (size_t i = 0; i < bestIdx; ++i)", pacerDecision);
+    ASSERT_NE(pacerDecision, std::string::npos);
+    ASSERT_NE(supersededDrop, std::string::npos);
+    EXPECT_LT(pacerDecision, supersededDrop);
+    EXPECT_NE(source.find("UpdateCfrOverloadRepeatPacer("), std::string::npos);
+    EXPECT_NE(source.find("IsCfrSourceHealthyForOverloadPacing("), std::string::npos);
+    EXPECT_NE(source.find("observeInjectFreshService(currentEncodeMs, pureEncodeMs)"), std::string::npos);
+    EXPECT_NE(source.find("observeInjectRepeatService(currentEncodeMs, pureEncodeMs)"), std::string::npos);
+    EXPECT_NE(source.find("ShouldAllowCfrRepeatCatchupUnderFreshPressure("), std::string::npos);
+    EXPECT_NE(source.find("kEncoderOverloadFlagMux"), std::string::npos);
+    EXPECT_NE(source.find("CFR PTS and audio timeline unchanged"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, EncoderCapacityWarningUsesStartupGuard) {
