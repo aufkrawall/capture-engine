@@ -189,6 +189,9 @@ private:
     uint64_t injectDisplayTimingResolvedCount;
     uint64_t injectDisplayTimingFallbackCount;
     uint64_t injectDisplayTimingPendingCount;
+    uint32_t injectDisplayTimingPhaseMismatchStreak;
+    uint64_t injectDisplayTimingPhaseReacquireCount;
+    uint64_t injectProducerThrottleTransitionCount;
     DWORD injectDisplayTimingLastLog;
     bool injectTimestampPathKnown;
     bool injectTimestampFinalOutputPathActive;

@@ -371,7 +371,7 @@ INJECT_CFR_QUALITY_SUMMARY_RE = re.compile(
     r"\[Inject CFR QUALITY SUMMARY\] TargetSelect=(\d+) Superseded=(\d+) TargetHold=(\d+) "
     r"HoldWithCandidate=(\d+) BufferCapTrim=(\d+) TargetResidualMax=(\d+)us"
     r"(?: PhaseReservePeak=(\d+) PhaseShiftMax=(-?\d+)us PreserveFrontTrim=(\d+) "
-    r"DisplayPathTransitions=(\d+))?",
+    r"DisplayPathTransitions=(\d+)(?: DisplayPhaseReacquire=(\d+))?)?",
     re.IGNORECASE,
 )
 INJECT_CFR_REPEAT_PRESSURE_RE = re.compile(r"\[Inject CFR\] Repeat pressure:\s*(.*)", re.IGNORECASE)

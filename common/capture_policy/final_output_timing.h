@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include "../display_timing_shared.h"
 
@@ -270,8 +271,15 @@ inline DisplayTimingPublicationWatermark CaptureDisplayTimingPublicationWatermar
 enum class DisplayTimingResolution {
     kPending,
     kResolved,
+    kPhaseMismatch,
     kInvalid,
 };
+
+constexpr uint32_t kFinalOutputDisplayPhaseReacquireMismatches = 4;
+
+inline bool ShouldReacquireFinalOutputDisplayPhase(uint32_t consecutivePhaseMismatches) {
+    return consecutivePhaseMismatches >= kFinalOutputDisplayPhaseReacquireMismatches;
+}
 
 struct FinalOutputTimestampOrderState {
     int64_t previousQpc = 0;
@@ -303,6 +311,33 @@ inline int64_t PreserveFinalOutputTimestampOrder(FinalOutputTimestampOrderState&
     }
     state.previousQpc = shiftedQpc;
     return shiftedQpc;
+}
+
+// Display ETW supplies two distinct signals: the cadence of actual screen
+// changes and a common virtual-to-display correlation phase. That phase can
+// contain Present-to-screen transport latency and slow drift between the two
+// clocks; neither belongs on the recording source timeline. Adding it to every
+// source timestamp makes otherwise available pixels look arbitrarily far in
+// the future and can exhaust the shared texture pool. Remove the learned
+// common phase while retaining the per-sample cadence residual around the
+// virtual final-output clock.
+inline int64_t NormalizeFinalOutputDisplayTimestampQpc(int64_t virtualTimestampQpc,
+                                                       int64_t displayTimestampQpc,
+                                                       int64_t smoothedCorrelationPhaseQpc) {
+    if (virtualTimestampQpc <= 0 || displayTimestampQpc <= 0)
+        return virtualTimestampQpc;
+
+    const int64_t measuredPhaseQpc = displayTimestampQpc - virtualTimestampQpc;
+    const int64_t cadenceCorrectionQpc = measuredPhaseQpc - smoothedCorrelationPhaseQpc;
+    if (cadenceCorrectionQpc > 0 &&
+        virtualTimestampQpc > std::numeric_limits<int64_t>::max() - cadenceCorrectionQpc) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (cadenceCorrectionQpc < 0 &&
+        virtualTimestampQpc < std::numeric_limits<int64_t>::min() - cadenceCorrectionQpc) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return virtualTimestampQpc + cadenceCorrectionQpc;
 }
 
 // Resolve one virtual final-output timestamp against ordered display samples
@@ -387,7 +422,7 @@ inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
                                     ? selectedTimestampQpc - targetTimestampQpc
                                     : targetTimestampQpc - selectedTimestampQpc;
     if (distanceQpc > maximumDistanceQpc)
-        return DisplayTimingResolution::kInvalid;
+        return DisplayTimingResolution::kPhaseMismatch;
 
     *matchedSequence = selectedSequence;
     *timestampQpc = selectedTimestampQpc;

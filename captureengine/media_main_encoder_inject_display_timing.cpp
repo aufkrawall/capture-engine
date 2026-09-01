@@ -23,6 +23,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
         injectDisplayTimingLastMatchedSequence = 0;
         injectDisplayTimingOffsetValid = false;
         injectDisplayTimingOffsetQpc = 0;
+        injectDisplayTimingPhaseMismatchStreak = 0;
     };
 
     const uint64_t publicationGeneration =
@@ -95,10 +96,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
 
         if (rawTimestamp > 0) {
             int64_t provisionalTimestampQpc = rawTimestamp;
-            if (finalOutput && injectDisplayTimingOffsetValid) {
-                provisionalTimestampQpc =
-                    addTimestampOffset(rawTimestamp, injectDisplayTimingOffsetQpc);
-            } else if (!finalOutput) {
+            if (!finalOutput) {
                 provisionalTimestampQpc =
                     addTimestampOffset(rawTimestamp, injectNonFinalTimestampOffsetQpc);
             }
@@ -181,7 +179,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
         int64_t displayTimestampQpc = 0;
         const int64_t maximumDistanceQpc =
             injectDisplayTimingOffsetValid ? std::max<int64_t>(1, qpcFreq.QuadPart / 50)
-                                           : std::max<int64_t>(1, qpcFreq.QuadPart / 4);
+                                           : std::max<int64_t>(1, qpcFreq.QuadPart / 2);
         const auto resolution = ce::capture_policy::ResolveDisplayTimingAfterWatermark(
             media_main_g_pSharedMem->displayTiming, it->publicationWatermark, it->generation,
             injectDisplayTimingLastMatchedSequence + 1, targetTimestampQpc, qpcFreq.QuadPart,
@@ -195,6 +193,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
 
         QueuedFrame* buffered = findBufferedObservation(*it);
         if (resolution == ce::capture_policy::DisplayTimingResolution::kResolved) {
+            injectDisplayTimingPhaseMismatchStreak = 0;
             injectDisplayTimingLastMatchedSequence = matchedSequence;
             const int64_t measuredOffsetQpc = displayTimestampQpc - it->virtualTimestampQpc;
             if (injectDisplayTimingOffsetValid) {
@@ -204,7 +203,10 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                 injectDisplayTimingOffsetValid = true;
             }
             if (buffered) {
-                buffered->timestamp = displayTimestampQpc;
+                buffered->timestamp =
+                    ce::capture_policy::NormalizeFinalOutputDisplayTimestampQpc(
+                        it->virtualTimestampQpc, displayTimestampQpc,
+                        injectDisplayTimingOffsetQpc);
                 buffered->captureFlags &= ~SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
                 buffered->captureFlags |= SHARED_FRAME_CAPTURE_DISPLAY_TIMING_RESOLVED;
             }
@@ -213,6 +215,25 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
             if (buffered)
                 buffered->captureFlags &= ~SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
             ++injectDisplayTimingFallbackCount;
+            if (resolution == ce::capture_policy::DisplayTimingResolution::kPhaseMismatch &&
+                injectDisplayTimingOffsetValid) {
+                ++injectDisplayTimingPhaseMismatchStreak;
+                if (ce::capture_policy::ShouldReacquireFinalOutputDisplayPhase(
+                        injectDisplayTimingPhaseMismatchStreak)) {
+                    const int64_t retiredPhaseQpc = injectDisplayTimingOffsetQpc;
+                    injectDisplayTimingOffsetValid = false;
+                    injectDisplayTimingOffsetQpc = 0;
+                    injectDisplayTimingPhaseMismatchStreak = 0;
+                    ++injectDisplayTimingPhaseReacquireCount;
+                    LogInfo(
+                        "[Inject DLSS FG] display transport phase reacquire: retiredPhaseUs=%lld "
+                        "count=%llu (virtual CFR cadence remained authoritative)",
+                        static_cast<long long>(qpcToUs(retiredPhaseQpc)),
+                        static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount));
+                }
+            } else {
+                injectDisplayTimingPhaseMismatchStreak = 0;
+            }
         }
         it = injectDisplayTimingObservations.erase(it);
         sawFinalOutput = true;
@@ -241,19 +262,12 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
         const bool alreadyResolved =
             (queuedFrame.captureFlags & SHARED_FRAME_CAPTURE_DISPLAY_TIMING_RESOLVED) != 0;
         int64_t candidateTimestamp =
-            alreadyResolved
-                ? queuedFrame.timestamp
-                : (injectDisplayTimingOffsetValid
-                       ? addTimestampOffset(virtualTimestamp, injectDisplayTimingOffsetQpc)
-                       : queuedFrame.timestamp);
+            alreadyResolved ? queuedFrame.timestamp : virtualTimestamp;
 
-        // Pending frames follow the most recently measured display phase. The
-        // virtual intervals remain authoritative, so a delayed ETW packet cannot
-        // make the buffered source order regress.
-        if ((queuedFrame.captureFlags & SHARED_FRAME_CAPTURE_DISPLAY_TIMING_RESOLVED) == 0 &&
-            injectDisplayTimingOffsetValid) {
-            candidateTimestamp = addTimestampOffset(virtualTimestamp, injectDisplayTimingOffsetQpc);
-        }
+        // Resolved frames retain display-cadence residuals around the virtual
+        // clock. Pending frames remain on that virtual clock; the common
+        // virtual-to-display phase is correlation evidence only and must never
+        // deepen the recording's leased texture history.
         queuedFrame.timestamp =
             ce::capture_policy::PreserveFinalOutputTimestampOrder(timestampOrder, candidateTimestamp);
     }
@@ -262,8 +276,9 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
     if (sawFinalOutput && now - injectDisplayTimingLastLog >= 1000) {
         LogInfo(
             "[Inject DLSS FG] final-output timing: resolved=%llu fallback=%llu pendingNow=%llu "
-            "pendingPassSum=%llu phaseOffsetUs=%lld timestampPhaseUs=%lld displayStatus=%u "
-            "writeSequence=%llu retentionCap=%zu phaseReservePeak=%zu path=%s transitions=%llu",
+            "pendingPassSum=%llu correlationPhaseUs=%lld timestampCorrectionUs=%lld displayStatus=%u "
+            "writeSequence=%llu retentionCap=%zu phaseReservePeak=%zu path=%s transitions=%llu "
+            "phaseReacquire=%llu mismatchStreak=%u",
             static_cast<unsigned long long>(injectDisplayTimingResolvedCount),
             static_cast<unsigned long long>(injectDisplayTimingFallbackCount),
             static_cast<unsigned long long>(pendingThisPass),
@@ -275,7 +290,9 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                 media_main_g_pSharedMem->displayTiming.writeSequence.load(std::memory_order_acquire)),
             injectTimestampRetentionLimit, injectTimestampPhaseReservePeak,
             injectTimestampFinalOutputPathActive ? "final-output" : "base-present",
-            static_cast<unsigned long long>(injectTimestampPathTransitionCount));
+            static_cast<unsigned long long>(injectTimestampPathTransitionCount),
+            static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount),
+            injectDisplayTimingPhaseMismatchStreak);
         injectDisplayTimingLastLog = now;
     }
 }

@@ -174,6 +174,43 @@ TEST(FinalOutputCaptureTimingTest, LateDisplayPhaseShiftPreservesCommittedOrderA
     EXPECT_EQ(second, 1'101);
 }
 
+TEST(FinalOutputCaptureTimingTest, DisplayCadenceExcludesAbsoluteTransportLatency) {
+    constexpr int64_t virtualTimestamp = 10'000;
+
+    EXPECT_EQ(policy::NormalizeFinalOutputDisplayTimestampQpc(
+                  virtualTimestamp, /*displayTimestampQpc=*/10'500,
+                  /*smoothedCorrelationPhaseQpc=*/500),
+              virtualTimestamp);
+    EXPECT_EQ(policy::NormalizeFinalOutputDisplayTimestampQpc(
+                  virtualTimestamp, /*displayTimestampQpc=*/10'520,
+                  /*smoothedCorrelationPhaseQpc=*/500),
+              virtualTimestamp + 20);
+    EXPECT_EQ(policy::NormalizeFinalOutputDisplayTimestampQpc(
+                  virtualTimestamp, /*displayTimestampQpc=*/10'480,
+                  /*smoothedCorrelationPhaseQpc=*/500),
+              virtualTimestamp - 20);
+}
+
+TEST(FinalOutputCaptureTimingTest, GrowingDisplayQueuePhaseStaysNearVirtualTimeline) {
+    int64_t smoothedTransportPhase = 150;
+    int64_t maximumCorrection = 0;
+    for (int frame = 0; frame < 600; ++frame) {
+        const int64_t virtualTimestamp = 100'000 + static_cast<int64_t>(frame) * 100;
+        const int64_t measuredTransportPhase = 150 + frame;
+        smoothedTransportPhase =
+            (smoothedTransportPhase * 7 + measuredTransportPhase) / 8;
+        const int64_t normalized = policy::NormalizeFinalOutputDisplayTimestampQpc(
+            virtualTimestamp, virtualTimestamp + measuredTransportPhase,
+            smoothedTransportPhase);
+        maximumCorrection =
+            std::max(maximumCorrection, normalized - virtualTimestamp);
+    }
+
+    EXPECT_LT(maximumCorrection, 10);
+    EXPECT_GT(smoothedTransportPhase, 700)
+        << "the driver transport phase may grow without moving CFR content into the future";
+}
+
 TEST(FinalOutputCaptureTimingTest, FinalOutputToBasePathKeepsTimestampContinuity) {
     const int64_t offset = policy::GetCapturePathContinuityOffsetQpc(
         /*previousAdjustedQpc=*/1'070, /*firstRawQpc=*/1'000);
@@ -209,6 +246,41 @@ TEST(CapturePipelinePolicyTest, InjectTimestampRetentionCoversDisplayPhaseJump) 
                   baseline, reserve, /*requiredTimestampSpanQpc=*/5'000'000,
                   /*sourceIntervalQpc=*/41'667, /*maximumAdaptiveLimit=*/28),
               28u);
+}
+
+TEST(CapturePipelinePolicyTest, AdaptiveInjectRetentionLeavesProducerTextureLeases) {
+    constexpr size_t minimumRequired = 7;
+    const size_t ceiling = policy::GetInjectRetentionCeiling(
+        minimumRequired, /*metadataSlotCount=*/32, /*textureSlotCount=*/16);
+
+    EXPECT_EQ(ceiling, 14u);
+    EXPECT_EQ(policy::GetInjectTimestampRetentionLimit(
+                  /*baselineLimit=*/13, /*injectReserveFrames=*/1,
+                  /*requiredTimestampSpanQpc=*/5'000'000,
+                  /*sourceIntervalQpc=*/41'667, ceiling),
+              14u);
+    EXPECT_EQ(std::min(/*desiredStartupLimit=*/size_t{49}, ceiling), 14u)
+        << "unattainable startup headroom must not consume every producer texture";
+    EXPECT_EQ(policy::GetInjectRetentionCeiling(
+                  /*minimumRequiredLimit=*/15, /*metadataSlotCount=*/32,
+                  /*textureSlotCount=*/16),
+              15u)
+        << "the physical cap must not silently shorten a configured A/V delay";
+}
+
+TEST(CapturePipelinePolicyTest, RetainedInjectHistoryDoesNotThrottleProducer) {
+    EXPECT_FALSE(policy::ShouldThrottleInjectProducer(
+        /*ingressQueueDepth=*/0, /*ingressQueueCapacity=*/32,
+        /*latestFenceWaitUs=*/0));
+    EXPECT_FALSE(policy::ShouldThrottleInjectProducer(
+        /*ingressQueueDepth=*/15, /*ingressQueueCapacity=*/32,
+        /*latestFenceWaitUs=*/0));
+    EXPECT_TRUE(policy::ShouldThrottleInjectProducer(
+        /*ingressQueueDepth=*/16, /*ingressQueueCapacity=*/32,
+        /*latestFenceWaitUs=*/0));
+    EXPECT_TRUE(policy::ShouldThrottleInjectProducer(
+        /*ingressQueueDepth=*/0, /*ingressQueueCapacity=*/32,
+        /*latestFenceWaitUs=*/16'001));
 }
 
 TEST(CapturePipelinePolicyTest, InjectCapPreservesNearOrFutureFrontForSelection) {
@@ -314,7 +386,14 @@ TEST(FinalOutputCaptureTimingTest, InitialDisplayPhaseCanExceedSteadyStateTolera
     EXPECT_EQ(policy::ResolveDisplayTimingAfterWatermark(
                   timing, watermark.sequence, watermark.generation, 1, 100'000'000, 10'000'000,
                   200'000, &matchedSequence, &timestampQpc),
-              policy::DisplayTimingResolution::kInvalid);
+              policy::DisplayTimingResolution::kPhaseMismatch);
+}
+
+TEST(FinalOutputCaptureTimingTest, SustainedDisplayPhaseMismatchRequestsReacquisition) {
+    EXPECT_FALSE(policy::ShouldReacquireFinalOutputDisplayPhase(0));
+    EXPECT_FALSE(policy::ShouldReacquireFinalOutputDisplayPhase(3));
+    EXPECT_TRUE(policy::ShouldReacquireFinalOutputDisplayPhase(4));
+    EXPECT_TRUE(policy::ShouldReacquireFinalOutputDisplayPhase(20));
 }
 
 TEST(FinalOutputCaptureTimingTest, SourceGroupIntervalCannotBeOverwrittenByBurstyPresentationMetric) {

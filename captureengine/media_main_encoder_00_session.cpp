@@ -239,6 +239,9 @@ bool MediaEncoderSession::Init() {
     injectDisplayTimingResolvedCount = 0;
     injectDisplayTimingFallbackCount = 0;
     injectDisplayTimingPendingCount = 0;
+    injectDisplayTimingPhaseMismatchStreak = 0;
+    injectDisplayTimingPhaseReacquireCount = 0;
+    injectProducerThrottleTransitionCount = 0;
     injectDisplayTimingLastLog = GetTickCount();
     injectTimestampPathKnown = false;
     injectTimestampFinalOutputPathActive = false;

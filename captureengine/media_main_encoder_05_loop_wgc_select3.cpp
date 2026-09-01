@@ -97,15 +97,19 @@ if (!config.video.useVFR) {
             "inject", injectCfrPhaseLock, basePlayoutTargetQpc, phaseReferenceQpc);
     }
 
-    const size_t baselineMaxBufferedInjectFrames =
+    const size_t minimumRequiredInjectFrames =
+        injectReserveFrames + injectContentDelayFrames + 2;
+    const size_t desiredBaselineMaxBufferedInjectFrames =
         std::max(ce::capture_policy::GetMaxBufferedInjectFrames(injectReserveFrames, recordingOutputLive,
                                                                 recordingLiveTick, GetTickCount64()),
-                 injectReserveFrames + injectContentDelayFrames + 2);
+                 minimumRequiredInjectFrames);
     int64_t timestampPhaseQpc = 0;
     for (const auto& queuedFrame : bufferedInjectFrames) {
-        if (queuedFrame.rawTimestamp > 0 && queuedFrame.timestamp > queuedFrame.rawTimestamp) {
-            timestampPhaseQpc =
-                std::max(timestampPhaseQpc, queuedFrame.timestamp - queuedFrame.rawTimestamp);
+        if (queuedFrame.rawTimestamp > 0) {
+            const int64_t correctionQpc = queuedFrame.timestamp >= queuedFrame.rawTimestamp
+                                              ? queuedFrame.timestamp - queuedFrame.rawTimestamp
+                                              : queuedFrame.rawTimestamp - queuedFrame.timestamp;
+            timestampPhaseQpc = std::max(timestampPhaseQpc, correctionQpc);
         }
     }
     const int64_t predictedSourceIntervalQpc =
@@ -124,15 +128,17 @@ if (!config.video.useVFR) {
             requiredTimestampSpanQpc = newestTimestampQpc - latestEligibleQpc;
         }
     }
-    const size_t maximumAdaptiveLimit =
-        FRAME_RING_SIZE > static_cast<int>(ce::capture_policy::kInjectFrameRingSafetySlots)
-            ? static_cast<size_t>(FRAME_RING_SIZE) - ce::capture_policy::kInjectFrameRingSafetySlots
-            : static_cast<size_t>(FRAME_RING_SIZE);
+    const size_t maximumRetentionLimit =
+        ce::capture_policy::GetInjectRetentionCeiling(
+            minimumRequiredInjectFrames, static_cast<size_t>(FRAME_RING_SIZE),
+            static_cast<size_t>(SHARED_TEXTURE_SLOT_COUNT));
+    const size_t baselineMaxBufferedInjectFrames =
+        std::min(desiredBaselineMaxBufferedInjectFrames, maximumRetentionLimit);
     const size_t maxBufferedInjectFrames =
         recordingOutputLive
             ? ce::capture_policy::GetInjectTimestampRetentionLimit(
                   baselineMaxBufferedInjectFrames, injectReserveFrames, requiredTimestampSpanQpc,
-                  predictedSourceIntervalQpc, maximumAdaptiveLimit)
+                  predictedSourceIntervalQpc, maximumRetentionLimit)
             : baselineMaxBufferedInjectFrames;
     injectTimestampRetentionLimit = maxBufferedInjectFrames;
     injectTimestampPhaseCurrentQpc = timestampPhaseQpc;

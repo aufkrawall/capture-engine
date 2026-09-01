@@ -251,6 +251,7 @@ def print_triage_report(report):
             "hold_with_candidate={hold_candidate} cap_trim={cap_trim} residual_max={residual}us "
             "phase_reserve_peak={phase_reserve} phase_shift_max={phase_shift}us "
             "preserve_front_trim={preserve_front} display_path_transitions={path_transitions} "
+            "display_phase_reacquire={phase_reacquire} "
             "inject_source_fps={fps_min:.2f}..{fps_max:.2f} matched_pressure={matched_rows}/{matched_run} "
             "matched_hold_drop={matched_hold}/{matched_superseded} "
             "retention_pressure={retention_rows}/{retention_hold}".format(
@@ -267,6 +268,7 @@ def print_triage_report(report):
                 phase_shift=inject_pacing["phase_shift_max_us"],
                 preserve_front=inject_pacing["preserve_front_trim"],
                 path_transitions=inject_pacing["display_path_transitions"],
+                phase_reacquire=inject_pacing["display_phase_reacquire"],
                 fps_min=inject_pacing["source_fps_min"],
                 fps_max=inject_pacing["source_fps_max"],
                 matched_rows=inject_pacing["matched_rate_pressure_rows"],

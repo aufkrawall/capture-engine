@@ -677,7 +677,7 @@ void MediaEncoderSession::Shutdown() {
                 "[Inject CFR QUALITY SUMMARY] TargetSelect=%llu Superseded=%llu TargetHold=%llu "
                 "HoldWithCandidate=%llu BufferCapTrim=%llu TargetResidualMax=%uus "
                 "PhaseReservePeak=%zu PhaseShiftMax=%lldus PreserveFrontTrim=%llu "
-                "DisplayPathTransitions=%llu",
+                "DisplayPathTransitions=%llu DisplayPhaseReacquire=%llu",
                 static_cast<unsigned long long>(injectTargetSelectTotal),
                 static_cast<unsigned long long>(injectTargetSupersededTotal),
                 static_cast<unsigned long long>(injectTargetHoldTotal),
@@ -686,17 +686,19 @@ void MediaEncoderSession::Shutdown() {
                 injectTimestampPhaseReservePeak,
                 static_cast<long long>(qpcToUs(injectTimestampPhaseMaxQpc)),
                 static_cast<unsigned long long>(injectFrontPreserveTrimTotal),
-                static_cast<unsigned long long>(injectTimestampPathTransitionCount));
+                static_cast<unsigned long long>(injectTimestampPathTransitionCount),
+                static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount));
             if (media_main_g_pSharedMem) {
                 const auto& contention = media_main_g_pSharedMem->runtimeState;
                 LogInfo(
                     "[Inject Contention SUMMARY] CaptureLock=%u CpuLease=%u GpuBusy=%u RingFull=%u "
-                    "EventSignals=%u",
+                    "EventSignals=%u ThrottleTransitions=%llu",
                     contention.injectProducerCaptureLockDrops.load(std::memory_order_relaxed),
                     contention.injectProducerCpuLeaseBusyDrops.load(std::memory_order_relaxed),
                     contention.injectProducerGpuBusyDrops.load(std::memory_order_relaxed),
                     contention.injectProducerMetadataFullDrops.load(std::memory_order_relaxed),
-                    contention.injectFrameReadySignals.load(std::memory_order_relaxed));
+                    contention.injectFrameReadySignals.load(std::memory_order_relaxed),
+                    static_cast<unsigned long long>(injectProducerThrottleTransitionCount));
             }
         }
         const auto& phaseLockSummary = summaryUsesScreenGrab ? wgcCfrPhaseLock : injectCfrPhaseLock;

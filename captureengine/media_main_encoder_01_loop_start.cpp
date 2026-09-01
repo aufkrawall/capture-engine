@@ -36,16 +36,36 @@ void MediaEncoderSession::LoopStart() {
         }
 
         if (media_main_g_pSharedMem) {
-            uint32_t queueDepth = (uint32_t)media_main_g_FrameQueue.Size();
+            const uint32_t ingressQueueDepth =
+                static_cast<uint32_t>(media_main_g_FrameQueue.Size());
+            uint32_t queueDepth = ingressQueueDepth;
             queueDepth += static_cast<uint32_t>(bufferedInjectFrames.size());
             queueDepth += static_cast<uint32_t>(bufferedWgcFrames.size());
-            double fenceWaitMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
-            const uint32_t queuePressureThreshold =
-                std::max<uint32_t>(8u, static_cast<uint32_t>(media_main_g_FrameQueue.Capacity() / 2));
-            bool shouldThrottle = queueDepth >= queuePressureThreshold || fenceWaitMs > 16.0;
+            const int64_t fenceWaitUs = MediaEngine_GetLastFrameFenceWaitUs();
+            const bool shouldThrottle = ce::capture_policy::ShouldThrottleInjectProducer(
+                ingressQueueDepth, media_main_g_FrameQueue.Capacity(), fenceWaitUs);
 
             media_main_g_pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
-            media_main_g_pSharedMem->throttleCapture.store(shouldThrottle, std::memory_order_release);
+            const bool wasThrottled =
+                media_main_g_pSharedMem->throttleCapture.exchange(shouldThrottle,
+                                                                   std::memory_order_acq_rel);
+            if (wasThrottled != shouldThrottle) {
+                ++injectProducerThrottleTransitionCount;
+                if (injectProducerThrottleTransitionCount <= 8 ||
+                    (injectProducerThrottleTransitionCount % 120ull) == 0) {
+                    LogInfo(
+                        "[Inject Capture] Producer throttle %s: ingressQ=%u/%zu retainedInject=%zu "
+                        "retainedWgc=%zu totalOwned=%u fenceWait=%lldus reason=%s transitions=%llu",
+                        shouldThrottle ? "entered" : "exited", ingressQueueDepth,
+                        media_main_g_FrameQueue.Capacity(), bufferedInjectFrames.size(),
+                        bufferedWgcFrames.size(), queueDepth,
+                        static_cast<long long>(fenceWaitUs),
+                        !shouldThrottle ? "recovered"
+                        : fenceWaitUs > 16'000 ? "gpu_fence"
+                                               : "ingress_queue",
+                        static_cast<unsigned long long>(injectProducerThrottleTransitionCount));
+                }
+            }
             media_main_g_pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(media_main_g_FrameQueue.GetDroppedCount()));
             UpdateAtomicPeak(media_main_g_pSharedMem->runtimeState.encoderQueuePeakDepth, queueDepth);
 

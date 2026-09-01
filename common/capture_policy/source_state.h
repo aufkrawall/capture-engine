@@ -291,6 +291,37 @@ inline size_t GetInjectTimestampRetentionLimit(size_t baselineLimit, size_t inje
     return std::max(baselineLimit, boundedRequired);
 }
 
+// The metadata ring can describe more frames than the producer has reusable
+// textures. Bound startup headroom and adaptive growth to both physical
+// resources so a display-phase event cannot lease every producer texture and
+// stop the arrivals needed to recover. The minimum required limit represents
+// the configured A/V delay and remains authoritative if it needs more than the
+// ordinary safety-reserved capacity.
+inline size_t GetInjectRetentionCeiling(size_t minimumRequiredLimit,
+                                        size_t metadataSlotCount,
+                                        size_t textureSlotCount) {
+    const size_t metadataLimit =
+        metadataSlotCount > kInjectFrameRingSafetySlots
+            ? metadataSlotCount - kInjectFrameRingSafetySlots
+            : metadataSlotCount;
+    const size_t textureLimit =
+        textureSlotCount > kInjectTextureLeaseSafetySlots
+            ? textureSlotCount - kInjectTextureLeaseSafetySlots
+            : textureSlotCount;
+    return std::max(minimumRequiredLimit, std::min(metadataLimit, textureLimit));
+}
+
+// Retained jitter-buffer history is intentional source state, not ingress
+// pressure. Feeding it into throttleCapture creates a closed loop: capture is
+// stopped precisely while fresh arrivals are needed to advance selection.
+inline bool ShouldThrottleInjectProducer(size_t ingressQueueDepth,
+                                         size_t ingressQueueCapacity,
+                                         int64_t latestFenceWaitUs) {
+    const size_t queuePressureThreshold =
+        std::max<size_t>(8, ingressQueueCapacity / 2);
+    return ingressQueueDepth >= queuePressureThreshold || latestFenceWaitUs > 16'000;
+}
+
 inline bool ShouldPreserveInjectFrontAtBufferCap(int64_t frontTimestampQpc,
                                                  int64_t playoutTargetQpc,
                                                  int64_t leadToleranceQpc) {

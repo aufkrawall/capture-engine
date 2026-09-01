@@ -17,6 +17,11 @@ constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
 // and the frame currently owned by the encoder when timestamp-phase retention
 // expands the live jitter buffer.
 constexpr size_t kInjectFrameRingSafetySlots = 4;
+// Retained inject frames own one of the producer's sixteen reusable shared
+// textures until selection or discard. Adaptive timestamp history must leave
+// at least two slots live for the producer/ingest handoff, independently of
+// the larger metadata ring's reserve.
+constexpr size_t kInjectTextureLeaseSafetySlots = 2;
 constexpr uint32_t kMaxInjectDeferredFrameRetries = 3;
 constexpr uint32_t kInjectCfrPublicationHeadroomPermille = 4000;
 // A final presented-output stream already has an ordered display cadence. Two

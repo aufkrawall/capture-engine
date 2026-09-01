@@ -86,6 +86,17 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(correlator.find("queuedFrame.frameIndex == observation.frameIndex"),
               std::string::npos)
         << "delayed display evidence must not retime a reused ring slot";
+    EXPECT_NE(correlator.find("NormalizeFinalOutputDisplayTimestampQpc"),
+              std::string::npos)
+        << "display cadence must be retained without adding absolute driver queue latency";
+
+    const std::string encoderLoopStart =
+        ReadSource("captureengine/media_main_encoder_01_loop_start.cpp");
+    ASSERT_FALSE(encoderLoopStart.empty());
+    EXPECT_NE(encoderLoopStart.find("ShouldThrottleInjectProducer"), std::string::npos);
+    EXPECT_EQ(encoderLoopStart.find("queueDepth >= queuePressureThreshold"),
+              std::string::npos)
+        << "intentional retained history must not feed producer throttling";
 }
 
 TEST(FinalOutputCaptureSourceTest, DX12RecordingStartsWithFreshFinalOutputClock) {

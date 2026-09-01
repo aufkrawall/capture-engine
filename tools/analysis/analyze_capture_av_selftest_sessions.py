@@ -512,7 +512,7 @@ if False:
                 "[Inject CFR QUALITY SUMMARY] TargetSelect=2282 Superseded=313 TargetHold=808 "
                 "HoldWithCandidate=803 BufferCapTrim=786 TargetResidualMax=54452us "
                 "PhaseReservePeak=8 PhaseShiftMax=81001us PreserveFrontTrim=120 "
-                "DisplayPathTransitions=2\n"
+                "DisplayPathTransitions=2 DisplayPhaseReacquire=3\n"
                 "[2026-08-31 07:46:33.000] [INFO] [Inject CFR] Repeat pressure: dup=111 srcLimited=111 "
                 "targetSelect=11 targetSuperseded=1 targetHold=111 holdWithCandidate=111 tickEmit=122 "
                 "unique=11 sourceFps=121.44 overload=0x0\n"
@@ -529,6 +529,7 @@ if False:
         assert "ce_visual_timeline_fault" in report["verdicts"]
         assert report["evidence"]["inject_pacing"]["phase_shift_max_us"] == 81001
         assert report["evidence"]["inject_pacing"]["display_path_transitions"] == 2
+        assert report["evidence"]["inject_pacing"]["display_phase_reacquire"] == 3
 
         inject_variable_rate_resampling = make_session(
             "inject_variable_rate_resampling",

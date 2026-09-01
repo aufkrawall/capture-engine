@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-01 - Display-correlation phase cannot consume the inject texture pool
+
+Gothic Remake session `20260901_040907` was not encoder overload. Across the 187.3-second recording, NVENC emitted
+all 22,476 CFR packets, its normal service stayed roughly 0.2-1.8 ms, overload/debt remained zero, DLSS MFG stayed
+4x, and the final-output hook continued near 120 callbacks/s. At about 33 seconds the unique capture rate nevertheless
+fell from roughly 120/s toward 40/s and never recovered; 11,186 of 22,476 video slots repeated.
+
+Game hitches moved NVIDIA's measured virtual-to-display correlation phase from about 15 ms to 360 ms. That phase can
+contain both scheduling latency and slow virtual/display clock drift. Media added it wholesale to CFR source timestamps
+and adaptively retained as many as 28 metadata entries, unaware that the
+producer owns only sixteen reusable shared textures. `CpuLease` contention began at the exact cadence collapse and
+reached 5,706. The intentional retained buffer also reached the old producer-throttle threshold, forming a closed
+loop: fresh pixels were suppressed while fresh arrivals were the only way the selector could close its future gap.
+
+Display matches are now normalized by their learned common transport phase, so they contribute only bounded
+screen-cadence residuals around the already-smooth virtual final-output clock. Four sustained 20 ms mismatches retire
+and reacquire the phase with a 500 ms window while virtual timestamps remain the nonblocking fallback. Adaptive
+startup headroom and adaptive retention are normally bounded to fourteen of sixteen texture leases, leaving two
+producer/handoff slots while preserving any larger explicit A/V-delay minimum, and `throttleCapture`
+uses only real ingress-queue or fence pressure rather than retained history. New logs separate `correlationPhaseUs`,
+`timestampCorrectionUs`, phase reacquisition, and producer throttle transitions. CFR PTS, A/V endpoints, configured
+audio-latency video delay, encoder policy, and Present-thread nonblocking behavior are unchanged. See
+`cfr-capture-sync.md`.
+
 ### 2026-09-01 - Inject overload recovery measures cheap repeats and sheds dynamic-overlay repeat work
 
 Gothic Remake session `20260901_031705` was not a recovered one-shot overload followed by a poisoned capture
@@ -194,33 +218,3 @@ one attempt. Source guards: `VulkanRendererPolicySourceTest.ExportBodyHooksRetry
 Also inspected the export body install mode: `InlineHook::InstallPublished` already composes with foreign entry
 patches (prepend/chain through the exact foreign entry, refusal of non-chainable patches) — no deep-hook change
 needed.
-
-### 2026-08-30 - Final-DXGI FIFO re-armed as a per-instance scoped backstop
-
-The retirement from earlier today did not survive a second look. The evidence that killed the override was
-unattributed: global `final Present1 #N` counters plus `vkQueuePresentKHR` counts could show the WSI emitting
-per-present DXGI parameters, but could not attribute the above-refresh tearing rate (~190/s) to correct variable
-refresh. Meanwhile the Remix CPU pacer that CE's metering withholding steers to is group-aware but is not VSync -
-it spreads generated batches across the rendered frame interval and never consults the display. With
-`vsync_mode=fifo` in Portal RTX 4x MFG the output still ran past refresh with tearing, so the native vblank
-contract is back, scoped instead of global.
-
-- `ShouldArmFinalDxgiPresent` arms only when the resident CE Vulkan layer is loaded and `vsync_mode` is `fifo` or
-  `adaptive`. `RegisterDynamicFactoryHooks` now stores the decision with an unconditional `g_armed.exchange` (the
-  old short-circuit never stored `false`), so disarm is the atomic gate; installed hooks are never live-unpatched.
-- New `hook/common/vulkan_dxgi_fifo_registry.h`: bounded 64-slot lock-free open-addressed table of raw swapchain
-  pointers, filled by the four creation detours on every successful targeted creation, no COM refs, refresh on
-  address recreation, fail-closed when full. DetourPresent/Present1 rewrite only `ShouldForceFifoNow() &&
-  registered`; foreign swapchains pass through with a bounded pass-through log.
-- Rewrite contract: `DXGI_PRESENT_TEST` (0x1) and no-force pass byte-identical; otherwise `SyncInterval=1`, clear
-  `ALLOW_TEARING` (0x200) and `DO_NOT_WAIT` (0x8) so the present may block, preserve `DO_NOT_SEQUENCE` (0x2) and
-  all other flags; already-correct calls are no-ops. Diagnostics are per-slot cadence with the swapchain pointer.
-- The 20260828 crash (vtable mutation) and the overlay flicker (compute barrier/fence/ring) remain fixed and
-  untouched. Tests: `VulkanRendererPolicyTest.FinalDxgiPresentIsNeverArmed` replaced by the new arm/gate/rewrite
-  contract plus registry unit tests and source guards in `test_vulkan_renderer_policy.cpp`.
-- Follow-up (surface lifetime, tests now in `test_vulkan_dxgi_fifo_scoping.cpp`): the layer records the owning
-  `VkInstance` with every tracked surface, and `vkDestroyInstance` sweeps the surfaces the instance still owns,
-  retiring their HWNDs exactly once per surface (refcount-safe when surfaces share a window). Explicit
-  `vkDestroySurfaceKHR` retirement is unchanged, retirement never runs under the layer's state lock, and the
-  `RequestsVblankPacedPresentation` duplicate in `vulkan_dxgi_fifo_policy.h` now calls the canonical helper from
-  `vulkan_present_metering_policy.h` instead of drifting next to it.

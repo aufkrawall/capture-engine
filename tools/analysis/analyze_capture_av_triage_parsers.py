@@ -344,6 +344,7 @@ def parse_media_triage(media_text):
                     "phase_shift_max_us": parse_int(inject_quality_match.group(8)),
                     "preserve_front_trim": parse_int(inject_quality_match.group(9)),
                     "display_path_transitions": parse_int(inject_quality_match.group(10)),
+                    "display_phase_reacquire": parse_int(inject_quality_match.group(11)),
                     "line": line,
                 }
             )

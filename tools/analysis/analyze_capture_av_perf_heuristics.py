@@ -253,6 +253,9 @@ def summarize_inject_pacing(media_evidence):
         "display_path_transitions": sum(
             row.get("display_path_transitions", 0) for row in quality_rows
         ),
+        "display_phase_reacquire": sum(
+            row.get("display_phase_reacquire", 0) for row in quality_rows
+        ),
         "pressure_rows": len(pressure_rows),
         "pressure_hold_with_candidate": sum(row.get("hold_with_candidate", 0) for row in pressure_rows),
         "matched_rate_pressure_rows": len(matched_pressure_rows),
