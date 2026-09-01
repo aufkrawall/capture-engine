@@ -654,7 +654,7 @@ bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
     const DWORD iterationError = GetLastError();
     CloseHandle(snapshot);
 
-    // Late-inject / runtime retry: proactively resolve the DLSS-G and Reflex
+    // Late-inject / runtime retry: proactively resolve the DLSS-G, Reflex, and PCL
     // feature functions through the interposer now that every Streamline
     // module is loaded and the runtime is stable (no loader lock). The startup
     // path defers this to the app's own slGetFeatureFunction / slSetD3DDevice
@@ -673,24 +673,27 @@ bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
     // they can run under the loader lock (SL DllMain), where LoadLibrary is not allowed.
     const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks(pinFeatureResolution);
     const bool resolvedReflex = TryResolveReflexFeatureHooks(pinFeatureResolution);
-    if (resolvedDLSSG || resolvedReflex) {
+    const bool resolvedPCL = TryResolvePCLFeatureHook(pinFeatureResolution);
+    if (resolvedDLSSG || resolvedReflex || resolvedPCL) {
         // The runtime retry path re-scans while FG is active; only log the
         // resolution summary until it is fully complete and then sparsely.
         static std::atomic<int> s_featureResolveLogCount{0};
         const int resolveLogCount = s_featureResolveLogCount.fetch_add(1, std::memory_order_relaxed);
+        const bool pclFeatureComplete = !GetModuleHandleA("sl.pcl.dll") || IsPCLSetMarkerHookReady();
         const bool allFeatureHooksComplete = streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) &&
-                                             streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) &&
-                                             AreReflexFeatureHooksComplete();
+                                              streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) &&
+                                              AreReflexFeatureHooksComplete() && pclFeatureComplete;
         if (resolveLogCount < 5 || !allFeatureHooksComplete || (resolveLogCount % 100) == 0) {
             HookLogImportant(
                 "Streamline Hook: Resolved feature hooks after loaded-module scan "
                 "(dlssgSetOptionsHooked=%d dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d "
-                "reflexSetConstantsHooked=%d log=%d)",
+                "reflexSetConstantsHooked=%d pclSetMarkerHooked=%d log=%d)",
                 streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                IsPCLSetMarkerHookReady() ? 1 : 0,
                 resolveLogCount + 1);
         }
     }
@@ -728,7 +731,8 @@ bool AreReflexFeatureHooksComplete() {
 void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source) {
 
 
-    if (AreReflexFeatureHooksComplete()) {
+    if (AreReflexFeatureHooksComplete() &&
+        (!GetModuleHandleA("sl.pcl.dll") || IsPCLSetMarkerHookReady())) {
         return;
     }
 
@@ -746,17 +750,20 @@ void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source) {
 
     const bool foundModule = ScanLoadedStreamlineModules();
     const bool resolved = TryResolveReflexFeatureHooks();
+    const bool resolvedPCL = TryResolvePCLFeatureHook();
     static std::atomic<int> s_lateReflexRetryLogCount{0};
     const int logCount = s_lateReflexRetryLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (resolved || logCount < 10 || (logCount % 24) == 0) {
+    if (resolved || resolvedPCL || logCount < 10 || (logCount % 24) == 0) {
         HookLogImportant(
             "Streamline Hook: Late Reflex feature hook retry during DLSSG runtime activity "
-            "(source=%s foundModule=%d resolved=%d sleepHooked=%d setOptionsHooked=%d setConstantsHooked=%d "
+            "(source=%s foundModule=%d resolved=%d pclResolved=%d sleepHooked=%d setOptionsHooked=%d "
+            "setConstantsHooked=%d pclSetMarkerHooked=%d "
             "manualLimiter=%d targetIntervalUs=%u)",
-            source ? source : "unknown", foundModule ? 1 : 0, resolved ? 1 : 0,
+            source ? source : "unknown", foundModule ? 1 : 0, resolved ? 1 : 0, resolvedPCL ? 1 : 0,
             streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
             streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
             streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            IsPCLSetMarkerHookReady() ? 1 : 0,
             g_ReflexLimiter.IsManualLimiterConfiguredOrActive() ? 1 : 0, g_ReflexLimiter.GetTargetIntervalUs());
     }
 

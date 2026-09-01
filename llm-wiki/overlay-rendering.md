@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-09-01 (Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-02 (Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -23,6 +23,8 @@ Primary sources:
 - `hook/common/performance_metrics.{h,cpp}`
 - `hook/common/system_latency_metrics.h`
 - `hook/common/system_latency_native_d3d.cpp`
+- `hook/common/streamline_pcl_latency.h`
+- `hook/apis/streamline_hook_pcl.cpp`
 - `hook/common/reflex_defs.h`
 - `hook/common/{presentation_color,dxgi_presentation_color}.h`
 - `hook/common/overlay_shader_{bytecode,spirv}.h`
@@ -101,10 +103,19 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 ## PC latency source hierarchy
 
 - `[Overlay] show_system_latency=true` adds one independent row. A fresh marker-enhanced sample renders as `PC Latency~`, the no-marker path renders as `Latency est.`, and an unavailable sample renders as `PC Latency --`; the labels deliberately do not imply an exact end-to-end instrument reading.
-- The preferred path queries `NvAPI_D3D_GetLatency` only from an already-loaded D3D NVAPI module, or `vkGetLatencyTimingsNV` when the game exposes `VK_NV_low_latency2`. It correlates each displayed frame with simulation-start, present-start, and GPU-completion markers in the display-timing QPC domain. The native reports do not expose NVIDIA PCL's ETW input ping, so only average input wait is estimated and the tilde remains even with Reflex markers.
+- The D3D preferred path consumes the game's real Streamline `slPCLSetMarker` SimulationStart/PresentStart calls when
+  `sl.pcl.dll` is present, otherwise it queries `NvAPI_D3D_GetLatency` only from an already-loaded NVAPI module.
+  Streamline PCL does not populate `NvAPI_D3D_GetLatency`: the latter reports markers submitted through
+  `NvAPI_D3D_SetLatencyMarker`. CE therefore intercepts the existing PCL calls with a lock-free fixed-capacity history;
+  it does not fabricate or inject a competing marker stream. A PCL history expires after two seconds so plugin unload,
+  stopped traffic, or an integration without usable pairs returns naturally to native NVAPI or the fallback estimate.
+  Vulkan continues to query `vkGetLatencyTimingsNV` when the game exposes `VK_NV_low_latency2`.
+- The marker-enhanced path correlates each displayed frame with simulation-start and present-start markers in the
+  display-timing QPC domain. Native Reflex reports can also supply GPU-completion timing, but the public reports do not
+  expose NVIDIA PCL's ETW input ping, so average input wait remains estimated and the tilde is retained.
 - Without usable markers, the fallback combines observed Present-to-display time with one cadence-estimated simulation/render interval and average input wait. Both paths add full skipped base intervals for superseded frames and use the base-render cadence while frame generation is active, because generated output frames do not create new input-sampling points.
 - NVIDIA's average-input-wait heuristic is unsupported below 10 FPS, so both paths fail closed there. Present-to-display samples over 250 ms, totals over 500 ms, incompatible timestamp domains, clock resets, and samples stale for more than two seconds also become unavailable instead of producing a plausible-looking number.
-- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, source-transition logs are rate-limited to ten seconds, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path.
+- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, source-transition logs are rate-limited to ten seconds, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path. Streamline logs one `PCL marker latency report available` transition; failed marker forwards are rate-limited.
 
 ## Legacy backend hot paths
 

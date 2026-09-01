@@ -128,8 +128,9 @@ anchors that predate the split are approximate.
       `opengl_hook_install.cpp` (inline + IAT hook installation, `OpenGLHook::Init/Shutdown`),
       `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.
     - Streamline: `streamline_hook.cpp` + `streamline_hook_{helpers,state,startup,
-      modules,originals,feature_fallback,install,resolve,dlssg,api}.cpp` +
-      `streamline_hook_internal.h`.
+      modules,originals,feature_fallback,install,resolve,dlssg,api,pcl}.cpp` +
+      `streamline_hook_internal.h`; `streamline_hook_pcl.cpp` captures the game's real
+      SimulationStart/PresentStart PCL calls for D3D latency correlation without synthetic markers.
     - FFX: `ffx_hook.cpp` + `ffx_hook_{context,install}.cpp` + `ffx_hook_internal.h`.
     - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
       textures,state,frame,capture}.cpp` + `layer_capture_internal.h`;
@@ -145,8 +146,9 @@ anchors that predate the split are approximate.
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
     `system_metrics*.cpp` (metrics + gpu unit), `system_latency_metrics.h`
-    (marker-enhanced/fallback PC-latency correlation), `system_latency_native_d3d.cpp`
-    (already-loaded NVAPI latency provider), `reflex_limiter.h`, `fps_limiter.h` +
+    (marker-enhanced/fallback PC-latency correlation), `streamline_pcl_latency.h`
+    (lock-free paired-marker history), `system_latency_native_d3d.cpp`
+    (fresh Streamline PCL provider followed by already-loaded NVAPI), `reflex_limiter.h`, `fps_limiter.h` +
     `fps_limiter_policy.h` (pure pacing policy incl. `OutputGroupAdmission` ordinal classification and
     `NextRationalGroupIntervalTicks`) + `fps_limiter_detail/{apply,frame_pacing,lifecycle}.h`
     (out-of-line inline member definitions; apply.h owns the admission-epoch key, the boundary

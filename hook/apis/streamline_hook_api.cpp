@@ -119,6 +119,12 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_h
                                         streamline_hook_function, hookReady);
         }
     }
+    else if (feature == streamline_hook_kSLFeaturePCL &&
+             strcmp(streamline_hook_functionName, "slPCLSetMarker") == 0) {
+        void* originalFunction = streamline_hook_function;
+        const bool hookReady = MaybeHookPCLSetMarker(streamline_hook_function, true);
+        LogPCLFeatureLookupOutcome(originalFunction, streamline_hook_function, hookReady);
+    }
 
     return result;
 
@@ -168,6 +174,7 @@ slResult Hooked_slSetD3DDevice(void* streamline_hook_d3dDevice) {
         }
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
+        TryResolvePCLFeatureHook();
     }
     if (acceptedD3D12Device) {
         acceptedD3D12Device->Release();

@@ -74,6 +74,8 @@ struct ReflexSignalLogState;
 
 #include "dx12_streamline_ui_overlay.h"
 
+#include "streamline_hook_pcl.h"
+
 using slResult = int;
 
 enum class slResourceType : char {
@@ -187,6 +189,7 @@ inline constexpr slResult streamline_hook_kSlResultErrorInvalidState = 38;
 inline constexpr uint32_t streamline_hook_kSLFeatureDLSSG = 1000;
 
 inline constexpr uint32_t streamline_hook_kSLFeatureReflex = 3;  // Streamline Reflex feature ID
+inline constexpr uint32_t streamline_hook_kSLFeaturePCL = 4;
 
 inline constexpr size_t streamline_hook_kSLStructVersion1 = 1;
 

@@ -1,5 +1,20 @@
 # llm-wiki Log Archive — 2026-W36a
 
+### 2026-08-31 - Optional hardware sensors stay outside the game and release package
+
+Added `[HardwareSensors]` polling for CPU/GPU temperature, package power, and GPU fan RPM through
+`plugins/LibreHardwareMonitor`. `sensor_plugin.cpp` owns a persistent Windows PowerShell bridge in a kill-on-close job;
+only the dedicated sensor service sees its bounded tab protocol, while hooks receive validated values through the
+versioned shared-metrics publication. GPU `auto` follows the highest GPU Core load without equal-load flapping, exact
+identifiers can pin any sensor, stale/invalid values disappear, and the existing CPU/GPU rows remain the only UI.
+The CPU/GPU-only LibreHardwareMonitor 0.9.6 runtime was reduced by an exact subset matrix to four matching user-supplied
+files: `LibreHardwareMonitorLib.dll`, `System.Memory.dll`, `System.Numerics.Vectors.dll`, and
+`System.Runtime.CompilerServices.Unsafe.dll`. Build finalization installs only the MIT bridge/setup text and preserves
+local DLLs; archive staging has a separate two-file plugin allowlist, and `LibreHardwareMonitor_NOTICE.txt` records the
+MPL-2.0/source/notices boundary. A live four-file 0.9.6 smoke published NVIDIA temperature and shut down cleanly; focused
+native tests, packaging isolation, warning-profile syntax checks, and 60-second ASan/libFuzzer runs for config, sensor
+protocol, and IPC passed. See `configuration.md`, `overlay-rendering.md`, and `fuzzing.md`.
+
 ### 2026-08-31 - Face camera stays off the capture clock and on the encoder GPU
 
 Added opt-in `[FaceCamera]` ingest and composition for inject and WGC/DXGI video. A private below-normal-priority

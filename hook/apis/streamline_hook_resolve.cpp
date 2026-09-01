@@ -573,6 +573,45 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 }
 
 
+bool TryResolvePCLFeatureHook(bool proactiveScan) {
+    if (IsPCLSetMarkerHookReady())
+        return true;
+
+    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
+    if (!originalGetFeatureFunction ||
+        streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? "sl.pcl.dll" : nullptr);
+    if (proactiveScan) {
+        if (!teardownGuard.IsValid()) {
+            LogSkippedFeatureResolutionForTeardownOnce("sl.pcl.dll", "PCL");
+            return false;
+        }
+    } else if (!GetModuleHandleA("sl.pcl.dll")) {
+        return false;
+    }
+
+    void* markerFunction = nullptr;
+    const uint64_t queryGenerationBefore =
+        streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
+    const slResult result =
+        originalGetFeatureFunction(streamline_hook_kSLFeaturePCL, "slPCLSetMarker", markerFunction);
+    const bool teardownObservedDuringQuery =
+        streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
+    if (result != streamline_hook_kSlResultOk || !markerFunction || teardownObservedDuringQuery ||
+        !DoesAddressBelongToLoadedModule(markerFunction, nullptr, nullptr, 0, nullptr)) {
+        return false;
+    }
+
+    const bool hooked = MaybeHookPCLSetMarker(markerFunction, false);
+    if (!hooked && !IsPCLSetMarkerHookReady())
+        LogPCLProactiveFeatureHookGap(markerFunction);
+    return hooked || IsPCLSetMarkerHookReady();
+}
+
+
 uint32_t QueryCapabilityMax(const slViewportHandle& viewport,  const slDLSSGOptions* streamline_hook_options) {
 
 

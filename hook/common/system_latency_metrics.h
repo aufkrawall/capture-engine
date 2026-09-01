@@ -38,8 +38,11 @@ struct NativeReport {
     size_t count = 0;
 };
 
+using SupplementalNativeReportProvider = bool (*)(NativeReport& report);
+
 // Implemented separately for the injected DirectX hook and Vulkan layer.
 bool QueryNativeReport(void* device, NativeReport& report);
+void SetSupplementalNativeReportProvider(SupplementalNativeReportProvider provider);
 
 inline const char* SourceLogLabel(Source source) {
     switch (source) {

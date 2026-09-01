@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-09-02 - D3D Streamline latency consumes the game's PCL markers
+
+Talos session `20260902_003841` loaded both `sl.pcl.dll` and `sl.reflex.dll`, enabled Reflex, and accumulated hundreds
+of successful game-owned `slReflexSleep` calls, but the overlay reported only `Latency est.`. The display timeline was
+healthy; CE's native marker query returned no samples. The root cause was a provider mismatch: CE queried
+`NvAPI_D3D_GetLatency`, whose report is populated by `NvAPI_D3D_SetLatencyMarker`, while Streamline games submit the
+separate cross-IHV markers through `slPCLSetMarker`.
+
+The Streamline hook now resolves/intercepts the game's existing `slPCLSetMarker` function and records only
+SimulationStart/PresentStart in a lock-free fixed ring. The D3D latency provider prefers fresh complete PCL pairs,
+then retains native NVAPI and presentation/display fallback behavior. CE deliberately does not inject synthetic
+markers: a game with no valid PCL pairs remains `Latency est.` instead of receiving a plausible but false
+`PC Latency~`. Reports expire after two seconds, plugin unload invalidates the feature hook, failed forwards are
+rate-limited, and focused pairing/order/reuse/freshness/provider/source-policy tests cover the path; see
+`overlay-rendering.md`.
+
 ### 2026-09-01 - Vulkan/DLSS publications cannot escape their renderer process tree
 
 Session `20260901_174634` proved two stale-state failures in one CaptureEngine lifetime. Portal RTX's child renderer
@@ -206,18 +222,3 @@ reader, joins the released worker, and leaves media-source shutdown exclusively 
 phase logs distinguish a future flush stall from a join/cleanup stall. A hardware smoke on the same default camera
 recorded and GPU-composited for 25.2 seconds; flush returned `S_OK` in 16 ms, the worker joined in 297 ms, the mux
 closed, and async finalization completed. See `face-camera-overlay.md`.
-
-### 2026-08-31 - Optional hardware sensors stay outside the game and release package
-
-Added `[HardwareSensors]` polling for CPU/GPU temperature, package power, and GPU fan RPM through
-`plugins/LibreHardwareMonitor`. `sensor_plugin.cpp` owns a persistent Windows PowerShell bridge in a kill-on-close job;
-only the dedicated sensor service sees its bounded tab protocol, while hooks receive validated values through the
-versioned shared-metrics publication. GPU `auto` follows the highest GPU Core load without equal-load flapping, exact
-identifiers can pin any sensor, stale/invalid values disappear, and the existing CPU/GPU rows remain the only UI.
-The CPU/GPU-only LibreHardwareMonitor 0.9.6 runtime was reduced by an exact subset matrix to four matching user-supplied
-files: `LibreHardwareMonitorLib.dll`, `System.Memory.dll`, `System.Numerics.Vectors.dll`, and
-`System.Runtime.CompilerServices.Unsafe.dll`. Build finalization installs only the MIT bridge/setup text and preserves
-local DLLs; archive staging has a separate two-file plugin allowlist, and `LibreHardwareMonitor_NOTICE.txt` records the
-MPL-2.0/source/notices boundary. A live four-file 0.9.6 smoke published NVIDIA temperature and shut down cleanly; focused
-native tests, packaging isolation, warning-profile syntax checks, and 60-second ASan/libFuzzer runs for config, sensor
-protocol, and IPC passed. See `configuration.md`, `overlay-rendering.md`, and `fuzzing.md`.

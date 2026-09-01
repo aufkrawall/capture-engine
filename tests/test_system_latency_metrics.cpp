@@ -3,6 +3,7 @@
 #include "../captureengine/display_timing_policy.h"
 #include "../hook/common/performance_metrics.h"
 #include "../hook/common/reflex_defs.h"
+#include "../hook/common/streamline_pcl_latency.h"
 #include "../hook/common/system_latency_metrics.h"
 
 namespace {
@@ -30,6 +31,19 @@ NativeFrameReport MakeNativeFrame(uint64_t frameId, uint64_t presentUs, uint64_t
     frame.gpuRenderEndTimeUs = presentUs + 2'000;
     return frame;
 }
+
+bool BuildTestSupplementalReport(NativeReport& report) {
+    report = {};
+    report.frames[0] = MakeNativeFrame(91, 2'000'000);
+    report.count = 1;
+    return true;
+}
+
+struct SupplementalProviderReset {
+    ~SupplementalProviderReset() {
+        ce::system_latency::SetSupplementalNativeReportProvider(nullptr);
+    }
+};
 
 }  // namespace
 
@@ -68,6 +82,91 @@ TEST(SystemLatencyMetricsTest, ReflexLatencyResultMatchesNvApiAbi) {
     EXPECT_EQ(offsetof(NV_LATENCY_RESULT_PARAMS::FrameReport, presentStartTime), 48u);
     EXPECT_EQ(offsetof(NV_LATENCY_RESULT_PARAMS::FrameReport, gpuRenderEndTime), 104u);
     EXPECT_EQ(NVAPI_ID_D3D_GetLatency, 0x1A587F9Cu);
+}
+
+TEST(SystemLatencyMetricsTest, SupplementalPclProviderPrecedesDeviceAndNvApiRequirements) {
+    SupplementalProviderReset reset;
+    ce::system_latency::SetSupplementalNativeReportProvider(BuildTestSupplementalReport);
+
+    NativeReport report{};
+    ASSERT_TRUE(ce::system_latency::QueryNativeReport(nullptr, report));
+    ASSERT_EQ(report.count, 1u);
+    EXPECT_EQ(report.frames[0].frameId, 91u);
+}
+
+TEST(SystemLatencyMetricsTest, StreamlinePclMarkersBuildChronologicalNativeReport) {
+    ce::system_latency::PclMarkerHistory history;
+    history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, 42, 1'000'000);
+    history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, 43, 1'010'000);
+    history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, 43, 1'018'000);
+    history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, 42, 1'008'000);
+
+    NativeReport report{};
+    ASSERT_TRUE(history.BuildReport(report));
+    ASSERT_EQ(report.count, 2u);
+    EXPECT_EQ(report.frames[0].frameId, 42u);
+    EXPECT_EQ(report.frames[0].simulationStartTimeUs, 1'000'000u);
+    EXPECT_EQ(report.frames[0].presentStartTimeUs, 1'008'000u);
+    EXPECT_EQ(report.frames[1].frameId, 43u);
+}
+
+TEST(SystemLatencyMetricsTest, StreamlinePclMarkersRejectIncompleteAndReversedPairs) {
+    ce::system_latency::PclMarkerHistory history;
+    EXPECT_FALSE(history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, 1, 1'000'000));
+    EXPECT_TRUE(history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, 2, 1'010'000));
+    EXPECT_FALSE(history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, 2, 1'009'000));
+    EXPECT_FALSE(history.Record(99, 2, 1'020'000));
+
+    NativeReport report{};
+    EXPECT_FALSE(history.BuildReport(report));
+    EXPECT_EQ(report.count, 0u);
+}
+
+TEST(SystemLatencyMetricsTest, StreamlinePclMarkerReportExpiresAfterFreshnessWindow) {
+    ce::system_latency::PclMarkerHistory history;
+    history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, 7, 1'000'000);
+    history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, 7, 1'008'000);
+
+    NativeReport report{};
+    EXPECT_TRUE(history.BuildFreshReport(report, 3'008'000));
+    EXPECT_FALSE(history.BuildFreshReport(report, 3'008'001));
+    EXPECT_EQ(report.count, 0u);
+    EXPECT_FALSE(history.BuildFreshReport(report, 1'007'999));
+}
+
+TEST(SystemLatencyMetricsTest, StreamlinePclHistoryRetainsNewestReportCapacityAcrossSlotReuse) {
+    ce::system_latency::PclMarkerHistory history;
+    for (uint64_t frameId = 1; frameId <= 140; ++frameId) {
+        const int64_t simulationUs = 2'000'000 + static_cast<int64_t>(frameId) * 10'000;
+        history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, frameId, simulationUs);
+        history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, frameId, simulationUs + 8'000);
+    }
+
+    NativeReport report{};
+    ASSERT_TRUE(history.BuildReport(report));
+    ASSERT_EQ(report.count, NativeReport::kCapacity);
+    EXPECT_EQ(report.frames.front().frameId, 77u);
+    EXPECT_EQ(report.frames[report.count - 1].frameId, 140u);
+}
+
+TEST(SystemLatencyMetricsTest, StreamlinePclReportSelectsMarkerEnhancedOverlaySource) {
+    ce::system_latency::PclMarkerHistory history;
+    Tracker tracker;
+    for (uint64_t frameId = 1; frameId <= 6; ++frameId) {
+        const int64_t simulationUs = 3'000'000 + static_cast<int64_t>(frameId - 1) * 10'000;
+        const int64_t presentUs = simulationUs + 8'000;
+        history.Record(ce::system_latency::PclMarkerHistory::kSimulationStartMarker, frameId, simulationUs);
+        history.Record(ce::system_latency::PclMarkerHistory::kPresentStartMarker, frameId, presentUs);
+        tracker.ObserveDisplay(presentUs + 4'000);
+    }
+
+    NativeReport report{};
+    ASSERT_TRUE(history.BuildReport(report));
+    tracker.SubmitNativeReport(report);
+    const auto snapshot = tracker.GetSnapshot(3'062'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+    EXPECT_NEAR(snapshot.milliseconds, 17.0f, 0.01f);
 }
 
 TEST(SystemLatencyMetricsTest, ReflexMarkersProduceMarkerEnhancedPcLatencyEstimate) {

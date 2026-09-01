@@ -2,6 +2,10 @@
 
 #include <windows.h>
 
+namespace ce::system_latency {
+struct NativeReport;
+}
+
 namespace StreamlineHook {
 
 void Init();
@@ -74,5 +78,9 @@ bool IsExternalOverlayPluginLookupGuardReady();
 // layered through Streamline can expose a command-queue wrapper whose GetDevice returns this identity while
 // the registered FFX resources belong to the underlying real D3D12 device.
 bool IsAcceptedD3D12Device(IUnknown* device);
+
+// Copies game-owned Streamline PCL simulation/present markers captured by CE.
+// The caller correlates them with the independent display-change timeline.
+bool QueryPCLLatencyReport(ce::system_latency::NativeReport& report);
 
 }  // namespace StreamlineHook

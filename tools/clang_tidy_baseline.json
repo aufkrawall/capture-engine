@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 688,
+    "entries": 689,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -280,6 +280,7 @@
       "hook/apis/streamline_hook_install.cpp",
       "hook/apis/streamline_hook_modules.cpp",
       "hook/apis/streamline_hook_originals.cpp",
+      "hook/apis/streamline_hook_pcl.cpp",
       "hook/apis/streamline_hook_resolve.cpp",
       "hook/apis/streamline_hook_startup.cpp",
       "hook/apis/streamline_hook_state.cpp",

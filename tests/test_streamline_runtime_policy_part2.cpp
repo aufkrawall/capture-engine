@@ -50,19 +50,51 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     ASSERT_NE(snapshotClose, std::string::npos);
     const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks(pinFeatureResolution)", snapshotClose);
     const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks(pinFeatureResolution)", snapshotClose);
+    const size_t pclResolve = text.find("TryResolvePCLFeatureHook(pinFeatureResolution)", snapshotClose);
     ASSERT_NE(dlssgResolve, std::string::npos);
     ASSERT_NE(reflexResolve, std::string::npos);
+    ASSERT_NE(pclResolve, std::string::npos);
     // Resolution must run after the module snapshot is released (runtime
     // stable, no loader lock) and inside the scan so late inject and the
     // runtime retry path both benefit.
     EXPECT_LT(snapshotClose, dlssgResolve);
     EXPECT_LT(snapshotClose, reflexResolve);
+    EXPECT_LT(snapshotClose, pclResolve);
     EXPECT_NE(text.find("Resolved feature hooks after loaded-module scan", scanStart), std::string::npos);
     // Reflex SetConstants can be genuinely absent from a sl.reflex build; the
     // retry loop must bound the failed queries instead of re-scanning forever
     // (session 20260811_231851 logged endless 2.5s rescans).
     EXPECT_NE(headerText.find("kReflexSetConstantsUnavailableQueryLimit"), std::string::npos);
     EXPECT_NE(headerText.find("streamline_hook_g_ReflexSetConstantsUnavailableQueries"), std::string::npos);
+}
+
+TEST(StreamlineRuntimePolicyTest, PclMarkerHookFeedsLatencyProviderWithoutSyntheticMarkers) {
+    namespace fs = std::filesystem;
+    const std::string pcl =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "streamline_hook_pcl.cpp");
+    const std::string native =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "system_latency_native_d3d.cpp");
+    ASSERT_FALSE(pcl.empty());
+    ASSERT_FALSE(native.empty());
+
+    const size_t hookStart = pcl.find("sl::Result Hooked_slPCLSetMarker");
+    const size_t hookEnd = pcl.find("\n}\n\n}  // namespace", hookStart);
+    ASSERT_NE(hookStart, std::string::npos);
+    ASSERT_NE(hookEnd, std::string::npos);
+    const std::string hookBody = pcl.substr(hookStart, hookEnd - hookStart);
+    EXPECT_NE(hookBody.find("PclMarkerHistory::kSimulationStartMarker"), std::string::npos);
+    EXPECT_NE(hookBody.find("PclMarkerHistory::kPresentStartMarker"), std::string::npos);
+    EXPECT_NE(hookBody.find("g_pclMarkerHistory.Record"), std::string::npos);
+    EXPECT_EQ(hookBody.find("mutex"), std::string::npos)
+        << "game PCL marker callbacks must remain lock-free";
+
+    const size_t pclQuery = native.find("supplementalProvider(report)");
+    const size_t nvapiQuery = native.find("ResolveGetLatency()", pclQuery);
+    ASSERT_NE(pclQuery, std::string::npos);
+    ASSERT_NE(nvapiQuery, std::string::npos);
+    EXPECT_LT(pclQuery, nvapiQuery);
+    EXPECT_EQ(native.find("NVAPI_ID_D3D_SetLatencyMarker"), std::string::npos)
+        << "CE consumes game-owned markers; it must not fabricate a competing marker stream";
 }
 
 // Session 20260814_014012: Streamline unload notifications cleared the feature-level

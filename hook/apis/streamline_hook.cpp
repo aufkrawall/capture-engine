@@ -151,6 +151,8 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
             "Streamline Hook: Invalidated %s hook slot for unloaded %s (target=%p original=%p base=%p size=0x%zX)",
             slot.name, moduleBaseName, target, original, moduleBase, moduleSizeBytes);
     }
+    if (InvalidatePCLFeatureHookForModule(moduleBase, moduleSizeBytes, moduleBaseName))
+        ++invalidatedSlots;
 
     std::atomic<void*>* attemptedTargets[] = {
         &streamline_hook_g_DLSSGSetOptionsImportFallbackAttemptedTarget,    &streamline_hook_g_DLSSGGetStateImportFallbackAttemptedTarget,
@@ -193,11 +195,13 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
     const bool inspectedModule = InstallHooksForModule(module, moduleNameOrPath);
     bool resolvedDLSSG = false;
     bool resolvedReflex = false;
+    bool resolvedPCL = false;
     const bool deferFeatureLookup =
         ce::streamline_runtime_policy::ShouldDeferStreamlineFeatureLookupDuringModuleLoad(true);
     if (!deferFeatureLookup) {
         resolvedDLSSG = TryResolveDLSSGFeatureHooks();
         resolvedReflex = TryResolveReflexFeatureHooks();
+        resolvedPCL = TryResolvePCLFeatureHook();
     } else if (inspectedModule) {
         static std::atomic<int> s_deferredLookupLogCount{0};
         const int logCount = s_deferredLookupLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -210,7 +214,7 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         }
     }
 
-    if (inspectedModule || resolvedDLSSG || resolvedReflex) {
+    if (inspectedModule || resolvedDLSSG || resolvedReflex || resolvedPCL) {
         static std::atomic<int> s_freshInspectLogCount{0};
         const int logCount = s_freshInspectLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 16 || (logCount % 1000) == 0) {
@@ -219,7 +223,8 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
                 "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
                 "slSetTagHooked=%d slSetTagForFrameHooked=%d slEvaluateFeatureHooked=%d "
                 "dlssgSetOptionsHooked=%d "
-                "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
+                "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d "
+                "pclSetMarkerHooked=%d",
                 GetModuleBaseName(moduleNameOrPath), module,
                 streamline_hook_g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
@@ -231,7 +236,8 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
                 streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
                 streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-                streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
+                streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                IsPCLSetMarkerHookReady() ? 1 : 0);
         }
     }
 }
@@ -318,6 +324,7 @@ void OnAuthoritativeStreamlineStartupHandoff() {
 namespace StreamlineHook {
 void Shutdown() {
     ce::dx12_streamline_ui_overlay::EndActivation("Streamline shutdown");
+    ResetPCLLatencyCapture();
     std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
     streamline_hook_g_ViewportStates.clear();
     streamline_hook_g_ViewportCapabilityMax.clear();
