@@ -7,6 +7,7 @@ struct MockNativePacingBackend {
     bool gameActive = false;
     bool setTargetSucceeds = true;
     int targetFps = 0;
+    int activityQueries = 0;
     int setTargetCalls = 0;
     int sleepCalls = 0;
     int clearCalls = 0;
@@ -16,7 +17,11 @@ NativeFpsPacingBackend MakeMockNativePacingBackend(MockNativePacingBackend* mock
     NativeFpsPacingBackend backend{};
     backend.context = mock;
     backend.isAvailable = [](void* context) { return static_cast<MockNativePacingBackend*>(context)->available; };
-    backend.isGameActive = [](void* context) { return static_cast<MockNativePacingBackend*>(context)->gameActive; };
+    backend.isGameActive = [](void* context) {
+        auto* state = static_cast<MockNativePacingBackend*>(context);
+        ++state->activityQueries;
+        return state->gameActive;
+    };
     backend.setTargetFps = [](void* context, int fps) {
         auto* state = static_cast<MockNativePacingBackend*>(context);
         ++state->setTargetCalls;
@@ -36,6 +41,22 @@ NativeFpsPacingBackend MakeMockNativePacingBackend(MockNativePacingBackend* mock
 
 }  // namespace
 
+TEST_F(FpsLimiterTest, ExternalNativeActivityIsQueriedOnlyForAnActiveAutoConstraint) {
+    MockNativePacingBackend mock;
+    limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+
+    limiter.Apply(true);
+    EXPECT_EQ(mock.activityQueries, 0);
+
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    limiter.Apply(true);
+    EXPECT_EQ(mock.activityQueries, 1);
+    limiter.Shutdown();
+}
+
 TEST(FpsLimiterPolicyTest, EveryGeneralLimiterModeTargetsFinalFrameGeneratedRate) {
     using ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget;
 
@@ -45,6 +66,153 @@ TEST(FpsLimiterPolicyTest, EveryGeneralLimiterModeTargetsFinalFrameGeneratedRate
     EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, false, 3, true), 100);
     EXPECT_EQ(ResolveFrameGenerationBaseTarget(100, true, 3, false), 100)
         << "ordinary/base inject capture-sync targets application frames, unlike the general output cap";
+}
+
+TEST(FpsLimiterPolicyTest, NominalDLSSFGNeedsNativeProductionEvidenceBeforeScaling) {
+    using ce::fg_runtime::RuntimeMode;
+    using ce::fps_limiter_policy::IsFrameGenerationProducingForPacing;
+
+    EXPECT_FALSE(IsFrameGenerationProducingForPacing(RuntimeMode::kOff, false, true, true));
+    EXPECT_FALSE(IsFrameGenerationProducingForPacing(RuntimeMode::kDLSSFG, true, false, false));
+    EXPECT_TRUE(IsFrameGenerationProducingForPacing(RuntimeMode::kDLSSFG, true, true, false));
+    EXPECT_TRUE(IsFrameGenerationProducingForPacing(RuntimeMode::kDLSSFG, true, false, true));
+    EXPECT_TRUE(IsFrameGenerationProducingForPacing(RuntimeMode::kFSRFG, true, false, false));
+    EXPECT_TRUE(IsFrameGenerationProducingForPacing(RuntimeMode::kNvidiaSmoothMotion, true, false, false));
+}
+
+TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexLocalCadenceSurvivesPresentGapWithoutGameSleep) {
+    const auto decision =
+        ce::fps_limiter_policy::ResolveReflexPacingDecision(true, false, false, false, false, 0, true);
+
+    EXPECT_TRUE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepWarmup);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, false));
+}
+
+TEST(ReflexFpsLimiterPolicyTest, NewActivationEpochCannotInheritAnOlderHighSleepBaseline) {
+    using ce::fps_limiter_policy::RebaseGameSleepBaselineForCounterEpoch;
+
+    EXPECT_EQ(RebaseGameSleepBaselineForCounterEpoch(800, 801, 800), 800u);
+    EXPECT_EQ(RebaseGameSleepBaselineForCounterEpoch(800, 0, 806), 0u);
+    EXPECT_EQ(RebaseGameSleepBaselineForCounterEpoch(800, 1, 806), 0u);
+}
+
+TEST(ReflexFpsLimiterPolicyTest, GameOwnedReflexHandoffAcceptsFreshStableSleepAfterGap) {
+    auto inactiveDecision =
+        ce::fps_limiter_policy::ResolveReflexPacingDecision(false, false, true, true, true, 3, false);
+    EXPECT_FALSE(inactiveDecision.useGameSleepHandoff);
+    EXPECT_FALSE(inactiveDecision.useGameSleepWarmup);
+
+    auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, true, true, 2, false);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_TRUE(decision.useGameSleepWarmup);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, true, true, 3, true);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(decision.useGameSleepWarmup);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, true, false, 3, false);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
+}
+
+TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexDoesNotOverlayFallbackOnFreshSleepWarmup) {
+    auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, true, true, 2, false);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_TRUE(decision.useGameSleepWarmup);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, true, false, 2, false);
+    EXPECT_TRUE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(decision.useGameSleepWarmup);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, true, true, 3, true);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(decision.useGameSleepWarmup);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, true, false, 3, false);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(decision.useGameSleepWarmup);
+}
+
+TEST_F(FpsLimiterTest, FreshGameSleepGetsOneDriverOwnedWarmupFrameThenFallbackResumes) {
+    ResetManualRearmSetSleepModeRecorder();
+    auto* fakeDevice = reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(0x6789));
+    g_ReflexLimiter.TestInstallSetSleepModeForUnitTest(&TestManualRearmSetSleepMode, fakeDevice);
+    g_ReflexLimiter.SetGameActivated(true);
+    g_ReflexLimiter.MarkGameSleep("unit-test-warmup");
+
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+
+    limiter.Apply(false, true);
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
+
+    limiter.Apply(false, true);
+    EXPECT_TRUE(limiter.IsActivelyLimiting())
+        << "unchanged merely-recent Sleep evidence must not extend driver-only warmup";
+    g_ReflexLimiter.Shutdown();
+}
+
+TEST(ReflexLimiterTest, NestedStreamlineAndNvApiSleepIsOneLogicalPacingBoundary) {
+    ReflexLimiter limiter;
+    limiter.DisableHybridPacing();
+    limiter.SetGameActivated(true);
+
+    const bool outerOwnsBoundary = limiter.BeginGameSleepBoundary("Streamline-test");
+    const bool innerOwnsBoundary = limiter.BeginGameSleepBoundary("NvAPI-test");
+    limiter.EndGameSleepBoundary(innerOwnsBoundary, true, "NvAPI-test");
+    const uint32_t countBeforeOuterCommit = limiter.GetGameSleepCount();
+    limiter.EndGameSleepBoundary(outerOwnsBoundary, true, "Streamline-test");
+
+    EXPECT_TRUE(outerOwnsBoundary);
+    EXPECT_FALSE(innerOwnsBoundary);
+    EXPECT_EQ(countBeforeOuterCommit, 0u);
+    EXPECT_EQ(limiter.GetGameSleepCount(), 1u);
+    EXPECT_EQ(limiter.GetCoalescedNestedGameSleepCount(), 1u);
+    limiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, NominalDLSSFGDoesNotDivideUntilRecentGameSleepEvidence) {
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+    g_FGCompat.SetDLSSFGMultiplier(4);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    for (int i = 0; i < 4; ++i) {
+        limiter.Apply(false, true);
+    }
+    EXPECT_EQ(limiter.GetPacedGroupCount(), 4u);
+    EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 0u);
+
+    ConfirmDLSSFGPacing();
+    const uint32_t pacedBeforeConfirmation = limiter.GetPacedGroupCount();
+    for (int i = 0; i < 4; ++i) {
+        limiter.Apply(false, true);
+    }
+    EXPECT_EQ(limiter.GetPacedGroupCount(), pacedBeforeConfirmation + 1);
+    EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 3u);
+
+    g_ReflexLimiter.SetGameActivated(false);
+    const uint32_t pacedBeforeSuspend = limiter.GetPacedGroupCount();
+    const uint32_t generatedBeforeSuspend = limiter.GetGeneratedSlotPassCount();
+    for (int i = 0; i < 4; ++i) {
+        limiter.Apply(false, true);
+    }
+    EXPECT_EQ(limiter.GetPacedGroupCount(), pacedBeforeSuspend + 4);
+    EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), generatedBeforeSuspend)
+        << "a Reflex suspend must immediately restore one paced slot per real output";
+
+    g_FGCompat.SetDLSSFGActive(false);
+    limiter.Shutdown();
 }
 
 TEST(FpsLimiterPolicyTest, GeneralCapRemainsAConcurrentConstraintDuringBaseInjectCapture) {
@@ -151,6 +319,7 @@ TEST_F(FpsLimiterTest, BasicCaptureSyncScalesToFinalFGOutputRate) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
     g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply();
 

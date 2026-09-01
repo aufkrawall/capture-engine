@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-08-31 (Vulkan-layer shared-memory mirror ungated from the FPS limiter path)
+Last cross-checked: 2026-09-01 (configured Streamline MFG-factor publication before feature creation)
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -11,9 +11,9 @@ Primary sources:
 - `hook/vulkan_layer/layer_overlay.cpp`
 - `build.py`
 - `hook/common/streamline_runtime_policy.h`
-- `hook/apis/streamline_hook.cpp`
+- `hook/apis/{streamline_hook,streamline_hook_state}.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
-- `tests/test_streamline_runtime_policy.cpp`
+- `tests/{test_streamline_runtime_policy,test_streamline_runtime_policy_part2}.cpp`
 
 ## Scope
 This page records how the current tree publishes visible FG status to the overlay.
@@ -66,6 +66,13 @@ This page records how the current tree publishes visible FG status to the overla
 - That helper uses `ResolveOverlayFGMetricType()` to map `(effectiveFGActive, runtimeMode)` into the published FG type.
 - If frame generation is active but the resolved published type is `0`, the helper logs an invariant violation.
 - When FG is active, the helper currently publishes a multiplier of at least `2`.
+- A configured `dlss_fg_factor=2x|3x|4x` is the factor CE forwards to Streamline/NGX and is now also the factor the
+  Streamline viewport aggregator publishes as soon as the runtime signals that viewport active. A known
+  `numFramesToGenerateMax` still clamps it. Gothic Remake session `20260831_223114` otherwise displayed the runtime's
+  transient default `DLSS FG 2x` until the main-menu NGX feature creation finally exposed the configured 4x factor.
+  Visible factor publication and limiter production qualification are intentionally separate: the overlay can show
+  the configured 4x intent while the limiter reports `fgProof=pending` and stays on an unscaled cadence until native
+  execution begins.
 - When FG is inactive, the helper resets published output FPS and base FPS to `0.0f` and resets the multiplier to `1`.
 - The helper tracks the last published state and only emits the main publication log when the visible state actually changes.
 - A stale visible FG label can still originate upstream from runtime classification drift even when `PublishOverlayFGMetrics()` itself behaves correctly. Talos `installed/captureengine/logs/20260416_192846` showed this explicitly: CE first published `runtime=STREAMLINE_NO_FG active=0`, then immediately re-detected heuristic `FSR_FG` from a lingering runtime-owned queue after `ffxConfigure(frameGenerationEnabled=0)` had already disabled the native FSR present-callback bridge.

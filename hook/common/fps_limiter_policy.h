@@ -10,11 +10,22 @@ namespace ce::fps_limiter_policy {
 
 struct ReflexPacingDecision {
     bool useGameSleepHandoff = false;
+    bool useGameSleepWarmup = false;
     bool useExplicitLocalCadence = false;
 };
 
-inline ReflexPacingDecision ResolveReflexPacingDecision(bool explicitReflexMode, bool gameSleepObserved,
-                                                        bool gameSleepRecent, uint32_t freshSleepCount,
+inline uint32_t RebaseGameSleepBaselineForCounterEpoch(uint32_t baselineCount,
+                                                       uint32_t currentSleepCount,
+                                                       uint32_t previouslyEvaluatedSleepCount) {
+    // Reflex activation epochs reset their observation counter. Preserve a
+    // disruption baseline only within the same epoch; otherwise a high old
+    // baseline can prevent a fresh 1/2/3-call streak from ever handing off.
+    return currentSleepCount < previouslyEvaluatedSleepCount ? 0 : baselineCount;
+}
+
+inline ReflexPacingDecision ResolveReflexPacingDecision(bool explicitReflexMode, bool gameActivated,
+                                                        bool gameSleepObserved, bool gameSleepRecent,
+                                                        bool gameSleepAdvanced, uint32_t freshSleepCount,
                                                         bool recentPresentGap) {
     ReflexPacingDecision decision;
     (void)recentPresentGap;
@@ -24,8 +35,17 @@ inline ReflexPacingDecision ResolveReflexPacingDecision(bool explicitReflexMode,
     // cadence on the newly healthy native one. That showed up as temporal
     // jitter around cutscene/FG transitions. Fresh post-gap Sleep evidence is
     // the recovery proof; a merely old observed Sleep is still insufficient.
-    decision.useGameSleepHandoff = gameSleepObserved && gameSleepRecent && freshSleepCount >= 3;
-    decision.useExplicitLocalCadence = explicitReflexMode && !decision.useGameSleepHandoff;
+    decision.useGameSleepHandoff =
+        gameActivated && gameSleepObserved && gameSleepRecent && freshSleepCount >= 3;
+    // Do not overlay CE's fallback cadence on the exact recovery frames where
+    // a newly successful game Sleep already owns pacing. This is deliberately
+    // progress-qualified rather than merely recency-qualified: if Sleep stops
+    // again before the stable streak is complete, fallback resumes on the
+    // very next evaluated frame instead of waiting out the recency grace.
+    decision.useGameSleepWarmup = gameActivated && gameSleepObserved && gameSleepRecent &&
+                                  gameSleepAdvanced && freshSleepCount < 3;
+    decision.useExplicitLocalCadence =
+        explicitReflexMode && !decision.useGameSleepHandoff && !decision.useGameSleepWarmup;
     return decision;
 }
 
@@ -54,6 +74,29 @@ inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool inje
     // WGC/DXGI and the explicit DX12/Vulkan final-output routes observe the
     // presented stream including generated frames.
     return !usingCaptureSync || !injectVideoCaptureRequested || injectFinalOutputAvailable;
+}
+
+// Streamline's requested/available state can report DLSS-G ON before the game
+// starts executing the frame-generation pipeline. Dividing the limiter target
+// from that nominal state caps an ordinary one-Present render loop at
+// target/multiplier (Gothic Remake sat at 60 fps under a 120 fps cap while its
+// pre-menu DLSS-G state still produced no generated frames). A successful,
+// recent game-owned low-latency sleep is a protocol-level production signal:
+// DLSS-G requires Reflex, while Vulkan publishes the equivalent native pacing
+// ownership through its backend. FSR FG and Smooth Motion runtime detection is
+// already based on an active presentation path and does not need this extra
+// Streamline qualification.
+inline bool IsFrameGenerationProducingForPacing(ce::fg_runtime::RuntimeMode runtimeMode,
+                                                bool runtimeFrameGenerationActive,
+                                                bool recentActivatedD3DGameSleep,
+                                                bool externalNativeGameActive) {
+    if (!runtimeFrameGenerationActive) {
+        return false;
+    }
+    if (runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG) {
+        return true;
+    }
+    return recentActivatedD3DGameSleep || externalNativeGameActive;
 }
 
 enum class LimiterConstraintSource : uint8_t {

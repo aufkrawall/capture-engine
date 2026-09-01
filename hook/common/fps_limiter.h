@@ -209,6 +209,10 @@ private:
 
     void ResetReflexNativePacingState();
 
+    bool TryHandleReflexNativeWarmup(bool requested, bool driverTargetAccepted,
+                                     uint32_t gameSleepCount, uint32_t freshSleepCount,
+                                     bool recentPresentGap);
+
     IPCClient* ipc = nullptr;
     SharedMemoryLayout* dbgShm = nullptr;  // Direct injection for testing
     HANDLE releaseEvent = NULL;
@@ -232,6 +236,8 @@ private:
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
     bool lastFGActive_ = false;                              // Include FG activation in cadence transitions
     int lastFGMultiplier_ = 1;                              // Re-arm immediately when MFG factor changes
+    bool lastFGRuntimeSignaledActive_ = false;               // Nominal API state can precede actual generation
+    int lastFGRuntimeSignaledMultiplier_ = 1;                // Requested/published factor while production is pending
     int lastNativeDriverTargetFps_ = 0;                      // Interval handed to a driver-owned low-latency cap
     int lastCaptureOutputEquivalentFps_ = 0;                 // Capture constraint expressed as displayed FPS
     int lastGeneralConstraintFps_ = 0;                       // Concurrent configured displayed-rate constraint
@@ -256,6 +262,8 @@ private:
     bool externalNativeLoggedSuccess_ = false;
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
+    uint32_t reflexLastEvaluatedGameSleepCount_ =
+        0;  // Progress detector prevents fallback from overlapping newly resumed game Sleep
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence

@@ -445,13 +445,12 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame) {
     streamline_hook_g_ReflexSleepObservedCount.fetch_add(1, std::memory_order_relaxed);
     streamline_hook_g_ReflexSleepLastTickMs.store(GetTickCount64(), std::memory_order_relaxed);
 
-    g_ReflexLimiter.ApplyHybridPacingBeforeNativeSleep();
+    const bool ownsSleepBoundary = g_ReflexLimiter.BeginGameSleepBoundary("Streamline");
 
     const slResult result = originalReflexSleep(streamline_hook_frame);
-    if (result == streamline_hook_kSlResultOk) {
-        g_ReflexLimiter.MarkGameSleep("Streamline");
-        g_ReflexLimiter.MarkNativePacingSignal();
-    } else {
+    g_ReflexLimiter.EndGameSleepBoundary(ownsSleepBoundary, result == streamline_hook_kSlResultOk,
+                                         "Streamline");
+    if (result != streamline_hook_kSlResultOk) {
         static std::atomic<int> s_reflexSleepFailLogCount{0};
         const int failCount = s_reflexSleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
         if (failCount < 5) {

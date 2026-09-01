@@ -318,6 +318,7 @@ TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
     // Simulate FG active (DLSS FG)
     g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     // Call Apply twice: first sets up cadence, second actually waits
     limiter.Apply();  // First call: sets up localTargetTime_
@@ -478,42 +479,6 @@ TEST_F(FpsLimiterTest, NonManualReflexPushDoesNotForceLowLatencyReset) {
     g_ReflexLimiter.Shutdown();
 }
 
-TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexLocalCadenceSurvivesPresentGapWithoutGameSleep) {
-    const auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, false, false, 0, true);
-
-    EXPECT_TRUE(decision.useExplicitLocalCadence);
-    EXPECT_FALSE(decision.useGameSleepHandoff);
-    EXPECT_TRUE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
-    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, false));
-}
-
-TEST(ReflexFpsLimiterPolicyTest, GameOwnedReflexHandoffAcceptsFreshStableSleepAfterGap) {
-    auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 2, false);
-    EXPECT_FALSE(decision.useExplicitLocalCadence);
-    EXPECT_FALSE(decision.useGameSleepHandoff);
-
-    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, true);
-    EXPECT_TRUE(decision.useGameSleepHandoff);
-
-    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, false);
-    EXPECT_TRUE(decision.useGameSleepHandoff);
-    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
-}
-
-TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexUsesLocalCadenceUntilFreshSleepHandoffIsStable) {
-    auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 2, false);
-    EXPECT_TRUE(decision.useExplicitLocalCadence);
-    EXPECT_FALSE(decision.useGameSleepHandoff);
-
-    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 3, true);
-    EXPECT_FALSE(decision.useExplicitLocalCadence);
-    EXPECT_TRUE(decision.useGameSleepHandoff);
-
-    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, true, true, 3, false);
-    EXPECT_FALSE(decision.useExplicitLocalCadence);
-    EXPECT_TRUE(decision.useGameSleepHandoff);
-}
-
 TEST(ReflexFpsLimiterPolicyTest, NvApiReflexWrapperIsOnlyReturnedForManualGameCallers) {
     EXPECT_TRUE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(true, false, false, false, false));
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(false, false, false, false, false));
@@ -549,6 +514,7 @@ TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
 // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply();
 

@@ -283,6 +283,7 @@ TEST_F(FpsLimiterTest, ThreeTimesSixCallbackBurstPacesExactlyTwoGroups) {
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // 3x group interval = 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     const uint32_t pacedBefore = limiter.GetPacedGroupCount();
     const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
@@ -366,6 +367,7 @@ TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // group interval 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(false, true);  // owner
     limiter.Apply(false, true);  // generated pass
@@ -394,6 +396,7 @@ TEST_F(FpsLimiterTest, DeactivationResetsPartialGroupAdmission) {
     ConfigureThreeTimesGeneralCap(*mockShm, 240);
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(false, true);  // owner
     limiter.Apply(false, true);  // generated pass -> partial group pending
@@ -433,6 +436,7 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(true, true);  // owner: arms the native backend + pending post-present sleep
     EXPECT_EQ(mock.setTargetCalls, 1);
@@ -462,6 +466,7 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
 TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     // WGC-style capture sync observes generated output: 60 fps capture with 3x
     // FG paces 20 groups/s (50 ms group interval, ~25 ms first slot).
@@ -511,6 +516,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingReceivesOutputRateUnderDlssFrameGenerat
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(true, true);
     EXPECT_EQ(mock.setTargetCalls, 1);
@@ -558,6 +564,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingScalesInjectCaptureSyncTargetToOutputRa
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(true, true);
     EXPECT_EQ(mock.setTargetCalls, 1);
@@ -577,6 +584,7 @@ TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // group interval 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     limiter.Apply(false, true);  // group 1 owner
     limiter.Apply(false, true);
@@ -626,6 +634,7 @@ TEST_F(FpsLimiterTest, ConcurrentCallersProduceExactGroupOwnersWithoutContention
     ConfigureThreeTimesGeneralCap(*mockShm, 600);  // 3x group interval = 5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
+    ConfirmDLSSFGPacing();
 
     constexpr int kThreads = 4;
     constexpr int kCallbacksPerThread = 9;  // 36 callbacks = 12 groups

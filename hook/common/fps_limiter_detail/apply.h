@@ -39,6 +39,10 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     uint32_t captureSyncMode = shm->fpsLimiter.GetCaptureSyncLimiterMode();
     uint32_t generalMode = shm->fpsLimiter.GetGeneralLimiterMode();
 
+    const bool externalNativeCallbacks =
+        allowPostPresentReflexCadence && nativePacingBackend_.context && nativePacingBackend_.isAvailable &&
+        nativePacingBackend_.setTargetFps && nativePacingBackend_.sleep;
+
     // Publish session ID once — use QPC ticks for better entropy
     if (!sessionIdPublished) {
         LARGE_INTEGER qpc;
@@ -53,12 +57,37 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // One detection snapshot drives constraint arbitration, multiplier math,
     // and the driver interval so they cannot disagree about the FG runtime.
     const ce::fg_runtime::RuntimeMode fgRuntimeMode = g_FGCompat.GetRuntimeMode();
-    bool fgActive = ce::fg_runtime::IsRuntimeFGActive(fgRuntimeMode);
-    int fgMultiplier = fgActive ? g_FGCompat.GetFGMultiplier() : 1;
-    if (fgActive && fgMultiplier < 2)
-        fgMultiplier = 2;
-    if (fgMultiplier > 4)
-        fgMultiplier = 4;
+    const bool fgRuntimeSignaledActive = ce::fg_runtime::IsRuntimeFGActive(fgRuntimeMode);
+    int fgRuntimeSignaledMultiplier = fgRuntimeSignaledActive ? g_FGCompat.GetFGMultiplier() : 1;
+    if (fgRuntimeSignaledActive && fgRuntimeSignaledMultiplier < 2)
+        fgRuntimeSignaledMultiplier = 2;
+    if (fgRuntimeSignaledMultiplier > 4)
+        fgRuntimeSignaledMultiplier = 4;
+    // The external backend's activity query may take its own synchronization
+    // lock. It is needed for AUTO mode and as DLSS-FG production evidence,
+    // but basic/manual D3D paths should not pay for it on every Present.
+    const bool autoNativePacingMayBeSelected =
+        (captureRequested && captureSyncEnabled && captureFps > 0 && !useVFR &&
+         captureSyncMode == LimiterModeValues::kAuto) ||
+        (generalEnabled && generalFps > 0 && generalMode == LimiterModeValues::kAuto);
+    const bool externalNativeGameActivityQuery =
+        nativePacingBackend_.context && nativePacingBackend_.isGameActive &&
+        ((fgRuntimeSignaledActive && fgRuntimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG) ||
+         autoNativePacingMayBeSelected);
+    const bool externalNativeGameActive =
+        externalNativeGameActivityQuery &&
+        nativePacingBackend_.isGameActive(nativePacingBackend_.context);
+    const bool recentD3DGameSleep =
+        g_ReflexLimiter.IsGameActivated() && g_ReflexLimiter.HasRecentGameSleep(500);
+    const bool fgActive = ce::fps_limiter_policy::IsFrameGenerationProducingForPacing(
+        fgRuntimeMode, fgRuntimeSignaledActive, recentD3DGameSleep, externalNativeGameActive);
+    const int fgMultiplier = fgActive ? fgRuntimeSignaledMultiplier : 1;
+    const char* fgPacingProof = !fgRuntimeSignaledActive            ? "inactive"
+                                : fgRuntimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG
+                                    ? "runtime"
+                                : recentD3DGameSleep ? "d3d-sleep"
+                                : externalNativeGameActive ? "api-native-sleep"
+                                                           : "pending";
 
     const bool injectVideoCaptureRequested = shm->runtimeState.IsInjectVideoCaptureRequested();
     const bool injectFinalOutputAvailable =
@@ -258,13 +287,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // =====================================================================
     // Resolve effective limiter mode (auto fallback chain)
     // =====================================================================
-    const bool externalNativeCallbacks =
-        allowPostPresentReflexCadence && nativePacingBackend_.context && nativePacingBackend_.isAvailable &&
-        nativePacingBackend_.setTargetFps && nativePacingBackend_.sleep;
-    const bool externalNativeGameActive =
-        configuredMode == LimiterModeValues::kAuto && externalNativeCallbacks &&
-        nativePacingBackend_.isGameActive && nativePacingBackend_.isGameActive(nativePacingBackend_.context);
-
     uint32_t effectiveMode = configuredMode;
 
     if (configuredMode == LimiterModeValues::kAuto) {
@@ -319,6 +341,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     if (effectiveMode != LimiterModeValues::kNative) {
         loggedNativeFallback_ = false;
         reflexSleepBaselineCount_ = 0;
+        reflexLastEvaluatedGameSleepCount_ = 0;
         reflexRecentPresentGap_ = false;
     }
 
@@ -328,6 +351,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // Log mode transitions - always log on first activation to confirm mode
     if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
         lastEffectiveMode_ != effectiveMode || lastFGActive_ != fgActive || lastFGMultiplier_ != fgMultiplier ||
+        lastFGRuntimeSignaledActive_ != fgRuntimeSignaledActive ||
+        lastFGRuntimeSignaledMultiplier_ != fgRuntimeSignaledMultiplier ||
         lastCadenceTargetFps_ != cadenceTargetFps || lastCadenceScale_ != cadenceScale ||
         lastNativeDriverTargetFps_ != nativeDriverTargetFps ||
         lastCaptureOutputEquivalentFps_ != targetSelection.captureOutputEquivalentFps ||
@@ -372,17 +397,20 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
             !externalNativeAvailable)
             availNote = " [API UNAVAILABLE - will fallback]";
 
-        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d driver=%d "
-                 "captureEq=%d general=%d captureSource=%s",
-                 usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
-                 cadenceScale, fgActive ? 1 : 0, fgMultiplier, nativeDriverTargetFps,
-                 targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
-                 targetSelection.captureSourceIsFinalOutput ? "final" : "base");
+        TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d "
+                  "fgSignal=%d/%dx fgProof=%s driver=%d captureEq=%d general=%d captureSource=%s",
+                  usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
+                  cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
+                  fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps,
+                  targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
+                  targetSelection.captureSourceIsFinalOutput ? "final" : "base");
         HookLog(
             "FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, group=%d/%d, fg=%d/%dx, "
-            "driver=%d, capReq=%d, constraints=capture:%d/output general:%d, captureSource=%s)%s",
+            "fgSignal=%d/%dx, fgProof=%s, driver=%d, capReq=%d, constraints=capture:%d/output general:%d, "
+            "captureSource=%s)%s",
             usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
-            cadenceScale, fgActive ? 1 : 0, fgMultiplier, nativeDriverTargetFps, captureRequested ? 1 : 0,
+            cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
+            fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps, captureRequested ? 1 : 0,
             targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
             targetSelection.captureSourceIsFinalOutput ? "final" : "base", availNote);
         loggedActive_ = true;
@@ -391,6 +419,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         lastEffectiveMode_ = effectiveMode;
         lastFGActive_ = fgActive;
         lastFGMultiplier_ = fgMultiplier;
+        lastFGRuntimeSignaledActive_ = fgRuntimeSignaledActive;
+        lastFGRuntimeSignaledMultiplier_ = fgRuntimeSignaledMultiplier;
         lastCadenceTargetFps_ = cadenceTargetFps;
         lastCadenceScale_ = cadenceScale;
         lastNativeDriverTargetFps_ = nativeDriverTargetFps;
@@ -469,6 +499,16 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         const bool gameSleepRecent = g_ReflexLimiter.HasRecentGameSleep(reflexSleepGraceMs);
         const bool gameActivated = g_ReflexLimiter.IsGameActivated();
         const uint32_t gameSleepCount = g_ReflexLimiter.GetGameSleepCount();
+        const bool gameSleepCounterReset = gameSleepCount < reflexLastEvaluatedGameSleepCount_;
+        reflexSleepBaselineCount_ = ce::fps_limiter_policy::RebaseGameSleepBaselineForCounterEpoch(
+            reflexSleepBaselineCount_, gameSleepCount, reflexLastEvaluatedGameSleepCount_);
+        if (gameSleepCounterReset) {
+            TraceLog("Apply: REFLEX game Sleep epoch reset previous=%u current=%u",
+                     reflexLastEvaluatedGameSleepCount_, gameSleepCount);
+        }
+        const bool gameSleepAdvanced =
+            gameSleepObserved && gameSleepCount != reflexLastEvaluatedGameSleepCount_;
+        reflexLastEvaluatedGameSleepCount_ = gameSleepCount;
         const bool recentPresentGap = HasRecentLargePresentGap(500);
         if (recentPresentGap && !reflexRecentPresentGap_) {
             reflexSleepBaselineCount_ = gameSleepCount;
@@ -477,7 +517,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         const uint32_t freshSleepCount =
             (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
         const auto reflexDecision = ce::fps_limiter_policy::ResolveReflexPacingDecision(
-            explicitReflexMode, gameSleepObserved, gameSleepRecent, freshSleepCount, recentPresentGap);
+            explicitReflexMode, gameActivated, gameSleepObserved, gameSleepRecent, gameSleepAdvanced,
+            freshSleepCount, recentPresentGap);
         const bool reflexHandoffReady = reflexDecision.useGameSleepHandoff;
         const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
         const bool reflexDeviceReady = g_ReflexLimiter.HasDevice();
@@ -508,6 +549,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
             LARGE_INTEGER retQpc;
             QueryPerformanceCounter(&retQpc);
             lastApplyReturnQpc = retQpc.QuadPart;
+            return;
+        } else if (TryHandleReflexNativeWarmup(reflexDecision.useGameSleepWarmup, reflexPushOk,
+                                               gameSleepCount, freshSleepCount, recentPresentGap)) {
             return;
         } else {
             g_ReflexLimiter.DisableHybridPacing();

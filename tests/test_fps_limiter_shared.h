@@ -28,7 +28,17 @@ protected:
         g_FGCompat.SetDLSSFGActive(false);
         g_FGCompat.SetFSRFGActive(false);
         g_FGCompat.SetHeuristicFSRFGActive(false);
+        g_ReflexLimiter.SetGameActivated(false);
         g_FGCompat.SetDormantMode(true);  // Reset to default dormant state
+    }
+
+    void ConfirmDLSSFGPacing() {
+        g_ReflexLimiter.SetGameActivated(true);
+        g_ReflexLimiter.MarkGameSleep("unit-test");
+    }
+
+    void TearDown() override {
+        g_ReflexLimiter.SetGameActivated(false);
     }
 };
 

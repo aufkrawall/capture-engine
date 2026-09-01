@@ -372,6 +372,41 @@ TEST(StreamlineRuntimePolicyTest, DLSSGInterpolationEvidenceRequiresGeneratedFra
     EXPECT_TRUE(ce::streamline_runtime_policy::IsDLSSGInterpolationPresentEvidence(4));
 }
 
+TEST(StreamlineRuntimePolicyTest, ConfiguredMfgFactorIsPublishedDuringHalfArmedStartup) {
+    using ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier;
+
+    EXPECT_EQ(0, ResolvePublishedDLSSFGMultiplier(false, 2, 4, 5));
+    EXPECT_EQ(4, ResolvePublishedDLSSFGMultiplier(true, 2, 4, 5));
+    EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 2, 4, 2))
+        << "known runtime capability still clamps the configured factor";
+    EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 3, 0, 5));
+}
+
+TEST(StreamlineRuntimePolicyTest, ReflexWrappersCoalesceNestedNativeSleepPacing) {
+    namespace fs = std::filesystem;
+    const std::string streamline = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "streamline_hook_api.cpp");
+    const std::string reflex = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "common" / "reflex_limiter.h");
+    ASSERT_FALSE(streamline.empty());
+    ASSERT_FALSE(reflex.empty());
+
+    const size_t streamlineStart = streamline.find("slResult Hooked_slReflexSleep");
+    const size_t streamlineEnd = streamline.find("slResult Hooked_slReflexSetOptions", streamlineStart);
+    ASSERT_NE(streamlineStart, std::string::npos);
+    ASSERT_NE(streamlineEnd, std::string::npos);
+    const std::string streamlineBody = streamline.substr(streamlineStart, streamlineEnd - streamlineStart);
+    EXPECT_NE(streamlineBody.find("BeginGameSleepBoundary(\"Streamline\")"), std::string::npos);
+    EXPECT_NE(streamlineBody.find("EndGameSleepBoundary(ownsSleepBoundary"), std::string::npos);
+    EXPECT_EQ(streamlineBody.find("ApplyHybridPacingBeforeNativeSleep()"), std::string::npos);
+
+    const size_t nvapiStart = reflex.find("ReflexLimiter::ReflexDetour_Sleep");
+    ASSERT_NE(nvapiStart, std::string::npos);
+    const std::string nvapiBody = reflex.substr(nvapiStart);
+    EXPECT_NE(nvapiBody.find("BeginGameSleepBoundary(\"NvAPI\")"), std::string::npos);
+    EXPECT_NE(nvapiBody.find("EndGameSleepBoundary(ownsSleepBoundary"), std::string::npos);
+}
+
 TEST(StreamlineRuntimePolicyTest, DLSSGHealthWarnsAtStreakThenRepeatsSparsely) {
     using ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating;
     // Below the streak threshold: silent.

@@ -201,6 +201,7 @@ inline void FpsLimiter::ResetReflexNativePacingState() {
     externalNativeTargetFps_ = 0;
     externalNativeLoggedSuccess_ = false;
     reflexSleepBaselineCount_ = 0;
+    reflexLastEvaluatedGameSleepCount_ = 0;
     reflexRecentPresentGap_ = false;
     reflexLoggedSuccess_ = false;
 }

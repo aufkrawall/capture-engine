@@ -119,6 +119,13 @@ public:
         return gameSleepCount_.load(std::memory_order_acquire);
     }
 
+    void ResetGameSleepObservation() {
+        lastNativePacingSignalTick_.store(0, std::memory_order_release);
+        lastGameSleepTick_.store(0, std::memory_order_release);
+        gameSleepObserved_.store(false, std::memory_order_release);
+        gameSleepCount_.store(0, std::memory_order_release);
+    }
+
     void ConfigureHybridPacing(int64_t qpcFreq, int fps, int cadenceScale);
 
     void DisableHybridPacing() {
@@ -128,6 +135,59 @@ public:
     }
 
     void ApplyHybridPacingBeforeNativeSleep();
+
+    // Streamline's slReflexSleep can call the NvAPI Sleep entry point that CE
+    // also observes. Treat that nested traversal as one logical game sleep:
+    // only the outermost boundary owns hybrid pacing and commits activity
+    // evidence after the complete call succeeds.
+    bool BeginGameSleepBoundary(const char* sourceName = nullptr) {
+        const uint32_t previousDepth = s_GameSleepBoundaryDepth_++;
+        if (previousDepth == 0) {
+            ApplyHybridPacingBeforeNativeSleep();
+            return true;
+        }
+
+        const uint32_t count = coalescedNestedGameSleepCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 8 || (count % 1024) == 0) {
+            HookLogImportant("ReflexLimiter: Coalesced nested %s sleep boundary (depth=%u count=%u)",
+                             sourceName && sourceName[0] ? sourceName : "unknown", previousDepth + 1, count);
+        }
+        return false;
+    }
+
+    void EndGameSleepBoundary(bool ownsBoundary, bool succeeded, const char* sourceName = nullptr) {
+        if (s_GameSleepBoundaryDepth_ == 0) {
+            const uint32_t count = unmatchedGameSleepBoundaryCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (count <= 4) {
+                HookLogImportant("ReflexLimiter: Unmatched %s sleep boundary end (count=%u)",
+                                 sourceName && sourceName[0] ? sourceName : "unknown", count);
+            }
+            return;
+        }
+
+        --s_GameSleepBoundaryDepth_;
+        if (!ownsBoundary) {
+            return;
+        }
+        if (s_GameSleepBoundaryDepth_ != 0) {
+            const uint32_t count = unmatchedGameSleepBoundaryCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (count <= 4) {
+                HookLogImportant("ReflexLimiter: Outermost %s sleep ended with nested depth=%u (count=%u)",
+                                 sourceName && sourceName[0] ? sourceName : "unknown",
+                                 s_GameSleepBoundaryDepth_, count);
+            }
+            s_GameSleepBoundaryDepth_ = 0;
+            return;
+        }
+        if (succeeded && IsGameActivated()) {
+            MarkGameSleep(sourceName);
+            MarkNativePacingSignal();
+        }
+    }
+
+    uint32_t GetCoalescedNestedGameSleepCount() const {
+        return coalescedNestedGameSleepCount_.load(std::memory_order_acquire);
+    }
 
     // Returns true if we've successfully pushed an FPS limit via Reflex.
     // This means: functions resolved + device set + last push succeeded.
@@ -188,13 +248,13 @@ public:
     void SetGameActivated(bool activated) {
         bool wasActive = gameActivated_.exchange(activated, std::memory_order_acq_rel);
         if (activated && !wasActive) {
+            ResetGameSleepObservation();
             HookLogImportant("ReflexLimiter: Game ACTIVATED Reflex (via Streamline)");
         } else if (!activated && wasActive) {
             HookLogImportant("ReflexLimiter: Game DEACTIVATED Reflex (via Streamline)");
-            lastNativePacingSignalTick_.store(0, std::memory_order_release);
-            lastGameSleepTick_.store(0, std::memory_order_release);
-            gameSleepObserved_.store(false, std::memory_order_release);
-            gameSleepCount_.store(0, std::memory_order_release);
+        }
+        if (!activated) {
+            ResetGameSleepObservation();
         }
     }
 
@@ -259,6 +319,8 @@ private:
     std::atomic<ULONGLONG> lastGameSleepTick_{0};
     std::atomic<bool> gameSleepObserved_{false};
     std::atomic<uint32_t> gameSleepCount_{0};
+    std::atomic<uint32_t> coalescedNestedGameSleepCount_{0};
+    std::atomic<uint32_t> unmatchedGameSleepBoundaryCount_{0};
     std::atomic<uint32_t> lastPushedIntervalUs_{UINT32_MAX};
     PFN_NvAPI_D3D_SetSleepMode realSetSleepModeForHook_ = nullptr;  // Real SetSleepMode for detour forwarding
     PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding
@@ -276,6 +338,7 @@ private:
     std::atomic<int64_t> hybridQpcFrequency_{0};
     std::atomic<int64_t> hybridIntervalTicks_{0};
     std::atomic<int64_t> hybridTargetTick_{0};
+    static inline thread_local uint32_t s_GameSleepBoundaryDepth_ = 0;
 };
 
 // Global instance (forward-declared for static detour methods)
@@ -595,13 +658,11 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
             limiter.IsGameActivated() ? 1 : 0);
     }
 
-    limiter.ApplyHybridPacingBeforeNativeSleep();
+    const bool ownsSleepBoundary = limiter.BeginGameSleepBoundary("NvAPI");
 
     NvAPI_Status status = forwardSleep(pDev);
-    if (status == NVAPI_OK) {
-        limiter.MarkGameSleep("NvAPI");
-        limiter.MarkNativePacingSignal();
-    } else {
+    limiter.EndGameSleepBoundary(ownsSleepBoundary, status == NVAPI_OK, "NvAPI");
+    if (status != NVAPI_OK) {
         static std::atomic<int> s_sleepFailLogCount{0};
         const int failCount = s_sleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
         if (failCount < 5) {

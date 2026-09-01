@@ -340,6 +340,31 @@ inline int ResolveDLSSFGMultiplier(bool active, uint32_t requestedGeneratedFrame
     return multiplier > 0 ? multiplier : 2;
 }
 
+// The configured factor is the factor CE forwards to Streamline/NGX, so it is
+// also the useful user-facing factor while Streamline is only half armed. Some
+// integrations initially report their default 2x request and do not expose the
+// overridden MFG factor until CreateFeature in the main menu. Clamp against a
+// known runtime capability, but otherwise publish the configured intent rather
+// than showing a misleading transient 2x status.
+inline int ResolvePublishedDLSSFGMultiplier(bool active, int runtimeMultiplier,
+                                            int configuredMultiplier,
+                                            uint32_t capabilityMaxGeneratedFrames) {
+    if (!active) {
+        return 0;
+    }
+
+    int publishedMultiplier = std::clamp(runtimeMultiplier, 2, 4);
+    if (configuredMultiplier >= 2 && configuredMultiplier <= 4) {
+        publishedMultiplier = configuredMultiplier;
+    }
+    if (capabilityMaxGeneratedFrames > 0) {
+        const int capabilityMultiplier =
+            std::clamp(static_cast<int>(capabilityMaxGeneratedFrames) + 1, 2, 4);
+        publishedMultiplier = std::min(publishedMultiplier, capabilityMultiplier);
+    }
+    return publishedMultiplier;
+}
+
 inline uint32_t ResolveDLSSFGGeneratedFrames(bool active, uint32_t requestedGeneratedFrames, int multiplier) {
     if (!active) {
         return 0;

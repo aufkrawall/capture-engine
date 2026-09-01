@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-01 - Nominal DLSS-G and nested Reflex Sleep cannot halve a displayed-rate cap
+
+Gothic Remake session `20260831_223114` retained the corrected 120-fps NVIDIA driver target, but exposed two
+independent local pacing defects. Streamline reported DLSS-G ON/default 2x for about 19 seconds while GetState still
+reported only one presented frame, no Reflex Sleep occurred, and no FG feature existed; CE nevertheless divided the
+120 cap to 60. At real 4x activation, every Streamline `slReflexSleep` synchronously entered CE's NvAPI Sleep hook.
+Both wrappers applied the 33.3 ms hybrid group period and both incremented the evidence counter, producing roughly
+65 ms rendered groups / 60 displayed fps and prematurely satisfying native-handoff evidence.
+
+DLSS-G limiter scaling now requires its nominal runtime signal plus recent successful game-owned Reflex Sleep (or
+equivalent Vulkan native ownership). Pending/suspended production stays on the unscaled real-frame cadence and
+automatically re-enters 2x/3x/4x grouping when evidence resumes; diagnostics split `fgSignal` from pacing `fg` and
+name the proof. A thread-local logical-Sleep boundary gives only the outer Streamline/NvAPI traversal ownership of
+hybrid pacing and evidence, with sparse nested-coalescing diagnostics. The Streamline viewport reducer also publishes
+the configured `dlss_fg_factor` immediately, clamped by known capability, so a 4x override no longer appears as 2x
+until main-menu feature creation. During native recovery, only a newly advanced successful Sleep with an accepted
+driver target suppresses CE's fallback for that exact frame, removing the short double-cadence jitter window without
+letting merely recent stale evidence delay fallback. Reflex off/on also rebases any old high Sleep-counter baseline,
+so multiple suspension epochs cannot strand recovery. Focused limiter/Reflex and Streamline policy suites cover
+pending -> producing -> suspended transitions, progress-qualified recovery, exact nested ownership, wrapper wiring,
+and early factor publication. Hardware validation is pending. See `graphics-overrides-and-frame-pacing.md` and
+`overlay-fg-status.md`.
+
 ### 2026-08-31 - Capture startup cannot remove a concurrent final-output cap under MFG
 
 Session `gothicfglimitlogs` showed both a real brief encoder overload and an avoidable pacing transition. Before

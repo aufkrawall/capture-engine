@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-08-31 (composed capture/general limiter constraints, explicit final-output inject source semantics, and post-gap Reflex handoff)
+Last cross-checked: 2026-09-01 (DLSS-G production-qualified limiter scaling, single-owner nested Reflex sleep pacing, composed constraints, and progress-qualified post-gap handoff)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -12,7 +12,7 @@ Primary sources:
 - `captureengine/{display_timing_service.cpp,display_timing_policy.h,display_timing_correlation.h}`
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
-- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api}.cpp`
+- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api,streamline_hook_state}.cpp`
 - `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
@@ -398,10 +398,19 @@ Primary sources:
   legacy Vulkan game path without initializing a CE-owned context merely to probe it. FG state/multiplier is imported
   from shared NGX state before mode resolution.
 - The configured general limiter value always denotes the final displayed/output rate, independent of `basic`,
-  `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by an active 2x-4x
+  `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by a producing 2x-4x
   FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. A capture-sync
   target is interpreted in the source domain: WGC/DXGI and explicit DX12/Vulkan final-output inject routes include
   generated outputs, while an ordinary/base inject route contains only application-rendered frames.
+- **A nominal Streamline DLSS-G `ON` state is not production evidence.** Gothic Remake session `20260831_223114`
+  reported `optionsMode=on`, one presented frame, and the default 2x factor for about 19 seconds before its first
+  DLSS-G feature creation or Reflex Sleep. Treating that state as generating divided a 120-fps cap to 60 while the
+  game still issued one real Present per refresh. `IsFrameGenerationProducingForPacing()` now requires both the
+  DLSS-G runtime signal and a recent successful game-owned Reflex Sleep (or the Vulkan backend's equivalent active
+  native ownership). FSR FG and confirmed Smooth Motion retain their presentation-derived active signal. A Reflex
+  suspend or stale sleep returns DLSS-G to the unscaled one-slot-per-frame grid; fresh sleep evidence re-enters the
+  exact 2x/3x/4x group cadence. Active-state diagnostics separate `fgSignal=` from pacing `fg=` and report
+  `fgProof=inactive|pending|d3d-sleep|api-native-sleep|runtime`.
 - **Capture sync and the general limiter are concurrent constraints, not a priority list.**
   `ResolveLimiterTargetSelection()` expresses both in the final-output domain and selects the lower rate. The capture
   constraint is `captureFps * capture_sync_multiplier`; an ordinary/base inject route multiplies that value by the
@@ -428,15 +437,24 @@ Primary sources:
   rendered rate), while CE's local cadence, the post-present Reflex cadence and the hybrid spin keep pacing base frames.
   Third-party generated frames (FSR FG) stay on the base target: they never reach the NVIDIA cap, which throttles the
   game's own Reflex sleep, i.e. the render loop. `DriverLowLatencyIntervalCoversGeneratedFrames()` is the single
-  discriminator and reads one `FGCompatibility::GetRuntimeMode()` snapshot that also decides `fgActive`, so the two
-  can never disagree. The `FPS Limiter: Active (...)` line reports the value as `driver=`.
-- The hybrid Reflex spin (`ConfigureHybridPacing`) runs once per RENDERED frame and therefore takes the scaled
-  output-group period (`freq * cadenceScale / cap`); deriving it from the floored base target capped a 130 fps / 3x
-  configuration at 129.
+  discriminator and reads the same `FGCompatibility::GetRuntimeMode()` snapshot as production qualification, so the
+  driver interval and local cadence cannot classify different runtime kinds. The `FPS Limiter: Active (...)` line
+  reports the value as `driver=`.
+- The hybrid Reflex spin (`ConfigureHybridPacing`) runs once per LOGICAL game Sleep / rendered frame and therefore
+  takes the scaled output-group period (`freq * cadenceScale / cap`); deriving it from the floored base target capped
+  a 130 fps / 3x configuration at 129. Streamline's `slReflexSleep` may synchronously traverse CE's NvAPI Sleep inline
+  hook. A thread-local boundary depth now gives only the outer call ownership of hybrid pacing and successful-Sleep
+  evidence; the nested NvAPI observation is coalesced and logged sparsely. Before that ownership rule, one 4x logical
+  sleep advanced two 33.3 ms hybrid slots, yielding about 65 ms base groups / 60 displayed fps under a 120 cap, and
+  doubled the evidence counter used by native handoff.
 - A large Present gap re-bases the game-Sleep evidence counter. Three recent successful game Reflex Sleep calls after
   that edge now prove native pacing has recovered even while the 500 ms gap-diagnostic grace is still active. Waiting
   out the entire grace window layered CE's local cadence over an already healthy game-owned cadence during cutscene/FG
-  transitions and could add temporal jitter; old pre-gap Sleep observations still cannot trigger a handoff.
+  transitions and could add temporal jitter. On each of the first recovery calls, an accepted driver target plus an
+  actually advanced Sleep count suppresses CE's fallback for that frame only; unchanged merely-recent evidence resumes
+  fallback on the next evaluated frame, while the third fresh call enables stable hybrid handoff. Old pre-gap Sleep
+  observations still cannot trigger either recovery path. A Reflex off/on activation starts a new Sleep-counter epoch
+  and discards any larger baseline from the prior epoch, so repeated cutscene suspension cannot strand native recovery.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.

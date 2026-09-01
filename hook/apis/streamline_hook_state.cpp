@@ -545,6 +545,11 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
     bool anyActive = false;
     int combinedMultiplier = 0;
     size_t clearedActiveViewportCount = 0;
+    const int configuredMultiplier =
+        NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
+    const int publishedMultiplier =
+        ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier(
+            active, multiplier, configuredMultiplier, capabilityMax);
 
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
@@ -555,7 +560,8 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
         }
 
         if (active) {
-            streamline_hook_g_ViewportStates[viewportKey] = {true, multiplier, generatedFrames, capabilityMax};
+            streamline_hook_g_ViewportStates[viewportKey] = {
+                true, publishedMultiplier, generatedFrames, capabilityMax};
         } else if (clearAllViewportStatesForDisable) {
             clearedActiveViewportCount = streamline_hook_g_ViewportStates.size();
             streamline_hook_g_ViewportStates.clear();
@@ -593,11 +599,11 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
 
     if (stateChanged) {
         HookLog(
-            "Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u "
-            "source=%s clearAll=%d",
-            viewportKey, active ? 1 : 0, active ? multiplier : 0, generatedFrames, capabilityMax,
+            "Streamline Hook: Viewport %u state active=%d multiplier=%dx runtimeMultiplier=%dx "
+            "configuredMultiplier=%dx generatedFrames=%u capabilityMax=%u source=%s clearAll=%d",
+            viewportKey, active ? 1 : 0, active ? publishedMultiplier : 0,
+            active ? multiplier : 0, configuredMultiplier, generatedFrames, capabilityMax,
             source ? source : "runtime", clearAllViewportStatesForDisable ? 1 : 0);
     }
 
 }
-
