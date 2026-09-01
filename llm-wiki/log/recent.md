@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-01 - Resume restores a failed verification gate
+
+Portal RTX verification exposed that plain `--resume` retained the failed build identity but selected build-only
+stages, so a prior `--verify` could end with tests, lint, and sanitizers unrun. Resume now reads the validated failed
+manifest's authoritative `mode=verify` (with prior `--verify` as backward compatibility), restores verification
+before gate selection, and carries that mode through another failed resumed run. Focused Python tests cover verify,
+legacy-argument, and ordinary-build manifests; see `build.py.md`.
+
+### 2026-09-01 - Layer-created Vulkan queues need loader dispatch data
+
+Portal RTX session `20260901_071629` crashed twice during CE's initial Vulkan font upload. Both x64 dumps end in
+`SteamOverlayVulkanLayer64!vkQueueSubmit`; CE's reserved queue still began with `ICD_LOADER_MAGIC` (`0x01CDC0DE`)
+instead of the parent device's loader dispatch pointer. CE had widened queue family 0, called the next layer's
+`vkGetDeviceQueue` directly for index 1, and registered the result without the loader trampoline that normally
+initializes a newly returned dispatchable object. Steam therefore found no dispatch record and jumped through a
+null function slot. The later `hl2.exe` dumps are secondary: RTX Remix exited the host after its bridge died.
+
+`Capture_vkCreateDevice` now preserves the chain's `VK_LOADER_DATA_CALLBACK` before advancing its link. A reserved
+queue is published only after `pfnSetDeviceLoaderData` succeeds and its dispatch key matches the parent device. The
+loader-documented parent-pointer copy remains the compatibility path when an old loader supplies no callback;
+callback rejection, missing keys, and false success disable the reserved queue and retain the synchronized borrowed
+game-queue fallback. Ready/failure logs expose the exact loader-data outcome. Focused tests cover every outcome and
+pin initialization before `RegisterQueue`; see `overlay-rendering.md`.
+
 ### 2026-09-01 - Display-correlation phase cannot consume the inject texture pool
 
 Gothic Remake session `20260901_040907` was not encoder overload. Across the 187.3-second recording, NVENC emitted
@@ -203,18 +227,3 @@ include the publish playpath; operation/error-code diagnostics remain active.
 Bundled FFmpeg still disables protocols by default and now allows only
 file/RTMP/RTMPS/TCP/TLS using Windows Schannel; the RTMPS wrapper now forwards
 TCP_NODELAY to its underlying socket. See `live-streaming.md`.
-
-### 2026-08-30 - Export body hooks retry while armed, cheaply
-
-Audit follow-up to the route-agnostic first factory observation: the three `CreateDXGIFactory*` export body hooks
-were installed only on the disarmed→armed transition, so a first arm that preceded the load of `dxgi.dll` (or saw
-an unresolvable target) left the observation permanently incomplete. `RegisterDynamicFactoryHooks` now calls
-`EnsureFactoryExportBodyHooksInstalled` on **every** armed hook-monitor call, still before `g_armed` publishes.
-Cost discipline (`hook/wrappers/vulkan_dxgi_fifo_present.cpp`): a complete installation is one atomic conjunction
-(`AllFactoryExportBodyHooksInstalled`), an absent module is one `GetModuleHandleA` plus a single one-shot
-diagnostic, and a failed attempt is keyed on the loaded dxgi HMODULE (`s_attemptedDxgiModule` CAS) — an unchanged
-module image never re-runs the image-mapping on-disk RVA resolve, and a new/first-loaded module re-arms exactly
-one attempt. Source guards: `VulkanRendererPolicySourceTest.ExportBodyHooksRetryWhileArmedWithoutPollWork`.
-Also inspected the export body install mode: `InlineHook::InstallPublished` already composes with foreign entry
-patches (prepend/chain through the exact foreign entry, refusal of non-chainable patches) — no deep-hook change
-needed.

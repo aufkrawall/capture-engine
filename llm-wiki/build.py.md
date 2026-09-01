@@ -1,10 +1,12 @@
 # build.py
 
-Last cross-checked: 2026-08-13 (stable releases now build the exact dispatched commit through the strict-clean verify gate, emit and attest FFmpeg/libiconv corresponding source, scope GitHub tokens to network steps, pin official Actions by commit, and immediately delete every self-hosted run log; tests-only builds warn about modified product sources outside their compile set; previously 2026-08-08)
+Last cross-checked: 2026-09-01 (resume restores a failed manifest's verification mode; stable releases build the exact dispatched commit through the strict-clean verify gate, emit and attest FFmpeg/libiconv corresponding source, scope GitHub tokens to network steps, pin official Actions by commit, and immediately delete every self-hosted run log; tests-only builds warn about modified product sources outside their compile set)
 
 Primary sources:
 - `AGENTS.md`
 - `build.py`
+- `tools/build/build_{io,cli}.py`
+- `tools/python_tool_self_tests.py`
 - `.github/workflows/hardening-ci.yml`
 - `.github/workflows/release-stable.yml`
 - `tools/verify_pe_hardening.py`
@@ -15,6 +17,7 @@ Primary sources:
 - `hook/apis/dx12_ffx_suspend_overlay.cpp`
 - `common/sequence_lock.h`
 - `tools/tests/test_build_flags.py`
+- `tools/tests/test_build_resume.py`
 - `tools/tests/test_packaging.py`
 - `tools/tests/test_pe_hardening.py`
 - `tools/tests/test_clang_tidy_baseline.py`
@@ -129,7 +132,7 @@ If a product build fails after starting, correct the failure and resume the imme
 python build.py --resume --skip-updates --concise
 ```
 
-`--resume` refuses a successful/no-build/non-top-level predecessor, a header/manifest identity mismatch, any `build.py` content change since the failed attempt, `--no-build`, `--force-rebuild`, or a run without `--skip-updates`. A refused or cache-suspect resume falls back to the applicable normal incremental or clean gate. A clean attempt followed by a successful guarded resume constitutes one complete clean build transaction: every object was either compiled by the clean attempt or revalidated/recompiled after the fix, and all final link/package/verification stages completed on the resumed run. Note (observed 2026-08-13): resume reuses the failed attempt's build identity but the gate stages are still selected by the CURRENT invocation's flags - a failed `--verify` recovered with plain `--resume` only finishes the build/packaging, so pass `--resume --verify --skip-updates --concise` to re-run tests/lint/sanitizer on the resumed objects (a plain successful resume afterwards makes the next `--resume` refuse, so complete the gate in that one call).
+`--resume` refuses a successful/no-build/non-top-level predecessor, a header/manifest identity mismatch, any `build.py` content change since the failed attempt, `--no-build`, `--force-rebuild`, or a run without `--skip-updates`. A refused or cache-suspect resume falls back to the applicable normal incremental or clean gate. It restores verification mode from the failed manifest, including when the predecessor was itself a plain resumed verification run whose argument list no longer contains `--verify`; tests, lint, and sanitizer coverage therefore cannot silently collapse into a build-only success. A clean attempt followed by a successful guarded resume constitutes one complete clean build transaction: every object was either compiled by the clean attempt or revalidated/recompiled after the fix, and all final link/package/verification stages completed on the resumed run.
 
 Then run relevant tests against the freshly built binaries. The canonical full test-only command is:
 
@@ -212,7 +215,7 @@ Default quality mode currently:
 | `--fuzz-seconds N` | user-facing | Per-target fuzzing budget for `--run-fuzz` | Defaults to 60 s per target. |
 | `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. Do not use it on existing source files unless explicitly requested; whole-file formatting creates unrelated churn in the current tree. |
 | `--incremental` | user-facing | Reuse signature-proven unchanged objects | Default behavior remains force rebuild. Source, compiler-binary, flags, dependency-file, and project-header content signatures fail closed to recompilation; normal link/package/verification stages still run. |
-| `--resume` | user-facing | Resume the immediately preceding failed top-level product build | Implies incremental object validation and reuses the failed attempt's build identity. Requires `--skip-updates`; refuses successful/no-build/sanitizer-child predecessors, identity or build-script mismatch, `--no-build`, and `--force-rebuild`. |
+| `--resume` | user-facing | Resume the immediately preceding failed top-level product build | Implies incremental object validation, reuses the failed attempt's build identity, and restores its verification mode. Requires `--skip-updates`; refuses successful/no-build/sanitizer-child predecessors, identity or build-script mismatch, `--no-build`, and `--force-rebuild`. |
 | `--force-rebuild` | advanced | Delete `build/obj` before the normal build flow starts | Separate from the default `FORCE_REBUILD=1` behavior; this does an early physical cleanup of objects. |
 | `--sanitize` | user-facing | Build x64 with ASan + UBSan | Disables LTO, sets sanitizer env flags, covers CaptureEngine (including its private process-loopback worker role), mediaengine, x64 hook, and Vulkan, and skips x86 artifacts whose sanitizer runtime is unavailable. |
 | `--sanitize-x86` | advanced | Require x86 sanitizer coverage | Fails explicitly because the required MinGW x86 sanitizer runtime is unavailable; coverage is never silently claimed or skipped. |
@@ -237,7 +240,7 @@ Default quality mode currently:
 - `--tests-only` does not imply `--run-tests` by itself; it only short-circuits the build after the unit-test build path. Use both when you want focused test execution.
 - `--sanitize-regression-child` disables spawning another nested sanitizer regression pass.
 - `--incremental` turns off the script's default force-rebuild mode; unchanged-object reuse is signature validated and failure to evaluate a signature recompiles the object.
-- `--resume` implies incremental mode and reuses the latest failed top-level build number only after its manifest, recorded `build.py` SHA-256, current `build.py`, and `build_version.h` agree. It requires `--skip-updates` and is mutually exclusive with `--no-build`/`--force-rebuild`.
+- `--resume` implies incremental mode and reuses the latest failed top-level build number only after its manifest, recorded `build.py` SHA-256, current `build.py`, and `build_version.h` agree. It requires `--skip-updates`, is mutually exclusive with `--no-build`/`--force-rebuild`, and restores `mode=verify` before gate selection so plain resume cannot omit the failed run's tests, lint, or sanitizer stages.
 - `--no-build`, `--tests-only`, and the sanitizer child reuse the current build version instead of bumping `build_version.h`; only product-producing ordinary builds mint a new exact identity.
 - `--concise`, `--verbose-commands`, `--jobs`, `--log-file`, and `--detail-log` are presentation/execution-shaping options for default-mode classification; they do not by themselves suppress default-quality actions.
 - `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.

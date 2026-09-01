@@ -469,6 +469,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                  ce::vulkan_instance_registry::ToString(owner.resolution));
     }
 
+    const PFN_vkSetDeviceLoaderData setDeviceLoaderData = FindDeviceLoaderDataCallback(*pCreateInfo);
     VkLayerDeviceCreateInfo* chain_info = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
     LayerLog("Vulkan Layer: Searching for VK_LAYER_LINK_INFO in device pNext chain...");
     uint32_t chainDepth = 0;
@@ -739,21 +740,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
     g_VulkanReflexLimiter.SetDevice(*pDevice, dispatch);
 
-    if (overlayQueueReservation.reserved && dispatch->fp_vkGetDeviceQueue) {
-        dispatch->fp_vkGetDeviceQueue(*pDevice, overlayQueueReservation.queueFamilyIndex,
-                                      overlayQueueReservation.queueIndex, &dispatch->overlayQueue);
-        if (dispatch->overlayQueue != VK_NULL_HANDLE) {
-            dispatch->overlayQueueFamilyIndex = overlayQueueReservation.queueFamilyIndex;
-            VulkanLayerState::Get().RegisterQueue(dispatch->overlayQueue, *pDevice,
-                                                  overlayQueueReservation.queueFamilyIndex);
-            LayerLog("Vulkan Layer: Overlay submit queue ready (queue=%p family=%u index=%u)",
-                     (void*)dispatch->overlayQueue, overlayQueueReservation.queueFamilyIndex,
-                     overlayQueueReservation.queueIndex);
-        } else {
-            LayerLog("Vulkan Layer: [Warning] Reserved overlay queue family=%u index=%u could not be fetched",
-                     overlayQueueReservation.queueFamilyIndex, overlayQueueReservation.queueIndex);
-        }
-    }
+    InitializeReservedOverlayQueue(*pDevice, dispatch, overlayQueueReservation, setDeviceLoaderData);
 
     LayerLog("Vulkan Layer: Capture_vkCreateDevice END - success, device=%p", (void*)*pDevice);
     return VK_SUCCESS;

@@ -553,6 +553,10 @@ bool BuildOverlayQueueReservation(InstanceDispatch* instanceDispatch, VkPhysical
                                   const VkDeviceCreateInfo& createInfo,
                                   std::vector<VkDeviceQueueCreateInfo>& queueCreateInfos,
                                   std::vector<float>& widenedPriorities, OverlayQueueReservation& reservation);
+PFN_vkSetDeviceLoaderData FindDeviceLoaderDataCallback(const VkDeviceCreateInfo& createInfo);
+void InitializeReservedOverlayQueue(VkDevice device, DeviceDispatch* dispatch,
+                                    const OverlayQueueReservation& reservation,
+                                    PFN_vkSetDeviceLoaderData setDeviceLoaderData);
 struct OverlaySubmitTarget {
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

@@ -114,6 +114,25 @@ def main():
     # --force-rebuild) keeps the authoritative clean product build for
     # toolchain/dependency/ABI-sensitive changes.
     resume_flag = "--resume" in sys.argv
+    if resume_flag and no_build_flag:
+        log("ERROR: --resume requires a build and cannot be combined with --no-build")
+        sys.exit(2)
+    if resume_flag and not skip_updates:
+        log("ERROR: --resume requires --skip-updates so the toolchain/dependency boundary stays unchanged")
+        sys.exit(2)
+
+    resume_build_number: Optional[int] = None
+    resume_verification_mode = False
+    if resume_flag:
+        try:
+            resume_build_number, resume_verification_mode = read_failed_build_resume_state()
+        except RuntimeError as error:
+            log(f"ERROR: Cannot resume failed build: {error}")
+            sys.exit(1)
+        if resume_verification_mode and not verify_flag:
+            verify_flag = True
+            log("Resume restored verification mode from the failed top-level run")
+
     if verify_clean_flag and not verify_flag:
         log(
             "ERROR: --verify-clean requires --verify (it selects the clean product build "
@@ -126,13 +145,6 @@ def main():
         or (verify_flag and not verify_clean_flag and "--force-rebuild" not in sys.argv)
     )
     force_flag = not incremental_flag  # Force rebuild by default
-
-    if resume_flag and no_build_flag:
-        log("ERROR: --resume requires a build and cannot be combined with --no-build")
-        sys.exit(2)
-    if resume_flag and not skip_updates:
-        log("ERROR: --resume requires --skip-updates so the toolchain/dependency boundary stays unchanged")
-        sys.exit(2)
 
     # --jobs N: override parallel compilation worker count (default: all CPU cores)
     jobs_flag = None
@@ -162,12 +174,17 @@ def main():
         sys.exit(2)
 
     try:
-        current_build_number = resolve_build_number_for_invocation(
-            sanitize_regression_child=sanitize_regression_child,
-            resume_failed_build=resume_flag,
-            no_build=no_build_flag,
-            tests_only=tests_only_flag,
-        )
+        if resume_flag:
+            if resume_build_number is None:
+                raise RuntimeError("validated failed-build state is unavailable")
+            current_build_number = resume_build_number
+        else:
+            current_build_number = resolve_build_number_for_invocation(
+                sanitize_regression_child=sanitize_regression_child,
+                resume_failed_build=False,
+                no_build=no_build_flag,
+                tests_only=tests_only_flag,
+            )
     except RuntimeError as error:
         action = "resume failed build" if resume_flag else "reuse current build version"
         log(f"ERROR: Cannot {action}: {error}")

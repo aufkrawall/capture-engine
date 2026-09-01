@@ -31,7 +31,7 @@ anchors that predate the split are approximate.
     | `build_privacy.py` | privacy helpers: profile spellings, `-ffile-prefix-map` flags, manifest/summary redaction, length-preserving binary scrub, path-component scan |
     | `build_common.py` | shared constants, compile-commands path, sha256, PDB path, linker helpers |
     | `build_bootstrap.py` | verification context, MSYS2/Python-tool bootstrap, download+verify, file locking |
-    | `build_io.py` | safe copy/remove, `run_command`/`run_logged_subprocess`, process helpers |
+    | `build_io.py` | safe copy/remove, `run_command`/`run_logged_subprocess`, process helpers, build-identity and failed-resume manifest validation |
     | `build_fg_sdk.py` | FidelityFX/Streamline SDK headers + runtime DLL preparation |
     | `build_linux_msys2.py` | Linux-host MSYS2 package resolution/download |
     | `build_ffmpeg.py` | `FFmpegBuilder` + bundled runtime licenses |
@@ -45,7 +45,7 @@ anchors that predate the split are approximate.
     | `build_project_finalize.py` | `_finalize_project_build`: phases 6-8 (FG SDK, test apps, vulkan layer), licenses, PE hardening, packaging |
     | `build_corresponding_source.py` | exact pinned/patched FFmpeg + LGPL libiconv corresponding-source staging |
     | `build_packaging.py` | `captureengine.7z` / `testapps.7z` staging + validation |
-    | `build_cli.py` | `main()` CLI dispatch and top-level orchestration |
+    | `build_cli.py` | `main()` CLI dispatch, failed-run verification-mode restoration, and top-level orchestration |
 - `tools/config/`
   - Committed tool configuration (clang-format, clang-tidy, clangd, editorconfig,
     flake8, pyright), consumed via explicit paths by the build and lint drivers.

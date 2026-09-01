@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 686,
+    "entries": 687,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -705,6 +705,7 @@
       "tests/test_vulkan_fg_policy.cpp",
       "tests/test_vulkan_instance_registry.cpp",
       "tests/test_vulkan_layer_registration.cpp",
+      "tests/test_vulkan_loader_data.cpp",
       "tests/test_vulkan_present_chain_policy.cpp",
       "tests/test_vulkan_present_metering_policy.cpp",
       "tests/test_vulkan_present_timing_policy.cpp",

@@ -322,10 +322,10 @@ def read_build_version_number(version_header_path: Optional[str] = None) -> int:
     return int(match.group(1))
 
 
-def read_failed_build_resume_version(
+def read_failed_build_resume_state(
     manifest_path: Optional[str] = None, version_header_path: Optional[str] = None
-) -> int:
-    """Return the reusable identity of the immediately preceding failed top-level build."""
+) -> Tuple[int, bool]:
+    """Return the failed build identity and whether its verification gate must resume."""
     if manifest_path is None:
         manifest_path = os.path.join(VERIFICATION_DIR, "latest_manifest.json")
     try:
@@ -354,6 +354,15 @@ def read_failed_build_resume_version(
         raise RuntimeError(
             f"Failed-build identity mismatch: manifest={build_number}, build_version.h={header_build_number}"
         )
+    restore_verification_mode = manifest.get("mode") == "verify" or "--verify" in previous_args
+    return build_number, restore_verification_mode
+
+
+def read_failed_build_resume_version(
+    manifest_path: Optional[str] = None, version_header_path: Optional[str] = None
+) -> int:
+    """Return the reusable identity of the immediately preceding failed top-level build."""
+    build_number, _ = read_failed_build_resume_state(manifest_path, version_header_path)
     return build_number
 
 

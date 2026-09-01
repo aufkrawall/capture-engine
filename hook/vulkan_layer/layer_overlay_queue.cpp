@@ -11,6 +11,7 @@
 #include "layer_main.h"
 #include "overlay_submit_queue_policy.h"
 #include "vulkan_layer.h"
+#include "vulkan_loader_data.h"
 
 namespace {
 
@@ -46,6 +47,18 @@ void LockBorrowedQueueSubmission() {
 
 void UnlockBorrowedQueueSubmission() {
     BorrowedQueueSubmissionLock().unlock();
+}
+
+PFN_vkSetDeviceLoaderData FindDeviceLoaderDataCallback(const VkDeviceCreateInfo& createInfo) {
+    for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(createInfo.pNext); node;
+         node = node->pNext) {
+        if (node->sType != VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO)
+            continue;
+        const auto* layerInfo = reinterpret_cast<const VkLayerDeviceCreateInfo*>(node);
+        if (layerInfo->function == VK_LOADER_DATA_CALLBACK)
+            return layerInfo->u.pfnSetDeviceLoaderData;
+    }
+    return nullptr;
 }
 
 // Build the queue-create list CE wants the device created with. Returns true
@@ -155,6 +168,46 @@ bool BuildOverlayQueueReservation(InstanceDispatch* instanceDispatch, VkPhysical
         "non-graphics queue will fall back to borrowing one of its own graphics queues under CE's submission "
         "lock");
     return false;
+}
+
+void InitializeReservedOverlayQueue(VkDevice device, DeviceDispatch* dispatch,
+                                    const OverlayQueueReservation& reservation,
+                                    PFN_vkSetDeviceLoaderData setDeviceLoaderData) {
+    if (!reservation.reserved)
+        return;
+    if (!dispatch || !dispatch->fp_vkGetDeviceQueue) {
+        LayerLog(
+            "Vulkan Layer: [Warning] Reserved overlay queue family=%u index=%u cannot be fetched because "
+            "vkGetDeviceQueue is unavailable",
+            reservation.queueFamilyIndex, reservation.queueIndex);
+        return;
+    }
+
+    VkQueue queue = VK_NULL_HANDLE;
+    dispatch->fp_vkGetDeviceQueue(device, reservation.queueFamilyIndex, reservation.queueIndex, &queue);
+    if (queue == VK_NULL_HANDLE) {
+        LayerLog("Vulkan Layer: [Warning] Reserved overlay queue family=%u index=%u could not be fetched",
+                 reservation.queueFamilyIndex, reservation.queueIndex);
+        return;
+    }
+
+    const ce::vulkan_loader_data::InitializationResult loaderData =
+        ce::vulkan_loader_data::InitializeDeviceObject(setDeviceLoaderData, device, queue);
+    if (!loaderData.initialized()) {
+        LayerLog(
+            "Vulkan Layer: [Warning] Reserved overlay queue family=%u index=%u loader data initialization "
+            "failed (outcome=%s callbackResult=%d); disabling the reserved queue",
+            reservation.queueFamilyIndex, reservation.queueIndex,
+            ce::vulkan_loader_data::ToString(loaderData.outcome), static_cast<int>(loaderData.callbackResult));
+        return;
+    }
+
+    dispatch->overlayQueue = queue;
+    dispatch->overlayQueueFamilyIndex = reservation.queueFamilyIndex;
+    VulkanLayerState::Get().RegisterQueue(queue, device, reservation.queueFamilyIndex);
+    LayerLog("Vulkan Layer: Overlay submit queue ready (queue=%p family=%u index=%u loaderData=%s)",
+             (void*)queue, reservation.queueFamilyIndex, reservation.queueIndex,
+             ce::vulkan_loader_data::ToString(loaderData.outcome));
 }
 
 // Resolve which graphics queue the overlay's render pass belongs on for a

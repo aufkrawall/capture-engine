@@ -543,33 +543,6 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 build.compute_link_input_fingerprint.cache_clear()
                 self.assertFalse(build.validate_cached_link_output(str(output), env))
 
-    def test_resume_requires_matching_immediately_failed_build_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            header = Path(temporary) / "build_version.h"
-            manifest = Path(temporary) / "latest_manifest.json"
-            header.write_text("#define BUILD_NUMBER 8765\n", encoding="utf-8")
-            failed_state = {
-                "top_level": True,
-                "success": False,
-                "build_number": 8765,
-                "build_script_sha256": build.sha256_file(build.__file__),
-                "args": ["--skip-updates"],
-            }
-            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
-
-            self.assertEqual(build.read_failed_build_resume_version(str(manifest), str(header)), 8765)
-
-            failed_state["success"] = True
-            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "did not fail"):
-                build.read_failed_build_resume_version(str(manifest), str(header))
-
-            failed_state["success"] = False
-            failed_state["build_script_sha256"] = "stale"
-            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "build.py changed"):
-                build.read_failed_build_resume_version(str(manifest), str(header))
-
     def test_lint_findings_are_only_fatal_for_standalone_lint_invocation(self) -> None:
         self.assertTrue(build.is_standalone_lint_invocation(["--lint"]))
         self.assertTrue(build.is_standalone_lint_invocation(["--lint", "--concise", "--jobs=4"]))

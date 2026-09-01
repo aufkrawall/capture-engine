@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-08-31 (optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-01 (Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -28,6 +28,8 @@ Primary sources:
 - `hook/common/overlay_shader_{bytecode,spirv}.h`
 - `hook/vulkan_layer/vulkan_presentation_color.h`
 - `hook/vulkan_layer/vulkan_reflex_limiter.{h,cpp}`
+- `hook/vulkan_layer/layer_overlay_queue.cpp`
+- `hook/vulkan_layer/vulkan_loader_data.h`
 - `hook/vulkan_layer/shaders/overlay_{solid,textured}.frag`
 - `hook/common/system_metrics.{h,cpp}`
 - `hook/common/overlay_layout_policy.h`
@@ -41,6 +43,7 @@ Primary sources:
 - `tests/test_performance_metrics.cpp`
 - `tests/test_system_latency_metrics.cpp`
 - `tests/test_shared_runtime_state.cpp`
+- `tests/test_vulkan_loader_data.cpp`
 
 ## Summary
 
@@ -114,6 +117,16 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## Vulkan compute-composite route (compute-only present queues)
 
+- A reserved graphics queue is a layer-created dispatchable object: CE obtains it by calling the next
+  `vkGetDeviceQueue` directly, below the loader trampoline that normally stamps an object's loader dispatch pointer.
+  CE must preserve the `VK_LOADER_DATA_CALLBACK` from the device-create chain before advancing its link, invoke its
+  `pfnSetDeviceLoaderData` on the queue, and validate that the queue now carries the parent device's dispatch key
+  before registering or submitting it. Portal RTX session `20260901_071629` proved the failure signature: both x64
+  dumps stopped in `SteamOverlayVulkanLayer64!vkQueueSubmit` during CE's initial font upload; the private queue still
+  began with `ICD_LOADER_MAGIC` (`0x01CDC0DE`), so Steam found no device dispatch and jumped through a null slot.
+  Older loaders without the callback use the loader-documented first-pointer copy from the parent device. A rejected
+  callback, missing parent key, or post-callback mismatch disables only the reserved queue and leaves the existing
+  synchronized borrowed-game-queue route available. The ready/warning log names the initialization outcome.
 - When the game presents from a queue family without `VK_QUEUE_GRAPHICS_BIT`, the layer renders the overlay into a
   per-submission-slot offscreen image on a graphics queue and alpha-composites only its occupied rectangle onto the
   swapchain image from the present queue itself (`layer_overlay_compute.cpp`). The direct render-pass route would
@@ -156,6 +169,10 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## Validation and stale-risk
 
+- `VulkanLoaderDataTest` covers callback initialization, the old-loader parent-dispatch fallback, callback rejection,
+  false-success validation, invalid objects, and the production ordering that initializes before queue registration.
+  Portal RTX still needs a fresh runtime startup after installing the fixed build; the supplied failure session itself
+  can establish the pre-fix call chain and object state, not post-fix hardware behavior.
 - Portal RTX session `20260826_020732` runtime-validated the generic split-renderer overlay/crash fix but exposed the telemetry provenance gap: `hl2.exe` remained the correct profile/source PID while `NvRemixBridge.exe` owned Vulkan on RTX 5070 LUID `0xC88E`. The bridge published that exact LUID, but the sensor accepted only same-PID publishers and found no `hl2.exe` GPU-engine instances, leaving validity `0x0`. Direct-child publisher eligibility now follows the same process-lineage boundary as the Vulkan layer without changing config/source ownership. Fresh runtime validation of the numeric GPU/VRAM rows remains required.
 - Focused deterministic coverage pins draw-data notifications versus cache hits, failed-upload dirtiness, DX8/DX9 state-block reuse structure, DX10 constant invalidation, OpenGL array/fallback selection and state sentinels, glyph gutters, graph geometry, text-origin snapping, dynamic row sequences, and memory-value policy.
 - Live 4K validation covered native DX9 plus DirectDraw7 x64/x86 and showed valid RAM consumption rather than the unavailable marker, with the full overlay and graph rendered. Required build `0.1.4989` completed x64/x86 hooks and test apps, Vulkan layers, packaging/import closure, PE hardening, and PDB checks. All 14 focused host-telemetry tests pass. The no-build gate passed the remaining 1,644 native tests; the sole excluded cursor-bitmap test depends on the shared `IDC_ARROW`, which was temporarily transparent while the ChatGPT Windows-control session was active, consistent with cursor substitution and unrelated to overlay telemetry.
