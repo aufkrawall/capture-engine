@@ -191,10 +191,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
         VK_API_VERSION_MAJOR(apiVersion), VK_API_VERSION_MINOR(apiVersion), VK_API_VERSION_PATCH(apiVersion),
         pCreateInfo->enabledLayerCount, pCreateInfo->enabledExtensionCount);
 
-    // Mark Vulkan layer as active in shared memory
-    auto* shm = g_IPCClient.GetSharedMem();
-    if (shm)
-        shm->runtimeState.vulkanLayerActive = true;
+    // LayerIPC_Init publishes PID-scoped ownership before this entry point is
+    // active. Do not refresh it here: a resident layer from an older target
+    // must never overwrite the current target's claim during late teardown.
 
     // The ICD may already be mapped before the layer sees vkCreateInstance. If
     // so, patch it now; otherwise the second call below catches the module that

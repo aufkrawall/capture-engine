@@ -18,6 +18,29 @@
 
 // SharedMemoryLayout: the top-level mapped region every process agrees on.
 
+namespace ce::dlss_fg_publication {
+
+struct Snapshot {
+    uint32_t publisherPid = 0;
+    bool belongsToProcessTree = false;
+    bool active = false;
+    int32_t multiplier = 0;
+};
+
+inline constexpr uint32_t MakePayload(bool active, int32_t multiplier) {
+    return active ? 1u | ((static_cast<uint32_t>(multiplier) & 0xFFu) << 8) : 0u;
+}
+
+inline constexpr bool Active(uint32_t payload) {
+    return (payload & 1u) != 0;
+}
+
+inline constexpr int32_t Multiplier(uint32_t payload) {
+    return Active(payload) ? static_cast<int32_t>((payload >> 8) & 0xFFu) : 0;
+}
+
+}  // namespace ce::dlss_fg_publication
+
 #pragma pack(push, 8)
 
 struct SharedMemoryLayout {
@@ -417,8 +440,37 @@ public:
         std::atomic<int32_t> versionPatch{0};
         std::atomic<int32_t> qualityMode{-1};   // -1=Unknown, 0=Perf, 1=Bal, 2=Qual,
                                                 // 3=UltraPerf, 4=UltraQual, 5=DLAA
-        std::atomic<bool> fgActive{false};      // Redundant with g_FGCompat but useful for IPC/Host visibility
-        std::atomic<int32_t> mfgMultiplier{0};  // 0=No DLSS FG, 2/3/4 = effective output multiplier
+        // PID-tagged and coherent: the Vulkan layer may outlive the hook that
+        // published this state, and active/multiplier must never be read from
+        // different updates. A split renderer accepts either half of its exact
+        // renderer/client claim; the next unrelated game accepts neither.
+        std::atomic<uint64_t> fgPublication{0};
+
+        void PublishFGState(uint32_t publisherPid, bool active, int32_t multiplier) {
+            fgPublication.store(
+                ce::owned_publication::Make(
+                    publisherPid, ce::dlss_fg_publication::MakePayload(active, multiplier)),
+                std::memory_order_release);
+        }
+
+        ce::dlss_fg_publication::Snapshot ReadFGStateForProcess(
+            uint32_t processPid, uint64_t vulkanClaim) const {
+            const uint64_t publication = fgPublication.load(std::memory_order_acquire);
+            ce::dlss_fg_publication::Snapshot snapshot;
+            snapshot.publisherPid = ce::owned_publication::OwnerPid(publication);
+            const bool directPublisher = processPid != 0 && snapshot.publisherPid == processPid;
+            const bool claimedTreePublisher =
+                ce::vulkan_layer_claim::BelongsToProcess(vulkanClaim, processPid) &&
+                (snapshot.publisherPid == ce::vulkan_layer_claim::RendererPid(vulkanClaim) ||
+                 snapshot.publisherPid == ce::vulkan_layer_claim::ClientPid(vulkanClaim));
+            snapshot.belongsToProcessTree = directPublisher || claimedTreePublisher;
+            if (snapshot.belongsToProcessTree) {
+                const uint32_t payload = ce::owned_publication::Payload(publication);
+                snapshot.active = ce::dlss_fg_publication::Active(payload);
+                snapshot.multiplier = ce::dlss_fg_publication::Multiplier(payload);
+            }
+            return snapshot;
+        }
     } dlssState;
 
     // Encoder queue monitoring (Host -> Hook)

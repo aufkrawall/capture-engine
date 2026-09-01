@@ -241,8 +241,9 @@ typedef void(WINAPI* glMinSampleShading_t)(GLfloat);
 // Note: Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach)
 // instead
 inline bool IsVulkanPrimary() {
-    // Check if Vulkan ICD layer is active via shared memory flag
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->runtimeState.vulkanLayerActive)
+    // Check whether the Vulkan layer claim belongs to this exact process tree.
+    if (g_IPC && g_IPC->GetSharedMem() &&
+        g_IPC->GetSharedMem()->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId()))
         return true;
     return false;
 }

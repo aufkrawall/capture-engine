@@ -289,8 +289,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND
     // presenting.
     if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
-        uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-        if (sharedMemory->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
+        if (sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
+                GetCurrentProcessId(), GetTickCount64(), 200)) {
             if (dx11_hook_oPresent1)
                 return dx11_hook_oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
             return dx11_hook_oPresent(pSwapChain, SyncInterval, PresentFlags);

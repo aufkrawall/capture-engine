@@ -261,6 +261,19 @@ int SensorProcessMain(const AppConfig& config) {
                 luidSourcePid != 0 && luidSourcePid != sourcePid ? QueryDirectParentProcessId(luidSourcePid) : 0;
             const bool luidPublisherEligible = scan_host::metrics_policy::IsGpuTelemetryPublisherEligible(
                 sourcePid, luidSourcePid, luidSourceParentPid);
+            const uint64_t vulkanLayerClaim =
+                s.shm->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
+            const uint32_t vulkanRendererPid =
+                ce::vulkan_layer_claim::RendererPid(vulkanLayerClaim);
+            bool vulkanRendererAlive = true;
+            if (vulkanRendererPid != 0 && vulkanRendererPid != sourcePid)
+                QueryDirectParentProcessId(vulkanRendererPid, &vulkanRendererAlive);
+            if (vulkanRendererPid != 0 && !vulkanRendererAlive &&
+                s.shm->runtimeState.ReleaseVulkanLayerClaim(vulkanRendererPid)) {
+                LogInfo("[Sensors] Cleared stale Vulkan ownership: rendererPid=%u clientPid=%u",
+                        vulkanRendererPid,
+                        ce::vulkan_layer_claim::ClientPid(vulkanLayerClaim));
+            }
             const uint64_t inheritedRendererClaim =
                 s.shm->runtimeState.inheritedRendererClaim.load(std::memory_order_acquire);
             const uint32_t inheritedRendererPid = ce::inherited_renderer::RendererPid(inheritedRendererClaim);

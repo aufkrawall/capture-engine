@@ -233,16 +233,15 @@ void ApplyCombinedDLSSFGState(bool active,  int multiplier) {
         g_FGCompat.SetDLSSFGActive(true);
 
         if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->dlssState.fgActive = true;
-            g_IPC->GetSharedMem()->dlssState.mfgMultiplier = effectiveMultiplier;
+            g_IPC->GetSharedMem()->dlssState.PublishFGState(
+                GetCurrentProcessId(), true, effectiveMultiplier);
         }
     } else {
         g_FGCompat.SetDLSSFGActive(false);
         g_FGCompat.SetDLSSFGMultiplier(0);
 
         if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->dlssState.fgActive = false;
-            g_IPC->GetSharedMem()->dlssState.mfgMultiplier = 0;
+            g_IPC->GetSharedMem()->dlssState.PublishFGState(GetCurrentProcessId(), false, 0);
         }
     }
 

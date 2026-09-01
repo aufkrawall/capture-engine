@@ -46,9 +46,21 @@ void CheckAndInstallHooks() {
   // RoboCop DX12 regression this latch exists to prevent.
   bool vulkanLayerOwned = false;
   if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
-    uint64_t lastVulkan = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-    vulkanLayerOwned = sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
-                       (lastVulkan != 0 && (GetTickCount64() - lastVulkan) < 2000);
+    const uint32_t currentPid = GetCurrentProcessId();
+    const uint64_t claim = sharedMemory->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
+    vulkanLayerOwned = sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(currentPid) ||
+                       sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
+                           currentPid, GetTickCount64(), 2000);
+    if (claim != 0 && !ce::vulkan_layer_claim::BelongsToProcess(claim, currentPid)) {
+      static std::atomic<uint64_t> s_lastRejectedVulkanClaim{0};
+      if (s_lastRejectedVulkanClaim.exchange(claim, std::memory_order_relaxed) != claim) {
+        EarlyLog("CheckAndInstallHooks: ignoring unrelated Vulkan claim rendererPid=%lu clientPid=%lu "
+                 "currentPid=%lu",
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::RendererPid(claim)),
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::ClientPid(claim)),
+                 static_cast<unsigned long>(currentPid));
+      }
+    }
   }
   if (!s_checkedForVulkan || s_vulkanActive || vulkanLayerOwned) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
@@ -330,8 +342,14 @@ void CheckAndInstallHooks() {
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DX9 hooks installed (hook ptr=%p, init=%.1f ms)", (void*)g_DX9Hook, _initMs);
   } else if (!g_DX9Hook && d3d9DllLoaded) {
-    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dx11Loaded=%d, dxvkD3D9=%d)",
-             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dx11DllLoaded ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
+    static std::atomic<uint32_t> s_dx9SkipLogCount{0};
+    const uint32_t skipCount = s_dx9SkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (skipCount <= 4 || (skipCount & (skipCount - 1)) == 0) {
+      EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dx11Loaded=%d, "
+               "dxvkD3D9=%d, occurrence=%lu)",
+               s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dx11DllLoaded ? 1 : 0,
+               dxvkD3D9WrapperLoaded ? 1 : 0, static_cast<unsigned long>(skipCount));
+    }
   }
 
   // DirectDraw titles can still load or probe D3D12 through DXGI/driver helper

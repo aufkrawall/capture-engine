@@ -98,8 +98,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
             g_FGCompat.SetDLSSFGActive(true);
             if (g_IPC && g_IPC->GetSharedMem()) {
                 auto& state = g_IPC->GetSharedMem()->dlssState;
-                state.mfgMultiplier.store(evaluatedFGMultiplier, std::memory_order_release);
-                state.fgActive.store(true, std::memory_order_release);
+                state.PublishFGState(GetCurrentProcessId(), true, evaluatedFGMultiplier);
             }
         }
         const auto evaluation = nvngx_hook_g_FeatureRegistry.MarkEvaluated(const_cast<void*>(handle));

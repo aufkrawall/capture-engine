@@ -628,6 +628,10 @@ TEST(VulkanRendererPolicySourceTest, LayerOwnershipReopensTheLatchedVulkanDecisi
     // Ownership has to be sampled before the gate, otherwise the gate can only
     // ever observe the previous tick's value.
     EXPECT_LT(ownershipRead, gate);
+    EXPECT_NE(source.find("IsVulkanLayerOwnedByProcess(currentPid)"), std::string::npos);
+    EXPECT_NE(source.find("IsVulkanPresentRecentForProcess("), std::string::npos);
+    EXPECT_NE(source.find("ignoring unrelated Vulkan claim"), std::string::npos);
+    EXPECT_EQ(source.find("vulkanLayerActive"), std::string::npos);
 
     // Module presence must stay inside the gate, never a re-entry condition.
     const size_t moduleProbe = source.find("GetModuleHandleW(L\"vulkan-1.dll\")");
@@ -635,7 +639,7 @@ TEST(VulkanRendererPolicySourceTest, LayerOwnershipReopensTheLatchedVulkanDecisi
     EXPECT_LT(gate, moduleProbe);
 }
 
-TEST(VulkanRendererPolicySourceTest, PresentGateConsultsSharedFlagNotModulePresence) {
+TEST(VulkanRendererPolicySourceTest, PresentGateConsultsScopedClaimNotModulePresence) {
     namespace fs = std::filesystem;
     const fs::path sharedSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(sharedSource));
@@ -668,6 +672,43 @@ TEST(VulkanRendererPolicySourceTest, PresentGateConsultsSharedFlagNotModulePrese
     ASSERT_FALSE(dx11.empty());
     EXPECT_NE(dx11.find("if (DXGIShared::IsVulkanActive())"), std::string::npos);
     EXPECT_EQ(dx11.find("GetModuleHandleW(L\"vulkan-1.dll\")"), std::string::npos);
+}
+
+TEST(VulkanRendererPolicySourceTest, LayerPublishesOwnedVulkanAndDlssState) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::current_path();
+    const std::string layerIpc =
+        ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_ipc.cpp");
+    const std::string layerPresent =
+        ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
+    const std::string streamline =
+        ce::test_source::ReadFile(root / "hook" / "apis" / "streamline_hook_state.cpp");
+
+    EXPECT_NE(layerIpc.find("PublishVulkanLayerClaim(rendererPid, clientPid)"), std::string::npos);
+    EXPECT_NE(layerIpc.find("ReleaseVulkanLayerClaim(GetCurrentProcessId())"), std::string::npos);
+    EXPECT_NE(layerPresent.find("ReadFGStateForProcess(GetCurrentProcessId(), vulkanClaim)"),
+              std::string::npos);
+    EXPECT_NE(layerPresent.find("DLSS FG publication ignored"), std::string::npos);
+    EXPECT_NE(streamline.find("PublishFGState(GetCurrentProcessId(), false, 0)"), std::string::npos);
+}
+
+TEST(VulkanRendererPolicySourceTest, DeviceLossStopsOverlayWorkAndSkipsIdleWait) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::current_path();
+    const std::string render = ce::test_source::ReadFile(
+        root / "hook" / "vulkan_layer" / "layer_overlay_render.cpp");
+    const std::string lifecycle = ce::test_source::ReadFile(
+        root / "hook" / "vulkan_layer" / "layer_overlay.cpp");
+
+    const size_t earlyGate = render.find("if (state.deviceLost)");
+    const size_t slotProbe = render.find("ChooseSubmissionSlot(");
+    ASSERT_NE(earlyGate, std::string::npos);
+    ASSERT_NE(slotProbe, std::string::npos);
+    EXPECT_LT(earlyGate, slotProbe);
+    EXPECT_NE(render.find("probeFailure == VK_ERROR_DEVICE_LOST"), std::string::npos);
+    EXPECT_NE(render.find("all further overlay GPU work is disabled"), std::string::npos);
+    EXPECT_NE(lifecycle.find("if (!state.deviceLost)"), std::string::npos);
+    EXPECT_NE(lifecycle.find("skipping device-idle wait during cleanup"), std::string::npos);
 }
 
 TEST(VulkanRendererPolicySourceTest, FifoIsAppliedBeforeStreamlineDlssgSeesSwapchainCreation) {

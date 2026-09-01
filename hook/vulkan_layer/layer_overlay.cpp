@@ -130,7 +130,8 @@ static void CleanupOverlayState(OverlayState& state, VkDevice device, DeviceDisp
     LayerLog("Vulkan Layer: Cleaning up partially initialized overlay state");
 
     if (disp && device != VK_NULL_HANDLE) {
-        disp->fp_vkDeviceWaitIdle(device);
+        if (!state.deviceLost)
+            disp->fp_vkDeviceWaitIdle(device);
         CleanupComputePresentOverlay(state, disp);
 
         // Cleanup framebuffers
@@ -573,8 +574,12 @@ void CleanupOverlay(VkDevice device) {
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && device != VK_NULL_HANDLE) {
-        LayerLog("Vulkan Layer: Waiting for device idle...");
-        disp->fp_vkDeviceWaitIdle(device);
+        if (!state.deviceLost) {
+            LayerLog("Vulkan Layer: Waiting for device idle...");
+            disp->fp_vkDeviceWaitIdle(device);
+        } else {
+            LayerLog("Vulkan Layer: Device loss already observed; skipping device-idle wait during cleanup");
+        }
 
         // Safely cleanup all Vulkan resources
         for (auto fb : state.framebuffers) {

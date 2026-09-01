@@ -100,7 +100,7 @@ bool ShouldSuppressDirectDrawHooking() {
     }
 
     SharedMemoryLayout* shm = GetHookSharedMemory();
-    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+    if (!shm || !shm->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId())) {
         return false;
     }
 

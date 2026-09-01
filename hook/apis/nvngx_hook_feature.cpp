@@ -292,11 +292,10 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                 } else if (featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration) {
                     // DLSS Multi-Frame Generation (MFG) - Feature ID 18
                     // MFG generates 2x, 3x, or 4x frames per rendered frame
-                    state.fgActive = true;
                     const int mfgMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
                         GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
                         ReadNVNGXFGMultiplierParam(params, parameterOriginals));
-                    state.mfgMultiplier = mfgMultiplier;
+                    state.PublishFGState(GetCurrentProcessId(), true, mfgMultiplier);
 
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog(
@@ -313,7 +312,6 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     // FrameGenerationMultiplier parameter on these legacy IDs;
                     // do not hardcode 2x (session 20260811_222500: Talos
                     // configured for 4x MFG but late inject showed DLSS 2x).
-                    state.fgActive = true;
                     const int resolvedMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
                         GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
                         ReadNVNGXFGMultiplierParam(params, parameterOriginals));
@@ -326,7 +324,7 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     const int fgMultiplier = (resolvedMultiplier >= 3 || g_FGCompat.GetFGMultiplier() < 2)
                                                  ? resolvedMultiplier
                                                  : g_FGCompat.GetFGMultiplier();
-                    state.mfgMultiplier = fgMultiplier;
+                    state.PublishFGState(GetCurrentProcessId(), true, fgMultiplier);
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X, %dx multiplier)", featureID,
                                  fgMultiplier);

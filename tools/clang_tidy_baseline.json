@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 687,
+    "entries": 688,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -562,6 +562,7 @@
       "tests/test_config_ue5.cpp",
       "tests/test_crash_dump_policy.cpp",
       "tests/test_crash_handler.cpp",
+      "tests/test_cross_process_graphics_publication.cpp",
       "tests/test_cursor_bitmap.cpp",
       "tests/test_cursor_geometry.cpp",
       "tests/test_d3d11_context_wrapper_source.cpp",

@@ -57,9 +57,9 @@ inline DWORD ResolveFreezeDumpTargetThread(DWORD resolvedThreadId, bool presentI
 }
 
 // Liveness published by a present path that cannot call Heartbeat() itself -
-// currently the Vulkan layer's `runtimeState.vulkanPresentTick`, which lives in
-// a separate DLL. A tick that is never published, or one from the future, is
-// not liveness.
+// currently the Vulkan layer's PID-tagged present publication, which lives in
+// a separate DLL. This pure timestamp helper remains useful to test the recency
+// boundary after the shared-memory owner check has succeeded.
 inline bool IsObservedPresentRecent(uint64_t lastPresentTickMs, uint64_t nowTickMs, uint64_t maxAgeMs) {
     return lastPresentTickMs != 0 && nowTickMs >= lastPresentTickMs && (nowTickMs - lastPresentTickMs) <= maxAgeMs;
 }

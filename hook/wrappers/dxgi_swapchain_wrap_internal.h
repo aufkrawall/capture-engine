@@ -167,14 +167,8 @@ inline bool ShouldYieldToVulkanLayer() {
         return false;
     }
 
-    const uint64_t lastVulkan = shm->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-    if (lastVulkan == 0) {
-        return false;
-    }
-
-    const uint64_t now = GetTickCount64();
-    return shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) && now >= lastVulkan &&
-           (now - lastVulkan) < 200;
+    return shm->runtimeState.IsVulkanPresentRecentForProcess(
+        GetCurrentProcessId(), GetTickCount64(), 200);
 }
 
 inline const char* DetectWrappedSwapchainApi(IUnknown* pDevice, bool isD3D12) {

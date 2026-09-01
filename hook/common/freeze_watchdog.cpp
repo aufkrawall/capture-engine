@@ -265,7 +265,8 @@ bool FreezeWatchdog::HasLiveRenderLoopEvidence() const {
     if (vulkanLayerRenderLoopObserved_.load(std::memory_order_acquire)) {
         const SharedMemoryLayout* sharedMemory = GetHookSharedMemory();
         vulkanLayerStillActive =
-            sharedMemory && sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+            sharedMemory &&
+            sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId());
     }
     return ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(
         d3dRenderLoopObserved_.load(std::memory_order_acquire),
@@ -287,18 +288,18 @@ void FreezeWatchdog::PollCrossApiPresentLiveness() {
     if (!sharedMemory) {
         return;
     }
-    if (!sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+    const uint32_t currentPid = GetCurrentProcessId();
+    if (!sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(currentPid)) {
         return;
     }
 
-    const uint64_t lastPresentTick = sharedMemory->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
     // Same 2 s recency window the hook-install Vulkan-ownership check uses, and
     // four watchdog polls wide, so the heartbeat tracks the layer's real present
     // rate instead of the poll rate. A stale tick deliberately produces no
     // heartbeat: that is a Vulkan render loop that stopped, which is the one
     // case where this watchdog should still be allowed to fire.
-    if (!ce::freeze_watchdog_policy::IsObservedPresentRecent(lastPresentTick, GetTickCount64(),
-                                                             kCrossApiPresentMaxAgeMs)) {
+    if (!sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
+            currentPid, GetTickCount64(), static_cast<uint32_t>(kCrossApiPresentMaxAgeMs))) {
         return;
     }
 
@@ -307,7 +308,8 @@ void FreezeWatchdog::PollCrossApiPresentLiveness() {
     // two run on different threads; whichever proves itself first keeps the
     // claim instead of the two overwriting each other every poll. Refreshing a
     // claim this poll already owns still tracks Vulkan swapchain recreation.
-    const DWORD presentThreadId = sharedMemory->runtimeState.vulkanPresentThreadId.load(std::memory_order_acquire);
+    const DWORD presentThreadId =
+        sharedMemory->runtimeState.GetVulkanPresentThreadForProcess(currentPid);
     const DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
     if (presentThreadId != 0 && presentThreadId != monitoredTid &&
         (monitoredTid == 0 || monitoredThreadFromVulkanLayer_.load(std::memory_order_acquire))) {

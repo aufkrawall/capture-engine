@@ -29,7 +29,7 @@ inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan(
 // chain, and no later injection can add one, because CE's whole Vulkan
 // present/overlay path lives in that layer DLL rather than in the injected hook.
 // Session logs/20260818_224257 (Strange Brigade Vulkan, CE started second) shows
-// the consequence: no vulkan_layer*.log at all, vulkanLayerActive never set, and
+// the consequence: no vulkan_layer*.log at all, no Vulkan ownership claim, and
 // the hook falling through to the D3D path with no overlay.
 //
 // Residency is safe because the layer is inert without a host: it finds no

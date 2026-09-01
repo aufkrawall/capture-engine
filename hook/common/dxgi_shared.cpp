@@ -576,7 +576,7 @@ bool IsVulkanActive() {
         return true;
     }
     if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
-        return sharedMemory->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+        return sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId());
     }
     return false;
 }

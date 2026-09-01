@@ -45,8 +45,14 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, recordingHealthFlags));
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, screenGrabTargetSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, inheritedRendererClaim));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, vulkanLayerClaim));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, vulkanOverlayClaim));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, vulkanPresentPublication));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, systemMetrics));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, displayTiming));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, dlssState));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::DLSSState));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::DLSSState, fgPublication));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));

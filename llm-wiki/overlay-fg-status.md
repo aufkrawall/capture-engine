@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-09-01 (configured Streamline MFG-factor publication before feature creation)
+Last cross-checked: 2026-09-01 (PID-scoped Vulkan/DLSS FG publication, shared ABI 53)
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -12,6 +12,8 @@ Primary sources:
 - `build.py`
 - `hook/common/streamline_runtime_policy.h`
 - `hook/apis/{streamline_hook,streamline_hook_state}.cpp`
+- `common/shared_defs_detail/{capture_state,shared_memory_layout}.h`
+- `tests/test_shared_runtime_state.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
 - `tests/{test_streamline_runtime_policy,test_streamline_runtime_policy_part2}.cpp`
 
@@ -85,7 +87,7 @@ This page records how the current tree publishes visible FG status to the overla
 - Talos `installed/captureengine/logs/20260425_181251` showed no final authoritative OFF evidence after a menu-side `DLSS FG -> all FG off` request: Streamline `GetState` remained active and PostSL kept submitting, so publication correctly retained the last known DLSS FG runtime state. The current diagnostics now log fresh `sl.*.dll` load inspection, `slGetFeatureFunction` lookup outcomes, returned-wrapper fallback use, proactive hook gaps, and sampled `slDLSSGGetState` options/state so the next repro can distinguish a missed hook seam from the game simply delaying the real Streamline OFF call until 3D rendering resumes.
 - Talos `installed/captureengine/logs/20260425_191325` proved the next upstream stale-label seam: after a captured `slDLSSGSetOptions(ON)` on viewport `1`, the later menu-side off surfaced as an authoritative `slDLSSGGetState(optionsMode=off)` with capability and fence evidence on viewport `0`, not as another captured `SetOptions(OFF)`. The Streamline viewport aggregator now clears all cached DLSSG viewport runtime states on successful non-suppressed `SetOptions(OFF)` and on evidence-backed disabled `GetState` readbacks, so a stale active sibling viewport cannot keep the visible overlay label on `DLSS FG` in a 2D menu.
 - **The Vulkan layer is a separate DLL, so its FG detector is not the hook DLL's.** `g_FGCompat` in
-  `VK_LAYER_CE_overlay` is mirrored from `SharedMemory::dlssState` (`fgActive`, `mfgMultiplier`) on the present path,
+  `VK_LAYER_CE_overlay` is mirrored from `SharedMemory::dlssState::fgPublication` on the present path,
   and `PublishDetectedOverlayFGMetrics` snapshots that mirror. Until 2026-08-31 the mirror sat inside the FPS
   limiter's `if (!asyncPresentDetected)` block in `Capture_vkQueuePresentKHR`, which is dead for the rest of the
   session once that latch trips. Portal RTX session `20260831_054801`: the latch tripped 7.5 s in
@@ -94,9 +96,19 @@ This page records how the current tree publishes visible FG status to the overla
   (DLSSG.MultiFrameCount=2)` and `FG: DLSS FG multiplier 4 -> 3`, and `vulkan_layer.log` never moved past its startup
   `FG: DLSS FG multiplier 0 -> 4`. The overlay showed the factor the game was started with for the whole run. The
   mirror now runs on every present, independently of limiter state.
+- Shared ABI 53 makes that hook-to-layer publication one coherent 64-bit value containing publisher PID, active
+  state, and multiplier. The layer accepts it only from its own exact renderer/client claim. Session
+  `20260901_174634` proved why both identities are required: Portal RTX's child renderer left DLSS FG 3x published;
+  Filter Tester then mirrored that stale value and displayed DLSS FG despite having no DLSS runtime. The same stale
+  session also left Vulkan ownership set, causing a later Talos DX12 process that merely loaded `vulkan-1.dll` to
+  bypass every DXGI/D3D hook. Vulkan ownership, recent-present evidence, present-thread evidence, and overlay-active
+  evidence are now PID-tagged publications scoped to the renderer/client process tree. An unrelated process rejects
+  them even if the old publisher is still alive or never ran shutdown; owner-only compare-exchange teardown prevents
+  an older layer from clearing a newer target. The sensor loop still reaps provably dead claims as hygiene.
 - The NGX side of that path is `ProcessEvaluateFeature`: every successful frame-generation `EvaluateFeature` writes
-  the observed factor to both `g_FGCompat` and `dlssState.mfgMultiplier`, so an in-game MFG change is authoritative at
-  the next evaluation. `DLSSG.MultiFrameCount` counts *generated* frames, so the visible factor is that value plus one.
+  the observed factor to both `g_FGCompat` and the coherent PID-tagged publication, so an in-game MFG change is
+  authoritative at the next evaluation. `DLSSG.MultiFrameCount` counts *generated* frames, so the visible factor is
+  that value plus one.
 - Current tests explicitly require:
   - `FSR FG` to publish as `FSR FG`
   - `DLSS FG` to publish as `DLSS FG`
@@ -111,6 +123,7 @@ This page records how the current tree publishes visible FG status to the overla
     sparse-contrast and module-absent windows remain rejected
   - confirmed Smooth Motion to stay latched across pacing/cap changes but clear immediately for competing FG evidence
   - idle Streamline support to permit Smooth Motion confirmation while active Streamline/DLSS/FSR evidence blocks it
+  - a Portal renderer/client publication to be invisible to later Filter Tester and Talos process identities
 - Source-contract coverage requires both the direct DX11 and Vulkan render paths to publish detected status before
   overlay rendering, and requires the Vulkan layer build to link the generic publisher implementation.
 - `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, including both directions of the freshness rule: a stale planner `DLSS FG` publication overridden by the latest DX12-visible `FSR FG` / `off` state, and a newer planner `off` update beating an older cached preferred `DLSS FG` state.

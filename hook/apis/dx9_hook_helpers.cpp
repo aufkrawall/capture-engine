@@ -126,7 +126,7 @@ bool ShouldSkipDX9PresentForVulkan() {
 
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
+    if (!shm || !shm->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId()))
         return false;
 
     static int vulkanYieldLogCount = 0;
@@ -142,9 +142,9 @@ bool ShouldSkipDX9OverlayForVulkan() {
 
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
+    if (!shm || !shm->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId()))
         return false;
-    if (!shm->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive))
+    if (!shm->runtimeState.IsVulkanOverlayActiveForProcess(GetCurrentProcessId()))
         return false;
 
     static int overlaySkipLogCount = 0;

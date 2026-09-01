@@ -130,6 +130,8 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return false;
 
     OverlayState& state = it->second;
+    if (state.deviceLost)
+        return false;
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)
         return false;
@@ -284,7 +286,13 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         },
         ringMayGrow);
     if (!slotChoice.valid || probeFailure != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Submission-slot fence probe FAILED with result %d", probeFailure);
+        if (probeFailure == VK_ERROR_DEVICE_LOST) {
+            state.deviceLost = true;
+            LayerLog("Vulkan Layer: device loss latched from submission-slot fence probe; "
+                     "all further overlay GPU work is disabled for this device");
+        } else {
+            LayerLog("Vulkan Layer: Submission-slot fence probe FAILED with result %d", probeFailure);
+        }
         return false;
     }
     if (slotChoice.growRing) {
@@ -321,6 +329,8 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     }
 
     if (fenceResult != VK_SUCCESS) {
+        if (fenceResult == VK_ERROR_DEVICE_LOST)
+            state.deviceLost = true;
         LayerLog("Vulkan Layer: Submission-slot fence wait FAILED with result %d (slot %u, image %u)", fenceResult,
                  submissionSlot, imageIndex);
         return false;
@@ -466,9 +476,12 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     // A borrowed queue is the game's, and VkQueue is externally synchronized:
     // hold the same lock the layer's own vkQueueSubmit wrappers take for it.
     (void)borrowedSubmitQueue;
-    if (disp->fp_vkResetFences(device, 1, &fence) != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Failed to reset overlay submission fence (slot %u, image %u)", submissionSlot,
-                 imageIndex);
+    const VkResult resetResult = disp->fp_vkResetFences(device, 1, &fence);
+    if (resetResult != VK_SUCCESS) {
+        if (resetResult == VK_ERROR_DEVICE_LOST)
+            state.deviceLost = true;
+        LayerLog("Vulkan Layer: Failed to reset overlay submission fence (slot %u, image %u, result=%d)",
+                 submissionSlot, imageIndex, resetResult);
         return false;
     }
     VkResult submitResult = VK_SUCCESS;
@@ -477,6 +490,8 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         submitResult = disp->fp_vkQueueSubmit(submitQueue, 1, &submitInfo, fence);
     }
     if (submitResult != VK_SUCCESS) {
+        if (submitResult == VK_ERROR_DEVICE_LOST)
+            state.deviceLost = true;
         LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (slot %u, image %u)", submitResult,
                  submissionSlot, imageIndex);
         return false;

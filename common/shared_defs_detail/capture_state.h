@@ -37,6 +37,42 @@ inline constexpr uint32_t ClientPid(uint64_t claim) {
 
 }  // namespace ce::inherited_renderer
 
+namespace ce::owned_publication {
+
+inline constexpr uint64_t Make(uint32_t ownerPid, uint32_t payload) {
+    return (static_cast<uint64_t>(ownerPid) << 32) | static_cast<uint64_t>(payload);
+}
+
+inline constexpr uint32_t OwnerPid(uint64_t publication) {
+    return static_cast<uint32_t>(publication >> 32);
+}
+
+inline constexpr uint32_t Payload(uint64_t publication) {
+    return static_cast<uint32_t>(publication & 0xFFFFFFFFull);
+}
+
+}  // namespace ce::owned_publication
+
+namespace ce::vulkan_layer_claim {
+
+inline constexpr uint64_t Make(uint32_t rendererPid, uint32_t clientPid) {
+    return ce::inherited_renderer::MakeClaim(rendererPid, clientPid);
+}
+
+inline constexpr uint32_t RendererPid(uint64_t claim) {
+    return ce::inherited_renderer::RendererPid(claim);
+}
+
+inline constexpr uint32_t ClientPid(uint64_t claim) {
+    return ce::inherited_renderer::ClientPid(claim);
+}
+
+inline constexpr bool BelongsToProcess(uint64_t claim, uint32_t processPid) {
+    return processPid != 0 && (RendererPid(claim) == processPid || ClientPid(claim) == processPid);
+}
+
+}  // namespace ce::vulkan_layer_claim
+
 #pragma pack(push, 8)
 
 struct alignas(8) CaptureState {
@@ -170,7 +206,6 @@ struct alignas(8) CaptureState {
     std::atomic<bool> captureRequested{false};       // Hooks should keep feeding frames (warmup + live recording)
     std::atomic<bool> isRecording{false};            // File output and REC overlay indicator are live
     std::atomic<bool> audioOnly{false};              // true = audio-only recording mode (no video)
-    std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     // Exact child PID whose inherited Vulkan eligibility was proven by the
     // layer, packed together with the profiled client PID the proof was made
@@ -190,8 +225,18 @@ struct alignas(8) CaptureState {
     // dereferenced null). Both halves live in one 64-bit value so every reader
     // observes them as a single consistent pair.
     std::atomic<uint64_t> inheritedRendererClaim{0};
-    std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan
-    std::atomic<uint64_t> vulkanPresentTick{0};      // GetTickCount64 of last Vulkan present
+    // Vulkan ownership is also process-tree scoped. A resident or abruptly
+    // terminated layer can leave shared memory behind, so a session-global
+    // boolean is not evidence for the next unrelated game. Direct renderers
+    // publish themselves in both halves; split renderers publish the child and
+    // its profiled client. Present and overlay publications carry the renderer
+    // PID too, making stale activity harmless even when publisher cleanup never
+    // runs. The present tick is the low 32 bits of GetTickCount64; unsigned
+    // subtraction preserves short recency windows across the 49-day wrap.
+    std::atomic<uint64_t> vulkanLayerClaim{0};
+    std::atomic<uint64_t> vulkanOverlayClaim{0};
+    std::atomic<uint64_t> vulkanPresentThreadPublication{0};
+    std::atomic<uint64_t> vulkanPresentPublication{0};
 
     // Transient overlay notification (host -> hook overlay)
     // notificationExpiry: GetTickCount64() value after which notification disappears (0 = none)
@@ -201,6 +246,106 @@ struct alignas(8) CaptureState {
 
     bool HasRuntimeFlag(uint32_t flag) const {
         return (runtimeFlags.load(std::memory_order_acquire) & flag) != 0;
+    }
+
+    uint64_t PublishVulkanLayerClaim(uint32_t rendererPid, uint32_t clientPid) {
+        if (rendererPid == 0 || clientPid == 0)
+            return 0;
+        return vulkanLayerClaim.exchange(ce::vulkan_layer_claim::Make(rendererPid, clientPid),
+                                         std::memory_order_acq_rel);
+    }
+
+    bool IsVulkanLayerOwnedByProcess(uint32_t processPid) const {
+        return ce::vulkan_layer_claim::BelongsToProcess(
+            vulkanLayerClaim.load(std::memory_order_acquire), processPid);
+    }
+
+    uint64_t PublishVulkanPresent(uint32_t rendererPid, uint32_t threadId, uint64_t tickMs) {
+        const uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        if (rendererPid == 0 || ce::vulkan_layer_claim::RendererPid(claim) != rendererPid)
+            return 0;
+        const uint64_t threadPublication = ce::owned_publication::Make(rendererPid, threadId);
+        vulkanPresentThreadPublication.store(threadPublication, std::memory_order_release);
+        vulkanPresentPublication.store(
+            ce::owned_publication::Make(rendererPid, static_cast<uint32_t>(tickMs)),
+            std::memory_order_release);
+        return threadPublication;
+    }
+
+    void ClearVulkanPresentThread(uint64_t threadPublication) {
+        if (threadPublication == 0)
+            return;
+        vulkanPresentThreadPublication.compare_exchange_strong(
+            threadPublication, 0, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+
+    bool IsVulkanPresentRecentForProcess(uint32_t processPid, uint64_t nowTickMs,
+                                         uint32_t maxAgeMs) const {
+        const uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        if (!ce::vulkan_layer_claim::BelongsToProcess(claim, processPid))
+            return false;
+        const uint64_t publication = vulkanPresentPublication.load(std::memory_order_acquire);
+        if (vulkanLayerClaim.load(std::memory_order_acquire) != claim)
+            return false;
+        if (ce::owned_publication::OwnerPid(publication) != ce::vulkan_layer_claim::RendererPid(claim))
+            return false;
+        const uint32_t presentTick = ce::owned_publication::Payload(publication);
+        return presentTick != 0 && static_cast<uint32_t>(nowTickMs) - presentTick <= maxAgeMs;
+    }
+
+    uint32_t GetVulkanPresentThreadForProcess(uint32_t processPid) const {
+        const uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        if (!ce::vulkan_layer_claim::BelongsToProcess(claim, processPid))
+            return 0;
+        const uint64_t publication = vulkanPresentThreadPublication.load(std::memory_order_acquire);
+        if (vulkanLayerClaim.load(std::memory_order_acquire) != claim)
+            return 0;
+        return ce::owned_publication::OwnerPid(publication) == ce::vulkan_layer_claim::RendererPid(claim)
+                   ? ce::owned_publication::Payload(publication)
+                   : 0;
+    }
+
+    bool SetVulkanOverlayActive(uint32_t rendererPid, bool active) {
+        const uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        if (ce::vulkan_layer_claim::RendererPid(claim) != rendererPid)
+            return false;
+        if (active) {
+            vulkanOverlayClaim.store(claim, std::memory_order_release);
+            SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, true);
+            return true;
+        }
+        uint64_t expected = claim;
+        if (!vulkanOverlayClaim.compare_exchange_strong(
+                expected, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return false;
+        }
+        SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
+        return true;
+    }
+
+    bool IsVulkanOverlayActiveForProcess(uint32_t processPid) const {
+        const uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        if (!ce::vulkan_layer_claim::BelongsToProcess(claim, processPid) ||
+            vulkanOverlayClaim.load(std::memory_order_acquire) != claim) {
+            return false;
+        }
+        return vulkanLayerClaim.load(std::memory_order_acquire) == claim;
+    }
+
+    bool ReleaseVulkanLayerClaim(uint32_t rendererPid) {
+        uint64_t claim = vulkanLayerClaim.load(std::memory_order_acquire);
+        while (claim != 0 && ce::vulkan_layer_claim::RendererPid(claim) == rendererPid) {
+            uint64_t overlayClaim = claim;
+            if (vulkanOverlayClaim.compare_exchange_strong(
+                    overlayClaim, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
+            }
+            if (vulkanLayerClaim.compare_exchange_weak(
+                    claim, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool IsInjectVideoCaptureRequested() const {

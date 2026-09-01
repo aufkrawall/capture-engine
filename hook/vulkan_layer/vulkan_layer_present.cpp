@@ -30,10 +30,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             (shm->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
         perfMetrics.sourceOverloadFlags = shm->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
-    if (shm) {
-        shm->runtimeState.vulkanPresentThreadId.store(GetCurrentThreadId(), std::memory_order_release);
-        shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
-    }
+    const uint64_t vulkanPresentThreadPublication =
+        shm ? shm->runtimeState.PublishVulkanPresent(GetCurrentProcessId(), GetCurrentThreadId(), GetTickCount64())
+            : 0;
 
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
@@ -110,10 +109,26 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // on, the mirror never ran again - the hook DLL logged the in-game 4x -> 3x
     // change ("FG: DLSS FG multiplier 4 -> 3") while the layer's detector, and
     // therefore the overlay, stayed frozen on the factor the game started with.
-    const bool sharedDLSSFGActive = shm && shm->dlssState.fgActive.load(std::memory_order_acquire);
-    const int sharedDLSSFGMultiplier =
-        shm ? shm->dlssState.mfgMultiplier.load(std::memory_order_acquire) : 0;
+    const uint64_t vulkanClaim =
+        shm ? shm->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire) : 0;
+    ce::dlss_fg_publication::Snapshot sharedDLSSFG =
+        shm ? shm->dlssState.ReadFGStateForProcess(GetCurrentProcessId(), vulkanClaim)
+            : ce::dlss_fg_publication::Snapshot{};
+    if (shm && shm->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire) != vulkanClaim)
+        sharedDLSSFG = {};
+    const bool sharedDLSSFGActive = sharedDLSSFG.active;
+    const int sharedDLSSFGMultiplier = sharedDLSSFG.multiplier;
     if (shm) {
+        if (sharedDLSSFG.publisherPid != 0 && !sharedDLSSFG.belongsToProcessTree) {
+            static std::atomic<uint32_t> s_lastIgnoredFGPublisher{0};
+            if (s_lastIgnoredFGPublisher.exchange(sharedDLSSFG.publisherPid, std::memory_order_relaxed) !=
+                sharedDLSSFG.publisherPid) {
+                LayerLog("DLSS FG publication ignored: publisherPid=%lu is outside rendererPid=%lu clientPid=%lu",
+                         static_cast<unsigned long>(sharedDLSSFG.publisherPid),
+                         static_cast<unsigned long>(ce::vulkan_layer_claim::RendererPid(vulkanClaim)),
+                         static_cast<unsigned long>(ce::vulkan_layer_claim::ClientPid(vulkanClaim)));
+            }
+        }
         if (sharedDLSSFGActive) {
             g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier, 2, 4));
             g_FGCompat.SetDLSSFGActive(true);
@@ -525,7 +540,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         g_InPresentHook = false;
 
     if (shm)
-        shm->runtimeState.vulkanPresentThreadId.store(0, std::memory_order_release);
+        shm->runtimeState.ClearVulkanPresentThread(vulkanPresentThreadPublication);
 
     // Log performance metrics. The overlay's percentile statistics are sampled
     // here rather than before the down-call: each of them scans up to five

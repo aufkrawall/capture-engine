@@ -36,6 +36,7 @@ struct ComputePresentDiagnostics {
 // Overlay state per device - manages Vulkan frame resources
 struct OverlayState {
     bool initialized = false;
+    bool deviceLost = false;
     VkDevice device = VK_NULL_HANDLE;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;

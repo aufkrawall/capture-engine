@@ -252,6 +252,11 @@ static void ReleaseInheritedRendererClaim(SharedMemoryLayout* sharedMemory) {
     }
 }
 
+static void ReleaseVulkanLayerClaim(SharedMemoryLayout* sharedMemory) {
+    if (sharedMemory)
+        sharedMemory->runtimeState.ReleaseVulkanLayerClaim(GetCurrentProcessId());
+}
+
 bool LayerIPC_Init() {
     static std::mutex initMutex;
     std::lock_guard<std::mutex> initLock(initMutex);
@@ -273,16 +278,21 @@ bool LayerIPC_Init() {
 
     // Connect to host
     if (current ? g_IPCClient.Reconnect() : g_IPCClient.Connect()) {
+        SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
         const uint64_t hostGeneration = g_LayerHostGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-        LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->GetHostPID());
+        LayerLog("Layer IPC: Connected to Host PID %d", sharedMemory->GetHostPID());
+        const uint32_t rendererPid = GetCurrentProcessId();
+        const uint32_t clientPid = inheritedParentPid != 0 ? inheritedParentPid : rendererPid;
+        const uint64_t previousVulkanClaim =
+            sharedMemory->runtimeState.PublishVulkanLayerClaim(rendererPid, clientPid);
+        LayerLog("Vulkan ownership: rendererPid=%lu clientPid=%lu replaced rendererPid=%lu clientPid=%lu",
+                 static_cast<unsigned long>(rendererPid), static_cast<unsigned long>(clientPid),
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::RendererPid(previousVulkanClaim)),
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::ClientPid(previousVulkanClaim)));
         g_LayerState.whitelisted.store(true, std::memory_order_release);
         g_ShuttingDown.store(false, std::memory_order_release);
         LayerLog("Layer IPC: Process '%s' whitelisted. Layer active (generation=%llu).", g_ProcessName,
                  static_cast<unsigned long long>(hostGeneration));
-
-        // Set vulkanLayerActive flag so other APIs (OpenGL, DX) know Vulkan is primary
-        g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
-        LayerLog("Set vulkanLayerActive flag in shared memory");
 
         if (inheritedParentPid != 0) {
             // Publish the client PID alongside our own: the claim suppresses
@@ -291,7 +301,7 @@ bool LayerIPC_Init() {
             // process - including the next game in this CE session, which can
             // still see this claim because a terminated renderer never reaches
             // the clear below - must remain free to apply its own.
-            g_IPCClient.GetSharedMem()->runtimeState.inheritedRendererClaim.store(
+            sharedMemory->runtimeState.inheritedRendererClaim.store(
                 ce::inherited_renderer::MakeClaim(GetCurrentProcessId(),
                                                   static_cast<uint32_t>(inheritedParentPid)),
                 std::memory_order_release);
@@ -354,6 +364,7 @@ bool LayerIPC_Init() {
 
 // Shutdown layer IPC
 void LayerIPC_Shutdown() {
+    ReleaseVulkanLayerClaim(g_IPCClient.GetSharedMem());
     ReleaseInheritedRendererClaim(g_IPCClient.GetSharedMem());
     g_IPCClient.Disconnect();
     LayerLog("Layer IPC: Shutdown");
@@ -384,8 +395,7 @@ void SetLayerDormant(const char* reason) {
     g_ShuttingDown.store(true, std::memory_order_release);
     g_LayerState.whitelisted.store(false, std::memory_order_release);
     if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
-        sharedMemory->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
-        sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
+        ReleaseVulkanLayerClaim(sharedMemory);
         ReleaseInheritedRendererClaim(sharedMemory);
     }
     if (g_LayerDormantEvent)
@@ -587,7 +597,7 @@ void LayerIPC_SetOverlayActive(bool active) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;
-    mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, active);
+    mem->runtimeState.SetVulkanOverlayActive(GetCurrentProcessId(), active);
 }
 
 void LayerIPC_SetLUID(int32_t low, int32_t high) {
