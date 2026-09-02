@@ -6,11 +6,16 @@ TEST(DisplayTimingCorrelationTest, PayloadBeforeMpoAndMpoBeforePayloadBothCorrel
     DisplayTimingCorrelation c;
     c.ObservePayload(Key(1), Payload(100, 50));
     EXPECT_EQ(c.pendingPayloads().size(), 1u);
-    c.Associate(Key(1), {7, 11, 100});
-    EXPECT_TRUE(c.pendingPayloads().empty()); EXPECT_EQ(c.TakePayloads().size(), 1u);
-    c.Associate(Key(2), {7, 12, 101});
+    c.Associate(Key(1), {7, 11, 100, 90});
+    EXPECT_TRUE(c.pendingPayloads().empty());
+    auto first = c.TakePayloads();
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_EQ(first[0].presentStartTimestamp, 90);
+    c.Associate(Key(2), {7, 12, 101, 91});
     EXPECT_EQ(c.ObservePayload(Key(2), Payload(102, 100)), DisplayTimingCorrelation::PayloadResult::Correlated);
-    EXPECT_EQ(c.TakePayloads().size(), 1u);
+    auto second = c.TakePayloads();
+    ASSERT_EQ(second.size(), 1u);
+    EXPECT_EQ(second[0].presentStartTimestamp, 91);
 }
 
 TEST(DisplayTimingCorrelationTest, ReversePresentIdsAndMismatchStayIsolated) {
@@ -44,4 +49,15 @@ TEST(DisplayTimingCorrelationTest, TombstonesRetainUntilPrunedThenAllowNewAssoci
     EXPECT_EQ(c.QueuePayload(7, 3, 102, 102, 1, q, order), DisplayTimingCorrelation::PayloadResult::Late);
     c.Prune(101); EXPECT_TRUE(c.states().empty()); c.Associate(Key(3), {7, 4, 300});
     EXPECT_EQ(c.ObservePayload(Key(3), Payload(301, 50)), DisplayTimingCorrelation::PayloadResult::Correlated);
+}
+
+TEST(DisplayTimingCorrelationTest, CompletionFallbackRetainsAssociatedPresentStart) {
+    DisplayTimingCorrelation c;
+    std::vector<PendingTimestamp> q;
+    uint64_t order = 1;
+
+    c.QueueFallback(7, 4, 300, DisplayCompletionKind::Immediate, q, order, 250);
+
+    ASSERT_EQ(q.size(), 1u);
+    EXPECT_EQ(q[0].presentStartTimestamp, 250);
 }

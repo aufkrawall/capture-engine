@@ -93,7 +93,7 @@ public:
         presents_.Push(presentTimeUs);
     }
 
-    void ObserveDisplay(int64_t screenTimeUs) {
+    void ObserveDisplay(int64_t screenTimeUs, int64_t presentStartTimeUs = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (screenTimeUs <= 0)
             return;
@@ -105,6 +105,7 @@ public:
         }
 
         displays_.Push(screenTimeUs);
+        displayPresentStarts_.Push(presentStartTimeUs);
         UpdateFallbackLocked(screenTimeUs);
     }
 
@@ -138,7 +139,6 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (samplingIntervalUs <= 0)
             samplingIntervalUs = ResolveWorkIntervalLocked();
-        samplingIntervalUs = (std::max)(samplingIntervalUs, ResolveFgBaseIntervalLocked());
         // NVIDIA documents the average input-to-frame-start heuristic as
         // invalid below 10 FPS. Fail closed instead of publishing a number
         // whose estimated input slice is outside that supported regime.
@@ -149,10 +149,24 @@ public:
             if (screenTimeUs <= lastNativeDisplayTimeUs_)
                 continue;
 
+            // The sensor associates every displayed transition with the
+            // runtime PresentStart that produced it. Use that causal boundary
+            // when available: DLSS-G's asynchronous pacer can let markers for
+            // newer application frames occur before an older frame reaches
+            // the screen, so screenTime alone selects a future frame.
+            int64_t markerCutoffUs = screenTimeUs;
+            if (displayIndex < displayPresentStarts_.Size()) {
+                const int64_t associatedPresentStartUs = displayPresentStarts_.At(displayIndex);
+                if (associatedPresentStartUs > 0 && associatedPresentStartUs <= screenTimeUs)
+                    markerCutoffUs = associatedPresentStartUs;
+            }
+
             const NativeFrameReport* candidate = nullptr;
             for (size_t frameIndex = 0; frameIndex < validCount; ++frameIndex) {
                 const auto& frame = validFrames[frameIndex];
                 if (frame.presentStartTimeUs <= static_cast<uint64_t>(lastNativePresentTimeUs_))
+                    continue;
+                if (frame.presentStartTimeUs > static_cast<uint64_t>(markerCutoffUs))
                     continue;
                 if (NativeReadyTimeUs(frame) > static_cast<uint64_t>(screenTimeUs))
                     continue;
@@ -379,8 +393,6 @@ private:
     }
 
     int64_t ResolveWorkIntervalLocked() const {
-        if (presentIntervals_.Empty())
-            return 0;
         return (std::max)(MedianRing(presentIntervals_), ResolveFgBaseIntervalLocked());
     }
 
@@ -427,6 +439,7 @@ private:
         presents_.Clear();
         presentIntervals_.Clear();
         displays_.Clear();
+        displayPresentStarts_.Clear();
         fallbackDisplayedPresentIntervals_.Clear();
         nativeDisplayedSimulationIntervals_.Clear();
         nativeEstimatedSamples_.Clear();
@@ -441,6 +454,7 @@ private:
     ValueRing<256> presents_;
     ValueRing<32> presentIntervals_;
     ValueRing<256> displays_;
+    ValueRing<256> displayPresentStarts_;
     ValueRing<32> fallbackDisplayedPresentIntervals_;
     ValueRing<32> nativeDisplayedSimulationIntervals_;
     SampleWindow nativeEstimatedSamples_;

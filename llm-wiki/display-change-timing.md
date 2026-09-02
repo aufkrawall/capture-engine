@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-08-31 (NVIDIA scheduled-flip announcements and inject-recording correlation under DLSS frame generation)
+Last verified: 2026-09-02 (runtime PresentStart association retained for PC-latency correlation under asynchronous DLSS frame generation)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -16,6 +16,10 @@ stream is unavailable, denied, failed, or two seconds stale.
   with graphics-kernel submissions by process, with thread ID only refining the choice; a worker-thread submission
   must not be rejected merely because it differs from the thread that called Present (`SelectDisplaySubmissionPresent`
   in `captureengine/display_timing_policy.h`).
+- Every published display sample retains the associated runtime `PresentStart` selected by that reducer. The PC-latency
+  marker matcher uses it as a causal upper bound, preventing a newer application marker from being paired with an older
+  generated frame that reaches the screen later through DLSS-G's asynchronous pacer. A missing association intentionally
+  preserves the older timestamp-only behavior.
 - **NVIDIA frame generation does not use the `Intel-PresentMon` `FlipFrameType` provider.** That provider's frame-type
   enumeration only names `Intel_XEFG` (50) and `AMD_AFMF` (100); a 2026-08-30 Talos run with DLSS 4 MFG at
   `published_multiplier=4` logged `frameType(received=0 ...)` for the whole session. An earlier revision of this page

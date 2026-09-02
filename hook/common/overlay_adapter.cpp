@@ -204,7 +204,6 @@ void OverlayAdapter::ResetStateLocked() {
     hasObservedFrameTimeSource = false;
     latencyDevice = nullptr;
     cachedSystemLatency = {};
-    lastObservedSystemLatencySource = ce::system_latency::Source::Unavailable;
     lastSystemLatencySourceLogTime = 0;
     lastNativeLatencyQueryTime = 0;
     hasObservedSystemLatencySource = false;

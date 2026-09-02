@@ -225,6 +225,50 @@ TEST(SystemLatencyMetricsTest, NativeCorrelationSkipsSupersededDroppedFrame) {
     EXPECT_EQ(snapshot.sampleCount, 1u);
 }
 
+TEST(SystemLatencyMetricsTest, NativeCorrelationUsesAssociatedPresentUnderAsyncFrameGeneration) {
+    Tracker tracker;
+    // Frame 2 has already submitted by the time frame 1 reaches the screen.
+    // The display service's runtime-Present association is the causal bound;
+    // screen time alone would incorrectly select frame 2 and undercount 10 ms.
+    tracker.ObserveDisplay(3'030'000, 3'001'000);
+
+    NativeReport report{};
+    report.count = 2;
+    report.frames[0] = MakeNativeFrame(1, 3'000'000);
+    report.frames[1] = MakeNativeFrame(2, 3'010'000);
+    tracker.SubmitNativeReport(report);
+
+    const auto snapshot = tracker.GetSnapshot(3'030'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+    EXPECT_NEAR(snapshot.milliseconds, 43.0f, 0.01f);
+    EXPECT_EQ(snapshot.sampleCount, 1u);
+}
+
+TEST(SystemLatencyMetricsTest, NativeMarkerCadenceOverridesNominalFrameGenerationMetadata) {
+    Tracker tracker;
+    // Native markers are emitted only for application-rendered frames, so a
+    // measured marker cadence is authoritative even if nominal FG telemetry
+    // is stale or briefly publishes a different inferred base rate.
+    tracker.SetFrameGeneration(50.0f, 2);
+
+    NativeReport report{};
+    report.count = 6;
+    for (size_t i = 0; i < report.count; ++i) {
+        const uint64_t presentUs = 3'200'000 + 10'000 * i;
+        tracker.ObserveDisplay(static_cast<int64_t>(presentUs + 4'000),
+                               static_cast<int64_t>(presentUs + 500));
+        report.frames[i] = MakeNativeFrame(i + 1, presentUs);
+    }
+    tracker.SubmitNativeReport(report);
+
+    const auto snapshot = tracker.GetSnapshot(3'254'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+    EXPECT_NEAR(snapshot.milliseconds, 17.0f, 0.01f);
+    EXPECT_EQ(snapshot.sampleCount, 6u);
+}
+
 TEST(SystemLatencyMetricsTest, NativeEstimateExtendsInputWaitAcrossDroppedFrames) {
     Tracker tracker;
     NativeReport report{};
@@ -395,4 +439,26 @@ TEST(SystemLatencyMetricsTest, PerformanceMetricsAcceptsNativeMarkerReport) {
     ASSERT_TRUE(snapshot.valid);
     EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
     EXPECT_NEAR(snapshot.milliseconds, 17.0f, 0.01f);
+}
+
+TEST(SystemLatencyMetricsTest, PerformanceMetricsCarriesDisplayPresentAssociationToMarkerMatcher) {
+    PerformanceMetrics metrics;
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+    metrics.ConsumeDisplayTiming(timing, 2'900'000);
+
+    timing.Publish(3'030'000, 3'031'000, 3'001'000);
+    metrics.ConsumeDisplayTiming(timing, 3'030'000);
+
+    NativeReport report{};
+    report.count = 2;
+    report.frames[0] = MakeNativeFrame(1, 3'000'000);
+    report.frames[1] = MakeNativeFrame(2, 3'010'000);
+    metrics.SubmitNativeLatencyReport(report);
+
+    const auto snapshot = metrics.GetSystemLatency(3'030'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+    EXPECT_NEAR(snapshot.milliseconds, 43.0f, 0.01f);
+    EXPECT_EQ(snapshot.sampleCount, 1u);
 }

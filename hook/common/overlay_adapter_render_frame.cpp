@@ -80,15 +80,19 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
                 cachedSystemLatency = metrics->GetSystemLatency(currentQpcUs);
                 const auto latencySource = cachedSystemLatency.source;
-                if (!hasObservedSystemLatencySource || latencySource != lastObservedSystemLatencySource) {
-                    if (!hasObservedSystemLatencySource || now - lastSystemLatencySourceLogTime >= 10000) {
-                        HookLogImportant("[Overlay] PC latency source: %s value=%.1fms samples=%u",
-                                         ce::system_latency::SourceLogLabel(latencySource),
-                                         cachedSystemLatency.milliseconds, cachedSystemLatency.sampleCount);
-                        lastObservedSystemLatencySource = latencySource;
-                        lastSystemLatencySourceLogTime = now;
-                        hasObservedSystemLatencySource = true;
-                    }
+                constexpr DWORD kSystemLatencyLogIntervalMs = 10000;
+                const bool latencyLogDue =
+                    !hasObservedSystemLatencySource ||
+                    now - lastSystemLatencySourceLogTime >= kSystemLatencyLogIntervalMs;
+                if (latencyLogDue) {
+                    HookLogImportant("[Overlay] PC latency sample: source=%s value=%.1fms samples=%u fg=%d multiplier=%d "
+                                     "baseFps=%.1f outputFps=%.1f",
+                                     ce::system_latency::SourceLogLabel(latencySource),
+                                     cachedSystemLatency.milliseconds, cachedSystemLatency.sampleCount,
+                                     metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
+                                     metrics->GetFGOutputFPS());
+                    lastSystemLatencySourceLogTime = now;
+                    hasObservedSystemLatencySource = true;
                 }
             } else {
                 cachedSystemLatency = {};

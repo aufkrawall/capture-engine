@@ -308,8 +308,10 @@ private:
             SelectDisplaySubmissionPresent(pendingThreadIds.data(), pendingCount, event->EventHeader.ThreadId);
         if (selected == kNoPendingDisplayPresent)
             return;
+        const int64_t presentStartTimestamp = pending[selected].timestamp;
         submitAssociations_[submitSequence].push_back(
-            {event->EventHeader.ProcessId, event->EventHeader.TimeStamp.QuadPart, nextAssociationId_++});
+            {event->EventHeader.ProcessId, event->EventHeader.TimeStamp.QuadPart, nextAssociationId_++,
+             presentStartTimestamp});
         pending.erase(pending.begin() + static_cast<std::deque<PendingRuntimePresent>::difference_type>(selected));
         if (pending.empty())
             pendingRuntimePresents_.erase(process);
@@ -342,7 +344,7 @@ private:
             if (std::find(publishedPids.begin(), publishedPids.begin() + publishedCount, processId) ==
                 publishedPids.begin() + publishedCount) {
                 QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
-                               DisplayCompletionKind::Sync);
+                               DisplayCompletionKind::Sync, association->presentStartTimestamp);
                 ++completionsBySource_[static_cast<std::size_t>(DisplayCompletionSource::SyncDpcMultiPlane)];
                 publishedPids[publishedCount++] = processId;
             }
@@ -370,7 +372,8 @@ private:
             if (ReadProperty(event, L"PresentId", presentId, i) && ReadProperty(event, L"LayerIndex", layer, i)) {
                 const DisplayLayerPresentKey layerKey = {displaySource, layer, presentId};
                 correlation_.Associate(layerKey, {association->processId, association->associationId,
-                                                  event->EventHeader.TimeStamp.QuadPart});
+                                                  event->EventHeader.TimeStamp.QuadPart,
+                                                  association->presentStartTimestamp});
                 ConsumeCorrelationPayloads();
             }
         }
@@ -453,7 +456,8 @@ private:
         const SubmitAssociation* association = FindSubmitAssociation(submitSequence);
         if (!association)
             return;
-        QueueTimestamp(association->processId, association->associationId, timestamp, completionKind);
+        QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
+                       association->presentStartTimestamp);
         ++completionsBySource_[static_cast<std::size_t>(source)];
         if (erase)
             EraseSubmitAssociation(submitSequence);
@@ -489,7 +493,7 @@ private:
     }
 
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
-                        DisplayCompletionKind completionKind) {
+                        DisplayCompletionKind completionKind, int64_t presentStartTimestamp) {
         if (timestamp <= 0)
             return;
         if (completionKind != DisplayCompletionKind::Unconditional) {
@@ -498,11 +502,12 @@ private:
             // the fallback (the 24 ms watermark is a bounded policy, not a
             // causal/no-late-events guarantee).
             correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
-                                       pendingTimestamps_, nextTimestampOrder_);
+                                       pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp);
             ++queuedTimestamps_;
             return;
         }
-        pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind, nextTimestampOrder_++});
+        pendingTimestamps_.push_back(
+            {processId, associationId, timestamp, completionKind, nextTimestampOrder_++, presentStartTimestamp});
         ++queuedTimestamps_;
     }
 
@@ -528,7 +533,8 @@ private:
             if (!force && pending.timestamp > cutoff)
                 break;
             if (ShouldPublish(pending)) {
-                PublishTimestamp(pending.processId, pending.timestamp, publishUs);
+                PublishTimestamp(pending.processId, pending.timestamp, publishUs,
+                                 pending.presentStartTimestamp);
                 if (pending.completionKind != DisplayCompletionKind::Unconditional) {
                     ++fallbackPublished_;
                     correlation_.CommitFallback(pending);
@@ -557,7 +563,8 @@ private:
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         for (const auto& pending : pendingTimestamps_)
             if (ShouldPublish(pending))
-                PublishTimestamp(pending.processId, pending.timestamp, publishUs);
+                PublishTimestamp(pending.processId, pending.timestamp, publishUs,
+                                 pending.presentStartTimestamp);
         pendingTimestamps_.clear();
     }
 
@@ -578,7 +585,8 @@ private:
         nvidiaFlips_.PruneBefore(cutoff);
     }
 
-    void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs) {
+    void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs,
+                          int64_t presentStartTimestamp) {
         for (const auto& target : targets_) {
             if (!target.output)
                 continue;
@@ -593,7 +601,8 @@ private:
                 continue;
             }
             lastPublished->second = timestamp;
-            target.output->Publish(DisplayTimingQpcToUs(timestamp, qpcFrequency_), publishUs);
+            target.output->Publish(DisplayTimingQpcToUs(timestamp, qpcFrequency_), publishUs,
+                                   DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_));
             ++publishedTimestamps_;
         }
     }

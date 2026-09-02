@@ -42,6 +42,11 @@ inline int64_t DisplayTimingUsToQpc(int64_t microseconds, int64_t frequency) {
 struct DisplayTimingSample {
     std::atomic<uint64_t> sequence{0};
     std::atomic<int64_t> screenTimeUs{0};
+    // Runtime PresentStart associated with this displayed transition by the
+    // sensor's PresentMon-style ETW reducer. Generated output can be displayed
+    // after a newer application marker has already been submitted, so screen
+    // time alone is not a causal frame identity.
+    std::atomic<int64_t> presentStartTimeUs{0};
 };
 
 // Sensor -> overlay single-producer/multi-consumer timestamp ring. Each reader
@@ -67,6 +72,7 @@ struct SharedDisplayTiming {
         droppedTimestampCount.store(0, std::memory_order_relaxed);
         for (auto& sample : samples) {
             sample.screenTimeUs.store(0, std::memory_order_relaxed);
+            sample.presentStartTimeUs.store(0, std::memory_order_relaxed);
             sample.sequence.store(0, std::memory_order_relaxed);
         }
         status.store(static_cast<uint32_t>(newStatus), std::memory_order_relaxed);
@@ -81,10 +87,11 @@ struct SharedDisplayTiming {
         return static_cast<DisplayTimingStatus>(status.load(std::memory_order_acquire));
     }
 
-    void Publish(int64_t screenTimeUs, int64_t publishQpcUs) {
+    void Publish(int64_t screenTimeUs, int64_t publishQpcUs, int64_t presentStartTimeUs = 0) {
         const uint64_t sequence = writeSequence.load(std::memory_order_relaxed) + 1;
         auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         sample.screenTimeUs.store(screenTimeUs, std::memory_order_relaxed);
+        sample.presentStartTimeUs.store(presentStartTimeUs, std::memory_order_relaxed);
         sample.sequence.store(sequence, std::memory_order_release);
         lastPublishQpcUs.store(publishQpcUs, std::memory_order_relaxed);
         writeSequence.store(sequence, std::memory_order_release);
@@ -92,12 +99,18 @@ struct SharedDisplayTiming {
     }
 
     bool Read(uint64_t sequence, int64_t& screenTimeUs) const {
+        int64_t unusedPresentStartTimeUs = 0;
+        return Read(sequence, screenTimeUs, unusedPresentStartTimeUs);
+    }
+
+    bool Read(uint64_t sequence, int64_t& screenTimeUs, int64_t& presentStartTimeUs) const {
         if (sequence == 0)
             return false;
         const auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         if (sample.sequence.load(std::memory_order_acquire) != sequence)
             return false;
         screenTimeUs = sample.screenTimeUs.load(std::memory_order_relaxed);
+        presentStartTimeUs = sample.presentStartTimeUs.load(std::memory_order_relaxed);
         return sample.sequence.load(std::memory_order_acquire) == sequence;
     }
 };

@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-02 - Async DLSS-G invalidated timestamp-only PC-latency pairing
+
+Talos session `20260902_011013` initially reported DLSS-G `presented=2`, but later health records repeatedly showed
+`presented=1` with a frozen fence while the nominal publication remained DLSS FG 2x. The later interval therefore was
+not a valid FG-on comparison. More importantly, the sensor was publishing a screen timestamp without the runtime
+`PresentStart` that produced it; once generated and application presents were interleaved, the marker matcher could
+select a newer marker submitted before an older frame reached the display and undercount latency. ABI 54 now carries
+the reducer's associated runtime `PresentStart` alongside each display sample, and marker matching is bounded by that
+association. Marker cadence is authoritative when a native report supplies it; nominal FG cadence is only a fallback.
+CE still consumes the game's real Streamline/Reflex markers and does not inject synthetic markers. Overlay PC-latency
+sample logging is rate-limited to one record per ten seconds so future comparisons include value, sample count, and the
+overlay's nominal FG/base/output-FPS state.
+
 ### 2026-09-02 - D3D Streamline latency consumes the game's PCL markers
 
 Talos session `20260902_003841` loaded both `sl.pcl.dll` and `sl.reflex.dll`, enabled Reflex, and accumulated hundreds

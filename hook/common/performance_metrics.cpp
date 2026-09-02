@@ -221,9 +221,10 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
 
     while (m_nextDisplaySequence <= writeSequence) {
         int64_t screenTimeUs = 0;
-        if (!timing.Read(m_nextDisplaySequence, screenTimeUs))
+        int64_t presentStartTimeUs = 0;
+        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs))
             break;
-        m_systemLatency.ObserveDisplay(screenTimeUs);
+        m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
         UpdateSeries(m_display, screenTimeUs);
         ++m_nextDisplaySequence;
     }

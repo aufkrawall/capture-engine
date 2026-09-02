@@ -205,7 +205,6 @@ private:
     FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
     DWORD lastFrameTimeSourceLogTime = 0;
     bool hasObservedFrameTimeSource = false;
-    ce::system_latency::Source lastObservedSystemLatencySource = ce::system_latency::Source::Unavailable;
     DWORD lastSystemLatencySourceLogTime = 0;
     DWORD lastNativeLatencyQueryTime = 0;
     bool hasObservedSystemLatencySource = false;

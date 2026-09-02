@@ -50,6 +50,7 @@ struct DisplayLayerAssociation {
     uint32_t processId = 0;
     uint64_t associationId = 0;
     int64_t timestamp = 0;
+    int64_t presentStartTimestamp = 0;
 };
 
 struct DisplayPendingFrameTypeFlip {
@@ -67,6 +68,7 @@ struct SubmitAssociation {
     uint32_t processId = 0;
     int64_t timestamp = 0;
     uint64_t associationId = 0;
+    int64_t presentStartTimestamp = 0;
 };
 
 struct PendingTimestamp {
@@ -75,6 +77,7 @@ struct PendingTimestamp {
     int64_t timestamp = 0;
     DisplayCompletionKind completionKind = DisplayCompletionKind::Unconditional;
     uint64_t arrivalOrder = 0;
+    int64_t presentStartTimestamp = 0;
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The
@@ -119,7 +122,8 @@ public:
 
     PayloadResult QueuePayload(uint32_t processId, uint64_t associationId, int64_t screenTime,
                                int64_t eventTimestamp, uint8_t frameType,
-                               std::vector<PendingTimestamp>& queue, uint64_t& order) {
+                               std::vector<PendingTimestamp>& queue, uint64_t& order,
+                               int64_t presentStartTimestamp = 0) {
         auto& state = states_[associationId];
         // Classify before touching timestamps: duplicates and late payloads do
         // not extend retention or overwrite the accepted transition time.
@@ -132,7 +136,8 @@ public:
         state.generatedFrameSeen |= IsGeneratedDisplayFrameType(frameType);
         state.nonGeneratedFrameSeen |= !IsGeneratedDisplayFrameType(frameType);
         state.payloadQueued = true;
-        queue.push_back({processId, associationId, screenTime, DisplayCompletionKind::Unconditional, order++});
+        queue.push_back({processId, associationId, screenTime, DisplayCompletionKind::Unconditional, order++,
+                         presentStartTimestamp});
         return PayloadResult::Correlated;
     }
 
@@ -144,13 +149,14 @@ public:
     }
 
     void QueueFallback(uint32_t processId, uint64_t associationId, int64_t timestamp,
-                       DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order) {
+                       DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order,
+                       int64_t presentStartTimestamp = 0) {
         if (timestamp <= 0)
             return;
         auto& state = states_[associationId];
         if (state.timestamp == 0)
             state.timestamp = timestamp;
-        queue.push_back({processId, associationId, timestamp, kind, order++});
+        queue.push_back({processId, associationId, timestamp, kind, order++, presentStartTimestamp});
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {
@@ -174,7 +180,8 @@ private:
     PayloadResult CorrelatePayload(const DisplayLayerAssociation& association,
                                    const DisplayPendingFrameTypeFlip& payload) {
         return QueuePayload(association.processId, association.associationId, payload.screenTime,
-                            payload.eventTimestamp, payload.frameType, payloadQueue_, nextOrder_);
+                            payload.eventTimestamp, payload.frameType, payloadQueue_, nextOrder_,
+                            association.presentStartTimestamp);
     }
 
     std::unordered_map<DisplayLayerPresentKey, DisplayLayerAssociation, DisplayLayerPresentKeyHash> layerAssociations_;

@@ -88,17 +88,19 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             to FrameSlot for smooth DLSS multi-frame-generation recording.
 // Version 52: Added OverlayConfig::showSystemLatency.
 // Version 53: Scoped Vulkan/DLSS FG publications to their renderer process tree.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 53;
+// Version 54: Added the causally associated runtime PresentStart to each
+//             display-timing sample for frame-accurate latency correlation.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 54;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_53_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_54_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_53";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_54";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)

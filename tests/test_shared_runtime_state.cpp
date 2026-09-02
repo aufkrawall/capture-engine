@@ -211,15 +211,15 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_53_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_53"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_54_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_54"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_53"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_53_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_53_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_53_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_53_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_54"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_54_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_54_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_54_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_54_1234ABCD"), 0);
 }
 
 TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) {
@@ -227,21 +227,24 @@ TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) 
     timing.Reset(100, 101, DisplayTimingStatus::Starting);
     const uint64_t firstGeneration = timing.publicationGeneration.load(std::memory_order_acquire);
 
-    timing.Publish(1000000, 2000000);
-    timing.Publish(1005000, 2001000);
+    timing.Publish(1000000, 2000000, 990000);
+    timing.Publish(1005000, 2001000, 995000);
 
     EXPECT_EQ(timing.GetStatus(), DisplayTimingStatus::Active);
     EXPECT_EQ(timing.writeSequence.load(std::memory_order_acquire), 2u);
     int64_t screenTimeUs = 0;
-    ASSERT_TRUE(timing.Read(1, screenTimeUs));
+    int64_t presentStartTimeUs = 0;
+    ASSERT_TRUE(timing.Read(1, screenTimeUs, presentStartTimeUs));
     EXPECT_EQ(screenTimeUs, 1000000);
-    ASSERT_TRUE(timing.Read(2, screenTimeUs));
+    EXPECT_EQ(presentStartTimeUs, 990000);
+    ASSERT_TRUE(timing.Read(2, screenTimeUs, presentStartTimeUs));
     EXPECT_EQ(screenTimeUs, 1005000);
+    EXPECT_EQ(presentStartTimeUs, 995000);
 
     timing.Reset(200, 0, DisplayTimingStatus::Starting);
     EXPECT_GT(timing.publicationGeneration.load(std::memory_order_acquire), firstGeneration);
     EXPECT_EQ(timing.writeSequence.load(std::memory_order_acquire), 0u);
-    EXPECT_FALSE(timing.Read(1, screenTimeUs));
+    EXPECT_FALSE(timing.Read(1, screenTimeUs, presentStartTimeUs));
     EXPECT_EQ(timing.sourcePid.load(std::memory_order_acquire), 200u);
 }
 
