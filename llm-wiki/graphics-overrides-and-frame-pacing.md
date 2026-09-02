@@ -689,22 +689,32 @@ Primary sources:
 - Detection is pattern-based and self-validating, never fixed-offset: the resolved address must actually hold one of
   the two documented payloads, and the fallback site must be a short `jcc` whose two paths load table slots exactly
   four bytes apart with the ON slot on the fall-through side. Anything else is refused and logged. Verified against
-  32.0.16.1088 and 32.0.16.2012 (620.12), x64 and x86, resolving to the documented offsets in all four; on an
-  already-patched driver is accepted only when `90 90`, the ON load, the skip jump, and the adjacent OFF table slot
-  remain structurally provable.
+  32.0.16.1088, 32.0.16.1656 (620.14) and 32.0.16.2012 (620.12), x64 and x86, resolving to the documented offsets in
+  all of them; an already-neutralized branch is accepted only when the ON load, the skip jump, and the adjacent OFF
+  table slot remain structurally provable.
+- **The branch is neutralized by zeroing its `rel8` displacement, not by replacing the opcode pair with NOPs.**
+  `jcc +0` continues at the fall-through - the path the scanner proved is ON - whichever way the flags go, so the two
+  forms are equivalent, but zeroing writes one byte where NOPing writes two. That is the difference between a fix
+  that applies and one that cannot: a two-byte replacement is atomic only while the pair fits an aligned word the
+  process can compare/exchange, and no x86 CAS is wider than 64-bit (32-bit processes have no `cmpxchg16b` at all),
+  so a pair at 7 modulo 8 had to fail closed. A single-byte store cannot tear at any address, so site alignment no
+  longer decides whether the option does anything. `IsNeutralizedBranch` accepts both forms, because a driver patched
+  on disk by the community tool, and any process patched by a CE build before 0.1.6368, carries `90 90`.
+- Filter Tester DXVK x86 session `20260902_065516` is what forced that change. 32.0.16.1656 moved the 32-bit ICD's
+  branch to `nvoglv32+0x576C27`; module bases are 64KB-aligned, so the site sits at 7 modulo 8 - the one alignment the
+  two-byte writer refused. Hook and layer both resolved the site correctly and then logged `crosses the widest
+  supported aligned atomic word (addressMod8=7) - nothing patched`, so `nv_lod_spread_fix=on` was a no-op and Vulkan
+  kept the shimmery negative-LOD-bias result while D3D10/11/12 (which do not go through this ICD) looked correct.
+  Nothing had regressed in CE; a driver update relocated the site by four bytes. The same driver's x64 branch is at
+  `nvoglv64+0x4C413B` (3 modulo 8), which is why 64-bit titles were unaffected and the report looked API-specific.
 - The injected hook and Vulkan layer each compile their own copy of the patcher. Their scans and protection changes
   are serialized through one per-process named mutex, so nested `VirtualProtect` calls cannot restore the code page
-  to another copy's temporary writable protection. The live two-byte NOP replacement uses the narrowest aligned
-  atomic word that contains the pair: 32-bit normally and 64-bit when it crosses a 32-bit boundary. The complete
-  containing word participates in `InterlockedCompareExchange`, so a concurrent adjacent-byte change loses the CAS
-  rather than being overwritten. A pair crossing the aligned 64-bit word remains unsupported and fails closed. The
-  instruction cache is flushed before the original protection is restored, and failures report the selected width,
-  whether bytes changed, cache-flush/protection state, and final byte verification.
-- Strange Brigade Vulkan x64 session `20260808_214315` exposed the former 32-bit-only writer gap: 32.0.16.1088's
-  validated branch is at `nvoglv64+0x4E35DB`, so its two bytes cross a 32-bit word but fit at byte 3 of the aligned
-  64-bit word. All three Vulkan-boundary attempts correctly found the site and then refused it, making the option a
-  no-op. The width-aware writer selects a 64-bit CAS for that exact layout. A structurally proven pre-patched driver
-  is accepted before writer-width selection because it needs no live write at all.
+  to another copy's temporary writable protection. The complete aligned 32-bit word containing the displacement
+  participates in `InterlockedCompareExchange`, so a concurrent adjacent-byte change loses the CAS rather than being
+  overwritten; that word never straddles a page, so one `VirtualProtect` always covers the write. The instruction
+  cache is flushed before the original protection is restored, and failures report whether bytes changed,
+  cache-flush/protection state, and final byte verification. A structurally proven pre-patched driver is accepted
+  without any live write.
 - `nv_lod_spread_fix=off` (the default) arms nothing. The machine's driver files are never written, so they keep
   their NVIDIA signature, and other processes are unaffected. Caveat carried in `config.ini.template`: patching a
   graphics driver in memory is the kind of thing anti-cheat systems object to.
@@ -714,10 +724,10 @@ Primary sources:
 - Source anchors: `hook/common/nv_lod_spread_override.{h,cpp}`, the pre-device calls in
   `hook/vulkan_layer/vulkan_layer_hooks.cpp`, inject fallback in `hook/main_{hookthread,overlay_detect}.cpp`, and
   coverage in `tests/test_nv_lod_spread_override.cpp`.
-- Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ... (validated branch +0x...: 75 .. -> 90 90 via
-  atomic 32-bit/64-bit compare/exchange, check +0x..., setting 0x...)`, or an explicit structural-validation/write
-  failure with post-write state. Hardware re-validation of the corrected build remains required; the supplied failing
-  runs prove the root causes and ordering, not the final pixels.
+- Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ... (validated branch +0x...: 75 05 -> 75 00 via
+  atomic 32-bit compare/exchange, check +0x..., setting 0x...)`, or an explicit structural-validation/write failure
+  with post-write state. Hardware re-validation of the corrected build remains required; the supplied failing runs
+  prove the root causes and ordering, not the final pixels.
 
 ## Diagnostics and stale-risk
 

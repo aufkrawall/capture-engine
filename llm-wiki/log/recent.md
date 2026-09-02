@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-02 - nv_lod_spread_fix silently refused a driver-relocated branch
+
+Filter Tester DXVK x86 session `20260902_065516` reported Vulkan negative-LOD-bias shimmer that D3D10/11/12 did not
+show, with `nv_lod_spread_fix=on`. CE had not regressed: 32.0.16.1656 moved the 32-bit ICD's validated branch to
+`nvoglv32+0x576C27`, and because module bases are 64KB-aligned that site is 7 modulo 8 - the single alignment where a
+two-byte NOP pair spans two aligned 64-bit words. The writer correctly fails closed there rather than tearing an
+instruction, so hook and layer both found the site and patched nothing. The same driver's x64 branch is at
+`nvoglv64+0x4C413B`, so 64-bit titles kept working and the symptom looked API-specific. The fix removes the alignment
+dependency instead of widening the CAS (32-bit processes have no `cmpxchg16b`): the branch is now neutralized by
+zeroing its `rel8` displacement, one byte, which cannot tear at any address, and `jcc +0` falls through to the ON path
+exactly as `90 90` did. Both forms are recognized as already-patched, so on-disk-patched drivers and older CE builds
+still resolve. Coverage: every alignment in a page, the real 32.0.16.1656 x86 instruction sequence, the Strange
+Brigade x64 site, and both already-neutralized encodings.
+
 ### 2026-09-02 - Async DLSS-G invalidated timestamp-only PC-latency pairing
 
 Talos session `20260902_011013` initially reported DLSS-G `presented=2`, but later health records repeatedly showed

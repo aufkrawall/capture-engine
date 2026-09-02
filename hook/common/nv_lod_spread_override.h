@@ -7,9 +7,9 @@
  * long-standing negative-LOD-bias filtering quality bug NVIDIA has not fixed.
  * Forcing the ON path restores a spread of 0x10.
  *
- * The community fix byte-patches the DLL on disk. CE applies the same validated
- * two-byte branch patch to the process-local image, so the machine keeps
- * NVIDIA's signed driver files.
+ * The community fix byte-patches the DLL on disk. CE neutralizes the same
+ * validated branch in the process-local image, so the machine keeps NVIDIA's
+ * signed driver files.
  *
  * Verified against 32.0.16.1088 and 32.0.16.2012 (620.12), both architectures.
  * The relevant code is:
@@ -33,6 +33,17 @@
  * exactly four bytes apart with the ON slot on the fall-through side. Anything
  * else is refused and logged rather than patched, so a future driver layout can
  * never turn this into a blind write.
+ *
+ * The branch is neutralized by zeroing its rel8 displacement rather than by
+ * replacing the opcode pair with NOPs. `jcc +0` continues at the fall-through -
+ * the ON path - whichever way the flags go, so the two forms are equivalent,
+ * but zeroing touches one byte instead of two. That matters because a two-byte
+ * replacement is only atomic while the pair fits one aligned word CE can
+ * compare/exchange, and 32.0.16.1656 put the 32-bit ICD's branch at
+ * `nvoglv32+0x576C27` - across the aligned 64-bit word, at the one alignment
+ * the old writer had to refuse, silently turning the option into a no-op. A
+ * single-byte store cannot tear at any address, so the alignment of the site
+ * no longer decides whether the fix applies.
  */
 
 #pragma once
@@ -56,6 +67,14 @@ inline constexpr uint32_t kDrsSettingId = 0x003001ACu;
 inline constexpr uint8_t kCmpOpcode0 = 0x81;
 inline constexpr uint8_t kCmpOpcode1 = 0x3D;
 inline constexpr size_t kCmpLength = 10;
+
+// The guarding branch is a short jcc (opcode + rel8). CE forces the fall-through
+// by writing a zero displacement; a NOP pair is the equivalent form left behind
+// by the on-disk community patch and by CE builds before 0.1.6368.
+inline constexpr uint8_t kShortJccFirst = 0x70;
+inline constexpr uint8_t kShortJccLast = 0x7F;
+inline constexpr uint8_t kFallThroughDisplacement = 0x00;
+inline constexpr uint8_t kNopOpcode = 0x90;
 
 // How far past the cmp the guarding short jcc may sit, and how much of each
 // branch path is inspected for its table load. Both are generous next to the
@@ -103,20 +122,14 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
 // table slot load. Returns false when the window holds no unambiguous candidate.
 bool FindTableLoadDisp(const uint8_t* path, size_t pathSize, uint8_t& outDisp);
 
-// The live two-byte branch replacement uses the narrowest aligned atomic word
-// that fully contains it: 32-bit normally, or 64-bit when the pair crosses a
-// 32-bit boundary. A pair crossing the widest supported word is refused rather
-// than exposing an instruction stream containing one old and one new byte.
-enum class AtomicPatchWidth : uint8_t { kNone = 0, k32Bit = 4, k64Bit = 8 };
-
-AtomicPatchWidth SelectAtomicPatchWidth(const void* address);
-bool CanPatchTwoBytesAtomically(const void* address);
+// True for the two encodings that count as an already-neutralized branch: CE's
+// zero-displacement short jcc, and the NOP pair an on-disk patch leaves behind.
+bool IsNeutralizedBranch(uint8_t first, uint8_t second);
 
 enum class CodePatchResult : uint8_t {
     kPatched,
     kAlreadyPatched,
     kInvalidAddress,
-    kUnsupportedAlignment,
     kProtectionFailed,
     kUnexpectedBytes,
     kCompareExchangeLost,
@@ -127,7 +140,6 @@ enum class CodePatchResult : uint8_t {
 
 struct CodePatchOutcome {
     CodePatchResult result = CodePatchResult::kInvalidAddress;
-    AtomicPatchWidth width = AtomicPatchWidth::kNone;
     bool bytesPatched = false;
     bool wroteBytes = false;
     bool instructionCacheFlushed = false;
@@ -140,10 +152,13 @@ struct CodePatchOutcome {
 };
 
 // Testable write primitive used only after the scanner has structurally
-// validated that replacing `expected0 expected1` with NOPs selects the ON path.
-// The full containing word participates in the compare/exchange, so a concurrent
-// adjacent-byte change is detected rather than overwritten.
-CodePatchOutcome WriteTwoByteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1);
+// validated that forcing the fall-through at `branch` selects the ON path. Only
+// the rel8 displacement changes, and the aligned 32-bit word containing it
+// always exists, so no address is unpatchable. The full containing word
+// participates in the compare/exchange, so a concurrent adjacent-byte change is
+// detected rather than overwritten.
+CodePatchOutcome WriteBranchDisplacementPatch(uint8_t* branch, uint8_t expectedOpcode,
+                                              uint8_t expectedDisplacement);
 const char* GetCodePatchResultName(CodePatchResult result);
 
 // Runtime state, for diagnostics and tests of the decision logic.

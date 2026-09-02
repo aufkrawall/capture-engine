@@ -18,7 +18,6 @@ namespace ce::nv_lod_spread {
 namespace {
 
 static_assert(sizeof(LONG) == 4);
-static_assert(sizeof(LONG64) == 8);
 
 std::atomic<Mode> g_mode{Mode::kOff};
 std::atomic<bool> g_moduleSeen{false};
@@ -89,15 +88,17 @@ const char* BaseName(const char* path) {
     return base;
 }
 
-uint64_t AtomicCompareExchangeWord(void* word, AtomicPatchWidth width, uint64_t exchange, uint64_t comparand) {
-    if (width == AtomicPatchWidth::k32Bit) {
-        auto* destination = static_cast<volatile LONG*>(word);
-        return static_cast<uint32_t>(InterlockedCompareExchange(destination, static_cast<LONG>(exchange),
-                                                                 static_cast<LONG>(comparand)));
-    }
-    auto* destination = static_cast<volatile LONG64*>(word);
-    return static_cast<uint64_t>(InterlockedCompareExchange64(destination, static_cast<LONG64>(exchange),
-                                                               static_cast<LONG64>(comparand)));
+// An aligned 32-bit load is atomic on every architecture CE builds for, and
+// `volatile` keeps it one access, so the comparand really is a value the word
+// held rather than something the compiler reassembled from parts.
+uint32_t AtomicLoadWord(const void* word) {
+    return *static_cast<const volatile uint32_t*>(word);
+}
+
+uint32_t AtomicCompareExchangeWord(void* word, uint32_t exchange, uint32_t comparand) {
+    auto* destination = static_cast<volatile LONG*>(word);
+    return static_cast<uint32_t>(
+        InterlockedCompareExchange(destination, static_cast<LONG>(exchange), static_cast<LONG>(comparand)));
 }
 
 // Locates the mapped image's bounds and its executable section. The ICD always
@@ -143,7 +144,7 @@ bool DescribeModule(HMODULE module, const uint8_t*& image, size_t& imageSize, si
 }
 
 bool FindAlreadyPatchedBranch(const uint8_t* image, size_t imageSize, size_t offset, Site& out) {
-    if (offset + 2 > imageSize || image[offset] != 0x90 || image[offset + 1] != 0x90) {
+    if (offset + 2 > imageSize || !IsNeutralizedBranch(image[offset], image[offset + 1])) {
         return false;
     }
 
@@ -192,7 +193,7 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
 
     if (g_patchedModule.load(std::memory_order_acquire) == module) {
         uint8_t* branch = g_branchAddress.load(std::memory_order_acquire);
-        if (branch && branch[0] == 0x90 && branch[1] == 0x90) {
+        if (branch && IsNeutralizedBranch(branch[0], branch[1])) {
             return true;
         }
     }
@@ -234,18 +235,9 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
         return true;
     }
 
-    const AtomicPatchWidth patchWidth = SelectAtomicPatchWidth(branch);
-    if (patchWidth == AtomicPatchWidth::kNone) {
-        NV_LOD_LOG("NV LOD spread: validated branch at +0x%zX in %s crosses the widest supported aligned atomic "
-                   "word (addressMod8=%zu) - nothing patched",
-                   site.branchRva, modulePath ? modulePath : "the ICD",
-                   reinterpret_cast<uintptr_t>(branch) & uintptr_t{7});
-        return false;
-    }
-
-    const uint8_t original0 = branch[0];
-    const uint8_t original1 = branch[1];
-    const CodePatchOutcome outcome = WriteTwoByteCodePatch(branch, original0, original1);
+    const uint8_t originalOpcode = branch[0];
+    const uint8_t originalDisplacement = branch[1];
+    const CodePatchOutcome outcome = WriteBranchDisplacementPatch(branch, originalOpcode, originalDisplacement);
     if (!outcome.Succeeded()) {
         if (outcome.bytesPatched && outcome.verified) {
             g_patchedModule.store(module, std::memory_order_release);
@@ -253,12 +245,12 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
             g_codePatchApplied.store(true, std::memory_order_release);
         }
         NV_LOD_LOG("NV LOD spread: FAILED to safely complete the validated OFF-branch patch at %p in %s "
-                   "(result=%s, atomicWidth=%u-bit, bytesPatched=%u, wroteBytes=%u, cacheFlushed=%u, "
-                   "protectionRestored=%u, verified=%u)",
+                   "(result=%s, bytesPatched=%u, wroteBytes=%u, cacheFlushed=%u, protectionRestored=%u, "
+                   "verified=%u)",
                    branch, modulePath ? modulePath : "the ICD", GetCodePatchResultName(outcome.result),
-                   static_cast<unsigned>(outcome.width) * 8u, outcome.bytesPatched ? 1u : 0u,
-                   outcome.wroteBytes ? 1u : 0u, outcome.instructionCacheFlushed ? 1u : 0u,
-                   outcome.protectionRestored ? 1u : 0u, outcome.verified ? 1u : 0u);
+                   outcome.bytesPatched ? 1u : 0u, outcome.wroteBytes ? 1u : 0u,
+                   outcome.instructionCacheFlushed ? 1u : 0u, outcome.protectionRestored ? 1u : 0u,
+                   outcome.verified ? 1u : 0u);
         return false;
     }
 
@@ -269,10 +261,10 @@ bool ApplyToModule(HMODULE module, const char* modulePath) {
         g_branchWasAlreadyPatched.store(true, std::memory_order_release);
     }
     NV_LOD_LOG("NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in %s (validated branch +0x%zX: %02X %02X -> "
-               "90 90 via atomic %u-bit compare/exchange, check +0x%zX, setting 0x%08X) - process-local, the driver "
-               "file is untouched",
-               modulePath ? modulePath : "the ICD", site.branchRva, original0, original1,
-               static_cast<unsigned>(outcome.width) * 8u, site.cmpRva, site.settingValue);
+               "%02X 00 via atomic 32-bit compare/exchange, check +0x%zX, setting 0x%08X) - process-local, the "
+               "driver file is untouched",
+               modulePath ? modulePath : "the ICD", site.branchRva, originalOpcode, originalDisplacement,
+               originalOpcode, site.cmpRva, site.settingValue);
     return true;
 }
 
@@ -298,73 +290,70 @@ bool IsIcdModuleName(const char* modulePathOrName) {
     return _stricmp(base, "nvoglv64.dll") == 0 || _stricmp(base, "nvoglv32.dll") == 0;
 }
 
-AtomicPatchWidth SelectAtomicPatchWidth(const void* address) {
-    if (!address) {
-        return AtomicPatchWidth::kNone;
+bool IsNeutralizedBranch(uint8_t first, uint8_t second) {
+    // The NOP pair the on-disk community patch and CE builds before 0.1.6368
+    // leave behind, and CE's own zero-displacement short jcc. Both continue at
+    // the fall-through, which the scanner proved is the ON path.
+    if (first == kNopOpcode && second == kNopOpcode) {
+        return true;
     }
-    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
-    if ((value & uintptr_t{3}) != 3) {
-        return AtomicPatchWidth::k32Bit;
-    }
-    if ((value & uintptr_t{7}) != 7) {
-        return AtomicPatchWidth::k64Bit;
-    }
-    return AtomicPatchWidth::kNone;
+    return first >= kShortJccFirst && first <= kShortJccLast && second == kFallThroughDisplacement;
 }
 
-bool CanPatchTwoBytesAtomically(const void* address) {
-    return SelectAtomicPatchWidth(address) != AtomicPatchWidth::kNone;
-}
-
-CodePatchOutcome WriteTwoByteCodePatch(uint8_t* address, uint8_t expected0, uint8_t expected1) {
+CodePatchOutcome WriteBranchDisplacementPatch(uint8_t* branch, uint8_t expectedOpcode,
+                                              uint8_t expectedDisplacement) {
     CodePatchOutcome outcome;
-    outcome.width = SelectAtomicPatchWidth(address);
-    if (!address) {
+    if (!branch) {
         return outcome;
     }
-    if (outcome.width == AtomicPatchWidth::kNone) {
-        outcome.result = CodePatchResult::kUnsupportedAlignment;
+    if (expectedOpcode < kShortJccFirst || expectedOpcode > kShortJccLast) {
+        outcome.result = CodePatchResult::kUnexpectedBytes;
         return outcome;
     }
 
-    const size_t wordSize = static_cast<size_t>(outcome.width);
-    const uintptr_t alignedAddress = reinterpret_cast<uintptr_t>(address) & ~(static_cast<uintptr_t>(wordSize) - 1);
-    const unsigned shift = static_cast<unsigned>((reinterpret_cast<uintptr_t>(address) - alignedAddress) * 8);
-    constexpr uint64_t kPatchedBytes = 0x9090u;
-    const uint64_t mask = uint64_t{0xFFFF} << shift;
-    const uint64_t expectedPair = static_cast<uint64_t>(expected0) | (static_cast<uint64_t>(expected1) << 8);
+    // Only the rel8 displacement changes. One byte always fits the aligned
+    // 32-bit word containing it, and that word never straddles a page, so a
+    // single VirtualProtect covers the whole compare/exchange at any address.
+    uint8_t* displacement = branch + 1;
+    const uintptr_t alignedAddress = reinterpret_cast<uintptr_t>(displacement) & ~uintptr_t{3};
+    const unsigned shift = static_cast<unsigned>((reinterpret_cast<uintptr_t>(displacement) - alignedAddress) * 8);
+    const uint32_t mask = uint32_t{0xFF} << shift;
     void* word = reinterpret_cast<void*>(alignedAddress);
 
     DWORD oldProtect = 0;
-    if (!VirtualProtect(word, wordSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(word, sizeof(uint32_t), PAGE_EXECUTE_READWRITE, &oldProtect)) {
         outcome.result = CodePatchResult::kProtectionFailed;
         return outcome;
     }
 
-    const uint64_t current = AtomicCompareExchangeWord(word, outcome.width, 0, 0);
-    const uint64_t currentPair = (current & mask) >> shift;
-    if (currentPair == kPatchedBytes) {
-        outcome.result = CodePatchResult::kAlreadyPatched;
-        outcome.bytesPatched = true;
-    } else if (currentPair != expectedPair) {
+    if (branch[0] != expectedOpcode) {
         outcome.result = CodePatchResult::kUnexpectedBytes;
     } else {
-        const uint64_t desired = (current & ~mask) | (kPatchedBytes << shift);
-        const uint64_t observed = AtomicCompareExchangeWord(word, outcome.width, desired, current);
-        if (observed != current) {
-            outcome.result = CodePatchResult::kCompareExchangeLost;
-        } else {
-            outcome.result = CodePatchResult::kPatched;
+        const uint32_t current = AtomicLoadWord(word);
+        const auto currentDisplacement = static_cast<uint8_t>((current & mask) >> shift);
+        if (currentDisplacement == kFallThroughDisplacement) {
+            outcome.result = CodePatchResult::kAlreadyPatched;
             outcome.bytesPatched = true;
-            outcome.wroteBytes = true;
-            outcome.instructionCacheFlushed = FlushInstructionCache(GetCurrentProcess(), address, 2) != FALSE;
+        } else if (currentDisplacement != expectedDisplacement) {
+            outcome.result = CodePatchResult::kUnexpectedBytes;
+        } else {
+            const uint32_t desired = current & ~mask;
+            const uint32_t observed = AtomicCompareExchangeWord(word, desired, current);
+            if (observed != current) {
+                outcome.result = CodePatchResult::kCompareExchangeLost;
+            } else {
+                outcome.result = CodePatchResult::kPatched;
+                outcome.bytesPatched = true;
+                outcome.wroteBytes = true;
+                outcome.instructionCacheFlushed = FlushInstructionCache(GetCurrentProcess(), branch, 2) != FALSE;
+            }
         }
     }
 
-    outcome.verified = address[0] == 0x90 && address[1] == 0x90;
+    outcome.verified = branch[0] == expectedOpcode && branch[1] == kFallThroughDisplacement;
     outcome.bytesPatched = outcome.bytesPatched || outcome.verified;
     DWORD restored = 0;
-    outcome.protectionRestored = VirtualProtect(word, wordSize, oldProtect, &restored) != FALSE;
+    outcome.protectionRestored = VirtualProtect(word, sizeof(uint32_t), oldProtect, &restored) != FALSE;
 
     if (outcome.wroteBytes && !outcome.instructionCacheFlushed) {
         outcome.result = CodePatchResult::kInstructionCacheFlushFailed;
@@ -384,8 +373,6 @@ const char* GetCodePatchResultName(CodePatchResult result) {
             return "already-patched";
         case CodePatchResult::kInvalidAddress:
             return "invalid-address";
-        case CodePatchResult::kUnsupportedAlignment:
-            return "unsupported-alignment";
         case CodePatchResult::kProtectionFailed:
             return "protection-failed";
         case CodePatchResult::kUnexpectedBytes:
@@ -439,7 +426,7 @@ bool FindOnBranch(const uint8_t* image, size_t imageSize, size_t cmpRva, Site& o
         }
 
         const uint8_t opcode = image[offset];
-        if (opcode < 0x70 || opcode > 0x7F) {
+        if (opcode < kShortJccFirst || opcode > kShortJccLast) {
             continue;
         }
         const size_t fallthrough = offset + 2;
