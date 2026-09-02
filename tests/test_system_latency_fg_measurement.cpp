@@ -1,0 +1,189 @@
+#include <gtest/gtest.h>
+
+#include "../hook/common/performance_metrics.h"
+#include "../hook/common/system_latency_frame_begin.h"
+#include "../hook/common/system_latency_metrics.h"
+
+namespace {
+
+using ce::system_latency::FrameBeginKind;
+using ce::system_latency::NativeFrameReport;
+using ce::system_latency::NativeReport;
+using ce::system_latency::Source;
+using ce::system_latency::Tracker;
+
+struct FrameBeginClockReset {
+    FrameBeginClockReset() {
+        ce::system_latency::FrameBeginClock::Get().Reset();
+    }
+    ~FrameBeginClockReset() {
+        ce::system_latency::FrameBeginClock::Get().Reset();
+    }
+};
+
+NativeFrameReport MakeNativeFrame(uint64_t frameId, uint64_t presentUs) {
+    NativeFrameReport frame{};
+    frame.frameId = frameId;
+    frame.simulationStartTimeUs = presentUs - 8'000;
+    frame.presentStartTimeUs = presentUs;
+    frame.gpuRenderEndTimeUs = presentUs + 2'000;
+    return frame;
+}
+
+float MeasureNoGeneration(int64_t frameBeginLeadUs) {
+    Tracker tracker;
+    constexpr int64_t firstPresentUs = 13'000'000;
+    constexpr int64_t intervalUs = 10'000;
+    for (int frame = 0; frame < 30; ++frame) {
+        const int64_t presentUs = firstPresentUs + intervalUs * frame;
+        tracker.ObservePresent(
+            presentUs, frameBeginLeadUs > 0 ? presentUs - frameBeginLeadUs : 0,
+            frameBeginLeadUs > 0 ? FrameBeginKind::LowLatencySleepReturn : FrameBeginKind::Modelled);
+        if (frame > 0) {
+            const int64_t displayedPresentUs = presentUs - intervalUs;
+            tracker.ObserveDisplay(displayedPresentUs + intervalUs, displayedPresentUs + 200);
+        }
+    }
+    return tracker.GetSnapshot(13'300'000).milliseconds;
+}
+
+float MeasureGenerated(int multiplier, bool lowLatency) {
+    Tracker tracker;
+    constexpr int64_t outputIntervalUs = 5'000;
+    const int64_t applicationIntervalUs = outputIntervalUs * multiplier;
+    tracker.SetFrameGeneration(1'000'000.0f / static_cast<float>(applicationIntervalUs), multiplier);
+    int64_t lastScreenUs = 0;
+    for (int frame = 0; frame < 30; ++frame) {
+        const int64_t sourceUs = 14'000'000 + applicationIntervalUs * frame;
+        tracker.ObserveApplicationPresent(
+            sourceUs, lowLatency ? sourceUs - 2'000 : 0,
+            lowLatency ? FrameBeginKind::LowLatencySleepReturn : FrameBeginKind::Modelled);
+        if (frame == 0)
+            continue;
+        for (int output = 0; output < multiplier; ++output) {
+            const int64_t runtimePresentUs = sourceUs + 1'000 + outputIntervalUs * output;
+            lastScreenUs = runtimePresentUs + 2'000;
+            tracker.ObserveDisplay(lastScreenUs, runtimePresentUs);
+        }
+    }
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_TRUE(diagnostics.frameGenerationObserved);
+    EXPECT_NEAR(diagnostics.observedOutputRatioPermille, multiplier * 1000, 2);
+    return tracker.GetSnapshot(lastScreenUs).milliseconds;
+}
+
+}  // namespace
+
+TEST(SystemLatencyFGMeasurementTest, OutputRateMarkersAreRejectedWhileGenerationIsMeasured) {
+    Tracker tracker;
+    tracker.SetFrameGeneration(50.0f, 2);
+    for (int frame = 0; frame < 24; ++frame) {
+        const int64_t sourceUs = 12'000'000 + 20'000 * frame;
+        tracker.ObserveApplicationPresent(sourceUs + 2'000, sourceUs,
+                                          FrameBeginKind::LowLatencySleepReturn);
+        if (frame == 0)
+            continue;
+        const int64_t heldSourceUs = sourceUs - 20'000;
+        tracker.ObserveDisplay(heldSourceUs + 25'000, heldSourceUs + 22'500);
+        tracker.ObserveDisplay(heldSourceUs + 35'000, heldSourceUs + 32'500);
+    }
+
+    NativeReport outputRateReport{};
+    outputRateReport.count = 48;
+    for (size_t frame = 0; frame < outputRateReport.count; ++frame)
+        outputRateReport.frames[frame] = MakeNativeFrame(frame + 1, 12'002'000 + 10'000 * frame);
+    tracker.SubmitNativeReport(outputRateReport);
+
+    const auto snapshot = tracker.GetSnapshot(12'500'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_TRUE(diagnostics.frameGenerationObserved);
+    EXPECT_FALSE(diagnostics.markerCadenceTrusted);
+    EXPECT_EQ(diagnostics.markerReportsRejectedForOutputCadence, 1u);
+    EXPECT_NEAR(diagnostics.observedOutputRatioPermille, 2000, 1);
+}
+
+TEST(SystemLatencyFGMeasurementTest, MeasuredPipelinesPreserveExpectedReflexAndFrameGenerationOrdering) {
+    const float noFgReflexOff = MeasureNoGeneration(0);
+    const float noFgReflexOn = MeasureNoGeneration(2'000);
+    const float fsr2xReflexOff = MeasureGenerated(2, false);
+    const float dlss2xReflexOn = MeasureGenerated(2, true);
+    const float dlss3xReflexOn = MeasureGenerated(3, true);
+    const float dlss4xReflexOn = MeasureGenerated(4, true);
+
+    EXPECT_LT(noFgReflexOn, noFgReflexOff);
+    EXPECT_LT(noFgReflexOff, fsr2xReflexOff);
+    EXPECT_LT(noFgReflexOn, dlss2xReflexOn);
+    EXPECT_LT(dlss2xReflexOn, dlss3xReflexOn);
+    EXPECT_LT(dlss3xReflexOn, dlss4xReflexOn);
+}
+
+TEST(SystemLatencyFGMeasurementTest, MultiplierChangeStartsANewMeasurementEpoch) {
+    Tracker tracker;
+    tracker.SetFrameGeneration(50.0f, 2);
+    int64_t lastScreenUs = 0;
+    for (int frame = 0; frame < 16; ++frame) {
+        const int64_t sourceUs = 15'000'000 + 20'000 * frame;
+        tracker.ObserveApplicationPresent(sourceUs, sourceUs - 2'000,
+                                          FrameBeginKind::LowLatencySleepReturn);
+        if (frame == 0)
+            continue;
+        tracker.ObserveDisplay(lastScreenUs = sourceUs + 3'000, sourceUs + 1'000);
+        tracker.ObserveDisplay(lastScreenUs = sourceUs + 13'000, sourceUs + 11'000);
+    }
+    ASSERT_TRUE(tracker.GetSnapshot(lastScreenUs).valid);
+    const uint64_t resetsBefore = tracker.GetDiagnostics().measurementEpochResets;
+
+    tracker.SetFrameGeneration(25.0f, 4);
+
+    const auto afterChange = tracker.GetSnapshot(lastScreenUs);
+    EXPECT_FALSE(afterChange.valid);
+    EXPECT_TRUE(afterChange.frameGenerationConfigured);
+    EXPECT_FALSE(afterChange.frameGenerationStateKnown);
+    EXPECT_GT(tracker.GetDiagnostics().measurementEpochResets, resetsBefore);
+}
+
+TEST(SystemLatencyClockTest, LatestFrameBeginPublishesTheNewestBoundaryAndRejectsUnusableOnes) {
+    FrameBeginClockReset reset;
+    FrameBeginKind kind = FrameBeginKind::LowLatencySleepReturn;
+
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'000'000, kind), 0);
+    EXPECT_EQ(kind, FrameBeginKind::Modelled);
+    ce::system_latency::NoteFrameBegin(1'000'000, FrameBeginKind::LowLatencySleepReturn);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'005'000, kind), 1'000'000);
+    EXPECT_EQ(kind, FrameBeginKind::LowLatencySleepReturn);
+    ce::system_latency::NoteFrameBegin(1'004'000, FrameBeginKind::LowLatencySleepReturn);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'005'000, kind), 1'004'000);
+
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'003'000, kind), 0);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'400'000, kind), 0);
+    EXPECT_EQ(kind, FrameBeginKind::Modelled);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'005'000, kind), 1'004'000);
+}
+
+TEST(SystemLatencyMetricsTest, PerformanceMetricsResolvesTheFrameBeginBoundaryFromTheProcessClock) {
+    FrameBeginClockReset reset;
+    PerformanceMetrics metrics;
+    SharedDisplayTiming timing;
+    timing.Reset(4321, 0, DisplayTimingStatus::Starting);
+    metrics.ConsumeDisplayTiming(timing, 6'900'000);
+
+    for (int i = 0; i < 12; ++i) {
+        const int64_t presentUs = 7'000'000 + 10'000 * i;
+        ce::system_latency::NoteFrameBegin(presentUs - 3'000, FrameBeginKind::LowLatencySleepReturn);
+        metrics.Update(presentUs);
+        if (i > 0) {
+            const int64_t displayedPresentUs = presentUs - 10'000;
+            timing.Publish(displayedPresentUs + 10'000, presentUs, displayedPresentUs + 200);
+        }
+    }
+    metrics.ConsumeDisplayTiming(timing, 7'120'000);
+
+    const auto snapshot = metrics.GetSystemLatency(7'120'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
+    EXPECT_NEAR(snapshot.milliseconds, 18.0f, 0.1f);
+    EXPECT_EQ(metrics.GetSystemLatencyDiagnostics(7'120'000).lastFrameBeginKind,
+              FrameBeginKind::LowLatencySleepReturn);
+}

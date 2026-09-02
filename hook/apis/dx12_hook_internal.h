@@ -549,7 +549,7 @@ void DX12_NoteSkippedStreamlineFinalOutput();
 DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
                                                                  const OverlayConfig& overlayConfig);
 bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan);
-void DX12_ObserveStreamlineSourcePresentTiming();
+void DX12_ObserveApplicationSourcePresentTiming();
 void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason);
 bool DX12_ShouldUseStreamlineFinalOutputCapture();
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,

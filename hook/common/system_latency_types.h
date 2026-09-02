@@ -20,15 +20,19 @@ enum class Source : uint8_t {
 // Where the simulation-start anchor of a measured frame came from. The value is
 // diagnostic: it tells a reader how much of the published number was measured
 // rather than modelled from the frame cadence.
+//
+// Only one producer qualifies. A Present returning looks like a frame boundary
+// but is not one: the wrapper is entered more than once per displayed frame in
+// several configurations (2.3x measured on a 144 Hz Talos session), and under
+// frame generation the Present that returns belongs to the generator's pacing
+// thread rather than to the application's frame.
 enum class FrameBeginKind : uint8_t {
     // No boundary observed; the frame's CPU work is modelled as one interval.
     Modelled,
-    // The previous Present returned, which is the earliest point the game's
-    // next frame can start when nothing throttles it.
-    PresentReturn,
-    // A low-latency runtime's per-frame sleep returned. Games call it
-    // immediately before sampling input, so it is the closest observable
-    // simulation start without game-owned markers.
+    // A low-latency runtime's per-frame sleep returned. The application calls
+    // it immediately before sampling input, so it is the closest observable
+    // simulation start. It is not used to count application frames: some
+    // integrations emit waits at output cadence.
     LowLatencySleepReturn,
 };
 
@@ -43,6 +47,12 @@ struct Snapshot {
     float medianMilliseconds = 0.0f;
     float minimumMilliseconds = 0.0f;
     float maximumMilliseconds = 0.0f;
+    // Nominal FG telemetry is not proof that generated frames are reaching the
+    // screen. These flags let the overlay disclose an idle/broken generator
+    // instead of presenting its low no-FG latency as an FG result.
+    bool frameGenerationConfigured = false;
+    bool frameGenerationStateKnown = false;
+    bool frameGenerationObserved = false;
 };
 
 // Rolling evidence about how the last published samples were produced. Every
@@ -63,6 +73,21 @@ struct Diagnostics {
     int64_t lastPresentToDisplayUs = 0;
     int64_t lastInputWaitUs = 0;
     int64_t lastBaseIntervalUs = 0;
+    // Cadence of the authoritative streams. Application Present is classified
+    // at the API boundary; frame begin is the input-sampling anchor paired with
+    // it when a low-latency sleep was observed.
+    int64_t displayIntervalUs = 0;
+    int64_t applicationIntervalUs = 0;
+    int64_t frameBeginIntervalUs = 0;
+    int64_t markerIntervalUs = 0;
+    // Measured output/application cadence ratio. 1000 means no generated
+    // output, 2000/3000/4000 are the expected steady 2x/3x/4x families.
+    int observedOutputRatioPermille = 0;
+    bool frameGenerationObserved = false;
+    bool markerCadenceTrusted = true;
+    // A generator is holding the application frame back behind the frames it
+    // derived from it, so the anchor was stepped one application frame older.
+    bool generatorHoldApplied = false;
     FrameBeginKind lastFrameBeginKind = FrameBeginKind::Modelled;
     // Whether the most recent marker-sourced sample was matched through the
     // sensor's runtime-Present association rather than by screen time alone.
@@ -73,6 +98,8 @@ struct Diagnostics {
     // compared against a reading taken under a different configuration.
     Source crossCheckSource = Source::Unavailable;
     float crossCheckMilliseconds = 0.0f;
+    uint64_t markerReportsRejectedForOutputCadence = 0;
+    uint64_t measurementEpochResets = 0;
 };
 
 struct NativeFrameReport {
@@ -139,10 +166,16 @@ inline const char* SourceOverlayLabel(Source source) {
     }
 }
 
+inline const char* SnapshotOverlayLabel(const Snapshot& snapshot) {
+    if (snapshot.frameGenerationConfigured && snapshot.frameGenerationStateKnown &&
+        !snapshot.frameGenerationObserved) {
+        return snapshot.source == Source::ReflexMarkers ? "PC Latency~ (FG idle)" : "Latency est. (FG idle)";
+    }
+    return SourceOverlayLabel(snapshot.source);
+}
+
 inline const char* FrameBeginKindLabel(FrameBeginKind kind) {
     switch (kind) {
-        case FrameBeginKind::PresentReturn:
-            return "present-return";
         case FrameBeginKind::LowLatencySleepReturn:
             return "low-latency-sleep";
         default:

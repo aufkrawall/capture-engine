@@ -19,6 +19,9 @@ public:
     // Presentation timestamp source. Kept active even when display timing is
     // selected so fallback and live config changes have warm history.
     void Update(int64_t currentQpcUs);
+    // A proven application-rendered source Present. Required while FG is active
+    // because Update also sees generated/final-output presents.
+    void ObserveApplicationPresent(int64_t currentQpcUs);
 
     // Import actual screen-change timestamps published by the sensor service.
     // This is intentionally called from the overlay render path so the display

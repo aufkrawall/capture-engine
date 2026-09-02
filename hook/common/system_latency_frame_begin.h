@@ -5,21 +5,30 @@
 //
 // Without game-owned latency markers the only honest way to know how much of a
 // frame's latency is simulation and render work is to observe the boundary the
-// game itself waits on. Two hooks see it and neither of them holds the per-API
-// PerformanceMetrics instance that consumes the value:
+// game itself waits on. The Reflex/Streamline/Vulkan low-latency sleep hooks
+// see the closest available point: the application normally samples input
+// after the wait returns. The hooks do not hold the per-API
+// PerformanceMetrics instance that consumes the value, hence the process-wide
+// slot.
 //
-//   * the present wrappers know when the previous Present returned, which is
-//     the earliest a game that is not throttled can start its next frame;
-//   * the Reflex/Streamline/Vulkan low-latency sleep hooks know when the
-//     per-frame wait ended, which is where a throttled game starts instead.
+// The wait stream is NOT treated as an application-frame counter. Real games
+// can emit markers/waits at output cadence or from more than one integration
+// layer. Application-source Present classification supplies that count; the
+// newest usable wait is only paired with the classified source frame.
 //
-// Both are recorded and the most recent one wins, which resolves the two cases
-// without any per-runtime special casing: with a low-latency runtime active the
-// sleep returns after the previous Present did, so it is naturally preferred;
-// with the runtime off no sleep is ever observed and the Present return stands.
-// That is exactly the difference a low-latency mode makes to input latency, so
-// the estimate becomes sensitive to it instead of modelling a fixed frame of
-// CPU work in both configurations.
+// A Present returning is deliberately NOT a boundary, though it looks like one:
+//
+//   * the present wrapper is entered more than once per displayed frame in
+//     several configurations - 2.3x on a 144 Hz Talos session, against 178-201
+//     runtime presents and ~100 displayed transitions per second - which
+//     shredded the measured application cadence into sub-frame fragments;
+//   * under frame generation the Present that returns is the generator's
+//     pacing thread, not the application's frame, so it says nothing about
+//     when the application last sampled input.
+//
+// A game with no low-latency integration therefore has no boundary and falls
+// back to modelling one interval of CPU work, which is honest rather than
+// confidently wrong.
 
 #include "system_latency_types.h"
 

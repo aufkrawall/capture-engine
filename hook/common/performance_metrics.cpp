@@ -109,12 +109,18 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
     // The boundary the game's current CPU frame started from, published by the
-    // present wrappers and the low-latency sleep hooks. Resolving it here keeps
+    // low-latency sleep hooks. Resolving it here keeps
     // the tracker free of process-wide state so it stays unit-testable.
     ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
     const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
     m_systemLatency.ObservePresent(currentQpcUs, frameBeginUs, frameBeginKind);
     UpdateSeries(m_presentation, currentQpcUs);
+}
+
+void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
+    ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
+    const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
+    m_systemLatency.ObserveApplicationPresent(currentQpcUs, frameBeginUs, frameBeginKind);
 }
 
 void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {

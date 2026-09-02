@@ -255,6 +255,11 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 ctx.staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
+            // This is Streamline's physical/final output, not the app's proxy
+            // Present. Forced FIFO belongs here: applying sync=1 to the proxy
+            // can stall DLSS-G's pacer, while omitting it here lets the recovered
+            // post-FSR output exceed refresh with tearing.
+            ProcessVSyncOverride(SyncInterval, Flags);
             HRESULT guardedSteamHr = S_OK;
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                             "post-FSR confirmed standalone Present", &guardedSteamHr)) {
@@ -303,6 +308,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         // deferred probe check would never fire here.  The ECL detour also
         // services it, but may not fire if PostSL submits are being skipped.
         DX12_ServiceDeferredECLProbe();
+        ProcessVSyncOverride(SyncInterval, Flags);
 
         HRESULT guardedSteamHr = S_OK;
         if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags, "Streamline synthetic Present",
@@ -447,6 +453,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         if (ctx.api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present");
         }
+        ProcessVSyncOverride(SyncInterval, Flags);
         static std::atomic<int> s_reentrantLogCount{0};
         int reentrantNum = s_reentrantLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (reentrantNum <= 10 || reentrantNum == 50 || reentrantNum == 100 || (reentrantNum % 500) == 0) {

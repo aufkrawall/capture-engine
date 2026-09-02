@@ -351,6 +351,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 api == APIType::D3D12, hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
+            ProcessVSyncOverride(SyncInterval, Flags);
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
                 static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount1{0};
@@ -385,6 +386,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline synthetic Present1");
         }
+        ProcessVSyncOverride(SyncInterval, Flags);
 
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
         if (present1Bypass) {
@@ -490,6 +492,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present1");
         }
+        ProcessVSyncOverride(SyncInterval, Flags);
         static std::atomic<int> s_reentrantLogCount1{0};
         int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (reentrantNum1 <= 10 || reentrantNum1 == 50 || reentrantNum1 == 100 || (reentrantNum1 % 500) == 0) {

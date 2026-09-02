@@ -186,6 +186,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 maxLabelWidth = (std::max)(
                     maxLabelWidth, MeasureTextWidth(ce::system_latency::SourceOverlayLabel(latencySource)));
             }
+            maxLabelWidth = (std::max)(
+                maxLabelWidth, MeasureTextWidth(ce::system_latency::SnapshotOverlayLabel(frameLayout.systemLatency)));
             if (frameLayout.systemLatency.valid)
                 snprintf(measureBuf, sizeof(measureBuf), "%.1f ms", frameLayout.systemLatency.milliseconds);
             else
@@ -640,7 +642,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // marked with a tilde. The generic markerless fallback is labelled
     // separately.
     if (rowSystemLatency) {
-        const char* latencyLabel = ce::system_latency::SourceOverlayLabel(frameLayout.systemLatency.source);
+        const char* latencyLabel = ce::system_latency::SnapshotOverlayLabel(frameLayout.systemLatency);
         uint32_t latencyColor = Colors::Gray;
         if (frameLayout.systemLatency.source == ce::system_latency::Source::ReflexMarkers ||
             frameLayout.systemLatency.source == ce::system_latency::Source::Estimated) {

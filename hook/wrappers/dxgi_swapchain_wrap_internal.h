@@ -59,8 +59,6 @@ void FinishSwapchainLifetimeAttribution(IDXGISwapChain* realChain);
 
 #include "../common/performance_metrics.h"
 
-#include "../common/system_latency_frame_begin.h"
-
 #include "hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)

@@ -529,13 +529,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         g_SharedFpsLimiter.ApplyPostPresent();
     }
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present", callCount, SyncInterval, presentFlags, hr);
-    // Everything the game's next frame has to wait for is behind us: the real
-    // Present, the frame-latency wait and any CE-imposed pacing. This is the
-    // earliest the next simulation can start, and it is the PC-latency
-    // estimate's frame-begin anchor whenever no low-latency runtime provides a
-    // later one. See system_latency_frame_begin.h.
-    ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
-                                       ce::system_latency::FrameBeginKind::PresentReturn);
     if (activeDebugSample) {
         activeDebugSample->presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
     }
@@ -724,7 +717,5 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         g_SharedFpsLimiter.ApplyPostPresent();
     }
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr);
-    ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
-                                       ce::system_latency::FrameBeginKind::PresentReturn);
     return hr;
 }

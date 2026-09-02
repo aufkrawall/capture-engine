@@ -108,7 +108,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## PC latency source hierarchy
 
-- `[Overlay] show_system_latency=true` adds one independent row. A fresh marker-enhanced sample renders as `PC Latency~`, the no-marker path renders as `Latency est.`, and an unavailable sample renders as `PC Latency --`; the labels deliberately do not imply an exact end-to-end instrument reading.
+- `[Overlay] show_system_latency=true` adds one independent row. A fresh marker-enhanced sample renders as `PC Latency~`, the no-marker path renders as `Latency est.`, and an unavailable sample renders as `PC Latency --`; the labels deliberately do not imply an exact end-to-end instrument reading. When frame generation is configured and known but not actively producing extra displayed frames, the label adds `(FG idle)` (`PC Latency~ (FG idle)` or `Latency est. (FG idle)`) to disclose that the generator is not active instead of attributing no-FG latency to frame generation.
 - The D3D preferred path consumes the game's real Streamline `slPCLSetMarker` SimulationStart/PresentStart calls when
   `sl.pcl.dll` is present, otherwise it queries `NvAPI_D3D_GetLatency` only from an already-loaded NVAPI module.
   Streamline PCL does not populate `NvAPI_D3D_GetLatency`: the latter reports markers submitted through
@@ -120,7 +120,9 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   display-timing QPC domain, bounded by the reducer's associated runtime `PresentStart` when available. A report's
   measured marker cadence is authoritative; nominal FG metadata is only a fallback when the report has no usable
   cadence. Native Reflex reports can also supply GPU-completion timing, but the public reports do not expose NVIDIA
-  PCL's ETW input ping, so average input wait remains estimated and the tilde is retained.
+  PCL's ETW input ping, so average input wait remains estimated and the tilde is retained. Marker reports arriving
+  at output cadence during active frame generation are rejected because they cannot identify which frames are
+  application-rendered, falling back cleanly to the estimated path.
 - Without usable markers, the estimate is `present-to-display + frame-begin-to-present + average input wait`, all three
   in the same QPC-microsecond domain.
 
@@ -141,25 +143,21 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ### Frame-begin anchor (`system_latency_frame_begin.h`)
 
-- The simulation/render span is measured, not modelled, whenever a frame boundary is observable. Two producers publish
-  into one process-wide slot and the most recent one at or before a Present wins:
-  - the present wrappers (DXGI `Present`/`Present1`, `vkQueuePresentKHR`) record when the previous present returned,
-    after the frame-latency wait and any CE-imposed pacing - the earliest an unthrottled game can start its next frame;
-  - the low-latency sleep hooks (`ReflexLimiter::EndGameSleepBoundary` for Streamline `slReflexSleep` and NvAPI
-    `NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) record when the per-frame wait ended, which is where a throttled game
-    starts instead.
-- No per-runtime special casing is needed: with a low-latency runtime active the sleep returns after the previous
-  present did, so it is naturally preferred; with the runtime off no sleep is ever observed. That difference is the
-  latency the mode actually removes, so the markerless estimate now moves with it instead of modelling a fixed frame of
-  CPU work either way. Boundaries in the future (another presenting thread) or older than 250 ms are rejected.
-- CE's own `ReflexLimiter::Sleep()` does not publish a boundary; it runs inside `ApplyPostPresent()`, before the
-  present wrapper's own boundary, so CE-imposed pacing is correctly counted as part of the next frame's latency.
-- The interval between frame-begin boundaries is the input-sampling cadence and is preferred over the Present interval
-  for the base interval. A boundary occurs once per application frame however many frames the generator paces out of
-  it, so the estimate no longer depends on the FG multiplier or on the asynchronously published base-rate telemetry -
-  which is briefly zero across every FG transition and used to halve the modelled interval there. A generated Present
-  reuses its application frame's boundary rather than being treated as a new sampling point. Regression coverage:
-  `FrameBeginCadenceMakesTheEstimateIndependentOfFrameGenerationTelemetry`.
+- The simulation/render span is measured, not modelled, whenever a low-latency frame boundary is observable.
+  Only `LowLatencySleepReturn` (`ReflexLimiter::EndGameSleepBoundary` for Streamline `slReflexSleep` and NvAPI
+  `NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) qualifies as an observable simulation-start boundary: games call it
+  immediately before sampling input.
+- Present wrappers do not record a frame-begin boundary: Present is entered multiple times per displayed frame in
+  several configurations (e.g. 2.3x in Talos), and under frame generation the Present that returns belongs to the
+  generator's pacing thread rather than the application's frame. When no low-latency sleep is active, CPU simulation
+  work is modelled from the measured application-frame cadence.
+- **Frame generation pacing hold.** Under frame generation, the generator holds an application frame behind the
+  interpolated frames derived from it. Matching against the newest boundary at or before final-output Present would
+  alias onto the next simulation frame that started while the generator was still holding the previous frame,
+  falsely reporting lower latency. When generation is measured, the tracker correlates against the application-source
+  Present and steps the simulation anchor back by the generator hold span.
+- Mode and multiplier transitions trigger a measurement epoch reset (`ResetMeasurementsLocked`), preventing history
+  from bleeding across FG 2x/3x/4x transitions or causing doubled/corrupted readings.
 - VSync and backbuffer queueing need no separate term: a blocking `Present` is entered before the block and reaches the
   screen after it, so the wait is inside `present-to-display`, and a block that instead delays the wrapper's return
   moves the next frame's boundary.
@@ -179,10 +177,11 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 - `[Overlay] PC latency sample` is emitted on every source change and otherwise every five seconds, with the trimmed
   mean plus the window's median/min/max. A wide min/max spread is how a broken correlation announces itself.
-- `[Overlay] PC latency chain` decomposes the most recent accepted sample: `frameBegin=` (`low-latency-sleep`,
-  `present-return` or `modelled`), `anchorToPresent`, `presentToDisplay`, `inputWait`, `baseInterval`, plus running
-  totals for displays observed, displays carrying a `PresentStart` association, displays that matched no Present,
-  presents dropped by the try-lock, samples rejected as out of range, and source transitions.
+- `[Overlay] PC latency chain` decomposes the most recent accepted sample: `frameBegin=` (`low-latency-sleep` or
+  `modelled`), `anchorToPresent`, `presentToDisplay`, `inputWait`, `baseInterval`, `applicationInterval`,
+  `frameBeginInterval`, `displayInterval`, `outputRatio`, `generationObserved`, `generatorHold`, `markerInterval`,
+  `markerTrusted`, `markerAssociated`, running totals for displays observed, associated, unmatched, dropped, rejected,
+  `markerCadenceRejects`, `epochResets`, and source changes.
 - `[Overlay] PC latency cross-check` prints the source that was **not** published whenever it also holds a fresh
   window. Both estimate the same quantity, so a large disagreement means one of the two correlations is wrong.
 - Open question / stale-risk: the two sources are not interchangeable across a configuration change if the marker path

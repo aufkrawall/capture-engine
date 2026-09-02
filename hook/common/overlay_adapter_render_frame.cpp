@@ -109,19 +109,32 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         metrics->GetFGOutputFPS());
                     HookLogImportant(
                         "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
-                        "inputWait=%lldus baseInterval=%lldus markerAssociated=%d displays=%llu associated=%llu "
-                        "unmatched=%llu droppedPresents=%llu rejected=%llu sourceChanges=%llu",
+                        "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
+                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%d "
+                        "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
+                        "unmatched=%llu droppedPresents=%llu rejected=%llu markerCadenceRejects=%llu epochResets=%llu "
+                        "sourceChanges=%llu",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
                         static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
                         static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
                         static_cast<long long>(latencyDiagnostics.lastInputWaitUs),
                         static_cast<long long>(latencyDiagnostics.lastBaseIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.applicationIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.frameBeginIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.displayIntervalUs),
+                        latencyDiagnostics.observedOutputRatioPermille,
+                        latencyDiagnostics.frameGenerationObserved ? 1 : 0,
+                        latencyDiagnostics.generatorHoldApplied ? 1 : 0,
+                        static_cast<long long>(latencyDiagnostics.markerIntervalUs),
+                        latencyDiagnostics.markerCadenceTrusted ? 1 : 0,
                         latencyDiagnostics.lastMarkerUsedAssociation ? 1 : 0,
                         static_cast<unsigned long long>(latencyDiagnostics.displaysObserved),
                         static_cast<unsigned long long>(latencyDiagnostics.displaysWithPresentAssociation),
                         static_cast<unsigned long long>(latencyDiagnostics.displaysWithoutMatchedPresent),
                         static_cast<unsigned long long>(latencyDiagnostics.presentsDroppedUnderContention),
                         static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedOutOfRange),
+                        static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
+                        static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
                         static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions));
                     if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
                         HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",

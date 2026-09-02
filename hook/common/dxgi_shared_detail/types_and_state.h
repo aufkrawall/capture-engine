@@ -298,8 +298,9 @@ inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool /*thirdPartyOv
 }
 
 inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,
-                                                          bool presentHookInstalled, bool present1HookInstalled) {
-    if (!hasReadableVtable) {
+                                                           bool presentHookInstalled, bool present1HookInstalled,
+                                                           bool presentEntryLeftToForeignChain) {
+    if (!hasReadableVtable || presentEntryLeftToForeignChain) {
         return false;
     }
 

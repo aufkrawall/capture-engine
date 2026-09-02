@@ -165,9 +165,12 @@ void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, con
     const bool trackedVtableMatchesCurrent = hasReadableVtable && dxgi_shared_s_hookedVTable == vtable;
     const bool presentHookInstalled = hasReadableVtable && vtable[8] == (void*)DetourPresent;
     const bool present1HookInstalled = hasReadableVtable && vtable[22] == (void*)DetourPresent1;
+    const bool presentEntryLeftToForeignChain =
+        dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire);
 
     if (!DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(hasReadableVtable, trackedVtableMatchesCurrent,
-                                                                   presentHookInstalled, present1HookInstalled)) {
+                                                                   presentHookInstalled, present1HookInstalled,
+                                                                   presentEntryLeftToForeignChain)) {
         return;
     }
 

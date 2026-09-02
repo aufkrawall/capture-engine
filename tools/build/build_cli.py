@@ -1,6 +1,77 @@
 
 
+def print_help() -> None:
+    help_text = """CaptureEngine Build System (build.py)
+
+Usage: python build.py [options]
+
+Recommended Workflows:
+  Fast test loop (daily dev iteration):
+    python build.py --incremental --tests-only --run-tests --gtest-filter=<suite-or-test> --skip-updates --concise
+  Run tests without rebuilding (re-evaluates current build identity):
+    python build.py --no-build --run-tests --skip-updates --concise
+    python build.py --no-build --run-tests --gtest-filter=<filter> --skip-updates --concise
+  Incremental product build & test:
+    python build.py --incremental --skip-updates --concise
+    python build.py --no-build --run-tests --skip-updates --concise
+  Clean product build:
+    python build.py --skip-updates --concise
+  Resume an immediately preceding failed build:
+    python build.py --resume --skip-updates --concise
+  Complete verification gate (single gate for capture/CFR/FG/audio/policy changes):
+    python build.py --verify --skip-updates --concise
+  Strict clean verification gate (for build.py, toolchain, ABI, compiler policy changes):
+    python build.py --verify --verify-clean --skip-updates --concise
+  Lint without building:
+    python build.py --no-build --lint --skip-updates --concise
+  Update clang-tidy baseline (only after a full product build):
+    python build.py --no-build --lint --update-lint-baseline --skip-updates --concise
+  Run fuzz target:
+    python build.py --run-fuzz --fuzz-seconds 60 --skip-updates --concise
+
+Build Modes & Targets:
+  --incremental            Reuse valid objects by content signature; production relinks with new build ID
+  --force-rebuild          Physically remove build/obj before building
+  --resume                 Resume immediately preceding failed build with same build ID (requires --skip-updates)
+  --tests-only             Build only unit test dependencies/executable; reuses current product identity
+  --no-build               Skip all compilation and linking; run only requested actions (--run-tests, --lint, etc.)
+  --production             Build signed production binaries (requires CE_PRODUCTION_BUILD=1)
+
+Gates & Quality Checks:
+  --verify                 Content-validated product build, tests, python self-tests, lint ratchets, ASan/UBSan
+  --verify-clean           Used with --verify for a clean product rebuild instead of content-validated reuse
+  --run-tests              Run native GoogleTest suite (unit_tests.exe)
+  --gtest-filter=<pattern> Filter unit tests by name pattern (e.g. --gtest-filter=SystemLatency*)
+  --run-integration-tests  Run integration tests
+  --full-integration       Run full integration test matrix
+  --lint                   Run clang-tidy and file-size ratchets against current compile_commands.json
+  --update-lint-baseline   Update tools/clang_tidy_baseline.json (only permitted on full product build)
+  --format                 Run clang-format on project sources (advisory)
+  --run-fuzz               Run libFuzzer fuzzing targets registered in FUZZ_TARGET_CORPUS
+  --fuzz-seconds <N>       Duration per fuzz target in seconds (default: 60)
+  --sanitize               Run ASan/UBSan build and regression test suite
+
+Build Options:
+  --skip-updates           Skip MSYS2 packages and FFmpeg repo update checks (essential for fast dev loops)
+  --skip-package           Skip creating 7z release packages in build/bin
+  --jobs <N>               Override parallel compilation workers (default: all CPU cores)
+  --ccache                 Enable ccache compiler cache wrapper if available
+
+Output & Diagnostics:
+  --concise                Concise console output; details go to build.details.log (default)
+  --verbose-commands       Verbose command logging directly to console
+  --log-file <path>        Custom primary log file path (default: build.log)
+  --detail-log <path>      Custom detail log file path (default: build.details.log)
+  --help, -h               Show this help message and exit immediately without side-effects
+"""
+    print(help_text)
+
+
 def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print_help()
+        sys.exit(0)
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     apply_workspace_temp_environment()

@@ -141,10 +141,11 @@ bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan)
         ce::capture_policy::kFinalOutputCfrPublicationHeadroomPermille);
 }
 
-void DX12_ObserveStreamlineSourcePresentTiming() {
-    if (!DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
-        return;
-    ce::capture_policy::ObserveFinalOutputSourcePresent(g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
+void DX12_ObserveApplicationSourcePresentTiming() {
+    if (auto* metrics = DXGIShared::GetPerformanceMetrics(); metrics && metrics->IsFGActive())
+        metrics->ObserveApplicationPresent(PerfLogger::GetQpcUs());
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
+        ce::capture_policy::ObserveFinalOutputSourcePresent(g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
 }
 
 void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason) {
