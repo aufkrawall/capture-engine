@@ -98,6 +98,14 @@ bool IsFrameGenerationRuntimeActiveForTerminationDump() {
          ce::fg_runtime::IsRuntimeFGActive(runtimeMode) || DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 }
 
+// Bounds of the process's own executable, captured while the loader is quiet so
+// the termination path can classify a caller by range check alone. A loader
+// query on that path would be far riskier: it can run with the loader lock held
+// by whatever is tearing the process down.
+static std::atomic<uintptr_t> g_PrimaryModuleBase{0};
+static std::atomic<size_t> g_PrimaryModuleSize{0};
+static std::atomic<bool> g_SuppressedTerminationDumpLogged{false};
+
 void DescribeAddressModule(void* address, char* buffer, size_t bufferSize) {
   if (!buffer || bufferSize == 0) {
     return;
@@ -122,6 +130,30 @@ void DescribeAddressModule(void* address, char* buffer, size_t bufferSize) {
   }
 
   snprintf(buffer, bufferSize, "unknown");
+}
+
+static const char* DescribeTerminationOrigin(ce::crash_dump_policy::TerminationOrigin origin) {
+  switch (origin) {
+    case ce::crash_dump_policy::TerminationOrigin::kPrimaryModule:
+      return "primary-module";
+    case ce::crash_dump_policy::TerminationOrigin::kLoadedModule:
+      return "loaded-module";
+    case ce::crash_dump_policy::TerminationOrigin::kUnknown:
+      break;
+  }
+  return "unknown";
+}
+
+static void LogSuppressedPreTerminationDump(const char* source, DWORD exitCode, const void* callerAddress) {
+  if (g_SuppressedTerminationDumpLogged.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  char callerModule[MAX_PATH + 64] = {};
+  DescribeAddressModule(const_cast<void*>(callerAddress), callerModule, sizeof(callerModule));
+  HookLogImportant(
+      "FatalExitDump: Skipping pre-termination dump - the application terminated itself from its own image with a "
+      "non-crash exit code (source=%s code=0x%08lX caller=%p module=%s fgRuntimeActiveOrRecent=1)",
+      source ? source : "unknown", static_cast<unsigned long>(exitCode), callerAddress, callerModule);
 }
 
 void LogFatalExitCallerStack(const char* source, DWORD exitCode, void* callerAddress) {
@@ -274,13 +306,56 @@ void RegisterCrashDumpEnvironmentHooksForHook() {
   RegisterCrashDumpEnvironmentHooks(hooks);
 }
 
+void CachePrimaryModuleBoundsForTerminationOrigin() {
+  const auto* base = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+  if (!base) {
+    return;
+  }
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+    return;
+  }
+  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE) {
+    return;
+  }
+  const size_t imageSize = nt->OptionalHeader.SizeOfImage;
+  if (imageSize == 0) {
+    return;
+  }
+  g_PrimaryModuleSize.store(imageSize, std::memory_order_release);
+  g_PrimaryModuleBase.store(reinterpret_cast<uintptr_t>(base), std::memory_order_release);
+}
+
+ce::crash_dump_policy::TerminationOrigin ResolveTerminationOrigin(const void* callerAddress) {
+  const uintptr_t base = g_PrimaryModuleBase.load(std::memory_order_acquire);
+  const size_t size = g_PrimaryModuleSize.load(std::memory_order_acquire);
+  if (!callerAddress || base == 0 || size == 0) {
+    return ce::crash_dump_policy::TerminationOrigin::kUnknown;
+  }
+  const uintptr_t address = reinterpret_cast<uintptr_t>(callerAddress);
+  return (address >= base && address < base + size) ? ce::crash_dump_policy::TerminationOrigin::kPrimaryModule
+                                                    : ce::crash_dump_policy::TerminationOrigin::kLoadedModule;
+}
+
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess,
                                        PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord,
                                        void* callerAddress ) {
+  if (!callerAddress) {
+    callerAddress = __builtin_return_address(0);
+  }
   const bool alreadyAttempted = g_PreTerminationDumpAttempted.load(std::memory_order_acquire);
   const bool frameGenerationRuntimeActiveOrRecent = IsFrameGenerationRuntimeActiveForTerminationDump();
+  const ce::crash_dump_policy::TerminationOrigin origin = ResolveTerminationOrigin(callerAddress);
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
-                                                              frameGenerationRuntimeActiveOrRecent)) {
+                                                              frameGenerationRuntimeActiveOrRecent, origin)) {
+    // Only the FG fallback can suppress a dump the old policy would have taken,
+    // so record that decision once instead of leaving a silent gap.
+    if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
+        origin == ce::crash_dump_policy::TerminationOrigin::kPrimaryModule &&
+        !ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode)) {
+      LogSuppressedPreTerminationDump(source, exitCode, callerAddress);
+    }
     return false;
   }
 
@@ -296,9 +371,6 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   t_InFatalTerminationDumpHook = true;
 
-  if (!callerAddress) {
-    callerAddress = __builtin_return_address(0);
-  }
   LogFatalExitCallerStack(source, exitCode, callerAddress);
 
   CONTEXT capturedContext = {};
@@ -329,10 +401,10 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   HookLogImportant(
       "FatalExitDump: Capturing pre-termination dump before crash-like process exit or active FG runtime exit "
-      "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d)",
+      "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d origin=%s)",
       source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress,
       ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) ? 1 : 0,
-      frameGenerationRuntimeActiveOrRecent ? 1 : 0);
+      frameGenerationRuntimeActiveOrRecent ? 1 : 0, DescribeTerminationOrigin(origin));
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
 
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",

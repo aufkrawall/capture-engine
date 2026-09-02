@@ -313,6 +313,61 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
               std::string::npos);
 }
 
+// The frame-generation fallback may only be suppressed on evidence the policy
+// can trust, and that evidence has to be gathered without touching the loader
+// on the termination path: whatever is tearing the process down may already
+// hold the loader lock. The executable's bounds are therefore cached while the
+// hooks are installed, and the decision is a plain range check.
+TEST(CrashHandlerSourceTest, TerminationOriginIsCachedAtInstallAndResolvedWithoutTheLoader) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::string contents = ReadSourceFile(source);
+    ASSERT_FALSE(contents.empty());
+
+    const size_t bootstrap = contents.find("void TryInstallFatalTerminationDumpHooks()");
+    ASSERT_NE(bootstrap, std::string::npos);
+    const size_t cacheCall = contents.find("CachePrimaryModuleBoundsForTerminationOrigin();", bootstrap);
+    ASSERT_NE(cacheCall, std::string::npos);
+
+    const size_t resolver = contents.find(
+        "ce::crash_dump_policy::TerminationOrigin ResolveTerminationOrigin(const void* callerAddress) {");
+    ASSERT_NE(resolver, std::string::npos);
+    const size_t resolverEnd = contents.find("\n}\n", resolver);
+    ASSERT_NE(resolverEnd, std::string::npos);
+    const std::string resolverBody = contents.substr(resolver, resolverEnd - resolver);
+    EXPECT_NE(resolverBody.find("g_PrimaryModuleBase.load"), std::string::npos);
+    EXPECT_NE(resolverBody.find("g_PrimaryModuleSize.load"), std::string::npos);
+    EXPECT_EQ(resolverBody.find("GetModuleHandle"), std::string::npos);
+    EXPECT_EQ(resolverBody.find("LoadLibrary"), std::string::npos);
+    EXPECT_EQ(resolverBody.find("EnumProcessModules"), std::string::npos);
+}
+
+// An unresolved origin must never suppress a dump, and a suppressed one must
+// never be silent - a lost artifact that leaves no trace is worse than a large
+// one, so the decision is logged with the caller that made it.
+TEST(CrashHandlerSourceTest, PreTerminationDumpResolvesOriginBeforeDecidingAndLogsASuppression) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::string contents = ReadSourceFile(source);
+    ASSERT_FALSE(contents.empty());
+
+    const size_t entry = contents.find("bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode,");
+    ASSERT_NE(entry, std::string::npos);
+    const size_t originResolved = contents.find("ResolveTerminationOrigin(callerAddress)", entry);
+    const size_t policyCall = contents.find("ce::crash_dump_policy::ShouldCapturePreTerminationDump(", entry);
+    const size_t suppressionLog = contents.find("LogSuppressedPreTerminationDump(source, exitCode, callerAddress)",
+                                                entry);
+    ASSERT_NE(originResolved, std::string::npos);
+    ASSERT_NE(policyCall, std::string::npos);
+    ASSERT_NE(suppressionLog, std::string::npos);
+    EXPECT_LT(originResolved, policyCall);
+    EXPECT_LT(policyCall, suppressionLog);
+
+    // The caller address is established before it is classified, so a hook that
+    // passes none still resolves to a real module rather than to kUnknown.
+    const size_t callerFallback = contents.find("callerAddress = __builtin_return_address(0);", entry);
+    ASSERT_NE(callerFallback, std::string::npos);
+    EXPECT_LT(callerFallback, originResolved);
+}
+
 TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRouting) {
     const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
     const std::string contents = ReadSourceFile(source);

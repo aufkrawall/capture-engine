@@ -171,6 +171,54 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntime
         policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false, true));
 }
 
+// Portal RTX sessions 20260901_202149 and 20260902_071853: the 64-bit
+// NvRemixBridge.exe renderer ends itself with TerminateProcess(1) from its own
+// image every time the game quits, and DLSS-G is still nominally active because
+// quitting never turns frame generation off first. Both runs therefore produced
+// a 191 MB "crash" dump for a clean exit, taking 2.5s at shutdown, while the two
+// genuine crashes in the same log set (DOOM STATUS_BREAKPOINT, Witcher 3
+// access violation) were caught by the crash-like exit code and never depended
+// on this fallback. A live FG runtime is the normal state at exit, so it cannot
+// by itself mean the exit was abnormal.
+TEST(CrashDumpPolicyTest, PreTerminationDumpSkipsAnApplicationTerminatingItself) {
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false, true,
+                                                         policy::TerminationOrigin::kPrimaryModule));
+
+    // Everything the fallback exists for still dumps: a request raised from a
+    // loaded module - an FG runtime, a driver, an injected component - and any
+    // request whose origin could not be resolved.
+    EXPECT_TRUE(
+        policy::ShouldCapturePreTerminationDump(true, 1, false, true, policy::TerminationOrigin::kLoadedModule));
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true, policy::TerminationOrigin::kUnknown));
+}
+
+// The origin only ever gates the frame-generation fallback. A crash-like exit
+// code is dump-worthy on its own, wherever the request came from, so a game
+// whose statically linked CRT calls abort() from inside the executable still
+// produces its dump.
+TEST(CrashDumpPolicyTest, TerminationOriginNeverSuppressesACrashLikeExit) {
+    for (const policy::TerminationOrigin origin : {policy::TerminationOrigin::kUnknown,
+                                                   policy::TerminationOrigin::kPrimaryModule,
+                                                   policy::TerminationOrigin::kLoadedModule}) {
+        EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, policy::kFailFastExceptionExitCode, false, false,
+                                                            origin));
+        EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, policy::kBreakpointExceptionExitCode, false, false,
+                                                            origin));
+        EXPECT_TRUE(
+            policy::ShouldCapturePreTerminationDump(true, EXCEPTION_ACCESS_VIOLATION, false, false, origin));
+        EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, EXCEPTION_STACK_OVERFLOW, false, true, origin));
+
+        // And the origin cannot resurrect an exit the other rules already
+        // refused, whichever way it points.
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false, true, origin));
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false, false, origin));
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(false, 1, false, true, origin));
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, true, true, origin));
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kProcessIsTerminatingExitCode, false, true,
+                                                             origin));
+    }
+}
+
 TEST(CrashDumpPolicyTest, InProcessDumpFallbackRefusedWithForeignOverlayLoaded) {
     // The in-process MiniDumpWriteDump fallback deadlocked the game's render thread inside the Steam
     // overlay's hooked version APIs (session 20260813_222058: dbgcore -> GetFileVersionInfoW ->

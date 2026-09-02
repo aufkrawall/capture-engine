@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-09-02 - A live FG runtime at exit is not an abnormal exit
+
+Portal RTX wrote a 191 MB pre-termination "crash" dump on every clean quit (sessions `20260901_202149` and
+`20260902_071853`, identical caller `NvRemixBridge.exe+0x10D6B`, `TerminateProcess(1)`, 2.5 s at shutdown). The
+active-FG fallback in `ShouldCapturePreTerminationDump` was added during FSR-FG bring-up to catch an FG runtime
+killing the process during teardown, but its only test was `fgActive && exitCode != 0` - and quitting never turns
+frame generation off first, so that condition is true for every FG game that exits with a non-zero code. The two
+genuine crashes in the same log set (DOOM `STATUS_BREAKPOINT`, Witcher 3 access violation) were both caught by the
+crash-like exit code and never depended on the fallback at all. The fallback now additionally requires that the
+termination was not raised from the process's own executable: an application ending itself from its own code with a
+non-crash exit code is quitting. Loaded modules and unresolvable callers still dump, so the classifier fails open,
+and crash-like codes are untouched. The origin is a cached range check over the primary image, deliberately making no
+loader call on the termination path, and a suppression is logged once with the caller and module rather than leaving
+a silent gap.
+
 ### 2026-09-02 - nv_lod_spread_fix silently refused a driver-relocated branch
 
 Filter Tester DXVK x86 session `20260902_065516` reported Vulkan negative-LOD-bias shimmer that D3D10/11/12 did not

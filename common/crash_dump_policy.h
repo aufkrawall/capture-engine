@@ -318,8 +318,21 @@ inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
     return (exitCode & 0xC0000000UL) == 0xC0000000UL;
 }
 
+// Where a termination request came from, resolved from the caller's return
+// address. Only the primary image is distinguished, because that is the one
+// distinction that carries meaning: code inside the process's own executable
+// deciding to end the process is the application quitting, while a request
+// raised from any loaded module can be a runtime failing on the way out.
+// Anything that cannot be resolved stays `kUnknown` and is never suppressed.
+enum class TerminationOrigin : uint8_t {
+    kUnknown = 0,
+    kPrimaryModule,
+    kLoadedModule,
+};
+
 inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
-                                            bool frameGenerationRuntimeActiveOrRecent = false) {
+                                            bool frameGenerationRuntimeActiveOrRecent = false,
+                                            TerminationOrigin origin = TerminationOrigin::kUnknown) {
     // STATUS_PROCESS_IS_TERMINATING is the runtime's own "the process is
     // already exiting" sentinel; it never represents a genuine abnormal exit,
     // so it must also skip the active-FG fallback below.
@@ -330,10 +343,21 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     if (IsCrashLikeProcessExitCode(exitCode)) {
         return true;
     }
+    if (!frameGenerationRuntimeActiveOrRecent || exitCode == 0) {
+        return false;
+    }
 
-    // Active/recent FG is useful context for abnormal process termination, but
-    // clean game exits should not create confusing crash artifacts.
-    return frameGenerationRuntimeActiveOrRecent && exitCode != 0;
+    // A live FG runtime at termination is the normal state of every game that
+    // uses frame generation - quitting never turns it off first - so it cannot
+    // by itself mean the exit was abnormal. What this fallback exists for is an
+    // FG runtime killing the process while tearing down, and such a request
+    // never originates in the application's own image. A game terminating
+    // itself from its own code with a non-crash exit code is quitting, and
+    // dumping several hundred megabytes for that buries the real artifacts.
+    // Crash machinery is unaffected: abort/terminate/_purecall/fail-fast all
+    // report a crash-like exit code and returned above, whether the CRT is
+    // statically linked into the executable or not.
+    return origin != TerminationOrigin::kPrimaryModule;
 }
 
 // UE5's ensure() macro raises this continuable code; the filter answers it with

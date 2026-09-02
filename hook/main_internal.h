@@ -272,6 +272,10 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 void RegisterCrashDumpEnvironmentHooksForHook();
 
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess, PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord, void* callerAddress = nullptr);
+// Records the primary image's bounds while the loader is quiet, so classifying a
+// termination request needs no loader call on the termination path itself.
+void CachePrimaryModuleBoundsForTerminationOrigin();
+ce::crash_dump_policy::TerminationOrigin ResolveTerminationOrigin(const void* callerAddress);
 
 bool ShouldCaptureExplicitFatalRaise(DWORD code);
 
