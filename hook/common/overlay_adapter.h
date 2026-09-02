@@ -174,6 +174,13 @@ private:
     SystemMetrics cachedSystemMetrics{};
     char cachedCpuMetricsText[96] = "--";
     char cachedGpuMetricsText[96] = "--";
+    char cachedCpuClocksText[48] = "";
+    char cachedGpuClocksText[64] = "";
+    // Byte offset at which the optional sensor readings start inside the two
+    // metrics strings, so the load percentage keeps its load color while the
+    // readings after it do not.
+    size_t cachedCpuSensorOffset = 0;
+    size_t cachedGpuSensorOffset = 0;
 
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;

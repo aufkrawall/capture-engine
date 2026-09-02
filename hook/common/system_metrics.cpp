@@ -65,6 +65,10 @@ struct HostMetricsPublication {
     float cpuPackagePowerW = 0.0f;
     float gpuPackagePowerW = 0.0f;
     float gpuFanRpm = 0.0f;
+    float cpuCoreClockMhz = 0.0f;
+    float gpuCoreClockMhz = 0.0f;
+    float gpuMemoryClockMhz = 0.0f;
+    float gpuCoreVoltageV = 0.0f;
     uint32_t validityMask = 0;
     uint32_t sourcePid = 0;
     LUID adapterLuid = {0, 0};
@@ -74,7 +78,9 @@ bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
     constexpr uint32_t kKnownValidity =
         SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID |
         SYSTEM_METRIC_CPU_TEMPERATURE_VALID | SYSTEM_METRIC_GPU_TEMPERATURE_VALID |
-        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_FAN_VALID;
+        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID |
+        SYSTEM_METRIC_GPU_FAN_VALID | SYSTEM_METRIC_CPU_CORE_CLOCK_VALID | SYSTEM_METRIC_GPU_CORE_CLOCK_VALID |
+        SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID | SYSTEM_METRIC_GPU_VOLTAGE_VALID;
     if (!std::isfinite(publication.cpuUsage) || publication.cpuUsage < 0.0f || publication.cpuUsage > 100.0f ||
         !std::isfinite(publication.ramUsageGB) || publication.ramUsageGB < 0.0f ||
         publication.ramUsageGB > 1048576.0f || publication.maxCoreLoad > 100u ||
@@ -105,18 +111,39 @@ bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
         return false;
     }
     if ((publication.validityMask & SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID) != 0 &&
-        (!std::isfinite(publication.cpuPackagePowerW) || publication.cpuPackagePowerW < 0.0f ||
+        (!std::isfinite(publication.cpuPackagePowerW) || publication.cpuPackagePowerW <= 0.0f ||
          publication.cpuPackagePowerW > 5000.0f)) {
         return false;
     }
     if ((publication.validityMask & SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID) != 0 &&
-        (!std::isfinite(publication.gpuPackagePowerW) || publication.gpuPackagePowerW < 0.0f ||
+        (!std::isfinite(publication.gpuPackagePowerW) || publication.gpuPackagePowerW <= 0.0f ||
          publication.gpuPackagePowerW > 5000.0f)) {
         return false;
     }
+    // A stopped fan is the one metric for which zero is a real reading.
     if ((publication.validityMask & SYSTEM_METRIC_GPU_FAN_VALID) != 0 &&
         (!std::isfinite(publication.gpuFanRpm) || publication.gpuFanRpm < 0.0f ||
          publication.gpuFanRpm > 100000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_CPU_CORE_CLOCK_VALID) != 0 &&
+        (!std::isfinite(publication.cpuCoreClockMhz) || publication.cpuCoreClockMhz <= 0.0f ||
+         publication.cpuCoreClockMhz > 20000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_CORE_CLOCK_VALID) != 0 &&
+        (!std::isfinite(publication.gpuCoreClockMhz) || publication.gpuCoreClockMhz <= 0.0f ||
+         publication.gpuCoreClockMhz > 20000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID) != 0 &&
+        (!std::isfinite(publication.gpuMemoryClockMhz) || publication.gpuMemoryClockMhz <= 0.0f ||
+         publication.gpuMemoryClockMhz > 20000.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_VOLTAGE_VALID) != 0 &&
+        (!std::isfinite(publication.gpuCoreVoltageV) || publication.gpuCoreVoltageV <= 0.0f ||
+         publication.gpuCoreVoltageV > 10.0f)) {
         return false;
     }
     if ((publication.validityMask & (SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID)) ==
@@ -148,6 +175,10 @@ bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublic
         publication.cpuPackagePowerW = metrics.cpuPackagePowerW.load(std::memory_order_relaxed);
         publication.gpuPackagePowerW = metrics.gpuPackagePowerW.load(std::memory_order_relaxed);
         publication.gpuFanRpm = metrics.gpuFanRpm.load(std::memory_order_relaxed);
+        publication.cpuCoreClockMhz = metrics.cpuCoreClockMhz.load(std::memory_order_relaxed);
+        publication.gpuCoreClockMhz = metrics.gpuCoreClockMhz.load(std::memory_order_relaxed);
+        publication.gpuMemoryClockMhz = metrics.gpuMemoryClockMhz.load(std::memory_order_relaxed);
+        publication.gpuCoreVoltageV = metrics.gpuCoreVoltageV.load(std::memory_order_relaxed);
         publication.adapterLuid.LowPart = static_cast<DWORD>(metrics.adapterLuidLow.load(std::memory_order_relaxed));
         publication.adapterLuid.HighPart = static_cast<LONG>(metrics.adapterLuidHigh.load(std::memory_order_relaxed));
         publication.validityMask = metrics.validityMask.load(std::memory_order_relaxed);
@@ -280,6 +311,12 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
         current.gpuPackagePowerValid = false;
         current.gpuFanRpm = 0.0f;
         current.gpuFanValid = false;
+        current.gpuCoreClockMhz = 0.0f;
+        current.gpuCoreClockValid = false;
+        current.gpuMemoryClockMhz = 0.0f;
+        current.gpuMemoryClockValid = false;
+        current.gpuCoreVoltageV = 0.0f;
+        current.gpuCoreVoltageValid = false;
         snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh,
                  (unsigned int)luidLow);
 
@@ -362,6 +399,14 @@ bool SystemMetricsCollector::UpdateFromHost() {
     current.gpuPackagePowerW = current.gpuPackagePowerValid ? publication.gpuPackagePowerW : 0.0f;
     current.gpuFanValid = (publication.validityMask & SYSTEM_METRIC_GPU_FAN_VALID) != 0;
     current.gpuFanRpm = current.gpuFanValid ? publication.gpuFanRpm : 0.0f;
+    current.cpuCoreClockValid = (publication.validityMask & SYSTEM_METRIC_CPU_CORE_CLOCK_VALID) != 0;
+    current.cpuCoreClockMhz = current.cpuCoreClockValid ? publication.cpuCoreClockMhz : 0.0f;
+    current.gpuCoreClockValid = (publication.validityMask & SYSTEM_METRIC_GPU_CORE_CLOCK_VALID) != 0;
+    current.gpuCoreClockMhz = current.gpuCoreClockValid ? publication.gpuCoreClockMhz : 0.0f;
+    current.gpuMemoryClockValid = (publication.validityMask & SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID) != 0;
+    current.gpuMemoryClockMhz = current.gpuMemoryClockValid ? publication.gpuMemoryClockMhz : 0.0f;
+    current.gpuCoreVoltageValid = (publication.validityMask & SYSTEM_METRIC_GPU_VOLTAGE_VALID) != 0;
+    current.gpuCoreVoltageV = current.gpuCoreVoltageValid ? publication.gpuCoreVoltageV : 0.0f;
     return true;
 }
 

@@ -459,7 +459,8 @@ separate corner window that never requires the hook DLL; see `[DesktopOverlay]` 
 ### Optional LibreHardwareMonitor sensors
 
 CPU/GPU temperature, package power, and GPU fan RPM can be appended to the existing CPU/GPU rows through the optional
-LibreHardwareMonitor bridge. The dedicated sensor service owns a contained PowerShell child that loads the managed
+LibreHardwareMonitor bridge, and CPU/GPU core clock, GPU memory clock and GPU core voltage appear on their own clock
+rows, each shown only while at least one of its sensors is readable. The dedicated sensor service owns a contained PowerShell child that loads the managed
 library; no LibreHardwareMonitor code enters the game or hook DLL. CaptureEngine does not bundle the third-party
 binaries.
 
@@ -473,10 +474,11 @@ and copy these four matching files from that one release into
 - `System.Runtime.CompilerServices.Unsafe.dll`
 
 No other release files are used by this CPU/GPU-only bridge. Restart CaptureEngine after copying the files.
-`[HardwareSensors] enabled=auto` activates the bridge when those files exist; temperatures default to `auto`, while
-package power and fan RPM are opt-in. A selector may instead contain an exact LibreHardwareMonitor identifier. Some
-low-level sensors require CaptureEngine to be started as administrator, but CaptureEngine never elevates itself and
-never substitutes a guessed value. See the installed plugin `README.txt` and `config.ini` for the complete setup and
+`[HardwareSensors] enabled=auto` activates the bridge when those files exist and every metric selector defaults to
+`auto`. A selector may instead contain an exact LibreHardwareMonitor identifier, or `off`. A metric the driver cannot
+read is reported as unavailable rather than as a zero, so an unreadable sensor simply stays blank: CPU temperature,
+package power and core clock come from LibreHardwareMonitor's own kernel driver and need CaptureEngine to run as
+administrator. CaptureEngine never elevates itself, never substitutes a guessed value, and logs the reason once. See the installed plugin `README.txt` and `config.ini` for the complete setup and
 selector behavior.
 
 ## Known issues and limitations

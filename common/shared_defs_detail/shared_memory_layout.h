@@ -416,6 +416,10 @@ public:
         std::atomic<float> cpuPackagePowerW{0.0f};
         std::atomic<float> gpuPackagePowerW{0.0f};
         std::atomic<float> gpuFanRpm{0.0f};
+        std::atomic<float> cpuCoreClockMhz{0.0f};
+        std::atomic<float> gpuCoreClockMhz{0.0f};
+        std::atomic<float> gpuMemoryClockMhz{0.0f};
+        std::atomic<float> gpuCoreVoltageV{0.0f};
         std::atomic<uint32_t> validityMask{0};
         std::atomic<uint32_t> sourcePid{0};
         std::atomic<int32_t> adapterLuidLow{0};

@@ -295,7 +295,9 @@ inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppCon
            left.enabled == right.enabled && left.pollIntervalMs == right.pollIntervalMs &&
            left.cpuTemperature == right.cpuTemperature && left.gpuTemperature == right.gpuTemperature &&
            left.cpuPackagePower == right.cpuPackagePower && left.gpuPackagePower == right.gpuPackagePower &&
-           left.gpuFan == right.gpuFan;
+           left.gpuFan == right.gpuFan && left.cpuCoreClock == right.cpuCoreClock &&
+           left.gpuCoreClock == right.gpuCoreClock && left.gpuMemoryClock == right.gpuMemoryClock &&
+           left.gpuVoltage == right.gpuVoltage;
 }
 
 inline std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {

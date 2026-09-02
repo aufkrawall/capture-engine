@@ -54,22 +54,66 @@ bool IsSafeProtocolToken(std::string_view value, size_t maximumLength, bool sens
     });
 }
 
-bool ParseSensorValue(std::string_view valueField, std::string_view identifierField, float minimum, float maximum,
-                      bool minimumExclusive, SensorValue& output) {
+// rejectZero marks the metrics for which zero means "not readable" rather than
+// an idle reading. A stopped fan really is 0 RPM, but a package reporting 0 W,
+// 0 MHz, 0 V or 0 C is reporting nothing: without elevation
+// LibreHardwareMonitor cannot open its kernel driver and every CPU power and
+// clock rail reads exactly zero. The bridge applies the same rule at the
+// source; this is the independent second check.
+bool ParseSensorValue(std::string_view valueField, std::string_view identifierField, float maximum, bool rejectZero,
+                      SensorValue& output) {
     output = {};
     if (valueField == "-" && identifierField == "-")
         return true;
     if (valueField == "-" || identifierField == "-" || !IsSafeProtocolToken(identifierField, 255, true))
         return false;
     float value = 0.0f;
-    if (!ce::TryParseFiniteFloat(std::string(valueField), value) || value > maximum ||
-        (minimumExclusive ? value <= minimum : value < minimum)) {
+    if (!ce::TryParseFiniteFloat(std::string(valueField), value) || value > maximum || value < 0.0f ||
+        (rejectZero && value <= 0.0f)) {
         return false;
     }
     output.value = value;
     output.valid = true;
     output.identifier.assign(identifierField);
     return true;
+}
+
+// Wire order of the CE_LHM_SAMPLE pairs, declared once so the bridge, the
+// parser, and the tests cannot drift apart. New metrics append: an older reader
+// meeting a longer line rejects it on field count instead of misreading a
+// shifted field.
+struct SensorFieldSpec {
+    SensorValue HardwareSensorSnapshot::*member;
+    float maximum;
+    bool rejectZero;
+};
+
+constexpr SensorFieldSpec kSensorFields[] = {
+    {&HardwareSensorSnapshot::cpuTemperature, 250.0f, true},
+    {&HardwareSensorSnapshot::gpuTemperature, 250.0f, true},
+    {&HardwareSensorSnapshot::cpuPackagePower, 5000.0f, true},
+    {&HardwareSensorSnapshot::gpuPackagePower, 5000.0f, true},
+    {&HardwareSensorSnapshot::gpuFan, 100000.0f, false},
+    {&HardwareSensorSnapshot::cpuCoreClock, 20000.0f, true},
+    {&HardwareSensorSnapshot::gpuCoreClock, 20000.0f, true},
+    {&HardwareSensorSnapshot::gpuMemoryClock, 20000.0f, true},
+    {&HardwareSensorSnapshot::gpuVoltage, 10.0f, true},
+};
+
+constexpr size_t kSensorFieldCount = std::size(kSensorFields);
+constexpr size_t kSampleFieldCount = 2 + kSensorFieldCount * 2;
+
+bool IsProcessElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION elevation = {};
+    DWORD returned = 0;
+    const bool elevated =
+        GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned) != FALSE &&
+        elevation.TokenIsElevated != 0;
+    CloseHandle(token);
+    return elevated;
 }
 
 std::wstring QuoteWindowsArgument(std::wstring_view argument) {
@@ -156,19 +200,19 @@ bool ParseBridgeMessage(std::string_view line, BridgeMessage& message) {
         message.detail.assign(fields[1]);
         return true;
     }
-    if (fields.size() != 12 || fields[0] != kSamplePrefix)
+    if (fields.size() != kSampleFieldCount || fields[0] != kSamplePrefix)
         return false;
 
     uint32_t sequence = 0;
     if (!ce::TryParseUInt32(fields[1], sequence) || sequence == 0)
         return false;
     HardwareSensorSnapshot snapshot;
-    if (!ParseSensorValue(fields[2], fields[3], 0.0f, 250.0f, true, snapshot.cpuTemperature) ||
-        !ParseSensorValue(fields[4], fields[5], 0.0f, 250.0f, true, snapshot.gpuTemperature) ||
-        !ParseSensorValue(fields[6], fields[7], 0.0f, 5000.0f, false, snapshot.cpuPackagePower) ||
-        !ParseSensorValue(fields[8], fields[9], 0.0f, 5000.0f, false, snapshot.gpuPackagePower) ||
-        !ParseSensorValue(fields[10], fields[11], 0.0f, 100000.0f, false, snapshot.gpuFan)) {
-        return false;
+    for (size_t index = 0; index < kSensorFieldCount; ++index) {
+        const SensorFieldSpec& spec = kSensorFields[index];
+        if (!ParseSensorValue(fields[2 + index * 2], fields[3 + index * 2], spec.maximum, spec.rejectZero,
+                              snapshot.*spec.member)) {
+            return false;
+        }
     }
     snapshot.sequence = sequence;
     message.kind = BridgeMessageKind::Sample;
@@ -192,7 +236,9 @@ struct LibreHardwareMonitorPlugin::Impl {
 
     bool AnySensorRequested() const {
         return config.cpuTemperature != "off" || config.gpuTemperature != "off" ||
-               config.cpuPackagePower != "off" || config.gpuPackagePower != "off" || config.gpuFan != "off";
+               config.cpuPackagePower != "off" || config.gpuPackagePower != "off" || config.gpuFan != "off" ||
+               config.cpuCoreClock != "off" || config.gpuCoreClock != "off" ||
+               config.gpuMemoryClock != "off" || config.gpuVoltage != "off";
     }
 
     void Shutdown() {
@@ -224,6 +270,8 @@ struct LibreHardwareMonitorPlugin::Impl {
         readyLogged = false;
         exitLogged = false;
         staleLogged = false;
+        elevationHintLogged = false;
+        samplesObserved = 0;
         launchTickMs = 0;
 
         if (config.enabled == "off" || !AnySensorRequested()) {
@@ -319,7 +367,10 @@ struct LibreHardwareMonitorPlugin::Impl {
             eventName, L"-PollIntervalMs", std::to_wstring(config.pollIntervalMs), L"-CpuTemperature",
             Utf8ToWide(config.cpuTemperature), L"-GpuTemperature", Utf8ToWide(config.gpuTemperature),
             L"-CpuPackagePower", Utf8ToWide(config.cpuPackagePower), L"-GpuPackagePower",
-            Utf8ToWide(config.gpuPackagePower), L"-GpuFan", Utf8ToWide(config.gpuFan),
+            Utf8ToWide(config.gpuPackagePower), L"-GpuFan", Utf8ToWide(config.gpuFan), L"-CpuCoreClock",
+            Utf8ToWide(config.cpuCoreClock), L"-GpuCoreClock", Utf8ToWide(config.gpuCoreClock),
+            L"-GpuMemoryClock", Utf8ToWide(config.gpuMemoryClock), L"-GpuVoltage",
+            Utf8ToWide(config.gpuVoltage),
         };
         std::wstring commandLine = QuoteWindowsArgument(powerShell.wstring());
         for (const std::wstring& argument : arguments) {
@@ -392,16 +443,21 @@ struct LibreHardwareMonitorPlugin::Impl {
     }
 
     void LogSelectedSensors(const HardwareSensorSnapshot& next) {
-        const std::array<std::pair<const char*, const SensorValue*>, 5> values = {{
+        const std::array<std::pair<const char*, const SensorValue*>, 9> values = {{
             {"cpu_temperature", &next.cpuTemperature},
             {"gpu_temperature", &next.gpuTemperature},
             {"cpu_package_power", &next.cpuPackagePower},
             {"gpu_package_power", &next.gpuPackagePower},
             {"gpu_fan", &next.gpuFan},
+            {"cpu_core_clock", &next.cpuCoreClock},
+            {"gpu_core_clock", &next.gpuCoreClock},
+            {"gpu_memory_clock", &next.gpuMemoryClock},
+            {"gpu_voltage", &next.gpuVoltage},
         }};
-        const std::array<const SensorValue*, 5> previous = {
+        const std::array<const SensorValue*, 9> previous = {
             &snapshot.cpuTemperature, &snapshot.gpuTemperature, &snapshot.cpuPackagePower,
-            &snapshot.gpuPackagePower, &snapshot.gpuFan,
+            &snapshot.gpuPackagePower, &snapshot.gpuFan,      &snapshot.cpuCoreClock,
+            &snapshot.gpuCoreClock,   &snapshot.gpuMemoryClock, &snapshot.gpuVoltage,
         };
         for (size_t index = 0; index < values.size(); ++index) {
             if (values[index].second->identifier == previous[index]->identifier)
@@ -413,6 +469,29 @@ struct LibreHardwareMonitorPlugin::Impl {
                 LogInfo("[Sensors:LHM] %s became unavailable", values[index].first);
             }
         }
+    }
+
+    // Explains once why the CPU metrics stay unavailable instead of leaving the
+    // user to guess. LibreHardwareMonitor reads package temperature, power and
+    // core clocks through its own kernel driver, which a non-elevated service
+    // cannot open; the rails then read exactly zero and the bridge suppresses
+    // them. There is no unprivileged path to these counters, so this is a hint,
+    // not a recoverable failure, and CaptureEngine never elevates itself.
+    void MaybeLogElevationHint() {
+        if (elevationHintLogged || samplesObserved < kElevationHintSampleCount)
+            return;
+        if (config.cpuTemperature == "off" && config.cpuPackagePower == "off" && config.cpuCoreClock == "off")
+            return;
+        elevationHintLogged = true;
+        if (snapshot.cpuTemperature.valid || snapshot.cpuPackagePower.valid || snapshot.cpuCoreClock.valid)
+            return;
+        if (IsProcessElevated()) {
+            LogInfo("[Sensors:LHM] No CPU temperature, power or clock sensor is readable on this system");
+            return;
+        }
+        LogInfo(
+            "[Sensors:LHM] CPU temperature, package power and core clock require LibreHardwareMonitor's kernel "
+            "driver; start CaptureEngine as administrator to read them");
     }
 
     void Poll() {
@@ -470,6 +549,9 @@ struct LibreHardwareMonitorPlugin::Impl {
                 LogSelectedSensors(message.snapshot);
                 snapshot = std::move(message.snapshot);
                 staleLogged = false;
+                if (samplesObserved < kElevationHintSampleCount)
+                    ++samplesObserved;
+                MaybeLogElevationHint();
             }
         }
 
@@ -506,11 +588,16 @@ struct LibreHardwareMonitorPlugin::Impl {
     HardwareSensorSnapshot snapshot;
     std::string outputBuffer;
     uint32_t rejectedMessages = 0;
+    // AMD's SMU needs a couple of updates before its rails settle, so the hint
+    // waits for a few samples rather than firing on a cold first line.
+    static constexpr uint32_t kElevationHintSampleCount = 3;
+    uint32_t samplesObserved = 0;
     uint64_t launchTickMs = 0;
     bool running = false;
     bool readyLogged = false;
     bool exitLogged = false;
     bool staleLogged = false;
+    bool elevationHintLogged = false;
 };
 
 LibreHardwareMonitorPlugin::LibreHardwareMonitorPlugin(const HardwareSensorsConfig& config)

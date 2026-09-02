@@ -475,12 +475,19 @@ struct HardwareSensorsConfig {
     uint32_t pollIntervalMs = 1000;
 
     // Each selector is off, auto, or an exact LibreHardwareMonitor sensor
-    // identifier such as /gpu-nvidia/0/temperature/0.
+    // identifier such as /gpu-nvidia/0/temperature/0. The bridge reports a
+    // metric it cannot actually read as unavailable rather than as a zero, so
+    // every selector can default to auto: without elevation LibreHardwareMonitor
+    // has no kernel driver and the CPU power/clock rails read exactly 0.
     std::string cpuTemperature = "auto";
     std::string gpuTemperature = "auto";
-    std::string cpuPackagePower = "off";
-    std::string gpuPackagePower = "off";
-    std::string gpuFan = "off";
+    std::string cpuPackagePower = "auto";
+    std::string gpuPackagePower = "auto";
+    std::string gpuFan = "auto";
+    std::string cpuCoreClock = "auto";
+    std::string gpuCoreClock = "auto";
+    std::string gpuMemoryClock = "auto";
+    std::string gpuVoltage = "auto";
 };
 
 struct AppConfig {

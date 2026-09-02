@@ -448,21 +448,31 @@ hdr_paper_white=auto
 
 [HardwareSensors]
 ; Optional LibreHardwareMonitor bridge for CPU/GPU temperature, package power,
-; and GPU fan RPM. A contained child owned by the dedicated sensor service loads
-; it, never the injected game process. auto uses it when all required plugin
-; files exist; on additionally warns when they are missing; off disables it.
+; GPU fan RPM, core/memory clocks and GPU core voltage. A contained child owned
+; by the dedicated sensor service loads it, never the injected game process.
+; auto uses it when all required plugin files exist; on additionally warns when
+; they are missing; off disables it.
 enabled=auto
 ; Polling interval in milliseconds (250-10000).
 poll_interval_ms=1000
 ; Each value is off, auto, or an exact LibreHardwareMonitor identifier such as
 ; /gpu-nvidia/0/temperature/0. Auto GPU selection follows the GPU with the
-; highest reported GPU Core load. Values are appended to the existing CPU/GPU
-; overlay rows, so [Overlay] show_cpu/show_gpu remain the display toggles.
+; highest reported GPU Core load. Temperature, power and fan are appended to the
+; existing CPU/GPU overlay rows; clocks and voltage get their own row, shown only
+; while at least one of their sensors is readable. [Overlay] show_cpu/show_gpu
+; remain the display toggles.
+; A metric the driver cannot read is reported as unavailable, not as zero: CPU
+; temperature, package power and core clock come from LibreHardwareMonitor's
+; kernel driver and stay blank unless CaptureEngine runs as administrator.
 cpu_temperature=auto
 gpu_temperature=auto
-cpu_package_power=off
-gpu_package_power=off
-gpu_fan=off
+cpu_package_power=auto
+gpu_package_power=auto
+gpu_fan=auto
+cpu_core_clock=auto
+gpu_core_clock=auto
+gpu_memory_clock=auto
+gpu_voltage=auto
 
 [DesktopOverlay]
 ; This small screen-corner window works without injection and is useful with WGC

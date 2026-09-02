@@ -177,6 +177,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     ce::overlay_layout::RowInputs rowInputs = {};
     rowInputs.showGPU = cfg.showGPU;
     rowInputs.showCPU = cfg.showCPU;
+    rowInputs.showGPUClocks = cachedSystemMetrics.gpuCoreClockValid || cachedSystemMetrics.gpuMemoryClockValid ||
+                              cachedSystemMetrics.gpuCoreVoltageValid;
+    rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid;
     rowInputs.showVRAM = cfg.showVRAM;
     rowInputs.showRAM = cfg.showRAM;
     rowInputs.showFPS = cfg.showFPS;

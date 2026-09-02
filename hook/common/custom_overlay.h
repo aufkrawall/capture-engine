@@ -230,6 +230,10 @@ constexpr uint32_t LabelCyan = 0xFFFFFF00;    // Cyan for FG
 constexpr uint32_t LabelYellow = 0xFF00FFFF;  // Yellow for FPS labels
 constexpr uint32_t ValueYellow = 0xFF00FFFF;  // Yellow for FPS values
 constexpr uint32_t ValueCyan = 0xFFFFFF00;    // Cyan for CPU %
+// Optional hardware-sensor readings appended to, or split out of, the usage
+// rows. Deliberately not a load color: these values are not a load percentage,
+// and inheriting one made every reading on a 99%-loaded GPU row look critical.
+constexpr uint32_t SensorValue = 0xFFE0E0E0;  // Neutral light gray
 }  // namespace Colors
 
 }  // namespace CustomOverlay

@@ -425,6 +425,14 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
         validity |= SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID;
     if (hardwareSensors.gpuFan.valid)
         validity |= SYSTEM_METRIC_GPU_FAN_VALID;
+    if (hardwareSensors.cpuCoreClock.valid)
+        validity |= SYSTEM_METRIC_CPU_CORE_CLOCK_VALID;
+    if (hardwareSensors.gpuCoreClock.valid)
+        validity |= SYSTEM_METRIC_GPU_CORE_CLOCK_VALID;
+    if (hardwareSensors.gpuMemoryClock.valid)
+        validity |= SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID;
+    if (hardwareSensors.gpuVoltage.valid)
+        validity |= SYSTEM_METRIC_GPU_VOLTAGE_VALID;
 
     auto& published = shm->systemMetrics;
     published.publicationSequence.fetch_add(1, std::memory_order_acq_rel);
@@ -442,6 +450,10 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
     published.cpuPackagePowerW.store(hardwareSensors.cpuPackagePower.value, std::memory_order_relaxed);
     published.gpuPackagePowerW.store(hardwareSensors.gpuPackagePower.value, std::memory_order_relaxed);
     published.gpuFanRpm.store(hardwareSensors.gpuFan.value, std::memory_order_relaxed);
+    published.cpuCoreClockMhz.store(hardwareSensors.cpuCoreClock.value, std::memory_order_relaxed);
+    published.gpuCoreClockMhz.store(hardwareSensors.gpuCoreClock.value, std::memory_order_relaxed);
+    published.gpuMemoryClockMhz.store(hardwareSensors.gpuMemoryClock.value, std::memory_order_relaxed);
+    published.gpuCoreVoltageV.store(hardwareSensors.gpuVoltage.value, std::memory_order_relaxed);
     published.adapterLuidLow.store(static_cast<int32_t>(low), std::memory_order_relaxed);
     published.adapterLuidHigh.store(static_cast<int32_t>(high), std::memory_order_relaxed);
     published.adapterSource.store(static_cast<uint32_t>(adapter.source), std::memory_order_relaxed);

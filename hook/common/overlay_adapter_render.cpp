@@ -25,6 +25,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     const bool rowGPU = (frameLayout.rowMask & kRowGPU) != 0;
     const bool rowCPU = (frameLayout.rowMask & kRowCPU) != 0;
+    const bool rowGPUClocks = (frameLayout.rowMask & kRowGPUClocks) != 0;
+    const bool rowCPUClocks = (frameLayout.rowMask & kRowCPUClocks) != 0;
     const bool rowVRAM = (frameLayout.rowMask & kRowVRAM) != 0;
     const bool rowRAM = (frameLayout.rowMask & kRowRAM) != 0;
     const bool rowFPS = (frameLayout.rowMask & kRowFPS) != 0;
@@ -42,13 +44,24 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                                   cachedSystemMetrics.gpuUsageValid, cachedSystemMetrics.gpuUsage,
                                   cachedSystemMetrics.gpuTemperatureValid, cachedSystemMetrics.gpuTemperatureC,
                                   cachedSystemMetrics.gpuPackagePowerValid, cachedSystemMetrics.gpuPackagePowerW,
-                                  cachedSystemMetrics.gpuFanValid, cachedSystemMetrics.gpuFanRpm);
+                                  cachedSystemMetrics.gpuFanValid, cachedSystemMetrics.gpuFanRpm,
+                                  &cachedGpuSensorOffset);
         }
         if (rowCPU) {
             FormatCpuMetricsValue(cachedCpuMetricsText, sizeof(cachedCpuMetricsText), cachedSystemMetrics.cpuUsage,
                                   cachedSystemMetrics.cpuMaxCoreUsage, cachedSystemMetrics.cpuTemperatureValid,
                                   cachedSystemMetrics.cpuTemperatureC, cachedSystemMetrics.cpuPackagePowerValid,
-                                  cachedSystemMetrics.cpuPackagePowerW);
+                                  cachedSystemMetrics.cpuPackagePowerW, &cachedCpuSensorOffset);
+        }
+        if (rowGPUClocks) {
+            FormatGpuClocksValue(cachedGpuClocksText, sizeof(cachedGpuClocksText),
+                                 cachedSystemMetrics.gpuCoreClockValid, cachedSystemMetrics.gpuCoreClockMhz,
+                                 cachedSystemMetrics.gpuMemoryClockValid, cachedSystemMetrics.gpuMemoryClockMhz,
+                                 cachedSystemMetrics.gpuCoreVoltageValid, cachedSystemMetrics.gpuCoreVoltageV);
+        }
+        if (rowCPUClocks) {
+            FormatCpuClocksValue(cachedCpuClocksText, sizeof(cachedCpuClocksText),
+                                 cachedSystemMetrics.cpuCoreClockValid, cachedSystemMetrics.cpuCoreClockMhz);
         }
     }
 
@@ -93,6 +106,14 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(SystemMetricsCollector::Get().GetCPUName()));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(cachedCpuMetricsText) + kShadowPad);
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("100% (100%)") + kShadowPad);
+        }
+        if (rowGPUClocks) {
+            maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(kGpuClocksLabel));
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(cachedGpuClocksText) + kShadowPad);
+        }
+        if (rowCPUClocks) {
+            maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(kCpuClocksLabel));
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(cachedCpuClocksText) + kShadowPad);
         }
         if (rowVRAM) {
             float gbUsed = (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
@@ -445,21 +466,60 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
     }
 
-    // GPU - Name in green, % in yellow (based on load)
+    // Draws "<load><sensor readings>" right-aligned as one run, but colors the
+    // load span and the sensor span separately. Sharing one color would turn
+    // the temperature, power and fan values red as soon as load crosses the
+    // high threshold, implying those sensors were critical too.
+    auto DrawMetricsRowValue = [&](const char* text, size_t sensorOffset, uint32_t loadColor) {
+        const size_t length = strlen(text);
+        if (sensorOffset >= length) {
+            renderer->DrawTextRightAligned(valueRightEdge, cursorY, text, loadColor, shadowColor);
+            return;
+        }
+        float totalWidth = 0.0f;
+        float sensorWidth = 0.0f;
+        renderer->CalcTextSize(text, &totalWidth, nullptr);
+        renderer->CalcTextSize(text + sensorOffset, &sensorWidth, nullptr);
+        char loadSpan[96];
+        const size_t loadLength = (std::min)(sensorOffset, sizeof(loadSpan) - 1);
+        memcpy(loadSpan, text, loadLength);
+        loadSpan[loadLength] = '\0';
+        renderer->DrawTextWithShadow(valueRightEdge - totalWidth, cursorY, loadSpan, loadColor, shadowColor);
+        renderer->DrawTextWithShadow(valueRightEdge - sensorWidth, cursorY, text + sensorOffset,
+                                     Colors::SensorValue, shadowColor);
+    };
+
+    // GPU - Name in green, % colored by load, sensor readings neutral
     if (rowGPU) {
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetGPUName(), Colors::LabelGreen,
                                      shadowColor);
         const uint32_t gpuValueColor =
             cachedSystemMetrics.gpuUsageValid ? GetLoadColor(cachedSystemMetrics.gpuUsage) : Colors::Gray;
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedGpuMetricsText, gpuValueColor, shadowColor);
+        DrawMetricsRowValue(cachedGpuMetricsText, cachedGpuSensorOffset, gpuValueColor);
         cursorY += lineHeight;
     }
 
-    // CPU - Name in green, % (maxCore%) in cyan
+    // GPU clocks - core/memory clock and core voltage on their own row
+    if (rowGPUClocks) {
+        renderer->DrawTextWithShadow(labelCol, cursorY, kGpuClocksLabel, Colors::LabelGreen, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedGpuClocksText, Colors::SensorValue,
+                                       shadowColor);
+        cursorY += lineHeight;
+    }
+
+    // CPU - Name in green, % (maxCore%) in cyan, sensor readings neutral
     if (rowCPU) {
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetCPUName(), Colors::LabelGreen,
                                      shadowColor);
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedCpuMetricsText, Colors::ValueCyan, shadowColor);
+        DrawMetricsRowValue(cachedCpuMetricsText, cachedCpuSensorOffset, Colors::ValueCyan);
+        cursorY += lineHeight;
+    }
+
+    // CPU clocks - core clock on its own row
+    if (rowCPUClocks) {
+        renderer->DrawTextWithShadow(labelCol, cursorY, kCpuClocksLabel, Colors::LabelGreen, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, cachedCpuClocksText, Colors::SensorValue,
+                                       shadowColor);
         cursorY += lineHeight;
     }
 

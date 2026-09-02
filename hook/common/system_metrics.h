@@ -19,6 +19,10 @@ struct SystemMetrics {
     float cpuPackagePowerW;
     float gpuPackagePowerW;
     float gpuFanRpm;
+    float cpuCoreClockMhz;
+    float gpuCoreClockMhz;
+    float gpuMemoryClockMhz;
+    float gpuCoreVoltageV;
     bool gpuUsageValid;     // True if gpuUsage is real
     bool vramUsageValid;    // True if vramUsed is real, including a valid zero
     bool cpuTemperatureValid;
@@ -26,6 +30,10 @@ struct SystemMetrics {
     bool cpuPackagePowerValid;
     bool gpuPackagePowerValid;
     bool gpuFanValid;
+    bool cpuCoreClockValid;
+    bool gpuCoreClockValid;
+    bool gpuMemoryClockValid;
+    bool gpuCoreVoltageValid;
 };
 
 class SystemMetricsCollector {

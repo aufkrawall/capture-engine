@@ -154,10 +154,14 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     config.hardwareSensors.gpuTemperature =
         ParseHardwareSensorSelector(reader, "gpu_temperature", "auto");
     config.hardwareSensors.cpuPackagePower =
-        ParseHardwareSensorSelector(reader, "cpu_package_power", "off");
+        ParseHardwareSensorSelector(reader, "cpu_package_power", "auto");
     config.hardwareSensors.gpuPackagePower =
-        ParseHardwareSensorSelector(reader, "gpu_package_power", "off");
-    config.hardwareSensors.gpuFan = ParseHardwareSensorSelector(reader, "gpu_fan", "off");
+        ParseHardwareSensorSelector(reader, "gpu_package_power", "auto");
+    config.hardwareSensors.gpuFan = ParseHardwareSensorSelector(reader, "gpu_fan", "auto");
+    config.hardwareSensors.cpuCoreClock = ParseHardwareSensorSelector(reader, "cpu_core_clock", "auto");
+    config.hardwareSensors.gpuCoreClock = ParseHardwareSensorSelector(reader, "gpu_core_clock", "auto");
+    config.hardwareSensors.gpuMemoryClock = ParseHardwareSensorSelector(reader, "gpu_memory_clock", "auto");
+    config.hardwareSensors.gpuVoltage = ParseHardwareSensorSelector(reader, "gpu_voltage", "auto");
 
 }
 

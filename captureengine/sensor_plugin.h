@@ -21,6 +21,10 @@ struct HardwareSensorSnapshot {
     SensorValue cpuPackagePower;
     SensorValue gpuPackagePower;
     SensorValue gpuFan;
+    SensorValue cpuCoreClock;
+    SensorValue gpuCoreClock;
+    SensorValue gpuMemoryClock;
+    SensorValue gpuVoltage;
     uint32_t sequence = 0;
     uint64_t receivedTickMs = 0;
 };

@@ -1,0 +1,1 @@
+CE_LHM_SAMPLE	19	-	-	41	/gpu-nvidia/0/temperature/0	-	-	180.25	/gpu-nvidia/0/power/0	0	/gpu-nvidia/0/fan/1	-	-	210	/gpu-nvidia/0/clock/0	810	/gpu-nvidia/0/clock/4	0.72	/gpu-nvidia/0/voltage/0

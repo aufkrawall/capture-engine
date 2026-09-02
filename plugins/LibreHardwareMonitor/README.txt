@@ -18,8 +18,10 @@ Setup (tested with LibreHardwareMonitor 0.9.6):
    No other release files are used by this CPU/GPU-only bridge; the
    LibreHardwareMonitor GUI executable is not required.
 3. Leave [HardwareSensors] enabled=auto in config.ini and restart
-   CaptureEngine. CPU/GPU temperatures appear beside the existing usage values.
-   Package power and GPU fan RPM are opt-in settings in that section.
+   CaptureEngine. CPU/GPU temperature, package power and GPU fan RPM appear
+   beside the existing usage values; CPU/GPU core clock, GPU memory clock and
+   GPU core voltage appear on their own clock rows. Every metric defaults to
+   auto and can be set to off or to an exact sensor identifier.
 
 The bridge enables only LibreHardwareMonitor's CPU and GPU visitors. It runs as
 a contained child owned by CaptureEngine's dedicated sensor-service process,
@@ -30,9 +32,19 @@ with an exact sensor identifier. The selected identifiers and periodic values
 are recorded in CaptureEngine's debug log without recording the plugin's
 filesystem path.
 
+An automatic selector prefers an exactly named sensor, then the lowest-numbered
+instance of that name, and only then falls back to the highest current reading.
+Hardware that numbers its sensors ("GPU Fan 1", "GPU Fan 2") therefore resolves
+to one fixed fan instead of alternating between physical fans as their speeds
+cross.
+
 Some low-level sensors require CaptureEngine itself to be started as
-administrator. CaptureEngine never elevates automatically; an unavailable or
-zero temperature is omitted from the overlay instead of being guessed.
+administrator: without elevation LibreHardwareMonitor cannot open its kernel
+driver, and the CPU temperature, package power and core clock rails then read
+exactly zero. CaptureEngine never elevates automatically. A metric that reads
+zero is reported as unavailable and omitted from the overlay rather than shown
+as a real 0 C, 0 W, 0 MHz or 0 V; a stopped fan is the one case where zero is
+kept, because 0 RPM is a genuine reading. The reason is logged once per run.
 
 Licensing
 ---------

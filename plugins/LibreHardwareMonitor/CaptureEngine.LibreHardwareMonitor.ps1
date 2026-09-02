@@ -17,18 +17,58 @@ param(
     [string]$GpuTemperature = 'auto',
 
     [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
-    [string]$CpuPackagePower = 'off',
+    [string]$CpuPackagePower = 'auto',
 
     [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
-    [string]$GpuPackagePower = 'off',
+    [string]$GpuPackagePower = 'auto',
 
     [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
-    [string]$GpuFan = 'off'
+    [string]$GpuFan = 'auto',
+
+    [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
+    [string]$CpuCoreClock = 'auto',
+
+    [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
+    [string]$GpuCoreClock = 'auto',
+
+    [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
+    [string]$GpuMemoryClock = 'auto',
+
+    [ValidatePattern('^(off|auto|/[A-Za-z0-9/_.-]{1,254})$')]
+    [string]$GpuVoltage = 'auto'
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# Wire order of the CE_LHM_SAMPLE value/identifier pairs. New metrics append, so
+# an older native reader can never misread a shifted field: it rejects the whole
+# line on its field count instead. RejectZero separates a genuinely idle reading
+# from a sensor the kernel driver could not fill in. A stopped fan really is
+# 0 RPM, but a package reporting 0 W, 0 MHz, 0 V or 0 C is reporting nothing at
+# all - without elevation LibreHardwareMonitor cannot open its driver and every
+# CPU power and clock rail reads exactly zero.
+$MetricDefinitions = @(
+    @{ Key = 'CpuTemperature';  Type = 'Temperature'; Scope = 'Cpu'; RejectZero = $true;  Maximum = 250.0;
+       PreferredNames = @('CPU Package', 'Core (Tctl/Tdie)', 'CPU (Tctl/Tdie)', 'CPU Die (average)') },
+    @{ Key = 'GpuTemperature';  Type = 'Temperature'; Scope = 'Gpu'; RejectZero = $true;  Maximum = 250.0;
+       PreferredNames = @('GPU Core') },
+    @{ Key = 'CpuPackagePower'; Type = 'Power';       Scope = 'Cpu'; RejectZero = $true;  Maximum = 5000.0;
+       PreferredNames = @('CPU Package', 'Package', 'CPU PPT') },
+    @{ Key = 'GpuPackagePower'; Type = 'Power';       Scope = 'Gpu'; RejectZero = $true;  Maximum = 5000.0;
+       PreferredNames = @('GPU Package', 'GPU Board', 'GPU Power') },
+    @{ Key = 'GpuFan';          Type = 'Fan';         Scope = 'Gpu'; RejectZero = $false; Maximum = 100000.0;
+       PreferredNames = @('GPU Fan') },
+    @{ Key = 'CpuCoreClock';    Type = 'Clock';       Scope = 'Cpu'; RejectZero = $true;  Maximum = 20000.0;
+       PreferredNames = @('Cores (Average)', 'CPU Core', 'Core') },
+    @{ Key = 'GpuCoreClock';    Type = 'Clock';       Scope = 'Gpu'; RejectZero = $true;  Maximum = 20000.0;
+       PreferredNames = @('GPU Core') },
+    @{ Key = 'GpuMemoryClock';  Type = 'Clock';       Scope = 'Gpu'; RejectZero = $true;  Maximum = 20000.0;
+       PreferredNames = @('GPU Memory') },
+    @{ Key = 'GpuVoltage';      Type = 'Voltage';     Scope = 'Gpu'; RejectZero = $true;  Maximum = 10.0;
+       PreferredNames = @('GPU Core Voltage', 'GPU Core') }
+)
 
 function Update-HardwareTree {
     param([object]$Hardware)
@@ -67,6 +107,19 @@ function Get-SensorNumber {
     return $number
 }
 
+function Test-SensorUsable {
+    param(
+        [object]$Sensor,
+        [bool]$RejectZero
+    )
+
+    $value = Get-SensorNumber -Sensor $Sensor
+    if ($null -eq $value -or $value -lt 0) {
+        return $false
+    }
+    return -not ($RejectZero -and $value -le 0)
+}
+
 function Find-ExactSensor {
     param(
         [object[]]$Sensors,
@@ -88,31 +141,72 @@ function Find-AutomaticSensor {
     param(
         [object[]]$Sensors,
         [string]$SensorType,
-        [string[]]$PreferredNames
+        [string[]]$PreferredNames,
+        [bool]$RejectZero,
+        [string]$PreviousIdentifier
     )
 
+    # 1. An exact preferred name wins, in preference order.
     foreach ($name in $PreferredNames) {
         foreach ($sensor in $Sensors) {
             if ($sensor.SensorType.ToString() -eq $SensorType -and
                 [string]::Equals($sensor.Name, $name, [System.StringComparison]::OrdinalIgnoreCase) -and
-                $null -ne (Get-SensorNumber -Sensor $sensor)) {
-                $value = Get-SensorNumber -Sensor $sensor
-                if ($SensorType -ne 'Temperature' -or $value -gt 0) {
-                    return $sensor
-                }
+                (Test-SensorUsable -Sensor $sensor -RejectZero $RejectZero)) {
+                return $sensor
             }
         }
     }
 
+    # 2. Multi-instance hardware numbers its sensors instead ("GPU Fan 1",
+    #    "GPU Fan 2", "Core #1"), so no exact name matches. Take the lowest
+    #    index: leaving this to the value comparison in step 4 would hand the
+    #    selection to whichever instance reads highest in this one sample, so
+    #    two idle fans a few RPM apart rename the selected identifier on nearly
+    #    every poll and the reported RPM alternates between physical fans.
+    foreach ($name in $PreferredNames) {
+        $pattern = '^' + [regex]::Escape($name) + '\s*#?\s*(\d+)$'
+        $selected = $null
+        $selectedIndex = [int]::MaxValue
+        foreach ($sensor in $Sensors) {
+            if ($sensor.SensorType.ToString() -ne $SensorType -or
+                -not (Test-SensorUsable -Sensor $sensor -RejectZero $RejectZero)) {
+                continue
+            }
+            $match = [regex]::Match($sensor.Name, $pattern,
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($match.Success -and [int]$match.Groups[1].Value -lt $selectedIndex) {
+                $selected = $sensor
+                $selectedIndex = [int]$match.Groups[1].Value
+            }
+        }
+        if ($null -ne $selected) {
+            return $selected
+        }
+    }
+
+    # 3. Keep an already-selected unrecognized sensor while it stays usable, so
+    #    the last resort below cannot reselect a different one every sample.
+    if (-not [string]::IsNullOrEmpty($PreviousIdentifier)) {
+        foreach ($sensor in $Sensors) {
+            if ($sensor.SensorType.ToString() -eq $SensorType -and
+                [string]::Equals($sensor.Identifier.ToString(), $PreviousIdentifier,
+                    [System.StringComparison]::OrdinalIgnoreCase) -and
+                (Test-SensorUsable -Sensor $sensor -RejectZero $RejectZero)) {
+                return $sensor
+            }
+        }
+    }
+
+    # 4. Nothing recognizable: the highest usable reading of the right type.
     $selected = $null
     $selectedValue = [double]::NegativeInfinity
     foreach ($sensor in $Sensors) {
-        if ($sensor.SensorType.ToString() -ne $SensorType) {
+        if ($sensor.SensorType.ToString() -ne $SensorType -or
+            -not (Test-SensorUsable -Sensor $sensor -RejectZero $RejectZero)) {
             continue
         }
         $value = Get-SensorNumber -Sensor $sensor
-        if ($null -ne $value -and ($SensorType -ne 'Temperature' -or $value -gt 0) -and
-            $value -gt $selectedValue) {
+        if ($value -gt $selectedValue) {
             $selected = $sensor
             $selectedValue = $value
         }
@@ -174,31 +268,33 @@ function Select-Sensor {
         [string]$Selector,
         [object[]]$ExactSensors,
         [object[]]$AutomaticSensors,
-        [string]$SensorType,
-        [string[]]$PreferredNames
+        [hashtable]$Metric,
+        [string]$PreviousIdentifier
     )
 
     if ($Selector -eq 'off') {
         return $null
     }
     if ($Selector -ne 'auto') {
-        return Find-ExactSensor -Sensors $ExactSensors -Selector $Selector -SensorType $SensorType
+        return Find-ExactSensor -Sensors $ExactSensors -Selector $Selector -SensorType $Metric.Type
     }
-    return Find-AutomaticSensor -Sensors $AutomaticSensors -SensorType $SensorType -PreferredNames $PreferredNames
+    return Find-AutomaticSensor -Sensors $AutomaticSensors -SensorType $Metric.Type `
+        -PreferredNames $Metric.PreferredNames -RejectZero $Metric.RejectZero `
+        -PreviousIdentifier $PreviousIdentifier
 }
 
 function Convert-SensorPair {
     param(
         [object]$Sensor,
-        [double]$Minimum,
         [double]$Maximum,
-        [bool]$MinimumExclusive
+        [bool]$RejectZero
     )
 
+    if (-not (Test-SensorUsable -Sensor $Sensor -RejectZero $RejectZero)) {
+        return @('-', '-')
+    }
     $value = Get-SensorNumber -Sensor $Sensor
-    if ($null -eq $value -or $value -gt $Maximum -or
-        ($MinimumExclusive -and $value -le $Minimum) -or
-        (-not $MinimumExclusive -and $value -lt $Minimum)) {
+    if ($value -gt $Maximum) {
         return @('-', '-')
     }
     $identifier = $Sensor.Identifier.ToString()
@@ -217,9 +313,36 @@ try {
     $libraryPath = Join-Path $PSScriptRoot 'LibreHardwareMonitorLib.dll'
     $assembly = [System.Reflection.Assembly]::LoadFrom($libraryPath)
 
+    $selectors = @{
+        CpuTemperature  = $CpuTemperature
+        GpuTemperature  = $GpuTemperature
+        CpuPackagePower = $CpuPackagePower
+        GpuPackagePower = $GpuPackagePower
+        GpuFan          = $GpuFan
+        CpuCoreClock    = $CpuCoreClock
+        GpuCoreClock    = $GpuCoreClock
+        GpuMemoryClock  = $GpuMemoryClock
+        GpuVoltage      = $GpuVoltage
+    }
+    $previousIdentifiers = @{}
+    $cpuRequested = $false
+    $gpuRequested = $false
+    foreach ($metric in $MetricDefinitions) {
+        $previousIdentifiers[$metric.Key] = ''
+        if ($selectors[$metric.Key] -eq 'off') {
+            continue
+        }
+        if ($metric.Scope -eq 'Cpu') {
+            $cpuRequested = $true
+        }
+        else {
+            $gpuRequested = $true
+        }
+    }
+
     $computer = New-Object LibreHardwareMonitor.Hardware.Computer
-    $computer.IsCpuEnabled = ($CpuTemperature -ne 'off' -or $CpuPackagePower -ne 'off')
-    $computer.IsGpuEnabled = ($GpuTemperature -ne 'off' -or $GpuPackagePower -ne 'off' -or $GpuFan -ne 'off')
+    $computer.IsCpuEnabled = $cpuRequested
+    $computer.IsGpuEnabled = $gpuRequested
     [void]$computer.Open()
 
     [Console]::Out.WriteLine("CE_LHM_READY`t{0}", $assembly.GetName().Version.ToString())
@@ -242,30 +365,22 @@ try {
         }
         $activeGpuSensors = if ($null -eq $activeGpu) { @() } else { @(Get-HardwareTreeSensors -Hardware $activeGpu) }
 
-        $cpuTempSensor = Select-Sensor -Selector $CpuTemperature -ExactSensors $allCpuSensors `
-            -AutomaticSensors $allCpuSensors -SensorType 'Temperature' `
-            -PreferredNames @('CPU Package', 'Core (Tctl/Tdie)', 'CPU (Tctl/Tdie)', 'CPU Die (average)')
-        $gpuTempSensor = Select-Sensor -Selector $GpuTemperature -ExactSensors $allGpuSensors `
-            -AutomaticSensors $activeGpuSensors -SensorType 'Temperature' -PreferredNames @('GPU Core')
-        $cpuPowerSensor = Select-Sensor -Selector $CpuPackagePower -ExactSensors $allCpuSensors `
-            -AutomaticSensors $allCpuSensors -SensorType 'Power' `
-            -PreferredNames @('CPU Package', 'Package', 'CPU PPT')
-        $gpuPowerSensor = Select-Sensor -Selector $GpuPackagePower -ExactSensors $allGpuSensors `
-            -AutomaticSensors $activeGpuSensors -SensorType 'Power' `
-            -PreferredNames @('GPU Package', 'GPU Board', 'GPU Power')
-        $gpuFanSensor = Select-Sensor -Selector $GpuFan -ExactSensors $allGpuSensors `
-            -AutomaticSensors $activeGpuSensors -SensorType 'Fan' -PreferredNames @('GPU Fan')
-
-        $cpuTempPair = @(Convert-SensorPair -Sensor $cpuTempSensor -Minimum 0 -Maximum 250 -MinimumExclusive $true)
-        $gpuTempPair = @(Convert-SensorPair -Sensor $gpuTempSensor -Minimum 0 -Maximum 250 -MinimumExclusive $true)
-        $cpuPowerPair = @(Convert-SensorPair -Sensor $cpuPowerSensor -Minimum 0 -Maximum 5000 -MinimumExclusive $false)
-        $gpuPowerPair = @(Convert-SensorPair -Sensor $gpuPowerSensor -Minimum 0 -Maximum 5000 -MinimumExclusive $false)
-        $gpuFanPair = @(Convert-SensorPair -Sensor $gpuFanSensor -Minimum 0 -Maximum 100000 -MinimumExclusive $false)
-
         $sequence++
-        $fields = @('CE_LHM_SAMPLE', $sequence.ToString([System.Globalization.CultureInfo]::InvariantCulture)) +
-            $cpuTempPair + $gpuTempPair + $cpuPowerPair + $gpuPowerPair + $gpuFanPair
-        [Console]::Out.WriteLine([string]::Join("`t", [string[]]$fields))
+        $fields = New-Object System.Collections.Generic.List[string]
+        $fields.Add('CE_LHM_SAMPLE')
+        $fields.Add($sequence.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        foreach ($metric in $MetricDefinitions) {
+            $exactScope = if ($metric.Scope -eq 'Cpu') { $allCpuSensors } else { $allGpuSensors }
+            $autoScope = if ($metric.Scope -eq 'Cpu') { $allCpuSensors } else { $activeGpuSensors }
+            $sensor = Select-Sensor -Selector $selectors[$metric.Key] -ExactSensors $exactScope `
+                -AutomaticSensors $autoScope -Metric $metric `
+                -PreviousIdentifier $previousIdentifiers[$metric.Key]
+            $pair = @(Convert-SensorPair -Sensor $sensor -Maximum $metric.Maximum -RejectZero $metric.RejectZero)
+            $previousIdentifiers[$metric.Key] = if ($pair[1] -eq '-') { '' } else { $pair[1] }
+            $fields.Add($pair[0])
+            $fields.Add($pair[1])
+        }
+        [Console]::Out.WriteLine([string]::Join("`t", $fields.ToArray()))
         [Console]::Out.Flush()
 
         if ($shutdownEvent.WaitOne($PollIntervalMs)) {

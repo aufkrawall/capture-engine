@@ -173,6 +173,10 @@ enum SharedSystemMetricsValidity : uint32_t {
     SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID = 1u << 5,
     SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID = 1u << 6,
     SYSTEM_METRIC_GPU_FAN_VALID = 1u << 7,
+    SYSTEM_METRIC_CPU_CORE_CLOCK_VALID = 1u << 8,
+    SYSTEM_METRIC_GPU_CORE_CLOCK_VALID = 1u << 9,
+    SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID = 1u << 10,
+    SYSTEM_METRIC_GPU_VOLTAGE_VALID = 1u << 11,
 };
 
 enum SharedSystemMetricsAdapterSource : uint32_t {
