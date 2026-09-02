@@ -102,11 +102,10 @@ public:
         if (count == 0)
             return {};
 
-        // Trim about an eighth from each tail once the window carries enough
-        // frames for that to be meaningful. One frame paired against the wrong
-        // present is a full frame interval out; a single trimmed sample is not
-        // enough margin when a whole batch can arrive at once.
-        const size_t trim = count >= 16 ? count / 8 : (count >= 8 ? 1 : 0);
+        // Use interquartile trimming once the window carries enough frames:
+        // rejects transition hitch spikes and outlier pairing jumps without
+        // distorting steady-state latency.
+        const size_t trim = count >= 8 ? count / 4 : (count >= 4 ? 1 : 0);
         const size_t retained = count - 2 * trim;
         float sum = 0.0f;
         for (size_t i = trim; i < count - trim; ++i)

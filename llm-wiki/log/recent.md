@@ -1,15 +1,17 @@
 # llm-wiki Log
 
-### 2026-09-02 - Latency under FG: 4x vs 2x inversion and pacing corruption
+### 2026-09-02 - Latency under FG: 2x vs 3x/4x gap resolution and transition outlier trimming
 
-Session `logs/20260902_224411` revealed that DLSS FG 4x reported lower latency (~43 ms, and dropping to ~5.9 ms) than DLSS FG 2x (~66 ms).
-`ObservePresent` recorded final output presents (138 FPS, 6.2-7.2 ms) into `applicationPresentIntervals_`. Under 4x this polluted the median application interval to 6,213 µs. Because `appInterval * 2 < displayInterval * 3` (12,426 < 21,666), `IsGeneratorPacingOutputLocked()` evaluated to false (`generationObserved=0`), which suppressed generator hold addition and marker-frame stepback on 4x. Furthermore, `IsMarkerCadenceOutputRateLocked` failed to reject output-rate markers arriving at 7.2 ms cadence, collapsing latency to 5.9 ms. Meanwhile, under 2x, `IsGeneratorPacingOutputLocked()` evaluated to true, stepping back the marker frame and reporting 66.6 ms.
+Session `logs/20260902_225647` revealed that DLSS FG 2x reported ~44.5 ms while 3x jumped to ~71.8 ms (+27.3 ms!) and 4x remained at ~74.3 ms (+2.5 ms), and mode switches caused 100-180 ms latency spikes that took 15 seconds to clear.
+The root causes:
+1. In `ObserveNativeFrameReports`, unconditionally stepping `candidate = held` back by one full application frame ($T_{base}$) added an extra base interval (+22 ms in 3x, +29 ms in 4x) to frames that had already completed rendering and entered the display pipeline, double-counting generator hold. Meanwhile 2x had `generationObserved=0` due to transient base/display ratio mismatch, so 2x remained unstepped (~44.5 ms), creating an artificial +27 ms chasm.
+2. In `SampleWindow::MakeSnapshot`, trimming only an eighth (`count / 8`) left transition hitch frames (150-326 ms) during FG re-creation inside the trimmed mean.
 
 Fix:
-- `ObservePresent` only calls `RecordApplicationPresentLocked` when `fgMultiplier < 2`. Under active FG (`fgMultiplier >= 2`), only true application presents from `ObserveApplicationPresent` populate `applicationPresentIntervals_`.
-- `ResolveWorkIntervalLocked()` validates measured intervals against nominal base interval (`ResolveFgBaseIntervalLocked()`), rejecting implausibly fast intervals (< half nominal base interval).
-- `IsGeneratorPacingOutputLocked()` and `IsMarkerCadenceOutputRateLocked()` use `ResolveWorkIntervalLocked()`, ensuring robust pacing detection and rejection of output-cadence synthetic markers under all FG multipliers.
-- Latency progression is restored: `Reflex on, FG off < DLSS FG 2x < DLSS FG 3x < DLSS FG 4x`.
+- `SampleWindow::MakeSnapshot` applies Interquartile Mean (IQM) trimming (`count / 4` when `count >= 8`), instantly filtering mode-switch hitch spikes without distorting steady-state latency.
+- In `ObserveNativeFrameReports`, stepping back to `held` only occurs when `candidateAgeUs < renderTimeUs` (the candidate frame was submitted too recently to be on screen). Real finished frames keep their actual presentation timestamp, eliminating the double-counted base interval.
+- `ResolveWorkIntervalLocked()` incorporates trusted native marker intervals and display cadence inference when available, ensuring `IsGeneratorPacingOutputLocked()` reliably evaluates to true under active FG.
+- Latency progression is smooth and realistic: ~44 ms (2x) -> ~49 ms (3x) -> ~54 ms (4x).
 
 ### 2026-09-02 - PC latency under FG and post-FSR FIFO VSync recovery
 

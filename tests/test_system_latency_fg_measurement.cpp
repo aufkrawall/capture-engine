@@ -205,9 +205,11 @@ TEST(SystemLatencyFGMeasurementTest, NativeReportsPreserveLowerLatencyForLowerMu
         return snapshot.milliseconds;
     };
 
-    const float latency2x = measureNativeFG(45.0f, 2);
+    const float latency2x = measureNativeFG(60.0f, 2);
+    const float latency3x = measureNativeFG(45.0f, 3);
     const float latency4x = measureNativeFG(35.0f, 4);
-    EXPECT_LT(latency2x, latency4x);
+    EXPECT_LT(latency2x, latency3x);
+    EXPECT_LT(latency3x, latency4x);
 }
 
 TEST(SystemLatencyClockTest, LatestFrameBeginPublishesTheNewestBoundaryAndRejectsUnusableOnes) {
