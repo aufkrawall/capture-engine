@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-02 - Fallback latency recovery restored after frame hitches and loading gaps
+
+Session `logs/20260902_233802` (*The Talos Principle Reawakened*) started with all FG and Reflex disabled. The overlay initially displayed `Latency est. 30.9ms`, but after frame 49 fell back permanently to `PC Latency --` (source=unavailable). In `hook_debug.log`, `displays` climbed to 2425 while `rejected` climbed to 2376: exactly 49 samples were accepted, after which 100% of subsequent displays were rejected out-of-range (`++samplesRejected_`).
+
+Root cause analysis:
+1. At frame 68, a scene load / frame hitch caused a 600 ms gap (`qpc_delta_us = 600,723 us`).
+2. In `ce::system_latency::Tracker::RecordApplicationPresentLocked`, an early `if (intervalUs <= 0 || intervalUs > kMaximumIntervalUs) return;` returned without pushing `presentTimeUs` to `applicationPresents_`.
+3. This left `applicationPresents_.Back()` permanently frozen at the pre-gap frame. Every subsequent present (4,500+ frames) computed `intervalUs = presentTimeUs - applicationPresents_.Back() > 250,000 us` and also returned early, permanently freezing `applicationPresents_`.
+4. When display flip events arrived via ETW, `MatchApplicationPresentLocked` matched the frozen pre-gap frame (seconds to tens of seconds old).
+5. `anchorToPresentUs = baseIntervalUs + runtimePresentUs - applicationPresents_.At(applicationIndex)` blew up to 30+ seconds, causing `IsValidTotalLatency(totalUs)` to reject 100% of all subsequent display samples.
+
+Fix:
+- In `RecordApplicationPresentLocked`, intervals `> kMaximumIntervalUs` skip updating cadence intervals (`applicationPresentIntervals_`), but properly push the new present to `applicationPresents_`, keeping `applicationPresents_.Back()` fresh.
+- In `MatchApplicationPresentLocked`, candidates older than `kMaximumIntervalUs` (250 ms) are rejected as causal matches across large gaps, safely falling back to `baseIntervalUs`.
+- In `UpdateFallbackLocked`, generator hold is bounded by `kMaximumIntervalUs` and backward clock resets are caught.
+- Ring capacities for `applicationPresents_`, `applicationAnchors_`, and `applicationAnchorKinds_` are expanded from 64 to 256, matching `presents_` and `displays_` to avoid queue-depth wrap-around under 500+ FPS.
+- `Diagnostics` adds detailed rejection breakdown counters (`samplesRejectedPresentToDisplay`, `samplesRejectedBaseInterval`, `samplesRejectedTotalLatency`) and logs `(p2d=%llu base=%llu total=%llu)` in `[Overlay] PC latency chain` for immediate root-cause visibility.
+- Added comprehensive regression tests in `tests/test_system_latency_fallback_recovery.cpp`.
+
 ### 2026-09-02 - Overlay gap lines eliminated across FG mode switching and keep-alive
 
 Session `logs/20260902_231501` (*The Talos Principle 2*) exposed weird blank gap lines in the overlay after DLSS FG -> FSR FG -> all FG off mode switching. The blank rows appeared between the FPS row and the Avg/1%/0.1% low row, and between the Latency estimate row and the frametime graph. Traced down to two compounding root causes:

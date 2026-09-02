@@ -112,8 +112,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
                         "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%d "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
-                        "unmatched=%llu droppedPresents=%llu rejected=%llu markerCadenceRejects=%llu epochResets=%llu "
-                        "sourceChanges=%llu",
+                        "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
+                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
                         static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
                         static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
@@ -133,6 +133,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.displaysWithoutMatchedPresent),
                         static_cast<unsigned long long>(latencyDiagnostics.presentsDroppedUnderContention),
                         static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedOutOfRange),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedPresentToDisplay),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedBaseInterval),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedTotalLatency),
                         static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
                         static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
                         static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions));

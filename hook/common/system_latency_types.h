@@ -66,6 +66,9 @@ struct Diagnostics {
     uint64_t displaysWithoutMatchedPresent = 0;
     uint64_t presentsDroppedUnderContention = 0;
     uint64_t samplesRejectedOutOfRange = 0;
+    uint64_t samplesRejectedPresentToDisplay = 0;
+    uint64_t samplesRejectedBaseInterval = 0;
+    uint64_t samplesRejectedTotalLatency = 0;
     uint64_t sourceTransitions = 0;
     // Components of the most recently accepted fallback sample, in
     // microseconds. Zero until one has been produced.

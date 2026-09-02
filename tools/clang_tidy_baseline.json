@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 691,
+    "entries": 692,
     "translation_units": [
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
@@ -689,6 +689,7 @@
       "tests/test_strict_integer_parse.cpp",
       "tests/test_stubs.cpp",
       "tests/test_swapchain_probe_lifetime.cpp",
+      "tests/test_system_latency_fallback_recovery.cpp",
       "tests/test_system_latency_fg_measurement.cpp",
       "tests/test_system_latency_metrics.cpp",
       "tests/test_third_party_load_policy.cpp",

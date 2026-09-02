@@ -241,6 +241,7 @@ public:
             const int64_t presentToDisplayUs = screenTimeUs - presentTimeUs;
             if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs) {
                 ++samplesRejected_;
+                ++samplesRejectedPresentToDisplay_;
                 continue;
             }
 
@@ -274,6 +275,7 @@ public:
                         nativeGeneratorHoldApplied_ = candidate != consumed || extraGeneratorHoldUs > 0;
                     } else {
                         ++samplesRejected_;
+                        ++samplesRejectedTotalLatency_;
                     }
                 }
             }
@@ -329,6 +331,9 @@ public:
         diagnostics.presentsDroppedUnderContention = droppedPresents_.load(std::memory_order_relaxed) +
                                                      droppedApplicationPresents_.load(std::memory_order_relaxed);
         diagnostics.samplesRejectedOutOfRange = samplesRejected_;
+        diagnostics.samplesRejectedPresentToDisplay = samplesRejectedPresentToDisplay_;
+        diagnostics.samplesRejectedBaseInterval = samplesRejectedBaseInterval_;
+        diagnostics.samplesRejectedTotalLatency = samplesRejectedTotalLatency_;
         diagnostics.sourceTransitions = sourceTransitions_;
         if (publishedSource_ == Source::ReflexMarkers) {
             diagnostics.lastAnchorToPresentUs = nativeSimulationToDisplayUs_ - nativePresentToDisplayUs_;
@@ -499,7 +504,7 @@ private:
                 break;
             }
         }
-        if (!found)
+        if (!found || runtimePresentUs - applicationPresents_.At(matchedIndex) > kMaximumIntervalUs)
             return false;
         if (matchedIndex > 0 && IsGeneratorPacingOutputLocked()) {
             --matchedIndex;
@@ -512,14 +517,19 @@ private:
         if (presentTimeUs <= 0)
             return;
         if (!applicationPresents_.Empty()) {
-            const int64_t intervalUs = presentTimeUs - applicationPresents_.Back();
+            const int64_t previous = applicationPresents_.Back();
+            if (presentTimeUs <= previous) {
+                if (previous - presentTimeUs > kClockResetThresholdUs)
+                    ResetMeasurementsLocked();
+                return;
+            }
+            const int64_t intervalUs = presentTimeUs - previous;
             const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
             const int64_t minIntervalUs = fgMultiplier >= 2 ? 3'000 : kApplicationDuplicateThresholdUs;
             if (intervalUs < minIntervalUs)
                 return;
-            if (intervalUs <= 0 || intervalUs > kMaximumIntervalUs)
-                return;
-            applicationPresentIntervals_.Push(intervalUs);
+            if (intervalUs <= kMaximumIntervalUs)
+                applicationPresentIntervals_.Push(intervalUs);
         }
 
         int64_t anchorUs = 0;
@@ -543,19 +553,13 @@ private:
     }
 
     void ResetSampleEpochLocked(int64_t displayWatermarkUs) {
-        fallbackDisplayedInputIntervals_.Clear();
-        nativeDisplayedSimulationIntervals_.Clear();
-        nativeEstimatedSamples_.Clear();
-        fallbackSamples_.Clear();
-        lastFallbackPresentTimeUs_ = 0;
-        lastFallbackAnchorUs_ = 0;
-        lastNativePresentTimeUs_ = 0;
-        lastNativeDisplayTimeUs_ = displayWatermarkUs;
+        fallbackDisplayedInputIntervals_.Clear(); nativeDisplayedSimulationIntervals_.Clear();
+        nativeEstimatedSamples_.Clear(); fallbackSamples_.Clear();
+        lastFallbackPresentTimeUs_ = 0; lastFallbackAnchorUs_ = 0;
+        lastNativePresentTimeUs_ = 0; lastNativeDisplayTimeUs_ = displayWatermarkUs;
         lastNativeSimulationStartTimeUs_ = 0;
-        lastAnchorToPresentUs_ = 0;
-        lastPresentToDisplayUs_ = 0;
-        lastInputWaitUs_ = 0;
-        lastBaseIntervalUs_ = 0;
+        lastAnchorToPresentUs_ = 0; lastPresentToDisplayUs_ = 0;
+        lastInputWaitUs_ = 0; lastBaseIntervalUs_ = 0;
         ++measurementEpochResets_;
     }
 
@@ -601,8 +605,11 @@ private:
             }
             runtimePresentUs = presents_.At(matchedIndex);
         }
-        if (runtimePresentUs <= lastFallbackPresentTimeUs_)
+        if (runtimePresentUs <= lastFallbackPresentTimeUs_) {
+            if (lastFallbackPresentTimeUs_ - runtimePresentUs > kClockResetThresholdUs)
+                ResetMeasurementsLocked();
             return;
+        }
 
         size_t applicationIndex = 0;
         bool holdApplied = false;
@@ -632,9 +639,14 @@ private:
 
         const int64_t presentToDisplayUs = screenTimeUs - runtimePresentUs;
         const int64_t baseIntervalUs = ResolveWorkIntervalLocked();
-        if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs || baseIntervalUs <= 0 ||
-            baseIntervalUs > kMaximumSamplingIntervalUs) {
+        if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs) {
             ++samplesRejected_;
+            ++samplesRejectedPresentToDisplay_;
+            return;
+        }
+        if (baseIntervalUs <= 0 || baseIntervalUs > kMaximumSamplingIntervalUs) {
+            ++samplesRejected_;
+            ++samplesRejectedBaseInterval_;
             return;
         }
 
@@ -652,7 +664,10 @@ private:
             // No observed input boundary: model one application interval of CPU
             // work, but retain the measured time the generator held that source
             // frame before the associated final-output Present.
-            anchorToPresentUs = baseIntervalUs + runtimePresentUs - applicationPresents_.At(applicationIndex);
+            const int64_t generatorHoldUs = runtimePresentUs - applicationPresents_.At(applicationIndex);
+            if (generatorHoldUs >= 0 && generatorHoldUs <= kMaximumIntervalUs) {
+                anchorToPresentUs = baseIntervalUs + generatorHoldUs;
+            }
         }
 
         if (IsGeneratorPacingOutputLocked()) {
@@ -676,6 +691,7 @@ private:
         const int64_t totalUs = presentToDisplayUs + anchorToPresentUs + estimatedInputWaitUs;
         if (!IsValidTotalLatency(totalUs)) {
             ++samplesRejected_;
+            ++samplesRejectedTotalLatency_;
             return;
         }
         fallbackSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
@@ -688,20 +704,13 @@ private:
     }
 
     void ResetMeasurementsLocked() {
-        presents_.Clear();
-        presentIntervals_.Clear();
-        applicationPresents_.Clear();
-        applicationPresentIntervals_.Clear();
-        applicationAnchors_.Clear();
-        applicationAnchorKinds_.Clear();
+        presents_.Clear(); presentIntervals_.Clear();
+        applicationPresents_.Clear(); applicationPresentIntervals_.Clear();
+        applicationAnchors_.Clear(); applicationAnchorKinds_.Clear();
         frameBeginIntervals_.Clear();
-        displays_.Clear();
-        displayPresentStarts_.Clear();
-        displayIntervals_.Clear();
-        fallbackDisplayedInputIntervals_.Clear();
-        nativeDisplayedSimulationIntervals_.Clear();
-        nativeEstimatedSamples_.Clear();
-        fallbackSamples_.Clear();
+        displays_.Clear(); displayPresentStarts_.Clear(); displayIntervals_.Clear();
+        fallbackDisplayedInputIntervals_.Clear(); nativeDisplayedSimulationIntervals_.Clear();
+        nativeEstimatedSamples_.Clear(); fallbackSamples_.Clear();
         lastFallbackPresentTimeUs_ = 0;
         lastFallbackAnchorUs_ = 0;
         lastFrameBeginUs_ = 0;
@@ -718,10 +727,10 @@ private:
     mutable std::mutex mutex_;
     ValueRing<256> presents_;
     ValueRing<32> presentIntervals_;
-    ValueRing<64> applicationPresents_;
+    ValueRing<256> applicationPresents_;
     ValueRing<32> applicationPresentIntervals_;
-    ValueRing<64> applicationAnchors_;
-    ValueRing<64> applicationAnchorKinds_;
+    ValueRing<256> applicationAnchors_;
+    ValueRing<256> applicationAnchorKinds_;
     ValueRing<32> frameBeginIntervals_;
     ValueRing<256> displays_;
     ValueRing<256> displayPresentStarts_;
@@ -747,6 +756,9 @@ private:
     uint64_t displaysWithAssociation_ = 0;
     uint64_t displaysWithoutMatchedPresent_ = 0;
     uint64_t samplesRejected_ = 0;
+    uint64_t samplesRejectedPresentToDisplay_ = 0;
+    uint64_t samplesRejectedBaseInterval_ = 0;
+    uint64_t samplesRejectedTotalLatency_ = 0;
     mutable uint64_t sourceTransitions_ = 0;
     mutable Source publishedSource_ = Source::Unavailable;
     int64_t lastAnchorToPresentUs_ = 0;

@@ -170,6 +170,8 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 ### Failure modes and bounds
 
 - NVIDIA's average-input-wait heuristic is unsupported below 10 FPS, so both paths fail closed there. Present-to-display samples over 250 ms, totals over 500 ms, incompatible timestamp domains, clock resets, and samples stale for more than two seconds also become unavailable instead of producing a plausible-looking number.
+- Presentation cadence gaps > 250 ms (loading screens, pause menus, scene hitches) skip rolling cadence interval updates (`applicationPresentIntervals_`) to avoid cadence skew, but keep `applicationPresents_` and `presents_` updated so subsequent frames remain fresh.
+- Causal application frame matching (`MatchApplicationPresentLocked`) rejects matches older than 250 ms across gaps, safely falling back to `baseIntervalUs` instead of inflating anchor spans. Generator hold is bounded to 250 ms, and detailed rejection causes (`p2d`, `base`, `total`) are tracked in `Diagnostics` and logged in `[Overlay] PC latency chain`.
 - The 32-sample window publishes a symmetrically trimmed mean, discarding an eighth from each tail once at least 16
   samples are held. A single 250 ms telemetry poll can contribute an entire window, so one frame paired against the
   wrong Present - a full frame interval out - must not be able to move the published number.
