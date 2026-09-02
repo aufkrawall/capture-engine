@@ -14,6 +14,15 @@ exactly as `90 90` did. Both forms are recognized as already-patched, so on-disk
 still resolve. Coverage: every alignment in a page, the real 32.0.16.1656 x86 instruction sequence, the Strange
 Brigade x64 site, and both already-neutralized encodings.
 
+Validated the same day on 0.1.6368: Filter Tester DXVK x86 is user-confirmed fixed, and Portal RTX session
+`20260902_071853` patches `nvoglv64+0x4C413B` inside `NvRemixBridge.exe` well before instance/device creation, with
+the layer recognizing the hook's `75 00` as already patched. RTX Remix keeps no ICD in the 32-bit game process at
+all, so arming the override in `hl2.exe` with nothing to patch is the correct outcome, not a miss.
+
+Unrelated observation from that session, not acted on: the bridge's own clean shutdown
+(`NvRemixBridge.exe+0x10D6B` calling `TerminateProcess(1)`) was dumped as a 191 MB pre-termination dump under
+`crashLike=0 fgRuntimeActiveOrRecent=1`, costing ~2.5s at exit. Same family as the Wukong benign-exit dump.
+
 ### 2026-09-02 - Async DLSS-G invalidated timestamp-only PC-latency pairing
 
 Talos session `20260902_011013` initially reported DLSS-G `presented=2`, but later health records repeatedly showed

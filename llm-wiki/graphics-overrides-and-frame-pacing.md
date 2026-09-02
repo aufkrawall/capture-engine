@@ -724,10 +724,17 @@ Primary sources:
 - Source anchors: `hook/common/nv_lod_spread_override.{h,cpp}`, the pre-device calls in
   `hook/vulkan_layer/vulkan_layer_hooks.cpp`, inject fallback in `hook/main_{hookthread,overlay_detect}.cpp`, and
   coverage in `tests/test_nv_lod_spread_override.cpp`.
+- **Split-architecture titles are patched where the Vulkan device is, not where the game is.** NVIDIA RTX Remix runs
+  the 32-bit game (`hl2.exe` for Portal RTX) as a thin client and does every bit of rendering in the 64-bit
+  `NvRemixBridge.exe`, so no ICD is ever mapped into the game process. Session `20260902_071853` shows the override
+  arming in `hl2.exe` with nothing to patch, which is correct, and the hook patching `nvoglv64+0x4C413B` in the
+  bridge 0.7s before its `vkCreateInstance` and 1.1s before `vkCreateDevice`. The layer's own sweep then reported
+  `already has the validated ON branch patch`, which is the cross-copy recognition of the zero-displacement form
+  working between two separately compiled patchers.
 - Diagnostics: `NV LOD spread: forced FERMI_UNOPT_LOD_SPREAD ON in ... (validated branch +0x...: 75 05 -> 75 00 via
   atomic 32-bit compare/exchange, check +0x..., setting 0x...)`, or an explicit structural-validation/write failure
-  with post-write state. Hardware re-validation of the corrected build remains required; the supplied failing runs
-  prove the root causes and ordering, not the final pixels.
+  with post-write state. Hardware-validated on 2026-09-02 against 32.0.16.1656 in both directions: Filter Tester
+  DXVK x86 (`nvoglv32+0x576C27`, user-confirmed image quality) and Portal RTX x64 (`nvoglv64+0x4C413B`).
 
 ## Diagnostics and stale-risk
 
