@@ -100,7 +100,7 @@ TEST(SystemLatencyMetricsTest, OverlayLabelsKeepBothEstimatedSourcesExplicit) {
     idle.source = Source::Estimated;
     idle.frameGenerationConfigured = true;
     idle.frameGenerationStateKnown = true;
-    EXPECT_STREQ(ce::system_latency::SnapshotOverlayLabel(idle), "Latency est. (FG idle)");
+    EXPECT_STREQ(ce::system_latency::SnapshotOverlayLabel(idle), "Latency est.");
 }
 
 TEST(SystemLatencyMetricsTest, ReflexLatencyResultMatchesNvApiAbi) {
@@ -390,17 +390,18 @@ TEST(SystemLatencyMetricsTest, SubTenFpsInputWaitHeuristicFailsClosed) {
     EXPECT_FALSE(nativeTracker.GetSnapshot(5'679'000).valid);
 }
 
-TEST(SystemLatencyMetricsTest, FrameGenerationWithoutMeasuredApplicationCadenceFailsClosed) {
+TEST(SystemLatencyMetricsTest, FrameGenerationWithNominalBaseFpsProducesValidEstimate) {
     Tracker tracker;
     tracker.SetFrameGeneration(100.0f, 2);
     FeedPresentationAndDisplay(tracker, 5'000'000, 5'000, 2'000, 8);
 
     const auto snapshot = tracker.GetSnapshot(5'037'000);
 
-    EXPECT_FALSE(snapshot.valid);
-    EXPECT_EQ(snapshot.source, Source::Unavailable);
+    EXPECT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
     EXPECT_TRUE(snapshot.frameGenerationConfigured);
-    EXPECT_FALSE(snapshot.frameGenerationStateKnown);
+    EXPECT_TRUE(snapshot.frameGenerationStateKnown);
+    EXPECT_GT(snapshot.milliseconds, 0.0f);
 }
 
 TEST(SystemLatencyMetricsTest, FallbackExtendsInputWaitAcrossSupersededPresents) {

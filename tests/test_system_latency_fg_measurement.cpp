@@ -140,8 +140,39 @@ TEST(SystemLatencyFGMeasurementTest, MultiplierChangeStartsANewMeasurementEpoch)
     const auto afterChange = tracker.GetSnapshot(lastScreenUs);
     EXPECT_FALSE(afterChange.valid);
     EXPECT_TRUE(afterChange.frameGenerationConfigured);
-    EXPECT_FALSE(afterChange.frameGenerationStateKnown);
+    EXPECT_TRUE(afterChange.frameGenerationStateKnown);
     EXPECT_GT(tracker.GetDiagnostics().measurementEpochResets, resetsBefore);
+}
+
+TEST(SystemLatencyFGMeasurementTest, LatencyReportingDoesNotDieAfterFGSwitch) {
+    Tracker tracker;
+    // Step 1: Run with FSR 2x (50 fps base, 100 fps output)
+    tracker.SetFrameGeneration(50.0f, 2);
+    int64_t screenUs = 16'000'000;
+    for (int frame = 0; frame < 16; ++frame) {
+        const int64_t sourceUs = 16'000'000 + 20'000 * frame;
+        tracker.ObserveApplicationPresent(sourceUs, sourceUs - 2'000,
+                                          FrameBeginKind::LowLatencySleepReturn);
+        tracker.ObserveDisplay(screenUs = sourceUs + 5'000, sourceUs + 2'000);
+        tracker.ObserveDisplay(screenUs = sourceUs + 15'000, sourceUs + 12'000);
+    }
+    const auto snapshot2x = tracker.GetSnapshot(screenUs);
+    ASSERT_TRUE(snapshot2x.valid);
+    EXPECT_GT(snapshot2x.milliseconds, 0.0f);
+
+    // Step 2: Switch to DLSS 4x (25 fps base, 100 fps output)
+    tracker.SetFrameGeneration(25.0f, 4);
+
+    // Step 3: Displays continue arriving on the new chain (even if presents bypass ProcessFrame)
+    for (int frame = 0; frame < 8; ++frame) {
+        const int64_t displayUs = screenUs + 10'000 * (frame + 1);
+        tracker.ObserveDisplay(displayUs, displayUs - 3'000);
+    }
+    const auto snapshot4x = tracker.GetSnapshot(screenUs + 80'000);
+    EXPECT_TRUE(snapshot4x.valid);
+    EXPECT_NE(snapshot4x.source, Source::Unavailable);
+    EXPECT_GT(snapshot4x.milliseconds, 0.0f);
+    EXPECT_GT(snapshot4x.milliseconds, snapshot2x.milliseconds);
 }
 
 TEST(SystemLatencyClockTest, LatestFrameBeginPublishesTheNewestBoundaryAndRejectsUnusableOnes) {

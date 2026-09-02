@@ -79,8 +79,7 @@ public:
         }
 
         presents_.Push(presentTimeUs);
-        if (fgMultiplier_.load(std::memory_order_relaxed) < 2)
-            RecordApplicationPresentLocked(presentTimeUs, frameBeginUs, frameBeginKind);
+        RecordApplicationPresentLocked(presentTimeUs, frameBeginUs, frameBeginKind);
     }
 
     void ObserveApplicationPresent(int64_t presentTimeUs, int64_t frameBeginUs = 0,
@@ -209,6 +208,7 @@ public:
             // derived from it - but keep the watermark on the unheld frame so
             // the remaining displays of the same group are not counted again.
             const NativeFrameReport* consumed = candidate;
+            int64_t extraGeneratorHoldUs = 0;
             if (IsGeneratorPacingOutputLocked()) {
                 const NativeFrameReport* held = nullptr;
                 for (size_t frameIndex = 0; frameIndex < validCount; ++frameIndex) {
@@ -218,8 +218,17 @@ public:
                     if (!held || frame.presentStartTimeUs > held->presentStartTimeUs)
                         held = &frame;
                 }
-                if (held)
+                if (held) {
                     candidate = held;
+                } else {
+                    const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
+                    if (fgMultiplier >= 2) {
+                        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+                        const int64_t effectiveDisplayIntervalUs =
+                            displayIntervalUs > 0 ? displayIntervalUs : (samplingIntervalUs / fgMultiplier);
+                        extraGeneratorHoldUs = (fgMultiplier - 1) * effectiveDisplayIntervalUs;
+                    }
+                }
             }
 
             const int64_t presentTimeUs = ToSignedTimestamp(candidate->presentStartTimeUs);
@@ -229,7 +238,8 @@ public:
                 continue;
             }
 
-            const int64_t simulationStartUs = ToSignedTimestamp(candidate->simulationStartTimeUs);
+            const int64_t simulationStartUs =
+                ToSignedTimestamp(candidate->simulationStartTimeUs) - extraGeneratorHoldUs;
             int64_t displayedSamplingIntervalUs = samplingIntervalUs;
             const int64_t displayedSimulationIntervalUs = simulationStartUs - lastNativeSimulationStartTimeUs_;
             if (lastNativeSimulationStartTimeUs_ > 0 &&
@@ -255,7 +265,7 @@ public:
                         nativeSamplingIntervalUs_ = samplingIntervalUs;
                         nativePresentToDisplayUs_ = presentToDisplayUs;
                         nativeUsedAssociation_ = usedAssociation;
-                        nativeGeneratorHoldApplied_ = candidate != consumed;
+                        nativeGeneratorHoldApplied_ = candidate != consumed || extraGeneratorHoldUs > 0;
                     } else {
                         ++samplesRejected_;
                     }
@@ -277,23 +287,13 @@ public:
     Snapshot GetSnapshot(int64_t currentQpcUs) const {
         std::lock_guard<std::mutex> lock(mutex_);
         Snapshot snapshot{};
-        snapshot.frameGenerationConfigured = fgMultiplier_.load(std::memory_order_relaxed) >= 2;
-        snapshot.frameGenerationStateKnown = observedProductionState_ >= 0;
-        snapshot.frameGenerationObserved = observedProductionState_ == 1;
-        // During a mode/production transition neither old samples nor nominal
-        // FG metadata can identify the pipeline on screen. Withhold the number
-        // until measured application/display cadence resolves it.
-        if (snapshot.frameGenerationConfigured && !snapshot.frameGenerationStateKnown) {
-            publishedSource_ = Source::Unavailable;
-            return snapshot;
-        }
         if (nativeEstimatedSamples_.IsFresh(currentQpcUs))
             snapshot = nativeEstimatedSamples_.MakeSnapshot(Source::ReflexMarkers);
         else if (fallbackSamples_.IsFresh(currentQpcUs))
             snapshot = fallbackSamples_.MakeSnapshot(Source::Estimated);
         snapshot.frameGenerationConfigured = fgMultiplier_.load(std::memory_order_relaxed) >= 2;
-        snapshot.frameGenerationStateKnown = observedProductionState_ >= 0;
-        snapshot.frameGenerationObserved = observedProductionState_ == 1;
+        snapshot.frameGenerationStateKnown = true;
+        snapshot.frameGenerationObserved = IsGeneratorPacingOutputLocked();
         if (snapshot.source != publishedSource_) {
             if (publishedSource_ != Source::Unavailable && snapshot.source != Source::Unavailable)
                 ++sourceTransitions_;
@@ -341,7 +341,8 @@ public:
             diagnostics.generatorHoldApplied = lastGeneratorHoldApplied_;
         }
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
-        diagnostics.applicationIntervalUs = MedianRing(applicationPresentIntervals_);
+        const int64_t appInterval = MedianRing(applicationPresentIntervals_);
+        diagnostics.applicationIntervalUs = appInterval > 0 ? appInterval : ResolveFgBaseIntervalLocked();
         diagnostics.frameBeginIntervalUs = MedianRing(frameBeginIntervals_);
         diagnostics.markerIntervalUs = markerIntervalUs_;
         if (diagnostics.displayIntervalUs > 0 && diagnostics.applicationIntervalUs > 0) {
@@ -349,7 +350,7 @@ public:
                 (diagnostics.applicationIntervalUs * 1000 + diagnostics.displayIntervalUs / 2) /
                 diagnostics.displayIntervalUs);
         }
-        diagnostics.frameGenerationObserved = observedProductionState_ == 1;
+        diagnostics.frameGenerationObserved = IsGeneratorPacingOutputLocked();
         diagnostics.markerCadenceTrusted = markerCadenceTrusted_;
         diagnostics.markerReportsRejectedForOutputCadence = markerReportsRejectedForOutputCadence_;
         diagnostics.measurementEpochResets = measurementEpochResets_;
@@ -433,20 +434,32 @@ private:
     }
 
     bool IsGeneratorPacingOutputLocked() const {
-        return observedProductionState_ == 1;
+        if (fgMultiplier_.load(std::memory_order_relaxed) < 2)
+            return false;
+        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+        if (displayIntervalUs <= 0)
+            return true;
+        const int64_t appInterval = MedianRing(applicationPresentIntervals_);
+        const int64_t baseIntervalUs = appInterval > 0 ? appInterval : ResolveFgBaseIntervalLocked();
+        if (baseIntervalUs <= 0)
+            return true;
+        return baseIntervalUs * 2 >= displayIntervalUs * 3;
     }
 
     bool IsMarkerCadenceOutputRateLocked(int64_t markerIntervalUs) const {
         if (!IsGeneratorPacingOutputLocked())
             return false;
         const int64_t applicationIntervalUs = MedianRing(applicationPresentIntervals_);
-        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
-        if (markerIntervalUs <= 0 || applicationIntervalUs <= 0 || displayIntervalUs <= 0)
+        const int64_t baseIntervalUs =
+            applicationIntervalUs > 0 ? applicationIntervalUs : ResolveFgBaseIntervalLocked();
+        if (baseIntervalUs <= 0 || markerIntervalUs <= 0)
             return false;
-        // A true source-frame marker follows the classified application
-        // cadence. Output-rate PCL/Reflex streams are substantially faster and
-        // cannot identify which generated display carries a given simulation.
-        return markerIntervalUs * 4 < applicationIntervalUs * 3;
+        if (markerIntervalUs * 4 < baseIntervalUs * 3)
+            return true;
+        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+        if (displayIntervalUs > 0 && markerIntervalUs <= displayIntervalUs * 13 / 10)
+            return true;
+        return false;
     }
 
     // Index in applicationPresents_ of the application frame whose simulation produced
@@ -484,7 +497,9 @@ private:
             return;
         if (!applicationPresents_.Empty()) {
             const int64_t intervalUs = presentTimeUs - applicationPresents_.Back();
-            if (intervalUs < kApplicationDuplicateThresholdUs)
+            const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
+            const int64_t minIntervalUs = fgMultiplier >= 2 ? 3'000 : kApplicationDuplicateThresholdUs;
+            if (intervalUs < minIntervalUs)
                 return;
             if (intervalUs <= 0 || intervalUs > kMaximumIntervalUs)
                 return;
@@ -529,25 +544,10 @@ private:
     }
 
     void UpdateObservedProductionStateLocked(int64_t displayWatermarkUs) {
-        int newState = -1;
-        if (fgMultiplier_.load(std::memory_order_relaxed) < 2) {
-            newState = 0;
-        } else if (applicationPresentIntervals_.Size() >= kCadenceEvidenceCount &&
-                   displayIntervals_.Size() >= kCadenceEvidenceCount) {
-            const int64_t applicationIntervalUs = MedianRing(applicationPresentIntervals_);
-            const int64_t displayIntervalUs = MedianRing(displayIntervals_);
-            if (applicationIntervalUs > 0 && displayIntervalUs > 0)
-                newState = applicationIntervalUs * 2 >= displayIntervalUs * 3 ? 1 : 0;
-        }
-        if (newState < 0 || newState == observedProductionState_)
+        const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
+        const int newState = fgMultiplier >= 2 ? 1 : 0;
+        if (newState == observedProductionState_)
             return;
-        if (observedProductionState_ < 0) {
-            observedProductionState_ = newState;
-            if (newState == 1)
-                ResetSampleEpochLocked(0);
-            return;
-        }
-        ResetSampleEpochLocked(displayWatermarkUs);
         observedProductionState_ = newState;
     }
 
@@ -639,6 +639,18 @@ private:
             anchorToPresentUs = baseIntervalUs + runtimePresentUs - applicationPresents_.At(applicationIndex);
         }
 
+        if (IsGeneratorPacingOutputLocked()) {
+            const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
+            const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+            const int64_t effectiveDisplayIntervalUs =
+                displayIntervalUs > 0 ? displayIntervalUs : (baseIntervalUs / fgMultiplier);
+            const int64_t expectedGeneratorHoldUs = (fgMultiplier - 1) * effectiveDisplayIntervalUs;
+            if (!holdApplied) {
+                anchorToPresentUs += expectedGeneratorHoldUs;
+                holdApplied = true;
+            }
+        }
+
         // Input wait is half a base interval plus every full interval whose
         // sampling point never reached the screen, matching PCL's dropped-frame
         // treatment.
@@ -680,7 +692,7 @@ private:
         lastNativePresentTimeUs_ = 0;
         lastNativeDisplayTimeUs_ = 0;
         lastNativeSimulationStartTimeUs_ = 0;
-        observedProductionState_ = -1;
+        observedProductionState_ = fgMultiplier_.load(std::memory_order_relaxed) >= 2 ? 1 : 0;
         markerIntervalUs_ = 0;
         markerCadenceTrusted_ = true;
         lastGeneratorHoldApplied_ = false;
@@ -733,7 +745,7 @@ private:
     int64_t nativeSamplingIntervalUs_ = 0;
     bool nativeUsedAssociation_ = false;
     bool nativeGeneratorHoldApplied_ = false;
-    int observedProductionState_ = -1;
+    int observedProductionState_ = 0;
     int64_t markerIntervalUs_ = 0;
     bool markerCadenceTrusted_ = true;
     uint64_t markerReportsRejectedForOutputCadence_ = 0;

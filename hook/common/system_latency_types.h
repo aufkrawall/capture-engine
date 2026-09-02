@@ -167,10 +167,6 @@ inline const char* SourceOverlayLabel(Source source) {
 }
 
 inline const char* SnapshotOverlayLabel(const Snapshot& snapshot) {
-    if (snapshot.frameGenerationConfigured && snapshot.frameGenerationStateKnown &&
-        !snapshot.frameGenerationObserved) {
-        return snapshot.source == Source::ReflexMarkers ? "PC Latency~ (FG idle)" : "Latency est. (FG idle)";
-    }
     return SourceOverlayLabel(snapshot.source);
 }
 
