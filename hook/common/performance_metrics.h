@@ -26,6 +26,9 @@ public:
     void ConsumeDisplayTiming(const SharedDisplayTiming& timing, int64_t currentQpcUs);
     void SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report);
     ce::system_latency::Snapshot GetSystemLatency(int64_t currentQpcUs) const;
+    // Evidence about how the published latency was produced. Diagnostic only;
+    // read on the bounded telemetry cadence, never per frame.
+    ce::system_latency::Diagnostics GetSystemLatencyDiagnostics(int64_t currentQpcUs) const;
     void ResetSystemLatency();
     void SetFrameTimeSource(FrameTimeSource source);
     FrameTimeSource GetEffectiveFrameTimeSource() const {

@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-09-02 - PC latency: the estimate could not see a render queue
+
+A Talos session (`logs/20260902_193843`, build 0.1.6370) walked all-FG-off/Reflex-off -> FSR FG -> Reflex on ->
+DLSS FG 3x and the reported PC latency did not order the way the pipeline does. Two separate defects.
+
+**The present/display pairing was newest-wins, so render-ahead was invisible.** `UpdateFallbackLocked` scanned the
+present ring from the back and took the newest present at or before the display's screen time. With any queue depth
+the game has already called `Present` for the frames queued behind the one being scanned out, so that match is the
+*most recent* present, not the causal one, and `presentToDisplay` collapsed to roughly one frame however deep the
+queue actually was. That term is the entire low-latency signal: at 144 Hz the log reports 15.2-15.5 ms with Reflex
+off, implying a 5 ms present-to-display, which is under one frame of queue. The sensor has published the causal
+runtime `PresentStart` per displayed transition since ABI 54 and the marker path already used it; the fallback did
+not. It does now, and the newest present at or before that `PresentStart` is provably the right frame, because the
+runtime emits `PresentStart` inside the `Present` call the wrapper timestamped, on the same thread.
+
+**The rest of the chain was a frame-time echo.** `total = presentToDisplay + workInterval + inputWait` modelled the
+simulation/render span as exactly one frame interval in every configuration, so with the pairing collapsed the whole
+number reduced to about `1.5 x frameTime`. It matched: 15.5 ms at 144 fps, 30.6 ms at 55 fps, 27 ms at 72.6 fps FG
+base. Nothing in it could move when a low-latency mode was switched on. The span is now measured from a frame-begin
+boundary (`system_latency_frame_begin.h`): the present wrappers publish when the previous present returned, the
+Reflex/Streamline/Vulkan sleep hooks publish when the per-frame wait ended, and the most recent boundary at or
+before a present wins. No per-runtime branching - with a low-latency runtime active its sleep returns after the
+previous present did and therefore wins on its own.
+
+Three consequences fall out of the boundary. The interval between boundaries is the input-sampling cadence, so the
+base interval no longer comes from the FG multiplier and base-rate telemetry - which is published asynchronously and
+logged as `baseFps=0.0` at every FG transition in this very session, silently halving the modelled interval there.
+The 32-sample window now trims an eighth from each tail instead of one sample, because a single 250 ms poll can
+replace the whole window and one mis-paired frame is a full frame interval out. And the native-report poll no longer
+requires a resolved graphics device: the Streamline PCL provider reports without one, so that gate could discard the
+game's own markers.
+
+**Still open.** The marker path produced 76.4 ms and 75.9 ms at 54.5 fps, then 14.3 ms and 6.4 ms at 138 fps. 6.4 ms
+is below one frame time and one refresh interval, so it is not a measurement. It is reachable only on the
+no-association branch, where `markerCutoffUs` falls back to screen time and aliases to a future frame exactly as the
+fallback did. The branch is kept (a display with no association is genuinely ambiguous) but every sample now logs
+`markerAssociated=`, plus a `PC latency chain` decomposition and a `PC latency cross-check` line comparing the source
+that was not published. Also note that games generally emit PCL markers only while their low-latency mode is on: an
+A/B of Reflex on versus off is an A/B of two estimators, and only the cross-check line says whether they agree.
+
+Hardware re-run pending. 0.1.6371.
+
 ### 2026-09-02 - Hardware sensors: four new metrics, and three bugs the defaults were hiding
 
 Added `cpu_core_clock`, `gpu_core_clock`, `gpu_memory_clock` and `gpu_voltage` to the LibreHardwareMonitor bridge and

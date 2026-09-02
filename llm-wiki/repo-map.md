@@ -146,7 +146,11 @@ anchors that predate the split are approximate.
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
     `system_metrics*.cpp` (metrics + gpu unit), `system_latency_metrics.h`
-    (marker-enhanced/fallback PC-latency correlation), `streamline_pcl_latency.h`
+    (marker-enhanced/fallback PC-latency correlation) + `system_latency_types.h`
+    (snapshot/report/diagnostics vocabulary) + `system_latency_windows.h`
+    (bounded rings + trimmed-mean sample window) + `system_latency_frame_begin.h`
+    (process-wide present-return / low-latency-sleep-return anchor),
+    `streamline_pcl_latency.h`
     (lock-free paired-marker history), `system_latency_native_d3d.cpp`
     (fresh Streamline PCL provider followed by already-loaded NVAPI), `reflex_limiter.h`, `fps_limiter.h` +
     `fps_limiter_policy.h` (pure pacing policy incl. `OutputGroupAdmission` ordinal classification and

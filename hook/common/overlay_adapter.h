@@ -215,5 +215,10 @@ private:
     DWORD lastSystemLatencySourceLogTime = 0;
     DWORD lastNativeLatencyQueryTime = 0;
     bool hasObservedSystemLatencySource = false;
+    // Latched so a configuration change that swaps the estimator is reported
+    // the moment it happens rather than up to a full log period later: the two
+    // sources are separate measurements and a comparison across the boundary
+    // is only meaningful if the boundary is visible.
+    ce::system_latency::Source lastLoggedSystemLatencySource = ce::system_latency::Source::Unavailable;
 };
 extern OverlayAdapter g_OverlayAdapter;

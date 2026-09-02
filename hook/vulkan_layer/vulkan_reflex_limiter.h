@@ -3,6 +3,8 @@
 #include "vulkan_layer.h"
 
 #include "../common/fps_limiter.h"
+#include "../common/perf_logger.h"
+#include "../common/system_latency_frame_begin.h"
 #include "../common/system_latency_metrics.h"
 #include "layer_main.h"
 
@@ -214,6 +216,11 @@ public:
         }
         const VkResult result = original(device, swapchain, params);
         if (result == VK_SUCCESS) {
+            // The game samples input right after this wait returns; see
+            // system_latency_frame_begin.h. Recorded before taking the lock so
+            // the anchor is not skewed by contention with the telemetry read.
+            ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
+                                               ce::system_latency::FrameBeginKind::LowLatencySleepReturn);
             std::lock_guard<std::mutex> lock(mutex_);
             if (device == device_) {
                 modernSwapchain_ = swapchain;

@@ -539,6 +539,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (isFirstHook)
         g_InPresentHook = false;
 
+    // Earliest point the game's next frame can start: the real present and any
+    // CE-imposed pacing are behind us. Frame-begin anchor for the PC-latency
+    // estimate unless vkLatencySleepNV publishes a later one; see
+    // system_latency_frame_begin.h.
+    ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
+                                       ce::system_latency::FrameBeginKind::PresentReturn);
+
     if (shm)
         shm->runtimeState.ClearVulkanPresentThread(vulkanPresentThreadPublication);
 

@@ -33,8 +33,10 @@
 #include "hook_common.h"
 #include "ngx_fg_preset_override.h"
 #include "overlay_compat.h"
+#include "perf_logger.h"
 #include "reflex_defs.h"
 #include "streamline_runtime_policy.h"
+#include "system_latency_frame_begin.h"
 
 // IAT hook infrastructure for game activation detection.
 // Only available in the Hook DLL build, not in the Vulkan Layer.
@@ -179,7 +181,18 @@ public:
             s_GameSleepBoundaryDepth_ = 0;
             return;
         }
-        if (succeeded && IsGameActivated()) {
+        if (!succeeded) {
+            return;
+        }
+        // A game samples input immediately after its low-latency wait returns,
+        // so this is the closest observable simulation start without
+        // game-owned markers, and it is what makes the PC-latency estimate
+        // sensitive to the low-latency mode instead of modelling a fixed frame
+        // of CPU work either way. Recorded independently of CE's own limiter
+        // activation: the game slept regardless of whether CE paces it.
+        ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
+                                           ce::system_latency::FrameBeginKind::LowLatencySleepReturn);
+        if (IsGameActivated()) {
             MarkGameSleep(sourceName);
             MarkNativePacingSignal();
         }

@@ -4,14 +4,48 @@
 #include "../hook/common/performance_metrics.h"
 #include "../hook/common/reflex_defs.h"
 #include "../hook/common/streamline_pcl_latency.h"
+#include "../hook/common/system_latency_frame_begin.h"
 #include "../hook/common/system_latency_metrics.h"
+#include "../hook/common/system_latency_windows.h"
 
 namespace {
 
+using ce::system_latency::FrameBeginKind;
 using ce::system_latency::NativeFrameReport;
 using ce::system_latency::NativeReport;
 using ce::system_latency::Source;
 using ce::system_latency::Tracker;
+
+// Feeds a render-ahead pipeline: the game keeps `queueDepth` frames in flight,
+// so by the time a frame is scanned out it has already presented the frames
+// behind it. Every display carries the sensor's association with the runtime
+// PresentStart of the frame that actually produced it.
+void FeedRenderAheadPipeline(Tracker& tracker, int64_t firstPresentUs, int64_t intervalUs, int queueDepth,
+                             int frameCount, int64_t frameBeginLeadUs = 0,
+                             FrameBeginKind frameBeginKind = FrameBeginKind::Modelled) {
+    const int64_t presentToDisplayUs = intervalUs * queueDepth;
+    for (int i = 0; i < frameCount; ++i) {
+        const int64_t presentUs = firstPresentUs + intervalUs * i;
+        const int64_t frameBeginUs = frameBeginLeadUs > 0 ? presentUs - frameBeginLeadUs : 0;
+        tracker.ObservePresent(presentUs, frameBeginUs, frameBeginKind);
+        const int displayedFrame = i - queueDepth;
+        if (displayedFrame < 0)
+            continue;
+        const int64_t displayedPresentUs = firstPresentUs + intervalUs * displayedFrame;
+        // The runtime records PresentStart inside the Present call the wrapper
+        // already observed, so it lands just after the hook's timestamp.
+        tracker.ObserveDisplay(displayedPresentUs + presentToDisplayUs, displayedPresentUs + 200);
+    }
+}
+
+struct FrameBeginClockReset {
+    FrameBeginClockReset() {
+        ce::system_latency::FrameBeginClock::Get().Reset();
+    }
+    ~FrameBeginClockReset() {
+        ce::system_latency::FrameBeginClock::Get().Reset();
+    }
+};
 
 void FeedPresentationAndDisplay(Tracker& tracker, int64_t firstPresentUs, int64_t intervalUs,
                                 int64_t presentToDisplayUs, int count) {
@@ -461,4 +495,201 @@ TEST(SystemLatencyMetricsTest, PerformanceMetricsCarriesDisplayPresentAssociatio
     EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
     EXPECT_NEAR(snapshot.milliseconds, 43.0f, 0.01f);
     EXPECT_EQ(snapshot.sampleCount, 1u);
+}
+
+TEST(SystemLatencyMetricsTest, RenderAheadQueueIsMeasuredThroughThePresentAssociation) {
+    // Regression: matching a displayed transition to the newest Present that
+    // preceded it collapses every render-ahead depth to about one frame,
+    // because the game has already queued the frames behind the one on screen.
+    // That is exactly the latency a low-latency mode removes, so without the
+    // sensor's association the estimate cannot tell the two configurations
+    // apart at equal frame rate.
+    Tracker tracker;
+    FeedRenderAheadPipeline(tracker, 1'000'000, 16'667, /*queueDepth=*/3, /*frameCount=*/20);
+
+    const auto snapshot = tracker.GetSnapshot(1'000'000 + 16'667 * 20);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
+    // 50.0 ms queue + 16.7 ms modelled CPU frame + 8.3 ms average input wait.
+    EXPECT_NEAR(snapshot.milliseconds, 75.0f, 0.1f);
+
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_EQ(diagnostics.lastPresentToDisplayUs, 50'001);
+    EXPECT_EQ(diagnostics.displaysWithPresentAssociation, diagnostics.displaysObserved);
+}
+
+TEST(SystemLatencyMetricsTest, ShallowerQueueReportsLowerLatencyAtIdenticalFrameRate) {
+    // The ordering the overlay has to get right: same cadence, different render
+    // queue depth. Each frame of queue must show up as a frame of latency.
+    Tracker deepTracker;
+    FeedRenderAheadPipeline(deepTracker, 1'000'000, 16'667, /*queueDepth=*/3, /*frameCount=*/20);
+    Tracker shallowTracker;
+    FeedRenderAheadPipeline(shallowTracker, 1'000'000, 16'667, /*queueDepth=*/1, /*frameCount=*/20);
+
+    const auto deep = deepTracker.GetSnapshot(1'000'000 + 16'667 * 20);
+    const auto shallow = shallowTracker.GetSnapshot(1'000'000 + 16'667 * 20);
+    ASSERT_TRUE(deep.valid);
+    ASSERT_TRUE(shallow.valid);
+    EXPECT_NEAR(deep.milliseconds - shallow.milliseconds, 33.3f, 0.1f);
+}
+
+TEST(SystemLatencyMetricsTest, MeasuredFrameBeginReplacesTheModelledFrameOfCpuWork) {
+    // A low-latency runtime holds the game back so that simulation starts late
+    // in the interval instead of immediately after the previous Present. With
+    // the boundary observed, that shortening is measured rather than modelled
+    // away as a fixed full interval.
+    Tracker modelledTracker;
+    FeedRenderAheadPipeline(modelledTracker, 2'000'000, 16'667, /*queueDepth=*/1, /*frameCount=*/20);
+    Tracker anchoredTracker;
+    FeedRenderAheadPipeline(anchoredTracker, 2'000'000, 16'667, /*queueDepth=*/1, /*frameCount=*/20,
+                            /*frameBeginLeadUs=*/4'000, FrameBeginKind::LowLatencySleepReturn);
+
+    const int64_t nowUs = 2'000'000 + 16'667 * 20;
+    const auto modelled = modelledTracker.GetSnapshot(nowUs);
+    const auto anchored = anchoredTracker.GetSnapshot(nowUs);
+    ASSERT_TRUE(modelled.valid);
+    ASSERT_TRUE(anchored.valid);
+    EXPECT_NEAR(modelled.milliseconds, 41.7f, 0.1f);
+    EXPECT_NEAR(anchored.milliseconds, 29.0f, 0.1f);
+
+    const auto diagnostics = anchoredTracker.GetDiagnostics();
+    EXPECT_EQ(diagnostics.lastAnchorToPresentUs, 4'000);
+    EXPECT_EQ(diagnostics.lastBaseIntervalUs, 16'667);
+    EXPECT_EQ(diagnostics.lastFrameBeginKind, FrameBeginKind::LowLatencySleepReturn);
+    EXPECT_STREQ(ce::system_latency::FrameBeginKindLabel(diagnostics.lastFrameBeginKind), "low-latency-sleep");
+}
+
+TEST(SystemLatencyMetricsTest, FrameBeginCadenceMakesTheEstimateIndependentOfFrameGenerationTelemetry) {
+    // Frame-generation base-rate telemetry is published asynchronously and is
+    // briefly zero across every transition, which used to collapse the modelled
+    // input-sampling interval onto the generated output cadence. Frame-begin
+    // boundaries occur once per application frame, so the same stream must
+    // produce the same number whatever the telemetry currently says.
+    const auto feed = [](Tracker& tracker, float baseFps) {
+        tracker.SetFrameGeneration(baseFps, 2);
+        for (int i = 0; i < 24; ++i) {
+            const int64_t applicationUs = 3'000'000 + 16'667 * i;
+            const int64_t frameBeginUs = applicationUs - 3'000;
+            tracker.ObservePresent(applicationUs, frameBeginUs, FrameBeginKind::PresentReturn);
+            // The generated present carries no simulation of its own, so it
+            // reuses the application frame's boundary.
+            tracker.ObservePresent(applicationUs + 8'333, frameBeginUs, FrameBeginKind::PresentReturn);
+            tracker.ObserveDisplay(applicationUs + 4'000, applicationUs + 200);
+            tracker.ObserveDisplay(applicationUs + 12'333, applicationUs + 8'533);
+        }
+    };
+
+    Tracker staleTelemetryTracker;
+    feed(staleTelemetryTracker, 0.0f);
+    Tracker publishedTelemetryTracker;
+    feed(publishedTelemetryTracker, 60.0f);
+
+    const int64_t nowUs = 3'000'000 + 16'667 * 24;
+    const auto stale = staleTelemetryTracker.GetSnapshot(nowUs);
+    const auto published = publishedTelemetryTracker.GetSnapshot(nowUs);
+    ASSERT_TRUE(stale.valid);
+    ASSERT_TRUE(published.valid);
+    EXPECT_FLOAT_EQ(stale.milliseconds, published.milliseconds);
+    EXPECT_EQ(staleTelemetryTracker.GetDiagnostics().lastBaseIntervalUs, 16'667);
+}
+
+TEST(SystemLatencyMetricsTest, DiagnosticsReportUnassociatedAndUnmatchedDisplays) {
+    Tracker tracker;
+    tracker.ObservePresent(4'000'000);
+    tracker.ObservePresent(4'016'667);
+    // Older than every observed present: nothing can be attributed to it.
+    tracker.ObserveDisplay(3'900'000, 3'899'000);
+    tracker.ObserveDisplay(4'020'000);
+
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_EQ(diagnostics.displaysObserved, 2u);
+    EXPECT_EQ(diagnostics.displaysWithPresentAssociation, 1u);
+    EXPECT_EQ(diagnostics.displaysWithoutMatchedPresent, 1u);
+}
+
+TEST(SystemLatencyMetricsTest, CrossCheckReportsTheSourceThatWasNotPublished) {
+    Tracker tracker;
+    FeedRenderAheadPipeline(tracker, 5'000'000, 10'000, /*queueDepth=*/1, /*frameCount=*/12);
+    NativeReport report{};
+    report.count = 6;
+    for (size_t i = 0; i < report.count; ++i)
+        report.frames[i] = MakeNativeFrame(i + 1, 5'000'000 + 10'000 * i);
+    tracker.SubmitNativeReport(report);
+
+    const int64_t nowUs = 5'000'000 + 10'000 * 12;
+    ASSERT_EQ(tracker.GetSnapshot(nowUs).source, Source::ReflexMarkers);
+    const auto diagnostics = tracker.GetDiagnostics(nowUs);
+    EXPECT_EQ(diagnostics.crossCheckSource, Source::Estimated);
+    EXPECT_GT(diagnostics.crossCheckMilliseconds, 0.0f);
+}
+
+TEST(SystemLatencyMetricsTest, SampleWindowTrimsMisPairedOutliersFromBothTails) {
+    ce::system_latency::SampleWindow window;
+    int64_t sampleTimeUs = 1'000'000;
+    for (int i = 0; i < 28; ++i)
+        window.Add(20.0f, sampleTimeUs += 7'000);
+    // Two frames paired against the wrong Present, in both directions.
+    window.Add(2.0f, sampleTimeUs += 7'000);
+    window.Add(3.0f, sampleTimeUs += 7'000);
+    window.Add(300.0f, sampleTimeUs += 7'000);
+    window.Add(400.0f, sampleTimeUs += 7'000);
+
+    const auto snapshot = window.MakeSnapshot(Source::Estimated);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.sampleCount, 32u);
+    EXPECT_FLOAT_EQ(snapshot.milliseconds, 20.0f);
+    EXPECT_FLOAT_EQ(snapshot.medianMilliseconds, 20.0f);
+    EXPECT_FLOAT_EQ(snapshot.minimumMilliseconds, 2.0f);
+    EXPECT_FLOAT_EQ(snapshot.maximumMilliseconds, 400.0f);
+}
+
+TEST(SystemLatencyClockTest, LatestFrameBeginPrefersTheNewestBoundaryAndRejectsUnusableOnes) {
+    FrameBeginClockReset reset;
+    FrameBeginKind kind = FrameBeginKind::Modelled;
+
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'000'000, kind), 0);
+    EXPECT_EQ(kind, FrameBeginKind::Modelled);
+
+    ce::system_latency::NoteFrameBegin(1'000'000, FrameBeginKind::PresentReturn);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'005'000, kind), 1'000'000);
+    EXPECT_EQ(kind, FrameBeginKind::PresentReturn);
+
+    // A low-latency wait returns after the previous Present did, so it wins
+    // without any per-runtime special casing.
+    ce::system_latency::NoteFrameBegin(1'004'000, FrameBeginKind::LowLatencySleepReturn);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'005'000, kind), 1'004'000);
+    EXPECT_EQ(kind, FrameBeginKind::LowLatencySleepReturn);
+
+    // A boundary from another presenting thread that is already ahead of this
+    // present, and one whose producer has stopped running, are both unusable.
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'003'000, kind), 0);
+    EXPECT_EQ(ce::system_latency::LatestFrameBegin(1'400'000, kind), 0);
+    EXPECT_EQ(kind, FrameBeginKind::Modelled);
+}
+
+TEST(SystemLatencyMetricsTest, PerformanceMetricsResolvesTheFrameBeginBoundaryFromTheProcessClock) {
+    FrameBeginClockReset reset;
+    PerformanceMetrics metrics;
+    SharedDisplayTiming timing;
+    timing.Reset(4321, 0, DisplayTimingStatus::Starting);
+    metrics.ConsumeDisplayTiming(timing, 6'900'000);
+
+    for (int i = 0; i < 12; ++i) {
+        const int64_t presentUs = 7'000'000 + 10'000 * i;
+        ce::system_latency::NoteFrameBegin(presentUs - 3'000, FrameBeginKind::LowLatencySleepReturn);
+        metrics.Update(presentUs);
+        if (i > 0) {
+            const int64_t displayedPresentUs = presentUs - 10'000;
+            timing.Publish(displayedPresentUs + 10'000, presentUs, displayedPresentUs + 200);
+        }
+    }
+    metrics.ConsumeDisplayTiming(timing, 7'120'000);
+
+    const auto snapshot = metrics.GetSystemLatency(7'120'000);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
+    // 10.0 ms queue + 3.0 ms measured CPU frame + 5.0 ms average input wait.
+    EXPECT_NEAR(snapshot.milliseconds, 18.0f, 0.1f);
+    EXPECT_EQ(metrics.GetSystemLatencyDiagnostics(7'120'000).lastFrameBeginKind,
+              FrameBeginKind::LowLatencySleepReturn);
 }

@@ -1,5 +1,7 @@
 #include "performance_metrics.h"
 
+#include "system_latency_frame_begin.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -106,7 +108,12 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
-    m_systemLatency.ObservePresent(currentQpcUs);
+    // The boundary the game's current CPU frame started from, published by the
+    // present wrappers and the low-latency sleep hooks. Resolving it here keeps
+    // the tracker free of process-wide state so it stays unit-testable.
+    ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
+    const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
+    m_systemLatency.ObservePresent(currentQpcUs, frameBeginUs, frameBeginKind);
     UpdateSeries(m_presentation, currentQpcUs);
 }
 
@@ -116,6 +123,10 @@ void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::Nat
 
 ce::system_latency::Snapshot PerformanceMetrics::GetSystemLatency(int64_t currentQpcUs) const {
     return m_systemLatency.GetSnapshot(currentQpcUs);
+}
+
+ce::system_latency::Diagnostics PerformanceMetrics::GetSystemLatencyDiagnostics(int64_t currentQpcUs) const {
+    return m_systemLatency.GetDiagnostics(currentQpcUs);
 }
 
 void PerformanceMetrics::ResetSystemLatency() {

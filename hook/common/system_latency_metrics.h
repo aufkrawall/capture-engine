@@ -1,5 +1,27 @@
 #pragma once
 
+// Correlator for the overlay's PC-latency readout.
+//
+// The published number is the time from the average input arrival to the frame
+// carrying it reaching the screen. It is assembled from three independent
+// observations, all in the same QueryPerformanceCounter microsecond domain:
+//
+//   frame begin -> Present call -> screen
+//   (hooks)        (hooks)         (display-timing sensor, ETW)
+//
+// plus a modelled average input wait for the part no runtime reports. When the
+// game emits Reflex/PCL markers the first two links are replaced by the game's
+// own simulation-start and present-start timestamps.
+//
+// The pairing between a Present and the screen transition it produced is the
+// load-bearing part. The sensor associates every displayed transition with the
+// runtime PresentStart that caused it; without that association a render-ahead
+// queue is invisible, because by the time a frame is scanned out the game has
+// already called Present for the frames queued behind it.
+
+#include "system_latency_types.h"
+#include "system_latency_windows.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -11,68 +33,24 @@
 
 namespace ce::system_latency {
 
-enum class Source : uint8_t {
-    Unavailable,
-    ReflexMarkers,
-    Estimated,
-};
-
-struct Snapshot {
-    float milliseconds = 0.0f;
-    Source source = Source::Unavailable;
-    uint32_t sampleCount = 0;
-    bool valid = false;
-};
-
-struct NativeFrameReport {
-    uint64_t frameId = 0;
-    uint64_t inputSampleTimeUs = 0;
-    uint64_t simulationStartTimeUs = 0;
-    uint64_t presentStartTimeUs = 0;
-    uint64_t gpuRenderEndTimeUs = 0;
-};
-
-struct NativeReport {
-    static constexpr size_t kCapacity = 64;
-    std::array<NativeFrameReport, kCapacity> frames{};
-    size_t count = 0;
-};
-
-using SupplementalNativeReportProvider = bool (*)(NativeReport& report);
-
-// Implemented separately for the injected DirectX hook and Vulkan layer.
-bool QueryNativeReport(void* device, NativeReport& report);
-void SetSupplementalNativeReportProvider(SupplementalNativeReportProvider provider);
-
-inline const char* SourceLogLabel(Source source) {
-    switch (source) {
-        case Source::ReflexMarkers:
-            return "Reflex/PCL markers (input wait estimated)";
-        case Source::Estimated:
-            return "presentation/display estimate";
-        default:
-            return "unavailable";
-    }
-}
-
-inline const char* SourceOverlayLabel(Source source) {
-    switch (source) {
-        case Source::ReflexMarkers:
-            return "PC Latency~";
-        case Source::Estimated:
-            return "Latency est.";
-        default:
-            return "PC Latency";
-    }
-}
-
 class Tracker {
 public:
-    void ObservePresent(int64_t presentTimeUs) {
+    // frameBeginUs is the most recent observed boundary at or before this
+    // present; see system_latency_frame_begin.h for who produces it. Zero means
+    // none was available and the frame's CPU work is modelled instead.
+    void ObservePresent(int64_t presentTimeUs, int64_t frameBeginUs = 0,
+                        FrameBeginKind frameBeginKind = FrameBeginKind::Modelled) {
         // Native-report processing is infrequent but can scan up to 64 frames.
         // Never make the present hot path wait behind that diagnostic work.
         std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-        if (!lock.owns_lock() || presentTimeUs <= 0)
+        if (!lock.owns_lock()) {
+            // A skipped present leaves a hole the display association has to
+            // resolve against an older frame, so make the loss visible instead
+            // of letting it look like extra latency.
+            droppedPresents_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (presentTimeUs <= 0)
             return;
 
         if (!presents_.Empty()) {
@@ -90,7 +68,29 @@ public:
                     presentIntervals_.Push(intervalUs);
             }
         }
+
+        // A generated present shares the application frame's simulation, so the
+        // boundary is reused rather than discarded; only an advancing boundary
+        // contributes to the input-sampling cadence.
+        int64_t anchorUs = 0;
+        FrameBeginKind anchorKind = FrameBeginKind::Modelled;
+        if (frameBeginUs > 0 && frameBeginUs <= presentTimeUs &&
+            presentTimeUs - frameBeginUs <= kMaximumIntervalUs) {
+            anchorUs = frameBeginUs;
+            anchorKind = frameBeginKind;
+            if (frameBeginUs > lastFrameBeginUs_) {
+                if (lastFrameBeginUs_ > 0) {
+                    const int64_t intervalUs = frameBeginUs - lastFrameBeginUs_;
+                    if (intervalUs >= kDuplicateThresholdUs && intervalUs <= kMaximumIntervalUs)
+                        frameBeginIntervals_.Push(intervalUs);
+                }
+                lastFrameBeginUs_ = frameBeginUs;
+            }
+        }
+
         presents_.Push(presentTimeUs);
+        presentAnchors_.Push(anchorUs);
+        presentAnchorKinds_.Push(static_cast<int64_t>(anchorKind));
     }
 
     void ObserveDisplay(int64_t screenTimeUs, int64_t presentStartTimeUs = 0) {
@@ -106,7 +106,10 @@ public:
 
         displays_.Push(screenTimeUs);
         displayPresentStarts_.Push(presentStartTimeUs);
-        UpdateFallbackLocked(screenTimeUs);
+        ++displaysObserved_;
+        if (presentStartTimeUs > 0)
+            ++displaysWithAssociation_;
+        UpdateFallbackLocked(screenTimeUs, presentStartTimeUs);
     }
 
     void SetFrameGeneration(float baseFps, int multiplier) {
@@ -155,10 +158,13 @@ public:
             // newer application frames occur before an older frame reaches
             // the screen, so screenTime alone selects a future frame.
             int64_t markerCutoffUs = screenTimeUs;
+            bool usedAssociation = false;
             if (displayIndex < displayPresentStarts_.Size()) {
                 const int64_t associatedPresentStartUs = displayPresentStarts_.At(displayIndex);
-                if (associatedPresentStartUs > 0 && associatedPresentStartUs <= screenTimeUs)
+                if (associatedPresentStartUs > 0 && associatedPresentStartUs <= screenTimeUs) {
                     markerCutoffUs = associatedPresentStartUs;
+                    usedAssociation = true;
+                }
             }
 
             const NativeFrameReport* candidate = nullptr;
@@ -189,7 +195,7 @@ public:
                 displayedSimulationIntervalUs <= kMaximumIntervalUs) {
                 displayedSamplingIntervalUs = (std::max)(
                     displayedSamplingIntervalUs,
-                    MedianWithCandidate(nativeDisplayedSimulationIntervals_, displayedSimulationIntervalUs));
+                    MedianRingWithCandidate(nativeDisplayedSimulationIntervals_, displayedSimulationIntervalUs));
             }
 
             // PCL uses half a base sampling interval for average input wait,
@@ -200,8 +206,16 @@ public:
                 const int64_t estimatedInputTimeUs = simulationStartUs - estimatedInputWaitUs;
                 if (estimatedInputTimeUs > 0 && screenTimeUs >= estimatedInputTimeUs) {
                     const int64_t totalUs = screenTimeUs - estimatedInputTimeUs;
-                    if (IsValidTotalLatency(totalUs))
+                    if (IsValidTotalLatency(totalUs)) {
                         nativeEstimatedSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
+                        nativeSimulationToDisplayUs_ = screenTimeUs - simulationStartUs;
+                        nativeInputWaitUs_ = estimatedInputWaitUs;
+                        nativeSamplingIntervalUs_ = samplingIntervalUs;
+                        nativePresentToDisplayUs_ = presentToDisplayUs;
+                        nativeUsedAssociation_ = usedAssociation;
+                    } else {
+                        ++samplesRejected_;
+                    }
                 }
             }
 
@@ -219,11 +233,55 @@ public:
 
     Snapshot GetSnapshot(int64_t currentQpcUs) const {
         std::lock_guard<std::mutex> lock(mutex_);
+        Snapshot snapshot{};
         if (nativeEstimatedSamples_.IsFresh(currentQpcUs))
-            return nativeEstimatedSamples_.MakeSnapshot(Source::ReflexMarkers);
-        if (fallbackSamples_.IsFresh(currentQpcUs))
-            return fallbackSamples_.MakeSnapshot(Source::Estimated);
-        return {};
+            snapshot = nativeEstimatedSamples_.MakeSnapshot(Source::ReflexMarkers);
+        else if (fallbackSamples_.IsFresh(currentQpcUs))
+            snapshot = fallbackSamples_.MakeSnapshot(Source::Estimated);
+        if (snapshot.source != publishedSource_) {
+            if (publishedSource_ != Source::Unavailable && snapshot.source != Source::Unavailable)
+                ++sourceTransitions_;
+            publishedSource_ = snapshot.source;
+        }
+        return snapshot;
+    }
+
+    // currentQpcUs selects which windows still count as fresh, matching the
+    // GetSnapshot call the caller is reporting on.
+    Diagnostics GetDiagnostics(int64_t currentQpcUs = 0) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        Diagnostics diagnostics{};
+        if (currentQpcUs > 0) {
+            const SampleWindow& crossCheck =
+                publishedSource_ == Source::ReflexMarkers ? fallbackSamples_ : nativeEstimatedSamples_;
+            const Source crossCheckSource =
+                publishedSource_ == Source::ReflexMarkers ? Source::Estimated : Source::ReflexMarkers;
+            if (publishedSource_ != Source::Unavailable && crossCheck.IsFresh(currentQpcUs)) {
+                diagnostics.crossCheckSource = crossCheckSource;
+                diagnostics.crossCheckMilliseconds = crossCheck.MakeSnapshot(crossCheckSource).milliseconds;
+            }
+        }
+        diagnostics.displaysObserved = displaysObserved_;
+        diagnostics.displaysWithPresentAssociation = displaysWithAssociation_;
+        diagnostics.displaysWithoutMatchedPresent = displaysWithoutMatchedPresent_;
+        diagnostics.presentsDroppedUnderContention = droppedPresents_.load(std::memory_order_relaxed);
+        diagnostics.samplesRejectedOutOfRange = samplesRejected_;
+        diagnostics.sourceTransitions = sourceTransitions_;
+        if (publishedSource_ == Source::ReflexMarkers) {
+            diagnostics.lastAnchorToPresentUs = nativeSimulationToDisplayUs_ - nativePresentToDisplayUs_;
+            diagnostics.lastPresentToDisplayUs = nativePresentToDisplayUs_;
+            diagnostics.lastInputWaitUs = nativeInputWaitUs_;
+            diagnostics.lastBaseIntervalUs = nativeSamplingIntervalUs_;
+            diagnostics.lastFrameBeginKind = FrameBeginKind::Modelled;
+            diagnostics.lastMarkerUsedAssociation = nativeUsedAssociation_;
+        } else {
+            diagnostics.lastAnchorToPresentUs = lastAnchorToPresentUs_;
+            diagnostics.lastPresentToDisplayUs = lastPresentToDisplayUs_;
+            diagnostics.lastInputWaitUs = lastInputWaitUs_;
+            diagnostics.lastBaseIntervalUs = lastBaseIntervalUs_;
+            diagnostics.lastFrameBeginKind = lastFrameBeginKind_;
+        }
+        return diagnostics;
     }
 
     void ResetDisplayHistory() {
@@ -238,86 +296,6 @@ private:
     static constexpr int64_t kMaximumSamplingIntervalUs = 100'000;
     static constexpr int64_t kMaximumPresentToDisplayUs = 250'000;
     static constexpr int64_t kMaximumTotalLatencyUs = 500'000;
-    static constexpr int64_t kFreshnessUs = 2'000'000;
-
-    template <size_t Capacity>
-    class ValueRing {
-    public:
-        void Push(int64_t value) {
-            if (count_ < Capacity) {
-                values_[(start_ + count_) % Capacity] = value;
-                ++count_;
-            } else {
-                values_[start_] = value;
-                start_ = (start_ + 1) % Capacity;
-            }
-        }
-
-        int64_t At(size_t index) const {
-            return values_[(start_ + index) % Capacity];
-        }
-        int64_t Back() const {
-            return At(count_ - 1);
-        }
-        size_t Size() const {
-            return count_;
-        }
-        bool Empty() const {
-            return count_ == 0;
-        }
-        void Clear() {
-            start_ = 0;
-            count_ = 0;
-        }
-
-    private:
-        std::array<int64_t, Capacity> values_{};
-        size_t start_ = 0;
-        size_t count_ = 0;
-    };
-
-    class SampleWindow {
-    public:
-        void Add(float milliseconds, int64_t sampleTimeUs) {
-            if (lastSampleTimeUs_ > 0 && sampleTimeUs - lastSampleTimeUs_ > kFreshnessUs)
-                Clear();
-            values_[writeIndex_] = milliseconds;
-            writeIndex_ = (writeIndex_ + 1) % values_.size();
-            count_ = (std::min)(count_ + 1, values_.size());
-            lastSampleTimeUs_ = sampleTimeUs;
-        }
-
-        bool IsFresh(int64_t currentQpcUs) const {
-            return count_ > 0 && lastSampleTimeUs_ > 0 && currentQpcUs >= lastSampleTimeUs_ &&
-                   currentQpcUs - lastSampleTimeUs_ <= kFreshnessUs;
-        }
-
-        Snapshot MakeSnapshot(Source source) const {
-            std::array<float, 32> sorted{};
-            for (size_t i = 0; i < count_; ++i)
-                sorted[i] = values_[i];
-            std::sort(sorted.begin(), sorted.begin() + count_);
-            const size_t trim = count_ >= 8 ? 1 : 0;
-            float sum = 0.0f;
-            for (size_t i = trim; i < count_ - trim; ++i)
-                sum += sorted[i];
-            const size_t retained = count_ - 2 * trim;
-            return {sum / static_cast<float>(retained), source, static_cast<uint32_t>(count_), true};
-        }
-
-        void Clear() {
-            values_.fill(0.0f);
-            writeIndex_ = 0;
-            count_ = 0;
-            lastSampleTimeUs_ = 0;
-        }
-
-    private:
-        std::array<float, 32> values_{};
-        size_t writeIndex_ = 0;
-        size_t count_ = 0;
-        int64_t lastSampleTimeUs_ = 0;
-    };
 
     static int64_t ToSignedTimestamp(uint64_t timestampUs) {
         if (timestampUs == 0 || timestampUs > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
@@ -361,29 +339,6 @@ private:
         return intervals[intervalCount / 2];
     }
 
-    template <size_t Capacity>
-    static int64_t MedianRing(const ValueRing<Capacity>& values) {
-        if (values.Empty())
-            return 0;
-        std::array<int64_t, Capacity> sorted{};
-        for (size_t i = 0; i < values.Size(); ++i)
-            sorted[i] = values.At(i);
-        std::sort(sorted.begin(), sorted.begin() + values.Size());
-        return sorted[values.Size() / 2];
-    }
-
-    template <size_t Capacity>
-    static int64_t MedianWithCandidate(const ValueRing<Capacity>& values, int64_t candidate) {
-        std::array<int64_t, Capacity + 1> sorted{};
-        const size_t first = values.Size() == Capacity ? 1 : 0;
-        size_t count = 0;
-        for (size_t i = first; i < values.Size(); ++i)
-            sorted[count++] = values.At(i);
-        sorted[count++] = candidate;
-        std::sort(sorted.begin(), sorted.begin() + count);
-        return sorted[count / 2];
-    }
-
     int64_t ResolveFgBaseIntervalLocked() const {
         const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
         const float fgBaseFps = fgBaseFps_.load(std::memory_order_relaxed);
@@ -393,58 +348,118 @@ private:
     }
 
     int64_t ResolveWorkIntervalLocked() const {
+        // A frame-begin boundary occurs once per application frame however many
+        // frames the generator paces out of it, so its cadence is the input
+        // sampling cadence directly. That makes the measurement independent of
+        // the FG multiplier and of the base frame rate telemetry, which is
+        // published asynchronously and is briefly zero across every transition.
+        const int64_t anchorIntervalUs = MedianRing(frameBeginIntervals_);
+        if (anchorIntervalUs > 0)
+            return anchorIntervalUs;
         return (std::max)(MedianRing(presentIntervals_), ResolveFgBaseIntervalLocked());
     }
 
-    void UpdateFallbackLocked(int64_t screenTimeUs) {
-        int64_t matchedPresentUs = 0;
+    // Returns false when this displayed transition cannot be attributed to an
+    // observed Present.
+    bool MatchPresentLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs, size_t& matchedIndex) const {
+        // The runtime emits PresentStart inside the Present call the wrapper
+        // observed, so the newest present at or before it is that same frame,
+        // however many later frames the game has already queued behind it.
+        // Without the association there is no way to tell a queued frame from a
+        // superseded one, so the newest present before the screen transition
+        // stays the documented degraded behaviour.
+        const int64_t matchCutoffUs = associatedPresentStartUs > 0 ? associatedPresentStartUs : screenTimeUs;
         for (size_t i = presents_.Size(); i > 0; --i) {
             const int64_t candidateUs = presents_.At(i - 1);
-            if (candidateUs <= screenTimeUs && candidateUs > lastFallbackPresentTimeUs_) {
-                matchedPresentUs = candidateUs;
-                break;
+            if (candidateUs <= matchCutoffUs && candidateUs > lastFallbackPresentTimeUs_) {
+                matchedIndex = i - 1;
+                return true;
             }
         }
-        if (matchedPresentUs == 0)
+        return false;
+    }
+
+    void UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs) {
+        size_t matchedIndex = 0;
+        if (!MatchPresentLocked(screenTimeUs, associatedPresentStartUs, matchedIndex)) {
+            ++displaysWithoutMatchedPresent_;
             return;
+        }
+        const int64_t matchedPresentUs = presents_.At(matchedIndex);
+        const int64_t anchorUs = presentAnchors_.At(matchedIndex);
+        const bool anchorUsable = anchorUs > 0 && anchorUs <= matchedPresentUs &&
+                                  matchedPresentUs - anchorUs <= kMaximumIntervalUs;
+
+        // Interval between the input-sampling points of consecutively displayed
+        // frames. Measured between frame-begin boundaries when they exist,
+        // because a Present interval counts generated frames that sample no
+        // input of their own.
         if (lastFallbackPresentTimeUs_ > 0) {
-            const int64_t displayedPresentIntervalUs = matchedPresentUs - lastFallbackPresentTimeUs_;
-            if (displayedPresentIntervalUs >= kDuplicateThresholdUs &&
-                displayedPresentIntervalUs <= kMaximumIntervalUs) {
-                fallbackDisplayedPresentIntervals_.Push(displayedPresentIntervalUs);
+            const bool useAnchors = anchorUsable && lastFallbackAnchorUs_ > 0;
+            const int64_t previousInputUs = useAnchors ? lastFallbackAnchorUs_ : lastFallbackPresentTimeUs_;
+            const int64_t currentInputUs = useAnchors ? anchorUs : matchedPresentUs;
+            const int64_t displayedInputIntervalUs = currentInputUs - previousInputUs;
+            if (displayedInputIntervalUs >= kDuplicateThresholdUs &&
+                displayedInputIntervalUs <= kMaximumIntervalUs) {
+                fallbackDisplayedInputIntervals_.Push(displayedInputIntervalUs);
             }
         }
         lastFallbackPresentTimeUs_ = matchedPresentUs;
+        lastFallbackAnchorUs_ = anchorUsable ? anchorUs : 0;
 
         const int64_t presentToDisplayUs = screenTimeUs - matchedPresentUs;
-        const int64_t workIntervalUs = ResolveWorkIntervalLocked();
-        if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs || workIntervalUs <= 0 ||
-            workIntervalUs > kMaximumSamplingIntervalUs)
+        const int64_t baseIntervalUs = ResolveWorkIntervalLocked();
+        if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs || baseIntervalUs <= 0 ||
+            baseIntervalUs > kMaximumSamplingIntervalUs) {
+            ++samplesRejected_;
             return;
+        }
 
-        // Without game markers, approximate one base frame of simulation/render
-        // work. Input wait is half a base interval plus every full skipped
-        // interval before a frame reaches the screen, matching PCL's dropped-
-        // frame treatment. FG base cadence is a floor because generated
-        // Presents do not add input-sampling points.
+        // Simulation and render work: measured from the frame's own boundary
+        // when one was observed, otherwise approximated as one base interval.
+        // The measured form is what makes the estimate sensitive to a
+        // low-latency mode, which shortens this span without changing cadence.
+        int64_t anchorToPresentUs = baseIntervalUs;
+        FrameBeginKind frameBeginKind = FrameBeginKind::Modelled;
+        if (anchorUsable) {
+            anchorToPresentUs = matchedPresentUs - anchorUs;
+            frameBeginKind = static_cast<FrameBeginKind>(presentAnchorKinds_.At(matchedIndex));
+        }
+
+        // Input wait is half a base interval plus every full interval whose
+        // sampling point never reached the screen, matching PCL's dropped-frame
+        // treatment.
         const int64_t displayedInputIntervalUs =
-            (std::max)(workIntervalUs, MedianRing(fallbackDisplayedPresentIntervals_));
-        const int64_t estimatedInputWaitUs = displayedInputIntervalUs - workIntervalUs / 2;
-        const int64_t totalUs = presentToDisplayUs + workIntervalUs + estimatedInputWaitUs;
-        if (IsValidTotalLatency(totalUs))
-            fallbackSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
+            (std::max)(baseIntervalUs, MedianRing(fallbackDisplayedInputIntervals_));
+        const int64_t estimatedInputWaitUs = displayedInputIntervalUs - baseIntervalUs / 2;
+        const int64_t totalUs = presentToDisplayUs + anchorToPresentUs + estimatedInputWaitUs;
+        if (!IsValidTotalLatency(totalUs)) {
+            ++samplesRejected_;
+            return;
+        }
+        fallbackSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
+        lastAnchorToPresentUs_ = anchorToPresentUs;
+        lastPresentToDisplayUs_ = presentToDisplayUs;
+        lastInputWaitUs_ = estimatedInputWaitUs;
+        lastBaseIntervalUs_ = baseIntervalUs;
+        lastFrameBeginKind_ = frameBeginKind;
     }
 
     void ResetMeasurementsLocked() {
         presents_.Clear();
+        presentAnchors_.Clear();
+        presentAnchorKinds_.Clear();
         presentIntervals_.Clear();
+        frameBeginIntervals_.Clear();
         displays_.Clear();
         displayPresentStarts_.Clear();
-        fallbackDisplayedPresentIntervals_.Clear();
+        fallbackDisplayedInputIntervals_.Clear();
         nativeDisplayedSimulationIntervals_.Clear();
         nativeEstimatedSamples_.Clear();
         fallbackSamples_.Clear();
         lastFallbackPresentTimeUs_ = 0;
+        lastFallbackAnchorUs_ = 0;
+        lastFrameBeginUs_ = 0;
         lastNativePresentTimeUs_ = 0;
         lastNativeDisplayTimeUs_ = 0;
         lastNativeSimulationStartTimeUs_ = 0;
@@ -452,19 +467,44 @@ private:
 
     mutable std::mutex mutex_;
     ValueRing<256> presents_;
+    ValueRing<256> presentAnchors_;
+    ValueRing<256> presentAnchorKinds_;
     ValueRing<32> presentIntervals_;
+    ValueRing<32> frameBeginIntervals_;
     ValueRing<256> displays_;
     ValueRing<256> displayPresentStarts_;
-    ValueRing<32> fallbackDisplayedPresentIntervals_;
+    ValueRing<32> fallbackDisplayedInputIntervals_;
     ValueRing<32> nativeDisplayedSimulationIntervals_;
     SampleWindow nativeEstimatedSamples_;
     SampleWindow fallbackSamples_;
     int64_t lastFallbackPresentTimeUs_ = 0;
+    int64_t lastFallbackAnchorUs_ = 0;
+    int64_t lastFrameBeginUs_ = 0;
     int64_t lastNativePresentTimeUs_ = 0;
     int64_t lastNativeDisplayTimeUs_ = 0;
     int64_t lastNativeSimulationStartTimeUs_ = 0;
     std::atomic<float> fgBaseFps_{0.0f};
     std::atomic<int> fgMultiplier_{1};
+
+    // Diagnostics. Counters survive a display-generation reset so a session's
+    // measurement quality stays legible across backend transitions.
+    std::atomic<uint64_t> droppedPresents_{0};
+    uint64_t displaysObserved_ = 0;
+    uint64_t displaysWithAssociation_ = 0;
+    uint64_t displaysWithoutMatchedPresent_ = 0;
+    uint64_t samplesRejected_ = 0;
+    mutable uint64_t sourceTransitions_ = 0;
+    mutable Source publishedSource_ = Source::Unavailable;
+    int64_t lastAnchorToPresentUs_ = 0;
+    int64_t lastPresentToDisplayUs_ = 0;
+    int64_t lastInputWaitUs_ = 0;
+    int64_t lastBaseIntervalUs_ = 0;
+    FrameBeginKind lastFrameBeginKind_ = FrameBeginKind::Modelled;
+    int64_t nativeSimulationToDisplayUs_ = 0;
+    int64_t nativePresentToDisplayUs_ = 0;
+    int64_t nativeInputWaitUs_ = 0;
+    int64_t nativeSamplingIntervalUs_ = 0;
+    bool nativeUsedAssociation_ = false;
 };
 
 }  // namespace ce::system_latency

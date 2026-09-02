@@ -69,7 +69,14 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             cached01PercentLow = metrics->Get01PercentLowFPS();
             if (cfg.showSystemLatency && currentQpcUs > 0) {
                 constexpr DWORD kNativeLatencyQueryIntervalMs = 250;
-                if (latencyDevice &&
+                // A registered cross-IHV marker provider reports without a
+                // graphics device, so the poll must not wait for one to be
+                // resolved: gating on the device alone silently disables the
+                // game's own PCL markers whenever the device is unavailable.
+                const bool nativeLatencySourceAvailable =
+                    latencyDevice != nullptr ||
+                    ce::system_latency::GetSupplementalNativeReportProvider() != nullptr;
+                if (nativeLatencySourceAvailable &&
                     (lastNativeLatencyQueryTime == 0 ||
                      now - lastNativeLatencyQueryTime >= kNativeLatencyQueryIntervalMs)) {
                     ce::system_latency::NativeReport nativeReport;
@@ -80,18 +87,50 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
                 cachedSystemLatency = metrics->GetSystemLatency(currentQpcUs);
                 const auto latencySource = cachedSystemLatency.source;
-                constexpr DWORD kSystemLatencyLogIntervalMs = 10000;
+                // Comparing a latency reading across a configuration change is
+                // only sound if the reading's provenance is on record, so the
+                // full decomposition is logged, not just the published number:
+                // a wide min/max spread or a low association ratio is how a
+                // broken present/display correlation announces itself.
+                constexpr DWORD kSystemLatencyLogIntervalMs = 5000;
+                const bool latencySourceChanged = latencySource != lastLoggedSystemLatencySource;
                 const bool latencyLogDue =
-                    !hasObservedSystemLatencySource ||
+                    !hasObservedSystemLatencySource || latencySourceChanged ||
                     now - lastSystemLatencySourceLogTime >= kSystemLatencyLogIntervalMs;
                 if (latencyLogDue) {
-                    HookLogImportant("[Overlay] PC latency sample: source=%s value=%.1fms samples=%u fg=%d multiplier=%d "
-                                     "baseFps=%.1f outputFps=%.1f",
-                                     ce::system_latency::SourceLogLabel(latencySource),
-                                     cachedSystemLatency.milliseconds, cachedSystemLatency.sampleCount,
-                                     metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
-                                     metrics->GetFGOutputFPS());
+                    const auto latencyDiagnostics = metrics->GetSystemLatencyDiagnostics(currentQpcUs);
+                    HookLogImportant(
+                        "[Overlay] PC latency sample: source=%s value=%.1fms median=%.1f min=%.1f max=%.1f "
+                        "samples=%u fg=%d multiplier=%d baseFps=%.1f outputFps=%.1f",
+                        ce::system_latency::SourceLogLabel(latencySource), cachedSystemLatency.milliseconds,
+                        cachedSystemLatency.medianMilliseconds, cachedSystemLatency.minimumMilliseconds,
+                        cachedSystemLatency.maximumMilliseconds, cachedSystemLatency.sampleCount,
+                        metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
+                        metrics->GetFGOutputFPS());
+                    HookLogImportant(
+                        "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
+                        "inputWait=%lldus baseInterval=%lldus markerAssociated=%d displays=%llu associated=%llu "
+                        "unmatched=%llu droppedPresents=%llu rejected=%llu sourceChanges=%llu",
+                        ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
+                        static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
+                        static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
+                        static_cast<long long>(latencyDiagnostics.lastInputWaitUs),
+                        static_cast<long long>(latencyDiagnostics.lastBaseIntervalUs),
+                        latencyDiagnostics.lastMarkerUsedAssociation ? 1 : 0,
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysObserved),
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysWithPresentAssociation),
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysWithoutMatchedPresent),
+                        static_cast<unsigned long long>(latencyDiagnostics.presentsDroppedUnderContention),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedOutOfRange),
+                        static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions));
+                    if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
+                        HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",
+                                         ce::system_latency::SourceLogLabel(latencyDiagnostics.crossCheckSource),
+                                         latencyDiagnostics.crossCheckMilliseconds,
+                                         cachedSystemLatency.milliseconds);
+                    }
                     lastSystemLatencySourceLogTime = now;
+                    lastLoggedSystemLatencySource = latencySource;
                     hasObservedSystemLatencySource = true;
                 }
             } else {

@@ -22,6 +22,9 @@ Primary sources:
 - `hook/common/overlay_adapter.{h,cpp}`
 - `hook/common/performance_metrics.{h,cpp}`
 - `hook/common/system_latency_metrics.h`
+- `hook/common/system_latency_types.h`
+- `hook/common/system_latency_windows.h`
+- `hook/common/system_latency_frame_begin.h`
 - `hook/common/system_latency_native_d3d.cpp`
 - `hook/common/streamline_pcl_latency.h`
 - `hook/apis/streamline_hook_pcl.cpp`
@@ -118,9 +121,74 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   measured marker cadence is authoritative; nominal FG metadata is only a fallback when the report has no usable
   cadence. Native Reflex reports can also supply GPU-completion timing, but the public reports do not expose NVIDIA
   PCL's ETW input ping, so average input wait remains estimated and the tilde is retained.
-- Without usable markers, the fallback combines observed Present-to-display time with one cadence-estimated simulation/render interval and average input wait. It uses the nominal base-render cadence while frame generation is active, because generated output frames do not create new input-sampling points, and adds full skipped intervals for superseded frames.
+- Without usable markers, the estimate is `present-to-display + frame-begin-to-present + average input wait`, all three
+  in the same QPC-microsecond domain.
+
+### Present/display pairing is the load-bearing part
+
+- A displayed transition is attributed to the Present that caused it through the reducer's associated runtime
+  `PresentStart`, and the newest observed Present at or before it is that same frame: the runtime emits `PresentStart`
+  inside the `Present` call the wrapper already timestamped, so hook entry and ETW event interleave strictly per frame
+  on the calling thread.
+- **This is what makes render-ahead visible at all.** Matching a display to "the newest Present that preceded its screen
+  time" collapses every queue depth to roughly one frame, because by the time a frame is scanned out the game has
+  already called `Present` for the frames queued behind it. That queue is exactly what a low-latency mode removes, so
+  before 0.1.6371 the estimate could not distinguish Reflex on from Reflex off at equal frame rate. Regression coverage:
+  `RenderAheadQueueIsMeasuredThroughThePresentAssociation`, `ShallowerQueueReportsLowerLatencyAtIdenticalFrameRate`.
+- Displays with no association keep the documented degraded timestamp-only behavior for both paths. The ratio is
+  logged (`displays=` vs `associated=`) because a reading taken on the degraded path cannot be compared against one
+  taken on the associated path.
+
+### Frame-begin anchor (`system_latency_frame_begin.h`)
+
+- The simulation/render span is measured, not modelled, whenever a frame boundary is observable. Two producers publish
+  into one process-wide slot and the most recent one at or before a Present wins:
+  - the present wrappers (DXGI `Present`/`Present1`, `vkQueuePresentKHR`) record when the previous present returned,
+    after the frame-latency wait and any CE-imposed pacing - the earliest an unthrottled game can start its next frame;
+  - the low-latency sleep hooks (`ReflexLimiter::EndGameSleepBoundary` for Streamline `slReflexSleep` and NvAPI
+    `NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) record when the per-frame wait ended, which is where a throttled game
+    starts instead.
+- No per-runtime special casing is needed: with a low-latency runtime active the sleep returns after the previous
+  present did, so it is naturally preferred; with the runtime off no sleep is ever observed. That difference is the
+  latency the mode actually removes, so the markerless estimate now moves with it instead of modelling a fixed frame of
+  CPU work either way. Boundaries in the future (another presenting thread) or older than 250 ms are rejected.
+- CE's own `ReflexLimiter::Sleep()` does not publish a boundary; it runs inside `ApplyPostPresent()`, before the
+  present wrapper's own boundary, so CE-imposed pacing is correctly counted as part of the next frame's latency.
+- The interval between frame-begin boundaries is the input-sampling cadence and is preferred over the Present interval
+  for the base interval. A boundary occurs once per application frame however many frames the generator paces out of
+  it, so the estimate no longer depends on the FG multiplier or on the asynchronously published base-rate telemetry -
+  which is briefly zero across every FG transition and used to halve the modelled interval there. A generated Present
+  reuses its application frame's boundary rather than being treated as a new sampling point. Regression coverage:
+  `FrameBeginCadenceMakesTheEstimateIndependentOfFrameGenerationTelemetry`.
+- VSync and backbuffer queueing need no separate term: a blocking `Present` is entered before the block and reaches the
+  screen after it, so the wait is inside `present-to-display`, and a block that instead delays the wrapper's return
+  moves the next frame's boundary.
+
+### Failure modes and bounds
+
 - NVIDIA's average-input-wait heuristic is unsupported below 10 FPS, so both paths fail closed there. Present-to-display samples over 250 ms, totals over 500 ms, incompatible timestamp domains, clock resets, and samples stale for more than two seconds also become unavailable instead of producing a plausible-looking number.
-- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, PC-latency sample logs (including the overlay's nominal FG state and base/output FPS) are rate-limited to one every ten seconds, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path. Streamline logs one `PCL marker latency report available` transition; failed marker forwards are rate-limited.
+- The 32-sample window publishes a symmetrically trimmed mean, discarding an eighth from each tail once at least 16
+  samples are held. A single 250 ms telemetry poll can contribute an entire window, so one frame paired against the
+  wrong Present - a full frame interval out - must not be able to move the published number.
+- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path. Streamline logs one `PCL marker latency report available` transition; failed marker forwards are rate-limited.
+- The native-report poll is gated on having either a graphics device **or** a registered supplemental provider. The
+  Streamline PCL provider serves reports without a device, so gating on the device alone silently discarded the game's
+  own markers whenever it was unresolved.
+
+### Diagnostics
+
+- `[Overlay] PC latency sample` is emitted on every source change and otherwise every five seconds, with the trimmed
+  mean plus the window's median/min/max. A wide min/max spread is how a broken correlation announces itself.
+- `[Overlay] PC latency chain` decomposes the most recent accepted sample: `frameBegin=` (`low-latency-sleep`,
+  `present-return` or `modelled`), `anchorToPresent`, `presentToDisplay`, `inputWait`, `baseInterval`, plus running
+  totals for displays observed, displays carrying a `PresentStart` association, displays that matched no Present,
+  presents dropped by the try-lock, samples rejected as out of range, and source transitions.
+- `[Overlay] PC latency cross-check` prints the source that was **not** published whenever it also holds a fresh
+  window. Both estimate the same quantity, so a large disagreement means one of the two correlations is wrong.
+- Open question / stale-risk: the two sources are not interchangeable across a configuration change if the marker path
+  is running on the degraded no-association branch. Games generally emit PCL markers only while their low-latency mode
+  is enabled, so an A/B of low-latency on versus off is an A/B of two estimators; check `markerAssociated=` and the
+  cross-check line before comparing the numbers.
 
 ## Legacy backend hot paths
 

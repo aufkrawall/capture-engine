@@ -4,13 +4,10 @@
 
 #include <windows.h>
 
-#include <atomic>
 #include <mutex>
 
 namespace ce::system_latency {
 namespace {
-
-std::atomic<SupplementalNativeReportProvider> g_supplementalReportProvider{nullptr};
 
 PFN_NvAPI_D3D_GetLatency ResolveGetLatency() {
     static std::mutex resolveMutex;
@@ -44,18 +41,13 @@ PFN_NvAPI_D3D_GetLatency ResolveGetLatency() {
 
 }  // namespace
 
-void SetSupplementalNativeReportProvider(SupplementalNativeReportProvider provider) {
-    g_supplementalReportProvider.store(provider, std::memory_order_release);
-}
-
 bool QueryNativeReport(void* device, NativeReport& report) {
     report = {};
 
     // Streamline PCL markers do not populate NvAPI_D3D_GetLatency; that API is
     // explicitly scoped to NvAPI_D3D_SetLatencyMarker. Prefer the game's real
     // cross-IHV PCL calls captured by the Streamline hook when available.
-    const SupplementalNativeReportProvider supplementalProvider =
-        g_supplementalReportProvider.load(std::memory_order_acquire);
+    const SupplementalNativeReportProvider supplementalProvider = GetSupplementalNativeReportProvider();
     if (supplementalProvider && supplementalProvider(report))
         return true;
     if (!device)
