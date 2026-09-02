@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-02 - Latency under FG: 4x vs 2x inversion and pacing corruption
+
+Session `logs/20260902_224411` revealed that DLSS FG 4x reported lower latency (~43 ms, and dropping to ~5.9 ms) than DLSS FG 2x (~66 ms).
+`ObservePresent` recorded final output presents (138 FPS, 6.2-7.2 ms) into `applicationPresentIntervals_`. Under 4x this polluted the median application interval to 6,213 µs. Because `appInterval * 2 < displayInterval * 3` (12,426 < 21,666), `IsGeneratorPacingOutputLocked()` evaluated to false (`generationObserved=0`), which suppressed generator hold addition and marker-frame stepback on 4x. Furthermore, `IsMarkerCadenceOutputRateLocked` failed to reject output-rate markers arriving at 7.2 ms cadence, collapsing latency to 5.9 ms. Meanwhile, under 2x, `IsGeneratorPacingOutputLocked()` evaluated to true, stepping back the marker frame and reporting 66.6 ms.
+
+Fix:
+- `ObservePresent` only calls `RecordApplicationPresentLocked` when `fgMultiplier < 2`. Under active FG (`fgMultiplier >= 2`), only true application presents from `ObserveApplicationPresent` populate `applicationPresentIntervals_`.
+- `ResolveWorkIntervalLocked()` validates measured intervals against nominal base interval (`ResolveFgBaseIntervalLocked()`), rejecting implausibly fast intervals (< half nominal base interval).
+- `IsGeneratorPacingOutputLocked()` and `IsMarkerCadenceOutputRateLocked()` use `ResolveWorkIntervalLocked()`, ensuring robust pacing detection and rejection of output-cadence synthetic markers under all FG multipliers.
+- Latency progression is restored: `Reflex on, FG off < DLSS FG 2x < DLSS FG 3x < DLSS FG 4x`.
+
 ### 2026-09-02 - PC latency under FG and post-FSR FIFO VSync recovery
 
 Session `logs/20260902_205111` resolved two distinct regressions across FG transitions: collapsed ~6 ms latency

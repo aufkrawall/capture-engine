@@ -175,6 +175,41 @@ TEST(SystemLatencyFGMeasurementTest, LatencyReportingDoesNotDieAfterFGSwitch) {
     EXPECT_GT(snapshot4x.milliseconds, snapshot2x.milliseconds);
 }
 
+TEST(SystemLatencyFGMeasurementTest, NativeReportsPreserveLowerLatencyForLowerMultiplier) {
+    auto measureNativeFG = [](float baseFps, int multiplier) {
+        Tracker tracker;
+        tracker.SetFrameGeneration(baseFps, multiplier);
+        const int64_t baseIntervalUs = std::llround(1'000'000.0 / static_cast<double>(baseFps));
+        const int64_t displayIntervalUs = baseIntervalUs / multiplier;
+        NativeReport report{};
+        report.count = 24;
+        for (size_t frame = 0; frame < report.count; ++frame) {
+            const int64_t sourceUs = 20'000'000 + baseIntervalUs * static_cast<int64_t>(frame);
+            tracker.ObserveApplicationPresent(sourceUs + 5'000);
+            report.frames[frame] = MakeNativeFrame(frame + 1, static_cast<uint64_t>(sourceUs + 5'000));
+        }
+        int64_t lastScreenUs = 0;
+        for (int frame = 0; frame < 20; ++frame) {
+            const int64_t sourceUs = 20'000'000 + baseIntervalUs * frame;
+            for (int mult = 0; mult < multiplier; ++mult) {
+                const int64_t presentUs = sourceUs + 5'000 + displayIntervalUs * (mult + 1);
+                lastScreenUs = presentUs + 2'000;
+                tracker.ObserveDisplay(lastScreenUs, presentUs);
+            }
+        }
+        tracker.SubmitNativeReport(report);
+        const auto snapshot = tracker.GetSnapshot(lastScreenUs);
+        EXPECT_TRUE(snapshot.valid);
+        EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+        EXPECT_TRUE(tracker.GetDiagnostics().frameGenerationObserved);
+        return snapshot.milliseconds;
+    };
+
+    const float latency2x = measureNativeFG(45.0f, 2);
+    const float latency4x = measureNativeFG(35.0f, 4);
+    EXPECT_LT(latency2x, latency4x);
+}
+
 TEST(SystemLatencyClockTest, LatestFrameBeginPublishesTheNewestBoundaryAndRejectsUnusableOnes) {
     FrameBeginClockReset reset;
     FrameBeginKind kind = FrameBeginKind::LowLatencySleepReturn;

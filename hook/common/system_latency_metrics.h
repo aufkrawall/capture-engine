@@ -79,7 +79,8 @@ public:
         }
 
         presents_.Push(presentTimeUs);
-        RecordApplicationPresentLocked(presentTimeUs, frameBeginUs, frameBeginKind);
+        if (fgMultiplier_.load(std::memory_order_relaxed) < 2)
+            RecordApplicationPresentLocked(presentTimeUs, frameBeginUs, frameBeginKind);
     }
 
     void ObserveApplicationPresent(int64_t presentTimeUs, int64_t frameBeginUs = 0,
@@ -341,8 +342,7 @@ public:
             diagnostics.generatorHoldApplied = lastGeneratorHoldApplied_;
         }
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
-        const int64_t appInterval = MedianRing(applicationPresentIntervals_);
-        diagnostics.applicationIntervalUs = appInterval > 0 ? appInterval : ResolveFgBaseIntervalLocked();
+        diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
         diagnostics.frameBeginIntervalUs = MedianRing(frameBeginIntervals_);
         diagnostics.markerIntervalUs = markerIntervalUs_;
         if (diagnostics.displayIntervalUs > 0 && diagnostics.applicationIntervalUs > 0) {
@@ -424,12 +424,17 @@ private:
     }
 
     int64_t ResolveWorkIntervalLocked() const {
+        const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
+        const int64_t fgBaseInterval = ResolveFgBaseIntervalLocked();
+        if (fgMultiplier >= 2 && fgBaseInterval > 0) {
+            const int64_t appInterval = MedianRing(applicationPresentIntervals_);
+            if (appInterval >= fgBaseInterval / 2)
+                return appInterval;
+            return fgBaseInterval;
+        }
         const int64_t applicationIntervalUs = MedianRing(applicationPresentIntervals_);
         if (applicationIntervalUs > 0)
             return applicationIntervalUs;
-        // Last resort. The hook's Present cadence is not the application's:
-        // it counts generated presents and, in some configurations, several
-        // wrapper entries per displayed frame.
         return (std::max)(MedianRing(presentIntervals_), ResolveFgBaseIntervalLocked());
     }
 
@@ -439,8 +444,7 @@ private:
         const int64_t displayIntervalUs = MedianRing(displayIntervals_);
         if (displayIntervalUs <= 0)
             return true;
-        const int64_t appInterval = MedianRing(applicationPresentIntervals_);
-        const int64_t baseIntervalUs = appInterval > 0 ? appInterval : ResolveFgBaseIntervalLocked();
+        const int64_t baseIntervalUs = ResolveWorkIntervalLocked();
         if (baseIntervalUs <= 0)
             return true;
         return baseIntervalUs * 2 >= displayIntervalUs * 3;
@@ -449,9 +453,7 @@ private:
     bool IsMarkerCadenceOutputRateLocked(int64_t markerIntervalUs) const {
         if (!IsGeneratorPacingOutputLocked())
             return false;
-        const int64_t applicationIntervalUs = MedianRing(applicationPresentIntervals_);
-        const int64_t baseIntervalUs =
-            applicationIntervalUs > 0 ? applicationIntervalUs : ResolveFgBaseIntervalLocked();
+        const int64_t baseIntervalUs = ResolveWorkIntervalLocked();
         if (baseIntervalUs <= 0 || markerIntervalUs <= 0)
             return false;
         if (markerIntervalUs * 4 < baseIntervalUs * 3)
