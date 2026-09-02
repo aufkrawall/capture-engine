@@ -212,6 +212,71 @@ TEST(SystemLatencyFGMeasurementTest, NativeReportsPreserveLowerLatencyForLowerMu
     EXPECT_LT(latency3x, latency4x);
 }
 
+TEST(SystemLatencyFGMeasurementTest, FSRFGSwitchPreservesEstimatedLatencyAndIgnoresForeignNativeMarkers) {
+    Tracker tracker;
+    // Step 1: Run FSR FG 2x (45 fps base, 90 fps output)
+    tracker.SetFrameGeneration(45.0f, 2, /*fgType=*/2);
+    constexpr int64_t baseIntervalUs = 22'222;
+    constexpr int64_t displayIntervalUs = 11'111;
+    int64_t screenUs = 30'000'000;
+    for (int frame = 0; frame < 20; ++frame) {
+        const int64_t sourceUs = 30'000'000 + baseIntervalUs * frame;
+        tracker.ObserveApplicationPresent(sourceUs + 2'000);
+        tracker.ObserveDisplay(screenUs = sourceUs + 5'000, sourceUs + 2'000);
+        tracker.ObserveDisplay(screenUs = sourceUs + 5'000 + displayIntervalUs, sourceUs + 2'000 + displayIntervalUs);
+    }
+    const auto initialFSRSnapshot = tracker.GetSnapshot(screenUs);
+    ASSERT_TRUE(initialFSRSnapshot.valid);
+    EXPECT_EQ(initialFSRSnapshot.source, Source::Estimated);
+    const float initialLatency = initialFSRSnapshot.milliseconds;
+    EXPECT_GT(initialLatency, 30.0f);
+    EXPECT_LT(initialLatency, 75.0f);
+
+    // Step 2: Switch to DLSS FG (fgType = 1)
+    tracker.SetFrameGeneration(35.0f, 4, /*fgType=*/1);
+    EXPECT_EQ(tracker.GetSnapshot(screenUs).source, Source::Unavailable);
+
+    // Step 3: Switch back to FSR FG (fgType = 2)
+    tracker.SetFrameGeneration(45.0f, 2, /*fgType=*/2);
+
+    // Run displays again for FSR FG
+    const int64_t startUs = screenUs + 100'000;
+    for (int frame = 0; frame < 20; ++frame) {
+        const int64_t sourceUs = startUs + baseIntervalUs * frame;
+        tracker.ObserveApplicationPresent(sourceUs + 2'000);
+        tracker.ObserveDisplay(screenUs = sourceUs + 5'000, sourceUs + 2'000);
+        tracker.ObserveDisplay(screenUs = sourceUs + 5'000 + displayIntervalUs, sourceUs + 2'000 + displayIntervalUs);
+    }
+
+    // A foreign Streamline PCL report arrives (game engine still emitting markers)
+    NativeReport foreignPclReport{};
+    foreignPclReport.count = 20;
+    for (size_t i = 0; i < foreignPclReport.count; ++i) {
+        const uint64_t presentUs = static_cast<uint64_t>(screenUs - baseIntervalUs * (foreignPclReport.count - i));
+        foreignPclReport.frames[i] = MakeNativeFrame(i + 1, presentUs);
+    }
+    tracker.SubmitNativeReport(foreignPclReport);
+
+    // The snapshot must remain Source::Estimated and MUST NOT jump from ~40-48ms to 80-100ms!
+    const auto postSwitchSnapshot = tracker.GetSnapshot(screenUs);
+    ASSERT_TRUE(postSwitchSnapshot.valid);
+    EXPECT_EQ(postSwitchSnapshot.source, Source::Estimated);
+    EXPECT_NEAR(postSwitchSnapshot.milliseconds, initialLatency, 3.0f);
+}
+
+TEST(SystemLatencyFGMeasurementTest, PerformanceMetricsRejectsForeignNativeReportUnderFSRFG) {
+    PerformanceMetrics metrics;
+    metrics.SetFGMetrics(90.0f, 45.0f, 2, /*fgType=*/2);
+    NativeReport report{};
+    report.count = 4;
+    for (size_t i = 0; i < report.count; ++i)
+        report.frames[i] = MakeNativeFrame(i + 1, 40'000'000 + 20'000 * i);
+    metrics.SubmitNativeLatencyReport(report);
+    // Tracker should have received no native report, so no native samples exist
+    const auto snapshot = metrics.GetSystemLatency(40'100'000);
+    EXPECT_NE(snapshot.source, Source::ReflexMarkers);
+}
+
 TEST(SystemLatencyClockTest, LatestFrameBeginPublishesTheNewestBoundaryAndRejectsUnusableOnes) {
     FrameBeginClockReset reset;
     FrameBeginKind kind = FrameBeginKind::LowLatencySleepReturn;

@@ -2,6 +2,7 @@
 
 #include "../common/perf_logger.h"
 #include "../common/streamline_pcl_latency.h"
+#include "../common/fg_detection.h"
 
 #include <sl_pcl.h>
 
@@ -151,6 +152,11 @@ void ResetPCLLatencyCapture() {
 namespace StreamlineHook {
 
 bool QueryPCLLatencyReport(ce::system_latency::NativeReport& report) {
+    if (g_FGCompat.IsFSRFGApiActive() ||
+        ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
+        ResetPCLLatencyCapture();
+        return false;
+    }
     if (!g_pclMarkerHistory.BuildFreshReport(report, PerfLogger::GetQpcUs()))
         return false;
     if (!g_pclReportLogged.exchange(true, std::memory_order_acq_rel)) {

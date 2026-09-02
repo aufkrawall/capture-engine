@@ -104,7 +104,7 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
     m_fgBaseFPS.store(baseFPS, std::memory_order_relaxed);
     m_fgMultiplier.store(multiplier, std::memory_order_relaxed);
     m_fgType.store(fgType, std::memory_order_relaxed);
-    m_systemLatency.SetFrameGeneration(baseFPS, multiplier);
+    m_systemLatency.SetFrameGeneration(baseFPS, multiplier, fgType);
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
@@ -124,6 +124,11 @@ void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
 }
 
 void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {
+    if (m_fgType.load(std::memory_order_relaxed) == 2) {
+        // FSR FG is driven by FidelityFX; foreign Streamline/NVAPI markers do not track
+        // FidelityFX presentations and must not override the proven fallback estimate.
+        return;
+    }
     m_systemLatency.SubmitNativeReport(report);
 }
 

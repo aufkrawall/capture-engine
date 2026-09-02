@@ -118,14 +118,15 @@ public:
         UpdateFallbackLocked(screenTimeUs, presentStartTimeUs);
     }
 
-    void SetFrameGeneration(float baseFps, int multiplier) {
+    void SetFrameGeneration(float baseFps, int multiplier, int fgType = 0) {
         // FG publication happens on the Present path. Keep this metadata
         // lock-free so an infrequent native-report scan can never stall it.
         fgBaseFps_.store(std::isfinite(baseFps) && baseFps > 0.0f ? baseFps : 0.0f,
                          std::memory_order_relaxed);
         const int normalizedMultiplier = multiplier >= 2 ? multiplier : 1;
         const int previousMultiplier = fgMultiplier_.exchange(normalizedMultiplier, std::memory_order_relaxed);
-        if (previousMultiplier != normalizedMultiplier) {
+        const int previousFgType = fgType_.exchange(fgType, std::memory_order_relaxed);
+        if (previousMultiplier != normalizedMultiplier || previousFgType != fgType) {
             std::lock_guard<std::mutex> lock(mutex_);
             ResetMeasurementsLocked();
             ++measurementEpochResets_;
@@ -133,6 +134,8 @@ public:
     }
 
     void SubmitNativeReport(const NativeReport& report) {
+        if (fgType_.load(std::memory_order_relaxed) == 2)
+            return;
         std::array<NativeFrameReport, NativeReport::kCapacity> validFrames{};
         size_t validCount = 0;
         const size_t reportCount = (std::min)(report.count, report.frames.size());
@@ -223,7 +226,8 @@ public:
                     const int64_t candidateAgeUs = markerCutoffUs - ToSignedTimestamp(candidate->presentStartTimeUs);
                     const int64_t renderTimeUs = ToSignedTimestamp(candidate->presentStartTimeUs) -
                                                  ToSignedTimestamp(candidate->simulationStartTimeUs);
-                    if (candidateAgeUs < (std::max)(renderTimeUs, samplingIntervalUs / 3)) {
+                    const bool synchronousPresent = usedAssociation && candidateAgeUs <= 1000;
+                    if (!synchronousPresent && candidateAgeUs < (std::max)(renderTimeUs, samplingIntervalUs / 3)) {
                         candidate = held;
                     }
                 } else {
@@ -237,7 +241,8 @@ public:
                 }
             }
 
-            const int64_t presentTimeUs = ToSignedTimestamp(candidate->presentStartTimeUs);
+            const int64_t presentTimeUs =
+                usedAssociation ? markerCutoffUs : ToSignedTimestamp(candidate->presentStartTimeUs);
             const int64_t presentToDisplayUs = screenTimeUs - presentTimeUs;
             if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs) {
                 ++samplesRejected_;
@@ -747,6 +752,7 @@ private:
     int64_t lastNativeSimulationStartTimeUs_ = 0;
     std::atomic<float> fgBaseFps_{0.0f};
     std::atomic<int> fgMultiplier_{1};
+    std::atomic<int> fgType_{0};
 
     // Diagnostics. Counters survive a display-generation reset so a session's
     // measurement quality stays legible across backend transitions.

@@ -311,6 +311,7 @@ void OnAuthoritativeStreamlineStartupHandoff() {
     streamline_hook_g_ConfirmedDLSSReflexSuspendPending.store(false, std::memory_order_release);
     streamline_hook_g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("authoritative Streamline startup handoff");
+    ResetPCLLatencyCapture();
     HookLogImportant(
         "Streamline Hook: Authoritative Streamline startup handoff observed — suppressing fresh GetState-only "
         "reactivation for %llums until explicit enable or stable startup evidence arrives",
