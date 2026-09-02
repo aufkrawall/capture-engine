@@ -159,15 +159,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     FrameLayoutSnapshot frameLayout = {};
     frameLayout.systemLatency = cachedSystemLatency;
     frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
-    frameLayout.reserveFGSpace = cfg.showFG && reserveInactiveFGSpace;
+    frameLayout.reserveFGSpace = false;
     if (frameLayout.fgActive && metrics) {
         frameLayout.fgMultiplier = metrics->GetFGMultiplier();
         std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "%s", metrics->GetFGTypeLabel());
         frameLayout.fgBaseFPS = metrics->GetFGBaseFPS();
         frameLayout.fgOutputFPS = metrics->GetFGOutputFPS();
-    } else if (frameLayout.reserveFGSpace) {
-        frameLayout.fgMultiplier = 4;
-        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "DLSS FG");
     }
     if (frameLayout.fgOutputFPS < 1.0f)
         frameLayout.fgOutputFPS = cachedFPS;

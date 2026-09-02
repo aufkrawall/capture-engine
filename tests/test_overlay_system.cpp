@@ -687,17 +687,22 @@ TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcr
     input.fgActive = false;
     EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), offMask);
     input.reserveFGSpace = true;
-    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), dlss2Mask);
+    // Inactive FG must never reserve blank gap lines in the row mask
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), offMask);
 
     input.recordingActive = true;
     input.showRecording = true;
     input.notificationVisible = true;
-    const uint32_t expandedMask = ce::overlay_layout::BuildOverlayRowMask(input);
-    EXPECT_EQ(ce::overlay_layout::CountOverlayRows(expandedMask), 10u);
+    const uint32_t expandedOffMask = ce::overlay_layout::BuildOverlayRowMask(input);
+    EXPECT_EQ(ce::overlay_layout::CountOverlayRows(expandedOffMask), 8u);
+
+    input.fgActive = true;
+    const uint32_t expandedFGMask = ce::overlay_layout::BuildOverlayRowMask(input);
+    EXPECT_EQ(ce::overlay_layout::CountOverlayRows(expandedFGMask), 10u);
 
     input.recordingActive = false;
     input.recordingStarting = true;
-    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), expandedMask);
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), expandedFGMask);
 
     input.showRecording = false;
     EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);

@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-02 - Overlay gap lines eliminated across FG mode switching and keep-alive
+
+Session `logs/20260902_231501` (*The Talos Principle 2*) exposed weird blank gap lines in the overlay after DLSS FG -> FSR FG -> all FG off mode switching. The blank rows appeared between the FPS row and the Avg/1%/0.1% low row, and between the Latency estimate row and the frametime graph. Traced down to two compounding root causes:
+1. `OverlayAdapter::RenderContent` advanced `cursorY += lineHeight;` unconditionally for `rowFGRates` and `rowFGStatus` whenever those rows were present in `rowMask`, but only rendered text when `frameLayout.fgActive` was true. When `fgActive` was false, the cursor advanced without drawing text, leaving two empty lines. In addition, `BuildOverlayRowMask` included both rows whenever `input.reserveFGSpace` was set, even if `fgActive` was false.
+2. `ShouldReserveInactiveFGOverlaySpaceForCurrentFrame` returned true permanently because `postSLRecentTeardownActivity` stayed true indefinitely. When Streamline FG transitioned to OFF after an earlier FSR FG phase, `DetourPresent` took the PostSL explicit-OFF keep-alive route, keeping `ProcessFrame` dormant. Because `dx12_hook_g_SLOffHeuristicGrace` (600 frames) was only decremented in `ProcessFrame`, it stayed at 600 forever. In turn, every ECL submission on `dx12_hook_g_PostSLLastWorkingQueue` satisfied `ShouldRefreshRecentPostSLTeardownActivity`, repeatedly extending `PostSLRecentTeardownActivityUntilMs` by 250 ms and keeping inactive FG space permanently reserved.
+
+Fix:
+- Inactive FG space reservation is completely removed (`ShouldReserveInactiveFGOverlaySpace...` always returns false; `BuildOverlayRowMask` requires `fgActive` for FG rows; `RenderContent` advances `cursorY` only when text is actually drawn) so inactive FG always cleanly collapses to compact non-FG dimensions.
+- `dx12_hook_g_SLOffHeuristicGrace` is decremented on each PostSL keep-alive frame so teardown grace properly drains while `ProcessFrame` is dormant.
+- Policy and layout tests lock the invariant that inactive FG never reserves empty rows or leaves gap lines in the overlay; see `overlay-rendering.md` and `frame-generation/case-studies.md`.
+
 ### 2026-09-02 - Latency under FG: 2x vs 3x/4x gap resolution and transition outlier trimming
 
 Session `logs/20260902_225647` revealed that DLSS FG 2x reported ~44.5 ms while 3x jumped to ~71.8 ms (+27.3 ms!) and 4x remained at ~74.3 ms (+2.5 ms), and mode switches caused 100-180 ms latency spikes that took 15 seconds to clear.
@@ -206,51 +217,3 @@ dump and x64 full renderer dump place CE's hook/layer lifecycle threads in norma
 thread is inside DXVK Remix, so the supplied evidence does not attribute the freeze to CE. Focused process-tree,
 publication, teardown-race, device-loss source-policy, and existing renderer-policy tests pass, as does the full
 x64/x86 product build; see `dx12-injection-bootstrap.md`, `overlay-fg-status.md`, and `overlay-rendering.md`.
-
-### 2026-09-01 - Resume restores a failed verification gate
-
-Portal RTX verification exposed that plain `--resume` retained the failed build identity but selected build-only
-stages, so a prior `--verify` could end with tests, lint, and sanitizers unrun. Resume now reads the validated failed
-manifest's authoritative `mode=verify` (with prior `--verify` as backward compatibility), restores verification
-before gate selection, and carries that mode through another failed resumed run. Focused Python tests cover verify,
-legacy-argument, and ordinary-build manifests; see `build.py.md`.
-
-### 2026-09-01 - Layer-created Vulkan queues need loader dispatch data
-
-Portal RTX session `20260901_071629` crashed twice during CE's initial Vulkan font upload. Both x64 dumps end in
-`SteamOverlayVulkanLayer64!vkQueueSubmit`; CE's reserved queue still began with `ICD_LOADER_MAGIC` (`0x01CDC0DE`)
-instead of the parent device's loader dispatch pointer. CE had widened queue family 0, called the next layer's
-`vkGetDeviceQueue` directly for index 1, and registered the result without the loader trampoline that normally
-initializes a newly returned dispatchable object. Steam therefore found no dispatch record and jumped through a
-null function slot. The later `hl2.exe` dumps are secondary: RTX Remix exited the host after its bridge died.
-
-`Capture_vkCreateDevice` now preserves the chain's `VK_LOADER_DATA_CALLBACK` before advancing its link. A reserved
-queue is published only after `pfnSetDeviceLoaderData` succeeds and its dispatch key matches the parent device. The
-loader-documented parent-pointer copy remains the compatibility path when an old loader supplies no callback;
-callback rejection, missing keys, and false success disable the reserved queue and retain the synchronized borrowed
-game-queue fallback. Ready/failure logs expose the exact loader-data outcome. Focused tests cover every outcome and
-pin initialization before `RegisterQueue`; see `overlay-rendering.md`.
-
-### 2026-09-01 - Display-correlation phase cannot consume the inject texture pool
-
-Gothic Remake session `20260901_040907` was not encoder overload. Across the 187.3-second recording, NVENC emitted
-all 22,476 CFR packets, its normal service stayed roughly 0.2-1.8 ms, overload/debt remained zero, DLSS MFG stayed
-4x, and the final-output hook continued near 120 callbacks/s. At about 33 seconds the unique capture rate nevertheless
-fell from roughly 120/s toward 40/s and never recovered; 11,186 of 22,476 video slots repeated.
-
-Game hitches moved NVIDIA's measured virtual-to-display correlation phase from about 15 ms to 360 ms. That phase can
-contain both scheduling latency and slow virtual/display clock drift. Media added it wholesale to CFR source timestamps
-and adaptively retained as many as 28 metadata entries, unaware that the
-producer owns only sixteen reusable shared textures. `CpuLease` contention began at the exact cadence collapse and
-reached 5,706. The intentional retained buffer also reached the old producer-throttle threshold, forming a closed
-loop: fresh pixels were suppressed while fresh arrivals were the only way the selector could close its future gap.
-
-Display matches are now normalized by their learned common transport phase, so they contribute only bounded
-screen-cadence residuals around the already-smooth virtual final-output clock. Four sustained 20 ms mismatches retire
-and reacquire the phase with a 500 ms window while virtual timestamps remain the nonblocking fallback. Adaptive
-startup headroom and adaptive retention are normally bounded to fourteen of sixteen texture leases, leaving two
-producer/handoff slots while preserving any larger explicit A/V-delay minimum, and `throttleCapture`
-uses only real ingress-queue or fence pressure rather than retained history. New logs separate `correlationPhaseUs`,
-`timestampCorrectionUs`, phase reacquisition, and producer throttle transitions. CFR PTS, A/V endpoints, configured
-audio-latency video delay, encoder policy, and Present-thread nonblocking behavior are unchanged. See
-`cfr-capture-sync.md`.

@@ -168,12 +168,12 @@ inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
         mask |= kRowFPS;
         if (input.showFPSAverages)
             mask |= kRowFPSAverages;
-        if (input.showFG && (input.fgActive || input.reserveFGSpace))
+        if (input.showFG && input.fgActive)
             mask |= kRowFGRates;
     }
     if (input.showSystemLatency)
         mask |= kRowSystemLatency;
-    if (input.showFG && (input.fgActive || input.reserveFGSpace))
+    if (input.showFG && input.fgActive)
         mask |= kRowFGStatus;
     if (input.showRecording && (input.recordingActive || input.recordingStarting))
         mask |= kRowRecording;

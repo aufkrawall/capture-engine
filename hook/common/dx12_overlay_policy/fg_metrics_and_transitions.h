@@ -79,23 +79,22 @@ inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverla
 inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool postFSRNonFGRecovery,
                                                                            bool recentStreamlineTeardown,
                                                                            bool postSLRecentTeardownActivity) {
-    // Keep the FG rows' background area reserved only while the recovered non-FG
-    // overlay is still compositing over teardown-era backbuffer content. Once the
-    // immediate teardown traffic settles, continuing to reserve those rows leaves
-    // visible empty gaps after FSR->DLSS->off even though the live overlay text is
-    // already correct.
-    // The coarse Streamline-off heuristic grace is intentionally much longer and
-    // exists to suppress stale queue/heuristic state. Treating that whole grace
-    // window as a layout reservation keeps two blank FG rows visible long after
-    // the live overlay has already returned to its smaller non-FG shape.
+    // Inactive FG rows must never be reserved in the overlay layout. Reserving empty
+    // space advances cursorY without drawing text, leaving visible empty gap lines
+    // between FPS and averages, and between latency and graph. When FG is inactive,
+    // the overlay must always cleanly collapse to its non-FG dimensions.
+    (void)postFSRNonFGRecovery;
     (void)recentStreamlineTeardown;
-    return postFSRNonFGRecovery && postSLRecentTeardownActivity;
+    (void)postSLRecentTeardownActivity;
+    return false;
 }
 
 inline bool ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
                                                                bool postSLRecentTeardownActivity) {
-    return ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(
-        postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
+    (void)postFSRNonFGRecovery;
+    (void)recentStreamlineTeardown;
+    (void)postSLRecentTeardownActivity;
+    return false;
 }
 
 inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {

@@ -305,6 +305,24 @@ TEST(DXGISharedSourceTest, PostSLSemanticUnitsShareLifecycleAndAccountingState) 
     EXPECT_EQ(entry.find("static int s_postSLProbeFrames"), std::string::npos);
 }
 
+// Explicit Streamline-off keep-alive renders frames while ProcessFrame is
+// dormant. It must decrement dx12_hook_g_SLOffHeuristicGrace so teardown grace
+// drains steadily rather than remaining stuck at 600 frames indefinitely.
+TEST(DXGISharedSourceTest, PostSLKeepAliveDecrementsSLOffHeuristicGrace) {
+    namespace fs = std::filesystem;
+    const fs::path entrySource =
+        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_entry.cpp";
+    ASSERT_TRUE(fs::exists(entrySource));
+
+    const std::string entry = ce::test_source::ReadFile(entrySource);
+    ASSERT_FALSE(entry.empty());
+
+    const size_t keepAlive = entry.find("if (keepAliveRenderAfterExplicitOff) {");
+    ASSERT_NE(keepAlive, std::string::npos);
+    const size_t decrement = entry.find("dx12_hook_g_SLOffHeuristicGrace.store(slGrace - 1", keepAlive);
+    EXPECT_NE(decrement, std::string::npos);
+}
+
 // Talos 20260809_042528 proved the pre-proof selectedQueueOrigECL fallback
 // executed and then fell through into queue->ExecuteCommandLists, submitting the
 // same overlay command list twice. Passive real-ECL publication removed the

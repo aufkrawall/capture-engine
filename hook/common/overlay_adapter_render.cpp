@@ -619,12 +619,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         cursorY += lineHeight;
 
         // Base/Display FPS when FG is active (shown first as in reference)
-        if (rowFGRates) {
-            if (frameLayout.fgActive) {
-                snprintf(buf, 64, "%.0f / %.0f FPS", frameLayout.fgBaseFPS, frameLayout.fgOutputFPS);
-                renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);
-                renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
-            }
+        if (rowFGRates && frameLayout.fgActive) {
+            snprintf(buf, 64, "%.0f / %.0f FPS", frameLayout.fgBaseFPS, frameLayout.fgOutputFPS);
+            renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);
+            renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
             cursorY += lineHeight;
         }
 
@@ -658,12 +656,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     }
 
     // FG Status line
-    if (rowFGStatus) {
-        if (frameLayout.fgActive) {
-            snprintf(buf, 64, "%s %dx", frameLayout.fgLabel, frameLayout.fgMultiplier);
-            renderer->DrawTextWithShadow(labelCol, cursorY, frameLayout.fgLabel, Colors::LabelCyan, shadowColor);
-            renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
-        }
+    if (rowFGStatus && frameLayout.fgActive) {
+        snprintf(buf, 64, "%s %dx", frameLayout.fgLabel, frameLayout.fgMultiplier);
+        renderer->DrawTextWithShadow(labelCol, cursorY, frameLayout.fgLabel, Colors::LabelCyan, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
         cursorY += lineHeight;
     }
 

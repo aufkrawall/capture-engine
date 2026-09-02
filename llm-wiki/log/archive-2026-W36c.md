@@ -1,4 +1,4 @@
-﻿# llm-wiki Log Archive - 2026-09-01
+# llm-wiki Log Archive - 2026-09-01
 
 ### 2026-09-01 - Inject overload recovery measures cheap repeats and sheds dynamic-overlay repeat work
 
@@ -46,3 +46,51 @@ so multiple suspension epochs cannot strand recovery. Focused limiter/Reflex and
 pending -> producing -> suspended transitions, progress-qualified recovery, exact nested ownership, wrapper wiring,
 and early factor publication. Hardware validation is pending. See `graphics-overrides-and-frame-pacing.md` and
 `overlay-fg-status.md`.
+
+### 2026-09-01 - Resume restores a failed verification gate
+
+Portal RTX verification exposed that plain `--resume` retained the failed build identity but selected build-only
+stages, so a prior `--verify` could end with tests, lint, and sanitizers unrun. Resume now reads the validated failed
+manifest's authoritative `mode=verify` (with prior `--verify` as backward compatibility), restores verification
+before gate selection, and carries that mode through another failed resumed run. Focused Python tests cover verify,
+legacy-argument, and ordinary-build manifests; see `build.py.md`.
+
+### 2026-09-01 - Layer-created Vulkan queues need loader dispatch data
+
+Portal RTX session `20260901_071629` crashed twice during CE's initial Vulkan font upload. Both x64 dumps end in
+`SteamOverlayVulkanLayer64!vkQueueSubmit`; CE's reserved queue still began with `ICD_LOADER_MAGIC` (`0x01CDC0DE`)
+instead of the parent device's loader dispatch pointer. CE had widened queue family 0, called the next layer's
+`vkGetDeviceQueue` directly for index 1, and registered the result without the loader trampoline that normally
+initializes a newly returned dispatchable object. Steam therefore found no dispatch record and jumped through a
+null function slot. The later `hl2.exe` dumps are secondary: RTX Remix exited the host after its bridge died.
+
+`Capture_vkCreateDevice` now preserves the chain's `VK_LOADER_DATA_CALLBACK` before advancing its link. A reserved
+queue is published only after `pfnSetDeviceLoaderData` succeeds and its dispatch key matches the parent device. The
+loader-documented parent-pointer copy remains the compatibility path when an old loader supplies no callback;
+callback rejection, missing keys, and false success disable the reserved queue and retain the synchronized borrowed
+game-queue fallback. Ready/failure logs expose the exact loader-data outcome. Focused tests cover every outcome and
+pin initialization before `RegisterQueue`; see `overlay-rendering.md`.
+
+### 2026-09-01 - Display-correlation phase cannot consume the inject texture pool
+
+Gothic Remake session `20260901_040907` was not encoder overload. Across the 187.3-second recording, NVENC emitted
+all 22,476 CFR packets, its normal service stayed roughly 0.2-1.8 ms, overload/debt remained zero, DLSS MFG stayed
+4x, and the final-output hook continued near 120 callbacks/s. At about 33 seconds the unique capture rate nevertheless
+fell from roughly 120/s toward 40/s and never recovered; 11,186 of 22,476 video slots repeated.
+
+Game hitches moved NVIDIA's measured virtual-to-display correlation phase from about 15 ms to 360 ms. That phase can
+contain both scheduling latency and slow virtual/display clock drift. Media added it wholesale to CFR source timestamps
+and adaptively retained as many as 28 metadata entries, unaware that the
+producer owns only sixteen reusable shared textures. `CpuLease` contention began at the exact cadence collapse and
+reached 5,706. The intentional retained buffer also reached the old producer-throttle threshold, forming a closed
+loop: fresh pixels were suppressed while fresh arrivals were the only way the selector could close its future gap.
+
+Display matches are now normalized by their learned common transport phase, so they contribute only bounded
+screen-cadence residuals around the already-smooth virtual final-output clock. Four sustained 20 ms mismatches retire
+and reacquire the phase with a 500 ms window while virtual timestamps remain the nonblocking fallback. Adaptive
+startup headroom and adaptive retention are normally bounded to fourteen of sixteen texture leases, leaving two
+producer/handoff slots while preserving any larger explicit A/V-delay minimum, and `throttleCapture`
+uses only real ingress-queue or fence pressure rather than retained history. New logs separate `correlationPhaseUs`,
+`timestampCorrectionUs`, phase reacquisition, and producer throttle transitions. CFR PTS, A/V endpoints, configured
+audio-latency video delay, encoder policy, and Present-thread nonblocking behavior are unchanged. See
+`cfr-capture-sync.md`.

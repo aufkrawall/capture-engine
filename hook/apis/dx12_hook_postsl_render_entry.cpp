@@ -92,13 +92,18 @@ if ((!cachedSLFGActive || s_postSLFGSuspended) && !keepAliveRenderAfterExplicitO
         return PostSLFlow::kReturn;
 }
 if (keepAliveRenderAfterExplicitOff) {
+    const int slGrace = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire);
+    if (slGrace > 0) {
+        dx12_hook_g_SLOffHeuristicGrace.store(slGrace - 1, std::memory_order_release);
+    }
     static std::atomic<int> s_keepAliveRenderLogCount{0};
     const int logCount = s_keepAliveRenderLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 10 || (logCount % 200) == 0) {
         HookLogImportant(
-            "DX12: PostSL keep-alive render after explicit Streamline OFF #%d (confirmed=%d active=%d)",
+            "DX12: PostSL keep-alive render after explicit Streamline OFF #%d (confirmed=%d active=%d grace=%d)",
             logCount + 1, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
-            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0);
+            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0,
+            slGrace > 0 ? slGrace - 1 : 0);
     }
 }
 bool sameQueuePureDLSSColdStartSafe = false;

@@ -54,6 +54,11 @@ Primary sources:
 
 The inject overlay deliberately keeps the existing compact appearance and shared CPU-generated draw format. Solid geometry and textured glyphs remain batched into the existing small command set; the 2026-07-16 polish is a local visual-quality, layout-consistency, and legacy-hot-path change rather than a renderer redesign. The entire overlay stack — text, metrics, the PC-latency row, and the frame-time graph — is first-party code: API-native custom renderers, a GDI-rasterized custom font atlas, and in-repo precompiled shaders, with no Dear ImGui or other third-party overlay/UI library.
 
+## Layout and row invariants (`overlay_layout_policy.h`, `overlay_adapter_render.cpp`)
+
+- Frame Generation rows (`Base/Display` rates and `FG Status`) appear atomically when frame generation is active (`fgActive == true`).
+- Inactive FG never reserves phantom empty rows in `BuildOverlayRowMask`, and `OverlayAdapter::RenderContent` advances `cursorY` only when text is actually rendered. This prevents blank gap lines from appearing in the overlay when FG is toggled off or during teardown transitions.
+
 ## HDR presentation and color invariants
 
 - Storage format is never treated as content metadata. DXGI `R10G10B10A2` can be SDR/Rec.709 or HDR10/PQ, and FP16 is scRGB only under the matching swapchain color-space contract. CE tracks successful `IDXGISwapChain3::SetColorSpace1` calls through exactly one publisher: the DXGI wrapper owns wrapped calls, while a separately installed inline hook owns unwrapped calls, refuses wrapper objects as hook targets, and publishes its atomic trampoline before the detour becomes live. The color path must never patch shared DXGI vtable slot 38; doing so composed the wrapper with its own detour and caused the Strange Brigade DX12 null-execute crash. State is retained as swapchain private data, unchanged repeated calls avoid another write/log, and an untracked swapchain uses DXGI's SDR default. Vulkan retains `VkSwapchainCreateInfoKHR::imageColorSpace` and resolves format plus color space together. Unsupported combinations fail closed instead of receiving an incorrectly encoded overlay.
