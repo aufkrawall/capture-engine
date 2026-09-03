@@ -127,6 +127,8 @@ enum OverlayRow : uint32_t {
     kRowSystemLatency = 1u << 10,
     kRowGPUClocks = 1u << 11,
     kRowCPUClocks = 1u << 12,
+    kRowBenchmarkTimer = 1u << 13,
+    kRowBenchmarkFPS = 1u << 14,
 };
 
 struct RowInputs {
@@ -148,6 +150,8 @@ struct RowInputs {
     bool recordingActive = false;
     bool recordingStarting = false;
     bool notificationVisible = false;
+    bool showBenchmarkTimer = false;
+    bool showBenchmarkFPS = false;
 };
 
 inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
@@ -179,6 +183,10 @@ inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
         mask |= kRowRecording;
     if (input.notificationVisible)
         mask |= kRowNotification;
+    if (input.showBenchmarkTimer)
+        mask |= kRowBenchmarkTimer;
+    if (input.showBenchmarkFPS)
+        mask |= kRowBenchmarkFPS;
     return mask;
 }
 

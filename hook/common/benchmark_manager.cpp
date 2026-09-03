@@ -92,6 +92,9 @@ void BenchmarkManager::StartRecording() {
     m_lastFrameQpcUs = m_recordingStartQpcUs;
     m_records.clear();
     m_records.reserve(7200);  // Reserve ~1 min at 120 FPS
+    m_runningPresStats = {};
+    m_runningDispStats = {};
+    m_lastRunningStatsUpdateQpcUs = 0;
     HookLogImportant("[Benchmark] Recording started (duration=%u s)", m_config.durationSeconds);
 }
 
@@ -168,6 +171,9 @@ void BenchmarkManager::StopRecordingAndPublish() {
 void BenchmarkManager::ClearResults() {
     m_state = BenchmarkState::Idle;
     m_records.clear();
+    m_runningPresStats = {};
+    m_runningDispStats = {};
+    m_lastRunningStatsUpdateQpcUs = 0;
 }
 
 BenchmarkState BenchmarkManager::GetState() const {
@@ -211,6 +217,17 @@ uint32_t BenchmarkManager::GetDurationSeconds() const {
 const BenchmarkResults& BenchmarkManager::GetResults() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_results;
+}
+
+BenchmarkStats BenchmarkManager::GetRunningStats(bool displayCadence) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_state == BenchmarkState::Results) {
+        return displayCadence ? m_results.displayStats : m_results.presentationStats;
+    }
+    if (m_state == BenchmarkState::Recording) {
+        return displayCadence ? m_runningDispStats : m_runningPresStats;
+    }
+    return {};
 }
 
 void BenchmarkManager::OnFrame(int64_t currentQpcUs, float presentationFrameTimeMs, float displayFrameTimeMs,
@@ -329,6 +346,20 @@ void BenchmarkManager::OnFrame(int64_t currentQpcUs, float presentationFrameTime
     }
 
     m_records.push_back(record);
+
+    if (m_lastRunningStatsUpdateQpcUs == 0 || (currentQpcUs - m_lastRunningStatsUpdateQpcUs) >= 100'000) {
+        m_lastRunningStatsUpdateQpcUs = currentQpcUs;
+        std::vector<float> presTimes;
+        std::vector<float> dispTimes;
+        presTimes.reserve(m_records.size());
+        dispTimes.reserve(m_records.size());
+        for (const auto& r : m_records) {
+            presTimes.push_back(r.presentationFrameTimeMs);
+            dispTimes.push_back(r.displayFrameTimeMs);
+        }
+        m_runningPresStats = CalculateStats(presTimes);
+        m_runningDispStats = CalculateStats(dispTimes);
+    }
 
     // Auto duration expiration check
     if (m_config.durationSeconds > 0) {

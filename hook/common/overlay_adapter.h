@@ -20,6 +20,7 @@
 #include "graph_scroll_policy.h"
 #include "../../common/recording_indicator_policy.h"
 #include "custom_overlay.h"
+#include "benchmark_manager.h"
 #include "ipc_client.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
@@ -134,6 +135,9 @@ private:
         uint32_t recordingSustainFpsX100 = 0;
         bool notificationVisible = false;
         uint32_t notificationType = 0;
+        BenchmarkState benchmarkState = BenchmarkState::Idle;
+        char benchmarkTimerText[32] = "";
+        char benchmarkFpsText[48] = "";
     };
 
     bool InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,

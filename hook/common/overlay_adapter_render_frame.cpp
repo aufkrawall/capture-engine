@@ -1,6 +1,5 @@
 #include "overlay_adapter_internal.h"
 #include "benchmark_manager.h"
-#include "benchmark_overlay_render.h"
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     std::lock_guard<std::mutex> lock(stateMutex);
@@ -235,30 +234,84 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         notificationExpiry > nowTick64 && frameLayout.notificationType != 0 &&
         (!recordingFinalizationNotification || frameLayout.recordingState == ce::recording_indicator::State::Idle);
 
+    const BenchmarkState benchState = BenchmarkManager::Get().GetState();
+    frameLayout.benchmarkState = benchState;
+    if (benchState == BenchmarkState::Delaying) {
+        const float remaining = BenchmarkManager::Get().GetDelayRemainingSeconds();
+        std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                      "Starts in %.0fs", remaining);
+        frameLayout.benchmarkFpsText[0] = '\0';
+    } else if (benchState == BenchmarkState::Recording) {
+        const float elapsed = BenchmarkManager::Get().GetRecordingElapsedSeconds();
+        const uint32_t dur = BenchmarkManager::Get().GetDurationSeconds();
+        const int elapsedSec = static_cast<int>(elapsed);
+        const int mm = elapsedSec / 60;
+        const int ss = elapsedSec % 60;
+        if (dur > 0) {
+            const int durMm = static_cast<int>(dur / 60);
+            const int durSs = static_cast<int>(dur % 60);
+            std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                          "%02d:%02d / %02d:%02d", mm, ss, durMm, durSs);
+        } else {
+            std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                          "%02d:%02d", mm, ss);
+        }
+
+        const bool displayCadence = (cfg.frameTimeSource == FrameTimeSource::DisplayChange);
+        const BenchmarkStats runningStats = BenchmarkManager::Get().GetRunningStats(displayCadence);
+        if (runningStats.avgFps > 0.0f) {
+            std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText),
+                          "%.1f / %.1f / %.1f", runningStats.avgFps, runningStats.onePercentLowFps,
+                          runningStats.zeroPointOnePercentLowFps);
+        } else {
+            std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText), "-- / -- / --");
+        }
+    } else if (benchState == BenchmarkState::Results) {
+        const BenchmarkResults& results = BenchmarkManager::Get().GetResults();
+        const int totalSec = static_cast<int>(results.durationSeconds);
+        const int mm = totalSec / 60;
+        const int ss = totalSec % 60;
+        std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                      "%02d:%02d (Done)", mm, ss);
+
+        const bool displayCadence = (cfg.frameTimeSource == FrameTimeSource::DisplayChange);
+        const BenchmarkStats& stats = displayCadence ? results.displayStats : results.presentationStats;
+        std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText),
+                      "%.1f / %.1f / %.1f", stats.avgFps, stats.onePercentLowFps,
+                      stats.zeroPointOnePercentLowFps);
+    } else {
+        frameLayout.benchmarkTimerText[0] = '\0';
+        frameLayout.benchmarkFpsText[0] = '\0';
+    }
+
     ce::overlay_layout::RowInputs rowInputs = {};
-    rowInputs.showGPU = cfg.showGPU;
-    rowInputs.showCPU = cfg.showCPU;
-    rowInputs.showGPUClocks = cachedSystemMetrics.gpuCoreClockValid || cachedSystemMetrics.gpuMemoryClockValid ||
-                              cachedSystemMetrics.gpuCoreVoltageValid;
-    rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid;
-    rowInputs.showVRAM = cfg.showVRAM;
-    rowInputs.showRAM = cfg.showRAM;
-    rowInputs.showFPS = cfg.showFPS;
-    rowInputs.showFPSAverages = cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f;
-    rowInputs.showSystemLatency = cfg.showSystemLatency;
-    rowInputs.showFG = cfg.showFG;
-    rowInputs.fgActive = frameLayout.fgActive;
-    rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
-    rowInputs.showRecording = cfg.showRecording;
-    rowInputs.recordingActive = frameLayout.recordingActive;
-    rowInputs.recordingStarting =
-        ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
-    rowInputs.notificationVisible = frameLayout.notificationVisible;
+    if (cfg.showOverlay) {
+        rowInputs.showGPU = cfg.showGPU;
+        rowInputs.showCPU = cfg.showCPU;
+        rowInputs.showGPUClocks = cachedSystemMetrics.gpuCoreClockValid || cachedSystemMetrics.gpuMemoryClockValid ||
+                                  cachedSystemMetrics.gpuCoreVoltageValid;
+        rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid;
+        rowInputs.showVRAM = cfg.showVRAM;
+        rowInputs.showRAM = cfg.showRAM;
+        rowInputs.showFPS = cfg.showFPS;
+        rowInputs.showFPSAverages = cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f;
+        rowInputs.showSystemLatency = cfg.showSystemLatency;
+        rowInputs.showFG = cfg.showFG;
+        rowInputs.fgActive = frameLayout.fgActive;
+        rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
+        rowInputs.showRecording = cfg.showRecording;
+        rowInputs.recordingActive = frameLayout.recordingActive;
+        rowInputs.recordingStarting =
+            ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
+        rowInputs.notificationVisible = frameLayout.notificationVisible;
+    }
+    rowInputs.showBenchmarkTimer = (benchState != BenchmarkState::Idle);
+    rowInputs.showBenchmarkFPS = (benchState == BenchmarkState::Recording || benchState == BenchmarkState::Results);
     frameLayout.rowMask = ce::overlay_layout::BuildOverlayRowMask(rowInputs);
     frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
 
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
-    bool showGraph = cfg.showFrameTime && metrics;
+    bool showGraph = cfg.showFrameTime && metrics && cfg.showOverlay;
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
@@ -278,7 +331,11 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     const bool notificationChanged = !hasLastFrameLayout ||
                                      frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
                                      frameLayout.notificationType != lastFrameLayout.notificationType;
-    bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged;
+    const bool benchmarkChanged = !hasLastFrameLayout ||
+                                  frameLayout.benchmarkState != lastFrameLayout.benchmarkState ||
+                                  std::strcmp(frameLayout.benchmarkTimerText, lastFrameLayout.benchmarkTimerText) != 0 ||
+                                  std::strcmp(frameLayout.benchmarkFpsText, lastFrameLayout.benchmarkFpsText) != 0;
+    bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged || benchmarkChanged;
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty || benchmarkActive;
     const bool refreshLayout = shouldUpdate || layoutDirty || configChanged || rowSetChanged || fgIdentityChanged;
@@ -341,11 +398,6 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
     renderer->BeginFrame(viewportWidth, viewportHeight);
     RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout);
-    if (benchmarkActive) {
-        const float benchDpiScale = renderer->GetDpiScale();
-        const float pad = (float)cfg.padding * benchDpiScale;
-        RenderBenchmarkOverlay(renderer, pad, pad, benchDpiScale, viewportWidth, viewportHeight);
-    }
     if (activeDebugSample) {
         activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
         activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);

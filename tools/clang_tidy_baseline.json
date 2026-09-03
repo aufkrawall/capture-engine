@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 713,
+    "entries": 712,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -296,7 +296,6 @@
       "hook/capture/shared_capture_d3d12.cpp",
       "hook/common/benchmark_html_report.cpp",
       "hook/common/benchmark_manager.cpp",
-      "hook/common/benchmark_overlay_render.cpp",
       "hook/common/cached_overlay_renderer.cpp",
       "hook/common/custom_font.cpp",
       "hook/common/custom_overlay.cpp",

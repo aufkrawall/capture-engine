@@ -164,3 +164,31 @@ TEST(BenchmarkManagerTest, StateTransitionsFollowHotkeyCycle) {
     // Since 0 frames were recorded in unit test, it returns to Idle cleanly
     EXPECT_EQ(mgr.GetState(), BenchmarkState::Idle);
 }
+
+TEST(BenchmarkManagerTest, RunningStatsComputedDuringRecording) {
+    BenchmarkManager& mgr = BenchmarkManager::Get();
+    BenchmarkConfig cfg;
+    cfg.startDelaySeconds = 0;
+    cfg.durationSeconds = 0;
+    mgr.Init(cfg, "TestGame");
+
+    mgr.Toggle();
+    EXPECT_EQ(mgr.GetState(), BenchmarkState::Recording);
+
+    SystemMetrics metrics = {};
+    for (int i = 0; i < 20; ++i) {
+        mgr.OnFrame(i * 16666, 16.666f, 16.666f, metrics, nullptr);
+    }
+
+    BenchmarkStats running = mgr.GetRunningStats(false);
+    EXPECT_NEAR(running.avgFps, 60.0f, 1.0f);
+
+    mgr.Toggle();
+    EXPECT_EQ(mgr.GetState(), BenchmarkState::Results);
+
+    BenchmarkStats finalStats = mgr.GetRunningStats(false);
+    EXPECT_NEAR(finalStats.avgFps, 60.0f, 1.0f);
+
+    mgr.Toggle();
+    EXPECT_EQ(mgr.GetState(), BenchmarkState::Idle);
+}

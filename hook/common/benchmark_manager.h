@@ -128,6 +128,7 @@ public:
     uint32_t GetDurationSeconds() const;
 
     const BenchmarkResults& GetResults() const;
+    BenchmarkStats GetRunningStats(bool displayCadence = false) const;
 
     static BenchmarkStats CalculateStats(const std::vector<float>& frameTimesMs);
     static void ComputeSensorSummary(const std::vector<BenchmarkFrameRecord>& records,
@@ -153,6 +154,10 @@ private:
     int64_t m_delayStartQpcUs = 0;
     int64_t m_recordingStartQpcUs = 0;
     int64_t m_lastFrameQpcUs = 0;
+    int64_t m_lastRunningStatsUpdateQpcUs = 0;
+
+    BenchmarkStats m_runningPresStats;
+    BenchmarkStats m_runningDispStats;
 
     std::vector<BenchmarkFrameRecord> m_records;
     BenchmarkResults m_results;

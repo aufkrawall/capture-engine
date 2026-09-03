@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <sstream>
 
+#include "shared_defs.h"
 #include "hook_common.h"
 
 namespace {
@@ -31,19 +32,49 @@ std::filesystem::path ResolveBenchmarksDirectory(const std::string& configuredOu
     std::error_code ec;
     if (!configuredOutputDir.empty()) {
         std::filesystem::path dir(configuredOutputDir);
-        if (std::filesystem::create_directories(dir, ec) || std::filesystem::exists(dir, ec)) {
+        if (dir.is_absolute() && (std::filesystem::create_directories(dir, ec) || std::filesystem::exists(dir, ec))) {
             return dir;
         }
     }
 
-    // Default: "benchmarks" subdirectory next to the executable
-    wchar_t exePath[MAX_PATH] = {};
-    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) > 0) {
-        std::filesystem::path baseDir = std::filesystem::path(exePath).parent_path();
-        std::filesystem::path benchDir = baseDir / "benchmarks";
-        std::filesystem::create_directories(benchDir, ec);
-        if (std::filesystem::exists(benchDir, ec)) {
-            return benchDir;
+    // Default / Relative: benchmarks directory inside the folder where the
+    // CaptureEngine binary is located (derived via DiscoveryInfo.logsPath or hook module path).
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (hDisc) {
+        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc) {
+            if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0] != '\0') {
+                std::filesystem::path p(pDisc->logsPath);
+                std::filesystem::path ceDir = p.parent_path();
+                if (ceDir.filename() == "logs") {
+                    ceDir = ceDir.parent_path();
+                }
+                std::filesystem::path benchDir =
+                    ceDir / (configuredOutputDir.empty() ? "benchmarks" : configuredOutputDir);
+                std::filesystem::create_directories(benchDir, ec);
+                if (std::filesystem::exists(benchDir, ec)) {
+                    UnmapViewOfFile(pDisc);
+                    CloseHandle(hDisc);
+                    return benchDir;
+                }
+            }
+            UnmapViewOfFile(pDisc);
+        }
+        CloseHandle(hDisc);
+    }
+
+    // Fallback if hook logs directory cannot be determined
+    HMODULE hMod = NULL;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)&ResolveBenchmarksDirectory, &hMod) && hMod) {
+        wchar_t modPath[MAX_PATH] = {};
+        if (GetModuleFileNameW(hMod, modPath, MAX_PATH) > 0) {
+            std::filesystem::path ceDir = std::filesystem::path(modPath).parent_path();
+            std::filesystem::path benchDir = ceDir / (configuredOutputDir.empty() ? "benchmarks" : configuredOutputDir);
+            std::filesystem::create_directories(benchDir, ec);
+            if (std::filesystem::exists(benchDir, ec)) {
+                return benchDir;
+            }
         }
     }
 

@@ -38,6 +38,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     const bool rowFGStatus = (frameLayout.rowMask & kRowFGStatus) != 0;
     const bool rowRecording = (frameLayout.rowMask & kRowRecording) != 0;
     const bool rowNotification = (frameLayout.rowMask & kRowNotification) != 0;
+    const bool rowBenchmarkTimer = (frameLayout.rowMask & kRowBenchmarkTimer) != 0;
+    const bool rowBenchmarkFPS = (frameLayout.rowMask & kRowBenchmarkFPS) != 0;
     const bool vramTelemetryAvailable = cachedSystemMetrics.vramUsageValid;
 
     if (refreshLayout) {
@@ -240,6 +242,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             measuredWidth =
                 (std::max)(measuredWidth, MeasureTextWidth("Recording saved - video degraded") + kShadowPad);
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Recording failed") + kShadowPad);
+        }
+        if (rowBenchmarkTimer) {
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("BENCHMARK") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("00:00 / 00:00") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Starts in 10s") + kShadowPad);
+        }
+        if (rowBenchmarkFPS) {
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("BENCH FPS") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("999.9 / 999.9 / 999.9") + kShadowPad);
         }
 
         cachedContentWidth = measuredWidth;
@@ -692,6 +703,28 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
             }
         }
+        cursorY += lineHeight;
+    }
+
+    // Benchmark status / timer line
+    if (rowBenchmarkTimer) {
+        uint32_t timerColor = Colors::Red;
+        if (frameLayout.benchmarkState == BenchmarkState::Delaying) {
+            timerColor = Colors::ValueYellow;
+        } else if (frameLayout.benchmarkState == BenchmarkState::Results) {
+            timerColor = Colors::LabelCyan;
+        }
+        renderer->DrawTextWithShadow(labelCol, cursorY, "BENCHMARK", timerColor, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, frameLayout.benchmarkTimerText, timerColor,
+                                       shadowColor);
+        cursorY += lineHeight;
+    }
+
+    // Benchmark sample period FPS line (Avg / 1% Low / 0.1% Low)
+    if (rowBenchmarkFPS) {
+        renderer->DrawTextWithShadow(labelCol, cursorY, "BENCH FPS", textColor, shadowColor);
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, frameLayout.benchmarkFpsText,
+                                       Colors::ValueYellow, shadowColor);
         cursorY += lineHeight;
     }
 

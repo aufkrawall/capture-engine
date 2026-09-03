@@ -5,6 +5,7 @@
 #include "../common/shared_defs.h"
 
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -21,7 +22,28 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
 
     sharedMemory->benchmark.startDelaySeconds.store(config.benchmark.startDelaySeconds, std::memory_order_release);
     sharedMemory->benchmark.durationSeconds.store(config.benchmark.durationSeconds, std::memory_order_release);
-    strncpy(sharedMemory->benchmark.outputDir, config.benchmark.outputDir.c_str(),
+
+    std::string resolvedOutputDir = config.benchmark.outputDir;
+    char exePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(NULL, exePath, MAX_PATH) > 0) {
+        std::string baseDir = exePath;
+        const size_t slash = baseDir.find_last_of("\\/");
+        if (slash != std::string::npos) {
+            baseDir = baseDir.substr(0, slash);
+            if (resolvedOutputDir.empty()) {
+                resolvedOutputDir = baseDir + "\\benchmarks";
+            } else {
+                std::filesystem::path configuredPath(resolvedOutputDir);
+                if (configuredPath.is_relative()) {
+                    resolvedOutputDir = (std::filesystem::path(baseDir) / configuredPath).string();
+                }
+            }
+        }
+    }
+    if (resolvedOutputDir.empty()) {
+        resolvedOutputDir = "benchmarks";
+    }
+    strncpy(sharedMemory->benchmark.outputDir, resolvedOutputDir.c_str(),
             sizeof(sharedMemory->benchmark.outputDir) - 1);
     sharedMemory->benchmark.outputDir[sizeof(sharedMemory->benchmark.outputDir) - 1] = '\0';
 
