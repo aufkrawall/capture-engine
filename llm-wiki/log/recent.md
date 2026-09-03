@@ -17,6 +17,15 @@
      - Added automatic discovery of all associated DriverStore packages (`FindPawnIoOemInfs`) via `Owners` multi-string and `C:\Windows\INF\oem*.inf` scanning, followed by forced package removal via `pnputil.exe /delete-driver <oem*.inf> /uninstall /force`.
      - Cleaned leftover registry keys and `%ProgramFiles%\PawnIO`.
 
+3. **Seamless Elevated Restart Handover**:
+   - *Problem*: Clicking "Restart as Administrator now" after installing PawnIO failed with error message "CaptureEngine is already running".
+   - *Root Cause*: Two bugs combined: (1) `RestartAsAdministrator()` called `PostMessageA(trayHWnd, WM_CLOSE, 0, 0)`, but `TrayIcon::WndProc` had no handler for `WM_CLOSE`, so the message was ignored and the old unelevated instance never terminated; (2) The new elevated instance launched immediately and attempted to acquire `Local\CaptureEngine_Instance_Mutex`, colliding with the still-running old process.
+   - *Fix*:
+     - Handled `WM_CLOSE` in `TrayIcon::WndProc` to trigger `StartShutdownAnimation()` and `callbacks.onQuit()`, cleanly terminating the message loop.
+     - Passed `--restart-from-pid=<PID>` from `RestartAsAdministrator()`.
+     - In `main_entry.cpp`, if `--restart-from-pid` is present, the new instance waits via `OpenProcess(SYNCHRONIZE)` and `WaitForSingleObject` for the prior PID to fully exit before proceeding.
+     - Added a retry loop (20 x 50 ms) around `CreateMutexA("Local\\CaptureEngine_Instance_Mutex")` to gracefully absorb teardown timing windows before erroring.
+
 ### 2026-09-03 - Offline PawnIO setup, system tray context menu, and local integrity verification
 
 Replaced external package manager (`winget`) retrieval of the PawnIO kernel driver with a fully self-contained offline installer bundled directly in `plugins/LibreHardwareMonitor/PawnIO_setup.exe`.

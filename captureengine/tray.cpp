@@ -180,6 +180,12 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
         if (pThis) {
             pThis->UpdateBlinkState();
         }
+    } else if (message == WM_CLOSE) {
+        if (pThis && pThis->callbacks.onQuit && !pThis->shuttingDown) {
+            pThis->StartShutdownAnimation();
+            pThis->callbacks.onQuit();
+        }
+        return 0;
     } else if (message == WM_QUERYENDSESSION) {
         // Windows is asking if we can shut down — always say yes
         return TRUE;

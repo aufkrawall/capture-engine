@@ -528,8 +528,43 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Controller: Single instance check
     if (mode == ProcessMode::Controller) {
-        CreateMutexA(0, FALSE, "Local\\CaptureEngine_Instance_Mutex");
-        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // If restarted from a prior instance, wait for that instance to exit cleanly
+        // so its single-instance mutex and ports are fully released.
+        const char* cmdLine = GetCommandLineA();
+        const char* restartArg = strstr(cmdLine, "--restart-from-pid=");
+        if (restartArg) {
+            uint32_t priorPid = 0;
+            const char* val = restartArg + 19;
+            const char* end = val;
+            while (*end >= '0' && *end <= '9')
+                ++end;
+            if (ce::TryParseUInt32(std::string_view(val, static_cast<size_t>(end - val)), priorPid) && priorPid != 0) {
+                HANDLE hPrior = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, priorPid);
+                if (hPrior) {
+                    LogInfo("[Controller] Waiting for prior instance (PID %u) to exit...", priorPid);
+                    const DWORD waitResult = WaitForSingleObject(hPrior, 5000);
+                    if (waitResult == WAIT_TIMEOUT) {
+                        LogWarn("[Controller] Prior instance did not exit in 5s; terminating it");
+                        TerminateProcess(hPrior, 0);
+                        WaitForSingleObject(hPrior, 1000);
+                    }
+                    CloseHandle(hPrior);
+                }
+            }
+        }
+
+        HANDLE hMutex = nullptr;
+        for (int retry = 0; retry < 20; ++retry) {
+            hMutex = CreateMutexA(0, FALSE, "Local\\CaptureEngine_Instance_Mutex");
+            if (GetLastError() != ERROR_ALREADY_EXISTS)
+                break;
+            if (hMutex) {
+                CloseHandle(hMutex);
+                hMutex = nullptr;
+            }
+            Sleep(50);
+        }
+        if (!hMutex || GetLastError() == ERROR_ALREADY_EXISTS) {
             MessageBoxA(NULL, "CaptureEngine is already running.", "Error", MB_ICONERROR);
             return 1;
         }

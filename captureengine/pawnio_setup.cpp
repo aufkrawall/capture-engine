@@ -379,15 +379,18 @@ void RestartAsAdministrator() {
     const std::filesystem::path executable = ExecutablePath();
     if (executable.empty())
         return;
+    const std::wstring params = L"--restart-from-pid=" + std::to_wstring(GetCurrentProcessId());
     SHELLEXECUTEINFOW info = {};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOASYNC;
     info.lpVerb = L"runas";
     info.lpFile = executable.c_str();
+    info.lpParameters = params.c_str();
     info.lpDirectory = executable.parent_path().c_str();
     info.nShow = SW_SHOWNORMAL;
     if (ShellExecuteExW(&info)) {
-        LogInfo("[PawnIO] Spawning elevated CaptureEngine and exiting unelevated instance");
+        LogInfo("[PawnIO] Spawning elevated CaptureEngine and exiting unelevated instance (PID %lu)",
+                GetCurrentProcessId());
         HWND trayHWnd = FindWindowA("CaptureEngineTray", nullptr);
         if (trayHWnd) {
             PostMessageA(trayHWnd, WM_CLOSE, 0, 0);
