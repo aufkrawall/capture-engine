@@ -3,8 +3,9 @@ LibreHardwareMonitor optional integration notice
 
 CaptureEngine does not include or redistribute LibreHardwareMonitor binaries.
 The optional integration is activated only when a user separately places the
-required files in plugins/LibreHardwareMonitor. CaptureEngine's bridge script is
-original CaptureEngine code and is licensed under the project's MIT license.
+required files in plugins/LibreHardwareMonitor. CaptureEngine's bridge is
+original CaptureEngine code compiled into captureengine.exe and is licensed
+under the project's MIT license.
 
 LibreHardwareMonitor is available under the Mozilla Public License 2.0 (MPL-2.0):
 
@@ -19,10 +20,9 @@ System.Runtime.CompilerServices.Unsafe.dll files from that official release.
 Those dependency DLLs retain their respective upstream licenses.
 
 CaptureEngine's package staging has an explicit first-party allowlist for the
-plugins directory. It ships only CaptureEngine.LibreHardwareMonitor.ps1 and its
-README.txt; all DLLs and other files a user adds locally are excluded. Therefore
-the official CaptureEngine archive contains no LibreHardwareMonitor/MPL-covered
-files. CaptureEngine's own bridge remains MIT-licensed; other bundled components
+plugins directory. It ships only that directory's README.txt; all DLLs and other
+files a user adds locally are excluded. Therefore the official CaptureEngine
+archive contains no LibreHardwareMonitor/MPL-covered files. CaptureEngine's own bridge remains MIT-licensed; other bundled components
 retain the licenses documented by their respective notices.
 
 Anyone redistributing a combined installation containing LibreHardwareMonitor

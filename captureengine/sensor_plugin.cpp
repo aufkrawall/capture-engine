@@ -9,11 +9,14 @@
 #include <cwchar>
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "../common/config.h"
 #include "../common/logging.h"
+#include "sensor_bridge_host.h"
+#include "sensor_selection_policy.h"
 #include "../common/strict_float_parse.h"
 #include "../common/strict_integer_parse.h"
 
@@ -78,29 +81,22 @@ bool ParseSensorValue(std::string_view valueField, std::string_view identifierFi
     return true;
 }
 
-// Wire order of the CE_LHM_SAMPLE pairs, declared once so the bridge, the
-// parser, and the tests cannot drift apart. New metrics append: an older reader
-// meeting a longer line rejects it on field count instead of misreading a
-// shifted field.
-struct SensorFieldSpec {
-    SensorValue HardwareSensorSnapshot::*member;
-    float maximum;
-    bool rejectZero;
-};
-
-constexpr SensorFieldSpec kSensorFields[] = {
-    {&HardwareSensorSnapshot::cpuTemperature, 250.0f, true},
-    {&HardwareSensorSnapshot::gpuTemperature, 250.0f, true},
-    {&HardwareSensorSnapshot::cpuPackagePower, 5000.0f, true},
-    {&HardwareSensorSnapshot::gpuPackagePower, 5000.0f, true},
-    {&HardwareSensorSnapshot::gpuFan, 100000.0f, false},
-    {&HardwareSensorSnapshot::cpuCoreClock, 20000.0f, true},
-    {&HardwareSensorSnapshot::gpuCoreClock, 20000.0f, true},
-    {&HardwareSensorSnapshot::gpuMemoryClock, 20000.0f, true},
-    {&HardwareSensorSnapshot::gpuVoltage, 10.0f, true},
+// Snapshot member for each CE_LHM_SAMPLE pair. The wire order, the maxima and
+// the zero-rejection rule live in sensor_selection_policy.h so the bridge, the
+// parser, and the tests read them from one declaration. New metrics append: an
+// older reader meeting a longer line rejects it on field count instead of
+// misreading a shifted field.
+constexpr SensorValue HardwareSensorSnapshot::*kSensorFields[] = {
+    &HardwareSensorSnapshot::cpuTemperature, &HardwareSensorSnapshot::gpuTemperature,
+    &HardwareSensorSnapshot::cpuPackagePower, &HardwareSensorSnapshot::gpuPackagePower,
+    &HardwareSensorSnapshot::gpuFan, &HardwareSensorSnapshot::cpuCoreClock,
+    &HardwareSensorSnapshot::gpuCoreClock, &HardwareSensorSnapshot::gpuMemoryClock,
+    &HardwareSensorSnapshot::gpuVoltage,
 };
 
 constexpr size_t kSensorFieldCount = std::size(kSensorFields);
+static_assert(kSensorFieldCount == policy::kMetricCount,
+              "Snapshot members and metric definitions must describe the same wire order");
 constexpr size_t kSampleFieldCount = 2 + kSensorFieldCount * 2;
 
 bool IsProcessElevated() {
@@ -208,9 +204,9 @@ bool ParseBridgeMessage(std::string_view line, BridgeMessage& message) {
         return false;
     HardwareSensorSnapshot snapshot;
     for (size_t index = 0; index < kSensorFieldCount; ++index) {
-        const SensorFieldSpec& spec = kSensorFields[index];
-        if (!ParseSensorValue(fields[2 + index * 2], fields[3 + index * 2], spec.maximum, spec.rejectZero,
-                              snapshot.*spec.member)) {
+        const policy::MetricDefinition& metric = policy::kMetrics[index];
+        if (!ParseSensorValue(fields[2 + index * 2], fields[3 + index * 2], metric.maximum, metric.rejectZero,
+                              snapshot.*kSensorFields[index])) {
             return false;
         }
     }
@@ -285,8 +281,7 @@ struct LibreHardwareMonitorPlugin::Impl {
             return false;
         }
         const std::filesystem::path pluginDirectory = executableDirectory / L"plugins" / L"LibreHardwareMonitor";
-        const std::array<const wchar_t*, 5> requiredFiles = {
-            L"CaptureEngine.LibreHardwareMonitor.ps1",
+        const std::array<const wchar_t*, 4> requiredFiles = {
             L"LibreHardwareMonitorLib.dll",
             L"System.Memory.dll",
             L"System.Numerics.Vectors.dll",
@@ -313,17 +308,12 @@ struct LibreHardwareMonitorPlugin::Impl {
             return false;
         }
 
-        wchar_t systemDirectory[32768] = {};
-        const UINT systemLength = GetSystemDirectoryW(systemDirectory, static_cast<UINT>(std::size(systemDirectory)));
-        if (systemLength == 0 || systemLength >= std::size(systemDirectory)) {
-            LogWarn("[Sensors:LHM] Cannot resolve Windows PowerShell");
-            return false;
-        }
-        const std::filesystem::path powerShell =
-            std::filesystem::path(std::wstring(systemDirectory, systemLength)) / L"WindowsPowerShell" / L"v1.0" /
-            L"powershell.exe";
-        if (GetFileAttributesW(powerShell.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            LogWarn("[Sensors:LHM] Windows PowerShell 5.1 is unavailable");
+        // The bridge is this same executable in its dedicated role, so the
+        // integration needs no interpreter, no script on disk, and nothing on
+        // the machine beyond the user-supplied LibreHardwareMonitor files.
+        const std::filesystem::path bridgeExecutable = executableDirectory / L"captureengine.exe";
+        if (GetFileAttributesW(bridgeExecutable.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            LogWarn("[Sensors:LHM] Cannot resolve the bridge executable (error=%lu)", GetLastError());
             return false;
         }
 
@@ -361,21 +351,25 @@ struct LibreHardwareMonitorPlugin::Impl {
             return false;
         }
 
-        std::vector<std::wstring> arguments = {
-            L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-ExecutionPolicy", L"Bypass", L"-File",
-            (pluginDirectory / L"CaptureEngine.LibreHardwareMonitor.ps1").wstring(), L"-ShutdownEventName",
-            eventName, L"-PollIntervalMs", std::to_wstring(config.pollIntervalMs), L"-CpuTemperature",
-            Utf8ToWide(config.cpuTemperature), L"-GpuTemperature", Utf8ToWide(config.gpuTemperature),
-            L"-CpuPackagePower", Utf8ToWide(config.cpuPackagePower), L"-GpuPackagePower",
-            Utf8ToWide(config.gpuPackagePower), L"-GpuFan", Utf8ToWide(config.gpuFan), L"-CpuCoreClock",
-            Utf8ToWide(config.cpuCoreClock), L"-GpuCoreClock", Utf8ToWide(config.gpuCoreClock),
-            L"-GpuMemoryClock", Utf8ToWide(config.gpuMemoryClock), L"-GpuVoltage",
-            Utf8ToWide(config.gpuVoltage),
+        const std::array<const std::string*, 9> selectors = {
+            &config.cpuTemperature, &config.gpuTemperature, &config.cpuPackagePower, &config.gpuPackagePower,
+            &config.gpuFan,         &config.cpuCoreClock,   &config.gpuCoreClock,    &config.gpuMemoryClock,
+            &config.gpuVoltage,
         };
-        std::wstring commandLine = QuoteWindowsArgument(powerShell.wstring());
+        static_assert(std::tuple_size_v<decltype(selectors)> == policy::kMetricCount,
+                      "Configured selectors and metric definitions must describe the same wire order");
+        std::vector<std::wstring> arguments = {
+            std::wstring(kSensorBridgeCommand),
+            std::wstring(kSensorBridgeShutdownEventOption) + eventName,
+            std::wstring(kSensorBridgePollIntervalOption) + std::to_wstring(config.pollIntervalMs),
+        };
+        for (size_t metric = 0; metric < policy::kMetricCount; ++metric)
+            arguments.push_back(MetricSelectorOption(metric) + Utf8ToWide(*selectors[metric]));
+
+        std::wstring commandLine = QuoteWindowsArgument(bridgeExecutable.wstring());
         for (const std::wstring& argument : arguments) {
-            if (argument.empty()) {
-                LogWarn("[Sensors:LHM] Refusing an invalid non-UTF-8 selector");
+            if (argument.empty() || argument.back() == L'=') {
+                LogWarn("[Sensors:LHM] Refusing an invalid or empty bridge selector");
                 CloseIfValid(stdoutWrite);
                 CloseIfValid(nullHandle);
                 Shutdown();
@@ -410,7 +404,7 @@ struct LibreHardwareMonitorPlugin::Impl {
         startup.lpAttributeList = attributeList;
         PROCESS_INFORMATION processInfo = {};
         const BOOL created = attributesReady &&
-                             CreateProcessW(powerShell.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
+                             CreateProcessW(bridgeExecutable.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
                                             CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr,
                                             pluginDirectory.c_str(), &startup.StartupInfo, &processInfo);
         const DWORD createError = created ? ERROR_SUCCESS : GetLastError();

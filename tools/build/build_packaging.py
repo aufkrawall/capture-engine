@@ -29,7 +29,6 @@ CAPTURE_PACKAGE_EXCLUDED_SUFFIXES = (".csv", ".dmp", ".link-cache.json", ".log",
 CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses", "plugins"}
 CAPTURE_PACKAGE_ROOT_SUFFIXES = (".dll", ".exe", ".json", ".pdb")
 CAPTURE_PACKAGE_PLUGIN_FILES = {
-    "plugins/librehardwaremonitor/captureengine.librehardwaremonitor.ps1",
     "plugins/librehardwaremonitor/readme.txt",
 }
 

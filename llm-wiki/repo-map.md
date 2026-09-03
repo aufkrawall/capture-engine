@@ -219,6 +219,11 @@ anchors that predate the split are approximate.
   (present/submission selection) + `display_timing_health.h` - the screen-change timestamp source behind
   `[Overlay] frametime_source=display_change` and the Present-to-display half of the PC-latency row; see
   `display-change-timing.md` and `overlay-rendering.md`.
+- `captureengine/clr_interop.{h,cpp}` + `sensor_bridge_host.{h,cpp}` + `sensor_bridge_lhm.{h,cpp}` +
+  `sensor_selection_policy.h` + `sensor_plugin.cpp` - the optional LibreHardwareMonitor integration. The bridge is a
+  role of `captureengine.exe` (`--sensor-bridge`) that hosts the in-box .NET Framework runtime and drives the managed
+  library through frozen mscorlib COM contracts; there is no script and no extra shipped file. Selection policy is
+  dependency-free and unit-tested; see `overlay-rendering.md`.
 - `hook/common/graph_scroll_policy.h` + `overlay_adapter_render.cpp` + `custom_overlay.cpp` - frame time graph
   scrolling: the cursor that advances one slot per drawn frame instead of per sample arrival, and the guard
   samples plus edge clipping that keep the plot filling its panel at any sub-slot offset.

@@ -61,17 +61,19 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
         copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
         log("Copied license files to installed/captureengine/")
 
-    # Install only CaptureEngine's first-party LHM bridge/support text. Never
-    # clear this directory: users place their separately licensed LHM files here.
+    # Install only CaptureEngine's first-party LHM setup text. The bridge itself
+    # is compiled into captureengine.exe, so nothing executable is placed here.
+    # Never clear this directory: users place their separately licensed LHM files
+    # here.
     lhm_support_src = os.path.join(PROJECT_ROOT, "plugins", "LibreHardwareMonitor")
     lhm_support_dst = os.path.join(BIN_DIR, "plugins", "LibreHardwareMonitor")
     os.makedirs(lhm_support_dst, exist_ok=True)
-    for filename in ("CaptureEngine.LibreHardwareMonitor.ps1", "README.txt"):
+    for filename in ("README.txt",):
         source = os.path.join(lhm_support_src, filename)
         destination = os.path.join(lhm_support_dst, filename)
         if not safe_copy_file(source, destination):
             raise RuntimeError(f"Failed to install LibreHardwareMonitor bridge support file: {filename}")
-    log("Copied optional LibreHardwareMonitor bridge support files")
+    log("Copied optional LibreHardwareMonitor setup notes")
 
     assert_no_obsolete_process_loopback_helper_artifacts()
 

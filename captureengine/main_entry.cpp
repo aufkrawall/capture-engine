@@ -335,6 +335,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return *workerResult;
     }
 
+    // The optional hardware-sensor bridge hosts the .NET runtime and the
+    // LibreHardwareMonitor library. It runs before config, logging and crash
+    // handling so that role stays contained to its own short-lived process.
+    if (const std::optional<int> bridgeResult = ce::hardware_sensors::TryRunSensorBridgeHost()) {
+        return *bridgeResult;
+    }
+
     if (IsDumpHelperCommandLine(lpCmdLine)) {
         return RunDumpHelperFromCommandLine();
     }

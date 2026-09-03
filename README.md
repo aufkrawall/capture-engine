@@ -460,9 +460,11 @@ separate corner window that never requires the hook DLL; see `[DesktopOverlay]` 
 
 CPU/GPU temperature, package power, and GPU fan RPM can be appended to the existing CPU/GPU rows through the optional
 LibreHardwareMonitor bridge, and CPU/GPU core clock, GPU memory clock and GPU core voltage appear on their own clock
-rows, each shown only while at least one of its sensors is readable. The dedicated sensor service owns a contained PowerShell child that loads the managed
-library; no LibreHardwareMonitor code enters the game or hook DLL. CaptureEngine does not bundle the third-party
-binaries.
+rows, each shown only while at least one of its sensors is readable. The bridge is compiled into `captureengine.exe`:
+the dedicated sensor service launches the same executable in a contained bridge role that hosts the .NET Framework
+runtime already present on Windows and drives the managed library directly, so no script, interpreter, or additional
+binary is involved. No LibreHardwareMonitor code enters the game or hook DLL, and CaptureEngine does not bundle the
+third-party binaries.
 
 Download the official [LibreHardwareMonitor 0.9.6 release](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6)
 and copy these four matching files from that one release into
@@ -473,7 +475,8 @@ and copy these four matching files from that one release into
 - `System.Numerics.Vectors.dll`
 - `System.Runtime.CompilerServices.Unsafe.dll`
 
-No other release files are used by this CPU/GPU-only bridge. Restart CaptureEngine after copying the files.
+No other release files are used by this CPU/GPU-only bridge, and no first-party file has to be placed beside them.
+Restart CaptureEngine after copying the files.
 `[HardwareSensors] enabled=auto` activates the bridge when those files exist and every metric selector defaults to
 `auto`. A selector may instead contain an exact LibreHardwareMonitor identifier, or `off`. A metric the driver cannot
 read is reported as unavailable rather than as a zero, so an unreadable sensor simply stays blank: CPU temperature,

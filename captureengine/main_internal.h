@@ -62,6 +62,8 @@
 
 #include "screenshot.h"
 
+#include "sensor_bridge_host.h"
+
 #include "tray.h"
 
 #ifdef _MSC_VER

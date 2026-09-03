@@ -79,7 +79,7 @@ class PackagingTests(unittest.TestCase):
                 "first-party integration notice", encoding="utf-8"
             )
             (source / "plugins" / "LibreHardwareMonitor" / "CaptureEngine.LibreHardwareMonitor.ps1").write_text(
-                "first-party bridge", encoding="utf-8"
+                "retired bridge script", encoding="utf-8"
             )
             (source / "plugins" / "LibreHardwareMonitor" / "README.txt").write_text(
                 "setup", encoding="utf-8"
@@ -102,8 +102,13 @@ class PackagingTests(unittest.TestCase):
             self.assertIn("captureengine.exe", copied)
             self.assertIn("ffmpeg/avcodec.dll", copied)
             self.assertIn("licenses/LibreHardwareMonitor_NOTICE.txt", copied)
-            self.assertIn("plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1", copied)
             self.assertIn("plugins/LibreHardwareMonitor/README.txt", copied)
+            # The bridge is compiled into captureengine.exe. A leftover copy of
+            # the retired script in a user's installation must not be packaged.
+            self.assertNotIn("plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1", copied)
+            self.assertFalse(
+                (destination / "plugins" / "LibreHardwareMonitor" / "CaptureEngine.LibreHardwareMonitor.ps1").exists()
+            )
             self.assertEqual((destination / "config.ini").read_text(encoding="utf-8"), "clean-default")
             self.assertFalse((destination / "logs").exists())
             self.assertFalse((destination / "bak").exists())

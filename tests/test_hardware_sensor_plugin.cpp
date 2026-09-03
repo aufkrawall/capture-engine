@@ -6,7 +6,9 @@
 #include <iterator>
 #include <string>
 
+#include "../captureengine/sensor_bridge_host.h"
 #include "../captureengine/sensor_plugin.h"
+#include "../captureengine/sensor_selection_policy.h"
 #include "../hook/common/overlay_layout_policy.h"
 
 namespace {
@@ -261,35 +263,68 @@ TEST(HardwareSensorOverlayTest, DrawsSensorReadingsOutsideTheLoadColoredSpan) {
               0u);
 }
 
-TEST(HardwareSensorBridgeTest, ScriptUsesDirectCpuGpuLibraryVisitorAndInterruptibleWait) {
-    const std::string script =
-        ReadProjectFile("plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1");
-    ASSERT_FALSE(script.empty());
-    EXPECT_NE(script.find("$computer.IsCpuEnabled = $cpuRequested"), std::string::npos);
-    EXPECT_NE(script.find("$computer.IsGpuEnabled = $gpuRequested"), std::string::npos);
-    EXPECT_NE(script.find("PreviousIdentifier"), std::string::npos);
-    EXPECT_NE(script.find("$candidates.Count -gt 1"), std::string::npos);
-    // Indexed sensor names ("GPU Fan 1"/"GPU Fan 2") must resolve by lowest
-    // index. Falling through to the highest-value comparison reselected a
-    // different physical fan on nearly every poll.
-    EXPECT_NE(script.find("[regex]::Escape($name)"), std::string::npos);
-    EXPECT_NE(script.find("$selectedIndex = [int]::MaxValue"), std::string::npos);
-    EXPECT_NE(script.find("Test-SensorUsable"), std::string::npos);
-    EXPECT_NE(script.find("RejectZero"), std::string::npos);
-    for (const char* parameter : {
-             "$CpuCoreClock",
-             "$GpuCoreClock",
-             "$GpuMemoryClock",
-             "$GpuVoltage",
-         }) {
-        SCOPED_TRACE(parameter);
-        EXPECT_NE(script.find(parameter), std::string::npos);
+// The bridge used to be a PowerShell script beside the executable. It is native
+// now, so the invariants that script carried have to hold in the C++ role: only
+// the CPU and GPU visitors are enabled, the poll wait stays interruptible, and
+// no interpreter is involved anywhere.
+TEST(HardwareSensorBridgeTest, NativeBridgeUsesDirectCpuGpuVisitorsAndAnInterruptibleWait) {
+    const std::string bridge = ReadProjectFile("captureengine/sensor_bridge_lhm.cpp");
+    const std::string host = ReadProjectFile("captureengine/sensor_bridge_host.cpp");
+    ASSERT_FALSE(bridge.empty());
+    ASSERT_FALSE(host.empty());
+    EXPECT_NE(bridge.find("IsCpuEnabled"), std::string::npos);
+    EXPECT_NE(bridge.find("IsGpuEnabled"), std::string::npos);
+    EXPECT_EQ(bridge.find("IsMotherboardEnabled"), std::string::npos);
+    EXPECT_EQ(bridge.find("IsStorageEnabled"), std::string::npos);
+    EXPECT_EQ(bridge.find("IsNetworkEnabled"), std::string::npos);
+    // The root hardware list is a constructed generic type the runtime refuses
+    // to marshal, so the roots arrive through the public lifecycle events.
+    EXPECT_NE(bridge.find("add_HardwareAdded"), std::string::npos);
+    EXPECT_NE(bridge.find("add_HardwareRemoved"), std::string::npos);
+    EXPECT_NE(bridge.find("CreateDelegate"), std::string::npos);
+    // Enum ordinals come from the loaded library's metadata, never a constant.
+    EXPECT_NE(bridge.find("ResolveEnumMember"), std::string::npos);
+    EXPECT_NE(host.find("WaitForSingleObject(shutdownEvent, arguments.pollIntervalMs)"), std::string::npos);
+    EXPECT_NE(host.find("CE_LHM_SAMPLE"), std::string::npos);
+    EXPECT_NE(host.find("COINIT_MULTITHREADED"), std::string::npos);
+}
+
+// Nothing in the shipped tree may reintroduce an interpreted bridge: the
+// integration must need no file beyond the user-supplied library.
+TEST(HardwareSensorBridgeTest, NoInterpretedBridgeRemainsAnywhere) {
+    const std::string implementation = ReadProjectFile("captureengine/sensor_plugin.cpp");
+    const std::string finalize = ReadProjectFile("tools/build/build_project_finalize.py");
+    const std::string packaging = ReadProjectFile("tools/build/build_packaging.py");
+    ASSERT_FALSE(implementation.empty());
+    ASSERT_FALSE(finalize.empty());
+    ASSERT_FALSE(packaging.empty());
+    EXPECT_TRUE(ReadProjectFile("plugins/LibreHardwareMonitor/CaptureEngine.LibreHardwareMonitor.ps1").empty());
+    for (const std::string& source : {implementation, finalize, packaging}) {
+        EXPECT_EQ(source.find(".ps1"), std::string::npos);
+        EXPECT_EQ(source.find("powershell"), std::string::npos);
+        EXPECT_EQ(source.find("PowerShell"), std::string::npos);
     }
-    EXPECT_NE(script.find("WaitOne($PollIntervalMs)"), std::string::npos);
-    EXPECT_NE(script.find("CE_LHM_SAMPLE"), std::string::npos);
-    EXPECT_EQ(script.find("IsMotherboardEnabled"), std::string::npos);
-    EXPECT_EQ(script.find("ManagementObject"), std::string::npos);
-    EXPECT_EQ(script.find("HttpClient"), std::string::npos);
+    // The bridge role is the product executable itself.
+    EXPECT_NE(implementation.find("captureengine.exe"), std::string::npos);
+    EXPECT_NE(implementation.find("kSensorBridgeCommand"), std::string::npos);
+}
+
+// The CLR is reached through frozen mscorlib COM contracts rather than name
+// based IDispatch, which the runtime answers with E_NOTIMPL for these types and
+// which LibreHardwareMonitor's internal hardware classes do not expose at all.
+TEST(HardwareSensorBridgeTest, ClrInteropBindsOnlyTheFrozenMscorlibContracts) {
+    const std::string interop = ReadProjectFile("captureengine/clr_interop.cpp");
+    ASSERT_FALSE(interop.empty());
+    EXPECT_NE(interop.find("CLRCreateInstance"), std::string::npos);
+    EXPECT_NE(interop.find("v4.0.30319"), std::string::npos);
+    EXPECT_NE(interop.find("CreateInstanceFrom"), std::string::npos);
+    EXPECT_NE(interop.find("InvokeMember"), std::string::npos);
+    EXPECT_NE(interop.find("Unwrap"), std::string::npos);
+    EXPECT_EQ(interop.find("GetIDsOfNames"), std::string::npos);
+    // Reserved-slot placeholders are what keep the hand-declared vtables aligned
+    // with the published interfaces; losing them silently shifts every call.
+    EXPECT_EQ(CountOccurrences(interop, "CE_CLR_RESERVED_SLOT(56)"), 1u);
+    EXPECT_EQ(CountOccurrences(interop, "CE_CLR_RESERVED_SLOT(36)"), 2u);
 }
 
 TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHandles) {
@@ -301,14 +336,16 @@ TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHa
     EXPECT_NE(implementation.find("CREATE_SUSPENDED"), std::string::npos);
     EXPECT_NE(implementation.find("AssignProcessToJobObject"), std::string::npos);
     EXPECT_NE(implementation.find("PROC_THREAD_ATTRIBUTE_HANDLE_LIST"), std::string::npos);
-    for (const char* argument : {
-             "-CpuCoreClock",
-             "-GpuCoreClock",
-             "-GpuMemoryClock",
-             "-GpuVoltage",
-         }) {
-        SCOPED_TRACE(argument);
-        EXPECT_NE(implementation.find(argument), std::string::npos);
+    // Selector option names are derived from the shared metric table, so the
+    // launcher spells them the same way the bridge parses them.
+    EXPECT_NE(implementation.find("MetricSelectorOption(metric)"), std::string::npos);
+    for (size_t metric = 0; metric < ce::hardware_sensors::policy::kMetricCount; ++metric) {
+        SCOPED_TRACE(ce::hardware_sensors::policy::kMetrics[metric].key);
+        const std::wstring option = ce::hardware_sensors::MetricSelectorOption(metric);
+        EXPECT_FALSE(option.empty());
+        EXPECT_EQ(option.substr(0, 2), L"--");
+        EXPECT_EQ(option.back(), L'=');
+        EXPECT_EQ(option.find(L'_'), std::wstring::npos);
     }
     EXPECT_NE(implementation.find("STARTF_FORCEOFFFEEDBACK"), std::string::npos);
     EXPECT_NE(service.find("OpenProcess(SYNCHRONIZE, FALSE, controllerPid)"), std::string::npos);

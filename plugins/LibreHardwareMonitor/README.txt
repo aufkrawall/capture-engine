@@ -1,7 +1,8 @@
 CaptureEngine optional LibreHardwareMonitor bridge
 ==================================================
 
-CaptureEngine ships this MIT-licensed bridge script but does not bundle
+CaptureEngine's bridge is compiled into captureengine.exe. Nothing first-party
+has to be placed in this folder, and CaptureEngine does not bundle
 LibreHardwareMonitor or its dependency DLLs.
 
 Setup (tested with LibreHardwareMonitor 0.9.6):
@@ -23,14 +24,17 @@ Setup (tested with LibreHardwareMonitor 0.9.6):
    GPU core voltage appear on their own clock rows. Every metric defaults to
    auto and can be set to off or to an exact sensor identifier.
 
-The bridge enables only LibreHardwareMonitor's CPU and GPU visitors. It runs as
-a contained child owned by CaptureEngine's dedicated sensor-service process,
-never in a game or hook DLL. With several GPUs, an automatic selector follows
-the GPU reporting the highest GPU Core load and retains it across equal-load
-samples rather than switching arbitrarily. Advanced users can replace auto
-with an exact sensor identifier. The selected identifiers and periodic values
-are recorded in CaptureEngine's debug log without recording the plugin's
-filesystem path.
+The bridge runs as a contained child owned by CaptureEngine's dedicated
+sensor-service process: the sensor service starts captureengine.exe again in a
+dedicated bridge role, which hosts the .NET Framework runtime that ships with
+Windows and drives LibreHardwareMonitorLib directly. No script, interpreter, or
+extra binary is involved, and none of this ever runs in a game or hook DLL.
+Only LibreHardwareMonitor's CPU and GPU visitors are enabled. With several GPUs,
+an automatic selector follows the GPU reporting the highest GPU Core load and
+retains it across equal-load samples rather than switching arbitrarily.
+Advanced users can replace auto with an exact sensor identifier. The selected
+identifiers and periodic values are recorded in CaptureEngine's debug log
+without recording the plugin's filesystem path.
 
 An automatic selector prefers an exactly named sensor, then the lowest-numbered
 instance of that name, and only then falls back to the highest current reading.
@@ -60,9 +64,8 @@ The three System.* dependency DLLs retain their own licenses. Keep the files and
 the versioned upstream license and notices together if you redistribute a
 combined installation. These optional DLLs execute with the sensor service's
 privileges, so obtain them only from the official project release. CaptureEngine
-release packaging deliberately includes only this README and the first-party
-bridge script from the plugins folder; it excludes every locally added DLL and
-notice file.
+release packaging deliberately includes only this README from the plugins
+folder; it excludes every locally added DLL and notice file.
 
 See licenses/LibreHardwareMonitor_NOTICE.txt for CaptureEngine's complete
 redistribution boundary and upstream references.
