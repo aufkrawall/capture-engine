@@ -2,9 +2,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "../common/display_timing_shared.h"
 #include "display_timing_correlation.h"
+#include "display_timing_vblank.h"
 
 inline bool ShouldCollectDisplayTiming(bool useScreenGrabTarget, FrameTimeSource configuredSource,
                                        bool injectVideoCaptureNeeded, bool systemLatencyRequested = false) {
@@ -36,4 +38,26 @@ inline std::size_t SelectDisplaySubmissionPresent(const uint32_t* pendingThreadI
             return i;
     }
     return 0;
+}
+
+// Replaces each vsync-deferred completion's timestamp with the vertical blank
+// its frame actually reaches the screen at. Entries the clock cannot answer for
+// keep the uncorrected timestamp and stay unresolved, so a machine or present
+// mode with no blank stream behaves exactly as it did before. The queue must
+// already be ordered by timestamp: blanks are claimed in display order.
+// Returns how many timestamps the rounding moved.
+inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pending, VerticalBlankClock& blanks) {
+    uint64_t adjusted = 0;
+    for (auto& entry : pending) {
+        if (entry.completionKind != DisplayCompletionKind::Sync || entry.screenTimeResolved)
+            continue;
+        const int64_t blank = blanks.Claim(entry.displaySource, entry.timestamp);
+        if (blank == 0)
+            continue;  // The blank has not happened yet, or there is no clock.
+        if (blank != entry.timestamp)
+            ++adjusted;
+        entry.timestamp = blank;
+        entry.screenTimeResolved = true;
+    }
+    return adjusted;
 }

@@ -78,6 +78,12 @@ struct PendingTimestamp {
     DisplayCompletionKind completionKind = DisplayCompletionKind::Unconditional;
     uint64_t arrivalOrder = 0;
     int64_t presentStartTimestamp = 0;
+    // Which display the flip completed on, so a deferred completion can be
+    // rounded onto that screen's own vertical blanks and not another's, and
+    // whether that rounding has already happened - the blank a completion
+    // belongs to is usually still in the future when the completion arrives.
+    uint32_t displaySource = 0;
+    bool screenTimeResolved = false;
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The
@@ -150,13 +156,14 @@ public:
 
     void QueueFallback(uint32_t processId, uint64_t associationId, int64_t timestamp,
                        DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order,
-                       int64_t presentStartTimestamp = 0) {
+                       int64_t presentStartTimestamp = 0, uint32_t displaySource = 0) {
         if (timestamp <= 0)
             return;
         auto& state = states_[associationId];
         if (state.timestamp == 0)
             state.timestamp = timestamp;
-        queue.push_back({processId, associationId, timestamp, kind, order++, presentStartTimestamp});
+        queue.push_back(
+            {processId, associationId, timestamp, kind, order++, presentStartTimestamp, displaySource});
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {

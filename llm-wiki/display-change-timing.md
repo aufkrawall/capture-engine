@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-02 (runtime PresentStart association retained for PC-latency correlation under asynchronous DLSS frame generation)
+Last verified: 2026-09-03 (deferred flip completions rounded onto the observed vertical blank; validated under FSR FG at and below the refresh cap)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -87,11 +87,17 @@ stream is unavailable, denied, failed, or two seconds stale.
   whole-table consumption, unmatched threads, prune, and the no-announcement pass-through).
 - Source layout: `captureengine/display_timing_etw.h` holds provider identity and real-time session plumbing,
   `display_timing_nvidia.h` the NVIDIA announcement reducer, `display_timing_correlation.h` the FrameType reducer,
-  `display_timing_policy.h` the present/submission selection, and `display_timing_health.h` the health snapshot type.
-- The per-window health line reports `completion(vsyncDpc,syncDpcMpo,immediateFlip,immediateMpoFlip)` and
+  `display_timing_submissions.h` the runtime-present/kernel-submission association, `display_timing_vblank.h` the
+  vertical-blank clock, `display_timing_intervals.h` the per-window interval statistics,
+  `display_timing_policy.h` the present/submission selection and the deferred screen-time resolution, and
+  `display_timing_health.h` the health snapshot type and its formatting.
+- The per-window health line reports
+  `completion(vsyncDpc,vsyncDpcMpo,hsyncDpcMpo,immediateFlip,immediateMpoFlip)` and
   `nvFlipSchedule(received,undecodable,applied,avgDelayUs,maxDelayUs,fieldOffset,abandoned)`. Only the immediate flip
   paths can take the NVIDIA announcement, so the completion split says whether the correction reaches the published
   series at all on a given machine and present mode; `fieldOffset` is -1 until the announcement field is located.
+  The VSync and HSync multiplane DPCs are counted apart because the HSync variant is the hardware flip queue, whose
+  timestamp is not a screen time - see the next section.
   Measured under DLSS-G on this hardware: every completion arrives through `MMIOFlipMultiPlaneOverlay` with
   `FlipEntryStatusAfterFlip=11` (`FlipWaitComplete`), and a Talos MFG session showed
   `completion(vsyncDpc=36 syncDpcMpo=486 immediateFlip=0 immediateMpoFlip=4943)`. Without frame generation `VSyncDPC`
@@ -101,7 +107,66 @@ stream is unavailable, denied, failed, or two seconds stale.
 - **A stage counter that matches the expected rate is not evidence the stage is correct.** The first attempt at this
   fix shipped with `runtimePresents=3434 submitAssociations=3434 published=2780 suppressed=0 regressed=0` - one
   sample per displayed frame, no drops, no regressions - while every published value was wrong. Only the timestamp
-  values could be, and were.
+  values could be, and were. The health line therefore also reports the *shape* of both series over the last window:
+  `publishedInterval(n,meanUs,stddevUs,jaggednessUs,p1Us,p50Us,p99Us,maxUs)` for what the overlay draws and
+  `runtimeInterval(n,meanUs,stddevUs,jaggednessUs)` for the same frames measured at `Present`. Jaggedness is the mean
+  absolute difference between neighbouring intervals, which is what a two-phase sawtooth shows up as while the mean
+  and the count stay exactly right. A jagged published series next to a flat runtime series localizes the fault in
+  this service rather than in the game.
+
+## Deferred flips reach the screen at a vertical blank
+
+- A flip whose `FlipEntryStatusAfterFlip` is `FlipWaitVSync` (5) or `FlipWaitHSync` (15) defers its screen time to a
+  `?SyncDPC` completion. **That completion's timestamp is not the screen time on the hardware flip queue**: the
+  driver latches each flip a variable time ahead of the scanout that shows it.
+- **Measured under FSR frame generation** (`dx12_fg_switch_test`, 3840x2160 at 144 Hz VRR, vsync on, 2x FSR FG, base
+  72 fps / output 144 fps). Every completion arrived as `HSyncDPCMultiPlane` with `FlipEntryStatusAfterFlip=15`, and
+  every flip carried an NVIDIA announcement:
+
+  | series | mean | stddev | jaggedness | p1 / p50 / p99 |
+  | --- | --- | --- | --- | --- |
+  | `DxgKrnl` `VSyncDPC` (the screen's own clock) | 6.946 ms | ~0 | ~0 | - |
+  | runtime `PresentStart` | 6.945 ms | 0.117 ms | 0.230 ms | - |
+  | published flip completions (before the fix) | 6.945 ms | **2.180 ms** | **4.360 ms** | 4.6 / 4.9 / 9.2 ms |
+  | published, rounded onto the blank (after) | 6.946 ms | **0.014 ms** | **0.012 ms** | 6.8 / 6.9 / 6.9 ms |
+
+  The completions arrive at exactly two phases inside the blank interval, 3.92 ms and 6.14 ms after the preceding
+  blank, one per interval, because the two frames of a generated pair become ready at different times. **4.6 ms is
+  shorter than the panel's own minimum frame interval at its 144 Hz maximum, so the before-the-fix series could not
+  have been a screen cadence at all.** That is the check worth reaching for: a published interval below one refresh
+  period is proof the values are wrong, whatever the counters say.
+- The NVIDIA scheduled-flip announcement does **not** help here and is deliberately not applied on this path: measured
+  on the same run it leads the flip event by about **two microseconds** (`received=1395` for 1395 flips, all
+  decodable), so it repeats the completion timestamp. It is still *consumed* when a deferred flip is seen, because an
+  announcement stranded on a driver thread would later be applied to an unrelated immediate flip.
+- The correction never assumes a refresh period. `VerticalBlankClock` records the `VSyncDPC` timestamps per
+  `VidPnSourceId` - both that event and the multiplane completions carry that field, `VidPnTargetId` only appears on
+  `VSyncDPC` - and each deferred completion is rounded onto an observed blank. A completion within a fifth of the
+  measured period *after* a blank is that blank's screen time reported by a slightly late DPC and rounds back to it;
+  everything else rounds forward to the next blank. **Under VRR the blank stream follows the frame rate** (measured:
+  116 blanks/s at 116 fps output, with the clock's median period tracking from 6.95 ms to 8.60 ms), so the correction
+  follows variable refresh by construction rather than by modelling it.
+- **A display shows at most one new frame per blank, and shows them in order.** Below the refresh cap the latch lead
+  spread exceeds a refresh period and `Snap` alone maps two completions onto one blank; the later frame would then be
+  published as a dropped frame the screen had in fact shown. `Claim` walks to the first unclaimed blank instead. The
+  walk is bounded (`kMaxForcedBlanks`) so a frame rate above the refresh rate cannot march it forward without end -
+  past that bound the natural blank is kept and the publisher's monotonic guard records an honest dropped frame.
+  Measured effect at 116 fps output: published `n=1158 mean=8637 us` against runtime `n=1159 mean=8637 us`, versus
+  `n=774 mean=12691 us` with the ordering rule missing.
+- Whether a latched flip belongs to the *next* blank (what is implemented) or to the previous one is an inference,
+  not a measurement: a DPC does not lag its interrupt by 3-6 ms, and next-blank puts `Present`-to-screen at ~14.4 ms,
+  about two refreshes, which fits a three-buffer vsync flip-model swapchain, where previous-blank would give ~7.4 ms.
+  Either choice shifts every sample by the same constant refresh period, so **no frame time, FPS, low or graph value
+  depends on it** - only the PC-latency estimate does. Stale-risk: unverified directly.
+- `vblank(observed,intervalUs,adjusted,unresolved)` reports the clock. `unresolved` counts deferred completions
+  published without ever being rounded, which is the pre-fix behaviour and the intended fallback when no blank stream
+  exists (another vendor, another present mode, a display that stopped raising the interrupt). It should be a handful
+  per window, not a fraction of the frames.
+- Coverage in `tests/test_display_timing_vblank.cpp` (period measurement, the alternating-phase rounding, the
+  at-a-blank tolerance, refusing to answer for a blank that has not happened, per-display separation, the
+  two-in-one-interval ordering case, the separate-intervals case that must not move anything, the bounded walk, and
+  reset) and `tests/test_display_timing_intervals.cpp` (a sawtooth with a correct mean, jaggedness, percentiles,
+  window boundaries, non-advancing timestamps, histogram saturation).
 
 ## Graph scrolling under frame generation
 

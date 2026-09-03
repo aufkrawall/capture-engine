@@ -1,5 +1,67 @@
 # llm-wiki Log
 
+### 2026-09-03 - The FSR frame-time sawtooth was a flip latch, not a frame cadence
+
+The overlay's frame-time graph and 1% low went jagged under FSR FG while the cube stayed visibly smooth
+(`installed/captureengine/logs/20260903_073736`, `dx12_fg_switch_test`, 3840x2160 at 144 Hz VRR, vsync on, 2x FSR FG).
+The user's instinct - that the picture was right and `msBetweenDisplayChange` was wrong - was correct.
+
+The counters were perfect again: `runtimePresents=1394 submitAssociations=1394 published=1384 suppressed=0
+regressed=0`, one sample per displayed frame. So the health line gained the thing that was missing the last time this
+happened: the *shape* of the series. `publishedInterval(n=1440 meanUs=6945 stddevUs=2180 jaggednessUs=4360 p1Us=4600
+p50Us=4900 p99Us=9200)` next to `runtimeInterval(n=1440 meanUs=6945 stddevUs=117 jaggednessUs=225)` - an exactly
+correct mean over a 4.7 ms / 9.2 ms sawtooth, against a flat present stream of the same frames.
+
+**4.7 ms is shorter than the panel can refresh.** That single line settles it without any further reasoning: at a
+144 Hz maximum the minimum frame interval is 6.944 ms, so a series that repeatedly claims 4.7 ms is not a screen
+cadence. Worth keeping as a check.
+
+Dumping the raw driver timeline explained it. Every completion arrived as `HSyncDPCMultiPlane` with
+`FlipEntryStatusAfterFlip=15` - the hardware flip queue - and those events sit at exactly two phases inside the blank
+interval, 3.92 ms and 6.14 ms after the preceding `VSyncDPC`, one per interval, while `VSyncDPC` itself ran at a dead
+flat 6.946 ms. The driver latches each flip a variable time ahead of the scanout that shows it, and under frame
+generation the two frames of a pair become ready at different times, so the *latch* alternates while the *screen*
+does not.
+
+The NVIDIA scheduled-flip announcement, which fixed the DLSS-G case, is useless here and was measured rather than
+assumed: on this path it leads the flip event by about **two microseconds**, so applying it changed the published
+series by nothing at all (stddev 2187 -> 2171, i.e. noise). It is now consumed and discarded on the deferred path, so
+it cannot strand on a driver thread and be applied to a later immediate flip.
+
+The fix is `captureengine/display_timing_vblank.h`: record `VSyncDPC` per `VidPnSourceId` and round every deferred
+completion onto an observed blank. Nothing models a refresh period - under VRR the blank stream follows the frame
+rate (measured 116 blanks/s at 116 fps output, the clock's median period tracking 6.95 ms -> 8.60 ms), so variable
+refresh is followed rather than assumed.
+
+Two things the first version got wrong, both caught by running it rather than by reading it:
+
+- **Below the refresh cap it dropped a third of the frames.** With the latch lead spread wider than a refresh period,
+  two completions land in one blank interval and rounding maps both onto the same blank; the later frame was then
+  published as a dropped frame the screen had actually shown (published `n=774 mean=12691 us` against runtime
+  `n=1158 mean=8632 us`). A display shows at most one new frame per blank *and shows them in order*, so blanks are
+  now claimed in completion order. After: published `n=1158 mean=8637 us`, runtime `n=1159 mean=8637 us`.
+- The bound on that ordered walk was dead code - it returned on the first step every time, so nothing stopped a
+  frame rate above the refresh rate from marching it forward. The walk now starts at the completion's own blank.
+
+Measured result at the cap: `publishedInterval stddevUs 2180 -> 14, jaggednessUs 4360 -> 12, p1/p99 4.6/9.2 ms ->
+6.8/6.9 ms`, sample count unchanged. The published series is now flatter than the presentation series (14 us against
+115 us), which is the right way round: the screen changes on the blank grid while the presents jitter around it.
+
+The metric now agrees with the eye in both directions, which is the real validation. At 144 fps the user sees smooth
+and it reports jaggedness 12 us; at 116 fps output under a synthetic 4K load the user saw judder and it reports
+p50 8.0 ms against p99 13.7 ms. Before the fix it drew a sawtooth in both cases.
+
+Separately measured while answering "is the judder CaptureEngine's fault": at `gpu_load=6000` (50x the normal test
+load, deliberately GPU-bound) CE costs about 2.6 ms per base frame - 68.3 fps base without it, 58.0 with, twice over.
+That is what pushed the run off the refresh cap into the region where FSR FG's smooth ~8.6 ms present cadence lands
+unevenly on the blank grid. The judder mechanism is not CE, but the frame rate that exposed it partly was. Not
+investigated further here; the number needs confirming at a realistic load and in a real title before it means
+anything about overlay cost.
+
+Still an inference, flagged in the topic page: whether a latched flip belongs to the next blank (implemented) or the
+previous one. It shifts every sample by one constant refresh period, so no frame time, FPS, low or graph value
+depends on it - only the PC-latency estimate.
+
 ### 2026-09-03 - The FSR startup latch that outlived its swapchain
 
 Talos, 2D menu, DLSS FG -> FSR FG -> DLSS FG a few times: the overlay vanished and never came back. The user

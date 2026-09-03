@@ -2,8 +2,11 @@
 #include "display_timing_correlation.h"
 #include "display_timing_etw.h"
 #include "display_timing_health.h"
+#include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
+#include "display_timing_submissions.h"
+#include "display_timing_vblank.h"
 
 #include <windows.h>
 #include <evntrace.h>
@@ -30,7 +33,6 @@ using namespace display_timing_etw;
 
 namespace {
 constexpr int64_t kTimestampReorderWindowUs = 24'000;
-constexpr std::size_t kMaxPendingPresentsPerProcess = 16;
 constexpr uint64_t kHealthLogPeriodMs = 10'000;
 constexpr DWORD kTraceFlushPeriodMs = 8;
 
@@ -145,7 +147,7 @@ public:
             if (!unchanged && target.output) {
                 target.output->Reset(target.sourcePid, target.rendererPid,
                                      startupStatus_.load(std::memory_order_acquire));
-                lastPublishedByOutput_.try_emplace(target.output, 0);
+                lastPublishedByOutput_.try_emplace(target.output);
             }
         }
         targets_ = targets;
@@ -216,13 +218,17 @@ private:
             if ((header.EventDescriptor.Id == kRuntimePresentStart ||
                  header.EventDescriptor.Id == kRuntimeMpoPresentStart) &&
                 IsTrackedProcess(header.ProcessId)) {
-                auto& pending = pendingRuntimePresents_[header.ProcessId];
-                // A present that never reached a kernel submission is dropped
-                // by age below; this only bounds a runaway producer.
-                if (pending.size() >= kMaxPendingPresentsPerProcess)
-                    pending.pop_front();
-                pending.push_back({header.ThreadId, header.TimeStamp.QuadPart});
-                ++observedRuntimePresents_;
+                submissions_.ObserveRuntimePresent(header.ProcessId, header.ThreadId,
+                                                   header.TimeStamp.QuadPart);
+                // The same frames the published series is built from, measured
+                // one stage earlier. Several tracked processes would interleave
+                // into one meaningless series, so the accumulator follows the
+                // most recent one instead of mixing them.
+                if (runtimeIntervalPid_ != header.ProcessId) {
+                    runtimeIntervalPid_ = header.ProcessId;
+                    runtimeIntervals_.StartWindow();
+                }
+                runtimeIntervals_.Observe(DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
             }
             return;
         }
@@ -293,43 +299,33 @@ private:
             !ReadProperty(event, L"bPresent", isPresent) || isPresent == 0) {
             return;
         }
-        // The submitting thread belongs to the presenting process even when it
-        // is not the thread that called Present, so the process is the key and
-        // the thread only refines the choice within it.
-        const auto process = pendingRuntimePresents_.find(event->EventHeader.ProcessId);
-        if (process == pendingRuntimePresents_.end() || process->second.empty())
-            return;
-        auto& pending = process->second;
-        std::array<uint32_t, kMaxPendingPresentsPerProcess> pendingThreadIds = {};
-        const std::size_t pendingCount = std::min(pending.size(), pendingThreadIds.size());
-        for (std::size_t i = 0; i < pendingCount; ++i)
-            pendingThreadIds[i] = pending[i].threadId;
-        const std::size_t selected =
-            SelectDisplaySubmissionPresent(pendingThreadIds.data(), pendingCount, event->EventHeader.ThreadId);
-        if (selected == kNoPendingDisplayPresent)
-            return;
-        const int64_t presentStartTimestamp = pending[selected].timestamp;
-        submitAssociations_[submitSequence].push_back(
-            {event->EventHeader.ProcessId, event->EventHeader.TimeStamp.QuadPart, nextAssociationId_++,
-             presentStartTimestamp});
-        pending.erase(pending.begin() + static_cast<std::deque<PendingRuntimePresent>::difference_type>(selected));
-        if (pending.empty())
-            pendingRuntimePresents_.erase(process);
-        ++observedSubmitAssociations_;
+        submissions_.Associate(event->EventHeader.ProcessId, event->EventHeader.ThreadId, submitSequence,
+                               event->EventHeader.TimeStamp.QuadPart);
     }
 
+    // Every vertical blank is observed, whether or not it carries a flip of a
+    // tracked process: this event is the screen's own clock, and the deferred
+    // flip completions below are rounded onto it.
     void HandleVsync(EVENT_RECORD* event) {
+        uint32_t displaySource = 0;
+        if (ReadProperty(event, L"VidPnSourceId", displaySource))
+            verticalBlanks_.Observe(displaySource, event->EventHeader.TimeStamp.QuadPart);
         uint64_t fenceId = 0;
         if (!ReadProperty(event, L"FlipFenceId", fenceId) || fenceId == 0)
             return;
         PublishForSubmit(static_cast<uint32_t>(fenceId >> 32u), event->EventHeader.TimeStamp.QuadPart,
-                         DisplayCompletionKind::Sync, true, DisplayCompletionSource::VSyncDpc);
+                         DisplayCompletionKind::Sync, true, DisplayCompletionSource::VSyncDpc, displaySource);
     }
 
     void HandleMpoSync(EVENT_RECORD* event) {
         uint32_t count = 0;
         if (!ReadProperty(event, L"FlipEntryCount", count) || count == 0 || count > 64)
             return;
+        const DisplayCompletionSource source = event->EventHeader.EventDescriptor.Id == kHsyncMpo
+                                                   ? DisplayCompletionSource::HSyncDpcMultiPlane
+                                                   : DisplayCompletionSource::VSyncDpcMultiPlane;
+        uint32_t displaySource = 0;
+        ReadProperty(event, L"VidPnSourceId", displaySource);
         std::array<uint32_t, 64> publishedPids = {};
         std::size_t publishedCount = 0;
         for (uint32_t i = 0; i < count; ++i) {
@@ -337,18 +333,18 @@ private:
             if (!ReadProperty(event, L"FlipSubmitSequence", encodedSequence, i) || encodedSequence == 0)
                 continue;
             const uint32_t submitSequence = static_cast<uint32_t>(encodedSequence >> 32u);
-            const SubmitAssociation* association = FindSubmitAssociation(submitSequence);
+            const SubmitAssociation* association = submissions_.Find(submitSequence);
             if (!association)
                 continue;
             const uint32_t processId = association->processId;
             if (std::find(publishedPids.begin(), publishedPids.begin() + publishedCount, processId) ==
                 publishedPids.begin() + publishedCount) {
                 QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
-                               DisplayCompletionKind::Sync, association->presentStartTimestamp);
-                ++completionsBySource_[static_cast<std::size_t>(DisplayCompletionSource::SyncDpcMultiPlane)];
+                               DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource);
+                ++completionsBySource_[static_cast<std::size_t>(source)];
                 publishedPids[publishedCount++] = processId;
             }
-            EraseSubmitAssociation(submitSequence);
+            submissions_.Erase(submitSequence);
         }
     }
 
@@ -363,7 +359,7 @@ private:
             !ReadProperty(event, L"FlipSubmitSequence", submitSequence) || planeCount == 0 || planeCount > 64) {
             return;
         }
-        const SubmitAssociation* association = FindSubmitAssociation(submitSequence);
+        const SubmitAssociation* association = submissions_.Find(submitSequence);
         if (!association)
             return;
         for (uint32_t i = 0; i < planeCount; ++i) {
@@ -434,8 +430,16 @@ private:
             !ReadProperty(event, L"FlipEntryStatusAfterFlip", status)) {
             return;
         }
-        if (status == kFlipWaitVSync || status == kFlipWaitHSync)
-            return;  // The matching ?SyncDPC event carries this flip's screen time.
+        if (status == kFlipWaitVSync || status == kFlipWaitHSync) {
+            // The matching ?SyncDPC event completes this flip. Its announcement
+            // is still consumed rather than left behind: measured under FSR
+            // frame generation on this hardware it leads this flip event by
+            // about two microseconds, so it says nothing the completion does
+            // not, while an announcement stranded here would later be applied
+            // to an unrelated immediate flip on the same driver thread.
+            nvidiaFlips_.TakeFlipDelay(event->EventHeader.ThreadId);
+            return;
+        }
         // Consume the announcement on every immediate flip, not only on the ones
         // that resolve to a tracked process: an announcement left behind by a
         // flip we do not publish would otherwise be applied to an unrelated
@@ -452,31 +456,15 @@ private:
     }
 
     void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
-                          bool erase, DisplayCompletionSource source) {
-        const SubmitAssociation* association = FindSubmitAssociation(submitSequence);
+                          bool erase, DisplayCompletionSource source, uint32_t displaySource = 0) {
+        const SubmitAssociation* association = submissions_.Find(submitSequence);
         if (!association)
             return;
         QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
-                       association->presentStartTimestamp);
+                       association->presentStartTimestamp, displaySource);
         ++completionsBySource_[static_cast<std::size_t>(source)];
         if (erase)
-            EraseSubmitAssociation(submitSequence);
-    }
-
-    const SubmitAssociation* FindSubmitAssociation(uint32_t submitSequence) const {
-        const auto association = submitAssociations_.find(submitSequence);
-        if (association != submitAssociations_.end() && !association->second.empty())
-            return &association->second.front();
-        return nullptr;
-    }
-
-    void EraseSubmitAssociation(uint32_t submitSequence) {
-        const auto association = submitAssociations_.find(submitSequence);
-        if (association == submitAssociations_.end())
-            return;
-        association->second.pop_front();
-        if (association->second.empty())
-            submitAssociations_.erase(association);
+            submissions_.Erase(submitSequence);
     }
 
     void ConsumeCorrelationPayloads() {
@@ -493,7 +481,8 @@ private:
     }
 
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
-                        DisplayCompletionKind completionKind, int64_t presentStartTimestamp) {
+                        DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
+                        uint32_t displaySource = 0) {
         if (timestamp <= 0)
             return;
         if (completionKind != DisplayCompletionKind::Unconditional) {
@@ -502,17 +491,34 @@ private:
             // the fallback (the 24 ms watermark is a bounded policy, not a
             // causal/no-late-events guarantee).
             correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
-                                       pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp);
+                                       pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp,
+                                       displaySource);
             ++queuedTimestamps_;
             return;
         }
-        pendingTimestamps_.push_back(
-            {processId, associationId, timestamp, completionKind, nextTimestampOrder_++, presentStartTimestamp});
+        pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind,
+                                      nextTimestampOrder_++, presentStartTimestamp, displaySource});
         ++queuedTimestamps_;
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {
         return correlation_.ShouldPublish(pending);
+    }
+
+    void SortPending() noexcept {
+        std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
+            return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
+        });
+    }
+
+    // A flip that waited for a vertical blank changed the screen at that blank,
+    // never at the moment the DPC reported it: on the hardware flip queue the
+    // driver latches each flip a variable time ahead of the scanout that shows
+    // it, which under frame generation alternates and turns a steady cadence
+    // into a sawtooth. Rounding onto the blank clock is skipped, not guessed,
+    // while the clock cannot answer.
+    void ResolveDeferredScreenTimes() {
+        blankAdjustedTimestamps_ += ::ResolveDeferredScreenTimes(pendingTimestamps_, verticalBlanks_);
     }
 
     void DrainReady(int64_t nowQpc, bool force) {
@@ -523,15 +529,24 @@ private:
         }
         if (pendingTimestamps_.empty())
             return;
-        std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
-            return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
-        });
+        SortPending();
+        // Blanks are claimed in the order the frames reach the screen, so the
+        // queue is ordered first and re-ordered afterwards: resolving moves a
+        // completion forward onto its blank, by less than one refresh in the
+        // ordinary case but never by a fixed amount.
+        ResolveDeferredScreenTimes();
+        SortPending();
         const int64_t cutoff = nowQpc - (kTimestampReorderWindowUs * qpcFrequency_) / 1'000'000;
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         std::size_t consumed = 0;
         for (auto& pending : pendingTimestamps_) {
             if (!force && pending.timestamp > cutoff)
                 break;
+            // Publishing a deferred completion the blank clock never answered
+            // for means the uncorrected timestamp reaches the overlay, which is
+            // the one thing this counter has to make visible.
+            if (pending.completionKind == DisplayCompletionKind::Sync && !pending.screenTimeResolved)
+                ++blankUnresolvedTimestamps_;
             if (ShouldPublish(pending)) {
                 PublishTimestamp(pending.processId, pending.timestamp, publishUs,
                                  pending.presentStartTimestamp);
@@ -557,9 +572,9 @@ private:
     void DrainReadyNoexcept(int64_t nowQpc) noexcept {
         if (pendingTimestamps_.empty())
             return;
-        std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
-            return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
-        });
+        SortPending();
+        ResolveDeferredScreenTimes();
+        SortPending();
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         for (const auto& pending : pendingTimestamps_)
             if (ShouldPublish(pending))
@@ -569,18 +584,7 @@ private:
     }
 
     void PruneAssociations(int64_t cutoff) {
-        for (auto it = pendingRuntimePresents_.begin(); it != pendingRuntimePresents_.end();) {
-            auto& presents = it->second;
-            while (!presents.empty() && presents.front().timestamp < cutoff)
-                presents.pop_front();
-            it = presents.empty() ? pendingRuntimePresents_.erase(it) : std::next(it);
-        }
-        for (auto mapIt = submitAssociations_.begin(); mapIt != submitAssociations_.end();) {
-            auto& associations = mapIt->second;
-            while (!associations.empty() && associations.front().timestamp < cutoff)
-                associations.pop_front();
-            mapIt = associations.empty() ? submitAssociations_.erase(mapIt) : std::next(mapIt);
-        }
+        submissions_.PruneBefore(cutoff);
         correlation_.Prune(cutoff);
         nvidiaFlips_.PruneBefore(cutoff);
     }
@@ -595,13 +599,15 @@ private:
             const auto lastPublished = lastPublishedByOutput_.find(target.output);
             if (lastPublished == lastPublishedByOutput_.end())
                 continue;
-            if (timestamp <= lastPublished->second) {
+            if (timestamp <= lastPublished->second.lastTimestamp) {
                 target.output->droppedTimestampCount.fetch_add(1, std::memory_order_relaxed);
                 ++regressedTimestamps_;
                 continue;
             }
-            lastPublished->second = timestamp;
-            target.output->Publish(DisplayTimingQpcToUs(timestamp, qpcFrequency_), publishUs,
+            lastPublished->second.lastTimestamp = timestamp;
+            const int64_t screenTimeUs = DisplayTimingQpcToUs(timestamp, qpcFrequency_);
+            lastPublished->second.intervals.Observe(screenTimeUs);
+            target.output->Publish(screenTimeUs, publishUs,
                                    DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_));
             ++publishedTimestamps_;
         }
@@ -617,8 +623,8 @@ private:
         lastHealthLogTime_ = now;
         if (firstWindow)
             return false;
-        health.presents = observedRuntimePresents_;
-        health.associations = observedSubmitAssociations_;
+        health.presents = submissions_.observedPresents();
+        health.associations = submissions_.observedAssociations();
         health.queued = queuedTimestamps_;
         health.published = publishedTimestamps_;
         health.suppressed = suppressedTimestamps_;
@@ -645,34 +651,35 @@ private:
                 nvidiaAnnouncedDelayTotal_ / static_cast<int64_t>(health.nvApplied), qpcFrequency_);
         }
         health.completions = completionsBySource_;
+        health.blankAdjusted = blankAdjustedTimestamps_;
+        health.blankUnresolved = blankUnresolvedTimestamps_;
+        const uint32_t blankSource = verticalBlanks_.busiestSource();
+        health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);
+        health.blanksObserved = verticalBlanks_.observedBlanks(blankSource);
+        SnapshotIntervals(health);
         return true;
+    }
+
+    // The busiest output is the one the overlay is reading; averaging several
+    // would hide exactly the shape these statistics exist to expose.
+    void SnapshotIntervals(DisplayTimingHealth& health) {
+        const DisplayIntervalStats* busiest = nullptr;
+        for (auto& output : lastPublishedByOutput_) {
+            if (!busiest || output.second.intervals.count() > busiest->count())
+                busiest = &output.second.intervals;
+        }
+        if (busiest)
+            SetPublishedIntervals(health, *busiest);
+        SetRuntimeIntervals(health, runtimeIntervals_);
+        for (auto& output : lastPublishedByOutput_)
+            output.second.intervals.StartWindow();
+        runtimeIntervals_.StartWindow();
     }
 
     void LogHealthIfDue() {
         DisplayTimingHealth health;
-        if (!SnapshotHealth(health))
-            return;
-        // A stalled window and a healthy one report the same fields so the two
-        // stay directly comparable; only the level and the prefix differ.
-        const bool stalled = health.published == 0;
-        if (!stalled && !Log_IsEnabled(LogLevel::Debug))
-            return;
-        Log(stalled ? LogLevel::Warn : LogLevel::Debug,
-            "[DisplayTiming]%s runtimePresents=%llu submitAssociations=%llu queued=%llu published=%llu "
-            "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
-            "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
-            "fallback(committed=%llu suppressed=%llu) "
-            "completion(vsyncDpc=%llu syncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
-            "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
-            "fieldOffset=%d abandoned=%d)",
-            stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
-            health.queued, health.published, health.suppressed, health.regressed, health.payloadReceived,
-            health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
-            health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
-            health.fallbackSuppressed, health.completions[0], health.completions[1], health.completions[2],
-            health.completions[3], health.nvReceived, health.nvUndecodable, health.nvApplied,
-            static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
-            health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0);
+        if (SnapshotHealth(health))
+            LogDisplayTimingHealth(health);
     }
 
     void FlushLoop() {
@@ -716,6 +723,8 @@ private:
         correlation_.Clear();
         nvidiaFlips_.Clear();
         nvidiaAnnouncements_.Reset();
+        verticalBlanks_.Clear();
+        submissions_.Clear();
     }
 
     std::atomic<bool> started_{false};
@@ -729,23 +738,29 @@ private:
     std::thread processThread_;
     std::thread flushThread_;
 
+    struct PublishedOutputState {
+        int64_t lastTimestamp = 0;
+        DisplayIntervalStats intervals;
+    };
+
     std::mutex mutex_;
     std::vector<DisplayTimingTarget> targets_;
-    std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingRuntimePresents_;
-    std::unordered_map<uint32_t, std::deque<SubmitAssociation>> submitAssociations_;
+    DisplaySubmissionTracker submissions_;
     DisplayTimingCorrelation correlation_;
     NvidiaFlipAnnouncementDecoder nvidiaAnnouncements_;
     NvidiaFlipDelayTracker nvidiaFlips_;
+    VerticalBlankClock verticalBlanks_;
     std::vector<PendingTimestamp> pendingTimestamps_;
-    std::unordered_map<SharedDisplayTiming*, int64_t> lastPublishedByOutput_;
-    uint64_t nextAssociationId_ = 1;
+    std::unordered_map<SharedDisplayTiming*, PublishedOutputState> lastPublishedByOutput_;
+    DisplayIntervalStats runtimeIntervals_;
+    uint32_t runtimeIntervalPid_ = 0;
+    uint64_t blankAdjustedTimestamps_ = 0;
+    uint64_t blankUnresolvedTimestamps_ = 0;
     uint64_t nextTimestampOrder_ = 1;
     ULONG observedTraceEventsLost_ = 0;
     ULONG loggedTraceEventsLost_ = 0;
     uint64_t lastTraceLossLogTime_ = 0;
     uint64_t lastHealthLogTime_ = 0;
-    uint64_t observedRuntimePresents_ = 0;
-    uint64_t observedSubmitAssociations_ = 0;
     uint64_t queuedTimestamps_ = 0;
     uint64_t publishedTimestamps_ = 0;
     uint64_t suppressedTimestamps_ = 0;
