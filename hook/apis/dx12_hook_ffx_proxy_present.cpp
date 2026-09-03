@@ -245,10 +245,14 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
+    const int64_t enterUs = PerfLogger::GetQpcUs();
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present");
     }
-    return original(self, SyncInterval, Flags);
+    const int64_t forwardUs = PerfLogger::GetQpcUs();
+    const HRESULT hr = original(self, SyncInterval, Flags);
+    DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* self, UINT SyncInterval, UINT Flags,
@@ -265,10 +269,14 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
+    const int64_t enterUs = PerfLogger::GetQpcUs();
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present1");
     }
-    return original(self, SyncInterval, Flags, pParams);
+    const int64_t forwardUs = PerfLogger::GetQpcUs();
+    const HRESULT hr = original(self, SyncInterval, Flags, pParams);
+    DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
+    return hr;
 }
 
 static HMODULE ModuleFromAddress(const void* address) {

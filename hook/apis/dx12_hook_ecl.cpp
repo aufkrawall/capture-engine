@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/hook_cpu_cost.h"
 #include "dx12_hook_ecl_shared.h"
 
 
@@ -57,15 +58,24 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         if (!real)
             real = oExecuteCommandLists;
         if (real)
-            real(pThis, NumCommandLists, ppCommandLists);
+            {
+                ScopedHookForwardedCall forwardedCycles;
+                real(pThis, NumCommandLists, ppCommandLists);
+            }
         return;
     }
+    // Frame generation multiplies submissions per frame, so this hook is on a
+    // hotter path than the present hook is.
+    ScopedHookCpuCost eclCpuCost(HookExecuteCommandListsCpuCost());
     if (HookIsShuttingDown()) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (!original)
             original = oExecuteCommandLists;
         if (original)
-            original(pThis, NumCommandLists, ppCommandLists);
+            {
+                ScopedHookForwardedCall forwardedCycles;
+                original(pThis, NumCommandLists, ppCommandLists);
+            }
         return;
     }
 
@@ -255,7 +265,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     if (noCallbackFSR && pThis != dx12_hook_g_OriginalGameQueue) {
         ExecuteCommandListsPtr original = noCallbackOriginal ? noCallbackOriginal : GetOriginalExecuteCommandLists(pThis);
         if (original) {
-            original(pThis, NumCommandLists, ppCommandLists);
+            {
+                ScopedHookForwardedCall forwardedCycles;
+                original(pThis, NumCommandLists, ppCommandLists);
+            }
         } else {
             pThis->ExecuteCommandLists(NumCommandLists, ppCommandLists);
         }
@@ -272,7 +285,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         } else {
             ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
             if (original)
-                original(pThis, NumCommandLists, ppCommandLists);
+                {
+                    ScopedHookForwardedCall forwardedCycles;
+                    original(pThis, NumCommandLists, ppCommandLists);
+                }
         }
         return;
     }
@@ -328,10 +344,16 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
 
         if (original)
-            original(pThis, NumCommandLists, ppCommandLists);
+            {
+                ScopedHookForwardedCall forwardedCycles;
+                original(pThis, NumCommandLists, ppCommandLists);
+            }
         else {
             if (real)
-                real(pThis, NumCommandLists, ppCommandLists);
+                {
+                    ScopedHookForwardedCall forwardedCycles;
+                    real(pThis, NumCommandLists, ppCommandLists);
+                }
         }
         return;
     }
@@ -349,11 +371,17 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (original) {
-            original(pThis, NumCommandLists, ppCommandLists);
+            {
+                ScopedHookForwardedCall forwardedCycles;
+                original(pThis, NumCommandLists, ppCommandLists);
+            }
         } else {
             ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
             if (real) {
-                real(pThis, NumCommandLists, ppCommandLists);
+                {
+                    ScopedHookForwardedCall forwardedCycles;
+                    real(pThis, NumCommandLists, ppCommandLists);
+                }
             } else if (oExecuteCommandLists) {
                 oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
             }
@@ -383,7 +411,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
             ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
             if (original) {
-                original(pThis, NumCommandLists, ppCommandLists);
+                {
+                    ScopedHookForwardedCall forwardedCycles;
+                    original(pThis, NumCommandLists, ppCommandLists);
+                }
             }
             return;
         }
@@ -740,7 +771,10 @@ skip_command_queue_registration:
         // synchronously re-enter Present; the PostSL consumer accounts the official-UI route only
         // when an output actually inherits it (standby submissions remain invisible while FG is off).
         (void)ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
-        original(pThis, NumCommandLists, ppCommandLists);
+        {
+            ScopedHookForwardedCall forwardedCycles;
+            original(pThis, NumCommandLists, ppCommandLists);
+        }
         ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
     }
 

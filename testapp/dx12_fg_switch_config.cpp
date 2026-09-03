@@ -63,6 +63,9 @@ void LoadConfig() {
         ClampInt(GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_interval_seconds",
                                        dx12_fg_switch_test_g_FsrPresentCallbackToggleIntervalSeconds, configPath.c_str()),
                  1, 120);
+    dx12_fg_switch_test_g_FsrConfigureEveryFrame =
+        GetPrivateProfileIntA("Stress", "fsr_configure_every_frame",
+                              dx12_fg_switch_test_g_FsrConfigureEveryFrame ? 1 : 0, configPath.c_str()) != 0;
     dx12_fg_switch_test_g_FsrDegenerateUiResource = GetPrivateProfileIntA("Stress", "fsr_degenerate_ui_resource",
                                                       dx12_fg_switch_test_g_FsrDegenerateUiResource ? 1 : 0, configPath.c_str()) != 0;
     dx12_fg_switch_test_g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
@@ -314,6 +317,14 @@ void ParseCommandLine(int argc, char* argv[]) {
         }
         if (strcmp(argv[i], "--no-fsr-present-callback-stress") == 0) {
             dx12_fg_switch_test_g_FsrPresentCallbackStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--fsr-configure-every-frame") == 0) {
+            dx12_fg_switch_test_g_FsrConfigureEveryFrame = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-fsr-configure-every-frame") == 0) {
+            dx12_fg_switch_test_g_FsrConfigureEveryFrame = false;
             continue;
         }
         if (strcmp(argv[i], "--fsr-degenerate-ui") == 0) {

@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-09-03 - CE's FSR-FG cost is not the overlay, and a frame-rate A/B cannot find it
+
+Follow-up to the 2.6 ms/frame figure measured while fixing the display-timing sawtooth. That number came from a run
+with the test app's own DXGI video-memory stress on (96 `QueryVideoMemoryInfo` per frame), vsync on so the no-CE side
+sat near the cap, and `gpu_load=6000`. Cleaned up - stress off, vsync off, `gpu_load=1200` - it is **2.06 ms per base
+frame**, and the ladder says where it is not: injection disabled 0.00, frame generation off 0.00, display-timing
+collector 0.02, **overlay 0.04**, log level +/-0.04, 1080p instead of 4K 2.06 (identical), `ffxConfigure` once
+instead of per frame 0.00. The task's premise - that the 4K overlay composite was the cost - is wrong by roughly
+fifty to one.
+
+The app turns out to be **main-thread bound**: its render thread is pinned at 100% of a core in every configuration,
+so anything on that thread is paid in frames. Per-thread accounting found no CE thread in the game process and an
+essentially unchanged process total (2.39 cores without CE, 2.43 with) while the frame rate fell 193 -> 137. Same
+CPU, fewer frames: the main thread is spinning longer inside the FFX runtime's `Present`, which is where a
+frame-generation swapchain paces itself.
+
+Two instruments were needed, and both are worth keeping:
+
+- **Wall time is the wrong unit for a hook that wraps a blocking call.** A forwarded `Present` blocks for pacing the
+  game would have paid anyway, so it looks expensive while costing the frame nothing. `hook/common/hook_cpu_cost.h`
+  measures `QueryThreadCycleTime` across the hook and subtracts the cycles the forwarded runtime call consumed, via
+  a thread-local tally that nested scopes restore rather than clear.
+- **A hook's own share has to be separated from the runtime's.** Timing the FFX present-callback bridge against the
+  callback it wraps put CE at 2 us per output frame against the runtime's 8 us; CE's share of the game thread's
+  proxy `Present` is 0 us against the 6.4 ms that call blocks.
+
+With the forwarded call excluded, CE's own CPU in the two hooks a frame-generation runtime drives hardest is the
+DXGI present hook at ~226k cycles per call (~269/s) and `ExecuteCommandLists` at ~10k cycles (~915/s) - together
+about **1.4% of one core**, against a loss worth far more. So the time is downstream of CE's hooks. Resolution
+independence rules out a copy or a composite; the remaining candidates are the GPU work CE appends to AMD's command
+lists (the bridge writes overlay breadcrumbs unconditionally) and any queue synchronization CE introduces. Left
+open, and recorded as such in `overlay-rendering.md` - guessing further without GPU timestamps would be the same
+mistake the display-timing sawtooth already punished once.
+
+Instrumentation is gated on debug logging, because two counter reads per call on the two hottest hooks in the
+process is small but not free. Test-app side, `fsr_configure_every_frame` became a `[Stress]` key and a
+`--no-fsr-configure-every-frame` switch; it was hardcoded on, which silently made every measurement on this app a
+measurement of CE's `ffxConfigure` hook (it turned out not to matter, but that could not be known without switching
+it off). Also worth knowing for future runs: back-to-back fullscreen runs need a settle delay, or
+`CreateSwapChainForHwnd` returns `E_ACCESSDENIED` and the app never enters FSR mode - two runs were lost to that
+before it was recognised.
+
+
 ### 2026-09-03 - Startup tray responsiveness and complete PawnIO uninstaller teardown
 
 1. **Instant Tray Responsiveness & 50x Startup Speedup**:

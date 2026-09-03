@@ -1,10 +1,14 @@
 #include "dxgi_shared_internal.h"
+#include "hook_cpu_cost.h"
 
 namespace DXGIShared {
 HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    // Everything below forwards into the runtime/driver; those cycles are the
+    // game's own, not CE's, and are excluded from the hook's cost.
+    ScopedHookForwardedCall forwardedCycles;
     if (HookIsShuttingDown()) {
         // A deep body hook means this call already came DOWN the foreign chain, so the only
         // remaining work is the real body. Checked before the entry forward below, which

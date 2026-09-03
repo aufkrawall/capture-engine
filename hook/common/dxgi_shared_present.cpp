@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook_cpu_cost.h"
 
 #include "../wrappers/vulkan_dxgi_fifo_present.h"
 
@@ -471,6 +472,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // ProcessFrame (overlay) and overlay-completion-wait phase timers, a slow total here with
     // NO matching slow ProcessFrame/wait log means the stall is the real Present call blocking
     // on the hung GPU (the iflip<->composited mode-switch GPU TDR). Compare 32-bit vs 64-bit.
+    // What this present path takes from a CPU-bound game, which the wall-clock
+    // timer below cannot separate from the runtime's own pacing block.
+    ScopedHookCpuCost presentCpuCost(HookPresentCpuCost());
+    ReportHookCpuCostIfDue();
     LARGE_INTEGER diagPresentT0;
     QueryPerformanceCounter(&diagPresentT0);
     auto diagPresentTimer = ce::make_scope_guard([&]() {

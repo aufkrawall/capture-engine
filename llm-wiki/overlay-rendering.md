@@ -265,6 +265,53 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## Performance and diagnostics
 
+### The overlay is not what CE costs under FSR frame generation (2026-09-03)
+
+Measured with `dx12_fg_switch_test` at 3840x2160, vsync off, 2x FSR FG, the app's own synthetic DXGI
+video-memory query stress disabled, `gpu_load=1200`. The app is **main-thread bound**: its render thread sits at
+100% of a core in every configuration below, so anything added to that thread comes straight off the frame rate.
+Base frame time without CaptureEngine was 5.18 ms; with it, 7.25 ms - **2.06 ms per base frame**. Where that goes,
+each line an A/B against the same baseline:
+
+| what was changed | cost vs no CE | conclusion |
+| --- | --- | --- |
+| CE running, injection disabled for the process | **0.00 ms** | CE's controller/inject/logger/sensor processes cost nothing |
+| CE injected, frame generation **off** (347 fps, 347 presents/s) | **0.00 ms** | the generic present/ECL hooks are free |
+| CE injected, FSR FG on, overlay off, display-timing collector off | **1.99 ms** | the cost is FSR-FG-specific and needs neither |
+| + display-timing ETW collector | +0.02 ms | not the ETW session |
+| + overlay | +0.04 ms | **not the overlay composite** |
+| `log_level` trace vs info vs warn | +/-0.04 ms | not the per-present CSV or trace logging |
+| 1920x1080 instead of 3840x2160 | 2.06 vs 2.06 ms | **resolution-independent, so not pixel work** |
+| app configuring FFX once instead of every frame | +/-0.00 ms | not the `ffxConfigure` hook |
+| `overlay_observer_only=true` | recovers ~0.9 of 2.9 ms | acting costs something; observing still costs ~1.9 ms |
+
+The task this came from assumed the 4K overlay composite was the cost. It is not: the overlay is worth about
+0.04 ms of the 2.06 ms, and CE costs nothing at all when frame generation is off.
+
+**Where the time is not.** CE's own CPU in the two hooks a frame-generation runtime drives hardest, measured with
+`QueryThreadCycleTime` and with the forwarded runtime call subtracted (`hook/common/hook_cpu_cost.h`): the DXGI
+present hook averages ~226k cycles per call at ~269 calls/s, and `ExecuteCommandLists` ~10k cycles at ~915 calls/s -
+together about **1.4% of one core**. The FFX present-callback bridge adds **2 us** per output frame over the runtime
+callback it wraps, and CE's share of the game thread's proxy `Present` is **0 us** against the ~6.4 ms that call
+blocks for. Per-thread accounting finds **no CE thread in the game process** and an unchanged process total
+(2.39 cores without CE, 2.43 with).
+
+**Where it is.** The game's main thread is saturated in both cases and completes fewer frames with CE, so it is
+spinning longer inside the FFX runtime's `Present` - which is what a frame-generation swapchain does while it paces.
+The delay is therefore downstream of CE's hooks rather than inside them, and resolution-independence rules out a
+copy or a composite. **Open question:** the remaining candidates are the GPU work CE appends to AMD's command lists
+(the unconditional overlay breadcrumb writes in the present-callback bridge) and any synchronization CE introduces
+between its own queue and AMD's. Not yet measured; GPU timestamps on the DX12 overlay path do not exist (only the
+Vulkan layer reports `overlayGpuUs`), and `xperf` profiling needs elevation this session did not have.
+
+**Method notes worth keeping.** A frame-rate A/B cannot separate a hook's own cost from the runtime call it forwards
+to; wall time is the wrong instrument for a hook that wraps a blocking call, because a forwarded `Present` blocks
+for pacing the game would have paid anyway. `QueryThreadCycleTime` with the forwarded call subtracted is the right
+one, and `[OVERLAY COST]` lines report it once per window under debug logging. Also: the test app's own stress
+switches (`[Stress] dxgi_video_memory_query_stress`, `fsr_configure_every_frame`) must be off before any of this is
+a performance measurement rather than a stress measurement, and vsync must be off or both sides sit on the cap.
+
+
 - Performance probes must launch old-API apps through CaptureEngine without recording. Those APIs cannot use the native zero-copy recording route, so a recording run would benchmark capture/conversion as well as the overlay.
 - Short uncapped 4K probes on the current NVIDIA system measured valid native DX9 at roughly 7/8/10 us median/p95/p99 overlay time and DX9Ex at 2/3/6 us. OpenGL reported 49/87/262 us while running thousands of FPS, but the driver returned a 4.6 compatibility context despite the test asking for 2.1, so this exercised the modern backend rather than the legacy array path.
 - The DirectDraw7 app used about 45.7% of one CPU core with the overlay disabled versus about 64.7-68.6% enabled in short probes. Disabling the graph did not materially improve it, confirming that the 4K full-surface compatibility composite, not graph geometry, dominates this route. These are diagnostic short runs, not a formal 10,000-frame acceptance baseline.

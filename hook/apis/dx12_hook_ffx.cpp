@@ -557,6 +557,17 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 
     dx12_hook_g_LastFFXPresentCallbackTickMs.store(GetTickCount64(), std::memory_order_release);
 
+    // This bridge runs once per displayed output frame, so anything it adds is
+    // multiplied by the frame-generation factor. Time it against the runtime
+    // callback it wraps, and report the split rather than leaving CE's share to
+    // be inferred from a frame-rate A/B.
+    const int64_t bridgeEnterUs = PerfLogger::GetQpcUs();
+    int64_t wrappedCallUs = 0;
+    auto costScope = ce::make_scope_guard([&]() {
+        g_FFXPresentCallbackCost.Observe(PerfLogger::GetQpcUs() - bridgeEnterUs, wrappedCallUs);
+        DX12_ReportFFXPresentCallbackCostIfDue();
+    });
+
     static thread_local int s_ffxPresentCallbackDepth = 0;
     if (s_ffxPresentCallbackDepth > 0) {
         static std::atomic<int> s_recursiveCallbackLogCount{0};
@@ -605,7 +616,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                     logCount + 1);
             }
         } else {
+            const int64_t wrappedEnterUs = PerfLogger::GetQpcUs();
             result = originalCallback(desc, originalUserContext);
+            wrappedCallUs = PerfLogger::GetQpcUs() - wrappedEnterUs;
         }
     }
 

@@ -125,3 +125,35 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
 bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* presentedSwapChain,
                                                               ID3D12CommandQueue* submitQueue);
 void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason);
+
+// CPU cost of a hook site that sits on a per-present path, split into the time
+// CE itself spends and the time the wrapped runtime callback spends. A hook
+// that merely forwards is invisible in a frame-rate A/B; this makes the split
+// measurable from a session log instead of inferred.
+struct FFXHookCostAccumulator {
+    std::atomic<uint64_t> calls{0};
+    std::atomic<uint64_t> selfUs{0};
+    std::atomic<uint64_t> wrappedUs{0};
+    std::atomic<uint64_t> selfMaxUs{0};
+    std::atomic<uint64_t> wrappedMaxUs{0};
+
+    void Observe(int64_t totalUs, int64_t wrappedCallUs) {
+        const uint64_t self = static_cast<uint64_t>(totalUs > wrappedCallUs ? totalUs - wrappedCallUs : 0);
+        const uint64_t wrapped = static_cast<uint64_t>(wrappedCallUs > 0 ? wrappedCallUs : 0);
+        selfUs.fetch_add(self, std::memory_order_relaxed);
+        wrappedUs.fetch_add(wrapped, std::memory_order_relaxed);
+        RaiseMax(selfMaxUs, self);
+        RaiseMax(wrappedMaxUs, wrapped);
+        calls.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static void RaiseMax(std::atomic<uint64_t>& slot, uint64_t candidate) {
+        uint64_t observed = slot.load(std::memory_order_relaxed);
+        while (candidate > observed && !slot.compare_exchange_weak(observed, candidate, std::memory_order_relaxed)) {
+        }
+    }
+};
+
+extern FFXHookCostAccumulator g_FFXPresentCallbackCost;
+void DX12_ReportFFXPresentCallbackCostIfDue();
+void DX12_ObserveFFXProxyPresentCost(int64_t enterUs, int64_t forwardUs, int64_t returnUs);
