@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
+
+#include "../common/fg_cost_probe.h"
 static bool KnownDLSSFGModuleLoaded() {
     if (dx12_hook_g_KnownDLSSFGModuleSeen.load(std::memory_order_acquire)) {
         return true;
@@ -300,7 +302,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         desc->isGeneratedFrame != 0, currentResource != nullptr, outputResource != nullptr,
         currentResource != nullptr && currentResource != outputResource, nativeFSRSuspended);
     bool renderedCurrent = false;
-    if (mirrorToCurrent) {
+    if (mirrorToCurrent && !ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeMirrorOff)) {
         renderedCurrent = renderOverlayToResource(
             currentResource, GetDX12StateFromFFXResourceState(desc->currentBackBuffer.state), "current-backbuffer");
     }
@@ -626,6 +628,10 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         return result;
     }
 
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeTailOff)) {
+        return result;
+    }
+
     if (result != 0) {
         static std::atomic<int> s_ffxPresentCallbackErrorLogCount{0};
         if (s_ffxPresentCallbackErrorLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
@@ -716,7 +722,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             belowForeignTopmostSubmitProven ? 1 : 0, completedNoCallbackTopmostBatch ? 1 : 0);
     }
 
-    if (!callbackYieldsToTopmostRoute && RenderOverlayViaFFXPresentCallback(desc)) {
+    const bool probeSuppressesBridgeOverlay = ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeOverlayOff);
+    if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     }
     WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);

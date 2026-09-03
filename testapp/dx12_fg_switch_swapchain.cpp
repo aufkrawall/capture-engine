@@ -334,6 +334,10 @@ bool InitDX12(HWND hwnd, bool useFfxSwapChain , const char* reason ) {
     g_CommandList->Close();
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Fence));
     g_FenceValues[g_FrameIndex]++;
+    if (!g_GpuFrameTimer.Init(g_Device.Get(), g_CommandQueue.Get())) {
+        testapp::Log("[FG-DIAG] WARN GPU frame timer unavailable; per-frame GPU duration will not be reported (%s)\n",
+                     reason ? reason : "init");
+    }
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     // The scene -> upscaler -> hudless chain runs in FP16 linear (band-free temporal accumulation);
     // the present blit dithers down to the 8-bit backbuffer.

@@ -1,5 +1,55 @@
 # llm-wiki Log
 
+### 2026-09-03 - The FSR-FG cost is the GPU starving, and it hangs on one pointer store
+
+Follow-up to the entry below, which left the 2 ms open with "the remaining candidates are the GPU work CE appends
+to AMD's command lists and any queue synchronization CE introduces". Both are now measured and both are wrong, and
+so was the framing: the app is **GPU-bound**, not main-thread bound. Its render thread is at 100% of a core because
+it is spinning inside the frame-generation runtime's `Present`, which is not the same claim.
+
+Three instruments were built, and each of them is worth more than the answer it produced:
+
+- **The app measures itself.** `testapp/dx12_fg_frame_phases.h` brackets the app's own `Present`, `ffxConfigure`,
+  `ffxDispatch` and `ExecuteCommandLists`; `testapp/dx12_fg_gpu_timer.h` puts D3D12 timestamps around its own
+  command list. Both read the same with and without an injected overlay, so they attribute rather than compare.
+  Of the +2116 us per base frame, **+2029 is inside the proxy `Present`** and the app's own GPU work moves +209.
+- **Board power at a fixed clock.** `nvidia-smi` needs no elevation and settles "more GPU work" versus "starved
+  GPU" in one sample: 152 W -> 119 W at an unchanged 2.9 GHz while frames fall 29%. The PDH `GPU Engine`
+  utilisation counter, by contrast, reads ~92% in every configuration and discriminates nothing.
+- **A per-behaviour kill switch.** `hook/common/fg_cost_probe.h` reads `CE_FG_COST_PROBE` once and each bit removes
+  exactly one thing CE does per present. Thirteen bits and two config settings were run; the overlay draw, both
+  draw sites together, the whole DXGI present hook (`ProcessFrame` provably never ran), installing the FFX bridge
+  at all, the ECL caller-module lookup, the Streamline-UI ECL observers, the startup block, the ECL diagnostics,
+  the queue vtable hook, the device publish, the sampler detours, `[Overlay] enabled=false` and
+  `[HardwareSensors] enabled=off` all recovered nothing.
+
+**One bit recovers it**: `0x8000`, CE never storing the game's command queue in `g_CommandQueue` - 183 fps against
+135.5, `Present` back from 6466 us to 4536 us. The device publish next to it recovers nothing, so it is the queue
+adoption itself, through a per-frame consumer that survives every suppression above. That is where the next session
+starts.
+
+**Wall time, not cycles, for a hook that blocks.** The previous entry's conclusion that CE's hooks cost 1.4% of a
+core was measured with `QueryThreadCycleTime` - which cannot see a thread waiting on a lock or a fence, and a
+blocked thread is exactly what starves a GPU. `HookCpuCost` now carries wall microseconds with the forwarded call
+subtracted alongside the cycles, reported as `avgWallUs`/`usPerMs` in the `[OVERLAY COST]` line.
+
+**A real defect, found and fixed, that was not the 2 ms.** Under FSR FG the ECL detour re-ran full command-queue
+registration on **1290 of 1290 submissions per second**. The fast path compares the submitting queue against the
+four queues CE knows; a frame-generation runtime submits from its own internal queues, which are none of them, and
+each registration re-pointed `g_CommandQueue` so the next submitter looked unknown again. Every one of those took
+the global command-queue mutex, called `GetDesc`/`GetDevice` on the queue, did COM AddRef/Release on a driver
+object and ran two `GetModuleFileName` calls under the loader lock - on the runtime's own submission threads.
+`ShouldRegisterCommandQueueFromExecuteCommandLists` now treats registration as discovery: it runs while there is no
+frame generation or no primary game queue, and never once both are true. ECL coverage does not depend on it (the
+detour lives on the queue vtable, which every queue of the device shares). `DX12 DIAG: ECL timing/1s` gained
+`registrations=`, 0 after the fix.
+
+**A trap worth remembering.** Three separate probes looked like they had found the answer, and all three were the
+same artefact: making the ECL detour return early also stops queue discovery, so `g_CommandQueue`/`g_Device` stay
+null and a large part of CE never initialises. A probe that removes a line removes everything downstream of it too;
+check what else stopped happening before believing the number.
+
+
 ### 2026-09-03 - CE's FSR-FG cost is not the overlay, and a frame-rate A/B cannot find it
 
 Follow-up to the 2.6 ms/frame figure measured while fixing the display-timing sawtooth. That number came from a run

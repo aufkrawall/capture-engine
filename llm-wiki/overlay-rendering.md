@@ -265,51 +265,96 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## Performance and diagnostics
 
-### The overlay is not what CE costs under FSR frame generation (2026-09-03)
+### What CE costs a frame-generation game, and the instruments that found it (2026-09-03)
 
-Measured with `dx12_fg_switch_test` at 3840x2160, vsync off, 2x FSR FG, the app's own synthetic DXGI
-video-memory query stress disabled, `gpu_load=1200`. The app is **main-thread bound**: its render thread sits at
-100% of a core in every configuration below, so anything added to that thread comes straight off the frame rate.
-Base frame time without CaptureEngine was 5.18 ms; with it, 7.25 ms - **2.06 ms per base frame**. Where that goes,
-each line an A/B against the same baseline:
+Measured with `dx12_fg_switch_test` at 3840x2160, vsync off, 2x FSR FG, `gpu_load=1200`, and every `[Stress]`
+switch off (`dxgi_video_memory_query_stress`, `fsr_suspend_resume`, `fsr_present_callback_toggle_stress`). Base
+frame time 5.27 ms without CaptureEngine, 7.38 ms with it - **2.11 ms per base frame**, reproduced across a dozen
+runs.
 
-| what was changed | cost vs no CE | conclusion |
+**The app is GPU-bound, not main-thread bound.** An earlier reading of this scene called it main-thread bound
+because its render thread sits at 100% of a core; that thread is *spinning inside the frame-generation runtime's
+`Present`*, which is not the same thing. Without CE the PDH `GPU Engine` 3D counter for the process reads ~100%.
+With CE, board power falls from **152 W to 119 W at an unchanged 2.9 GHz SM clock** while the frame rate falls
+29%. Same clock, less power, fewer frames: the GPU is being **starved**, not loaded. `nvidia-smi --query-gpu=clocks.sm,power.draw` sampled once a second is enough to see it,
+and needs no elevation.
+
+**Where the time goes, measured by the app itself.** `testapp/dx12_fg_frame_phases.h` brackets the app's own call
+sites (its `Present`, `ffxConfigure`, `ffxDispatch`, `ExecuteCommandLists`) and reports microseconds per frame in
+the heartbeat; `testapp/dx12_fg_gpu_timer.h` adds D3D12 timestamp queries around the app's own command list. Both
+read identically with and without an injected overlay, which is what makes them decisive:
+
+| per base frame | no CE | with CE | delta |
+| --- | --- | --- | --- |
+| frame | 5267 us | 7382 us | **+2116** |
+| inside the FFX proxy `Present` | 4437 us | 6466 us | **+2029** |
+| `ffxConfigure` (2x per frame) | 2 us | 40 us | +38 |
+| `ExecuteCommandLists` | 31 us | 41 us | +10 |
+| `ffxDispatch` | 50 us | 56 us | +5 |
+| the app's own command list, on the GPU | 4179 us | 4387 us | +209 |
+
+So 96% of the loss is the game thread blocking longer inside the runtime's `Present`, and the app's own GPU work is
+essentially unchanged. CE's own share of that `Present` call is 0 us (`[OVERLAY COST] FFX proxy Present`).
+
+**What it is not.** `hook/common/fg_cost_probe.h` (`CE_FG_COST_PROBE`, off by default) removes one CE behaviour per
+bit so a frame-rate A/B can attribute the cost. None of these recovered anything:
+
+| probe | what it removes | result |
 | --- | --- | --- |
-| CE running, injection disabled for the process | **0.00 ms** | CE's controller/inject/logger/sensor processes cost nothing |
-| CE injected, frame generation **off** (347 fps, 347 presents/s) | **0.00 ms** | the generic present/ECL hooks are free |
-| CE injected, FSR FG on, overlay off, display-timing collector off | **1.99 ms** | the cost is FSR-FG-specific and needs neither |
-| + display-timing ETW collector | +0.02 ms | not the ETW session |
-| + overlay | +0.04 ms | **not the overlay composite** |
-| `log_level` trace vs info vs warn | +/-0.04 ms | not the per-present CSV or trace logging |
-| 1920x1080 instead of 3840x2160 | 2.06 vs 2.06 ms | **resolution-independent, so not pixel work** |
-| app configuring FFX once instead of every frame | +/-0.00 ms | not the `ffxConfigure` hook |
-| `overlay_observer_only=true` | recovers ~0.9 of 2.9 ms | acting costs something; observing still costs ~1.9 ms |
+| `0x1` | the FFX present-callback bridge tail: compose, overlay, breadcrumbs, metrics | 135.9 fps |
+| `0x20` | the DXGI present hook entirely (`ProcessFrame` provably never ran: 1 CSV row, not 8680) | 137.4 |
+| `0x21` | both overlay draw sites at once | 137.3 |
+| `0x40` | installing CE's present-callback bridge at all | 136.7 |
+| `0x6F` | all of the above together | 137.9 |
+| `0x80` | the ECL caller-module lookup (`GetModuleFileName` per submission) | 135.4 |
+| `0x100` | the Streamline-UI ECL observers (a global mutex twice per submission) | 135.5 |
+| `0x200` | the PostSL/Streamline startup block in the ECL detour | 135.4 |
+| `0x800` | the per-call ECL wall-clock diagnostic and watchdog heartbeat | 135.4 |
+| `0x2000` | hooking the queue's vtable during registration | 135.5 |
+| `0x4000` | resolving and publishing the queue's device (limiter, LUID, `g_Device`) | 135.8 |
+| `0x10000` | the sampler/anisotropy detours on the game's real device vtable | 135.7 |
+| config | `[Overlay] enabled=false` | 136.3 |
+| config | `[HardwareSensors] enabled=off` | 135.6 |
 
-The task this came from assumed the 4K overlay composite was the cost. It is not: the overlay is worth about
-0.04 ms of the 2.06 ms, and CE costs nothing at all when frame generation is off.
+against 189-192 fps with no CE and 135.5 fps with CE unmodified.
 
-**Where the time is not.** CE's own CPU in the two hooks a frame-generation runtime drives hardest, measured with
-`QueryThreadCycleTime` and with the forwarded runtime call subtracted (`hook/common/hook_cpu_cost.h`): the DXGI
-present hook averages ~226k cycles per call at ~269 calls/s, and `ExecuteCommandLists` ~10k cycles at ~915 calls/s -
-together about **1.4% of one core**. The FFX present-callback bridge adds **2 us** per output frame over the runtime
-callback it wraps, and CE's share of the game thread's proxy `Present` is **0 us** against the ~6.4 ms that call
-blocks for. Per-thread accounting finds **no CE thread in the game process** and an unchanged process total
-(2.39 cores without CE, 2.43 with).
+**What it is, so far.** Exactly one intervention recovers the frames: **`0x8000`, CE never storing the game's
+command queue in `g_CommandQueue`** - 183.1 fps, `Present` back to 4536 us, 1.92 of the 2.11 ms returned. The
+adjacent device publish (`0x4000`) and the vtable hook (`0x2000`) each recover nothing, so it is the queue adoption
+itself, through a per-frame consumer that survives every suppression in the table above. The three probes that
+looked like answers earlier (`0x10` ECL passthrough, `0x400` ECL early forward, `0x1000` registration suppressed)
+all share one side effect - CE never adopts a queue at all - and that, not what they were nominally removing, is
+why they were fast. **Open question, and the next step: name the per-frame reader of `g_CommandQueue` that makes
+the frame-generation runtime's `Present` block 2 ms longer.**
 
-**Where it is.** The game's main thread is saturated in both cases and completes fewer frames with CE, so it is
-spinning longer inside the FFX runtime's `Present` - which is what a frame-generation swapchain does while it paces.
-The delay is therefore downstream of CE's hooks rather than inside them, and resolution-independence rules out a
-copy or a composite. **Open question:** the remaining candidates are the GPU work CE appends to AMD's command lists
-(the unconditional overlay breadcrumb writes in the present-callback bridge) and any synchronization CE introduces
-between its own queue and AMD's. Not yet measured; GPU timestamps on the DX12 overlay path do not exist (only the
-Vulkan layer reports `overlayGpuUs`), and `xperf` profiling needs elevation this session did not have.
+**A real defect found on the way, fixed.** Under FSR FG the ECL detour re-ran full command-queue registration on
+**1290 of 1290 submissions per second**: the "known queue" fast path compares against four pointers CE knows, and a
+frame-generation runtime submits from its own internal queues, which are none of them - and each registration
+re-pointed `g_CommandQueue`, so the queue that submitted next looked unknown again. Registration takes the global
+command-queue mutex, calls `GetDesc`/`GetDevice` on the queue, re-points `g_CommandQueue` with COM AddRef/Release
+on a driver object, and hooks the queue vtable (two `GetModuleFileName` calls under the loader lock).
+`ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists` now says: registration is discovery,
+so it runs while there is no frame generation or no primary game queue, and never once both are true - the game's
+render queue is the first DIRECT queue seen and predates any FG runtime, so an unrecognised queue under active FG
+belongs to the runtime. ECL coverage does not depend on it (the detour is on the queue vtable, shared by every
+queue of the device). `DX12 DIAG: ECL timing/1s` now reports `registrations=`, which is 0 after the fix and was
+equal to the submission count before it. This did **not** recover the 2 ms.
 
-**Method notes worth keeping.** A frame-rate A/B cannot separate a hook's own cost from the runtime call it forwards
-to; wall time is the wrong instrument for a hook that wraps a blocking call, because a forwarded `Present` blocks
-for pacing the game would have paid anyway. `QueryThreadCycleTime` with the forwarded call subtracted is the right
-one, and `[OVERLAY COST]` lines report it once per window under debug logging. Also: the test app's own stress
-switches (`[Stress] dxgi_video_memory_query_stress`, `fsr_configure_every_frame`) must be off before any of this is
-a performance measurement rather than a stress measurement, and vsync must be off or both sides sit on the cap.
+**Method notes worth keeping.**
+
+- Wall time is the wrong instrument for a hook that *forwards* a blocking call, but wall-minus-forwarded is the
+  right one for a hook that *blocks*: cycles cannot see a thread waiting on a lock or a fence. `HookCpuCost` now
+  reports both (`avgWallUs`/`usPerMs` next to `cyclesPerMs`).
+- A probe that makes a hook return early can change far more than the line it removes. Every "this recovered the
+  frames" result has to be checked for what else stopped happening - here, three separate bits all silently
+  stopped queue discovery.
+- The PDH `GPU Engine` utilisation counter is pinned near 92% in every configuration here and discriminates
+  nothing; board power at a fixed clock does.
+- `Get-Counter '\GPU Engine(pid_<pid>*)\Utilization Percentage'` must be sampled one shot at a time: a single
+  `Get-Counter` stream expands the instance wildcard once and never sees a process that started after it.
+- The test app's `[Stress]` switches must be off before any of this is a performance measurement, and vsync off or
+  both sides sit on the cap. Back-to-back fullscreen runs need a settle delay or `ffxCreateContext` fails
+  `RUNTIME_ERROR` and `CreateSwapChainForHwnd` returns `E_ACCESSDENIED`, and the app never enters FSR mode.
 
 
 - Performance probes must launch old-API apps through CaptureEngine without recording. Those APIs cannot use the native zero-copy recording route, so a recording run would benchmark capture/conversion as well as the overlay.

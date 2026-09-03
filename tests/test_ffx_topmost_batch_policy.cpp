@@ -347,21 +347,26 @@ TEST(FFXTopmostBatchSourceTest, CallbackDrawAndFrameTimingUseIndependentExactOwn
     ASSERT_FALSE(ownerQueue.empty());
 
     const size_t decision = source.find("const bool callbackYieldsToTopmostRoute =");
-    const size_t draw = source.find(
-        "if (!callbackYieldsToTopmostRoute && RenderOverlayViaFFXPresentCallback(desc))", decision);
+    // Matched in two parts so a diagnostic conjunct (the frame-generation cost probe) can sit
+    // between them: what this pins is that the draw is gated on the yield decision and precedes
+    // the timing update, not the exact spelling of the condition.
+    const size_t drawGate = source.find("if (!callbackYieldsToTopmostRoute &&", decision);
+    const size_t draw = source.find("RenderOverlayViaFFXPresentCallback(desc))", drawGate);
     const size_t timingCall = source.find("DX12_UpdateFFXPresentCallbackFrameTiming(", draw);
     const size_t deepPresentObserver = metrics.find("DXGIShared::IsPresentInterceptedBelowForeignChain()");
     const size_t timingDecision = metrics.find("ShouldSampleFrameTimingFromFFXPresentCallback(", deepPresentObserver);
     const size_t timingGate = metrics.find("if (callbackSamplesFrameTiming) {", timingDecision);
     const size_t timingUpdate = metrics.find("metrics->Update(PerfLogger::GetQpcUs());", timingGate);
     ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(drawGate, std::string::npos);
     ASSERT_NE(draw, std::string::npos);
     ASSERT_NE(timingCall, std::string::npos);
     ASSERT_NE(deepPresentObserver, std::string::npos);
     ASSERT_NE(timingDecision, std::string::npos);
     ASSERT_NE(timingGate, std::string::npos);
     ASSERT_NE(timingUpdate, std::string::npos);
-    EXPECT_LT(decision, draw);
+    EXPECT_LT(decision, drawGate);
+    EXPECT_LT(drawGate, draw);
     EXPECT_LT(draw, timingCall);
     EXPECT_LT(deepPresentObserver, timingDecision);
     EXPECT_LT(timingDecision, timingGate);

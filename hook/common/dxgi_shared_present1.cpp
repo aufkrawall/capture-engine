@@ -1,5 +1,7 @@
 #include "dxgi_shared_internal.h"
 
+#include "fg_cost_probe.h"
+
 #include "../wrappers/vulkan_dxgi_fifo_present.h"
 
 namespace DXGIShared {
@@ -9,6 +11,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown())
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kPresentPassthrough))
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     // Same single parameter decision as DetourPresent: the scoped Vulkan FIFO
     // backstop is consulted once, at the top, before reentrancy/forwarding.

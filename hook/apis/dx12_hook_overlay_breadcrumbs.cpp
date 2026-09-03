@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include "../common/fg_cost_probe.h"
+
 
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode) {
 dx12_hook_g_DescFreeBackendDevice = nullptr;
@@ -135,6 +137,9 @@ HookLogImportant("DX12: Overlay GPU breadcrumb buffer armed (slots=%d gpuVA=0x%l
 
 
 void BeginOverlayGpuBreadcrumbFrame(ID3D12Device* device) {
+if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kBreadcrumbsOff)) {
+    return;
+}
 EnsureOverlayBreadcrumbBuffer(device);
 if (dx12_hook_g_OverlayBcMapped) {
     dx12_hook_g_OverlayBcSeq.fetch_add(1, std::memory_order_relaxed);
@@ -143,6 +148,9 @@ if (dx12_hook_g_OverlayBcMapped) {
 
 
 void WriteOverlayGpuBreadcrumb(ID3D12GraphicsCommandList* list, OverlayGpuBreadcrumbOp op) {
+if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kBreadcrumbsOff)) {
+    return;
+}
 if (!list || !dx12_hook_g_OverlayBcMapped || dx12_hook_g_OverlayBcGpuVA == 0 || op == 0 || op >= kOverlayBcSlotCount) {
     return;
 }

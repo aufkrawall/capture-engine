@@ -1,5 +1,7 @@
 #include "dx12_sampler_hooks.h"
 
+#include "../common/fg_cost_probe.h"
+
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -406,6 +408,9 @@ HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT n
 
 bool HookDevice(ID3D12Device* device) {
     if (HookIsShuttingDown() || !device) {
+        return false;
+    }
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kSamplerDeviceHooksOff)) {
         return false;
     }
     LogConfigOnce();

@@ -1,4 +1,6 @@
 #include "dx12_hook_internal.h"
+
+#include "../common/fg_cost_probe.h"
 #include "streamline_bridge.h"
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or
@@ -103,7 +105,7 @@ ID3D12CommandQueue* expected = nullptr;
 dx12_hook_g_PrimaryGameQueue.compare_exchange_strong(expected, pQueue, std::memory_order_acq_rel);
 
 std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-if (g_CommandQueue.load() != pQueue) {
+if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kQueueAdoptionOff) && g_CommandQueue.load() != pQueue) {
     if (g_CommandQueue.load())
         g_CommandQueue.load()->Release();
     g_CommandQueue.store(pQueue);
@@ -119,7 +121,8 @@ if (g_CommandQueue.load() != pQueue) {
     }
 
     ID3D12Device* dev = nullptr;
-    if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
+    if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kQueueDevicePublishOff) &&
+        SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
         DX12_PublishNativeLimiterDevice(dev, pQueue, "command queue");
         // A bridged Streamline 2.x runtime needs this device, and this is the route that
         // finds it in a title whose device never came through an sl.interposer export -
@@ -155,7 +158,9 @@ if (g_CommandQueue.load() != pQueue) {
 
 // CRITICAL FIX: Hook queue vtable lazily here instead of during swapchain
 // creation This prevents hangs during DXGI internal operations
-DX12_HookQueueVTable(pQueue);
+if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kQueueVTableHookOff)) {
+    DX12_HookQueueVTable(pQueue);
+}
 }
 
 

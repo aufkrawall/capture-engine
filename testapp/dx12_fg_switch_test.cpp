@@ -44,6 +44,10 @@ ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 
 ComPtr<ID3D12Fence> g_Fence;
 
+testapp::fg::GpuFrameTimer g_GpuFrameTimer;
+
+testapp::fg::FramePhaseTimers g_FramePhases;
+
 testapp::dx12fg::AuxiliaryResources g_FgInputs;
 
 testapp::dx12fg::SceneRenderer g_Scene;

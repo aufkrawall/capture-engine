@@ -58,6 +58,10 @@ struct GlyphPattern;
 
 #include <sl_reflex.h>
 
+#include "dx12_fg_gpu_timer.h"
+
+#include "dx12_fg_frame_phases.h"
+
 #include "dx12_fg_resources.h"
 
 #include "dx12_fg_scene.h"
@@ -718,6 +722,14 @@ extern ComPtr<ID3D12CommandAllocator> g_CommandAllocators[dx12_fg_switch_test_kM
 extern ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 
 extern ComPtr<ID3D12Fence> g_Fence;
+
+// GPU duration of the app's own command list; see dx12_fg_gpu_timer.h for why a
+// frame-rate A/B against an injected overlay needs it.
+extern testapp::fg::GpuFrameTimer g_GpuFrameTimer;
+
+// Wall time the render thread spends inside its own frame-generation call sites;
+// see dx12_fg_frame_phases.h for why the split is what an injected-overlay A/B needs.
+extern testapp::fg::FramePhaseTimers g_FramePhases;
 
 extern testapp::dx12fg::AuxiliaryResources g_FgInputs;
 

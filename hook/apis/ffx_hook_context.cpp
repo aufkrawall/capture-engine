@@ -1,5 +1,7 @@
 #include "ffx_hook_internal.h"
 
+#include "../common/fg_cost_probe.h"
+
 
 void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context) {
 
@@ -313,7 +315,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     bool uiTargetSubstituted = false;
     const ffxConfigureDescHeader* descToCall = ffx_hook_desc;
     const auto* parsedDesc = reinterpret_cast<const ce::ffx_api::ApiHeader*>(ffx_hook_desc);
-    const bool recognizedFGConfigure = parsedDesc && parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration;
+    const bool recognizedFGConfigure = parsedDesc &&
+                                       parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration &&
+                                       !ce::fg_cost_probe::Active(ce::fg_cost_probe::kFfxBridgeOff);
     ce::ffx_api::PresentCallback bridgedOriginalCallback = nullptr;
     void* bridgedOriginalUserContext = nullptr;
     bool usingDefaultPresentCallback = false;

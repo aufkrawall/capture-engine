@@ -600,6 +600,8 @@ bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source)
 bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
                               const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer);
 void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress);
+// Serviced from the ExecuteCommandLists detour; see dx12_hook_ecl_startup_activation.cpp.
+void DX12_ServiceECLPostSLStartupActivation();
 bool ShouldSuppressOverlayForStartupCompat( HWND gameWindow, const char** overlayModule = nullptr, ULONGLONG* remainingMs = nullptr, ce::overlay_compat::AuxiliaryProcessWindowInfo* activeWindow = nullptr);
 bool ShouldDeferOverlayInitForStartupCompat(HWND gameWindow, ULONGLONG* remainingMs = nullptr);
 bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRender, HWND gameWindow, bool runtimeOwnedSwapchainActive, ULONGLONG* remainingMs = nullptr);

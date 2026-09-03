@@ -157,6 +157,7 @@ void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
     g_FrameLatencyWaitHandle = nullptr;
     g_DxgiVideoMemoryQueryAdapter.Reset();
     g_CommandQueue.Reset();
+    g_GpuFrameTimer.Shutdown();
     g_Fence.Reset();
     g_Device.Reset();
     if (g_FenceEvent) {
@@ -516,7 +517,9 @@ void Render() {
         static std::chrono::high_resolution_clock::time_point s_lastHeartbeatTime;
         static uint64_t s_lastHeartbeatFrameId = 0;
         double fps = 0.0;
+        uint64_t heartbeatFrames = 0;
         if (s_lastHeartbeatFrameId != 0 && dx12_fg_switch_test_g_FrameIdCounter > s_lastHeartbeatFrameId) {
+            heartbeatFrames = dx12_fg_switch_test_g_FrameIdCounter - s_lastHeartbeatFrameId;
             const double windowSeconds = std::chrono::duration<double>(now - s_lastHeartbeatTime).count();
             if (windowSeconds > 0.0) {
                 fps = static_cast<double>(dx12_fg_switch_test_g_FrameIdCounter - s_lastHeartbeatFrameId) / windowSeconds;
@@ -524,18 +527,33 @@ void Render() {
         }
         s_lastHeartbeatTime = now;
         s_lastHeartbeatFrameId = dx12_fg_switch_test_g_FrameIdCounter;
+        // GPU duration of the app's OWN command list over the same window. It separates
+        // "an injected overlay added GPU work to the frame-generation runtime's frames"
+        // from "it slowed this app's own work down", which frame rate alone cannot.
+        const testapp::fg::GpuFrameTimer::Summary gpu = g_GpuFrameTimer.TakeSummary();
+        // Frames in THIS window, captured before s_lastHeartbeatFrameId advances.
+        const uint64_t phaseFrames = heartbeatFrames;
+        const double presentUs = g_FramePhases.TakeUsPerFrame(testapp::fg::FramePhase::kPresent, phaseFrames);
+        const double configureUs = g_FramePhases.TakeUsPerFrame(testapp::fg::FramePhase::kFfxConfigure, phaseFrames);
+        const double dispatchUs = g_FramePhases.TakeUsPerFrame(testapp::fg::FramePhase::kFfxDispatch, phaseFrames);
+        const double eclUs =
+            g_FramePhases.TakeUsPerFrame(testapp::fg::FramePhase::kExecuteCommandLists, phaseFrames);
         testapp::Log(
             "[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
             "fsrConfigureEveryFrame=%d fsrSuspended=%d dlssSuspended=%d presentSync=%u presentFlags=0x%x "
-            "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d render=%dx%d upscaler=%s\n",
+            "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d render=%dx%d upscaler=%s "
+            "appGpuMs(n=%u mean=%.3f p50=%.3f p99=%.3f) "
+            "phaseUsPerFrame(present=%.0f ffxConfigure=%.0f ffxDispatch=%.0f ecl=%.0f)\n",
             static_cast<unsigned long long>(dx12_fg_switch_test_g_FrameIdCounter), frameIndex, ModeName(dx12_fg_switch_test_g_CurrentMode),
             dx12_fg_switch_test_g_FsrEnabled ? 1 : 0, dx12_fg_switch_test_g_DlssEnabled ? 1 : 0, dx12_fg_switch_test_g_ManualMode ? 1 : 0, dx12_fg_switch_test_g_AutoStage,
             dx12_fg_switch_test_g_FsrConfigureEveryFrame ? 1 : 0, dx12_fg_switch_test_g_FsrSuspended ? 1 : 0, dx12_fg_switch_test_g_DlssSuspended ? 1 : 0, presentSyncInterval,
             presentFlags, dx12_fg_switch_test_g_VSync, static_cast<unsigned long long>(dx12_fg_switch_test_g_LastFsrSuspendResumeToggleFrameId), fps,
-            dx12_fg_switch_test_g_ReflexLowLatencyActive ? 1 : 0, dx12_fg_switch_test_g_RenderWidth, dx12_fg_switch_test_g_RenderHeight, ActiveUpscalerName());
+            dx12_fg_switch_test_g_ReflexLowLatencyActive ? 1 : 0, dx12_fg_switch_test_g_RenderWidth, dx12_fg_switch_test_g_RenderHeight, ActiveUpscalerName(),
+            gpu.count, gpu.meanMs, gpu.p50Ms, gpu.p99Ms, presentUs, configureUs, dispatchUs, eclUs);
     }
 
     if (dx12_fg_switch_test_g_FsrEnabled && dx12_fg_switch_test_g_FsrConfigureEveryFrame) {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kFfxConfigure);
         ConfigureFSR(!dx12_fg_switch_test_g_FsrSuspended, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
                      dx12_fg_switch_test_g_FsrSuspended ? "per-frame suspended refresh" : "per-frame active refresh", false);
     }
@@ -544,6 +562,7 @@ void Render() {
     WaitForSwapChainFrameLatency();
     g_CommandAllocators[frameIndex]->Reset();
     g_CommandList->Reset(g_CommandAllocators[frameIndex].Get(), nullptr);
+    g_GpuFrameTimer.Begin(g_CommandList.Get());
     const float hudSweep = std::sin(elapsed * 1.2f) * 0.5f + 0.5f;
     LONG hudSpan = dx12_fg_switch_test_g_WindowWidth - 280;
     if (hudSpan < 0) {
@@ -558,7 +577,10 @@ void Render() {
     SubmitStreamlineFrameInputs(frameToken, frameIndex);
     // Upscale stage: fills the display-res hudlessColor from the render-res scene inputs
     // (TAA/TAAU for OFF mode and fallbacks, DLSS SR or FSR upscale otherwise).
-    RunUpscaleStage(frameToken, frameIndex, dx12_fg_switch_test_g_LastFrameDeltaMs);
+    {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kFfxDispatch);
+        RunUpscaleStage(frameToken, frameIndex, dx12_fg_switch_test_g_LastFrameDeltaMs);
+    }
 
     // Compose the presented backbuffer from the (FP16) hud-less scene via the dithered present
     // blit, then draw the UI on top so all-FG-off and real frames match the FG UI layer
@@ -578,27 +600,38 @@ void Render() {
     DrawHudOverlay(g_CommandList.Get(), rtvHandle, hudX, hudY);
     DrawStatusText(g_CommandList.Get(), rtvHandle);
     if (!dx12_fg_switch_test_g_FsrSuspended) {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kFfxDispatch);
         DispatchFSRPrepare(dx12_fg_switch_test_g_LastFrameDeltaMs);
     }
     if (dx12_fg_switch_test_g_FsrEnabled && !dx12_fg_switch_test_g_FsrSuspended) {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kFfxConfigure);
         RegisterFSRUiResource();
     }
 
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     g_CommandList->ResourceBarrier(1, &barrier);
+    g_GpuFrameTimer.End(g_CommandList.Get());
     g_CommandList->Close();
 
     ID3D12CommandList* lists[] = {g_CommandList.Get()};
     SetPCLMarker(frameToken, sl::PCLMarker::eRenderSubmitStart, "RenderSubmitStart");
-    g_CommandQueue->ExecuteCommandLists(1, lists);
+    {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kExecuteCommandLists);
+        g_CommandQueue->ExecuteCommandLists(1, lists);
+    }
+    g_GpuFrameTimer.AfterSubmit(g_CommandQueue.Get());
     SetPCLMarker(frameToken, sl::PCLMarker::eRenderSubmitEnd, "RenderSubmitEnd");
     SetPCLMarker(frameToken, sl::PCLMarker::ePresentStart, "PresentStart");
     const bool fsrExitPassthroughPresent =
         dx12_fg_switch_test_g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::PresentPending;
     const bool dlssReplacementPassthroughPresent =
         dx12_fg_switch_test_g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::ReplacementPresentPending;
-    HRESULT presentHr = g_SwapChain->Present(presentSyncInterval, presentFlags);
+    HRESULT presentHr;
+    {
+        testapp::fg::ScopedFramePhase phase(g_FramePhases, testapp::fg::FramePhase::kPresent);
+        presentHr = g_SwapChain->Present(presentSyncInterval, presentFlags);
+    }
     if (fsrExitPassthroughPresent || dlssReplacementPassthroughPresent || FAILED(presentHr) ||
         (dx12_fg_switch_test_g_LastModeSwitchFrameId != 0 && dx12_fg_switch_test_g_FrameIdCounter - dx12_fg_switch_test_g_LastModeSwitchFrameId <= 3)) {
         testapp::Log(
@@ -693,6 +726,7 @@ void Cleanup() {
     dx12_fg_switch_test_g_SwapChainUsesStreamline = false;
     g_DxgiVideoMemoryQueryAdapter.Reset();
     g_CommandQueue.Reset();
+    g_GpuFrameTimer.Shutdown();
     g_Fence.Reset();
     g_Device.Reset();
     JoinAsyncRuntimePreloadThreads("cleanup");

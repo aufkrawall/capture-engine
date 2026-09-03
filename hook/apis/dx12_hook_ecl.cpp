@@ -1,4 +1,6 @@
 #include "dx12_hook_internal.h"
+
+#include "../common/fg_cost_probe.h"
 #include "../common/hook_cpu_cost.h"
 #include "dx12_hook_ecl_shared.h"
 
@@ -49,6 +51,10 @@ ExecuteCommandListsPtr ResolveECLRecursionBreakTarget(ID3D12CommandQueue* pThis)
 
 }  // namespace
 
+// Submissions whose queue the frame-generation fast path did not recognise, and which
+// therefore re-ran queue registration. Reported once per second next to ECL timing.
+static std::atomic<uint32_t> g_EclQueueRegistrationsThisWindow{0};
+
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
                                                  ID3D12CommandList* const* ppCommandLists) {
     // Safety: during FG transitions, SL may call ECL on a queue that's being freed.
@@ -62,6 +68,16 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 ScopedHookForwardedCall forwardedCycles;
                 real(pThis, NumCommandLists, ppCommandLists);
             }
+        return;
+    }
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclPassthrough)) {
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (!original)
+            original = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+        if (!original)
+            original = oExecuteCommandLists;
+        if (original)
+            original(pThis, NumCommandLists, ppCommandLists);
         return;
     }
     // Frame generation multiplies submissions per frame, so this hook is on a
@@ -125,9 +141,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // the 32-bit/WoW64 freeze (kernel GPU allocation slow under WoW64); on native 64-bit the
     // same ECL stays fast. Always-on, no env/flag — compare 32-bit vs 64-bit hook_debug.log.
     const bool diagEclIsOverlayQueue = (pThis == dx12_hook_g_State.overlayQueue);
+    const bool diagEclEnabled = !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclDiagnosticsOff);
     LARGE_INTEGER diagEclStart;
     QueryPerformanceCounter(&diagEclStart);
     auto diagEclTimer = ce::make_scope_guard([&]() {
+        if (!diagEclEnabled) {
+            return;
+        }
         LARGE_INTEGER diagEclEnd, diagEclFreq;
         QueryPerformanceCounter(&diagEclEnd);
         QueryPerformanceFrequency(&diagEclFreq);
@@ -170,8 +190,14 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 const double winMax = s_eclWindowMaxMs.exchange(0.0, std::memory_order_relaxed);
                 const double winSum = s_eclWindowSumMs.exchange(0.0, std::memory_order_relaxed);
                 const uint32_t winCnt = s_eclWindowCount.exchange(0, std::memory_order_relaxed);
-                HookLogImportant("DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f tid=0x%04X", winCnt, winMax,
-                                 winCnt ? (winSum / (double)winCnt) : 0.0, GetCurrentThreadId());
+                const uint32_t winRegistrations =
+                    g_EclQueueRegistrationsThisWindow.exchange(0, std::memory_order_relaxed);
+                // registrations counts submissions whose queue the frame-generation fast path did not
+                // recognise, so each one re-ran queue registration (command-queue mutex + queue calls)
+                // on a submission thread. Under active FG this belongs at or near zero.
+                HookLogImportant(
+                    "DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f registrations=%u tid=0x%04X", winCnt,
+                    winMax, winCnt ? (winSum / (double)winCnt) : 0.0, winRegistrations, GetCurrentThreadId());
             }
         }
     });
@@ -190,7 +216,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     }
 
     // Heartbeat for freeze watchdog — skip when device is removed
-    if (!dx12_hook_g_DeviceRemoved.load(std::memory_order_relaxed)) {
+    if (diagEclEnabled && !dx12_hook_g_DeviceRemoved.load(std::memory_order_relaxed)) {
         g_RenderWatchdog.HeartbeatFromHelperThread();
     }
 
@@ -420,144 +446,18 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
     }
 
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclClassificationOff)) {
+        ExecuteCommandListsPtr probeOriginal = GetOriginalExecuteCommandLists(pThis);
+        if (probeOriginal) {
+            ScopedHookForwardedCall forwardedCycles;
+            probeOriginal(pThis, NumCommandLists, ppCommandLists);
+        }
+        return;
+    }
     NoteStartupBlockingRenderModuleActivityFromECL(pThis, CE_RETURN_ADDRESS());
 
-    // Critical fix for GTA V Enhanced DLSS FG startup freeze:
-    // When the startup-handoff Present bypasses the synthetic Present path, PostSL
-    // activation is deferred until the startup transition window expires.  If
-    // ProcessFrame stops running (freeze), the deferred callback never fires.
-    // Detect window expiry from the ECL hook (present thread) and trigger the
-    // PostSL callback directly to complete activation before Streamline times out.
-    {
-        static bool s_startupWindowWasActive = false;
-        static bool s_callbackTriggeredWithCachedSwapchain = false;
-        static std::atomic<ULONGLONG> s_lastVisibleOverlayStartupProgressTriggerMs{0};
-        static std::atomic<int> s_visibleOverlayStartupProgressLogCount{0};
-        static std::atomic<int> s_visibleOverlayStartupProgressCompleteLogCount{0};
-        const bool activationPending =
-            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
-        const bool callbackInstalled =
-            DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
-        const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
-        const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
-        const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
-        const bool overlayVisible = GetHookOverlayConfig().showOverlay;
-        const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
-        const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
-        const bool nativeFSRPresentPathActive = HookHasRuntimeOwnedNativeFGPresentPath();
-        const bool nativeFSRActive = g_FGCompat.IsFSRFGApiActive();
-        const bool shouldProbeStartupActivationSwapchain =
-
-            ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
-                activationPending, callbackInstalled, postSLConfirmedRendering, nativeFSRPresentPathActive,
-                nativeFSRActive);
-        const bool activationSwapchainAvailable =
-            shouldProbeStartupActivationSwapchain && HasStartupActivationSwapchainCandidateForECLProbe();
-        if (!shouldProbeStartupActivationSwapchain && activationPending && callbackInstalled) {
-            static std::atomic<int> s_eclStartupProbeSuppressedLogCount{0};
-            const int logCount = s_eclStartupProbeSuppressedLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 200) == 0) {
-                HookLogImportant(
-                    "DX12: ECL startup activation swapchain probe suppressed "
-                    "(activationPending=%d callbackInstalled=%d confirmed=%d nativeFGPath=%d apiFSR=%d "
-                    "retained=%p last=%p log=%d)",
-                    activationPending ? 1 : 0, callbackInstalled ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    nativeFSRPresentPathActive ? 1 : 0, nativeFSRActive ? 1 : 0, dx12_hook_g_StreamlineStartupActivationSwapchain,
-                    dx12_hook_g_LastSwapChain, logCount + 1);
-            }
-        }
-        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
-        const bool allowExpiryTriggeredStartupActivation =
-            ce::dx12_overlay_policy::ShouldTriggerExpiryDrivenECLPostSLStartupActivation(
-                startupTransitionWindowJustExpired, activationPending, callbackInstalled, dx12_hook_g_HadFSRFGPhase,
-                safePostFSRBootstrapPath);
-        const bool continueVisibleOverlayStartupProgress =
-            ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-                overlayVisible, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
-                callbackInstalled, activationSwapchainAvailable, dx12_hook_g_HadFSRFGPhase, safePostFSRBootstrapPath);
-        const ULONGLONG nowMs = GetTickCount64();
-        const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
-            s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);
-        const bool visibleOverlayStartupProgressTick = continueVisibleOverlayStartupProgress && !windowActive &&
-                                                       (lastVisibleOverlayStartupProgressTriggerMs == 0 ||
-                                                        nowMs - lastVisibleOverlayStartupProgressTriggerMs >= 16);
-
-        if (allowExpiryTriggeredStartupActivation || visibleOverlayStartupProgressTick) {
-            // If the deferred ECL probe is pending and the startup window has expired,
-            // try to probe now.  ProcessFrame may not be running (synthetic re-entrant
-            // Present path), so the deferred probe check in ProcessFrame would never fire.
-            DX12_ServiceDeferredECLProbe();
-
-            if (activationSwapchainAvailable) {
-                if (startupTransitionWindowJustExpired) {
-                    HookLogImportant(
-                        "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
-                        "triggering retained-swapchain PostSL activation service "
-                        "(startupWindowExpired=1 activationPending=1 activeButUnconfirmed=%d "
-                        "startupActivationEntered=%d callbackInstalled=1)",
-                        postSLActiveButUnconfirmed ? 1 : 0, postSLStartupActivationEntered ? 1 : 0);
-                } else {
-                    const int logCount =
-                        s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
-                    if (logCount < 10 || (logCount % 120) == 0) {
-                        HookLogImportant(
-                            "DX12: ECL hook continuing visible-overlay PostSL startup progress while render remains "
-                            "unconfirmed (startupPending=%d activeButUnconfirmed=%d "
-                            "startupActivationEntered=%d retainedSwapchain=1)",
-                            activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                            postSLStartupActivationEntered ? 1 : 0);
-                    }
-                }
-
-                s_callbackTriggeredWithCachedSwapchain = true;
-                if (!startupTransitionWindowJustExpired) {
-                    s_lastVisibleOverlayStartupProgressTriggerMs.store(nowMs, std::memory_order_release);
-                }
-                const bool invoked = DX12_TryInvokePostSLStartupActivationCallback(
-                    startupTransitionWindowJustExpired ? "DX12::ECL startup-window expiry"
-                                                       : "DX12::ECL visible startup progress",
-                    startupTransitionWindowJustExpired);
-                s_callbackTriggeredWithCachedSwapchain = false;
-                if (invoked) {
-                    if (startupTransitionWindowJustExpired) {
-                        HookLogImportant("DX12: ECL hook retained-swapchain PostSL callback completed");
-                    } else {
-                        const int logCount =
-                            s_visibleOverlayStartupProgressCompleteLogCount.fetch_add(1, std::memory_order_relaxed);
-                        if (logCount < 10 || (logCount % 120) == 0) {
-                            HookLogImportant("DX12: ECL hook visible-overlay PostSL progress callback completed");
-                        }
-                    }
-                }
-            } else {
-                static int s_nullSwapchainSkipLog = 0;
-                if (s_nullSwapchainSkipLog < 5) {
-                    HookLogImportant(
-                        "DX12: ECL hook skipping PostSL callback — no retained/fresh activation swapchain "
-                        "(allowExpiry=%d visibleTick=%d)",
-                        allowExpiryTriggeredStartupActivation ? 1 : 0, visibleOverlayStartupProgressTick ? 1 : 0);
-                    ++s_nullSwapchainSkipLog;
-                }
-            }
-        } else if (startupTransitionWindowJustExpired && activationPending && callbackInstalled &&
-                   !allowExpiryTriggeredStartupActivation) {
-            HookLogImportant(
-                "DX12: ECL hook leaving pending PostSL activation dormant after startup window expiry "
-                "because post-FSR bootstrap path is still unsafe "
-                "(activationPending=1 hadFSR=%d safeBootstrap=%d activationSwapchainAvailable=%d)",
-                dx12_hook_g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, activationSwapchainAvailable ? 1 : 0);
-        } else if (s_callbackTriggeredWithCachedSwapchain) {
-            // Log if we're still processing after callback was triggered (callbacks from ProcessFrame)
-            static int s_postEclCallbackLogCount = 0;
-            if (s_postEclCallbackLogCount < 5) {
-                HookLogImportant(
-                    "DX12: PostSL callback path after ECL hook trigger "
-                    "(windowActive=%d startupPending=%d callbackInstalled=%d)",
-                    windowActive ? 1 : 0, activationPending ? 1 : 0, callbackInstalled ? 1 : 0);
-                s_postEclCallbackLogCount++;
-            }
-        }
-        s_startupWindowWasActive = windowActive;
+    if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclStartupBlockOff)) {
+        DX12_ServiceECLPostSLStartupActivation();
     }
 
     // Debug: Log first few calls to verify hook is working
@@ -583,7 +483,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     const bool isKnownQueueEarly = primaryQ && (pThis == primaryQ || pThis == currentQEarly ||
                                                 pThis == dx12_hook_g_OriginalGameQueue || pThis == dx12_hook_g_SwapchainQueue);
     bool callerFromThirdPartyOverlay = false;
-    if (!anyFGActiveEarly || !isKnownQueueEarly) {
+    if ((!anyFGActiveEarly || !isKnownQueueEarly) &&
+        !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclCallerModuleLookupOff)) {
         callerFromThirdPartyOverlay =
             IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
     }
@@ -731,11 +632,30 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             }
             goto skip_command_queue_registration;
         }
-        if (!anyFGActive || !primaryQ || !isKnownQueue) {
-            // No FG, or FG active with a primary queue still missing/unknown: register this queue.
-            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
+        if (ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists(anyFGActive,
+                                                                                       primaryQ != nullptr)) {
+            // Registration is the expensive branch (command-queue mutex, GetDesc/GetDevice, vtable
+            // hook). Count it so the per-second ECL summary shows when it runs on a hot submission
+            // path at all; under active frame generation it must not run.
+            g_EclQueueRegistrationsThisWindow.fetch_add(1, std::memory_order_relaxed);
+            if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclQueueRegistrationOff)) {
+                DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
+            }
+        } else if (!isKnownQueue) {
+            // A queue CE does not recognise, submitting while frame generation owns presentation:
+            // the runtime's own. Logged sparsely (once per new queue is not knowable here without
+            // per-queue state, so this is rate-limited) because it is the signal that would have
+            // named the 1.9 ms/frame regression immediately.
+            static std::atomic<int> s_runtimeQueueSkipLogCount{0};
+            const int logCount = s_runtimeQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 8192) == 0) {
+                HookLogImportant(
+                    "DX12: ECL skipping queue registration for a frame-generation runtime queue "
+                    "(queue=%p primary=%p current=%p orig=%p scQ=%p actualFG=%d slFG=%d log=%d)",
+                    pThis, primaryQ, currentQ, dx12_hook_g_OriginalGameQueue, dx12_hook_g_SwapchainQueue,
+                    actualFGActive ? 1 : 0, streamlineFGRunning ? 1 : 0, logCount + 1);
+            }
         }
-        // else: FG active, known queue — skip registration (fast path)
     }
 skip_command_queue_registration:
 
@@ -767,15 +687,20 @@ skip_command_queue_registration:
     const bool hasDeferredOverlay = dx12_hook_g_steamDeferredOverlay.pending;
 
     if (original) {
+        const bool streamlineUiObservers = !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclStreamlineUiHooksOff);
         // Arm coverage before entering a wrapped queue. Its ExecuteCommandLists implementation may
         // synchronously re-enter Present; the PostSL consumer accounts the official-UI route only
         // when an output actually inherits it (standby submissions remain invisible while FG is off).
-        (void)ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
+        if (streamlineUiObservers) {
+            (void)ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
+        }
         {
             ScopedHookForwardedCall forwardedCycles;
             original(pThis, NumCommandLists, ppCommandLists);
         }
-        ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+        if (streamlineUiObservers) {
+            ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+        }
     }
 
     // After Steam's ECL completes: submit CE deferred overlay to the same queue.

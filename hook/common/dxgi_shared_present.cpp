@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "fg_cost_probe.h"
 #include "hook_cpu_cost.h"
 
 #include "../wrappers/vulkan_dxgi_fifo_present.h"
@@ -457,6 +458,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (!pSwapChain)
         return DXGI_ERROR_INVALID_CALL;
     if (HookIsShuttingDown())
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kPresentPassthrough))
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     // Single parameter decision for the scoped Vulkan FIFO backstop: exactly one
     // physical Present hook (this one) consults the armed/lifecycle policy and
