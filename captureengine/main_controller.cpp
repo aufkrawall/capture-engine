@@ -193,3 +193,144 @@ void SendCommandToAll(ProcessCommand cmd) {
         main_g_LimiterClient->SendCommand(cmd);
     }
 }
+
+namespace {
+
+bool TryParseBool(std::string_view val, bool& out) {
+    if (val == "1" || _stricmp(std::string(val).c_str(), "true") == 0 ||
+        _stricmp(std::string(val).c_str(), "on") == 0 || _stricmp(std::string(val).c_str(), "yes") == 0) {
+        out = true;
+        return true;
+    }
+    if (val == "0" || _stricmp(std::string(val).c_str(), "false") == 0 ||
+        _stricmp(std::string(val).c_str(), "off") == 0 || _stricmp(std::string(val).c_str(), "no") == 0) {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+bool TryParseInt(std::string_view val, int minVal, int maxVal, int& out) {
+    char* end = nullptr;
+    std::string s(val);
+    long v = strtol(s.c_str(), &end, 10);
+    if (end != s.c_str() && *end == '\0') {
+        out = std::clamp(static_cast<int>(v), minVal, maxVal);
+        return true;
+    }
+    return false;
+}
+
+PseudoOverlayConfig ParseProfileDesktopOverlayOverrides(const std::string& path, const std::string& section,
+                                                        const PseudoOverlayConfig& base) {
+    char buffer[4096];
+    const DWORD chars = GetPrivateProfileSectionA(section.c_str(), buffer, sizeof(buffer), path.c_str());
+    if (chars == 0 || chars >= sizeof(buffer) - 2)
+        return base;
+
+    PseudoOverlayConfig cfg = base;
+    for (const char* p = buffer; *p; p += strlen(p) + 1) {
+        std::string line(p);
+        size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        key.erase(0, key.find_first_not_of(" \t"));
+        const size_t keyEnd = key.find_last_not_of(" \t");
+        if (keyEnd != std::string::npos)
+            key.erase(keyEnd + 1);
+        val.erase(0, val.find_first_not_of(" \t"));
+        const size_t valEnd = val.find_last_not_of(" \t");
+        if (valEnd != std::string::npos)
+            val.erase(valEnd + 1);
+
+        std::string lowerKey;
+        lowerKey.reserve(key.size());
+        for (char c : key)
+            lowerKey.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+
+        if (lowerKey == "desktopoverlay.enabled" || lowerKey == "pseudo-overlay.enabled") {
+            TryParseBool(val, cfg.enabled);
+        } else if (lowerKey == "desktopoverlay.size" || lowerKey == "pseudo-overlay.size") {
+            TryParseInt(val, 10, 200, cfg.size);
+        } else if (lowerKey == "desktopoverlay.pad" || lowerKey == "pseudo-overlay.pad") {
+            TryParseInt(val, 0, 100, cfg.pad);
+        } else if (lowerKey == "desktopoverlay.pos" || lowerKey == "pseudo-overlay.pos") {
+            TryParseInt(val, 0, 3, cfg.pos);
+        } else if (lowerKey == "desktopoverlay.mode" || lowerKey == "pseudo-overlay.mode") {
+            TryParseInt(val, 0, 2, cfg.mode);
+        } else if (lowerKey == "desktopoverlay.always_render" || lowerKey == "pseudo-overlay.always_render" ||
+                   lowerKey == "always_render") {
+            TryParseBool(val, cfg.alwaysRender);
+        } else if (lowerKey == "desktopoverlay.always_render_only_when_game" ||
+                   lowerKey == "pseudo-overlay.always_render_only_when_game" ||
+                   lowerKey == "always_render_only_when_game") {
+            TryParseBool(val, cfg.alwaysRenderOnlyWhenGame);
+        } else if (lowerKey == "desktopoverlay.show_encoder_overload_warnings" ||
+                   lowerKey == "pseudo-overlay.show_encoder_overload_warnings" ||
+                   lowerKey == "show_encoder_overload_warnings") {
+            TryParseBool(val, cfg.showEncoderOverloadWarn);
+        } else if (lowerKey == "desktopoverlay.foreground_acquire_grace_ms" ||
+                   lowerKey == "pseudo-overlay.foreground_acquire_grace_ms" ||
+                   lowerKey == "foreground_acquire_grace_ms") {
+            TryParseInt(val, 0, 10000, cfg.foregroundAcquireGraceMs);
+        }
+    }
+    return cfg;
+}
+
+std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
+    std::vector<PseudoOverlayApplicationConfig> profiles;
+    profiles.reserve(baseConfig.applicationProfiles.size());
+
+    for (const ApplicationProfile& profile : baseConfig.applicationProfiles) {
+        if (!profile.target.HasProcess())
+            continue;
+
+        PseudoOverlayApplicationConfig overlayProfile;
+        overlayProfile.section = profile.section;
+        overlayProfile.processName = profile.target.pattern;
+        overlayProfile.settings =
+            ParseProfileDesktopOverlayOverrides(main_g_ConfigPath, profile.section, baseConfig.pseudoOverlay);
+        overlayProfile.settings.processList = baseConfig.pseudoOverlay.processList;
+        overlayProfile.warningTarget = profile.resolvedVideoCapture != ApplicationVideoCapture::kNone;
+        overlayProfile.captureUsesInjection =
+            profile.resolvedVideoCapture == ApplicationVideoCapture::kInject;
+        profiles.push_back(std::move(overlayProfile));
+    }
+
+    LogDebug("[Controller] Resolved DesktopOverlay settings for %zu process-backed application profiles",
+             profiles.size());
+    return profiles;
+}
+
+}  // namespace
+
+void SyncPseudoOverlayConfiguration(const char* reason) {
+    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(main_g_Config);
+    const bool anyProfileEnabled =
+        std::any_of(profiles.begin(), profiles.end(), [](const PseudoOverlayApplicationConfig& profile) {
+            return profile.settings.enabled;
+        });
+
+    if (!main_g_PseudoOverlay && !main_g_Config.pseudoOverlay.enabled && !anyProfileEnabled)
+        return;
+
+    if (!main_g_PseudoOverlay) {
+        LogInfo("[Controller] Initializing pseudo-overlay (%s)...", reason ? reason : "configuration");
+        auto overlay = std::make_unique<PseudoOverlay>();
+        overlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
+        overlay->SetRecordingStartIntent(main_g_RecordingStartIntent.load(std::memory_order_acquire));
+        HMODULE hMod = GetModuleHandle(NULL);
+        if (!overlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
+            LogError("[Controller] Failed to initialize pseudo-overlay");
+            return;
+        }
+        main_g_PseudoOverlay = std::move(overlay);
+        LogInfo("[Controller] Pseudo-overlay initialized");
+        return;
+    }
+
+    main_g_PseudoOverlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
+}

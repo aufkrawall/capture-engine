@@ -91,7 +91,16 @@ int ControllerMain(HINSTANCE hInstance) {
         ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW);
     };
     trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
-    trayCallbacks.onUninstallPawnIo = []() { ce::pawnio::UninstallDriverAsync(); };
+    trayCallbacks.onUninstallPawnIo = []() {
+        if (main_g_hSensorProcess) {
+            LogInfo("[PawnIO] Stopping sensor process before driver uninstallation");
+            TerminateProcess(main_g_hSensorProcess, 0);
+            WaitForSingleObject(main_g_hSensorProcess, 1000);
+            CloseHandle(main_g_hSensorProcess);
+            main_g_hSensorProcess = NULL;
+        }
+        ce::pawnio::UninstallDriverAsync();
+    };
     trayCallbacks.isPawnIoInstalled = []() { return ce::pawnio::IsDriverInstalled(); };
     auto tray = std::make_unique<TrayIcon>(hInstance, std::move(trayCallbacks));
     const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;

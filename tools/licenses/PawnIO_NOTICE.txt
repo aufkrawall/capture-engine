@@ -14,7 +14,7 @@ CaptureEngine bundles the official Microsoft-signed installer for PawnIO
   Authenticode:   Valid (Signed by "namazso.eu", timestamped by Microsoft Corporation)
   License:        GNU General Public License v2.0 or later (GPL-2.0-or-later)
                   with explicit Device IO Control Interface Exception
-  Copyright:      (c) 2025-2026 namazso <admin@namazso.eu>
+  Copyright:      (c) 2025-2026 namazso (namazso.eu)
 
 Licensing and redistribution
 ----------------------------

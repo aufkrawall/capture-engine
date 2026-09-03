@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 697,
+    "entries": 700,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -574,7 +574,9 @@
       "tests/test_d3d12_device_creation_policy.cpp",
       "tests/test_d3d9_capture_policy.cpp",
       "tests/test_display_timing_correlation.cpp",
+      "tests/test_display_timing_intervals.cpp",
       "tests/test_display_timing_nvidia.cpp",
+      "tests/test_display_timing_vblank.cpp",
       "tests/test_dlss_indicator_spoof.cpp",
       "tests/test_dx12_ecl_recursion_break_policy.cpp",
       "tests/test_dx12_factory_slot_policy.cpp",
@@ -659,6 +661,7 @@
       "tests/test_overlay_submit_queue_policy.cpp",
       "tests/test_overlay_system.cpp",
       "tests/test_path_utils.cpp",
+      "tests/test_pawnio_setup.cpp",
       "tests/test_performance_metrics.cpp",
       "tests/test_present_pacing_policy.cpp",
       "tests/test_process_identity.cpp",

@@ -562,6 +562,7 @@ bool CompleteControllerStartup() {
         }
     }
     const int64_t auxSpawnUs = Log_GetQpcUs() - auxSpawnStartUs;
+    PumpStartupMessages();
 
     LogInfo("[Controller] Waiting for child processes to connect...");
     const int64_t ipcConnectStartUs = Log_GetQpcUs();
@@ -571,6 +572,7 @@ bool CompleteControllerStartup() {
     }
     const int64_t ipcConnectUs = Log_GetQpcUs() - ipcConnectStartUs;
     LogInfo("[Controller] All child processes connected");
+    PumpStartupMessages();
 
     if (!main_g_DeferredLaunchPath.empty()) {
         LogInfo("[Controller] Launching deferred game: %s", main_g_DeferredLaunchPath.c_str());
@@ -599,6 +601,7 @@ bool CompleteControllerStartup() {
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
     SyncPseudoOverlayConfiguration("startup");
+    PumpStartupMessages();
 
     LogInfo("[Controller] Ready. Press hotkey to start recording.");
     PrimeStartupCursor();

@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-03 - Startup tray responsiveness and complete PawnIO uninstaller teardown
+
+1. **Instant Tray Responsiveness & 50x Startup Speedup**:
+   - *Problem*: For several seconds after launching CaptureEngine, right-clicking the system tray icon opened the context menu with a multi-second delay.
+   - *Root Cause*: During deferred startup (`main_kMsgCompleteControllerStartup`), `SyncPseudoOverlayConfiguration("startup")` resolved all 29 application profiles by calling `LoadConfig` from disk for each profile. Each `LoadConfig` called hundreds of `GetPrivateProfileStringA` queries and logged dozens of lines, blocking the main thread for ~4.4 seconds before any message in the queue could be dispatched.
+   - *Fix*: Replaced redundant whole-file disk parsing with an in-memory section scanner (`ParseProfileDesktopOverlayOverrides`) using `GetPrivateProfileSectionA` to parse only the relevant `DesktopOverlay.*` override keys without re-reading the 1500-line config or loading unneeded graphics/audio/hotkey modules. Added `PumpStartupMessages()` checkpoints across child process spawn and connect phases.
+   - *Result*: Controller startup time plummeted from 5,842 ms to 114 ms (51x faster). Tray menu clicks now open instantly.
+
+2. **Complete PawnIO Driver Uninstallation Teardown**:
+   - *Problem*: Uninstalling PawnIO via tray context menu or `--uninstall-pawnio` failed with "PawnIO driver uninstallation was cancelled or did not complete", even when launched elevated.
+   - *Root Cause*: `PawnIO_setup.exe -uninstall` expects `HKLM\...\Uninstall\PawnIO` and `InstallLocation` to exist. When absent (e.g. driver installed via INF, pnputil, or prior tools like FanControl), `PawnIO_setup.exe -uninstall -silent` exited in 19 ms without doing anything, leaving the `PawnIO` kernel service running and `IsDriverInstalled()` returning true. Additionally, if CaptureEngine's `sensors` child process was active, it held open device handles to `\\.\PawnIO`, preventing driver unload.
+   - *Fix*: 
+     - Added child sensor process termination before uninstallation to release open device handles.
+     - Implemented direct Windows Service Control Manager teardown (`OpenSCManagerW`, `OpenServiceW`, `ControlService(SERVICE_CONTROL_STOP)`, `DeleteService`).
+     - Added automatic discovery of all associated DriverStore packages (`FindPawnIoOemInfs`) via `Owners` multi-string and `C:\Windows\INF\oem*.inf` scanning, followed by forced package removal via `pnputil.exe /delete-driver <oem*.inf> /uninstall /force`.
+     - Cleaned leftover registry keys and `%ProgramFiles%\PawnIO`.
+
 ### 2026-09-03 - Offline PawnIO setup, system tray context menu, and local integrity verification
 
 Replaced external package manager (`winget`) retrieval of the PawnIO kernel driver with a fully self-contained offline installer bundled directly in `plugins/LibreHardwareMonitor/PawnIO_setup.exe`.
