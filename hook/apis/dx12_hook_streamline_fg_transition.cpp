@@ -78,6 +78,12 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     }
 
     if (active) {
+        // Streamline FG running is authoritative proof that presentation is Streamline's, so any official
+        // FFX startup still waiting for its enabled ffxConfigure has been abandoned. GetState can raise this
+        // edge without an explicit slDLSSGSetOptions enable and without a new authoritative swapchain, so
+        // this is the last place that can retire a latch which would otherwise quiesce InitOverlaySync — and
+        // therefore every PostSL draw — for the rest of the process.
+        DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership("Streamline FG ON");
         dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(nullptr, std::memory_order_release);
         const int previousHeuristicGrace = dx12_hook_g_SLOffHeuristicGrace.exchange(0, std::memory_order_acq_rel);
         const int previousSwapchainGrace = dx12_hook_g_SLOffSwapchainReinitGrace.exchange(0, std::memory_order_acq_rel);

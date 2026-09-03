@@ -693,4 +693,25 @@ inline bool ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable
     return protectedOfficialFFXStartupPending && streamlineEnableSucceeded && !authoritativeFSRActive;
 }
 
+inline bool ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(
+    bool protectedOfficialFFXStartupPending, bool authoritativeStreamlineOwnershipProof,
+    bool authoritativeFSRActive) {
+    // Streamline owning presentation - it created the new presentation swapchain, or its FG is running -
+    // moves presentation off the official FFX startup swapchain, so that swapchain's enabled ffxConfigure
+    // can never arrive. Streamline can come back ON through GetState alone, which never reaches the
+    // explicit-enable retirement above; without this the latch quiesces InitOverlaySync for the rest of
+    // the process (Talos 20260903_070055: PostSL then skipped every present with syncInit=0 and the
+    // overlay was gone until the game was closed).
+    return protectedOfficialFFXStartupPending && authoritativeStreamlineOwnershipProof && !authoritativeFSRActive;
+}
+
+inline bool ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(
+    bool protectedOfficialFFXStartupPending, bool frameGenerationSwapchainContextDestroyed) {
+    // The latch protects exactly one official FFX frame-generation SWAPCHAIN context, so its lifetime
+    // must end with that context. The process-wide FG context count is the wrong bound: the sibling
+    // FRAMEGENERATION context can outlive several FG toggles (Talos keeps it across FSR->DLSS->FSR), so
+    // the count never returns to zero and the count-based teardown never runs.
+    return protectedOfficialFFXStartupPending && frameGenerationSwapchainContextDestroyed;
+}
+
 }  // namespace ce::dx12_overlay_policy

@@ -146,6 +146,8 @@ void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* reason);
 bool DX12_IsNativeFSRStartupConfigureArmingPending();
 void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();
+void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source);
+void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const char* source);
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);

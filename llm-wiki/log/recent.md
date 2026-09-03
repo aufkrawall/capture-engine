@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-09-03 - The FSR startup latch that outlived its swapchain
+
+Talos, 2D menu, DLSS FG -> FSR FG -> DLSS FG a few times: the overlay vanished and never came back. The user
+deliberately quit from the menu rather than returning to 3D, where it would have recovered, so the end of
+`installed/captureengine/logs/20260903_070055` is the stuck state itself - 789 identical
+`InitOverlaySync: ENTER (syncInit=0 ...)` triples in the last four seconds.
+
+CE was quiesced by its own protection. An official FFX swapchain create arms a latch that suppresses every CE GPU
+side effect until AMD's runtime reaches an enabled `ffxConfigure`; while it is armed `InitOverlaySync` deliberately
+keeps the sync resources idle. The second FSR selection (07:01:56.610) armed it and never resolved it: the game
+raised only the FFX frame-generation *swapchain* context, and CE observed no `ffxConfigure` at all after 07:01:52.633.
+None of the three existing exits could fire either. The context-count exit needs `liveContexts == 0`, but a sibling
+FRAMEGENERATION context outlived the toggle so the count went 2 -> 1 and stopped. The explicit-enable exit needs a
+successful `slDLSSGSetOptions` enable, but DLSS-G returned through GetState (`FG state transition OFF->ON via
+GetState`). So DLSS FG ran with the FSR latch still armed, and PostSL skipped every single present with
+`init=1 sync=0 list=0 alloc=0`.
+
+The fix is a lifetime correction, not another special case: a provisional latch is bounded by the thing it protects.
+It is now retired when the FFX frame-generation swapchain context is destroyed (keyed on that effect id - the
+process-wide FG context count was always the wrong bound), when a Streamline runtime creates the new presentation
+swapchain (placed before the PostSL prewarm, which is otherwise quiesced too), and at the Streamline-FG-ON edge for
+the case where neither of the other two ever happens. All three stay gated on FSR FG not being API-active, so a real
+AMD pre-configure window is untouched.
+
+Worth recording for the next reader: the published FG status was correct throughout this session. The window where
+the overlay showed no FG (07:01:56 -> 07:01:59) had no FG context configured at all - the game had built an FFX
+interpolation swapchain and torn it down again without ever enabling FG. The symptom was only the disappearance.
+
+Hardware re-run pending: switch FG modes several times in the Talos menu and confirm the overlay survives, with
+`Authoritative Streamline presentation ownership superseded provisional official FFX startup` or `Official FFX
+frame-generation swapchain context was destroyed before its enabled ffxConfigure` in the log.
+
+
 ### 2026-09-03 - CaptureEngine now installs the sensor library, and offers the PawnIO driver
 
 Two follow-ups to the native bridge. Neither adds a shipped script.

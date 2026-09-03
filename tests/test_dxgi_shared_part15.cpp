@@ -94,3 +94,31 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     EXPECT_NE(limiterHeader.find("void ResetTraceLogPath();"), std::string::npos)
         << "FpsLimiter must expose the trace-path reset entry point";
 }
+
+// Talos 20260903_070055: DLSS FG -> FSR FG -> DLSS FG left the provisional official FFX startup latch
+// armed, because the second FSR enable never issued an enabled ffxConfigure and DLSS-G came back through
+// GetState instead of an explicit slDLSSGSetOptions enable. The latch quiesces every CE GPU side effect,
+// so InitOverlaySync kept syncInit=0 and PostSL skipped every present until the game was closed.
+TEST(DXGISharedTest, AuthoritativeStreamlineOwnershipRetiresAbandonedOfficialFFXStartup) {
+    using ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership;
+
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(true, true, false));
+
+    // Nothing to retire, no Streamline ownership proof, or FSR FG genuinely owns the runtime.
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(false, true, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(true, false, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(true, true, true));
+}
+
+// The latch is armed by one official FFX frame-generation SWAPCHAIN context create, so destroying that
+// context retires it. The process-wide FG context count cannot be the bound: Talos keeps its
+// FRAMEGENERATION context alive across FG toggles, so the count never returns to zero.
+TEST(DXGISharedTest, DestroyedFFXSwapchainContextRetiresUnconfirmedOfficialFFXStartup) {
+    using ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext;
+
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(true, true));
+
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(false, true));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(true, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(false, false));
+}

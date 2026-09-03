@@ -115,6 +115,33 @@ void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable() {
         authoritativeFSRActive ? 1 : 0);
     DX12_ClearNativeFSRStartupConfigureArming("successful explicit Streamline enable superseded FFX startup");
 }
+void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source) {
+    const bool protectedFFXStartupPending =
+        dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire);
+    const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(
+            protectedFFXStartupPending, true, authoritativeFSRActive)) {
+        return;
+    }
+
+    HookLogImportant(
+        "DX12: Authoritative Streamline presentation ownership superseded provisional official FFX startup — "
+        "retiring staged FFX queue and restoring CE overlay/queue side effects (source=%s apiFSR=%d)",
+        source && source[0] ? source : "unknown", authoritativeFSRActive ? 1 : 0);
+    DX12_ClearNativeFSRStartupConfigureArming("authoritative Streamline presentation ownership superseded FFX startup");
+}
+void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const char* source) {
+    if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(
+            dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire), true)) {
+        return;
+    }
+
+    HookLogImportant(
+        "DX12: Official FFX frame-generation swapchain context was destroyed before its enabled ffxConfigure — "
+        "retiring the provisional startup latch so CE overlay/queue side effects resume (source=%s)",
+        source && source[0] ? source : "unknown");
+    DX12_ClearNativeFSRStartupConfigureArming("official FFX FG swapchain context destroyed before enabled configure");
+}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
     if (!swapchain || !IsUsableStartupActivationSwapchainPointer(swapchain)) {
         return;

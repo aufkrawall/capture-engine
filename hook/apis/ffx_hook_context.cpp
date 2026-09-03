@@ -144,6 +144,7 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
     // Inspect before forwarding but commit no bookkeeping changes until AMD confirms destruction succeeded.
     // This preserves callback delegation and queue ownership if the provider rejects the destroy.
     bool isFGContext = false;
+    bool isFGSwapchainContext = false;
     bool isVulkanContext = false;
     bool isVulkanFGContext = false;
     {
@@ -153,6 +154,8 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
             uint32_t effectId = it->second;
             isVulkanContext = ffx_hook_g_VulkanContextSet.find(contextHandle) != ffx_hook_g_VulkanContextSet.end();
             isVulkanFGContext = isVulkanContext && ce::ffx_api::IsFrameGenerationEffectType(effectId);
+            isFGSwapchainContext =
+                !isVulkanContext && effectId == ffx_hook_FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN;
             isFGContext = !isVulkanContext && (effectId == ffx_hook_FFX_API_EFFECT_ID_FRAMEGENERATION ||
                                                effectId == ffx_hook_FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN);
         }
@@ -178,6 +181,13 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
             DX12_ClearFFXPresentCallbackBridge(contextHandle);
             DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
             ClearSubstituteUiReRegistrationForContext(contextHandle);
+            if (isFGSwapchainContext) {
+                // The protected-startup latch belongs to this swapchain context, not to the process-wide
+                // FG context count: the sibling FRAMEGENERATION context survives FG toggles, so the
+                // count-based teardown below never runs and the latch would quiesce CE forever.
+                DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(
+                    "FFX frame-generation swapchain context destroyed");
+            }
         }
     }
 

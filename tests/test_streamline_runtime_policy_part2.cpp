@@ -281,6 +281,72 @@ TEST(StreamlineRuntimePolicyTest, SuccessfulExplicitStreamlineEnableRetiresAband
     EXPECT_NE(startup.find("DX12_ClearNativeFSRStartupConfigureArming(", retireHelper), std::string::npos);
 }
 
+// A provisional official FFX startup can be abandoned two ways that the explicit-enable retirement above
+// never observes: the app hands presentation back to a Streamline runtime (DLSS-G may then come ON through
+// GetState alone), or the FFX frame-generation swapchain context is destroyed before its enabled
+// ffxConfigure. Either way the latch must be retired, otherwise it quiesces InitOverlaySync forever and the
+// overlay never returns (Talos 20260903_070055, DLSS FG -> FSR FG -> DLSS FG in the 2D menu).
+TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritativeExit) {
+    namespace fs = std::filesystem;
+    const std::string startup = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp");
+    const std::string tracking = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+    const std::string ffxContext = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "ffx_hook_context.cpp");
+    ASSERT_FALSE(startup.empty());
+    ASSERT_FALSE(tracking.empty());
+    ASSERT_FALSE(ffxContext.empty());
+
+    const size_t ownershipHelper =
+        startup.find("void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(");
+    ASSERT_NE(ownershipHelper, std::string::npos);
+    EXPECT_NE(
+        startup.find("ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(", ownershipHelper),
+        std::string::npos);
+    EXPECT_NE(startup.find("DX12_ClearNativeFSRStartupConfigureArming(", ownershipHelper), std::string::npos);
+
+    const size_t destroyHelper =
+        startup.find("void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(");
+    ASSERT_NE(destroyHelper, std::string::npos);
+    EXPECT_NE(
+        startup.find("ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(", destroyHelper),
+        std::string::npos);
+    EXPECT_NE(startup.find("DX12_ClearNativeFSRStartupConfigureArming(", destroyHelper), std::string::npos);
+
+    // The handoff retirement must precede the PostSL prewarm in the same block; a quiesced CE cannot
+    // build the sync resources that the prewarm and every later PostSL draw need.
+    const size_t handoffBlock = tracking.find("if (freshAuthoritativeStreamlineHandoff) {");
+    ASSERT_NE(handoffBlock, std::string::npos);
+    const size_t handoffRetire =
+        tracking.find("DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(", handoffBlock);
+    ASSERT_NE(handoffRetire, std::string::npos);
+    const size_t prewarm = tracking.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(", handoffBlock);
+    ASSERT_NE(prewarm, std::string::npos);
+    EXPECT_LT(handoffRetire, prewarm);
+
+    // DLSS-G can be raised through GetState alone, without an explicit enable and without a new
+    // authoritative swapchain; the Streamline-FG-ON edge is the last retirement opportunity.
+    const std::string transition = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_streamline_fg_transition.cpp");
+    ASSERT_FALSE(transition.empty());
+    EXPECT_NE(
+        transition.find("DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(\"Streamline FG ON\")"),
+        std::string::npos);
+
+    // The context-destroy retirement is keyed on the frame-generation SWAPCHAIN context, never on the
+    // process-wide FG context count reaching zero.
+    ASSERT_NE(ffxContext.find("isFGSwapchainContext = "), std::string::npos);
+    const size_t destroyRetire =
+        ffxContext.find("DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(");
+    ASSERT_NE(destroyRetire, std::string::npos);
+    const size_t swapchainGate = ffxContext.rfind("if (isFGSwapchainContext) {", destroyRetire);
+    ASSERT_NE(swapchainGate, std::string::npos);
+    const size_t countGate = ffxContext.find("if (newCount == 0) {");
+    ASSERT_NE(countGate, std::string::npos);
+    EXPECT_LT(destroyRetire, countGate) << "the retirement must not depend on the FG context count";
+}
+
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {
     alignas(16) static unsigned char image[0x100];
     alignas(16) static unsigned char outsideImage[0x100];

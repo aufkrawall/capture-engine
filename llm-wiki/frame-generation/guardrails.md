@@ -114,6 +114,27 @@ This page records current guardrails and tested transition families for no-FG, D
 - The pseudo-overlay is not an injected-overlay replacement for FG. It must not be used to paper over DLSS FG or FSR FG injected-overlay failures.
 
 ## Facts
+- **CURRENT PROTECTED-FFX-STARTUP LATCH LIFETIME INVARIANT (2026-09-03):** Talos session
+  `installed/captureengine/logs/20260903_070055` lost the overlay for good after DLSS FG -> FSR FG -> DLSS FG in the
+  2D menu. An official FFX swapchain create arms `dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending`, which
+  quiesces **every** CE GPU side effect until the AMD runtime reaches its enabled `ffxConfigure`
+  (`ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup`). That latch had only three exits: an
+  enabled/disabled `ffxConfigure`, all FFX FG contexts destroyed, or a successful explicit `slDLSSGSetOptions` enable.
+  The 07:01:56.610 FSR selection never reached an enabled configure (the game raised the FFX FG *swapchain* context
+  alone and CE observed no further `ffxConfigure` after 07:01:52.633); the FG context count never returned to zero
+  because a sibling FRAMEGENERATION context outlived the toggle (`liveContexts` 2 -> 1, never 0); and DLSS-G came back
+  ON through GetState, not through an explicit enable. So the latch stayed armed while DLSS FG ran: `InitOverlaySync`
+  returned early every call with `syncInit=0` ("Dedicated queue intentionally disabled because protected official FFX
+  startup is active") and PostSL logged `SKIP - state unavailable ... init=1 sync=0 list=0 alloc=0` for every present
+  until the process exited. **A provisional latch must be bounded by the lifetime of the thing it protects**, so it is
+  now retired at all three authoritative exits: the FFX frame-generation SWAPCHAIN context destroy (keyed on that
+  effect id, never on the process-wide FG context count), the fresh authoritative Streamline swapchain handoff
+  (before the PostSL prewarm in the same block, or the prewarm itself is quiesced), and the Streamline-FG-ON edge.
+  Each retirement stays gated on FSR FG not being API-active, so a genuine AMD pre-configure window is untouched.
+  Expected diagnostics: `Official FFX frame-generation swapchain context was destroyed before its enabled
+  ffxConfigure` and `Authoritative Streamline presentation ownership superseded provisional official FFX startup`.
+  Never re-key this retirement on elapsed time or frame progress: progress-only finalization is deliberately refused
+  by `MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress`.
 - **CURRENT FOREIGN-OVERLAY SWAPCHAIN-IDENTITY INVARIANT (2026-08-14):** sessions
   `installed/captureengine/logs/20260814_004913` (Steam + RTSS) and `20260814_051557` (Steam only) show CE's retaining
   `CWrapDXGISwapChain` teardown leaving foreign references before official FFX replacement creation fails controlled
