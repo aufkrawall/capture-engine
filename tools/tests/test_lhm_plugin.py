@@ -142,10 +142,14 @@ class LhmPluginAcquisitionTest(unittest.TestCase):
         for name in build.LHM_PLUGIN_FILES:
             expected = f"plugins/librehardwaremonitor/{name.lower()}"
             self.assertIn(expected, build.CAPTURE_PACKAGE_PLUGIN_FILES)
-        # Nothing beyond the pinned files and the setup notes may be packaged.
+        self.assertIn("plugins/librehardwaremonitor/pawnio_setup.exe", build.CAPTURE_PACKAGE_PLUGIN_FILES)
+        # Nothing beyond the pinned files, installer and setup notes may be packaged.
         self.assertEqual(
             build.CAPTURE_PACKAGE_PLUGIN_FILES,
-            {"plugins/librehardwaremonitor/readme.txt"}
+            {
+                "plugins/librehardwaremonitor/readme.txt",
+                "plugins/librehardwaremonitor/pawnio_setup.exe",
+            }
             | {f"plugins/librehardwaremonitor/{name.lower()}" for name in build.LHM_PLUGIN_FILES},
         )
 

@@ -55,6 +55,18 @@ LHM_MICROSOFT_SIGNED_FILES = frozenset(
         "System.Runtime.CompilerServices.Unsafe.dll",
     }
 )
+PAWNIO_SETUP_NAME = "PawnIO_setup.exe"
+PAWNIO_SETUP_SHA256 = "1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032"
+PAWNIO_SETUP_URL = "https://github.com/namazso/PawnIO.Setup/releases/download/2.2.0/PawnIO_setup.exe"
+PAWNIO_VERSION = "2.2.0"
+DATE_ACCESSED = "2026-09-03"
+
+LHM_PINNED_FILE_SHA256 = {
+    "LibreHardwareMonitorLib.dll": "6ebc194316536ba61af5be24508ad9fcbb2ecc685e716c12e787c79530f66bf0",
+    "System.Memory.dll": "d5e8e4866f9cfa66f7765660f84b210198893e55335487afe5ebda342c0e913d",
+    "System.Numerics.Vectors.dll": "20c2fa81b8c70d651099d762954f285fd4f942e63b2d7217c145dab8d4b2f4c9",
+    "System.Runtime.CompilerServices.Unsafe.dll": "08cbd7278b66f1e68425a82d4b97181a4130d93e3dd91831407aba7212ccdacf",
+}
 LHM_MANIFEST_NAME = "installed-files.json"
 
 
@@ -64,6 +76,10 @@ def lhm_cache_directory() -> str:
 
 def lhm_plugin_directory() -> str:
     return os.path.join(BIN_DIR, "plugins", "LibreHardwareMonitor")  # noqa: F821 - shared build namespace
+
+
+def lhm_repo_source_directory() -> str:
+    return os.path.join(PROJECT_ROOT, "plugins", "LibreHardwareMonitor")  # noqa: F821 - shared build namespace
 
 
 def _lhm_manifest_path() -> str:
@@ -85,7 +101,9 @@ def lhm_plugin_files_are_current() -> bool:
     if manifest.get("release") != LHM_RELEASE_TAG or manifest.get("archive_sha256") != LHM_ARCHIVE_SHA256:
         return False
     recorded = manifest.get("files")
-    if not isinstance(recorded, dict) or set(recorded) != set(LHM_PLUGIN_FILES):
+    if not isinstance(recorded, dict):
+        return False
+    if not set(LHM_PLUGIN_FILES).issubset(set(recorded)):
         return False
     directory = lhm_plugin_directory()
     for filename, expected_digest in recorded.items():
@@ -196,16 +214,61 @@ def _install_archive_members(archive_path: str, destination: str) -> dict:
     return digests
 
 
+def _install_from_repo_source(source_dir: str, destination: str) -> dict:
+    for filename in LHM_PLUGIN_FILES:
+        if not os.path.isfile(os.path.join(source_dir, filename)):
+            return {}
+    os.makedirs(destination, exist_ok=True)
+    digests = {}
+    for filename in LHM_PLUGIN_FILES:
+        src = os.path.join(source_dir, filename)
+        digest = sha256_file(src)  # noqa: F821
+        expected = LHM_PINNED_FILE_SHA256.get(filename)
+        if expected and digest.lower() != expected.lower():
+            raise RuntimeError(f"Repository source file {filename} SHA-256 mismatch: expected {expected}, got {digest}")
+        dst = os.path.join(destination, filename)
+        if not safe_copy_file(src, dst):  # noqa: F821
+            raise RuntimeError(f"Failed to copy {filename} to {destination}")
+        if filename in LHM_MICROSOFT_SIGNED_FILES and not pe_has_authenticode_certificate(dst):  # noqa: F821
+            os.remove(dst)
+            raise RuntimeError(f"Dependency {filename} is not Authenticode signed; refusing it")
+        digests[filename] = digest.lower()
+
+    pawnio_src = os.path.join(source_dir, PAWNIO_SETUP_NAME)
+    if os.path.isfile(pawnio_src):
+        pawnio_digest = sha256_file(pawnio_src)  # noqa: F821
+        if pawnio_digest.lower() != PAWNIO_SETUP_SHA256.lower():
+            raise RuntimeError(
+                f"PawnIO setup binary SHA-256 mismatch: expected {PAWNIO_SETUP_SHA256}, got {pawnio_digest}"
+            )
+        pawnio_dst = os.path.join(destination, PAWNIO_SETUP_NAME)
+        if not safe_copy_file(pawnio_src, pawnio_dst):  # noqa: F821
+            raise RuntimeError(f"Failed to copy {PAWNIO_SETUP_NAME} to {destination}")
+        if not pe_has_authenticode_certificate(pawnio_dst):  # noqa: F821
+            os.remove(pawnio_dst)
+            raise RuntimeError(f"PawnIO installer {PAWNIO_SETUP_NAME} is not Authenticode signed; refusing it")
+        digests[PAWNIO_SETUP_NAME] = pawnio_digest.lower()
+
+    return digests
+
+
 def install_lhm_plugin_binaries() -> None:
     """Install the pinned LibreHardwareMonitor runtime files, verifying each."""
     destination = lhm_plugin_directory()
-    archive_path = ensure_pinned_lhm_archive()
-    digests = _install_archive_members(archive_path, destination)
+    repo_source = lhm_repo_source_directory()
+    digests = _install_from_repo_source(repo_source, destination)
+    if not digests:
+        archive_path = ensure_pinned_lhm_archive()
+        digests = _install_archive_members(archive_path, destination)
     manifest = {
-        "release": LHM_RELEASE_TAG,
         "archive_sha256": LHM_ARCHIVE_SHA256,
         "archive_url": LHM_ARCHIVE_URL,
+        "date_accessed": DATE_ACCESSED,
         "files": digests,
+        "pawnio_setup_sha256": PAWNIO_SETUP_SHA256,
+        "pawnio_setup_url": PAWNIO_SETUP_URL,
+        "pawnio_version": PAWNIO_VERSION,
+        "release": LHM_RELEASE_TAG,
     }
     with open(_lhm_manifest_path(), "w", encoding="utf-8") as sink:
         json.dump(manifest, sink, indent=2, sort_keys=True)

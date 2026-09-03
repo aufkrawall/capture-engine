@@ -34,6 +34,7 @@ CAPTURE_PACKAGE_ROOT_SUFFIXES = (".dll", ".exe", ".json", ".pdb")
 # executable, PDBs, storage/SMBus helpers - is still excluded.
 CAPTURE_PACKAGE_PLUGIN_FILES = {
     "plugins/librehardwaremonitor/readme.txt",
+    "plugins/librehardwaremonitor/pawnio_setup.exe",
     "plugins/librehardwaremonitor/librehardwaremonitorlib.dll",
     "plugins/librehardwaremonitor/system.memory.dll",
     "plugins/librehardwaremonitor/system.numerics.vectors.dll",

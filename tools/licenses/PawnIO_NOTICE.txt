@@ -1,0 +1,41 @@
+PawnIO driver notice
+====================
+
+CaptureEngine bundles the official Microsoft-signed installer for PawnIO
+(PawnIO_setup.exe) for its optional CPU hardware sensor integration.
+
+  Component:      PawnIO 2.2.0
+  Installer file: plugins/LibreHardwareMonitor/PawnIO_setup.exe
+  Source code:    https://github.com/namazso/PawnIO
+                  https://github.com/namazso/PawnIO.Setup
+  Upstream asset: https://github.com/namazso/PawnIO.Setup/releases/tag/2.2.0
+  Date accessed:  2026-09-03
+  SHA-256 digest: 1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032
+  Authenticode:   Valid (Signed by "namazso.eu", timestamped by Microsoft Corporation)
+  License:        GNU General Public License v2.0 or later (GPL-2.0-or-later)
+                  with explicit Device IO Control Interface Exception
+  Copyright:      (c) 2025-2026 namazso <admin@namazso.eu>
+
+Licensing and redistribution
+----------------------------
+
+PawnIO is licensed under the GNU General Public License version 2 or later, with
+the following special exception granted by the copyright holder:
+
+  "As a special exception, the copyright holders of this library give you
+   permission to link this library with independent modules to produce an
+   executable, regardless of the license terms of these independent modules,
+   and to copy and distribute the resulting executable under terms of your
+   choice, provided that you also meet, for each linked independent module,
+   the terms and conditions of the license of that module. An independent
+   module is a module which is not derived from or based on this library.
+   Independent modules that communicate with PawnIO solely through the device
+   IO control interface are exempt from GPL requirements."
+
+CaptureEngine interacts with PawnIO solely through LibreHardwareMonitor via the
+standard Windows kernel device IO control interface, and distributes the
+official, unmodified PawnIO_setup.exe installer alongside CaptureEngine as a
+convenience for optional local installation. In accordance with Section 3 of the
+GNU GPL v2, the exact source code corresponding to this release is available at
+the upstream repositories listed above. The full text of the GNU General Public
+License v2 is provided in tools/licenses/GPLv2_PawnIO.txt.

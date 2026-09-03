@@ -313,10 +313,10 @@ TEST(HardwareSensorBridgeTest, NoInterpretedBridgeRemainsAnywhere) {
     EXPECT_NE(implementation.find("kSensorBridgeCommand"), std::string::npos);
 }
 
-// CaptureEngine must never become a distributor or downloader of the kernel
-// driver LibreHardwareMonitor needs for the CPU rails. It detects, asks, and
-// delegates the install to the platform package manager under one UAC prompt.
-TEST(HardwareSensorBridgeTest, PawnIoSetupNeitherShipsNorDownloadsTheDriver) {
+// CaptureEngine must never become a loose .sys extractor or arbitrary downloader.
+// It bundles the official Microsoft-signed PawnIO installer and verifies its
+// Authenticode signature and pinned SHA-256 digest before executing under UAC.
+TEST(HardwareSensorBridgeTest, PawnIoSetupVerifiesBundledInstallerLocally) {
     const std::string setup = ReadProjectFile("captureengine/pawnio_setup.cpp");
     ASSERT_FALSE(setup.empty());
     EXPECT_EQ(setup.find(".sys"), std::string::npos);
@@ -325,10 +325,9 @@ TEST(HardwareSensorBridgeTest, PawnIoSetupNeitherShipsNorDownloadsTheDriver) {
     EXPECT_EQ(setup.find("WinHttp"), std::string::npos);
     EXPECT_EQ(setup.find(".ps1"), std::string::npos);
     EXPECT_EQ(setup.find("powershell"), std::string::npos);
-    EXPECT_NE(setup.find("namazso.PawnIO"), std::string::npos);
-    // Both elevated roles must refuse to act without elevation rather than
-    // failing halfway through a privileged operation.
-    EXPECT_NE(setup.find("ERROR_ELEVATION_REQUIRED"), std::string::npos);
+    EXPECT_NE(setup.find("PawnIO_setup.exe"), std::string::npos);
+    EXPECT_NE(setup.find("VerifyPawnIoSetupBinary"), std::string::npos);
+    EXPECT_NE(setup.find("ComputeFileSha256"), std::string::npos);
     // The prompt cannot run on the controller thread: that loop dispatches
     // hotkeys itself, and a nested modal loop would swallow them.
     EXPECT_NE(setup.find("std::thread(PromptThread).detach()"), std::string::npos);

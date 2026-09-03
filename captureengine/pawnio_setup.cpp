@@ -1,13 +1,17 @@
 #include "pawnio_setup.h"
 
+#include <bcrypt.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <softpub.h>
+#include <wintrust.h>
 
 #include <array>
 #include <cstring>
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -15,13 +19,6 @@
 
 namespace ce::pawnio {
 namespace {
-
-constexpr wchar_t kDriverServiceKey[] = L"SYSTEM\\CurrentControlSet\\Services\\PawnIO";
-constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO";
-constexpr wchar_t kSuppressionKey[] = L"Software\\CaptureEngine";
-constexpr wchar_t kSuppressionValue[] = L"PawnIoPromptSuppressed";
-constexpr wchar_t kPackageIdentifier[] = L"namazso.PawnIO";
-constexpr wchar_t kProjectPage[] = L"https://pawnio.eu/";
 
 constexpr int kInstallButtonId = 101;
 constexpr int kNotNowButtonId = 102;
@@ -105,23 +102,6 @@ void SuppressPrompt() {
     LogInfo("[PawnIO] Recorded the user's choice not to be asked about the driver again");
 }
 
-// Locates winget without trusting PATH alone: the per-user app-execution alias
-// is the canonical location and stays valid under same-user elevation.
-std::filesystem::path FindPackageManager() {
-    wchar_t localAppData[MAX_PATH] = {};
-    DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
-    if (length > 0 && length < std::size(localAppData)) {
-        const std::filesystem::path alias =
-            std::filesystem::path(localAppData) / L"Microsoft" / L"WindowsApps" / L"winget.exe";
-        if (GetFileAttributesW(alias.c_str()) != INVALID_FILE_ATTRIBUTES)
-            return alias;
-    }
-    wchar_t resolved[MAX_PATH] = {};
-    if (SearchPathW(nullptr, L"winget.exe", nullptr, static_cast<DWORD>(std::size(resolved)), resolved, nullptr) > 0)
-        return resolved;
-    return {};
-}
-
 int RunProcessAndWait(const std::wstring& executable, std::wstring commandLine) {
     STARTUPINFOW startup = {};
     startup.cb = sizeof(startup);
@@ -131,9 +111,6 @@ int RunProcessAndWait(const std::wstring& executable, std::wstring commandLine) 
         LogWarn("[PawnIO] Cannot start %ls (error=%lu)", executable.c_str(), GetLastError());
         return -1;
     }
-    // The package manager downloads and runs a vendor installer; several minutes
-    // is generous but bounded, so a wedged child cannot keep the elevated role
-    // alive forever.
     const DWORD wait = WaitForSingleObject(process.hProcess, 10 * 60 * 1000);
     DWORD exitCode = static_cast<DWORD>(-1);
     if (wait == WAIT_OBJECT_0)
@@ -145,35 +122,64 @@ int RunProcessAndWait(const std::wstring& executable, std::wstring commandLine) 
     return static_cast<int>(exitCode);
 }
 
+bool VerifyAuthenticode(const std::filesystem::path& path) {
+    WINTRUST_FILE_INFO fileInfo = {};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = path.c_str();
+
+    WINTRUST_DATA trustData = {};
+    trustData.cbStruct = sizeof(trustData);
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+
+    GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const LONG status = WinVerifyTrust(nullptr, &policyGuid, &trustData);
+
+    trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &policyGuid, &trustData);
+
+    return status == ERROR_SUCCESS;
+}
+
 int InstallDriverNow() {
-    const std::filesystem::path packageManager = FindPackageManager();
-    if (packageManager.empty()) {
-        // Without a package source there is nothing CaptureEngine can safely
-        // execute: it will not download or run a kernel-driver installer itself.
-        LogWarn("[PawnIO] Windows Package Manager is unavailable; opening the project page instead");
-        ShellExecuteW(nullptr, L"open", kProjectPage, nullptr, nullptr, SW_SHOWNORMAL);
-        return 2;
+    const std::filesystem::path setupPath = BundledPawnIoSetupPath();
+    if (!VerifyPawnIoSetupBinary(setupPath)) {
+        LogWarn("[PawnIO] Bundled installer verification failed; cannot install driver: %ls", setupPath.c_str());
+        return 1;
     }
-    std::wstring commandLine = L"\"" + packageManager.wstring() +
-                               L"\" install --id " + kPackageIdentifier +
-                               L" --exact --source winget --accept-source-agreements --accept-package-agreements"
-                               L" --disable-interactivity";
-    LogInfo("[PawnIO] Installing the driver through the Windows Package Manager");
-    const int result = RunProcessAndWait(packageManager.wstring(), commandLine);
-    LogInfo("[PawnIO] Package manager finished with exit code %d", result);
-    return result == 0 ? 0 : 1;
+    std::wstring commandLine = L"\"" + setupPath.wstring() + L"\" -install -silent";
+    LogInfo("[PawnIO] Installing driver using bundled installer: %ls", setupPath.c_str());
+    const int result = RunProcessAndWait(setupPath.wstring(), commandLine);
+    LogInfo("[PawnIO] Bundled installer finished with exit code %d", result);
+    return (result == 0 || result == 3010) ? 0 : 1;
 }
 
 int UninstallDriverNow() {
     std::wstring command = ReadRegistryString(HKEY_LOCAL_MACHINE, kUninstallKey, L"QuietUninstallString");
     if (command.empty())
         command = ReadRegistryString(HKEY_LOCAL_MACHINE, kUninstallKey, L"UninstallString");
-    if (command.empty()) {
-        LogWarn("[PawnIO] No registered uninstall command; nothing to do");
-        return 2;
+    if (!command.empty()) {
+        LogInfo("[PawnIO] Running registered uninstall command: %ls", command.c_str());
+        const int result = RunProcessAndWait(std::wstring(), command);
+        LogInfo("[PawnIO] Registered uninstaller finished with exit code %d", result);
+        if (result == 0 || result == 3010)
+            return 0;
     }
-    LogInfo("[PawnIO] Running the driver's own registered uninstall command");
-    return RunProcessAndWait(std::wstring(), command) == 0 ? 0 : 1;
+
+    const std::filesystem::path setupPath = BundledPawnIoSetupPath();
+    if (VerifyPawnIoSetupBinary(setupPath)) {
+        std::wstring commandLine = L"\"" + setupPath.wstring() + L"\" -uninstall -silent";
+        LogInfo("[PawnIO] Running uninstallation via bundled installer: %ls", setupPath.c_str());
+        const int result = RunProcessAndWait(setupPath.wstring(), commandLine);
+        LogInfo("[PawnIO] Bundled uninstaller finished with exit code %d", result);
+        return (result == 0 || result == 3010) ? 0 : 1;
+    }
+
+    LogWarn("[PawnIO] No registered uninstaller or valid bundled installer found");
+    return 2;
 }
 
 // Relaunches this executable elevated for one setup action. Returns the child's
@@ -207,9 +213,81 @@ int RunElevatedSetupRole(const wchar_t* command) {
 
 typedef HRESULT(WINAPI* TaskDialogIndirectFunction)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
 
-// Three genuinely distinct answers need three buttons, which MessageBox cannot
-// express. TaskDialog is resolved at runtime so an environment without the v6
-// common controls degrades instead of failing.
+void RestartAsAdministrator() {
+    const std::filesystem::path executable = ExecutablePath();
+    if (executable.empty())
+        return;
+    SHELLEXECUTEINFOW info = {};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOASYNC;
+    info.lpVerb = L"runas";
+    info.lpFile = executable.c_str();
+    info.lpDirectory = executable.parent_path().c_str();
+    info.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&info)) {
+        LogInfo("[PawnIO] Spawning elevated CaptureEngine and exiting unelevated instance");
+        HWND trayHWnd = FindWindowA("CaptureEngineTray", nullptr);
+        if (trayHWnd) {
+            PostMessageA(trayHWnd, WM_CLOSE, 0, 0);
+        } else {
+            ExitProcess(0);
+        }
+    }
+}
+
+void OfferRestartAsAdministrator() {
+    if (IsProcessElevated()) {
+        MessageBoxW(nullptr,
+                    L"PawnIO was installed successfully.\n\n"
+                    L"CPU temperature, package power and core clocks are now available.",
+                    L"CaptureEngine", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        return;
+    }
+
+    HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    auto taskDialog = controls ? reinterpret_cast<TaskDialogIndirectFunction>(
+                                     GetProcAddress(controls, "TaskDialogIndirect"))
+                               : nullptr;
+
+    constexpr int kRestartButtonId = 201;
+    constexpr int kLaterButtonId = 202;
+
+    int choice = 0;
+    if (taskDialog) {
+        const TASKDIALOG_BUTTON buttons[] = {
+            {kRestartButtonId,
+             L"Restart as Administrator now\nCloses CaptureEngine and relaunches it elevated so CPU sensors work immediately."},
+            {kLaterButtonId,
+             L"Later\nKeep running without elevation. CPU sensors will remain unavailable until restarted as admin."},
+        };
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.pszWindowTitle = L"CaptureEngine";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"PawnIO was installed successfully";
+        config.pszContent =
+            L"LibreHardwareMonitor requires administrator privileges to read CPU temperature, package power and core clocks.\n\n"
+            L"Would you like to restart CaptureEngine as administrator now?";
+        config.cButtons = static_cast<UINT>(std::size(buttons));
+        config.pButtons = buttons;
+        config.nDefaultButton = kRestartButtonId;
+        taskDialog(&config, &choice, nullptr, nullptr);
+    } else {
+        const int res = MessageBoxW(
+            nullptr,
+            L"PawnIO was installed successfully.\n\n"
+            L"LibreHardwareMonitor requires administrator privileges to read CPU temperature, package power and core clocks.\n\n"
+            L"Restart CaptureEngine as administrator now?",
+            L"CaptureEngine", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_SETFOREGROUND);
+        choice = (res == IDYES) ? kRestartButtonId : kLaterButtonId;
+    }
+
+    if (choice == kRestartButtonId) {
+        RestartAsAdministrator();
+    }
+}
+
 int AskWithTaskDialog() {
     HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!controls)
@@ -218,7 +296,7 @@ int AskWithTaskDialog() {
     if (!taskDialog)
         return 0;
     const TASKDIALOG_BUTTON buttons[] = {
-        {kInstallButtonId, L"Install PawnIO\nRuns the official installer through the Windows Package Manager."},
+        {kInstallButtonId, L"Install PawnIO\nRuns the official Microsoft-signed installer bundled with CaptureEngine."},
         {kNotNowButtonId, L"Not now\nAsk again the next time CaptureEngine starts."},
         {kNeverButtonId, L"Don't ask again\nKeep CPU sensors unavailable and stop asking."},
     };
@@ -232,8 +310,8 @@ int AskWithTaskDialog() {
         L"CaptureEngine can show CPU temperature, package power and core clocks in the overlay, but "
         L"LibreHardwareMonitor reads those through PawnIO - a separate, Microsoft-signed kernel driver that is not "
         L"installed on this PC.\n\n"
-        L"CaptureEngine does not bundle or download the driver. Choosing to install hands the job to the Windows "
-        L"Package Manager and asks for administrator approval once. GPU sensors work either way.";
+        L"CaptureEngine bundles the official Microsoft-signed PawnIO installer. Choosing to install runs it "
+        L"locally and asks for administrator approval once. GPU sensors work either way.";
     config.cButtons = static_cast<UINT>(std::size(buttons));
     config.pButtons = buttons;
     config.nDefaultButton = kNotNowButtonId;
@@ -248,7 +326,8 @@ int AskWithMessageBox() {
         nullptr,
         L"CaptureEngine can show CPU temperature, package power and core clocks, but LibreHardwareMonitor reads "
         L"those through PawnIO - a separate, Microsoft-signed kernel driver that is not installed on this PC.\n\n"
-        L"Yes\tInstall it now through the Windows Package Manager (asks for administrator approval).\n"
+        L"CaptureEngine bundles the official Microsoft-signed installer for optional offline setup.\n\n"
+        L"Yes\tInstall it now (asks for administrator approval once).\n"
         L"No\tNot now; ask again next time.\n"
         L"Cancel\tDon't ask again.\n\n"
         L"GPU sensors work either way.",
@@ -276,11 +355,8 @@ void PromptThread() {
     }
     const int result = IsProcessElevated() ? InstallDriverNow() : RunElevatedSetupRole(kInstallCommand);
     if (result == 0 && IsDriverInstalled()) {
-        LogInfo("[PawnIO] Driver installed; restart CaptureEngine as administrator to read the CPU rails");
-        MessageBoxW(nullptr,
-                    L"PawnIO was installed.\n\nRestart CaptureEngine as administrator to read CPU temperature, "
-                    L"package power and core clocks.",
-                    L"CaptureEngine", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        LogInfo("[PawnIO] Driver installed; offering restart as administrator");
+        OfferRestartAsAdministrator();
         return;
     }
     LogWarn("[PawnIO] Driver installation did not complete (result=%d)", result);
@@ -288,9 +364,89 @@ void PromptThread() {
 
 }  // namespace
 
+std::wstring ComputeFileSha256(const std::filesystem::path& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return {};
+
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        CloseHandle(file);
+        return {};
+    }
+
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD objectSize = 0;
+    DWORD returned = 0;
+    std::wstring hexDigest;
+
+    if (BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectSize), sizeof(objectSize),
+                          &returned, 0) == 0) {
+        std::vector<UCHAR> hashObject(objectSize);
+        if (BCryptCreateHash(alg, &hash, hashObject.data(), objectSize, nullptr, 0, 0) == 0) {
+            std::array<UCHAR, 65536> buffer;
+            DWORD bytesRead = 0;
+            bool readSuccess = true;
+            while (ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead, nullptr) &&
+                   bytesRead > 0) {
+                if (BCryptHashData(hash, buffer.data(), bytesRead, 0) != 0) {
+                    readSuccess = false;
+                    break;
+                }
+            }
+            if (readSuccess) {
+                std::array<UCHAR, 32> digest;
+                if (BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0) {
+                    constexpr wchar_t kHexChars[] = L"0123456789abcdef";
+                    hexDigest.reserve(64);
+                    for (UCHAR byte : digest) {
+                        hexDigest.push_back(kHexChars[(byte >> 4) & 0x0F]);
+                        hexDigest.push_back(kHexChars[byte & 0x0F]);
+                    }
+                }
+            }
+            BCryptDestroyHash(hash);
+        }
+    }
+
+    BCryptCloseAlgorithmProvider(alg, 0);
+    CloseHandle(file);
+    return hexDigest;
+}
+
+bool VerifyPawnIoSetupBinary(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        LogWarn("[PawnIO] Installer binary not found at %ls", path.c_str());
+        return false;
+    }
+    const auto fileSize = std::filesystem::file_size(path, ec);
+    if (ec || fileSize < 500000 || fileSize > 32000000) {
+        LogWarn("[PawnIO] Installer binary size suspicious: %llu bytes", static_cast<unsigned long long>(fileSize));
+        return false;
+    }
+    if (!VerifyAuthenticode(path)) {
+        LogWarn("[PawnIO] Installer binary Authenticode signature verification failed: %ls", path.c_str());
+        return false;
+    }
+    const std::wstring sha256 = ComputeFileSha256(path);
+    if (_wcsicmp(sha256.c_str(), kPawnIoExpectedSha256) != 0) {
+        LogWarn("[PawnIO] Installer binary SHA-256 mismatch (got %ls, expected %ls)", sha256.c_str(),
+                kPawnIoExpectedSha256);
+        return false;
+    }
+    return true;
+}
+
+std::filesystem::path BundledPawnIoSetupPath() {
+    const std::filesystem::path executable = ExecutablePath();
+    if (executable.empty())
+        return {};
+    return executable.parent_path() / L"plugins" / L"LibreHardwareMonitor" / L"PawnIO_setup.exe";
+}
+
 bool IsDriverInstalled() {
-    // The driver package registers a service key; on 64-bit Windows the caller
-    // must not be redirected into the WOW6432Node view.
     return RegistryKeyExists(HKEY_LOCAL_MACHINE, kDriverServiceKey, KEY_WOW64_64KEY);
 }
 
@@ -309,16 +465,71 @@ bool IsPromptSuppressed() {
     return suppressed;
 }
 
+void ClearPromptSuppression() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kSuppressionKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, kSuppressionValue);
+        RegCloseKey(key);
+        LogInfo("[PawnIO] Cleared the prompt suppression preference");
+    }
+}
+
 void OfferInstallationAsync(const ::HardwareSensorsConfig& config) {
     if (config.enabled == "off" || !AreSensorLibraryFilesPresent())
         return;
-    // Only the rails that actually need the driver justify a prompt.
     if (config.cpuTemperature == "off" && config.cpuPackagePower == "off" && config.cpuCoreClock == "off")
         return;
     if (IsDriverInstalled() || IsPromptSuppressed())
         return;
-    LogInfo("[PawnIO] Driver absent; offering the optional installation once");
+    LogInfo("[PawnIO] Driver absent; offering optional installation once");
     std::thread(PromptThread).detach();
+}
+
+void InstallDriverAsync() {
+    std::thread([]() {
+        if (IsDriverInstalled()) {
+            MessageBoxW(nullptr, L"The PawnIO driver is already installed on this machine.", L"CaptureEngine",
+                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+            return;
+        }
+        const int result = IsProcessElevated() ? InstallDriverNow() : RunElevatedSetupRole(kInstallCommand);
+        if (result == 0 && IsDriverInstalled()) {
+            ClearPromptSuppression();
+            OfferRestartAsAdministrator();
+            return;
+        }
+        MessageBoxW(nullptr, L"PawnIO driver installation was cancelled or did not complete.", L"CaptureEngine",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    }).detach();
+}
+
+void UninstallDriverAsync() {
+    std::thread([]() {
+        if (!IsDriverInstalled()) {
+            MessageBoxW(nullptr, L"The PawnIO driver is not installed on this machine.", L"CaptureEngine",
+                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+            return;
+        }
+
+        const int confirm = MessageBoxW(
+            nullptr,
+            L"Uninstall the PawnIO kernel driver?\n\n"
+            L"PawnIO is a shared system component. Other hardware monitoring tools on your PC "
+            L"(e.g. FanControl, LibreHardwareMonitor) may also rely on it.\n\n"
+            L"Are you sure you want to uninstall PawnIO?",
+            L"CaptureEngine", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND);
+        if (confirm != IDYES)
+            return;
+
+        const int result = IsProcessElevated() ? UninstallDriverNow() : RunElevatedSetupRole(kUninstallCommand);
+        if (result == 0 && !IsDriverInstalled()) {
+            MessageBoxW(nullptr, L"PawnIO driver was successfully uninstalled.", L"CaptureEngine",
+                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+            return;
+        }
+        MessageBoxW(nullptr, L"PawnIO driver uninstallation was cancelled or did not complete.", L"CaptureEngine",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    }).detach();
 }
 
 std::optional<int> TryRunPawnIoSetupHost() {
@@ -332,7 +543,7 @@ std::optional<int> TryRunPawnIoSetupHost() {
     if (!install && !uninstall)
         return std::nullopt;
     if (!IsProcessElevated())
-        return ERROR_ELEVATION_REQUIRED;
+        return RunElevatedSetupRole(install ? kInstallCommand : kUninstallCommand);
     return install ? InstallDriverNow() : UninstallDriverNow();
 }
 

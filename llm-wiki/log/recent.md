@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-09-03 - Offline PawnIO setup, system tray context menu, and local integrity verification
+
+Replaced external package manager (`winget`) retrieval of the PawnIO kernel driver with a fully self-contained offline installer bundled directly in `plugins/LibreHardwareMonitor/PawnIO_setup.exe`.
+- **Integrity & Security**: Authenticode certificate and pinned SHA-256 digest (`1f519a22...`) are strictly verified via BCrypt and WinVerifyTrust before executing under UAC elevation, preventing local privilege escalation through file tampering.
+- **Packaging & Licensing**: Staged official signed v2.2.0 binary and recorded provenance in `plugins/LibreHardwareMonitor/installed-files.json`. Included full GNU GPLv2 and vendor notices in `tools/licenses/`. Build system verifies signatures and packages the installer directly in release archives.
+- **Tray & UI Integration**: Replaced single-action tray click with a full context menu (`Open config`, `Install PawnIO` / `Uninstall PawnIO`, `Close`). Startup prompt offers install / not now / don't ask again.
+- **Elevation & Lifecycle**: Added auto-elevation fallback for CLI flags (`--install-pawnio`, `--uninstall-pawnio`), confirmation dialog before uninstallation, and 1-click elevated restart offer after successful installation.
+
 ### 2026-09-03 - The FSR frame-time sawtooth was a flip latch, not a frame cadence
 
 The overlay's frame-time graph and 1% low went jagged under FSR FG while the cube stayed visibly smooth

@@ -10,6 +10,15 @@
 
 class TrayIcon {
 public:
+    struct Callbacks {
+        std::function<void()> onQuit;
+        std::function<void()> onOpenConfig;
+        std::function<void()> onInstallPawnIo;
+        std::function<void()> onUninstallPawnIo;
+        std::function<bool()> isPawnIoInstalled;
+    };
+
+    TrayIcon(HINSTANCE hInstance, Callbacks callbacks);
     TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit, std::function<void()> onOpenConfig);
     ~TrayIcon();
 
@@ -34,8 +43,7 @@ private:
     HWND hWnd = nullptr;
     NOTIFYICONDATAA nid{};
     UINT taskbarCreatedMessage = 0;
-    std::function<void()> onQuit;
-    std::function<void()> onOpenConfig;
+    Callbacks callbacks;
 
     HICON hIconIdle = nullptr;
     HICON hIconRecording = nullptr;
@@ -52,4 +60,5 @@ private:
     void InitIcon();
     void RestoreAfterTaskbarCreated();
     void UpdateBlinkState();
+    void ShowContextMenu();
 };

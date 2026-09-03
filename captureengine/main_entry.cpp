@@ -85,9 +85,15 @@ int ControllerMain(HINSTANCE hInstance) {
     // extend the launch-feedback cursor. The window remains hidden and inactive.
     LogInfo("[Controller] Creating tray icon...");
     const int64_t trayCreateStartUs = Log_GetQpcUs();
-    auto tray = std::make_unique<TrayIcon>(
-        hInstance, []() { main_g_Running = false; },
-        []() { ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
+    TrayIcon::Callbacks trayCallbacks;
+    trayCallbacks.onQuit = []() { main_g_Running = false; };
+    trayCallbacks.onOpenConfig = []() {
+        ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW);
+    };
+    trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
+    trayCallbacks.onUninstallPawnIo = []() { ce::pawnio::UninstallDriverAsync(); };
+    trayCallbacks.isPawnIoInstalled = []() { return ce::pawnio::IsDriverInstalled(); };
+    auto tray = std::make_unique<TrayIcon>(hInstance, std::move(trayCallbacks));
     const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
     main_g_Tray = tray.get();
     PrimeStartupCursor();

@@ -7,9 +7,17 @@ v0.9.6 release during the build, verified against a pinned SHA-256 digest and
 byte size, and installed into plugins/LibreHardwareMonitor:
 
   LibreHardwareMonitorLib.dll                 (MPL-2.0, LibreHardwareMonitor)
+    SHA-256: 6ebc194316536ba61af5be24508ad9fcbb2ecc685e716c12e787c79530f66bf0
   System.Memory.dll                           (MIT, Microsoft Corporation)
+    SHA-256: d5e8e4866f9cfa66f7765660f84b210198893e55335487afe5ebda342c0e913d
   System.Numerics.Vectors.dll                 (MIT, Microsoft Corporation)
+    SHA-256: 20c2fa81b8c70d651099d762954f285fd4f942e63b2d7217c145dab8d4b2f4c9
   System.Runtime.CompilerServices.Unsafe.dll  (MIT, Microsoft Corporation)
+    SHA-256: 08cbd7278b66f1e68425a82d4b97181a4130d93e3dd91831407aba7212ccdacf
+
+  Upstream asset: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip
+  Date accessed:  2026-09-03
+  Archive SHA256: 086d9f1b5a99e643edc2cfaaac16051685b551e4c5ac0b32a57c58c0e529c001
 
 CaptureEngine's own bridge is original CaptureEngine code compiled into
 captureengine.exe and is licensed under the project's MIT license. It links
@@ -47,17 +55,15 @@ They are the dependency closure LibreHardwareMonitorLib.dll needs; CaptureEngine
 does not call into them directly. The build refuses to install any of the three
 unless it still carries a valid Authenticode certificate after extraction.
 
-PawnIO is not redistributed
----------------------------
+PawnIO kernel driver
+--------------------
 
 LibreHardwareMonitor 0.9.6 reads CPU temperature, package power and core clocks
-through PawnIO, a separately installed kernel driver. CaptureEngine neither
-bundles nor downloads that driver. It detects whether the driver is present and,
-only with the user's consent, delegates installation to the Windows Package
-Manager under a single elevation prompt.
-
-  Project: https://github.com/namazso/PawnIO
-  Setup:   https://pawnio.eu/
+through PawnIO, a separately installed kernel driver. CaptureEngine bundles the
+official Microsoft-signed installer (PawnIO_setup.exe) in plugins/LibreHardwareMonitor
+for optional offline installation. See PawnIO_NOTICE.txt for full licensing terms
+(GPL-2.0 with Device IO Control Interface Exception), source code availability,
+and verification details.
 
 Packaging boundary
 ------------------

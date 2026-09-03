@@ -378,7 +378,7 @@ TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
     "pseudo_overlay_sync.cpp",
 )
 
-TESTS_ONLY_SENSOR_SOURCES = ("sensor_plugin.cpp",)
+TESTS_ONLY_SENSOR_SOURCES = ("sensor_plugin.cpp", "pawnio_setup.cpp")
 
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
@@ -482,6 +482,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             "-lmfplat",
             "-lmfuuid",
             "-lbcrypt",
+            "-lwintrust",
             "-lsecur32",
             "-lmmdevapi",
             "-luuid",

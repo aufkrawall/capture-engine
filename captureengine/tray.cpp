@@ -5,10 +5,17 @@
 static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
 static constexpr UINT BLINK_INTERVAL_MS = 500;
 
-TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit, std::function<void()> onOpenConfig)
+TrayIcon::TrayIcon(HINSTANCE hInstance, Callbacks callbacks)
     : hInstance(hInstance),
-      onQuit(std::move(onQuit)),
-      onOpenConfig(std::move(onOpenConfig)) {
+      callbacks(std::move(callbacks)) {
+    InitWindow();
+    InitIcon();
+}
+
+TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit, std::function<void()> onOpenConfig)
+    : hInstance(hInstance) {
+    callbacks.onQuit = std::move(onQuit);
+    callbacks.onOpenConfig = std::move(onOpenConfig);
     InitWindow();
     InitIcon();
 }
@@ -92,6 +99,60 @@ void TrayIcon::SetRecordingState(bool recording) {
     Shell_NotifyIconA(NIM_MODIFY, &nid);
 }
 
+void TrayIcon::ShowContextMenu() {
+    if (shuttingDown || !hWnd)
+        return;
+
+    POINT pt;
+    if (!GetCursorPos(&pt))
+        return;
+
+    SetForegroundWindow(hWnd);
+
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu)
+        return;
+
+    constexpr UINT kIdOpenConfig = 1001;
+    constexpr UINT kIdInstallPawnIo = 1002;
+    constexpr UINT kIdUninstallPawnIo = 1003;
+    constexpr UINT kIdClose = 1004;
+
+    AppendMenuW(hMenu, MF_STRING, kIdOpenConfig, L"Open config");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    const bool installed = callbacks.isPawnIoInstalled ? callbacks.isPawnIoInstalled() : false;
+    if (installed) {
+        AppendMenuW(hMenu, MF_STRING, kIdUninstallPawnIo, L"Uninstall PawnIO");
+    } else {
+        AppendMenuW(hMenu, MF_STRING, kIdInstallPawnIo, L"Install PawnIO");
+    }
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
+
+    const UINT cmd =
+        TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, nullptr);
+    DestroyMenu(hMenu);
+    PostMessage(hWnd, WM_NULL, 0, 0);
+
+    if (cmd == kIdOpenConfig) {
+        if (callbacks.onOpenConfig)
+            callbacks.onOpenConfig();
+    } else if (cmd == kIdInstallPawnIo) {
+        if (callbacks.onInstallPawnIo)
+            callbacks.onInstallPawnIo();
+    } else if (cmd == kIdUninstallPawnIo) {
+        if (callbacks.onUninstallPawnIo)
+            callbacks.onUninstallPawnIo();
+    } else if (cmd == kIdClose) {
+        if (callbacks.onQuit) {
+            StartShutdownAnimation();
+            callbacks.onQuit();
+        }
+    }
+}
+
 LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     TrayIcon* pThis = (TrayIcon*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
     if (message == WM_NCCREATE) {
@@ -109,14 +170,11 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
             return 0;
         }
         if (lParam == WM_LBUTTONUP) {
-            if (pThis && pThis->onOpenConfig)
-                pThis->onOpenConfig();
+            if (pThis && pThis->callbacks.onOpenConfig)
+                pThis->callbacks.onOpenConfig();
         } else if (lParam == WM_RBUTTONUP) {
-            // Right-click starts shutdown (don't hide icon yet)
-            if (pThis && pThis->onQuit) {
-                pThis->StartShutdownAnimation();
-                pThis->onQuit();
-            }
+            if (pThis)
+                pThis->ShowContextMenu();
         }
     } else if (message == WM_TIMER && wParam == BLINK_TIMER_ID) {
         if (pThis) {
@@ -128,9 +186,9 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
     } else if (message == WM_ENDSESSION) {
         if (wParam) {
             // Session is ending (shutdown/logoff) — trigger graceful exit
-            if (pThis && pThis->onQuit && !pThis->shuttingDown) {
+            if (pThis && pThis->callbacks.onQuit && !pThis->shuttingDown) {
                 pThis->StartShutdownAnimation();
-                pThis->onQuit();
+                pThis->callbacks.onQuit();
             }
         }
         return 0;
@@ -146,37 +204,63 @@ void TrayIcon::StartShutdownAnimation() {
     shuttingDown = true;
     blinkState = false;
 
-    // Update tooltip to show shutting down
-    strcpy_s(nid.szTip, "Capture Engine (Shutting down...)");
-    Shell_NotifyIconA(NIM_MODIFY, &nid);
+    // Set initial shutdown icon and tooltip
+    if (hIconShutdown) {
+        nid.hIcon = hIconShutdown;
+        strcpy_s(nid.szTip, "Capture Engine (Shutting down...)");
+        Shell_NotifyIconA(NIM_MODIFY, &nid);
+    }
 
-    // Start blink timer
-    blinkTimerId = SetTimer(hWnd, BLINK_TIMER_ID, BLINK_INTERVAL_MS, NULL);
+    // Start timer for blinking (every 500ms)
+    if (hWnd) {
+        blinkTimerId = SetTimer(hWnd, BLINK_TIMER_ID, BLINK_INTERVAL_MS, NULL);
+    }
 }
 
 void TrayIcon::UpdateBlinkState() {
+    if (!shuttingDown || !iconInitialized || iconRemovalRequested)
+        return;
+
     blinkState = !blinkState;
 
     if (blinkState) {
-        // Show icon (normal)
-        nid.hIcon = hIconIdle ? hIconIdle : LoadIcon(NULL, IDI_APPLICATION);
+        // Icon visible (red)
+        nid.hIcon = hIconShutdown ? hIconShutdown : hIconIdle;
     } else {
-        // Show shutdown icon (orange placeholder)
-        nid.hIcon = hIconShutdown ? hIconShutdown : LoadIcon(NULL, IDI_WINLOGO);
+        // Icon "hidden" (transparent/blank)
+        nid.hIcon = NULL;
     }
 
+    strcpy_s(nid.szTip, "Capture Engine (Shutting down...)");
     Shell_NotifyIconA(NIM_MODIFY, &nid);
 }
 
 void TrayIcon::Remove() {
-    if (iconRemovalRequested)
-        return;
     iconRemovalRequested = true;
 
-    if (blinkTimerId) {
+    if (blinkTimerId && hWnd) {
         KillTimer(hWnd, blinkTimerId);
         blinkTimerId = 0;
     }
-    if (iconInitialized)
+
+    if (iconInitialized) {
         Shell_NotifyIconA(NIM_DELETE, &nid);
+        iconInitialized = false;
+    }
+}
+
+void TrayIcon::Update() {
+    MSG msg;
+    while (PeekMessageA(&msg, hWnd, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+}
+
+void TrayIcon::Run() {
+    MSG msg;
+    while (GetMessageA(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
 }

@@ -49,21 +49,21 @@ Microsoft-signed kernel driver, and CaptureEngine additionally has to be running
 as administrator to open it. Without both, every one of those rails reads
 exactly zero.
 
-CaptureEngine neither bundles nor downloads that driver. When the driver is
-missing and CPU sensors are requested, CaptureEngine asks once at startup
-whether to install it and, if you agree, hands the job to the Windows Package
-Manager under a single administrator prompt. The dialog's three answers are
-install now, not now (ask again next start), and don't ask again. "Don't ask
-again" is remembered per user under HKCU\Software\CaptureEngine.
+CaptureEngine bundles the official Microsoft-signed PawnIO installer
+(PawnIO_setup.exe) directly in this directory for optional offline setup.
+When the driver is missing and CPU sensors are requested, CaptureEngine asks
+at startup whether to install it (Yes / No / Don't ask again). If you agree,
+it verifies the installer's Authenticode signature and pinned SHA-256 digest,
+then runs it under a single UAC administrator prompt.
 
-The driver can also be installed or removed from a command line:
-
-  captureengine.exe --install-pawnio
-  captureengine.exe --uninstall-pawnio
-
-Both refuse to run without elevation. Uninstalling is deliberately not offered
-in the interface: PawnIO is a shared system component that LibreHardwareMonitor
-and other tools may also be using, so removing it stays an explicit decision.
+The driver can also be installed or uninstalled at any time from CaptureEngine:
+- Via the system tray icon: right-click the tray icon and select
+  "Install PawnIO" or "Uninstall PawnIO".
+- Via the command line:
+    captureengine.exe --install-pawnio
+    captureengine.exe --uninstall-pawnio
+  (Both automatically request elevation if invoked from a non-elevated shell).
+- Via standard Windows Settings -> Apps -> Installed Apps (PawnIO).
 
 A metric that reads zero is reported as unavailable and omitted from the overlay
 rather than shown as a real 0 C, 0 W, 0 MHz or 0 V; a stopped fan is the one
