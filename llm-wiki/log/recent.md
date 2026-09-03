@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-09-03 - An ETW session outlives the process that opened it
+
+Two overlay regressions reported after a day of measurement runs: PC latency showed no value, and
+`msBetweenDisplayChange` went jagged under DLSS 4 MFG. Neither was a code change. The measurement harness had
+force-killed CaptureEngine about fifty times, and **an ETW session outlives the process that created it**: each
+kill left a `CE_DisplayTiming_<pid>` session running, fourteen of them accumulated, and Windows then refused a new
+one with 1450 `ERROR_NO_SYSTEM_RESOURCES`. Screen-change timing fell back to presentation timing, which is a
+present cadence rather than a screen cadence - a sawtooth under frame generation - and the PC-latency estimate,
+whose only working source here is `presentation/display estimate`, lost its pairing and read `source=unavailable`.
+
+The evidence was one line in `sensors.log`: `Screen-change timing startup failed: 1450`. Session
+`20260903_220337` still had `source=presentation/display estimate value=12.1ms`; every session after it read
+`unavailable`, which is when the count crossed the machine's limit.
+
+`captureengine/display_timing_session_reclaim.*` now sweeps before opening: it enumerates ETW sessions, keeps only
+names matching `CE_DisplayTiming_%08X`, and stops the ones whose owning process is gone - never a live owner's,
+never a stranger's. The sweep runs on every service start, so the leak cannot accumulate at all, and again if the
+open is refused anyway. The 1450 case also names its own cause in the log now instead of printing a bare number.
+Validated on hardware: with one leaked session present, the service logged `Reclaimed 1 leaked screen-change trace
+session(s)` and started.
+
+**Two things worth keeping.** `QueryAllTracesW` writes each session's logger name *and* log file name into the
+buffer it is handed, so a buffer sized for our own short session name is undefined behaviour rather than a failure;
+size it `sizeof(EVENT_TRACE_PROPERTIES) + 2 * MAX_PATH * sizeof(wchar_t)` per session. And `logman query -ets` /
+`logman stop <name> -ets` work unelevated for sessions the user owns, which is how a machine in this state gets
+cleaned by hand.
+
+**Left unresolved on this machine:** after that session churn, the display-timing collector starts cleanly and
+receives *no events at all* (`runtimePresents=0`), and the committed HEAD build without any of this code behaves
+identically - so it is wedged Windows ETW state, not CaptureEngine, and it needs a reboot to clear. The reclaim
+path itself is proven; end-to-end screen-change timing has to be re-checked once the machine is rebooted.
+
+
 ### 2026-09-03 - The FSR-FG cost is the GPU starving, and it hangs on one pointer store
 
 Follow-up to the entry below, which left the 2 ms open with "the remaining candidates are the GPU work CE appends

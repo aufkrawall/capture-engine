@@ -5,6 +5,7 @@
 #include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
+#include "display_timing_session_reclaim.h"
 #include "display_timing_submissions.h"
 #include "display_timing_vblank.h"
 
@@ -53,9 +54,8 @@ public:
         qpcFrequency_ = frequency.QuadPart;
         nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
         swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
-        auto properties = MakeProperties(sessionName_);
-
-        ULONG status = StartTraceW(&session_, sessionName_, properties.Get());
+        // Opening also reclaims sessions leaked by CaptureEngine processes that were killed.
+        ULONG status = static_cast<ULONG>(ce::display_timing_reclaim::OpenSessionWithReclaim(&session_, sessionName_));
         if (status != ERROR_SUCCESS) {
             SetStartupFailure(status);
             return;
@@ -175,6 +175,11 @@ private:
         if (error == ERROR_ACCESS_DENIED) {
             LogWarn("[DisplayTiming] Screen-change timing is unavailable (access denied); overlays will use "
                     "presentation timing");
+        } else if (ce::display_timing_reclaim::ShouldReclaimAfterStartFailure(error)) {
+            // Name the cause; the symptom is otherwise silent (a present-cadence graph).
+            LogWarn("[DisplayTiming] Screen-change timing startup failed: %lu - the machine's ETW session budget is "
+                    "exhausted and no leaked CaptureEngine session could be reclaimed; overlays will use "
+                    "presentation timing", error);
         } else {
             LogWarn("[DisplayTiming] Screen-change timing startup failed: %lu; overlays will use presentation timing",
                     error);
