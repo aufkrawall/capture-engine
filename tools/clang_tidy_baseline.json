@@ -23,8 +23,9 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 692,
+    "entries": 696,
     "translation_units": [
+      "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -84,6 +85,8 @@
       "captureengine/screenshot.cpp",
       "captureengine/screenshot_encoding.cpp",
       "captureengine/screenshot_hdr_encoding.cpp",
+      "captureengine/sensor_bridge_host.cpp",
+      "captureengine/sensor_bridge_lhm.cpp",
       "captureengine/sensor_plugin.cpp",
       "captureengine/sensor_service.cpp",
       "captureengine/status_overlay_sync.cpp",
@@ -679,6 +682,7 @@
       "tests/test_screenshot_present_thread_policy.cpp",
       "tests/test_screenshot_source.cpp",
       "tests/test_secure_dll_loading.cpp",
+      "tests/test_sensor_selection_policy.cpp",
       "tests/test_sequence_lock.cpp",
       "tests/test_sequence_lock_stress.cpp",
       "tests/test_shared_runtime_state.cpp",
