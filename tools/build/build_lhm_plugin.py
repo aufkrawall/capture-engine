@@ -214,10 +214,52 @@ def _install_archive_members(archive_path: str, destination: str) -> dict:
     return digests
 
 
+REPO_RAW_BASE_URL = "https://raw.githubusercontent.com/aufkrawall/capture-engine/main/plugins/LibreHardwareMonitor"
+
+
+def _retrieve_missing_repo_file(source_dir: str, filename: str, expected_sha256: str) -> bool:
+    """Retrieve a missing file from the project's GitHub repository if absent locally."""
+    target_path = os.path.join(source_dir, filename)
+    if os.path.isfile(target_path):
+        if sha256_file(target_path).lower() == expected_sha256.lower():  # noqa: F821
+            return True
+    url = f"{REPO_RAW_BASE_URL}/{filename}"
+    temporary = target_path + ".tmp"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "CaptureEngine-Build/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as response, open(temporary, "wb") as sink:
+            payload = response.read()
+            sink.write(payload)
+        digest = hashlib.sha256(payload).hexdigest().lower()
+        if digest != expected_sha256.lower():
+            if os.path.exists(temporary):
+                os.remove(temporary)
+            log(f"WARNING: Retrieved {filename} SHA-256 mismatch (got {digest}, expected {expected_sha256})")  # noqa: F821
+            return False
+        os.replace(temporary, target_path)
+        log(f"Retrieved {filename} from capture-engine repository ({len(payload)} bytes)")  # noqa: F821
+        return True
+    except (OSError, urllib.error.URLError) as error:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+        log(f"Note: Could not retrieve {filename} from repository ({error})")  # noqa: F821
+        return False
+
+
 def _install_from_repo_source(source_dir: str, destination: str) -> dict:
     for filename in LHM_PLUGIN_FILES:
-        if not os.path.isfile(os.path.join(source_dir, filename)):
+        src = os.path.join(source_dir, filename)
+        if not os.path.isfile(src):
+            expected = LHM_PINNED_FILE_SHA256.get(filename)
+            if expected:
+                _retrieve_missing_repo_file(source_dir, filename, expected)
+        if not os.path.isfile(src):
             return {}
+
+    pawnio_src = os.path.join(source_dir, PAWNIO_SETUP_NAME)
+    if not os.path.isfile(pawnio_src):
+        _retrieve_missing_repo_file(source_dir, PAWNIO_SETUP_NAME, PAWNIO_SETUP_SHA256)
+
     os.makedirs(destination, exist_ok=True)
     digests = {}
     for filename in LHM_PLUGIN_FILES:

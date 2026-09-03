@@ -19,6 +19,8 @@
 *.lib
 *.map
 *.exe
+!plugins/LibreHardwareMonitor/*.dll
+!plugins/LibreHardwareMonitor/*.exe
 *.link-cache.json
 *.mkv
 *.old
