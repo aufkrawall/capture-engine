@@ -414,6 +414,18 @@ bool LibreHardwareMonitorSession::Start(const std::filesystem::path& pluginDirec
             impl_->gpuHardwareTypes.push_back(value);
     }
 
+    // A scope whose HardwareType cannot be resolved would match no root at all
+    // and report every one of its metrics as unavailable forever. Fail with a
+    // reason instead of going quiet.
+    if (cpuRequested && !impl_->cpuHardwareTypeKnown) {
+        failureToken = "CpuHardwareTypeUnknown";
+        return false;
+    }
+    if (gpuRequested && impl_->gpuHardwareTypes.empty()) {
+        failureToken = "GpuHardwareTypeUnknown";
+        return false;
+    }
+
     if (!impl_->SubscribeHardwareEvents(failureToken))
         return false;
 

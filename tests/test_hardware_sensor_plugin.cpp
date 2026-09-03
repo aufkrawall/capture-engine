@@ -282,8 +282,12 @@ TEST(HardwareSensorBridgeTest, NativeBridgeUsesDirectCpuGpuVisitorsAndAnInterrup
     EXPECT_NE(bridge.find("add_HardwareAdded"), std::string::npos);
     EXPECT_NE(bridge.find("add_HardwareRemoved"), std::string::npos);
     EXPECT_NE(bridge.find("CreateDelegate"), std::string::npos);
-    // Enum ordinals come from the loaded library's metadata, never a constant.
+    // Enum ordinals come from the loaded library's metadata, never a constant,
+    // and an unresolvable scope fails with a reason instead of going quiet.
     EXPECT_NE(bridge.find("ResolveEnumMember"), std::string::npos);
+    EXPECT_NE(bridge.find("CpuHardwareTypeUnknown"), std::string::npos);
+    EXPECT_NE(bridge.find("GpuHardwareTypeUnknown"), std::string::npos);
+    EXPECT_NE(bridge.find("NoHardwareDiscovered"), std::string::npos);
     EXPECT_NE(host.find("WaitForSingleObject(shutdownEvent, arguments.pollIntervalMs)"), std::string::npos);
     EXPECT_NE(host.find("CE_LHM_SAMPLE"), std::string::npos);
     EXPECT_NE(host.find("COINIT_MULTITHREADED"), std::string::npos);
