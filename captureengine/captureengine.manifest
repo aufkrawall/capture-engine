@@ -15,6 +15,21 @@
         </asmv3:windowsSettings>
     </asmv3:application>
 
+    <!-- Common Controls v6: required for the TaskDialog used by the optional
+         PawnIO driver prompt, which needs three distinct answers. -->
+    <dependency>
+        <dependentAssembly>
+            <assemblyIdentity
+                type="win32"
+                name="Microsoft.Windows.Common-Controls"
+                version="6.0.0.0"
+                processorArchitecture="*"
+                publicKeyToken="6595b64144ccf1df"
+                language="*"
+            />
+        </dependentAssembly>
+    </dependency>
+
     <!-- Trust Info -->
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>

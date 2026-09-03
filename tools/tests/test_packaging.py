@@ -85,10 +85,19 @@ class PackagingTests(unittest.TestCase):
                 "setup", encoding="utf-8"
             )
             (source / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll").write_bytes(
+                b"pinned third-party runtime"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "System.Memory.dll").write_bytes(
+                b"pinned third-party runtime"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitor.exe").write_bytes(
                 b"user-supplied"
             )
             (source / "plugins" / "LibreHardwareMonitor" / "LICENSE.txt").write_text(
                 "user-supplied", encoding="utf-8"
+            )
+            (source / "plugins" / "LibreHardwareMonitor" / "installed-files.json").write_text(
+                "{}", encoding="utf-8"
             )
             (source / "logs" / "session" / "captureengine.log").write_text("private", encoding="utf-8")
             (source / "bak" / "config.ini").write_text("private", encoding="utf-8")
@@ -113,10 +122,18 @@ class PackagingTests(unittest.TestCase):
             self.assertFalse((destination / "logs").exists())
             self.assertFalse((destination / "bak").exists())
             self.assertFalse((destination / "captureengine.exe.old.123").exists())
-            self.assertFalse(
-                (destination / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll").exists()
-            )
+            # The pinned runtime files are installed by the build and do ship.
+            self.assertIn("plugins/LibreHardwareMonitor/LibreHardwareMonitorLib.dll", copied)
+            self.assertIn("plugins/LibreHardwareMonitor/System.Memory.dll", copied)
+            # Anything else in that directory does not, including build state and
+            # whatever a user dropped in beside it.
             self.assertFalse((destination / "plugins" / "LibreHardwareMonitor" / "LICENSE.txt").exists())
+            self.assertFalse(
+                (destination / "plugins" / "LibreHardwareMonitor" / "LibreHardwareMonitor.exe").exists()
+            )
+            self.assertFalse(
+                (destination / "plugins" / "LibreHardwareMonitor" / "installed-files.json").exists()
+            )
             self.assertNotIn("nul", copied)
             self.assertNotIn("nul", [path.name.lower() for path in destination.iterdir()])
 

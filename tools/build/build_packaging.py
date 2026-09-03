@@ -28,8 +28,16 @@ CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES = {"bak", "captures", "logs", "screenshots"
 CAPTURE_PACKAGE_EXCLUDED_SUFFIXES = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
 CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses", "plugins"}
 CAPTURE_PACKAGE_ROOT_SUFFIXES = (".dll", ".exe", ".json", ".pdb")
+# Everything CaptureEngine is entitled to ship from the plugins directory: its
+# own setup notes plus the pinned LibreHardwareMonitor runtime files installed by
+# tools/build/build_lhm_plugin.py. Anything else a user drops in there - the GUI
+# executable, PDBs, storage/SMBus helpers - is still excluded.
 CAPTURE_PACKAGE_PLUGIN_FILES = {
     "plugins/librehardwaremonitor/readme.txt",
+    "plugins/librehardwaremonitor/librehardwaremonitorlib.dll",
+    "plugins/librehardwaremonitor/system.memory.dll",
+    "plugins/librehardwaremonitor/system.numerics.vectors.dll",
+    "plugins/librehardwaremonitor/system.runtime.compilerservices.unsafe.dll",
 }
 
 

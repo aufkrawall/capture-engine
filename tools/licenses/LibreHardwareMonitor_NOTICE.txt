@@ -1,31 +1,73 @@
 LibreHardwareMonitor optional integration notice
 ================================================
 
-CaptureEngine does not include or redistribute LibreHardwareMonitor binaries.
-The optional integration is activated only when a user separately places the
-required files in plugins/LibreHardwareMonitor. CaptureEngine's bridge is
-original CaptureEngine code compiled into captureengine.exe and is licensed
-under the project's MIT license.
+CaptureEngine redistributes four third-party files for its optional hardware
+sensor integration. They are fetched from the official LibreHardwareMonitor
+v0.9.6 release during the build, verified against a pinned SHA-256 digest and
+byte size, and installed into plugins/LibreHardwareMonitor:
 
-LibreHardwareMonitor is available under the Mozilla Public License 2.0 (MPL-2.0):
+  LibreHardwareMonitorLib.dll                 (MPL-2.0, LibreHardwareMonitor)
+  System.Memory.dll                           (MIT, Microsoft Corporation)
+  System.Numerics.Vectors.dll                 (MIT, Microsoft Corporation)
+  System.Runtime.CompilerServices.Unsafe.dll  (MIT, Microsoft Corporation)
+
+CaptureEngine's own bridge is original CaptureEngine code compiled into
+captureengine.exe and is licensed under the project's MIT license. It links
+against nothing in the files above; it loads the managed library at runtime
+through the .NET Framework that ships with Windows.
+
+LibreHardwareMonitor - Mozilla Public License 2.0
+-------------------------------------------------
 
   Project: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
   Source:  https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/v0.9.6
   License: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/v0.9.6/LICENSE
   Notices: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/v0.9.6/THIRD-PARTY-NOTICES.txt
+  Release: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6
 
-CaptureEngine's tested setup uses LibreHardwareMonitor 0.9.6 and the matching
-System.Memory.dll, System.Numerics.Vectors.dll, and
-System.Runtime.CompilerServices.Unsafe.dll files from that official release.
-Those dependency DLLs retain their respective upstream licenses.
+MPL-2.0 section 3.2 requires that recipients of the Executable Form be able to
+obtain the Source Code Form under the MPL. The exact revision this binary was
+built from is the tagged source above, and it remains available there at no
+charge; the tag is recorded in tools/build/build_lhm_plugin.py alongside the
+archive digest, so the correspondence is verifiable. MPL-2.0 is file-level
+copyleft: the covered files stay under the MPL, and CaptureEngine's own sources
+are unaffected by including them in the Larger Work.
 
-CaptureEngine's package staging has an explicit first-party allowlist for the
-plugins directory. It ships only that directory's README.txt; all DLLs and other
-files a user adds locally are excluded. Therefore the official CaptureEngine
-archive contains no LibreHardwareMonitor/MPL-covered files. CaptureEngine's own bridge remains MIT-licensed; other bundled components
-retain the licenses documented by their respective notices.
+Microsoft dependency assemblies - MIT
+-------------------------------------
 
-Anyone redistributing a combined installation containing LibreHardwareMonitor
-or its dependencies is responsible for satisfying the applicable MPL-2.0 and
+The three System.* assemblies are Microsoft-published NuGet packages
+(System.Memory, System.Numerics.Vectors, System.Runtime.CompilerServices.Unsafe)
+distributed under the MIT license.
+
+  Source:  https://github.com/dotnet/runtime
+  License: https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+
+They are the dependency closure LibreHardwareMonitorLib.dll needs; CaptureEngine
+does not call into them directly. The build refuses to install any of the three
+unless it still carries a valid Authenticode certificate after extraction.
+
+PawnIO is not redistributed
+---------------------------
+
+LibreHardwareMonitor 0.9.6 reads CPU temperature, package power and core clocks
+through PawnIO, a separately installed kernel driver. CaptureEngine neither
+bundles nor downloads that driver. It detects whether the driver is present and,
+only with the user's consent, delegates installation to the Windows Package
+Manager under a single elevation prompt.
+
+  Project: https://github.com/namazso/PawnIO
+  Setup:   https://pawnio.eu/
+
+Packaging boundary
+------------------
+
+CaptureEngine's package staging uses an explicit allowlist for the plugins
+directory: the four files above plus that directory's README.txt. Every other
+file a user adds locally - the LibreHardwareMonitor GUI executable, PDBs,
+storage/SMBus helpers, notices - is excluded from the release archive.
+
+Anyone redistributing a combined installation containing LibreHardwareMonitor or
+its dependencies is responsible for satisfying the applicable MPL-2.0 and
 dependency-license requirements, including carrying the upstream license and
 third-party notices and meeting any corresponding-source obligations.

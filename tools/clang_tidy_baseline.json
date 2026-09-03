@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 696,
+    "entries": 697,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -75,6 +75,7 @@
       "captureengine/media_main_wgc.cpp",
       "captureengine/media_main_window.cpp",
       "captureengine/mediaengine_loader.cpp",
+      "captureengine/pawnio_setup.cpp",
       "captureengine/process_loopback_worker_host.cpp",
       "captureengine/pseudo_overlay.cpp",
       "captureengine/pseudo_overlay_render.cpp",

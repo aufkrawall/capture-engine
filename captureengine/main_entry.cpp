@@ -168,6 +168,11 @@ int ControllerMain(HINSTANCE hInstance) {
                 if (!CompleteControllerStartup()) {
                     ShutdownChildProcesses();
                     main_g_Running = false;
+                } else {
+                    // Offered once startup is complete so the prompt cannot
+                    // delay child spawning, and on its own thread so it cannot
+                    // swallow hotkeys from this loop.
+                    ce::pawnio::OfferInstallationAsync(main_g_Config.hardwareSensors);
                 }
                 continue;
             }
@@ -340,6 +345,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // handling so that role stays contained to its own short-lived process.
     if (const std::optional<int> bridgeResult = ce::hardware_sensors::TryRunSensorBridgeHost()) {
         return *bridgeResult;
+    }
+
+    // Elevated PawnIO setup role. It runs before every other role for the same
+    // reason as the bridge: the action is self-contained and must not depend on
+    // controller state.
+    if (const std::optional<int> setupResult = ce::pawnio::TryRunPawnIoSetupHost()) {
+        return *setupResult;
     }
 
     if (IsDumpHelperCommandLine(lpCmdLine)) {

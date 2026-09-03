@@ -61,10 +61,10 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
         copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
         log("Copied license files to installed/captureengine/")
 
-    # Install only CaptureEngine's first-party LHM setup text. The bridge itself
-    # is compiled into captureengine.exe, so nothing executable is placed here.
-    # Never clear this directory: users place their separately licensed LHM files
-    # here.
+    # Install CaptureEngine's first-party LHM setup text. The bridge itself is
+    # compiled into captureengine.exe, so nothing first-party and executable is
+    # placed here. Never clear this directory: it also holds the separately
+    # licensed third-party files installed below.
     lhm_support_src = os.path.join(PROJECT_ROOT, "plugins", "LibreHardwareMonitor")
     lhm_support_dst = os.path.join(BIN_DIR, "plugins", "LibreHardwareMonitor")
     os.makedirs(lhm_support_dst, exist_ok=True)
@@ -74,6 +74,10 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
         if not safe_copy_file(source, destination):
             raise RuntimeError(f"Failed to install LibreHardwareMonitor bridge support file: {filename}")
     log("Copied optional LibreHardwareMonitor setup notes")
+
+    # The third-party sensor library itself is fetched from its official release
+    # and verified before installation; see tools/build/build_lhm_plugin.py.
+    ensure_lhm_plugin_binaries()
 
     assert_no_obsolete_process_loopback_helper_artifacts()
 

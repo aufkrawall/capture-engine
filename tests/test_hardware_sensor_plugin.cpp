@@ -313,6 +313,47 @@ TEST(HardwareSensorBridgeTest, NoInterpretedBridgeRemainsAnywhere) {
     EXPECT_NE(implementation.find("kSensorBridgeCommand"), std::string::npos);
 }
 
+// CaptureEngine must never become a distributor or downloader of the kernel
+// driver LibreHardwareMonitor needs for the CPU rails. It detects, asks, and
+// delegates the install to the platform package manager under one UAC prompt.
+TEST(HardwareSensorBridgeTest, PawnIoSetupNeitherShipsNorDownloadsTheDriver) {
+    const std::string setup = ReadProjectFile("captureengine/pawnio_setup.cpp");
+    ASSERT_FALSE(setup.empty());
+    EXPECT_EQ(setup.find(".sys"), std::string::npos);
+    EXPECT_EQ(setup.find("urlopen"), std::string::npos);
+    EXPECT_EQ(setup.find("URLDownload"), std::string::npos);
+    EXPECT_EQ(setup.find("WinHttp"), std::string::npos);
+    EXPECT_EQ(setup.find(".ps1"), std::string::npos);
+    EXPECT_EQ(setup.find("powershell"), std::string::npos);
+    EXPECT_NE(setup.find("namazso.PawnIO"), std::string::npos);
+    // Both elevated roles must refuse to act without elevation rather than
+    // failing halfway through a privileged operation.
+    EXPECT_NE(setup.find("ERROR_ELEVATION_REQUIRED"), std::string::npos);
+    // The prompt cannot run on the controller thread: that loop dispatches
+    // hotkeys itself, and a nested modal loop would swallow them.
+    EXPECT_NE(setup.find("std::thread(PromptThread).detach()"), std::string::npos);
+}
+
+TEST(HardwareSensorBridgeTest, PawnIoPromptOffersThreeDistinctAnswers) {
+    const std::string setup = ReadProjectFile("captureengine/pawnio_setup.cpp");
+    const std::string manifest = ReadProjectFile("captureengine/captureengine.manifest");
+    ASSERT_FALSE(setup.empty());
+    ASSERT_FALSE(manifest.empty());
+    for (const char* identifier : {"kInstallButtonId", "kNotNowButtonId", "kNeverButtonId"}) {
+        SCOPED_TRACE(identifier);
+        EXPECT_NE(setup.find(identifier), std::string::npos);
+    }
+    // Only "don't ask again" is persisted, and it is persisted per user.
+    EXPECT_NE(setup.find("SuppressPrompt()"), std::string::npos);
+    EXPECT_NE(setup.find("HKEY_CURRENT_USER"), std::string::npos);
+    // Three answers need a TaskDialog, which needs the v6 common controls; the
+    // MessageBox path is the fallback when they are unavailable.
+    EXPECT_NE(manifest.find("Microsoft.Windows.Common-Controls"), std::string::npos);
+    EXPECT_NE(setup.find("AskWithMessageBox"), std::string::npos);
+    // Elevation is requested only for the setup action itself.
+    EXPECT_NE(manifest.find("level=\"asInvoker\""), std::string::npos);
+}
+
 // The CLR is reached through frozen mscorlib COM contracts rather than name
 // based IDispatch, which the runtime answers with E_NOTIMPL for these types and
 // which LibreHardwareMonitor's internal hardware classes do not expose at all.
@@ -356,11 +397,15 @@ TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHa
     EXPECT_NE(service.find("WaitForMultipleObjects"), std::string::npos);
 }
 
-TEST(HardwareSensorBridgeTest, RuntimeAndSetupAgreeOnTheFourUserSuppliedFiles) {
+TEST(HardwareSensorBridgeTest, RuntimeAndSetupAgreeOnTheFourInstalledFiles) {
     const std::string implementation = ReadProjectFile("captureengine/sensor_plugin.cpp");
     const std::string setup = ReadProjectFile("plugins/LibreHardwareMonitor/README.txt");
+    const std::string fetch = ReadProjectFile("tools/build/build_lhm_plugin.py");
     ASSERT_FALSE(implementation.empty());
     ASSERT_FALSE(setup.empty());
+    ASSERT_FALSE(fetch.empty());
+    // The runtime's presence check, the acquisition allowlist and the setup
+    // notes must name exactly the same closure.
     for (const char* filename : {
              "LibreHardwareMonitorLib.dll",
              "System.Memory.dll",
@@ -370,7 +415,10 @@ TEST(HardwareSensorBridgeTest, RuntimeAndSetupAgreeOnTheFourUserSuppliedFiles) {
         SCOPED_TRACE(filename);
         EXPECT_NE(implementation.find(filename), std::string::npos);
         EXPECT_NE(setup.find(filename), std::string::npos);
+        EXPECT_NE(fetch.find(filename), std::string::npos);
     }
+    // Everything else in the upstream release stays out of the plugin
+    // directory, out of the package, and out of the documentation.
     for (const char* filename : {
              "Aga.Controls.dll",
              "BlackSharp.Core.dll",
@@ -382,5 +430,9 @@ TEST(HardwareSensorBridgeTest, RuntimeAndSetupAgreeOnTheFourUserSuppliedFiles) {
         SCOPED_TRACE(filename);
         EXPECT_EQ(implementation.find(filename), std::string::npos);
         EXPECT_EQ(setup.find(filename), std::string::npos);
+        EXPECT_EQ(fetch.find(filename), std::string::npos);
     }
+    // The acquisition path must stay pinned and verified.
+    EXPECT_NE(fetch.find("LHM_ARCHIVE_SHA256"), std::string::npos);
+    EXPECT_NE(fetch.find("pe_has_authenticode_certificate"), std::string::npos);
 }

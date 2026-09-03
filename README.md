@@ -466,23 +466,23 @@ runtime already present on Windows and drives the managed library directly, so n
 binary is involved. No LibreHardwareMonitor code enters the game or hook DLL, and CaptureEngine does not bundle the
 third-party binaries.
 
-Download the official [LibreHardwareMonitor 0.9.6 release](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6)
-and copy these four matching files from that one release into
-`plugins\LibreHardwareMonitor` beside `captureengine.exe`:
+CaptureEngine installs the four LibreHardwareMonitor runtime files itself. The build fetches them from the official
+[v0.9.6 release](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6), verifies the
+archive against a pinned SHA-256 digest and byte size, extracts only those four names, and refuses any Microsoft
+dependency that is not Authenticode signed. Nothing else from that release is extracted or packaged, and their
+licenses are recorded in [LibreHardwareMonitor_NOTICE.txt](tools/licenses/LibreHardwareMonitor_NOTICE.txt).
 
-- `LibreHardwareMonitorLib.dll`
-- `System.Memory.dll`
-- `System.Numerics.Vectors.dll`
-- `System.Runtime.CompilerServices.Unsafe.dll`
+`[HardwareSensors] enabled=auto` activates the bridge and every metric selector defaults to `auto`. A selector may
+instead contain an exact LibreHardwareMonitor identifier, or `off`. A metric the driver cannot read is reported as
+unavailable rather than as a zero, so an unreadable sensor simply stays blank.
 
-No other release files are used by this CPU/GPU-only bridge, and no first-party file has to be placed beside them.
-Restart CaptureEngine after copying the files.
-`[HardwareSensors] enabled=auto` activates the bridge when those files exist and every metric selector defaults to
-`auto`. A selector may instead contain an exact LibreHardwareMonitor identifier, or `off`. A metric the driver cannot
-read is reported as unavailable rather than as a zero, so an unreadable sensor simply stays blank: CPU temperature,
-package power and core clock come from LibreHardwareMonitor's own kernel driver and need CaptureEngine to run as
-administrator. CaptureEngine never elevates itself, never substitutes a guessed value, and logs the reason once. See the installed plugin `README.txt` and `config.ini` for the complete setup and
-selector behavior.
+GPU sensors work out of the box. CPU temperature, package power and core clock additionally require
+[PawnIO](https://pawnio.eu/) - a separate Microsoft-signed kernel driver LibreHardwareMonitor reads those rails
+through - and CaptureEngine to be running as administrator. CaptureEngine neither bundles nor downloads that driver:
+when it is missing and CPU sensors are requested, CaptureEngine asks once at startup and, only if you agree, hands the
+installation to the Windows Package Manager under a single administrator prompt. The dialog offers install now, not
+now, and don't ask again. CaptureEngine never elevates itself for anything else and never substitutes a guessed value.
+See the installed plugin `README.txt` and `config.ini` for the complete setup and selector behavior.
 
 ## Known issues and limitations
 

@@ -54,6 +54,8 @@
 
 #include "main_vulkan_residency.h"
 
+#include "pawnio_setup.h"
+
 #include "process_loopback_worker_host.h"
 
 #include "pseudo_overlay.h"
