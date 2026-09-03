@@ -382,6 +382,18 @@ toggle_overlay=CTRL+8
 screenshot=CTRL+0
 ; Starts or stops a recording that contains audio but no video.
 audio_only=CTRL+Minus
+; Starts a benchmark run, stops an active run, or clears results from overlay.
+benchmark=CTRL+7
+
+[Benchmark]
+; Optional start delay in seconds after pressing the benchmark hotkey before recording begins.
+; 0 starts recording immediately.
+start_delay_seconds=0
+; Optional duration in seconds after which benchmark recording stops automatically.
+; 0 records until the benchmark hotkey is pressed again.
+duration_seconds=0
+; Output directory for HTML benchmark reports (empty = "benchmarks" subfolder beside executable).
+output_dir=
 
 [Overlay]
 ; This is the overlay drawn inside injected applications.

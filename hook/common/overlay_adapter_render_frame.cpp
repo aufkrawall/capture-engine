@@ -1,4 +1,6 @@
 #include "overlay_adapter_internal.h"
+#include "benchmark_manager.h"
+#include "benchmark_overlay_render.h"
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     std::lock_guard<std::mutex> lock(stateMutex);
@@ -24,11 +26,6 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
     auto* sharedMem = ipc->GetSharedMem();
     auto cfg = sharedMem->ReadOverlayConfig();
-    if (!cfg.showOverlay) {
-        if (renderLogCount < 5)
-            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
-        return;
-    }
 
     int64_t currentQpcUs = 0;
     if (metrics) {
@@ -53,6 +50,18 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 hasObservedFrameTimeSource = true;
             }
         }
+    }
+
+    const float presFrameTimeMs = metrics ? metrics->GetLastPresentationFrameTimeMs() : 0.0f;
+    const float dispFrameTimeMs = metrics ? metrics->GetLastDisplayFrameTimeMs() : 0.0f;
+    BenchmarkManager::Get().OnFrame(currentQpcUs, presFrameTimeMs, dispFrameTimeMs,
+                                    SystemMetricsCollector::Get().GetMetrics(), sharedMem);
+    const bool benchmarkActive = BenchmarkManager::Get().IsActiveOrShowingResults();
+
+    if (!cfg.showOverlay && !benchmarkActive) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
+        return;
     }
 
     // Update throttling
@@ -271,7 +280,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                                      frameLayout.notificationType != lastFrameLayout.notificationType;
     bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged;
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
-                       dynamicStateChanged || layoutDirty;
+                       dynamicStateChanged || layoutDirty || benchmarkActive;
     const bool refreshLayout = shouldUpdate || layoutDirty || configChanged || rowSetChanged || fgIdentityChanged;
     static int renderPathLogCount = 0;
     if (renderPathLogCount < 10) {
@@ -332,6 +341,11 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
     renderer->BeginFrame(viewportWidth, viewportHeight);
     RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout);
+    if (benchmarkActive) {
+        const float benchDpiScale = renderer->GetDpiScale();
+        const float pad = (float)cfg.padding * benchDpiScale;
+        RenderBenchmarkOverlay(renderer, pad, pad, benchDpiScale, viewportWidth, viewportHeight);
+    }
     if (activeDebugSample) {
         activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
         activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);

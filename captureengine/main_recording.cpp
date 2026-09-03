@@ -258,6 +258,22 @@ void ToggleOverlay() {
     LogInfo("[Controller] Overlay toggle hotkey handled");
 }
 
+void ToggleBenchmark() {
+    if (!main_g_InjectClient || !main_g_InjectClient->IsConnected()) {
+        LogWarn("[Controller] Benchmark hotkey pressed, but no inject process is connected");
+        return;
+    }
+
+    MainThreadBlockTimer _blk("benchmark toggle IPC");
+    ProcessResponse response = ProcessResponse::Error;
+    if (!main_g_InjectClient->SendCommand(ProcessCommand::ToggleBenchmark, nullptr, &response) ||
+        response == ProcessResponse::Error) {
+        LogError("[Controller] Inject process did not accept the benchmark toggle");
+        return;
+    }
+    LogInfo("[Controller] Benchmark toggle hotkey handled");
+}
+
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
@@ -590,6 +606,8 @@ bool CompleteControllerStartup() {
         RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly, "audio-only");
     main_g_HotkeyOwnership.toggleOverlay =
         RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay, "overlay toggle");
+    main_g_HotkeyOwnership.benchmark =
+        RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark, "benchmark");
 
     // RegisterHotKey stops being delivered to anyone while a foreground
     // application registers its raw-input keyboard with RIDEV_NOHOTKEYS, so the

@@ -51,6 +51,11 @@ void PublishConfigLocked(SharedMemoryLayout* sharedMemory, const AppConfig& reso
              Publication().overlayVisibility.active ? 1 : 0, resolved.overlay.showOverlay ? 1 : 0,
              reason ? reason : "unknown");
     UpdateSharedMemoryFromConfig(sharedMemory, resolved);
+    if (sharedMemory) {
+        strncpy(sharedMemory->benchmark.profileName, targetProcess.c_str(),
+                sizeof(sharedMemory->benchmark.profileName) - 1);
+        sharedMemory->benchmark.profileName[sizeof(sharedMemory->benchmark.profileName) - 1] = '\0';
+    }
 }
 
 void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* reason) {

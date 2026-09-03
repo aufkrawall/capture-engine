@@ -593,6 +593,15 @@ public:
         shmemMappingSize_.store(val, std::memory_order_release);
     }
 
+    // Benchmark Coordination (Host -> Hook)
+    struct SharedBenchmarkState {
+        std::atomic<uint64_t> toggleSeq{0};
+        std::atomic<uint32_t> startDelaySeconds{0};
+        std::atomic<uint32_t> durationSeconds{0};
+        char outputDir[MAX_PATH]{};
+        char profileName[64]{};
+    } benchmark;
+
     // Cache Invalidation
     std::atomic<uint32_t> configVersion{0};  // Incremented when config changes
 };

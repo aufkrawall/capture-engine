@@ -49,7 +49,7 @@ static bool IsValidMode(ProcessMode mode) {
 
 bool IsValidCommand(uint16_t opcode) {
     return opcode >= static_cast<uint16_t>(ProcessCommand::Shutdown) &&
-           opcode <= static_cast<uint16_t>(ProcessCommand::ToggleOverlay);
+           opcode <= static_cast<uint16_t>(ProcessCommand::ToggleBenchmark);
 }
 
 static bool IsValidResponse(uint16_t opcode) {
@@ -90,6 +90,7 @@ bool IsResponseAllowed(ProcessCommand command, ProcessResponse response) {
         case ProcessCommand::Shutdown:
         case ProcessCommand::ReloadConfig:
         case ProcessCommand::ToggleOverlay:
+        case ProcessCommand::ToggleBenchmark:
             return response == ProcessResponse::Ack;
         case ProcessCommand::StartRecording:
             return response == ProcessResponse::Ack || response == ProcessResponse::RecordingStarted;

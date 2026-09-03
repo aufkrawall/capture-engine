@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "benchmark_config.h"
 #include "face_camera_config.h"
 #include "shared_defs.h"
 
@@ -585,6 +586,10 @@ struct AppConfig {
     HotkeyConfig hotkeyToggleOverlay;
     HotkeyConfig hotkeyScreenshot;
     HotkeyConfig hotkeyAudioOnly;
+    HotkeyConfig hotkeyBenchmark;
+
+    // Benchmark
+    BenchmarkConfig benchmark;
 
     // Screenshot
     std::string screenshotDir;  // Output directory (empty = "captures" next to exe)

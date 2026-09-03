@@ -305,6 +305,7 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     ASSERT_FALSE(templateSource.empty());
 
     EXPECT_NE(protocolHeader.find("ToggleOverlay = 6"), std::string::npos);
+    EXPECT_NE(protocolHeader.find("ToggleBenchmark = 7"), std::string::npos);
 
     // The controller registers the hotkey, dispatches it in the message loop and
     // forwards the intent to the inject client over the authenticated channel.
@@ -328,6 +329,12 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     // so a single overlay toggle dropped its graphics, DLSS and UE5 overrides.
     const size_t toggleCase = injectSource.find("case ProcessCommand::ToggleOverlay:");
     ASSERT_NE(toggleCase, std::string::npos);
+    const size_t benchCase = injectSource.find("case ProcessCommand::ToggleBenchmark:");
+    ASSERT_NE(benchCase, std::string::npos);
+    EXPECT_NE(controllerSource.find("hotkeyId == HOTKEY_ID_BENCHMARK"), std::string::npos);
+    EXPECT_NE(controllerSource.find("ToggleBenchmark();"), std::string::npos);
+    EXPECT_NE(controllerSource.find("SendCommand(ProcessCommand::ToggleBenchmark, nullptr, &response)"),
+              std::string::npos);
     const size_t toggleEnd = injectSource.find("case ProcessCommand::ReloadConfig:", toggleCase);
     ASSERT_NE(toggleEnd, std::string::npos);
     const std::string toggleBlock = injectSource.substr(toggleCase, toggleEnd - toggleCase);

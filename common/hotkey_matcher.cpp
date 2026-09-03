@@ -54,6 +54,8 @@ size_t BuildHotkeyBindings(const AppConfig& config, const HotkeyOwnership& owner
     AppendBinding(bindings, count, capacity, HOTKEY_ID_AUDIO_ONLY, config.hotkeyAudioOnly, ownership.audioOnly);
     AppendBinding(bindings, count, capacity, HOTKEY_ID_TOGGLE_OVERLAY, config.hotkeyToggleOverlay,
                   ownership.toggleOverlay);
+    AppendBinding(bindings, count, capacity, HOTKEY_ID_BENCHMARK, config.hotkeyBenchmark,
+                  ownership.benchmark);
     return count;
 }
 

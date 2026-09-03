@@ -102,6 +102,8 @@ void ToggleAudioOnlyRecording();
 
 void ToggleOverlay();
 
+void ToggleBenchmark();
+
 void DispatchHotkey(int hotkeyId);
 
 void ShutdownChildProcesses();

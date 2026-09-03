@@ -19,6 +19,12 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     strncpy(sharedMemory->logFilePath, config.logFilePath.c_str(), sizeof(sharedMemory->logFilePath) - 1);
     sharedMemory->logFilePath[sizeof(sharedMemory->logFilePath) - 1] = '\0';
 
+    sharedMemory->benchmark.startDelaySeconds.store(config.benchmark.startDelaySeconds, std::memory_order_release);
+    sharedMemory->benchmark.durationSeconds.store(config.benchmark.durationSeconds, std::memory_order_release);
+    strncpy(sharedMemory->benchmark.outputDir, config.benchmark.outputDir.c_str(),
+            sizeof(sharedMemory->benchmark.outputDir) - 1);
+    sharedMemory->benchmark.outputDir[sizeof(sharedMemory->benchmark.outputDir) - 1] = '\0';
+
     auto& graphics = sharedMemory->graphicsConfig;
     strncpy(graphics.vsyncMode, config.graphics.vsyncMode.c_str(), 31);
     strncpy(graphics.anisotropicFiltering, config.graphics.anisotropicFiltering.c_str(), 31);

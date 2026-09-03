@@ -108,8 +108,12 @@ TEST(IpcMessageValidationTest, AcceptsWellFormedMessages) {
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleOverlay), 9);
     EXPECT_TRUE(Validate(toggleOverlay, toggleOverlay.totalSize, 8, false));
 
-    const ProcessMessage ack = MakeValid(ProcessMessageKind::Response, static_cast<uint16_t>(ProcessResponse::Ack), 9);
-    EXPECT_TRUE(Validate(ack, ack.totalSize, 8, false));
+    const ProcessMessage toggleBenchmark =
+        MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleBenchmark), 10);
+    EXPECT_TRUE(Validate(toggleBenchmark, toggleBenchmark.totalSize, 9, false));
+
+    const ProcessMessage ack = MakeValid(ProcessMessageKind::Response, static_cast<uint16_t>(ProcessResponse::Ack), 10);
+    EXPECT_TRUE(Validate(ack, ack.totalSize, 9, false));
 
     const ProcessMessage error =
         MakeValid(ProcessMessageKind::Response, static_cast<uint16_t>(ProcessResponse::Error), 10, "detail");
@@ -196,6 +200,10 @@ TEST(IpcMessageValidationTest, RejectsOutOfRangeOpcodesAndUnexpectedPayloads) {
     ProcessMessage toggleWithPayload =
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleOverlay), 7, "audio_only");
     EXPECT_FALSE(Validate(toggleWithPayload, toggleWithPayload.totalSize, 6, false));
+
+    ProcessMessage toggleBenchWithPayload =
+        MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::ToggleBenchmark), 7, "audio_only");
+    EXPECT_FALSE(Validate(toggleBenchWithPayload, toggleBenchWithPayload.totalSize, 6, false));
 
     ProcessMessage startWrongToken =
         MakeValid(ProcessMessageKind::Command, static_cast<uint16_t>(ProcessCommand::StartRecording), 7, "video_only");

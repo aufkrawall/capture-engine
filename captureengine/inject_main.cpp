@@ -456,6 +456,16 @@ int InjectProcessMain(const AppConfig& config) {
                         ipc.SendResponse(ProcessResponse::Ack);
                         break;
                     }
+                    case ProcessCommand::ToggleBenchmark: {
+                        if (pSharedMem) {
+                            const uint64_t seq =
+                                pSharedMem->benchmark.toggleSeq.fetch_add(1, std::memory_order_release) + 1;
+                            LogInfo("[Inject] Benchmark toggle signaled via controller hotkey (seq=%llu)",
+                                    static_cast<unsigned long long>(seq));
+                        }
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    }
                     case ProcessCommand::ReloadConfig: {
                         AppConfig reloadedConfig;
                         LoadConfig(configPath, reloadedConfig);

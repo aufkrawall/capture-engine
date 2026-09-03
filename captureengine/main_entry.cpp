@@ -27,6 +27,10 @@ void DispatchHotkey(int hotkeyId) {
         ToggleOverlay();
         return;
     }
+    if (hotkeyId == HOTKEY_ID_BENCHMARK) {
+        ToggleBenchmark();
+        return;
+    }
     if (hotkeyId != HOTKEY_ID_SCREENSHOT)
         return;
 
@@ -262,6 +266,13 @@ int ControllerMain(HINSTANCE hInstance) {
                                                      "overlay toggle");
                     }
 
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, main_g_Config.hotkeyBenchmark)) {
+                        UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
+                        main_g_HotkeyOwnership.benchmark =
+                            RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark,
+                                                     "benchmark");
+                    }
+
                     // The keyboard-hook path recognizes the same hotkeys, so it
                     // has to follow every reload, including one that only
                     // disabled a hotkey.
@@ -322,6 +333,7 @@ int ControllerMain(HINSTANCE hInstance) {
     UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
     UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
     UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
+    UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
 
     // Keep tray icon alive during shutdown (animation already started by
     // right-click handler) Process messages during shutdown so animation

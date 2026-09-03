@@ -92,6 +92,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, processWhitelist));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, logsPath));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, profileTargetPid));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::SharedBenchmarkState));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, benchmark));
     return hash;
 }
 #if defined(__clang__)

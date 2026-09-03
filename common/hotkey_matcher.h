@@ -26,6 +26,7 @@ inline constexpr int HOTKEY_ID_RECORD = 1;
 inline constexpr int HOTKEY_ID_SCREENSHOT = 2;
 inline constexpr int HOTKEY_ID_AUDIO_ONLY = 3;
 inline constexpr int HOTKEY_ID_TOGGLE_OVERLAY = 4;
+inline constexpr int HOTKEY_ID_BENCHMARK = 5;
 
 struct HotkeyBinding {
     int id = 0;    // HOTKEY_ID_* the controller acts on; 0 means unused
@@ -69,6 +70,7 @@ struct HotkeyOwnership {
     bool screenshot = false;
     bool audioOnly = false;
     bool toggleOverlay = false;
+    bool benchmark = false;
 };
 
 // Fills the binding table from the configured hotkeys. A hotkey without a key,

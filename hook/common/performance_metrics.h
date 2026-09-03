@@ -61,6 +61,22 @@ public:
     void GetSmartScale(float& outMin, float& outMax, float minRangeMs = 33.0f) const;
     float GetMaxFrameTime(float windowSeconds) const;
 
+    float GetLastPresentationFrameTimeMs() const {
+        const int idx = (m_presentation.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
+        return m_presentation.history[idx];
+    }
+    float GetLastDisplayFrameTimeMs() const {
+        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0) {
+            return GetLastPresentationFrameTimeMs();
+        }
+        const int idx = (m_display.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
+        const float val = m_display.history[idx];
+        return val > 0.0f ? val : GetLastPresentationFrameTimeMs();
+    }
+    bool HasDisplayTimingSamples() const {
+        return m_display.sampleCount.load(std::memory_order_relaxed) > 0;
+    }
+
     void SetRecording(bool isRecording);
 
     // Frame Generation metrics (for displaying base vs output FPS)

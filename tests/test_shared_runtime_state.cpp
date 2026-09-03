@@ -211,15 +211,15 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_55_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_55"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_56_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_56"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_55"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_55_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_55_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_55_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_55_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_56"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_56_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_56_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_56_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_56_1234ABCD"), 0);
 }
 
 TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) {

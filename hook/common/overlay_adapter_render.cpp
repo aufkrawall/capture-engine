@@ -6,6 +6,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     if (!ipc || !ipc->GetSharedMem())
         return;
+    if (!cfg.showOverlay)
+        return;
     // Get DPI scale for consistent sizing
     float dpiScale = renderer->GetDpiScale();
 

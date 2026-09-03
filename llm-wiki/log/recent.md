@@ -1,6 +1,27 @@
 # llm-wiki Log
 
-### 2026-09-03 - An ETW session outlives the process that opened it
+### 2026-09-04 - In-Game Benchmark Recording and Interactive HTML Reports
+
+Added comprehensive in-game benchmark functionality for inject overlay:
+- **Configuration & Hotkey (`[Benchmark]` section & default `CTRL+7`):**
+  Added `[Benchmark]` section in `config.ini.template` with options `start_delay_seconds` (countdown before recording), `duration_seconds` (auto-stop timer, or `0` for manual toggle), and `output_dir` (default: `benchmarks` folder). Added `benchmark=CTRL+7` in `[Hotkeys]`.
+- **Three-Phase Cycle State Machine (`BenchmarkManager` in `hook/common/benchmark_manager.*`):**
+  State machine cycles `Idle -> Delaying (countdown) -> Recording -> Results -> Idle`.
+  - Press 1: Starts countdown delay (if configured) or begins recording immediately.
+  - Press 2: Stops recording, calculates stats, writes standalone HTML report, and renders summary card on screen.
+  - Press 3: Clears benchmark results overlay and returns to Idle.
+- **IPC & Shared Memory ABI 56:**
+  Bumped `SHARED_MEMORY_VERSION` to 56 (`Local\CE_SM_56_*`, `Local\CE_Disc_56`). Added `SharedBenchmarkState` to `SharedMemoryLayout` and `ProcessCommand::ToggleBenchmark = 7` to authenticated IPC protocol. Dispatched via hotkey matcher ID `HOTKEY_ID_BENCHMARK = 5` in controller and inject client.
+- **Dual Timing Modes & 1% / 0.1% Low Metrics:**
+  Calculates Average FPS, Max FPS, Min FPS, 1% Low FPS, 0.1% Low FPS, and Average Frame Time ms for both Presentation (`Classic Frame Start`) and display cadence (`msBetweenDisplayChange`).
+- **Telemetry & Hardware Sensor Capture:**
+  Captures per-frame CPU load, max core load, CPU/GPU temperatures, powers, core & memory clocks, fan speeds, core voltages, and RAM/VRAM usages. Computes averages and peaks across all active sensors.
+- **Standalone Offline Interactive HTML Report (`hook/common/benchmark_html_report.*`):**
+  Generates modern dark-themed self-contained HTML reports named after profile/executable with timestamp (`<name>_YYYY-MM-DD_HH-MM-SS.html`). Includes live interactive timing mode switcher, responsive KPI cards, hardware telemetry table, and HTML5 Canvas timeline chart with synchronized hover crosshair and real-time telemetry inspection HUD.
+- **In-Game Overlay Rendering (`hook/common/benchmark_overlay_render.*`):**
+  Renders live countdown banner, recording badge with pulsating indicator, and post-run results card directly in game overlay, dismissing cleanly on the next hotkey press.
+
+
 
 Two overlay regressions reported after a day of measurement runs: PC latency showed no value, and
 `msBetweenDisplayChange` went jagged under DLSS 4 MFG. Neither was a code change. The measurement harness had

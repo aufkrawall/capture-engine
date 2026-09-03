@@ -57,6 +57,18 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
         config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey);
     }
 
+    std::string benchmarkKey = reader.GetStr("Hotkeys", "benchmark", "CTRL+7");
+    if (!benchmarkKey.empty()) {
+        config.hotkeyBenchmark = ParseHotkey(benchmarkKey);
+    }
+
+    // Benchmark configuration
+    config.benchmark.startDelaySeconds =
+        static_cast<uint32_t>(reader.GetBoundedInt("Benchmark", "start_delay_seconds", 0, 0, 3600));
+    config.benchmark.durationSeconds =
+        static_cast<uint32_t>(reader.GetBoundedInt("Benchmark", "duration_seconds", 0, 0, 86400));
+    config.benchmark.outputDir = reader.GetStr("Benchmark", "output_dir", "");
+
     config.screenshotDir = reader.GetStrCompat("Output", "screenshot_dir", "Screenshot", "screenshot_dir", "");
     config.screenshotColorSpace = Lowercase(Trim(reader.GetStr("Screenshot", "color_space", "auto")));
     if (config.screenshotColorSpace != "auto" && config.screenshotColorSpace != "bt709") {
