@@ -146,7 +146,9 @@ anchors that predate the split are approximate.
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
     `system_metrics*.cpp` (metrics + gpu unit), `system_latency_metrics.h`
-    (marker-enhanced/fallback PC-latency correlation) + `system_latency_types.h`
+    (the PC-latency correlator; includes `system_latency_marker_reports.h`, the
+    out-of-line marker path, at its end - mutual guarded include, either may be
+    included first) + `system_latency_types.h`
     (snapshot/report/diagnostics vocabulary) + `system_latency_windows.h`
     (bounded rings + trimmed-mean sample window) + `system_latency_frame_begin.h`
     (process-wide present-return / low-latency-sleep-return anchor),

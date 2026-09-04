@@ -1,5 +1,53 @@
 # llm-wiki Log
 
+### 2026-09-04 - The single-frame hold was a Reflex-on assumption
+
+User rejection of the previous result, and correctly: at matched cadence FSR FG (Reflex off)
+read 62-65 ms against DLSS FG (Reflex on) at 66-73 ms, and a generator without a low-latency
+mode cannot be *faster* than one with it. The expected separation is 10-25 ms the other way.
+
+Session `20260904_042922` pins the configuration exactly - `ReflexLimiter: Game ACTIVATED
+Reflex (via Streamline)` at 04:29:36.644, `DEACTIVATED` at 04:30:04.852 - so Reflex is on
+only while DLSS FG is on, and every FSR-FG and no-FG window runs it off.
+
+Root cause: `MatchApplicationPresentLocked` stepped the anchor back exactly one application
+frame. That step is the *interpolation hold* - the generator must hold a complete source
+frame to interpolate toward - and the code's comment argues exactly that. It is not the
+game's queue depth. The two are the same number only when a low-latency mode pins the queue
+to one frame, which is precisely what Reflex does and what FSR FG here has nothing doing.
+
+The queue is real and saturated: CE's own `[OVERLAY COST] FFX proxy Present` telemetry
+measured `runtimePresentAvgUs=4857-9163` - AMD's proxy blocks the game thread for 5-9 ms of
+every ~22 ms application frame. That is back-pressure from a full queue sitting *above* the
+DXGI present, where `presentToDisplay` cannot see it (2.5-4.2 ms under FSR against 17-25 ms
+under DLSS, at the same cadence). Same blindness as the previous fix, one level up.
+
+Fix: count the in-flight application frames by conservation over both streams and step back
+that many, floored at one. Timestamps cannot answer which frame is on screen without being
+circular; conservation can, because every application frame is displayed exactly
+`fgMultiplier` times. The count needs a known-empty seed - FG switching on, or an
+application-present gap over 250 ms - and is dropped on any evidence the display stream was
+incomplete, including a new `NoteDisplayStreamGap()` that `ConsumeDisplayTiming` raises when
+it skips publication sequences.
+
+Unit topologies confirm it is exact and linear: measured depths 2/3/4 report `appQueue=2/3/4`
+and 73.5/94.5/115.5 ms - one application interval per queued frame, nothing else moving.
+
+`system_latency_metrics.h` was at 799 of 800 lines, so the marker path
+(`SubmitNativeReport` plus its three native-only helpers) moved to
+`system_latency_marker_reports.h` as out-of-line inline members, mutually included and guarded.
+618 lines and 210.
+
+Hardware run pending. What to read: `appQueue=` in the chain line under FSR FG, and whether
+the DLSS FG cross-check still agrees within a few ms - under Reflex the depth must measure 2,
+which reproduces the previous step exactly, so a moved DLSS value means the count is wrong.
+
+Open, and separate: without FG the log reports 6.1 ms with Reflex against 36-43 ms without,
+30+ ms apart. That is a wider separation than the user's own 10-25 ms estimate of the real
+on-screen difference, and 6.1 ms rests on Talos's own PCL markers reporting a 1.9 ms
+simulation-to-present and a 0.4 ms present-to-flip. Whether the marker path is under-reading
+there is unexamined.
+
 ### 2026-09-04 - The overlay's FSR-FG frame-time variance was the flip-latch clock
 
 User report: frame pacing under FSR FG in Talos is "sometimes worse, sometimes better"

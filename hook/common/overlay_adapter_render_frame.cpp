@@ -125,7 +125,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     HookLogImportant(
                         "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
                         "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
-                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%s "
+                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%s appQueue=%u "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
                         "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu",
@@ -145,6 +145,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         latencyDiagnostics.generatorHoldApplied
                             ? (latencyDiagnostics.generatorHoldMeasured ? "measured" : "modelled")
                             : "none",
+                        latencyDiagnostics.applicationFramesInFlight,
                         static_cast<long long>(latencyDiagnostics.markerIntervalUs),
                         latencyDiagnostics.markerCadenceTrusted ? 1 : 0,
                         latencyDiagnostics.lastMarkerUsedAssociation ? 1 : 0,

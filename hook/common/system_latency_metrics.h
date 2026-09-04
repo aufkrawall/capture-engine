@@ -108,14 +108,26 @@ public:
             const int64_t displayIntervalUs = screenTimeUs - displays_.Back();
             if (displayIntervalUs >= kDuplicateThresholdUs && displayIntervalUs <= kMaximumIntervalUs)
                 displayIntervals_.Push(displayIntervalUs);
+            else if (displayIntervalUs > kMaximumIntervalUs)
+                queueDepthMeasurable_ = false;
         }
         displays_.Push(screenTimeUs);
         displayPresentStarts_.Push(presentStartTimeUs);
+        ++displaysSinceQueueSeed_;
         ++displaysObserved_;
         if (presentStartTimeUs > 0)
             ++displaysWithAssociation_;
         UpdateObservedProductionStateLocked(screenTimeUs);
         UpdateFallbackLocked(screenTimeUs, presentStartTimeUs);
+    }
+
+    // A consumer that knows it could not deliver every displayed transition -
+    // a publication ring it fell behind on, say - must say so: the in-flight
+    // count is conservation over both streams, and an uncounted retirement
+    // inflates it permanently.
+    void NoteDisplayStreamGap() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queueDepthMeasurable_ = false;
     }
 
     void SetFrameGeneration(float baseFps, int multiplier, int fgType = 0) {
@@ -128,174 +140,17 @@ public:
         const int previousFgType = fgType_.exchange(fgType, std::memory_order_relaxed);
         if (previousMultiplier != normalizedMultiplier || previousFgType != fgType) {
             std::lock_guard<std::mutex> lock(mutex_);
+            const bool generatorJustStarted = previousMultiplier < 2 && normalizedMultiplier >= 2;
             ResetMeasurementsLocked();
             ++measurementEpochResets_;
+            // The runtime has produced nothing yet, so its queue is empty and the
+            // depth the game fills it to becomes measurable from here.
+            queueDepthMeasurable_ = generatorJustStarted;
         }
     }
 
-    void SubmitNativeReport(const NativeReport& report) {
-        if (fgType_.load(std::memory_order_relaxed) == 2)
-            return;
-        std::array<NativeFrameReport, NativeReport::kCapacity> validFrames{};
-        size_t validCount = 0;
-        const size_t reportCount = (std::min)(report.count, report.frames.size());
-        for (size_t i = 0; i < reportCount; ++i) {
-            const auto& frame = report.frames[i];
-            if (!IsValidNativeFrame(frame))
-                continue;
-            validFrames[validCount++] = frame;
-        }
-        if (validCount == 0)
-            return;
-
-        std::sort(validFrames.begin(), validFrames.begin() + validCount,
-                  [](const NativeFrameReport& a, const NativeFrameReport& b) {
-                      return a.presentStartTimeUs < b.presentStartTimeUs;
-                  });
-        int64_t samplingIntervalUs = MedianSimulationInterval(validFrames, validCount);
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (samplingIntervalUs <= 0)
-            samplingIntervalUs = ResolveWorkIntervalLocked();
-        markerIntervalUs_ = samplingIntervalUs;
-        markerCadenceTrusted_ = !IsMarkerCadenceOutputRateLocked(samplingIntervalUs);
-        if (!markerCadenceTrusted_) {
-            nativeEstimatedSamples_.Clear();
-            ++markerReportsRejectedForOutputCadence_;
-            return;
-        }
-        // NVIDIA documents the average input-to-frame-start heuristic as
-        // invalid below 10 FPS. Fail closed instead of publishing a number
-        // whose estimated input slice is outside that supported regime.
-        if (samplingIntervalUs <= 0 || samplingIntervalUs > kMaximumSamplingIntervalUs)
-            return;
-        for (size_t displayIndex = 0; displayIndex < displays_.Size(); ++displayIndex) {
-            const int64_t screenTimeUs = displays_.At(displayIndex);
-            if (screenTimeUs <= lastNativeDisplayTimeUs_)
-                continue;
-
-            // The sensor associates every displayed transition with the
-            // runtime PresentStart that produced it. Use that causal boundary
-            // when available: DLSS-G's asynchronous pacer can let markers for
-            // newer application frames occur before an older frame reaches
-            // the screen, so screenTime alone selects a future frame.
-            int64_t markerCutoffUs = screenTimeUs;
-            bool usedAssociation = false;
-            if (displayIndex < displayPresentStarts_.Size()) {
-                const int64_t associatedPresentStartUs = displayPresentStarts_.At(displayIndex);
-                if (associatedPresentStartUs > 0 && associatedPresentStartUs <= screenTimeUs) {
-                    markerCutoffUs = associatedPresentStartUs;
-                    usedAssociation = true;
-                }
-            }
-
-            const NativeFrameReport* candidate = nullptr;
-            for (size_t frameIndex = 0; frameIndex < validCount; ++frameIndex) {
-                const auto& frame = validFrames[frameIndex];
-                if (frame.presentStartTimeUs <= static_cast<uint64_t>(lastNativePresentTimeUs_))
-                    continue;
-                if (frame.presentStartTimeUs > static_cast<uint64_t>(markerCutoffUs))
-                    continue;
-                if (NativeReadyTimeUs(frame) > static_cast<uint64_t>(screenTimeUs))
-                    continue;
-                if (!candidate || frame.presentStartTimeUs > candidate->presentStartTimeUs)
-                    candidate = &frame;
-            }
-            if (!candidate)
-                continue;
-
-            // The generator's pacing thread presents this content after the
-            // application has already submitted a newer frame, so the newest
-            // marker at or before that present belongs to a simulation this
-            // frame cannot be showing. Step back one application frame - the
-            // one the generator is holding while it displays the frames it
-            // derived from it - but keep the watermark on the unheld frame so
-            // the remaining displays of the same group are not counted again.
-            const NativeFrameReport* consumed = candidate;
-            int64_t extraGeneratorHoldUs = 0;
-            if (IsGeneratorPacingOutputLocked()) {
-                const NativeFrameReport* held = nullptr;
-                for (size_t frameIndex = 0; frameIndex < validCount; ++frameIndex) {
-                    const auto& frame = validFrames[frameIndex];
-                    if (frame.presentStartTimeUs >= candidate->presentStartTimeUs)
-                        continue;
-                    if (!held || frame.presentStartTimeUs > held->presentStartTimeUs)
-                        held = &frame;
-                }
-                if (held) {
-                    const int64_t candidateAgeUs = markerCutoffUs - ToSignedTimestamp(candidate->presentStartTimeUs);
-                    const int64_t renderTimeUs = ToSignedTimestamp(candidate->presentStartTimeUs) -
-                                                 ToSignedTimestamp(candidate->simulationStartTimeUs);
-                    const bool synchronousPresent = usedAssociation && candidateAgeUs <= 1000;
-                    if (!synchronousPresent && candidateAgeUs < (std::max)(renderTimeUs, samplingIntervalUs / 3)) {
-                        candidate = held;
-                    }
-                } else {
-                    const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
-                    if (fgMultiplier >= 2) {
-                        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
-                        const int64_t effectiveDisplayIntervalUs =
-                            displayIntervalUs > 0 ? displayIntervalUs : (samplingIntervalUs / fgMultiplier);
-                        extraGeneratorHoldUs = (fgMultiplier - 1) * effectiveDisplayIntervalUs;
-                    }
-                }
-            }
-
-            const int64_t presentTimeUs =
-                usedAssociation ? markerCutoffUs : ToSignedTimestamp(candidate->presentStartTimeUs);
-            const int64_t presentToDisplayUs = screenTimeUs - presentTimeUs;
-            if (presentToDisplayUs < 0 || presentToDisplayUs > kMaximumPresentToDisplayUs) {
-                ++samplesRejected_;
-                ++samplesRejectedPresentToDisplay_;
-                continue;
-            }
-
-            const int64_t simulationStartUs =
-                ToSignedTimestamp(candidate->simulationStartTimeUs) - extraGeneratorHoldUs;
-            int64_t displayedSamplingIntervalUs = samplingIntervalUs;
-            const int64_t displayedSimulationIntervalUs = simulationStartUs - lastNativeSimulationStartTimeUs_;
-            if (lastNativeSimulationStartTimeUs_ > 0 &&
-                displayedSimulationIntervalUs >= kDuplicateThresholdUs &&
-                displayedSimulationIntervalUs <= kMaximumIntervalUs) {
-                displayedSamplingIntervalUs = (std::max)(
-                    displayedSamplingIntervalUs,
-                    MedianRingWithCandidate(nativeDisplayedSimulationIntervals_, displayedSimulationIntervalUs));
-            }
-
-            // PCL uses half a base sampling interval for average input wait,
-            // then adds every complete base interval whose frame was dropped.
-            // Equivalently: displayed interval minus half the base interval.
-            const int64_t estimatedInputWaitUs = displayedSamplingIntervalUs - samplingIntervalUs / 2;
-            if (estimatedInputWaitUs > 0) {
-                const int64_t estimatedInputTimeUs = simulationStartUs - estimatedInputWaitUs;
-                if (estimatedInputTimeUs > 0 && screenTimeUs >= estimatedInputTimeUs) {
-                    const int64_t totalUs = screenTimeUs - estimatedInputTimeUs;
-                    if (IsValidTotalLatency(totalUs)) {
-                        nativeEstimatedSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
-                        nativeSimulationToDisplayUs_ = screenTimeUs - simulationStartUs;
-                        nativeInputWaitUs_ = estimatedInputWaitUs;
-                        nativeSamplingIntervalUs_ = samplingIntervalUs;
-                        nativePresentToDisplayUs_ = presentToDisplayUs;
-                        nativeUsedAssociation_ = usedAssociation;
-                        nativeGeneratorHoldApplied_ = candidate != consumed || extraGeneratorHoldUs > 0;
-                    } else {
-                        ++samplesRejected_;
-                        ++samplesRejectedTotalLatency_;
-                    }
-                }
-            }
-
-            if (lastNativeSimulationStartTimeUs_ > 0 &&
-                displayedSimulationIntervalUs >= kDuplicateThresholdUs &&
-                displayedSimulationIntervalUs <= kMaximumIntervalUs) {
-                nativeDisplayedSimulationIntervals_.Push(displayedSimulationIntervalUs);
-            }
-            if (lastNativeSimulationStartTimeUs_ == 0 || simulationStartUs > lastNativeSimulationStartTimeUs_)
-                lastNativeSimulationStartTimeUs_ = simulationStartUs;
-            lastNativePresentTimeUs_ = ToSignedTimestamp(consumed->presentStartTimeUs);
-            lastNativeDisplayTimeUs_ = screenTimeUs;
-        }
-    }
+    // Definition in system_latency_marker_reports.h.
+    void SubmitNativeReport(const NativeReport& report);
 
     Snapshot GetSnapshot(int64_t currentQpcUs) const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -357,6 +212,7 @@ public:
             diagnostics.generatorHoldApplied = lastGeneratorHoldApplied_;
             diagnostics.generatorHoldMeasured = lastGeneratorHoldMeasured_;
         }
+        diagnostics.applicationFramesInFlight = static_cast<uint32_t>(InFlightApplicationFramesLocked());
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
         diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
         diagnostics.frameBeginIntervalUs = MedianRing(frameBeginIntervals_);
@@ -388,6 +244,9 @@ private:
     static constexpr int64_t kMaximumPresentToDisplayUs = 250'000;
     static constexpr int64_t kMaximumTotalLatencyUs = 500'000;
     static constexpr size_t kCadenceEvidenceCount = 6;
+    // A generator holding more than this many application frames is reporting a
+    // drifted count, not a pipeline.
+    static constexpr size_t kMaximumQueueDepth = 8;
 
     static int64_t ToSignedTimestamp(uint64_t timestampUs) {
         if (timestampUs == 0 || timestampUs > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
@@ -395,41 +254,17 @@ private:
         return static_cast<int64_t>(timestampUs);
     }
 
-    static bool IsValidNativeFrame(const NativeFrameReport& frame) {
-        const int64_t simulationStartUs = ToSignedTimestamp(frame.simulationStartTimeUs);
-        const int64_t presentStartUs = ToSignedTimestamp(frame.presentStartTimeUs);
-        return simulationStartUs > 0 && presentStartUs >= simulationStartUs &&
-               presentStartUs - simulationStartUs <= kMaximumIntervalUs;
-    }
-
-    static uint64_t NativeReadyTimeUs(const NativeFrameReport& frame) {
-        if (frame.gpuRenderEndTimeUs >= frame.presentStartTimeUs &&
-            frame.gpuRenderEndTimeUs - frame.presentStartTimeUs <= static_cast<uint64_t>(kMaximumTotalLatencyUs)) {
-            return frame.gpuRenderEndTimeUs;
-        }
-        return frame.presentStartTimeUs;
-    }
+    // Definitions in system_latency_marker_reports.h.
+    static bool IsValidNativeFrame(const NativeFrameReport& frame);
+    static uint64_t NativeReadyTimeUs(const NativeFrameReport& frame);
 
     static bool IsValidTotalLatency(int64_t totalUs) {
         return totalUs > 0 && totalUs <= kMaximumTotalLatencyUs;
     }
 
+    // Definition in system_latency_marker_reports.h.
     static int64_t MedianSimulationInterval(
-        const std::array<NativeFrameReport, NativeReport::kCapacity>& frames, size_t count) {
-        std::array<int64_t, NativeReport::kCapacity - 1> intervals{};
-        size_t intervalCount = 0;
-        for (size_t i = 1; i < count; ++i) {
-            const int64_t previous = ToSignedTimestamp(frames[i - 1].simulationStartTimeUs);
-            const int64_t current = ToSignedTimestamp(frames[i].simulationStartTimeUs);
-            const int64_t deltaUs = current - previous;
-            if (deltaUs >= kDuplicateThresholdUs && deltaUs <= kMaximumIntervalUs)
-                intervals[intervalCount++] = deltaUs;
-        }
-        if (intervalCount == 0)
-            return 0;
-        std::sort(intervals.begin(), intervals.begin() + intervalCount);
-        return intervals[intervalCount / 2];
-    }
+        const std::array<NativeFrameReport, NativeReport::kCapacity>& frames, size_t count);
 
     int64_t ResolveFgBaseIntervalLocked() const {
         const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
@@ -489,6 +324,29 @@ private:
         return false;
     }
 
+    // Application frames the game has handed to the generator that have not yet
+    // reached the screen, counted by conservation: every application frame is
+    // eventually displayed exactly fgMultiplier times, so the cumulative
+    // difference between the two streams is the number still in flight.
+    //
+    // Only the difference carries the depth - both streams run at the same rate
+    // in steady state - so the count means something only from a point where the
+    // queue was empty. Frame generation switching on is such a point: the runtime
+    // has produced nothing yet, and the depth then emerges as the number of
+    // application frames issued before the first group reaches the screen.
+    // Anywhere else the queue state is unknowable from timestamps, and the
+    // documented single-frame hold stands.
+    size_t InFlightApplicationFramesLocked() const {
+        if (!queueDepthMeasurable_)
+            return 0;
+        const int fgMultiplier = (std::max)(fgMultiplier_.load(std::memory_order_relaxed), 1);
+        const uint64_t retired = displaysSinceQueueSeed_ / static_cast<uint64_t>(fgMultiplier);
+        if (applicationPresentsSinceQueueSeed_ <= retired)
+            return 0;
+        const uint64_t inFlight = applicationPresentsSinceQueueSeed_ - retired;
+        return static_cast<size_t>((std::min)(inFlight, static_cast<uint64_t>(kMaximumQueueDepth)));
+    }
+
     // Index in applicationPresents_ of the application frame whose simulation produced
     // the content of the runtime present at runtimePresentUs.
     //
@@ -497,9 +355,17 @@ private:
     // next frame can begin, so no newer boundary exists yet. A generator's
     // pacing thread presents on its own schedule, and by then the application
     // has already begun the next frame - it must have, because the generator
-    // interpolates towards a frame that is complete. So exactly one boundary
+    // interpolates towards a frame that is complete. So at least one boundary
     // has to be stepped back, which is the application frame the generator is
     // holding while it shows the frames derived from it.
+    //
+    // One is the whole answer only when the queue behind that hold is one frame
+    // deep, which is what a low-latency mode enforces and nothing else does. A
+    // game running ahead into a generator's own queue is exactly as far behind
+    // the screen as that queue is deep, so step back the measured depth and keep
+    // the single-frame hold as the floor. A stepped anchor older than the
+    // correlator's interval bound is not evidence of latency, it is evidence the
+    // count drifted, so it falls back toward the floor.
     bool MatchApplicationPresentLocked(int64_t runtimePresentUs, size_t& matchedIndex, bool& holdApplied) const {
         holdApplied = false;
         bool found = false;
@@ -512,10 +378,17 @@ private:
         }
         if (!found || runtimePresentUs - applicationPresents_.At(matchedIndex) > kMaximumIntervalUs)
             return false;
-        if (matchedIndex > 0 && IsGeneratorPacingOutputLocked()) {
-            --matchedIndex;
-            holdApplied = true;
+        if (matchedIndex == 0 || !IsGeneratorPacingOutputLocked())
+            return true;
+        const size_t inFlight = InFlightApplicationFramesLocked();
+        size_t stepBack = inFlight > 1 ? inFlight - 1 : 1;
+        stepBack = (std::min)(stepBack, matchedIndex);
+        while (stepBack > 1 &&
+               runtimePresentUs - applicationPresents_.At(matchedIndex - stepBack) > kMaximumIntervalUs) {
+            --stepBack;
         }
+        matchedIndex -= stepBack;
+        holdApplied = true;
         return true;
     }
 
@@ -534,6 +407,11 @@ private:
             const int64_t minIntervalUs = fgMultiplier >= 2 ? 3'000 : kApplicationDuplicateThresholdUs;
             if (intervalUs < minIntervalUs)
                 return;
+            if (intervalUs > kMaximumIntervalUs) {
+                applicationPresentsSinceQueueSeed_ = 0;
+                displaysSinceQueueSeed_ = 0;
+                queueDepthMeasurable_ = true;
+            }
             if (intervalUs <= kMaximumIntervalUs)
                 applicationPresentIntervals_.Push(intervalUs);
         }
@@ -554,6 +432,7 @@ private:
         }
 
         applicationPresents_.Push(presentTimeUs);
+        ++applicationPresentsSinceQueueSeed_;
         applicationAnchors_.Push(anchorUs);
         applicationAnchorKinds_.Push(static_cast<int64_t>(anchorKind));
     }
@@ -735,6 +614,9 @@ private:
         markerCadenceTrusted_ = true;
         lastGeneratorHoldApplied_ = false;
         lastGeneratorHoldMeasured_ = false;
+        applicationPresentsSinceQueueSeed_ = 0;
+        displaysSinceQueueSeed_ = 0;
+        queueDepthMeasurable_ = false;
         nativeGeneratorHoldApplied_ = false;
     }
 
@@ -783,6 +665,9 @@ private:
     FrameBeginKind lastFrameBeginKind_ = FrameBeginKind::Modelled;
     bool lastGeneratorHoldApplied_ = false;
     bool lastGeneratorHoldMeasured_ = false;
+    uint64_t applicationPresentsSinceQueueSeed_ = 0;
+    uint64_t displaysSinceQueueSeed_ = 0;
+    bool queueDepthMeasurable_ = false;
     int64_t nativeSimulationToDisplayUs_ = 0;
     int64_t nativePresentToDisplayUs_ = 0;
     int64_t nativeInputWaitUs_ = 0;
@@ -797,3 +682,7 @@ private:
 };
 
 }  // namespace ce::system_latency
+
+// Out-of-line marker-path definitions. Included last so the class is complete;
+// the include is mutual and guarded, so either header may be included first.
+#include "system_latency_marker_reports.h"

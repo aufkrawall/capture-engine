@@ -185,7 +185,36 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   `expectedGeneratorHoldUs` addition is a model.
 - Stale-risk: any other generator that paces from its own thread (Intel XeSS-FG, AFMF, third-party proxy swapchains)
   has the same topology and no producer wired. `generatorHold=modelled` while `generationObserved=1` is the symptom.
-- Stale-risk: `system_latency_metrics.h` is at 799 lines against the 800-line ceiling. The next addition needs a split.
+
+### The generator's queue depth
+
+- Stepping the anchor back **one** application frame is the interpolation hold: the generator must hold a complete
+  source frame to interpolate toward. That is not the same quantity as the game's queue depth, and the two coincide
+  only when a low-latency mode pins the queue to one frame. Reflex does; nothing else does. So under DLSS-G the
+  single-frame step was right, and under FSR FG - where Talos runs Reflex off, and NVIDIA's driver offers no
+  Anti-Lag - the game runs ahead into FidelityFX's own queue and the frame on screen is as far behind as that queue
+  is deep. Evidence that the queue is real and saturated: `[OVERLAY COST] FFX proxy Present ... runtimePresentAvgUs`
+  measured 4857-9163 us of blocking per ~22 ms application frame, which is back-pressure from a full queue.
+- The depth is counted by conservation, not inferred from timestamps: every application frame is displayed exactly
+  `fgMultiplier` times, so the cumulative difference between the two streams is the number still in flight. Any
+  timestamp-based rule would be circular with the assumption being tested.
+- Only the *difference* carries the depth, so the count means something only from a point where the queue was empty.
+  Two such points exist and both are observable: frame generation switching on (the runtime has produced nothing
+  yet) and an application-present gap over 250 ms (the queue drained). The depth then emerges as the number of
+  application frames issued before the first group reaches the screen.
+- Conservation is invalid across a broken stream, so the count is dropped - back to the single-frame hold - on a
+  display gap over 250 ms and on `NoteDisplayStreamGap()`, which `PerformanceMetrics::ConsumeDisplayTiming` calls
+  when it falls behind the publication ring and skips sequences. An uncounted retirement would otherwise inflate the
+  depth for the rest of the epoch, which is the dangerous direction; a missed application present deflates it, which
+  degrades toward the floor.
+- Guard rails: the step back never goes below one (so a measurement failure is exactly the previous behaviour),
+  never above `kMaximumQueueDepth` = 8, and is trimmed while the stepped anchor is older than the correlator's
+  250 ms interval bound. Published as `appQueue=` in the chain line - `0` means not measurable, never "empty".
+- **The DLSS-G marker cross-check is the regression test.** Under Reflex the depth must measure 2 (one queued frame
+  plus the interpolation hold), which reproduces the previous step exactly, so a published DLSS FG value that moves
+  means the count is wrong.
+- Stale-risk: measured only in unit topologies so far. Hardware run pending; the numbers to read are `appQueue=` in
+  the chain line and whether the DLSS FG cross-check still agrees within a few ms.
 
 ### Frame-begin anchor (`system_latency_frame_begin.h`)
 

@@ -86,6 +86,11 @@ struct Diagnostics {
     // Measured output/application cadence ratio. 1000 means no generated
     // output, 2000/3000/4000 are the expected steady 2x/3x/4x families.
     int observedOutputRatioPermille = 0;
+    // Application frames handed to a pacing generator that had not yet reached
+    // the screen. Zero means the queue state is not measurable from the current
+    // epoch, not that the queue is empty; the correlator then holds the
+    // documented single-frame hold.
+    uint32_t applicationFramesInFlight = 0;
     bool frameGenerationObserved = false;
     bool markerCadenceTrusted = true;
     // A generator is holding the application frame back behind the frames it

@@ -240,8 +240,13 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
 
     const uint64_t earliestAvailable =
         writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
-    if (m_nextDisplaySequence < earliestAvailable)
+    if (m_nextDisplaySequence < earliestAvailable) {
+        // Displayed transitions were published faster than they were consumed.
+        // The correlator counts retirements, so silently skipping them would
+        // inflate its in-flight estimate for the rest of the epoch.
         m_nextDisplaySequence = earliestAvailable;
+        m_systemLatency.NoteDisplayStreamGap();
+    }
 
     while (m_nextDisplaySequence <= writeSequence) {
         int64_t screenTimeUs = 0;

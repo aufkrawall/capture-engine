@@ -161,6 +161,45 @@ ProxyPacedMetricsResult MeasureProxyPacedMetrics(bool classifyProxyPresent) {
     return result;
 }
 
+// A proxy-swapchain generator with nothing pinning the game's queue to one
+// frame: application frames are handed over at applicationIntervalUs and the
+// generator shows each one queueDepth application intervals later, as two
+// outputs. The frame on screen is therefore queueDepth - 1 steps behind the
+// newest frame the game had handed over by then.
+struct QueuedGeneratorResult {
+    float milliseconds = 0.0f;
+    uint32_t framesInFlight = 0;
+    bool holdMeasured = false;
+};
+
+QueuedGeneratorResult MeasureQueuedGenerator(int queueDepth, bool trustQueueCount = true) {
+    constexpr int64_t applicationIntervalUs = 21'000;
+    constexpr int64_t outputIntervalUs = 11'000;
+    Tracker tracker;
+    tracker.SetFrameGeneration(1'000'000.0f / static_cast<float>(applicationIntervalUs), 2, /*fgType=*/2);
+    if (!trustQueueCount)
+        tracker.NoteDisplayStreamGap();
+    int64_t lastScreenUs = 0;
+    for (int frame = 0; frame < 40; ++frame) {
+        tracker.ObserveApplicationPresent(20'000'000 + applicationIntervalUs * frame);
+        if (frame < queueDepth)
+            continue;
+        for (int output = 0; output < 2; ++output) {
+            const int64_t runtimePresentUs =
+                20'000'000 + applicationIntervalUs * frame + 1'000 + outputIntervalUs * output;
+            lastScreenUs = runtimePresentUs + 4'000;
+            tracker.ObserveDisplay(lastScreenUs, runtimePresentUs);
+        }
+    }
+    const auto diagnostics = tracker.GetDiagnostics();
+    QueuedGeneratorResult result{};
+    result.milliseconds = tracker.GetSnapshot(lastScreenUs).milliseconds;
+    result.framesInFlight = diagnostics.applicationFramesInFlight;
+    result.holdMeasured = diagnostics.generatorHoldMeasured;
+    EXPECT_TRUE(diagnostics.frameGenerationObserved);
+    return result;
+}
+
 }  // namespace
 
 // Regression: the FSR-FG topology of session 20260904_034526. The application
@@ -224,6 +263,42 @@ TEST(SystemLatencyFGMeasurementTest, ProxyPresentClassificationMakesTheGenerator
     EXPECT_TRUE(classified.holdMeasured);
     EXPECT_FALSE(unclassified.holdMeasured);
     EXPECT_GT(classified.milliseconds, unclassified.milliseconds + 10.0f);
+}
+
+// Regression for the second half of the FSR-FG shortfall. A single-frame step
+// back is only the whole hold when the queue behind it is one frame deep, which
+// is what a low-latency mode enforces and nothing else does. Talos runs FSR FG
+// with Reflex off, so the game runs ahead into FidelityFX's own queue and the
+// frame on screen is as far behind as that queue is deep.
+TEST(SystemLatencyFGMeasurementTest, GeneratorQueueDepthIsMeasuredFromBothStreams) {
+    const QueuedGeneratorResult twoDeep = MeasureQueuedGenerator(2);
+    const QueuedGeneratorResult threeDeep = MeasureQueuedGenerator(3);
+    const QueuedGeneratorResult fourDeep = MeasureQueuedGenerator(4);
+
+    EXPECT_EQ(twoDeep.framesInFlight, 2u);
+    EXPECT_EQ(threeDeep.framesInFlight, 3u);
+    EXPECT_EQ(fourDeep.framesInFlight, 4u);
+    EXPECT_TRUE(fourDeep.holdMeasured);
+
+    // Each queued application frame is one application interval of latency, and
+    // nothing else moves: the cadence is identical in all three.
+    EXPECT_NEAR(threeDeep.milliseconds - twoDeep.milliseconds, 21.0f, 1.0f);
+    EXPECT_NEAR(fourDeep.milliseconds - threeDeep.milliseconds, 21.0f, 1.0f);
+}
+
+TEST(SystemLatencyFGMeasurementTest, AnUncountableDisplayStreamFallsBackToTheSingleFrameHold) {
+    // Conservation over two streams is only valid while both are complete. A
+    // consumer that skipped displayed transitions must not leave the count
+    // inflated for the rest of the epoch - it has to return to the documented
+    // single-frame hold, which is depth-independent.
+    const QueuedGeneratorResult twoDeep = MeasureQueuedGenerator(2, /*trustQueueCount=*/false);
+    const QueuedGeneratorResult fourDeep = MeasureQueuedGenerator(4, /*trustQueueCount=*/false);
+
+    EXPECT_EQ(twoDeep.framesInFlight, 0u);
+    EXPECT_EQ(fourDeep.framesInFlight, 0u);
+    EXPECT_FLOAT_EQ(twoDeep.milliseconds, fourDeep.milliseconds);
+    // And it is a floor: never deeper than the measured pipeline it stands in for.
+    EXPECT_LT(fourDeep.milliseconds, MeasureQueuedGenerator(4).milliseconds);
 }
 
 TEST(SystemLatencyFGMeasurementTest, OutputRateMarkersAreRejectedWhileGenerationIsMeasured) {
