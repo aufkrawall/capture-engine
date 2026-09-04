@@ -353,7 +353,12 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // Always wait for overlay fence before Present.  The overlay ECL was
     // submitted during ProcessFrame (non-deferred), so the fence signals
     // completion before the buffer flips.
-    if (ctx.api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+    // Skip during runtime-owned native FG presentation (including no-callback FSR FG):
+    // the runtime presentation queue must not be stalled with overlay fence queries.
+    const bool runtimeOwnedNativeFGPresent =
+        DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
+    if (ctx.api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        !runtimeOwnedNativeFGPresent) {
         // DIAGNOSTIC: time the overlay-completion wait (one half of the present-thread cost; the
         // other is the real Present call timed below). Compare 32-bit vs 64-bit; a multi-second
         // wait here means CE's overlay GPU work hung, vs a slow real Present means the swapchain
@@ -474,10 +479,14 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
-    // Skip during no-callback FSR FG: the deferred Signal on the game queue is an extra
-    // ID3D12CommandQueue::Signal on an AMD-tracked queue — exactly what wedges ffxQuery pacing.
-    if (ctx.api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+    // Skip during runtime-owned native FG presentation (including no-callback FSR FG):
+    // the deferred Signal on the queue is an extra ID3D12CommandQueue::Signal on an
+    // AMD-tracked queue — exactly what stalls or desyncs presenter pacing / ffxQuery.
+    if (ctx.api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        !runtimeOwnedNativeFGPresent) {
         InvokeDX12FlushDeferredSignal();
+    }
+    if (ctx.api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
         // switch (the wrapped path already does this via the wrapper).

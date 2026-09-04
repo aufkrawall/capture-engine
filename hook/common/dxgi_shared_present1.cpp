@@ -678,7 +678,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    if (api == APIType::D3D12) {
+    const bool runtimeOwnedNativeFGPresent =
+        DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
+    if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        !runtimeOwnedNativeFGPresent) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
@@ -709,7 +712,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     // Flush deferred overlay fence Signal AFTER Present.
-    if (api == APIType::D3D12) {
+    if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        !runtimeOwnedNativeFGPresent) {
         InvokeDX12FlushDeferredSignal();
     }
 

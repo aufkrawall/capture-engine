@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-04 - Fix FSR FG real on-screen frame pacing stutter by prioritizing official presentCallback and eliminating extra ECL/signals on AMD presentation queue
+
+Fixed root cause of intermittent on-screen frame pacing stutter in *The Talos Principle: Reawakened* (`Talos1-Win64-Shipping.exe`) with native AMD FSR Frame Generation:
+
+1. **Root Cause (Route B extra ECL on AMD's presentation queue):**
+   - When a foreign overlay like Steam was loaded, `DecideBelowForeignChainFSRDeepDraw` (`hook/common/dx12_overlay_policy/ffx_routing.h`) activated Route B (`TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR`).
+   - Route B caused CE to voluntarily yield AMD's official, zero-overhead `presentCallback` (`ShouldYieldFFXPresentCallbackToTopmostRoute`).
+   - Instead, on AMD's presenter thread inside `DetourPresent`, Route B executed a separate `ExecuteCommandLists` call directly on AMD's presentation queue (`dx12_hook_g_SwapchainQueue`) right before `CallOriginalPresent`.
+   - AMD's presenter thread uses high-precision QPC timers to pace generated vs real frames. Submitting an extra command list on AMD's queue desynced AMD's pacing timer and caused GPU queue contention right before VBlank scanout. Depending on queue slack at startup, if an extra ECL pushed GPU completion past the scanout deadline by even a fraction of a millisecond, the driver's hardware flip queue slipped by 1 VBlank and permanently locked into alternating 1 vs 2 VBlank flips (~6.6 ms / ~17.7 ms alternating flips, steady state ~83.3 FPS stutter).
+2. **Prioritizing official FFX `presentCallback` (Part 1):**
+   - In `hook/common/dx12_overlay_policy/ffx_routing.h`, `DecideBelowForeignChainFSRDeepDraw` makes Route B unavailable (`kUnavailable`). The official FFX `presentCallback` is never yielded to an extra swapchain-queue submission; CE renders directly into AMD's provided command list (`desc->commandList`) with zero extra `ExecuteCommandLists` calls, zero extra fences, and zero presenter-thread stalls.
+3. **Skipping deferred signals and overlay completion waits on runtime-owned queues (Part 3):**
+   - In `hook/common/dxgi_shared_present_core.cpp` (lines 356 and 479) and `hook/common/dxgi_shared_present1.cpp`, `InvokeDX12WaitForOverlayCompletion` and `InvokeDX12FlushDeferredSignal` are now skipped whenever `HookHasRuntimeOwnedNativeFGPresentPath()` or `DXGIShared::DoesFGRuntimeOwnSwapchain()`. This prevents any deferred signals or completion queries from touching AMD's presentation queue.
+4. **Regression Tests & Verification:**
+   - Updated `tests/test_ffx_below_foreign_chain_policy.cpp` (`PrefersOfficialPresentCallbackOverSwapchainQueueDrawInHealthyState`).
+   - Passed full `--verify` content-validated product build, native tests, Python self-tests, file-size ratchet, and ASan/UBSan validation.
+
 ### 2026-09-04 - Faithful msBetweenDisplayChange reporting and elimination of FSR FG VEH rearm overhead
 
 Two root-cause improvements resolving FSR FG frame pacing and overlay fidelity:

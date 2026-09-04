@@ -8,10 +8,11 @@ using ce::dx12_overlay_policy::BelowForeignChainFSRDeepDrawDecision;
 using ce::dx12_overlay_policy::DecideBelowForeignChainFSRDeepDraw;
 using ce::fg_runtime::RuntimeMode;
 
-// The steady-state Talos FSR-FG + Steam shape (session 20260813_061015): CE intercepts below the
-// foreign Present chain, the FFX present callback is the live overlay transport, and the routed
-// submit queue is the swapchain-owning queue the foreign overlay's own command list went through.
-TEST(BelowForeignChainFSRDeepDrawPolicyTest, DrawsOnSwapchainQueueInTheHealthyAppCallbackState) {
+// When the official FFX present callback is active and healthy, CE must NOT yield the callback to an extra
+// command list on AMD's swapchain presentation queue: an extra ECL on AMD's presenter queue desyncs AMD's
+// QPC-timed presenter pacing and causes on-screen frame pacing stutter / alternating flips (Talos Reawakened).
+// The zero-overhead official present callback is strictly preferred.
+TEST(BelowForeignChainFSRDeepDrawPolicyTest, PrefersOfficialPresentCallbackOverSwapchainQueueDrawInHealthyState) {
     EXPECT_EQ(DecideBelowForeignChainFSRDeepDraw(
                   /*presentInterceptedBelowForeignChain=*/true, /*foreignOverlayLoaded=*/true,
                   /*nativeFSRActive=*/true, /*runtimeOwnedNativeFGPresentPath=*/true,
@@ -19,7 +20,7 @@ TEST(BelowForeignChainFSRDeepDrawPolicyTest, DrawsOnSwapchainQueueInTheHealthyAp
                   /*ffxPresentCallbackStalled=*/false, /*explicitNativeFSROffPending=*/false,
                   /*protectedOfficialFFXStartupQuiesced=*/false, /*hasSwapchainQueue=*/true,
                   /*submitQueueIsSwapchainQueue=*/true, /*deviceRemoved=*/false, /*shuttingDown=*/false),
-              BelowForeignChainFSRDeepDrawDecision::kDrawOnSwapchainQueue);
+              BelowForeignChainFSRDeepDrawDecision::kUnavailable);
 }
 
 // Without a foreign overlay chain the callback draw already owns the frame and nothing composites on
