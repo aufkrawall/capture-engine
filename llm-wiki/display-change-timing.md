@@ -213,13 +213,22 @@ stream is unavailable, denied, failed, or two seconds stale.
   the health line and what the consumers are told cannot disagree. The producer always knew this; the ring simply
   did not carry it, so every consumer treated both kinds as a screen time.
 - What the consumers then do with it:
-  - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over a decaying window and
-    `RefreshEffectiveSource` refuses to select `DisplayChange` for a stream that is not publishing screen times;
+  - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over its most recent samples
+    and `RefreshEffectiveSource` refuses to select `DisplayChange` for a stream that is not publishing screen times;
     presentation timing drives the graph, lows and variance instead. Two thresholds - 90% resolved to select, 50%
     to keep - stop a stream sitting near the boundary from switching the whole metric every window, and a stream is
-    trusted until `kMinimumSamples` (64) have arrived so nothing is withheld at startup. `[Overlay] Frame timing
-    source:` reports `screenTime=` and `screenTimeShare=`, which is why a `display_change` request can legitimately
-    report `presentation` on a live, healthy, correctly-counting stream.
+    trusted until `kMinimumSamples` (32) have arrived so nothing is withheld at startup. `[Overlay] Frame timing
+    source:` reports `screenTime=`, `screenTimeShare=` and `suppressedChanges=`, which is why a `display_change`
+    request can legitimately report `presentation` on a live, healthy, correctly-counting stream.
+  - **That judgement is a window over the last 128 samples, not a decaying total** (2026-09-04). The stream does not
+    drift between regimes, it switches: a frame generator handing over swaps deferred completions for immediate
+    flips in one step. A decaying count carries the old regime in - measured in Talos, an FSR-FG stretch held the
+    metric on presentation timing for 7.2 s after DLSS FG had already started delivering resolved screen times,
+    which is long enough to watch the graph change shape. A fixed recent window follows a regime change in at most
+    one window, about a second of frames. Resetting it at a known FG-type boundary would make that instantaneous
+    and is deliberately not done: it would show display-change timing optimistically after *every* switch,
+    including into a regime that cannot resolve, and presentation timing is never wrong - only less informative -
+    so a short delay in that direction is the benign failure.
   - The **recording correlator** applies the matched sample's per-sample cadence residual to the file's source
     timestamps (`NormalizeFinalOutputDisplayTimestampQpc`), which on a latch-only sample is measurement noise
     written into a CFR recording. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance
@@ -235,6 +244,14 @@ stream is unavailable, denied, failed, or two seconds stale.
   1426 us; the same frames at `Present` were 66.7 and 74.4 fps at 748 and 612 us. Correct means (85.1 vs 84.9,
   90.7 vs 91.1), wrong values, and a four-times-versus-twice difference between two runs of the same build is what
   a user experiences as "the frame-time variance is sometimes bad and sometimes not".
+- **And measured on the other side of the same title, which is what makes the collector worth having**: under DLSS
+  FG every completion arrives as `immediateMpoFlip` and carries the driver's announcement, so the published screen
+  series reads `stddev=661/925 us jaggedness=473/650 us` while runtime `PresentStart` on the same frames reads
+  `stddev=11457/11670 us jaggedness=22772/23088 us` (session `20260904_092817`). Streamline issues a generated group
+  of presents in a burst and the screen consumes them evenly, so here it is *presentation* timing that is the
+  sawtooth and display timing that is flat - the exact inverse of the FSR-FG-below-cap case above. The gate has to
+  tell these two apart, which is why it is keyed on the provenance of the timestamps rather than on whether frame
+  generation is active.
 - `vblank(observed,periodUs,usableClock,adjusted,unresolved,gaps(...))` reports the clock, and
   `latchInterval(...)` reports the completions as the driver timestamped them, next to `publishedInterval(...)`.
   Read together they say whether a jagged graph is the screen or is this service: the two are equal while

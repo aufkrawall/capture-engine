@@ -202,6 +202,7 @@ void OverlayAdapter::ResetStateLocked() {
     lastObservedFrameTimeSource = FrameTimeSource::Presentation;
     lastFrameTimeSourceLogTime = 0;
     hasObservedFrameTimeSource = false;
+    suppressedFrameTimeSourceChanges = 0;
     latencyDevice = nullptr;
     cachedSystemLatency = {};
     lastSystemLatencySourceLogTime = 0;

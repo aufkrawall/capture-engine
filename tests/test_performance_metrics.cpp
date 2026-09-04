@@ -325,6 +325,75 @@ TEST_F(PerformanceMetricsTest, ScreenTimeDiagnosticStaysCurrentUnderAPresentatio
     EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
 }
 
+// The judgement is about the stream's current regime, so it has to follow a
+// regime change rather than average across it. A frame generator handing over
+// swaps deferred completions for immediate flips; measured in Talos, the
+// previous decaying-count form held presentation timing for 7.2 s after DLSS FG
+// had already started delivering resolved screen times, which is long enough to
+// watch the graph change shape. Recovery must complete inside one window.
+TEST_F(PerformanceMetricsTest, ScreenTimeSelectionFollowsARegimeChangeWithinOneWindow) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    const auto publish = [&](bool resolved) {
+        screenUs += 11'000;
+        timing.Publish(screenUs, ++publishUs, 0, resolved);
+    };
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.Update(1'000'000);
+    metrics.Update(1'011'000);
+
+    // A long latch-only stretch, far more than one window.
+    for (int i = 0; i < 3000; ++i)
+        publish(false);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+
+    // The new regime resolves every sample. One window of them has to be enough,
+    // whatever the stream did before it.
+    for (uint32_t i = 0; i < 128; ++i)
+        publish(true);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 1000u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+}
+
+// ... and symmetrically, a stream that stops resolving must not keep the metric
+// on a screen-time claim it can no longer support.
+TEST_F(PerformanceMetricsTest, ScreenTimeSelectionReleasesWithinOneWindowWhenResolutionStops) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    const auto publish = [&](bool resolved) {
+        screenUs += 11'000;
+        timing.Publish(screenUs, ++publishUs, 0, resolved);
+    };
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.Update(1'000'000);
+    metrics.Update(1'011'000);
+
+    for (int i = 0; i < 3000; ++i)
+        publish(true);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+
+    for (uint32_t i = 0; i < 128; ++i)
+        publish(false);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+}
+
 TEST_F(PerformanceMetricsTest, PresentationSelectionIgnoresAHealthyDisplayStream) {
     metrics.Update(1000000);
     metrics.Update(1020000);

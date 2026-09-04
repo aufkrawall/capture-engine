@@ -164,16 +164,27 @@ private:
     // deviation the same frames had at Present - which is what "the variance is
     // sometimes bad and sometimes not" looks like from the outside.
     //
-    // Judged over a decaying window so a display that changes regime - reaching
-    // or leaving its refresh cap, a mode change, a monitor swap - is followed
-    // rather than remembered.
+    // Judged over the most recent samples, not over a decaying total of
+    // everything the stream has ever published. Which of the two it is matters,
+    // because the thing being judged changes regime: a frame generator handing
+    // over swaps deferred vsync/hsync completions for immediate flips, and the
+    // evidence from before the handover says nothing about after it. A decaying
+    // count carries the old regime in and needs about eight hundred samples to
+    // shed it - measured in Talos, an FSR-FG stretch held the metric on
+    // presentation timing for 7.2 s after DLSS FG had already started
+    // delivering resolved screen times, which is long enough to watch the graph
+    // change shape. A window of the last kWindowSamples follows a regime change
+    // in kWindowSamples samples and no longer, about a second of frames.
     struct ScreenTimeCadence {
-        // Enough samples for the ratio to mean something, about two thirds of a
-        // second of frames, before it may overrule the initial assumption.
-        static constexpr uint32_t kMinimumSamples = 64;
-        // The window halves here, so the judgement follows the display instead
-        // of averaging over everything it has ever done.
-        static constexpr uint32_t kWindowSamples = 512;
+        // About one second of frames at ordinary output rates, which is also the
+        // order of a frame-generation handover's own settling time; short enough
+        // to follow a regime change, long enough that sampling noise near the
+        // selection threshold cannot move it.
+        static constexpr uint32_t kWindowSamples = 128;
+        static constexpr uint32_t kWindowWords = kWindowSamples / 64;
+        // Enough samples for the ratio to mean anything before it may overrule
+        // the initial assumption.
+        static constexpr uint32_t kMinimumSamples = 32;
         // Selecting the display stream needs it to be almost entirely screen
         // times; keeping it needs only a majority. The two thresholds are what
         // stop a stream hovering at one of them from switching the metric back
@@ -182,17 +193,28 @@ private:
         static constexpr uint32_t kKeepPercent = 50;
 
         void Observe(bool screenTimeResolved) {
-            ++samples;
-            if (screenTimeResolved)
+            const uint64_t bit = uint64_t{1} << (next % 64u);
+            uint64_t& word = window[next / 64u];
+            // The slot only holds an older sample once the window is full;
+            // before that it has never been written.
+            if (filled == kWindowSamples && (word & bit) != 0)
+                --resolved;
+            if (screenTimeResolved) {
+                word |= bit;
                 ++resolved;
-            if (samples >= kWindowSamples) {
-                samples /= 2;
-                resolved /= 2;
+            } else {
+                word &= ~bit;
             }
+            next = (next + 1u) % kWindowSamples;
+            if (filled < kWindowSamples)
+                ++filled;
         }
 
         void Reset() {
-            samples = 0;
+            for (uint64_t& word : window)
+                word = 0;
+            next = 0;
+            filled = 0;
             resolved = 0;
         }
 
@@ -200,15 +222,17 @@ private:
         // otherwise, so a stream that is fine never spends its first frames
         // withheld from the overlay.
         bool IsScreenTime(bool currentlySelected) const {
-            if (samples < kMinimumSamples)
+            if (filled < kMinimumSamples)
                 return true;
             const uint32_t required = currentlySelected ? kKeepPercent : kSelectPercent;
-            return resolved * 100 >= samples * required;
+            return resolved * 100 >= filled * required;
         }
 
-        uint32_t permille() const { return samples != 0 ? (resolved * 1000) / samples : 0; }
+        uint32_t permille() const { return filled != 0 ? (resolved * 1000) / filled : 0; }
 
-        uint32_t samples = 0;
+        uint64_t window[kWindowWords] = {};
+        uint32_t next = 0;
+        uint32_t filled = 0;
         uint32_t resolved = 0;
     };
 

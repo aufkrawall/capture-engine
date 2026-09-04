@@ -1,5 +1,50 @@
 # llm-wiki Log
 
+### 2026-09-04 - The screen-time gate has to follow a regime change, not average across it
+
+User report against 0.1.6480: switching FSR FG -> DLSS FG leaves the frame-time graph
+showing the presentation series (the DLSS-4 burst pattern) and it only goes flat "after a
+few seconds". Session `20260904_092817` confirms it and the cause is the gate added the
+same morning, not the display-timing service.
+
+Timeline: DLSS FG confirmed at 09:29:07.081 (`postsl-first-confirmed-render`), and the
+sensor's completions switch wholesale from `hsyncDpcMpo` to `immediateMpoFlip` at the
+same moment - immediate flips carry the driver's scheduled-screen-time announcement, so
+every one of them is a resolved screen time. The overlay nevertheless stayed on
+presentation timing until **09:29:14.269**, 7.2 s later.
+
+`ScreenTimeCadence` was a decaying counter halved at 512 samples. That is the wrong
+instrument for the thing it measures: the stream does not drift between regimes, it
+*switches*, and a decaying total carries the old regime into the new one. Simulated from
+the steady state of a long latch-only stretch, recovery needs about 830 resolved samples,
+which is 10 s at the 83 fps that session was running - matching the 7.2 s observed once
+the mixed handover window is accounted for. It is now a window over the last 128 samples
+(two `uint64` words plus a running count), so recovery completes in at most one window,
+about a second of frames, whatever the stream did before it. The 90%/50% hysteresis is
+unchanged, and `kMinimumSamples` drops 64 -> 32 because the window is smaller.
+
+Deliberately not done: resetting the cadence on an FG-type change would make recovery
+instantaneous, but it would also show display-change timing optimistically for the first
+32 samples after *every* switch, including switches into a regime that cannot resolve.
+Presentation timing is never wrong, only less informative, so a short delay in that
+direction is the benign failure and a short burst of latch times is not.
+
+**What the same session says about the gate's verdicts, which are correct.** Under DLSS FG
+(windows 09:29:23 and 09:29:33, all `immediateMpoFlip`): published/screen
+`stddev=661/925 us jaggedness=473/650 us` against runtime `PresentStart`
+`stddev=11457/11670 us jaggedness=22772/23088 us`. That inversion is the whole point of
+the collector - Streamline issues a generated group of presents in a burst and the screen
+consumes them evenly - and it is exactly the "jigsaw" the user was seeing while the gate
+still had them on presentation timing. Under FSR FG in the same session every completion
+was `hsyncDpcMpo` with `usableClock=0`, so there was no screen-time series to show and
+presentation timing is the honest answer. Both verdicts were right; only the latency of
+the second one was wrong.
+
+Also fixed: a suppressed source-transition log left `lastObservedFrameTimeSource` stale,
+so every later comparison ran against a source that was no longer current and a flapping
+stream reached the log as unrelated one-off lines. The observed source is now recorded
+whatever the rate limit decides, and the line carries `suppressedChanges=`.
+
 ### 2026-09-04 - The single-frame hold was a Reflex-on assumption
 
 User rejection of the previous result, and correctly: at matched cadence FSR FG (Reflex off)

@@ -216,6 +216,10 @@ private:
     FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
     DWORD lastFrameTimeSourceLogTime = 0;
     bool hasObservedFrameTimeSource = false;
+    // Transitions the rate limit swallowed since the last line was written. A
+    // suppressed transition that left no trace made a flapping source look like
+    // a single late one, which is the shape a reader most needs to tell apart.
+    uint32_t suppressedFrameTimeSourceChanges = 0;
     DWORD lastSystemLatencySourceLogTime = 0;
     DWORD lastNativeLatencyQueryTime = 0;
     bool hasObservedSystemLatencySource = false;

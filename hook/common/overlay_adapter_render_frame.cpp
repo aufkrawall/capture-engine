@@ -39,21 +39,30 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
         const DWORD sourceNow = GetTickCount();
         if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
+            // The observed source is recorded whatever the rate limit then
+            // decides. Leaving it behind on a suppressed transition made every
+            // later comparison run against a source that was no longer current,
+            // so a flapping stream reached the log as unrelated one-off lines.
+            lastObservedFrameTimeSource = effectiveSource;
             if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
                 // screenTime says whether the display stream is publishing screen
                 // times or flip-latch timestamps its vertical-blank clock could not
                 // resolve; the latter is why a display-change request can still
-                // report presentation timing on a live, healthy stream.
+                // report presentation timing on a live, healthy stream. suppressed
+                // counts the transitions the rate limit swallowed before this one.
                 HookLogImportant(
                     "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
-                    "screenTimeShare=%upermille)",
+                    "screenTimeShare=%upermille suppressedChanges=%u)",
                     effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
-                    metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille());
+                    metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille(),
+                    suppressedFrameTimeSourceChanges);
                 lastFrameTimeSourceLogTime = sourceNow;
-                lastObservedFrameTimeSource = effectiveSource;
                 hasObservedFrameTimeSource = true;
+                suppressedFrameTimeSourceChanges = 0;
+            } else {
+                ++suppressedFrameTimeSourceChanges;
             }
         }
     }
