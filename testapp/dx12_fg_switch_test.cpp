@@ -233,7 +233,7 @@ int main(int argc, char* argv[]) {
                 "[FG-DIAG] Startup native swapchain recreate stress %d/%d while mode remains OFF before FG "
                 "runtime preload\n",
                 i + 1, dx12_fg_switch_test_g_StartupNativeSwapchainRecreateCount);
-            if (!RecreateSwapChain(false, "startup native recreate stress")) {
+            if (!RecreateSwapChain(false, false, "startup native recreate stress")) {
                 testapp::Log("[FG-DIAG] Startup native swapchain recreate stress failed\n");
                 Cleanup();
                 testapp::CloseLogFile();

@@ -563,8 +563,9 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
 
     // Wrap the swapchain with CWrapDXGISwapChain
     HookLog("DetourCreateSwapChainGlobal: Wrapping swapchain %p", *ppSwapChain);
-    auto* wrapper = new CWrapDXGISwapChain(*ppSwapChain, pDevice);
-    *ppSwapChain = wrapper;
+    IDXGISwapChain* pReal = *ppSwapChain;
+    *ppSwapChain = new CWrapDXGISwapChain(*ppSwapChain, pDevice);
+    pReal->Release();
     HookLog("DetourCreateSwapChainGlobal: Swapchain wrapped successfully");
 
     // Don't capture queue here — global hooks fire for non-game swapchains
@@ -574,10 +575,7 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
 return hr;
 }
 
-
 // Detour for global CreateSwapChainForHwnd hook
-
-
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
 // CRITICAL: Pass through during shutdown
 if (HookIsShuttingDown()) {
@@ -765,8 +763,9 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
     }
 
     HookLog("DetourCreateSwapChainForHwndGlobal: Wrapping swapchain %p", *ppSC);
-    auto* wrapper = new CWrapDXGISwapChain(*ppSC, pDevice);
-    *ppSC = (IDXGISwapChain1*)wrapper;
+    IDXGISwapChain1* pReal = *ppSC;
+    *ppSC = (IDXGISwapChain1*)new CWrapDXGISwapChain(pReal, pDevice);
+    pReal->Release();
     HookLog("DetourCreateSwapChainForHwndGlobal: Swapchain wrapped successfully");
 
     // Don't capture queue here — inline hook handles queue capture for all

@@ -173,25 +173,19 @@ void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
 
 bool ReinitializeDX12ForFSR(const char* reason) {
     ReleaseDX12RendererResourcesForSwitch(reason);
-    if (dx12_fg_switch_test_g_SlInitialized || dx12_fg_switch_test_g_SlModule) {
-        testapp::Log("[FG-DIAG] Shutting down Streamline before creating FSR renderer (%s)\n",
-                     reason ? reason : "enter FSR");
-        ShutdownStreamlineSerialized(reason ? reason : "enter FSR");
-    }
-    return InitDX12(dx12_fg_switch_test_g_Hwnd, true, reason ? reason : "enter FSR mode");
+    ApplyReflexMode(false, reason ? reason : "enter FSR mode");
+    return InitDX12(dx12_fg_switch_test_g_Hwnd, true, false, reason ? reason : "enter FSR mode");
 }
 
 // Leaving DLSS mode for OFF must fully tear down the Streamline proxy swapchain and recreate a
 // truly native one: keeping the proxy would keep its present pacer alive, and Reflex must stay on
 // while that pacer presents (turning it off wedges the GPU; see dx12_fg_switch_streamline.inl).
-// Only the teardown lets Reflex genuinely turn off, removing its frame cap in OFF mode -- exactly
-// like a real game that rebuilds presentation when FG is switched off for good.
+// With the proxy swapchain destroyed, Reflex can genuinely turn off, removing its frame cap in
+// OFF mode without unloading Streamline (which would corrupt driver callback state on DLSS return).
 bool ReinitializeDX12ForNativeOff(const char* reason) {
     ReleaseDX12RendererResourcesForSwitch(reason);
-    if (dx12_fg_switch_test_g_SlInitialized || dx12_fg_switch_test_g_SlModule) {
-        ShutdownStreamlineSerialized(reason ? reason : "enter OFF mode");
-    }
-    return InitDX12(dx12_fg_switch_test_g_Hwnd, false, reason ? reason : "enter OFF mode");
+    ApplyReflexMode(false, reason ? reason : "enter OFF mode");
+    return InitDX12(dx12_fg_switch_test_g_Hwnd, false, false, reason ? reason : "enter OFF mode");
 }
 
 bool EnsureStreamlineReadyForDLSS(const char* reason) {

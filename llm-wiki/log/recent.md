@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-09-04 - Fix DXGI swapchain COM reference leak and Streamline driver callback crash across FG switches (logs/20260904_143301)
+
+Analyzed and resolved four minidumps from `logs/20260904_143301` produced during rapid native/FSR/DLSS FG transitions:
+
+1. **Root Cause 1: Leaked COM references causing `E_ACCESSDENIED` (0x80070005) on swapchain recreation:**
+   - Dumps: `crash_external_swapchain_access_denied_exhausted_f3172865.dmp` and `crash_external_fatal_exit_ExitProcess_e000eacc_14cc1ec5.dmp` (PID 13328).
+   - In `hook/wrappers/dxgi_swapchain_wrap_present.cpp`, `CWrapDXGISwapChain::PromoteInterfaces()` called `m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))` unconditionally without checking `if (!m_pReal1)`. When the wrapper was constructed around an `IDXGISwapChain1`, the constructor had already stored and AddRef'd `m_pReal1`; calling `QueryInterface` again overwrote the pointer and added a second reference while the destructor only released it once.
+   - In `hook/apis/dx12_hook_swapchain_create.cpp`, `DetourCreateSwapChainGlobal` and `DetourCreateSwapChainForHwndGlobal` wrapped `*ppSwapChain` / `*ppSC` with `new CWrapDXGISwapChain` (which AddRefs), but omitted `pReal->Release()` to consume the factory's returned reference (unlike `dxgi_factory_wrap.cpp` and `dx11_hook_detours.cpp`).
+   - The extra references pinned the swapchain to the HWND across mode switches, causing `CreateSwapChainForHwnd` to fail with `DXGI_ERROR_ACCESS_DENIED` (`0x80070005`) once the deep recovery was exhausted.
+   - Fix: Added `!m_pReal1..4` guards in `PromoteInterfaces()`, and added `pReal->Release()` after wrapping in `DetourCreateSwapChainGlobal` and `DetourCreateSwapChainForHwndGlobal`.
+
+2. **Root Cause 2: Streamline mid-process unload causing driver callback DEP crash (0xC0000005):**
+   - Dumps: `crash_20260904_143617_972_pid21396_tid12612.dmp` and `crash_external_fatal_exit_NtTerminateProcess_c0000005_bbde10db.dmp` (PID 21396).
+   - In `testapp/dx12_fg_switch_render.cpp`, `ReinitializeDX12ForFSR` and `ReinitializeDX12ForNativeOff` were calling `ShutdownStreamlineSerialized()`, which called `slShutdown()` and `FreeLibrary(sl.interposer.dll)`.
+   - Freeing `sl.interposer.dll` unloaded `sl.dlss_g.dll` and freed its code pages. However, NVIDIA's driver runtime (`_nvngx.dll` and `160_E658703.bin`) remained resident in the process and retained a registered telemetry/evaluate callback pointer (`0x0000014125CADD30`) inside global `0x713df0`.
+   - On returning to DLSS, `slSetD3DDevice` -> `NVSDK_NGX_D3D12_Init_Ext` checked `[0x713df0] != 0` and called into the unmapped memory, immediately triggering an access violation / DEP crash (`0xC0000005`).
+   - Fix: Added `useStreamlineSwapChain` parameter to `CreateSwapChainResources` / `InitDX12` so native swapchains can be created without unloading Streamline. Replaced mid-switch `ShutdownStreamlineSerialized` calls with `ApplyReflexMode(false, ...)` so Streamline remains resident throughout the process lifetime (matching NVIDIA's programming model and real game behavior in *The Talos Principle*) and is only torn down at process exit.
+
+3. **Regression Coverage & Verification:**
+   - Added unit tests in `tests/test_swapchain_probe_lifetime.cpp`: `PromoteInterfacesDoesNotDuplicateReferencesWhenAlreadyPopulated`, `GlobalSwapchainDetoursConsumeFactoryReferenceAfterWrapping`, and `StreamlineLifecyclePreservesRuntimeAcrossModeSwitches`.
+   - Full `--verify` gate passed with 0 warnings, ASan/UBSan green, all 713 clang-tidy translation units cached and clean.
+
 ### 2026-09-04 - Fix FSR FG real on-screen frame pacing stutter by prioritizing official presentCallback and eliminating extra ECL/signals on AMD presentation queue
 
 Fixed root cause of intermittent on-screen frame pacing stutter in *The Talos Principle: Reawakened* (`Talos1-Win64-Shipping.exe`) with native AMD FSR Frame Generation:

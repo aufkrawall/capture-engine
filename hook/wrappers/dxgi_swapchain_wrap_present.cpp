@@ -86,7 +86,7 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
     if (!m_pReal)
         return;
     try {
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
+        if (!m_pReal1 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
             if (m_StreamlineRuntimeNonRetaining && m_pReal1) {
                 // Borrowed interface: the transferred CreateSwapChain reference keeps the
                 // object alive for the wrapper lifetime; never pin it with extra refs.
@@ -94,19 +94,19 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
             }
             m_Version = 1;
         }
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
+        if (!m_pReal2 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
             if (m_StreamlineRuntimeNonRetaining && m_pReal2) {
                 m_pReal2->Release();
             }
             m_Version = 2;
         }
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
+        if (!m_pReal3 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
             if (m_StreamlineRuntimeNonRetaining && m_pReal3) {
                 m_pReal3->Release();
             }
             m_Version = 3;
         }
-        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
+        if (!m_pReal4 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
             if (m_StreamlineRuntimeNonRetaining && m_pReal4) {
                 m_pReal4->Release();
             }

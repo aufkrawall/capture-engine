@@ -177,3 +177,75 @@ TEST(SwapChainLivenessLedgerTest, StaysBoundedAcrossManySwapchainRecreations) {
 
     ce::swapchain_liveness::ResetForTesting();
 }
+
+TEST(SwapChainProbeLifetimeTest, PromoteInterfacesDoesNotDuplicateReferencesWhenAlreadyPopulated) {
+    const std::string present = ReadProjectSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp");
+
+    const size_t promote = present.find("void CWrapDXGISwapChain::PromoteInterfaces()");
+    ASSERT_NE(promote, std::string::npos);
+    const size_t promoteEnd = present.find("\n}\n", promote);
+    ASSERT_NE(promoteEnd, std::string::npos);
+    const std::string body = present.substr(promote, promoteEnd - promote);
+
+    // When wrapping IDXGISwapChain1..4, the constructor already stores and AddRefs m_pReal1..N.
+    // Promoting interfaces must check !m_pRealN before calling QueryInterface so it never overwrites
+    // an existing interface pointer and leaks the duplicate reference (dumps 20260904_143301).
+    EXPECT_NE(body.find("if (!m_pReal1 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))))"),
+              std::string::npos);
+    EXPECT_NE(body.find("if (!m_pReal2 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2))))"),
+              std::string::npos);
+    EXPECT_NE(body.find("if (!m_pReal3 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3))))"),
+              std::string::npos);
+    EXPECT_NE(body.find("if (!m_pReal4 && SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))"),
+              std::string::npos);
+}
+
+TEST(SwapChainProbeLifetimeTest, GlobalSwapchainDetoursConsumeFactoryReferenceAfterWrapping) {
+    const std::string create = ReadProjectSource("hook/apis/dx12_hook_swapchain_create.cpp");
+
+    const size_t createGlobal = create.find("HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(");
+    ASSERT_NE(createGlobal, std::string::npos);
+
+    // The factory returns an owning reference (ref=1). CWrapDXGISwapChain constructor AddRefs (ref=2).
+    // The detour must consume the factory's returned reference so the caller's eventual wrapper Release
+    // drops the real swapchain to 0 instead of leaking a reference.
+    const size_t wrapSite = create.find("*ppSwapChain = new CWrapDXGISwapChain(*ppSwapChain, pDevice);", createGlobal);
+    ASSERT_NE(wrapSite, std::string::npos);
+    const size_t releaseSite = create.find("pReal->Release();", wrapSite);
+    EXPECT_NE(releaseSite, std::string::npos);
+
+    const size_t createHwndGlobal = create.find("HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(");
+    ASSERT_NE(createHwndGlobal, std::string::npos);
+    EXPECT_GT(createHwndGlobal, releaseSite);
+
+    const size_t wrapHwndSite =
+        create.find("*ppSC = (IDXGISwapChain1*)new CWrapDXGISwapChain(pReal, pDevice);", createHwndGlobal);
+    ASSERT_NE(wrapHwndSite, std::string::npos);
+    const size_t releaseHwndSite = create.find("pReal->Release();", wrapHwndSite);
+    EXPECT_NE(releaseHwndSite, std::string::npos);
+}
+
+TEST(SwapChainProbeLifetimeTest, StreamlineLifecyclePreservesRuntimeAcrossModeSwitches) {
+    const std::string render = ReadProjectSource("testapp/dx12_fg_switch_render.cpp");
+
+    // Mode transitions to FSR or Native OFF must NOT unload Streamline mid-process.
+    // Unloading sl.interposer.dll frees sl.dlss_g.dll while NVIDIA driver (160_E658703.bin)
+    // retains registered telemetry callback pointers, causing DEP crash 0xC0000005 on DLSS return.
+    const size_t fsrFunc = render.find("bool ReinitializeDX12ForFSR(");
+    ASSERT_NE(fsrFunc, std::string::npos);
+    const size_t fsrFuncEnd = render.find("\n}\n", fsrFunc);
+    ASSERT_NE(fsrFuncEnd, std::string::npos);
+    const std::string fsrBody = render.substr(fsrFunc, fsrFuncEnd - fsrFunc);
+    EXPECT_EQ(fsrBody.find("ShutdownStreamlineSerialized"), std::string::npos);
+
+    const size_t offFunc = render.find("bool ReinitializeDX12ForNativeOff(");
+    ASSERT_NE(offFunc, std::string::npos);
+    const size_t offFuncEnd = render.find("\n}\n", offFunc);
+    ASSERT_NE(offFuncEnd, std::string::npos);
+    const std::string offBody = render.substr(offFunc, offFuncEnd - offFunc);
+    EXPECT_EQ(offBody.find("ShutdownStreamlineSerialized"), std::string::npos);
+
+    const std::string swapchain = ReadProjectSource("testapp/dx12_fg_switch_swapchain.cpp");
+    EXPECT_NE(swapchain.find("bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain"),
+              std::string::npos);
+}

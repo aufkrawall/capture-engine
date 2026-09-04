@@ -113,9 +113,7 @@ bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
                     "[FG-DIAG] Streamline preparation failed before FSR presentation break; "
                     "rolling back to active FSR without destroying its proxy\n");
                 dx12_fg_switch_test_g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
-                if (dx12_fg_switch_test_g_SlInitialized || dx12_fg_switch_test_g_SlModule) {
-                    ShutdownStreamlineSerialized("rollback failed DLSS preparation");
-                }
+                ApplyReflexMode(false, "rollback failed DLSS preparation");
                 ResetFSRSuspensionStressState("rollback failed DLSS preparation");
                 const UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
                 const bool resumed = ConfigureFSR(
@@ -215,14 +213,14 @@ bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             // Streamline, its device binding, and its feature entry points were prepared while the
             // disabled FSR proxy was still the visible surface. Reuse the existing device/queue and
             // replace only swapchain-bound resources, matching the already smooth FSR->OFF handoff.
-            recreatedDlssSurface = RecreateSwapChain(false, "enter DLSS mode after prepared FSR exit");
+            recreatedDlssSurface = RecreateSwapChain(false, true, "enter DLSS mode after prepared FSR exit");
             ok = recreatedDlssSurface && ok;
             dx12_fg_switch_test_g_FsrRuntimeRetirementPendingForDlss = recreatedDlssSurface;
         }
         if (ok && !dx12_fg_switch_test_g_SwapChainUsesStreamline) {
             // Native->DLSS (including FSR->OFF->DLSS) also prepares Streamline before releasing the
             // visible native chain, then performs the shortest possible swapchain-only handoff.
-            recreatedDlssSurface = RecreateSwapChain(false, "enter DLSS mode from prepared native surface");
+            recreatedDlssSurface = RecreateSwapChain(false, true, "enter DLSS mode from prepared native surface");
             ok = recreatedDlssSurface && ok;
         }
         if (ok && recreatedDlssSurface) {
@@ -284,13 +282,13 @@ bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         } else if (ok && (dx12_fg_switch_test_g_FfxCtx || dx12_fg_switch_test_g_FfxSwapChainCtx)) {
             DestroyFSRContexts();
             dx12_fg_switch_test_g_FsrInitialized = false;
-            ok = RecreateSwapChain(false, "enter OFF mode") && ok;
+            ok = RecreateSwapChain(false, false, "enter OFF mode") && ok;
             MaybeUnloadFSRRuntimeAfterSwitch("enter OFF mode");
             StartAsyncFSRRuntimePreload("after entering OFF mode");
         } else if (ok && (dx12_fg_switch_test_g_SwapChainUsesStreamline || dx12_fg_switch_test_g_SlInitialized || dx12_fg_switch_test_g_SlModule)) {
             testapp::Log(
-                "[FG-DIAG] OFF mode tears down the Streamline proxy swapchain and Streamline itself, then "
-                "recreates a native swapchain (swapChain=%p streamline=%d) so Reflex can genuinely turn off\n",
+                "[FG-DIAG] OFF mode tears down the Streamline proxy swapchain and recreates a native swapchain "
+                "(swapChain=%p streamline=%d) so Reflex can genuinely turn off\n",
                 g_SwapChain.Get(), dx12_fg_switch_test_g_SwapChainUsesStreamline ? 1 : 0);
             ok = ReinitializeDX12ForNativeOff("enter OFF mode after DLSS") && ok;
         }

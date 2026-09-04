@@ -313,11 +313,12 @@ void ReleaseSwapChainResources();
 
 bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory);
 
-bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reason);
+bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain, const char* reason);
 
-bool RecreateSwapChain(bool useFfxSwapChain, const char* reason);
+bool RecreateSwapChain(bool useFfxSwapChain, bool useStreamlineSwapChain, const char* reason);
 
-bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason = "initial native");
+bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, bool useStreamlineSwapChain = false,
+              const char* reason = "initial native");
 
 bool UpscalingActive();
 

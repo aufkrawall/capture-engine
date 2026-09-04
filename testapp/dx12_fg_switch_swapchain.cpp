@@ -168,15 +168,18 @@ bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory) {
     return false;
 }
 
-bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reason) {
+bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain, const char* reason) {
     ComPtr<IDXGIFactory4> factory;
     PFun_CreateDXGIFactory1 createFactory =
-        (!useFfxSwapChain && dx12_fg_switch_test_g_SlCreateDXGIFactory1) ? dx12_fg_switch_test_g_SlCreateDXGIFactory1 : CreateDXGIFactory1;
+        (!useFfxSwapChain && useStreamlineSwapChain && dx12_fg_switch_test_g_SlCreateDXGIFactory1)
+            ? dx12_fg_switch_test_g_SlCreateDXGIFactory1
+            : CreateDXGIFactory1;
     const bool usingStreamlineFactory = createFactory == dx12_fg_switch_test_g_SlCreateDXGIFactory1 && dx12_fg_switch_test_g_SlCreateDXGIFactory1 != nullptr;
     HRESULT factoryHr = createFactory(IID_PPV_ARGS(&factory));
-    testapp::Log("[FG-DIAG] %s CreateDXGIFactory1(%s) hr=0x%08lx factory=%p useFfx=%d\n",
+    testapp::Log("[FG-DIAG] %s CreateDXGIFactory1(%s) hr=0x%08lx factory=%p useFfx=%d useSl=%d\n",
                  usingStreamlineFactory ? "Streamline" : "Native", reason ? reason : "swapchain",
-                 static_cast<unsigned long>(factoryHr), factory.Get(), useFfxSwapChain ? 1 : 0);
+                 static_cast<unsigned long>(factoryHr), factory.Get(), useFfxSwapChain ? 1 : 0,
+                 useStreamlineSwapChain ? 1 : 0);
     if (FAILED(factoryHr) || !factory) {
         return false;
     }
@@ -286,10 +289,10 @@ bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reaso
     return true;
 }
 
-bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
+bool RecreateSwapChain(bool useFfxSwapChain, bool useStreamlineSwapChain, const char* reason) {
     WaitForGpu();
     ReleaseSwapChainResources();
-    bool ok = CreateSwapChainResources(dx12_fg_switch_test_g_Hwnd, useFfxSwapChain, reason);
+    bool ok = CreateSwapChainResources(dx12_fg_switch_test_g_Hwnd, useFfxSwapChain, useStreamlineSwapChain, reason);
     if (ok && g_Fence) {
         const UINT64 nextFenceValue = g_Fence->GetCompletedValue() + 1;
         for (UINT i = 0; i < dx12_fg_switch_test_kMaxSwapChainBuffers; ++i) {
@@ -302,11 +305,17 @@ bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
     return ok;
 }
 
-bool InitDX12(HWND hwnd, bool useFfxSwapChain , const char* reason ) {
-    PFun_D3D12CreateDevice createDevice = dx12_fg_switch_test_g_SlD3D12CreateDevice ? dx12_fg_switch_test_g_SlD3D12CreateDevice : D3D12CreateDevice;
+bool InitDX12(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain, const char* reason) {
+    PFun_D3D12CreateDevice createDevice =
+        (!useFfxSwapChain && useStreamlineSwapChain && dx12_fg_switch_test_g_SlD3D12CreateDevice)
+            ? dx12_fg_switch_test_g_SlD3D12CreateDevice
+            : D3D12CreateDevice;
     HRESULT deviceHr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device));
     testapp::Log("[FG-DIAG] %s D3D12CreateDevice hr=0x%08lx device=%p\n",
-                 dx12_fg_switch_test_g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr), g_Device.Get());
+                 (createDevice == dx12_fg_switch_test_g_SlD3D12CreateDevice && dx12_fg_switch_test_g_SlD3D12CreateDevice)
+                     ? "Streamline"
+                     : "Native",
+                 static_cast<unsigned long>(deviceHr), g_Device.Get());
     if (FAILED(deviceHr) || !g_Device) {
         return false;
     }
@@ -326,7 +335,7 @@ bool InitDX12(HWND hwnd, bool useFfxSwapChain , const char* reason ) {
         return false;
     }
 
-    if (!CreateSwapChainResources(hwnd, useFfxSwapChain, reason)) {
+    if (!CreateSwapChainResources(hwnd, useFfxSwapChain, useStreamlineSwapChain, reason)) {
         return false;
     }
     g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_CommandAllocators[g_FrameIndex].Get(), nullptr,
