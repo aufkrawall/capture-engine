@@ -64,13 +64,20 @@ TEST(DisplayTimingSessionReclaimTest, StopsOnlyOurSessionsWhoseOwnerIsGone) {
 TEST(DisplayTimingSessionReclaimTest, TheServiceReclaimsAndThenRetriesTheSession) {
     const std::string service = ReadSource("captureengine/display_timing_service.cpp");
     ASSERT_FALSE(service.empty());
-    // The service opens its session only through the reclaiming path, never StartTraceW
-    // directly, or a leak would still be able to accumulate.
-    EXPECT_NE(service.find("OpenSessionWithReclaim(&session_, sessionName_)"), std::string::npos);
+    // The service reaches ETW only through the startup unit, which is the only
+    // caller of the reclaiming open below.
+    EXPECT_NE(service.find("OpenSessionAndEnableProviders(&session_, sessionName_)"), std::string::npos);
     EXPECT_EQ(service.find("StartTraceW("), std::string::npos);
+
+    const std::string startup = ReadSource("captureengine/display_timing_startup.cpp");
+    ASSERT_FALSE(startup.empty());
+    // The session is opened only through the reclaiming path, never StartTraceW
+    // directly, or a leak would still be able to accumulate.
+    EXPECT_NE(startup.find("OpenSessionWithReclaim(session, sessionName)"), std::string::npos);
+    EXPECT_EQ(startup.find("StartTraceW("), std::string::npos);
     // The exhausted-budget case says so instead of reporting a bare error number: the
     // symptom a user sees is a changed frame-time graph, not an error.
-    EXPECT_NE(service.find("ETW session budget is"), std::string::npos);
+    EXPECT_NE(startup.find("ETW session budget is"), std::string::npos);
 
     const std::string reclaim = ReadSource("captureengine/display_timing_session_reclaim.cpp");
     ASSERT_FALSE(reclaim.empty());

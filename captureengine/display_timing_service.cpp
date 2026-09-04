@@ -6,6 +6,7 @@
 #include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
 #include "display_timing_session_reclaim.h"
+#include "display_timing_startup.h"
 #include "display_timing_submissions.h"
 #include "display_timing_vblank.h"
 
@@ -54,37 +55,9 @@ public:
         qpcFrequency_ = frequency.QuadPart;
         nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
         swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
-        // Opening also reclaims sessions leaked by CaptureEngine processes that were killed.
-        ULONG status = static_cast<ULONG>(ce::display_timing_reclaim::OpenSessionWithReclaim(&session_, sessionName_));
+        const ULONG status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
         if (status != ERROR_SUCCESS) {
             SetStartupFailure(status);
-            return;
-        }
-
-        status = EnableFilteredProvider(session_, kRuntimeProvider, kRuntimeKeyword,
-                                        {kRuntimePresentStart, kRuntimeMpoPresentStart});
-        if (status == ERROR_SUCCESS) {
-            status = EnableFilteredProvider(session_, kGraphicsKernelProvider, kGraphicsKernelKeyword,
-                                            {kQueuePacketStart, kMmioFlip, kMmioMpoFlip, kVsync, kVsyncMpo,
-                                             kHsyncMpo, kMpoPresentIds});
-        }
-        if (status == ERROR_SUCCESS) {
-            const ULONG optionalStatus =
-                EnableFilteredProvider(session_, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
-            if (optionalStatus != ERROR_SUCCESS) {
-                LogWarn("[DisplayTiming] Generated-frame timestamp events are unavailable: %lu", optionalStatus);
-            }
-            // Optional like the frame-type provider: absent on non-NVIDIA
-            // adapters, where flip event timestamps already are the screen times.
-            const ULONG nvidiaStatus = EnableFilteredProvider(session_, kNvidiaDisplayProvider, kNvidiaDisplayKeyword,
-                                                             {kNvidiaFlipRequest});
-            if (nvidiaStatus != ERROR_SUCCESS) {
-                LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", nvidiaStatus);
-            }
-        }
-        if (status != ERROR_SUCCESS) {
-            SetStartupFailure(status);
-            StopTraceSession();
             return;
         }
 
@@ -172,18 +145,7 @@ private:
         const DisplayTimingStatus status =
             error == ERROR_ACCESS_DENIED ? DisplayTimingStatus::AccessDenied : DisplayTimingStatus::Failed;
         startupStatus_.store(status, std::memory_order_release);
-        if (error == ERROR_ACCESS_DENIED) {
-            LogWarn("[DisplayTiming] Screen-change timing is unavailable (access denied); overlays will use "
-                    "presentation timing");
-        } else if (ce::display_timing_reclaim::ShouldReclaimAfterStartFailure(error)) {
-            // Name the cause; the symptom is otherwise silent (a present-cadence graph).
-            LogWarn("[DisplayTiming] Screen-change timing startup failed: %lu - the machine's ETW session budget is "
-                    "exhausted and no leaked CaptureEngine session could be reclaimed; overlays will use "
-                    "presentation timing", error);
-        } else {
-            LogWarn("[DisplayTiming] Screen-change timing startup failed: %lu; overlays will use presentation timing",
-                    error);
-        }
+        ce::display_timing_startup::LogStartupFailure(error);
     }
 
     void ObserveTraceLosses(ULONG eventsLost) {
@@ -313,8 +275,11 @@ private:
     // flip completions below are rounded onto it.
     void HandleVsync(EVENT_RECORD* event) {
         uint32_t displaySource = 0;
-        if (ReadProperty(event, L"VidPnSourceId", displaySource))
+        if (ReadProperty(event, L"VidPnSourceId", displaySource)) {
             verticalBlanks_.Observe(displaySource, event->EventHeader.TimeStamp.QuadPart);
+            if (displaySource == verticalBlanks_.busiestSource())
+                blankIntervals_.Observe(DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
+        }
         uint64_t fenceId = 0;
         if (!ReadProperty(event, L"FlipFenceId", fenceId) || fenceId == 0)
             return;
@@ -347,6 +312,8 @@ private:
                 QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
                                DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource);
                 ++completionsBySource_[static_cast<std::size_t>(source)];
+                latchIntervals_.Observe(
+                    DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
                 publishedPids[publishedCount++] = processId;
             }
             submissions_.Erase(submitSequence);
@@ -661,6 +628,9 @@ private:
         const uint32_t blankSource = verticalBlanks_.busiestSource();
         health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);
         health.blanksObserved = verticalBlanks_.observedBlanks(blankSource);
+        health.blankClockUsable = verticalBlanks_.CanPlaceFrames(blankSource);
+        SetBlankIntervals(health, blankIntervals_);
+        SetLatchIntervals(health, latchIntervals_);
         SnapshotIntervals(health);
         return true;
     }
@@ -679,6 +649,8 @@ private:
         for (auto& output : lastPublishedByOutput_)
             output.second.intervals.StartWindow();
         runtimeIntervals_.StartWindow();
+        blankIntervals_.StartWindow();
+        latchIntervals_.StartWindow();
     }
 
     void LogHealthIfDue() {
@@ -761,6 +733,8 @@ private:
     uint32_t runtimeIntervalPid_ = 0;
     uint64_t blankAdjustedTimestamps_ = 0;
     uint64_t blankUnresolvedTimestamps_ = 0;
+    DisplayIntervalStats blankIntervals_;
+    DisplayIntervalStats latchIntervals_;
     uint64_t nextTimestampOrder_ = 1;
     ULONG observedTraceEventsLost_ = 0;
     ULONG loggedTraceEventsLost_ = 0;

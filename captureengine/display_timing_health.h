@@ -73,6 +73,28 @@ struct DisplayTimingHealth {
     int64_t blankIntervalUs = 0;
     uint64_t blankAdjusted = 0;
     uint64_t blankUnresolved = 0;
+    // Whether the blank clock is placing frames at all. False says the display
+    // is not refreshing on a grid the driver's blank reports describe - variable
+    // refresh below the cap - and that the published series therefore carries
+    // the driver's own flip-latch times. That is the difference between a graph
+    // that is jagged because the screen is and one that is jagged because this
+    // service made it so, and nothing else in the line says which.
+    bool blankClockUsable = false;
+    // The shape of the blank stream itself. The clock can only be as good as
+    // this: gaps that are not multiples of one period are what the grid refuses.
+    uint64_t blankIntervalCount = 0;
+    int64_t blankIntervalMeanUs = 0;
+    int64_t blankIntervalP50Us = 0;
+    int64_t blankIntervalP99Us = 0;
+    int64_t blankIntervalMaxUs = 0;
+    // The completions as the driver timestamped them, before any rounding. Read
+    // against publishedInterval it says what the rounding did: the two are equal
+    // while the clock is refusing, and the published one should be the flatter
+    // of the two whenever it is not.
+    uint64_t latchIntervalCount = 0;
+    int64_t latchIntervalMeanUs = 0;
+    int64_t latchIntervalStdDevUs = 0;
+    int64_t latchIntervalJaggednessUs = 0;
 };
 
 inline void SetPublishedIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
@@ -84,6 +106,21 @@ inline void SetPublishedIntervals(DisplayTimingHealth& health, const DisplayInte
     health.publishedIntervalP50Us = stats.percentileUs(0.50);
     health.publishedIntervalP99Us = stats.percentileUs(0.99);
     health.publishedIntervalMaxUs = stats.maxUs();
+}
+
+inline void SetLatchIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
+    health.latchIntervalCount = stats.count();
+    health.latchIntervalMeanUs = stats.meanUs();
+    health.latchIntervalStdDevUs = stats.stdDevUs();
+    health.latchIntervalJaggednessUs = stats.jaggednessUs();
+}
+
+inline void SetBlankIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
+    health.blankIntervalCount = stats.count();
+    health.blankIntervalMeanUs = stats.meanUs();
+    health.blankIntervalP50Us = stats.percentileUs(0.50);
+    health.blankIntervalP99Us = stats.percentileUs(0.99);
+    health.blankIntervalMaxUs = stats.maxUs();
 }
 
 inline void SetRuntimeIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
@@ -109,7 +146,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
-        "vblank(observed=%llu intervalUs=%lld adjusted=%llu unresolved=%llu) "
+        "vblank(observed=%llu periodUs=%lld usableClock=%d adjusted=%llu unresolved=%llu "
+        "gaps(n=%llu meanUs=%lld p50Us=%lld p99Us=%lld maxUs=%lld)) "
+        "latchInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "publishedInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld p1Us=%lld p50Us=%lld p99Us=%lld "
         "maxUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld)",
         stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
@@ -120,8 +159,12 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
-        static_cast<long long>(health.blankIntervalUs), health.blankAdjusted, health.blankUnresolved,
-        health.publishedIntervalCount,
+        static_cast<long long>(health.blankIntervalUs), health.blankClockUsable ? 1 : 0, health.blankAdjusted,
+        health.blankUnresolved, health.blankIntervalCount, static_cast<long long>(health.blankIntervalMeanUs),
+        static_cast<long long>(health.blankIntervalP50Us), static_cast<long long>(health.blankIntervalP99Us),
+        static_cast<long long>(health.blankIntervalMaxUs), health.latchIntervalCount,
+        static_cast<long long>(health.latchIntervalMeanUs), static_cast<long long>(health.latchIntervalStdDevUs),
+        static_cast<long long>(health.latchIntervalJaggednessUs), health.publishedIntervalCount,
         static_cast<long long>(health.publishedIntervalMeanUs),
         static_cast<long long>(health.publishedIntervalStdDevUs),
         static_cast<long long>(health.publishedIntervalJaggednessUs),

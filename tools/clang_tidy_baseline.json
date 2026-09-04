@@ -23,11 +23,12 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 712,
+    "entries": 713,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
       "captureengine/display_timing_session_reclaim.cpp",
+      "captureengine/display_timing_startup.cpp",
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
       "captureengine/host_metrics.cpp",
