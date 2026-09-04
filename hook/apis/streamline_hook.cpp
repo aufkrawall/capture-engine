@@ -328,6 +328,7 @@ void Shutdown() {
     ResetPCLLatencyCapture();
     std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
     streamline_hook_g_ViewportStates.clear();
+    streamline_hook_g_ViewportLoggedStates.clear();
     streamline_hook_g_ViewportCapabilityMax.clear();
     streamline_hook_g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
     streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);

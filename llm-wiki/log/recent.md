@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-09-04 - Two unbounded per-frame log lines on the game's render thread under FSR FG
+
+Found while reading the sessions above. With `log_level` defaulting to `trace`, CE wrote
+about 135 lines per second from Talos's render thread (`T:5830`) for as long as FSR FG
+ran - each a global mutex plus two unbuffered `WriteFile` calls, 1.7-2.1 MB per 45 s:
+
+- `FFX Hook: Armed VEH breakpoint ... (forward-call rearm)` - 1775 lines in 26 s. Only
+  the `post-call rearm` reason was metered; the forward-call reason logged every time.
+  Both are steady-state heartbeats and are now metered together
+  (`ce::log_meter::ShouldLogCadence(n, 20, 300)`); genuine transitions still log always.
+- `Streamline Hook: Viewport N state ...` - 3099 lines in 26 s. `stateChanged` compared
+  against whether the map held an entry, but the disable path *erases* it, so an
+  absent-before/absent-after steady state was indistinguishable from a transition on
+  every query. It now compares against the last state actually written to the log
+  (`streamline_hook_g_ViewportLoggedStates`).
+
+Open, with evidence, not fixed: the protected-official-FFX `ffxConfigure` entry
+breakpoint was hit **zero** times in both sessions (`s_vehHitLogCount` never logged) -
+the game reaches `Hooked_ffxConfigure` through the IAT route. Yet
+`CallFfxConfigureOriginalGuarded` still pauses and re-arms it around every forward:
+one `VirtualQuery`, four `VirtualProtect` on AMD's executable code page and two
+`FlushInstructionCache` per application frame, on the render thread, to maintain a
+breakpoint nothing hits. The project's own measurement puts `ffxConfigure` at 2 us
+without CE and 40 us with it (two calls per frame). The clean fix is a trampoline so the
+0xCC never has to come out - which also closes the window where a concurrent thread runs
+the runtime's `ffxConfigure` unhooked - but it rewrites a path under the "FG must never
+break" constraint and needs a hardware run to land safely.
+
 ### 2026-09-04 - FSR FG had no application-source Present at all
 
 User observation: real Reflex/PCL PC latency tracks the screen far better than the

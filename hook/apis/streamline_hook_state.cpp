@@ -538,8 +538,6 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
                                 bool clearAllViewportStatesForDisable) {
 
 
-    ViewportFGState previousState{};
-    bool hadPreviousState = false;
     bool stateChanged = false;
     bool anyActive = false;
     int combinedMultiplier = 0;
@@ -552,12 +550,6 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
 
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
-        const auto existing = streamline_hook_g_ViewportStates.find(viewportKey);
-        if (existing != streamline_hook_g_ViewportStates.end()) {
-            previousState = existing->second;
-            hadPreviousState = true;
-        }
-
         if (active) {
             streamline_hook_g_ViewportStates[viewportKey] = {
                 true, publishedMultiplier, generatedFrames, capabilityMax};
@@ -572,10 +564,18 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
         const ViewportFGState currentState =
             current != streamline_hook_g_ViewportStates.end() ? current->second : ViewportFGState{false, 0, 0, capabilityMax};
 
-        stateChanged = !hadPreviousState || previousState.active != currentState.active ||
-                       previousState.multiplier != currentState.multiplier ||
-                       previousState.generatedFrames != currentState.generatedFrames ||
-                       previousState.capabilityMax != currentState.capabilityMax;
+        // Compare against what was last reported, not against whether the map
+        // happened to hold an entry for this viewport: the disable paths erase
+        // it, so an absent-before/absent-after steady state looked like a
+        // transition on every single query and logged once per rendered frame.
+        // The line reports the viewport's state, so the state is what decides
+        // whether it has something new to say; the source it names is the call
+        // that last changed it.
+        const auto lastLogged = streamline_hook_g_ViewportLoggedStates.find(viewportKey);
+        stateChanged = lastLogged == streamline_hook_g_ViewportLoggedStates.end() ||
+                       lastLogged->second != currentState;
+        if (stateChanged)
+            streamline_hook_g_ViewportLoggedStates[viewportKey] = currentState;
 
         for (const auto& [_, state] : streamline_hook_g_ViewportStates) {
             if (!state.active) {

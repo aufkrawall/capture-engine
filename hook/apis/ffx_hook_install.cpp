@@ -435,16 +435,26 @@ bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_mod
         ffx_hook_g_Original_ffxConfigure = target;
     }
 
-    const bool postCallRearm = ffx_hook_reason && std::strcmp(ffx_hook_reason, "post-call rearm") == 0;
+    // A re-arm that follows the runtime's own ffxConfigure is a steady-state
+    // heartbeat, not an event: the game calls it once per rendered frame, so an
+    // unmetered line here is two WriteFile calls on the game's render thread
+    // every frame for as long as frame generation runs. Measured in Talos under
+    // FSR FG, the forward-call re-arm alone wrote 1775 lines in 26 seconds
+    // because only the post-call reason was metered. Both re-arm reasons carry
+    // the same information and are metered the same way; a genuine transition
+    // (init, target change, an FG-off/on re-arm) still logs every time.
+    const bool steadyStateRearm =
+        ffx_hook_reason && (std::strcmp(ffx_hook_reason, "post-call rearm") == 0 ||
+                            std::strcmp(ffx_hook_reason, "forward-call rearm") == 0);
     bool shouldLogArm = true;
     int rearmLogCount = 0;
-    if (postCallRearm) {
-        static std::atomic<int> s_postCallRearmLogCount{0};
-        rearmLogCount = s_postCallRearmLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        shouldLogArm = rearmLogCount <= 20 || (rearmLogCount % 300) == 0;
+    if (steadyStateRearm) {
+        static std::atomic<int> s_steadyStateRearmLogCount{0};
+        rearmLogCount = s_steadyStateRearmLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        shouldLogArm = ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(rearmLogCount), 20, 300);
     }
     if (shouldLogArm) {
-        if (postCallRearm) {
+        if (steadyStateRearm) {
             HookLogImportant("FFX Hook: %s VEH breakpoint for %s!ffxConfigure at %p (%s #%d)",
                              currentByte == 0xCC ? "Confirmed" : "Armed", ffx_hook_moduleName ? ffx_hook_moduleName : "FFX",
                              reinterpret_cast<void*>(target), ffx_hook_reason, rearmLogCount);

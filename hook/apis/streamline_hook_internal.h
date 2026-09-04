@@ -345,6 +345,12 @@ struct ViewportFGState {
     int multiplier = 0;
     uint32_t generatedFrames = 0;
     uint32_t capabilityMax = 0;
+
+    bool operator==(const ViewportFGState& o) const {
+        return active == o.active && multiplier == o.multiplier && generatedFrames == o.generatedFrames &&
+               capabilityMax == o.capabilityMax;
+    }
+    bool operator!=(const ViewportFGState& o) const { return !(*this == o); }
 };
 
 inline std::mutex streamline_hook_g_InitMutex;
@@ -476,6 +482,10 @@ inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsLookupLogged{false}
 inline std::atomic<ULONGLONG> streamline_hook_g_ReflexFeatureHookRetryLastMs{0};
 
 inline std::unordered_map<uint32_t, ViewportFGState> streamline_hook_g_ViewportStates;
+
+// The last viewport state written to the log, per viewport. See
+// UpdateViewportRuntimeState: the map above cannot answer what was reported.
+inline std::unordered_map<uint32_t, ViewportFGState> streamline_hook_g_ViewportLoggedStates;
 
 inline std::unordered_map<uint32_t, uint32_t> streamline_hook_g_ViewportCapabilityMax;
 
