@@ -42,8 +42,23 @@ healthy. It now prints `measured` / `modelled` / `none`.
 
 Modelled reconstruction of the logged FSR topology (21 ms application, 11 ms output, 4 ms
 present-to-display): 46.5 ms modelled versus 63.0 ms measured, against 66-73 ms of real
-markers in the DLSS window at the same cadence. Hardware run pending; the number to check
-is `generatorHold=measured` in the chain line while FSR FG is active.
+markers in the DLSS window at the same cadence.
+
+**Confirmed on hardware, session `20260904_042922`.** FSR FG now reads 62-65 ms at
+baseFps ~45 / outputFps ~90 - the same cadence that read 45 ms before - so the FSR-FG-on
+against all-FG-off delta is ~+25 ms instead of ~+7 ms. The conclusive evidence is not the
+value but `frameBeginInterval`: `0us` on every FSR line before, `22268-23328us` after. The
+application-source stream carries a frame-begin anchor with it, and **Talos calls its
+low-latency sleep even under FSR FG**, so the FSR path is now fully measured
+(`frameBegin=low-latency-sleep`, `anchorToPresent=41826-54687us` against a modelled floor
+of `baseInterval + displayInterval = 35044us`), not merely hold-corrected.
+
+That immediately caught a defect in the new diagnostic itself: `generatorHold` printed
+`modelled` on those lines. `holdMeasured` was only set in the no-anchor branch, but the
+step back onto the held application frame is what makes the hold measured in *both*
+branches - the anchor form spans from that frame's own boundary, the no-anchor form from
+its Present. Only the `expectedGeneratorHoldUs` addition is a model. Corrected: the flag is
+now seeded from `holdApplied` and cleared only when the hold could not be applied.
 
 Open: the same structural gap applies to any generator that paces from its own thread
 without CE seeing the application Present (Intel XeSS-FG, AFMF, third-party proxies). Only

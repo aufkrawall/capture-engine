@@ -662,7 +662,10 @@ private:
         // what makes the estimate sensitive to a low-latency mode, which
         // shortens this span without changing cadence.
         int64_t anchorToPresentUs = baseIntervalUs;
-        bool holdMeasured = false;
+        // The step back onto the held application frame is what makes the hold
+        // measured in both branches below; only the expected-hold addition
+        // further down is a model.
+        bool holdMeasured = holdApplied;
         FrameBeginKind frameBeginKind = FrameBeginKind::Modelled;
         if (anchorUsable) {
             anchorToPresentUs = runtimePresentUs - anchorUs;
@@ -674,7 +677,8 @@ private:
             const int64_t generatorHoldUs = runtimePresentUs - applicationPresents_.At(applicationIndex);
             if (generatorHoldUs >= 0 && generatorHoldUs <= kMaximumIntervalUs) {
                 anchorToPresentUs = baseIntervalUs + generatorHoldUs;
-                holdMeasured = true;
+            } else {
+                holdMeasured = false;
             }
         }
 

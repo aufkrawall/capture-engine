@@ -175,8 +175,16 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   the proxy Present detour classifies it directly (`DX12_ObserveFFXProxyApplicationSourcePresent`, outermost entry,
   before any routing decision: the measurement must not depend on which overlay-composition route is live). A
   same-frame duplicate from a synchronous passthrough is rejected by the 3 ms minimum application interval.
+- The stream carries the frame-begin anchor with it, which is the larger half of the win: a game that calls its
+  low-latency sleep under a proxy generator (Talos does, under FSR FG) becomes fully measured rather than
+  hold-corrected. Measured on hardware: `frameBeginInterval` went from `0us` to `22268-23328us`, and
+  `anchorToPresent` from a modelled `baseInterval + displayInterval` floor of 35 ms to a measured 42-55 ms.
+- `generatorHold` is `measured` whenever the anchor was stepped back onto an observed application frame - in the
+  anchored branch as well as the no-anchor one, since the step-back is what carries the hold in both. Only the
+  `expectedGeneratorHoldUs` addition is a model.
 - Stale-risk: any other generator that paces from its own thread (Intel XeSS-FG, AFMF, third-party proxy swapchains)
   has the same topology and no producer wired. `generatorHold=modelled` while `generationObserved=1` is the symptom.
+- Stale-risk: `system_latency_metrics.h` is at 799 lines against the 800-line ceiling. The next addition needs a split.
 
 ### Frame-begin anchor (`system_latency_frame_begin.h`)
 

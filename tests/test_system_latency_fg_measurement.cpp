@@ -82,9 +82,10 @@ struct RuntimePacedResult {
     float milliseconds = 0.0f;
     bool holdApplied = false;
     bool holdMeasured = false;
+    FrameBeginKind frameBeginKind = FrameBeginKind::Modelled;
 };
 
-RuntimePacedResult MeasureRuntimePacedGenerator(bool observeApplicationPresents) {
+RuntimePacedResult MeasureRuntimePacedGenerator(bool observeApplicationPresents, int64_t frameBeginLeadUs = 0) {
     constexpr int64_t applicationIntervalUs = 21'000;
     constexpr int64_t outputIntervalUs = 11'000;
     constexpr int64_t presentToDisplayUs = 4'000;
@@ -93,8 +94,11 @@ RuntimePacedResult MeasureRuntimePacedGenerator(bool observeApplicationPresents)
     int64_t lastScreenUs = 0;
     for (int frame = 0; frame < 30; ++frame) {
         const int64_t applicationPresentUs = 20'000'000 + applicationIntervalUs * frame;
-        if (observeApplicationPresents)
-            tracker.ObserveApplicationPresent(applicationPresentUs);
+        if (observeApplicationPresents) {
+            tracker.ObserveApplicationPresent(
+                applicationPresentUs, frameBeginLeadUs > 0 ? applicationPresentUs - frameBeginLeadUs : 0,
+                frameBeginLeadUs > 0 ? FrameBeginKind::LowLatencySleepReturn : FrameBeginKind::Modelled);
+        }
         if (frame == 0)
             continue;
         for (int output = 0; output < 2; ++output) {
@@ -108,6 +112,7 @@ RuntimePacedResult MeasureRuntimePacedGenerator(bool observeApplicationPresents)
     result.milliseconds = tracker.GetSnapshot(lastScreenUs).milliseconds;
     result.holdApplied = diagnostics.generatorHoldApplied;
     result.holdMeasured = diagnostics.generatorHoldMeasured;
+    result.frameBeginKind = diagnostics.lastFrameBeginKind;
     EXPECT_TRUE(diagnostics.frameGenerationObserved);
     EXPECT_EQ(diagnostics.displaysWithoutMatchedPresent, 0u);
     return result;
@@ -179,6 +184,27 @@ TEST(SystemLatencyFGMeasurementTest, RuntimePacedGeneratorHoldIsMeasuredFromAppl
     // so it exceeds the modelled single output interval by at least the
     // difference between the application and output cadence.
     EXPECT_GT(withApplicationPresents.milliseconds, withoutApplicationPresents.milliseconds + 10.0f);
+}
+
+// Talos under FSR FG: the game calls its low-latency sleep even while the
+// FidelityFX runtime paces output, so the anchor of the *held* application frame
+// is observable and the whole simulation-to-present span - generator hold
+// included - is measured. That span must still count as a measured hold; it is
+// the one the modelled floor is standing in for.
+TEST(SystemLatencyFGMeasurementTest, MeasuredAnchorSpanCountsAsAMeasuredGeneratorHold) {
+    const RuntimePacedResult shortSimulation = MeasureRuntimePacedGenerator(true, /*frameBeginLeadUs=*/3'000);
+    const RuntimePacedResult longSimulation = MeasureRuntimePacedGenerator(true, /*frameBeginLeadUs=*/18'000);
+
+    for (const RuntimePacedResult& result : {shortSimulation, longSimulation}) {
+        EXPECT_EQ(result.frameBeginKind, FrameBeginKind::LowLatencySleepReturn);
+        EXPECT_TRUE(result.holdApplied);
+        // Reporting this span as a modelled hold is what hid the FSR shortfall.
+        EXPECT_TRUE(result.holdMeasured);
+    }
+    // The span responds to the measured simulation start rather than to a
+    // modelled frame of CPU work, which is exactly what a low-latency mode
+    // changes without touching cadence.
+    EXPECT_GT(longSimulation.milliseconds, shortSimulation.milliseconds + 10.0f);
 }
 
 TEST(SystemLatencyFGMeasurementTest, ModelledGeneratorHoldStaysAFloorForTheMeasuredPipeline) {
