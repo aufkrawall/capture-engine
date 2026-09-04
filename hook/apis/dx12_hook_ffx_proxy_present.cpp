@@ -232,6 +232,33 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     }
 }
 
+// The application's own Present, on the game thread, once per rendered frame.
+// AMD's frame-generation swapchain takes it here and issues the real DXGI
+// presents for the interpolated and application outputs later from its own
+// presenter thread, so CE's DetourPresent below the chain only ever observes
+// runtime presents. Without this classification the PC-latency correlator has
+// no application frame to attribute a displayed transition to: it models the
+// generator hold as one output interval instead of measuring how long the
+// runtime actually held the frame, and the published estimate collapses toward
+// that floor (session 20260904_034526: 45 ms under FSR FG against 70 ms of real
+// Reflex/PCL markers at the same application and output cadence).
+static void DX12_ObserveFFXProxyApplicationSourcePresent(int64_t presentQpcUs) {
+    auto* metrics = DXGIShared::GetPerformanceMetrics();
+    const bool active = metrics && metrics->IsFGActive();
+    static std::atomic<bool> s_applicationSourceStreamActive{false};
+    if (s_applicationSourceStreamActive.exchange(active, std::memory_order_relaxed) != active) {
+        HookLogImportant(
+            "DX12: FFX proxy present %s the PC-latency application-source stream — the generator hold is now %s",
+            active ? "FEEDS" : "no longer feeds",
+            active ? "measured against the game's own Present"
+                   : "irrelevant (frame generation inactive; DetourPresent classifies source frames again)");
+    }
+    if (!active) {
+        return;
+    }
+    metrics->ObserveApplicationPresent(presentQpcUs);
+}
+
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self, UINT SyncInterval, UINT Flags) {
     g_FFXProxyPresentDetoursInFlight.fetch_add(1, std::memory_order_acq_rel);
     auto inFlightGuard = ce::make_scope_guard([]() {
@@ -246,6 +273,9 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
     const int64_t enterUs = PerfLogger::GetQpcUs();
+    if (outermost) {
+        DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
+    }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present");
     }
@@ -270,6 +300,9 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
     const int64_t enterUs = PerfLogger::GetQpcUs();
+    if (outermost) {
+        DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
+    }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_RunFFXProxyPrePresentWork(self, "Present1");
     }

@@ -355,6 +355,7 @@ public:
             diagnostics.lastBaseIntervalUs = lastBaseIntervalUs_;
             diagnostics.lastFrameBeginKind = lastFrameBeginKind_;
             diagnostics.generatorHoldApplied = lastGeneratorHoldApplied_;
+            diagnostics.generatorHoldMeasured = lastGeneratorHoldMeasured_;
         }
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
         diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
@@ -661,6 +662,7 @@ private:
         // what makes the estimate sensitive to a low-latency mode, which
         // shortens this span without changing cadence.
         int64_t anchorToPresentUs = baseIntervalUs;
+        bool holdMeasured = false;
         FrameBeginKind frameBeginKind = FrameBeginKind::Modelled;
         if (anchorUsable) {
             anchorToPresentUs = runtimePresentUs - anchorUs;
@@ -672,6 +674,7 @@ private:
             const int64_t generatorHoldUs = runtimePresentUs - applicationPresents_.At(applicationIndex);
             if (generatorHoldUs >= 0 && generatorHoldUs <= kMaximumIntervalUs) {
                 anchorToPresentUs = baseIntervalUs + generatorHoldUs;
+                holdMeasured = true;
             }
         }
 
@@ -706,6 +709,7 @@ private:
         lastBaseIntervalUs_ = baseIntervalUs;
         lastFrameBeginKind_ = frameBeginKind;
         lastGeneratorHoldApplied_ = holdApplied;
+        lastGeneratorHoldMeasured_ = holdMeasured;
     }
 
     void ResetMeasurementsLocked() {
@@ -726,6 +730,7 @@ private:
         markerIntervalUs_ = 0;
         markerCadenceTrusted_ = true;
         lastGeneratorHoldApplied_ = false;
+        lastGeneratorHoldMeasured_ = false;
         nativeGeneratorHoldApplied_ = false;
     }
 
@@ -773,6 +778,7 @@ private:
     int64_t lastBaseIntervalUs_ = 0;
     FrameBeginKind lastFrameBeginKind_ = FrameBeginKind::Modelled;
     bool lastGeneratorHoldApplied_ = false;
+    bool lastGeneratorHoldMeasured_ = false;
     int64_t nativeSimulationToDisplayUs_ = 0;
     int64_t nativePresentToDisplayUs_ = 0;
     int64_t nativeInputWaitUs_ = 0;

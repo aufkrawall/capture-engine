@@ -91,6 +91,13 @@ struct Diagnostics {
     // A generator is holding the application frame back behind the frames it
     // derived from it, so the anchor was stepped one application frame older.
     bool generatorHoldApplied = false;
+    // Whether that hold was measured against the application's own Present, or
+    // modelled as one output interval because no application frame reached the
+    // correlator. A runtime that presents from its own thread hides the
+    // application Present from the present hook, and the modelled form is only
+    // a floor - so the two must never be reported as the same thing. Estimate
+    // path only; the marker path carries the game's own timestamps.
+    bool generatorHoldMeasured = false;
     FrameBeginKind lastFrameBeginKind = FrameBeginKind::Modelled;
     // Whether the most recent marker-sourced sample was matched through the
     // sensor's runtime-Present association rather than by screen time alone.

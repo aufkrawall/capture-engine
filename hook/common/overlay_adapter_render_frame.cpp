@@ -118,7 +118,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     HookLogImportant(
                         "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
                         "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
-                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%d "
+                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%s "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
                         "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu",
@@ -132,7 +132,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<long long>(latencyDiagnostics.displayIntervalUs),
                         latencyDiagnostics.observedOutputRatioPermille,
                         latencyDiagnostics.frameGenerationObserved ? 1 : 0,
-                        latencyDiagnostics.generatorHoldApplied ? 1 : 0,
+                        // "modelled" while a generator is pacing means no application-source Present
+                        // reached the correlator, so the hold is a floor of one output interval rather
+                        // than the span the runtime actually held the frame for.
+                        latencyDiagnostics.generatorHoldApplied
+                            ? (latencyDiagnostics.generatorHoldMeasured ? "measured" : "modelled")
+                            : "none",
                         static_cast<long long>(latencyDiagnostics.markerIntervalUs),
                         latencyDiagnostics.markerCadenceTrusted ? 1 : 0,
                         latencyDiagnostics.lastMarkerUsedAssociation ? 1 : 0,

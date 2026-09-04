@@ -72,7 +72,133 @@ float MeasureGenerated(int multiplier, bool lowLatency) {
     return tracker.GetSnapshot(lastScreenUs).milliseconds;
 }
 
+// A frame-generation runtime that paces output from its own presenter thread
+// (FidelityFX, and any proxy-swapchain generator) takes the application's
+// Present on the game thread and issues the real DXGI presents later. When that
+// application-source stream is classified, the span the runtime held the frame
+// for is measured; when it is not, the correlator can only model it as one
+// output interval, which is a floor.
+struct RuntimePacedResult {
+    float milliseconds = 0.0f;
+    bool holdApplied = false;
+    bool holdMeasured = false;
+};
+
+RuntimePacedResult MeasureRuntimePacedGenerator(bool observeApplicationPresents) {
+    constexpr int64_t applicationIntervalUs = 21'000;
+    constexpr int64_t outputIntervalUs = 11'000;
+    constexpr int64_t presentToDisplayUs = 4'000;
+    Tracker tracker;
+    tracker.SetFrameGeneration(1'000'000.0f / static_cast<float>(applicationIntervalUs), 2, /*fgType=*/2);
+    int64_t lastScreenUs = 0;
+    for (int frame = 0; frame < 30; ++frame) {
+        const int64_t applicationPresentUs = 20'000'000 + applicationIntervalUs * frame;
+        if (observeApplicationPresents)
+            tracker.ObserveApplicationPresent(applicationPresentUs);
+        if (frame == 0)
+            continue;
+        for (int output = 0; output < 2; ++output) {
+            const int64_t runtimePresentUs = applicationPresentUs + 1'000 + outputIntervalUs * output;
+            lastScreenUs = runtimePresentUs + presentToDisplayUs;
+            tracker.ObserveDisplay(lastScreenUs, runtimePresentUs);
+        }
+    }
+    const auto diagnostics = tracker.GetDiagnostics();
+    RuntimePacedResult result{};
+    result.milliseconds = tracker.GetSnapshot(lastScreenUs).milliseconds;
+    result.holdApplied = diagnostics.generatorHoldApplied;
+    result.holdMeasured = diagnostics.generatorHoldMeasured;
+    EXPECT_TRUE(diagnostics.frameGenerationObserved);
+    EXPECT_EQ(diagnostics.displaysWithoutMatchedPresent, 0u);
+    return result;
+}
+
+// The wiring contract the FidelityFX proxy-present detour has to honour, driven
+// through the same public API that detour calls. The runtime's presenter thread
+// is the only present CE's DetourPresent sees under FSR FG, so PerformanceMetrics
+// must be told about the game's own Present separately - otherwise the generator
+// hold stays modelled no matter how healthy the display association looks.
+struct ProxyPacedMetricsResult {
+    float milliseconds = 0.0f;
+    bool holdMeasured = false;
+};
+
+ProxyPacedMetricsResult MeasureProxyPacedMetrics(bool classifyProxyPresent) {
+    constexpr int64_t applicationIntervalUs = 21'000;
+    constexpr int64_t outputIntervalUs = 11'000;
+    PerformanceMetrics metrics;
+    SharedDisplayTiming timing;
+    timing.Reset(4321, 0, DisplayTimingStatus::Starting);
+    metrics.ConsumeDisplayTiming(timing, 9'000'000);
+    metrics.SetFGMetrics(1'000'000.0f / static_cast<float>(outputIntervalUs),
+                         1'000'000.0f / static_cast<float>(applicationIntervalUs), 2, /*fgType=*/2);
+
+    int64_t lastScreenUs = 0;
+    for (int frame = 0; frame < 30; ++frame) {
+        const int64_t applicationPresentUs = 10'000'000 + applicationIntervalUs * frame;
+        if (classifyProxyPresent)
+            metrics.ObserveApplicationPresent(applicationPresentUs);
+        if (frame == 0)
+            continue;
+        for (int output = 0; output < 2; ++output) {
+            const int64_t runtimePresentUs = applicationPresentUs + 1'000 + outputIntervalUs * output;
+            // The runtime's own present, which is all DetourPresent observes here.
+            metrics.Update(runtimePresentUs);
+            lastScreenUs = runtimePresentUs + 4'000;
+            timing.Publish(lastScreenUs, runtimePresentUs);
+        }
+    }
+    metrics.ConsumeDisplayTiming(timing, lastScreenUs);
+
+    ProxyPacedMetricsResult result{};
+    result.milliseconds = metrics.GetSystemLatency(lastScreenUs).milliseconds;
+    result.holdMeasured = metrics.GetSystemLatencyDiagnostics(lastScreenUs).generatorHoldMeasured;
+    return result;
+}
+
 }  // namespace
+
+// Regression: the FSR-FG topology of session 20260904_034526. The application
+// Present arrives through the FidelityFX swapchain proxy on the game thread and
+// never reaches CE's DetourPresent below the chain, so before the proxy-present
+// classification the correlator saw only the runtime's own presents ~4 ms ahead
+// of scanout, modelled the generator hold as one output interval, and published
+// 45 ms where real Reflex/PCL markers reported 70 ms at the same cadence.
+TEST(SystemLatencyFGMeasurementTest, RuntimePacedGeneratorHoldIsMeasuredFromApplicationPresents) {
+    const RuntimePacedResult withApplicationPresents = MeasureRuntimePacedGenerator(true);
+    const RuntimePacedResult withoutApplicationPresents = MeasureRuntimePacedGenerator(false);
+
+    EXPECT_TRUE(withApplicationPresents.holdApplied);
+    EXPECT_TRUE(withApplicationPresents.holdMeasured);
+    EXPECT_TRUE(withoutApplicationPresents.holdApplied);
+    // The distinction has to survive into the diagnostics: a modelled hold that
+    // reports itself as applied is exactly what made the shortfall invisible.
+    EXPECT_FALSE(withoutApplicationPresents.holdMeasured);
+
+    // The measured hold spans the application Present the generator is holding,
+    // so it exceeds the modelled single output interval by at least the
+    // difference between the application and output cadence.
+    EXPECT_GT(withApplicationPresents.milliseconds, withoutApplicationPresents.milliseconds + 10.0f);
+}
+
+TEST(SystemLatencyFGMeasurementTest, ModelledGeneratorHoldStaysAFloorForTheMeasuredPipeline) {
+    // Without the application stream the estimate must still be produced - it is
+    // a floor, not an error - but it must never read higher than the measured
+    // pipeline it approximates.
+    const RuntimePacedResult modelled = MeasureRuntimePacedGenerator(false);
+    const RuntimePacedResult measured = MeasureRuntimePacedGenerator(true);
+    EXPECT_GT(modelled.milliseconds, 0.0f);
+    EXPECT_LE(modelled.milliseconds, measured.milliseconds);
+}
+
+TEST(SystemLatencyFGMeasurementTest, ProxyPresentClassificationMakesTheGeneratorHoldMeasurable) {
+    const ProxyPacedMetricsResult classified = MeasureProxyPacedMetrics(true);
+    const ProxyPacedMetricsResult unclassified = MeasureProxyPacedMetrics(false);
+
+    EXPECT_TRUE(classified.holdMeasured);
+    EXPECT_FALSE(unclassified.holdMeasured);
+    EXPECT_GT(classified.milliseconds, unclassified.milliseconds + 10.0f);
+}
 
 TEST(SystemLatencyFGMeasurementTest, OutputRateMarkersAreRejectedWhileGenerationIsMeasured) {
     Tracker tracker;

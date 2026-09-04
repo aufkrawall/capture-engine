@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-09-02 (Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-04 (application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -154,6 +154,29 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Displays with no association keep the documented degraded timestamp-only behavior for both paths. The ratio is
   logged (`displays=` vs `associated=`) because a reading taken on the degraded path cannot be compared against one
   taken on the associated path.
+- **The association only exposes a queue that lives below the runtime Present.** A frame-generation runtime that
+  paces output from its own presenter thread keeps the game's frames in *its* queue, above DXGI: the associated
+  `PresentStart` is then the generator's present, a few milliseconds before scanout, and `presentToDisplay` measures
+  none of the wait. Session `20260904_034526` on Talos: 2-4 ms under FSR FG against 17-25 ms under DLSS FG at nearly
+  identical application (21.0 / 23.2 ms) and output (11.2 / 11.0 ms) cadence. What covers that span is the measured
+  generator hold, which needs the application-source Present stream below.
+
+### The application-source Present stream
+
+- Under frame generation the final-output Present stream is the generator's, so the application's own Present has to
+  be classified separately (`ObserveApplicationPresent`). Without it `MatchApplicationPresentLocked` fails, the hold
+  degrades to the modelled `(fgMultiplier - 1) x displayInterval` floor, and `ResolveWorkIntervalLocked` falls through
+  to the FG runtime's *published* base FPS instead of measured cadence - three modelled terms in a row, none of them
+  visible in the published number.
+- Two producers exist, one per runtime topology. Streamline/DLSS-G presents through CE's own `ProcessFrame`, so
+  `DX12_ObserveApplicationSourcePresentTiming` runs there under the `applicationSourcePresent` guard
+  (`ShouldApplyDX12PrerenderLimitOnPresent`: the tracked game Present thread only). FidelityFX does not - the game
+  presents into AMD's frame-generation swapchain proxy and AMD's presenter thread issues the real DXGI present - so
+  the proxy Present detour classifies it directly (`DX12_ObserveFFXProxyApplicationSourcePresent`, outermost entry,
+  before any routing decision: the measurement must not depend on which overlay-composition route is live). A
+  same-frame duplicate from a synchronous passthrough is rejected by the 3 ms minimum application interval.
+- Stale-risk: any other generator that paces from its own thread (Intel XeSS-FG, AFMF, third-party proxy swapchains)
+  has the same topology and no producer wired. `generatorHold=modelled` while `generationObserved=1` is the symptom.
 
 ### Frame-begin anchor (`system_latency_frame_begin.h`)
 
@@ -195,7 +218,8 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   mean plus the window's median/min/max. A wide min/max spread is how a broken correlation announces itself.
 - `[Overlay] PC latency chain` decomposes the most recent accepted sample: `frameBegin=` (`low-latency-sleep` or
   `modelled`), `anchorToPresent`, `presentToDisplay`, `inputWait`, `baseInterval`, `applicationInterval`,
-  `frameBeginInterval`, `displayInterval`, `outputRatio`, `generationObserved`, `generatorHold`, `markerInterval`,
+  `frameBeginInterval`, `displayInterval`, `outputRatio`, `generationObserved`, `generatorHold`
+  (`measured` against the application's own Present, `modelled` as one output interval, or `none`), `markerInterval`,
   `markerTrusted`, `markerAssociated`, running totals for displays observed, associated, unmatched, dropped, rejected,
   `markerCadenceRejects`, `epochResets`, and source changes.
 - `[Overlay] PC latency cross-check` prints the source that was **not** published whenever it also holds a fresh
