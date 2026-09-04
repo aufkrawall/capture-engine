@@ -52,11 +52,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 // counts the transitions the rate limit swallowed before this one.
                 HookLogImportant(
                     "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
-                    "screenTimeShare=%upermille suppressedChanges=%u)",
+                    "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u)",
                     effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
                     metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille(),
+                    metrics->GetDisplayJaggednessUs(), metrics->GetPresentationJaggednessUs(),
                     suppressedFrameTimeSourceChanges);
                 lastFrameTimeSourceLogTime = sourceNow;
                 hasObservedFrameTimeSource = true;

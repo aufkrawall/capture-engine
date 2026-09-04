@@ -394,6 +394,71 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionReleasesWithinOneWindowWhenRes
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
 }
 
+// Provenance is a per-sample fact and a stream can be a screen clock while a
+// minority of its samples are not. Measured under DLSS FG: four fifths of the
+// completions are immediate flips carrying the driver's announced screen time,
+// the rest are deferred and unresolved, and the published series is flat at
+// 450 us of jaggedness while the presents that produced it - a generated group
+// issued as a burst - carry 18244 us. A series that is not adding jitter to the
+// frames it measures has to be usable whatever its labels say, or the overlay
+// throws away the only measurement that shows what the screen did.
+TEST_F(PerformanceMetricsTest, AFlatDisplayStreamIsUsedEvenWhereSomeSamplesAreUnlabelled) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    // Presents arrive as generated groups: two together, then a long wait.
+    int64_t presentUs = 1'000'000;
+    // Screen transitions are evenly spaced, as the display consumes that group.
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    for (int i = 0; i < 400; ++i) {
+        presentUs += (i % 2 == 0) ? 1'000 : 21'000;
+        metrics.Update(presentUs);
+        screenUs += 11'000;
+        // One sample in five stays a deferred, unresolved completion.
+        timing.Publish(screenUs, ++publishUs, 0, /*screenTimeResolved=*/(i % 5) != 0);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+
+    // Only four fifths carry a screen-time label, below the selection share...
+    EXPECT_LT(metrics.GetDisplayScreenTimePermille(), 900u);
+    EXPECT_GT(metrics.GetDisplayScreenTimePermille(), 700u);
+    // ...but the series is flatter than the presents, so it is the honest one.
+    EXPECT_LT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 90.9f, 1.0f);
+}
+
+// The same clause must not rescue the case it was built to reject: under FSR FG
+// the presents are even and the display series is the noisy one, which is
+// exactly a series that adds jitter to the frames it measures.
+TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsStillRefusedAgainstEvenPresents) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t presentUs = 1'000'000;
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    for (int i = 0; i < 400; ++i) {
+        // Evenly paced presents, with just enough movement to be a real series.
+        presentUs += (i % 2 == 0) ? 10'900 : 11'100;
+        metrics.Update(presentUs);
+        // Flip-latch timestamps alternating either side of the true screen time.
+        screenUs += (i % 2 == 0) ? 8'000 : 14'000;
+        timing.Publish(screenUs, ++publishUs, 0, /*screenTimeResolved=*/(i % 5) != 0);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+
+    EXPECT_GT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+}
+
 TEST_F(PerformanceMetricsTest, PresentationSelectionIgnoresAHealthyDisplayStream) {
     metrics.Update(1000000);
     metrics.Update(1020000);

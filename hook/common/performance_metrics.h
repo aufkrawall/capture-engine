@@ -49,6 +49,15 @@ public:
     uint32_t GetDisplayScreenTimePermille() const {
         return m_displayScreenTimePermille.load(std::memory_order_relaxed);
     }
+    // Mean absolute difference between neighbouring frame-time samples, per
+    // series. Their ratio is the other half of the source decision, so a health
+    // line has to be able to print both.
+    double GetDisplayJaggednessUs() const {
+        return m_display.windowJaggedness.load(std::memory_order_relaxed);
+    }
+    double GetPresentationJaggednessUs() const {
+        return m_presentation.windowJaggedness.load(std::memory_order_relaxed);
+    }
 
     const float* GetHistoryArray() const;
     int GetHistoryIndex() const;
@@ -137,6 +146,13 @@ private:
         bool windowFilled = false;
         std::atomic<double> windowVariance{0.0};
         std::atomic<double> windowStdDev{0.0};
+        // Mean absolute difference between neighbouring intervals. A spread-out
+        // series and an alternating one can share a mean and a variance; only
+        // this tells them apart. Zero is a legitimate value - a perfectly even
+        // series has no jaggedness at all - so readiness is carried separately
+        // rather than inferred from the number being non-zero.
+        std::atomic<double> windowJaggedness{0.0};
+        std::atomic<bool> windowStatisticsValid{false};
 
         bool recordingState = false;
         double baselineMean = 0;

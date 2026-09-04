@@ -250,8 +250,12 @@ stream is unavailable, denied, failed, or two seconds stale.
   `stddev=11457/11670 us jaggedness=22772/23088 us` (session `20260904_092817`). Streamline issues a generated group
   of presents in a burst and the screen consumes them evenly, so here it is *presentation* timing that is the
   sawtooth and display timing that is flat - the exact inverse of the FSR-FG-below-cap case above. The gate has to
-  tell these two apart, which is why it is keyed on the provenance of the timestamps rather than on whether frame
-  generation is active.
+  tell these two apart, which is why it evaluates both the provenance of the timestamps and the arrival-order
+  jaggedness (`windowJaggedness` mean absolute difference between neighbouring intervals). Where DLSS FG completions
+  are partially deferred or unlabelled (session `20260904_095110`, screenTimeShare ~492 permille), provenance alone
+  would refuse the stream; the flatness clause (`displayJaggedness <= allowedJaggedness`) accepts the stream because it
+  is measurably not adding jitter to the frames it measures, while safely continuing to reject the noisy flip-latch
+  clock under FSR FG below the refresh cap.
 - `vblank(observed,periodUs,usableClock,adjusted,unresolved,gaps(...))` reports the clock, and
   `latchInterval(...)` reports the completions as the driver timestamped them, next to `publishedInterval(...)`.
   Read together they say whether a jagged graph is the screen or is this service: the two are equal while

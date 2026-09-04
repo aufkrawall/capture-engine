@@ -53,6 +53,8 @@ void PerformanceMetrics::MetricSeries::Reset() {
     windowFilled = false;
     windowVariance.store(0.0, std::memory_order_relaxed);
     windowStdDev.store(0.0, std::memory_order_relaxed);
+    windowJaggedness.store(0.0, std::memory_order_relaxed);
+    windowStatisticsValid.store(false, std::memory_order_relaxed);
     recordingState = false;
     baselineMean = 0;
     baselineM2 = 0;
@@ -187,17 +189,34 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
 
     if (series.windowFilled || series.windowIndex > 10) {
         const int count = series.windowFilled ? VARIANCE_WINDOW : series.windowIndex;
+        // Walked oldest to newest, because jaggedness - the mean absolute
+        // difference between neighbouring intervals - is the one statistic here
+        // that depends on the order. It is what separates a series that is
+        // merely spread out from one that alternates, and comparing it against
+        // the same statistic on the presentation series is how the frame-time
+        // source is chosen; mean and variance do not care about the order and
+        // ride along in the same pass.
+        const int oldest = series.windowFilled ? series.windowIndex : 0;
         double sum = 0;
         double sumSq = 0;
+        double jaggednessSum = 0;
+        double previous = 0;
         for (int i = 0; i < count; i++) {
-            const double sample = static_cast<double>(series.frameTimeWindow[i]);
+            const double sample =
+                static_cast<double>(series.frameTimeWindow[(oldest + i) % VARIANCE_WINDOW]);
             sum += sample;
             sumSq += sample * sample;
+            if (i > 0)
+                jaggednessSum += std::abs(sample - previous);
+            previous = sample;
         }
         const double mean = sum / count;
         const double variance = std::max(0.0, (sumSq / count) - (mean * mean));
         series.windowVariance.store(variance, std::memory_order_relaxed);
         series.windowStdDev.store(std::sqrt(variance), std::memory_order_relaxed);
+        series.windowJaggedness.store(count > 1 ? jaggednessSum / (count - 1) : 0.0,
+                                      std::memory_order_relaxed);
+        series.windowStatisticsValid.store(count > 1, std::memory_order_release);
     }
 
     if (series.recordingState && series.recordingCount > 240 && series.lastBaselineVariance > 1.0) {
@@ -279,7 +298,33 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     // configuration that was not going to select the stream anyway.
     const bool alreadySelected =
         m_effectiveSource.load(std::memory_order_relaxed) == FrameTimeSource::DisplayChange;
-    const bool screenTime = m_displayScreenTimeCadence.IsScreenTime(alreadySelected);
+    const bool provenSamples = m_displayScreenTimeCadence.IsScreenTime(alreadySelected);
+    // Provenance is a per-sample fact, and a stream can be a screen clock while
+    // a minority of its samples are not. Measured under DLSS FG, four fifths of
+    // the completions are immediate flips carrying the driver's announced
+    // screen time and the rest are deferred and unresolved, yet the published
+    // series is flat at 450 us of jaggedness while the presents that produced
+    // it - issued as a generated group in a burst - carry 18244 us. Refusing
+    // that series because a fifth of it is unlabelled would throw away the one
+    // measurement that shows what the screen did.
+    //
+    // So a series is also accepted when it is measurably not adding jitter to
+    // the frames it measures: no jaggier than the presentation series over the
+    // same window. That is a statement about the values rather than about their
+    // labels, it needs no absolute threshold, and it fails exactly where the
+    // labels already said it should - under FSR FG below the refresh cap the
+    // presents are even at 351-540 us while the display series is 2043-4575 us,
+    // which is the noise this gate exists to keep off the graph.
+    const double displayJaggednessUs = m_display.windowJaggedness.load(std::memory_order_relaxed);
+    const double presentJaggednessUs = m_presentation.windowJaggedness.load(std::memory_order_relaxed);
+    // Half again as jagged is the width of the band that keeps a stream sitting
+    // near equality from switching the metric back and forth.
+    const double allowedJaggednessUs =
+        alreadySelected ? presentJaggednessUs * 3.0 / 2.0 : presentJaggednessUs;
+    const bool bothSeriesMeasured = m_display.windowStatisticsValid.load(std::memory_order_acquire) &&
+                                    m_presentation.windowStatisticsValid.load(std::memory_order_acquire);
+    const bool flatterThanPresents = bothSeriesMeasured && displayJaggednessUs <= allowedJaggednessUs;
+    const bool screenTime = provenSamples || flatterThanPresents;
     m_displayStreamIsScreenTime.store(screenTime, std::memory_order_release);
 
     if (m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation) {

@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-04 - Accept a display stream that is measurably flatter than presents even when partially unlabelled
+
+Follow-up report against 0.1.6481 in session `20260904_095110`: switching FSR FG -> DLSS FG
+still showed the "jigsaw frame time graph" briefly or intermittently.
+
+Under DLSS FG in this session, `screenTimeShare` sat at ~492 permille (about half of completions
+were immediate flips carrying announced screen times, while others were deferred/unresolved).
+Because `ScreenTimeCadence.IsScreenTime` required 900 permille to select display-change timing,
+the gate refused the stream and fell back to presentation timing (the DLSS-4 burst pattern,
+jaggedness ~18-23 ms). Yet the display timing stream was flat (jaggedness ~450 us). Refusing a
+stream because a fraction of completions lacked a provenance label threw away the true screen
+measurements.
+
+Fix: in `hook/common/performance_metrics.cpp`, `PerformanceMetrics` now computes `windowJaggedness`
+(mean absolute difference between neighbouring intervals in arrival order). The display stream is
+accepted if either `provenSamples` passes the 900 permille share OR `flatterThanPresents`:
+`displayJaggednessUs <= allowedJaggednessUs` (with a 1.5x hysteresis band if already selected) and
+both series have valid window statistics.
+
+This correctly rescues DLSS FG when completions are partially deferred/unlabelled, while firmly
+rejecting the noisy flip-latch stream under FSR FG below the refresh cap (where display jaggedness
+is ~2000-4500 us and presents are ~350-540 us).
+
 ### 2026-09-04 - The screen-time gate has to follow a regime change, not average across it
 
 User report against 0.1.6480: switching FSR FG -> DLSS FG leaves the frame-time graph
