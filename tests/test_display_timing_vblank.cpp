@@ -258,11 +258,9 @@ TEST(DisplayTimingResolveDeferredScreenTimesTest, IsIdempotentAndClaimsEachBlank
     EXPECT_EQ(pending[1].timestamp, kBase + 2 * kPeriod);
 }
 
-// The reported Talos case: variable refresh below the panel's cap. Rounding
-// only the completions a hole-ridden blank stream can answer for published
-// screen times and flip-latch times in one series, which measured worse than
-// either - so under variable refresh nothing is rounded and the series stays
-// in the driver's own units.
+// Under variable refresh below the panel's cap or without a regular blank grid,
+// the panel updates dynamically when each flip completes. The completions are
+// kept in the driver's own units and are valid on-screen display transition times.
 TEST(DisplayTimingResolveDeferredScreenTimesTest, LeavesVariableRefreshCompletionsInOneUnit) {
     VerticalBlankClock clock;
     int64_t now = kBase;
@@ -276,8 +274,8 @@ TEST(DisplayTimingResolveDeferredScreenTimesTest, LeavesVariableRefreshCompletio
     EXPECT_EQ(ResolveDeferredScreenTimes(pending, clock), 0u);
     EXPECT_EQ(pending[0].timestamp, kBase + 3920);
     EXPECT_EQ(pending[1].timestamp, kBase + 14000);
-    EXPECT_FALSE(pending[0].screenTimeResolved);
-    EXPECT_FALSE(pending[1].screenTimeResolved);
+    EXPECT_TRUE(pending[0].screenTimeResolved);
+    EXPECT_TRUE(pending[1].screenTimeResolved);
 }
 
 TEST(DisplayTimingResolveDeferredScreenTimesTest, LeavesTheTimestampAloneWithoutABlankStream) {
@@ -286,5 +284,27 @@ TEST(DisplayTimingResolveDeferredScreenTimesTest, LeavesTheTimestampAloneWithout
     pending.push_back(SyncEntry(kBase + 3920));
     EXPECT_EQ(ResolveDeferredScreenTimes(pending, clock), 0u);
     EXPECT_EQ(pending[0].timestamp, kBase + 3920);
-    EXPECT_FALSE(pending[0].screenTimeResolved);
+    EXPECT_TRUE(pending[0].screenTimeResolved);
+}
+
+TEST(DisplayTimingResolveDeferredScreenTimesTest, MixedSourcesRoundFixedAndPreserveVrr) {
+    VerticalBlankClock clock;
+    FeedBlanks(clock, 12, kPeriod, kBase, kSource);
+    int64_t now = kBase;
+    for (int64_t gap : {11900, 51100, 9460, 117472, 23000, 9880, 46000}) {
+        clock.Observe(kOtherSource, now);
+        now += gap;
+    }
+
+    std::vector<PendingTimestamp> pending;
+    pending.push_back(SyncEntry(kBase + 3920, kSource));
+    pending.push_back(SyncEntry(kBase + 5000, kOtherSource));
+
+    EXPECT_EQ(ResolveDeferredScreenTimes(pending, clock), 1u);
+    // Fixed refresh display is rounded to next blank.
+    EXPECT_EQ(pending[0].timestamp, kBase + kPeriod);
+    EXPECT_TRUE(pending[0].screenTimeResolved);
+    // VRR display retains unrounded completion timestamp.
+    EXPECT_EQ(pending[1].timestamp, kBase + 5000);
+    EXPECT_TRUE(pending[1].screenTimeResolved);
 }

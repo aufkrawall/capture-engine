@@ -198,20 +198,17 @@ stream is unavailable, denied, failed, or two seconds stale.
   series it is made of - in Talos to within 10 us of jaggedness across three consecutive windows - instead of being
   three times as jagged, and `p1` rose from 800 us to 7200 us, so no published interval is shorter than the panel can
   produce any more. `adjusted` stops growing while `unresolved` climbs, which is the clock correctly declining.
-- **The residual below the cap is the driver's own latch jitter**, and this service has no better source for it on
-  the deferred path (the NVIDIA announcement repeats the completion, above). How much of it is real FSR-FG pacing is
-  an **open question**: FSR FG does pace worse than DLSS FG, but at the cap that same latch series carries 4.4 ms of
-  jaggedness while the screen is provably flat at 6.946 ms, so a good part of it is reporting artifact rather than
-  anything the screen did. Separating them under VRR needs a screen-time source we do not currently have. Note the
-  contrast that makes this worth returning to: runtime `PresentStart` jaggedness in the same Talos windows is
-  333-395 us, so the presents are even and the whole 2.4 ms lives in the flip path.
-- **So the series is labelled instead of guessed at** (2026-09-04). Each publication carries
-  `kDisplayTimingScreenTimeResolved` in `DisplayTimingSample::flags` (shared ABI 57), set when the timestamp is a
-  screen time - a deferred completion rounded onto the blank, an immediate flip corrected by the NVIDIA
-  announcement, or an explicit generated-transition payload - and clear when it is the flip-latch timestamp of a
-  deferred completion the clock could not answer for. It is the same condition the `unresolved` counter reports, so
-  the health line and what the consumers are told cannot disagree. The producer always knew this; the ring simply
-  did not carry it, so every consumer treated both kinds as a screen time.
+- **Under variable refresh below the cap (VRR)**, there is no fixed vertical-blank grid by design:
+  the panel refreshes dynamically as each flip completes. The unrounded hardware completion timestamp
+  is the valid on-screen display transition time (`screenTimeResolved = true`), reflecting actual on-screen
+  frame pacing (and micro-stutter/variance when present, e.g. with FSR FG or render-time jitter),
+  matching PresentMon and CapFrameX `msBetweenDisplayChange`.
+- **Each publication is labelled with its provenance** (`DisplayTimingSample::flags`, shared ABI 57):
+  `kDisplayTimingScreenTimeResolved` is set when the timestamp is a screen time — a completion rounded
+  onto the blank under fixed refresh, an unrounded completion under variable refresh / no-grid mode,
+  an immediate flip corrected by the driver announcement, or an explicit generated-transition payload —
+  and clear only when a fixed-grid clock failed to answer for a completion.
+
 - What the consumers then do with it:
   - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over its most recent samples
     and `RefreshEffectiveSource` refuses to select `DisplayChange` for a stream that is not publishing screen times;

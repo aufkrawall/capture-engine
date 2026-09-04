@@ -41,23 +41,29 @@ inline std::size_t SelectDisplaySubmissionPresent(const uint32_t* pendingThreadI
 }
 
 // Replaces each vsync-deferred completion's timestamp with the vertical blank
-// its frame actually reaches the screen at. Entries the clock cannot answer for
-// keep the uncorrected timestamp and stay unresolved, so a machine or present
-// mode with no blank stream behaves exactly as it did before. The queue must
-// already be ordered by timestamp: blanks are claimed in display order.
+// its frame actually reaches the screen at. Under fixed refresh with an active
+// blank grid, completions are claimed in display order and rounded to their blank.
+// Under variable refresh (VRR) or when no blank grid exists, the panel refreshes
+// dynamically as flips complete, so the unrounded completion timestamp is itself
+// the valid on-screen display transition time. The queue must already be ordered
+// by timestamp: blanks are claimed in display order.
 // Returns how many timestamps the rounding moved.
 inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pending, VerticalBlankClock& blanks) {
     uint64_t adjusted = 0;
     for (auto& entry : pending) {
         if (entry.completionKind != DisplayCompletionKind::Sync || entry.screenTimeResolved)
             continue;
-        const int64_t blank = blanks.Claim(entry.displaySource, entry.timestamp);
-        if (blank == 0)
-            continue;  // The blank has not happened yet, or there is no clock.
-        if (blank != entry.timestamp)
-            ++adjusted;
-        entry.timestamp = blank;
-        entry.screenTimeResolved = true;
+        if (blanks.CanPlaceFrames(entry.displaySource)) {
+            const int64_t blank = blanks.Claim(entry.displaySource, entry.timestamp);
+            if (blank == 0)
+                continue;  // The blank has not happened yet, or is outside the grid window.
+            if (blank != entry.timestamp)
+                ++adjusted;
+            entry.timestamp = blank;
+            entry.screenTimeResolved = true;
+        } else {
+            entry.screenTimeResolved = true;
+        }
     }
     return adjusted;
 }

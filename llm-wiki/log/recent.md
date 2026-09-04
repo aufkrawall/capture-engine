@@ -1,6 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-04 - Restore msBetweenDisplayChange for VRR and unquantized screen delivery
+
+Under variable refresh rate (VRR / G-Sync / FreeSync below panel cap), there is no fixed
+vertical blank grid by hardware design: the display controller scans out dynamically when
+each flip completes.
+
+Previously, `ResolveDeferredScreenTimes` only set `screenTimeResolved = true` when
+`blanks.Claim()` successfully snapped a completion to an active periodic VBlank grid.
+Because VRR has no fixed grid (`CanPlaceFrames() == false`), completions were left
+unrounded but marked `screenTimeResolved = false`. This caused `PerformanceMetrics` to
+treat every VRR completion as "unresolved latch noise", refusing `DisplayChange` and
+falling back to `Presentation` timing (CPU `Present()` calls) whenever the display stream
+exhibited real on-screen frame pacing variance (such as with FSR FG or uneven render times).
+
+Fix: in `captureengine/display_timing_policy.h`, `ResolveDeferredScreenTimes` now sets
+`screenTimeResolved = true` when `!blanks.CanPlaceFrames()`. On VRR or without a fixed
+blank grid, the hardware flip completion timestamp is the physical display transition
+time itself. Snapping to a periodic VBlank grid remains active for fixed-refresh displays.
+This restores `msBetweenDisplayChange` as a true on-screen pacing metric under VRR across
+all modes (all FG off, FSR FG, and DLSS FG), matching PresentMon and CapFrameX behavior.
+
 ### 2026-09-04 - Accept a display stream that is measurably flatter than presents even when partially unlabelled
+
 
 Follow-up report against 0.1.6481 in session `20260904_095110`: switching FSR FG -> DLSS FG
 still showed the "jigsaw frame time graph" briefly or intermittently.
