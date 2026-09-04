@@ -1,25 +1,41 @@
 # llm-wiki Log
 
-### 2026-09-04 - Restore msBetweenDisplayChange for VRR and unquantized screen delivery
+### 2026-09-04 - Screen-time gate distinguishes VRR screen delivery from FSR FG flip-latch sawtooth
 
-Under variable refresh rate (VRR / G-Sync / FreeSync below panel cap), there is no fixed
-vertical blank grid by hardware design: the display controller scans out dynamically when
-each flip completes.
+Session `20260904_104053` investigated whether CaptureEngine degrades FSR FG frame pacing.
+Detailed log and sensor analysis disproved any CE-induced pacing regression:
+- DXGI `Present()` runtime intervals from AMD's presenter thread were rock-solid:
+  `runtimeInterval`: mean = 11.46 ms (~87.2 fps), median = 11.53 ms, stddev = 900-1100 us,
+  **jaggedness = 518 us (0.5 ms)**!
+- CaptureEngine overhead was negligible: 11 us in FFX proxy Present, 16 us in FFX present
+  callback, ~200 us at DXGI Present, 0 command-queue registrations, 0 drops (1 drop in 4107 frames).
+- Real GPU render/overlay execution overhead was ~30-50 us without queue Signal.
 
-Previously, `ResolveDeferredScreenTimes` only set `screenTimeResolved = true` when
-`blanks.Claim()` successfully snapped a completion to an active periodic VBlank grid.
-Because VRR has no fixed grid (`CanPlaceFrames() == false`), completions were left
-unrounded but marked `screenTimeResolved = false`. This caused `PerformanceMetrics` to
-treat every VRR completion as "unresolved latch noise", refusing `DisplayChange` and
-falling back to `Presentation` timing (CPU `Present()` calls) whenever the display stream
-exhibited real on-screen frame pacing variance (such as with FSR FG or uneven render times).
+Why the overlay frame-time graph and 1% lows regressed in 0.1.6483:
+- Build 0.1.6483 unconditionally marked unclocked completions under VRR (`!blanks.CanPlaceFrames()`)
+  as `screenTimeResolved = true`.
+- This caused `PerformanceMetrics::RefreshEffectiveSource` to count 100% `provenSamples`,
+  bypassing the `flatterThanPresents` jaggedness gate.
+- Under FSR FG below the 144 Hz refresh cap, AMD uses software presenter thread pacing without
+  driver-level hardware flip queue pacing (unlike NVIDIA Reflex on DLSS FG). On the GPU, the
+  ~3 ms compute interpolation finishes much earlier than the ~10 ms 3D render frame, so the
+  ETW `HSyncDPCMultiPlane` flip-queue latch times alternate in a severe sawtooth:
+  `publishedInterval`: stddev = 2920 us, **jaggedness = 4123 us (4.1 ms)**, `p1Us = 6400 us`
+  (impossible on a 144 Hz monitor whose minimum refresh is 6944 us).
+- Marking these unclocked completions as `screenTimeResolved = true` forced `PerformanceMetrics`
+  to display the raw ~4.1 ms flip latch sawtooth on the overlay, dropping reported 1% lows to
+  50.1 fps and raising stddev to 3763 us (matching what the user observed). Tools like RTSS
+  measure DXGI `Present()`, which remained flat at ~700 us stddev.
 
-Fix: in `captureengine/display_timing_policy.h`, `ResolveDeferredScreenTimes` now sets
-`screenTimeResolved = true` when `!blanks.CanPlaceFrames()`. On VRR or without a fixed
-blank grid, the hardware flip completion timestamp is the physical display transition
-time itself. Snapping to a periodic VBlank grid remains active for fixed-refresh displays.
-This restores `msBetweenDisplayChange` as a true on-screen pacing metric under VRR across
-all modes (all FG off, FSR FG, and DLSS FG), matching PresentMon and CapFrameX behavior.
+Fix:
+1. In `captureengine/display_timing_policy.h`, reverted unconditional `screenTimeResolved = true`
+   when `!blanks.CanPlaceFrames()`. Unclocked deferred sync completions remain `screenTimeResolved = false`.
+2. In `hook/common/performance_metrics.cpp`, tuned `allowedJaggednessUs = alreadySelected ? presentJaggednessUs * 2.0 : presentJaggednessUs * 1.5;`.
+   - Admits normal VRR streams (FG OFF) with minor DPC jitter (within 1.5x of Present).
+   - Admits DLSS FG on VRR (proven immediate flips with scheduled screen times, display jaggedness ~450 us).
+   - Rejects the ~4.1 ms flip-latch sawtooth of FSR FG on VRR (display jaggedness ~8x higher than Present).
+     The overlay falls back to `Presentation` timing, faithfully reporting the true ~11.5 ms cadence.
+
 
 ### 2026-09-04 - Accept a display stream that is measurably flatter than presents even when partially unlabelled
 

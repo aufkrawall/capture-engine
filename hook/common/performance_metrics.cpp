@@ -317,10 +317,12 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     // which is the noise this gate exists to keep off the graph.
     const double displayJaggednessUs = m_display.windowJaggedness.load(std::memory_order_relaxed);
     const double presentJaggednessUs = m_presentation.windowJaggedness.load(std::memory_order_relaxed);
-    // Half again as jagged is the width of the band that keeps a stream sitting
-    // near equality from switching the metric back and forth.
+    // Allow up to 1.5x presentation jaggedness to select DisplayChange (admitting
+    // normal VRR streams with minor DPC jitter), and 2.0x hysteresis once already
+    // selected. Under FSR FG the flip-latch clock is 4x-8x jaggier than presents
+    // (3000-4500 us vs ~350-540 us), so it remains firmly rejected.
     const double allowedJaggednessUs =
-        alreadySelected ? presentJaggednessUs * 3.0 / 2.0 : presentJaggednessUs;
+        alreadySelected ? presentJaggednessUs * 2.0 : presentJaggednessUs * 1.5;
     const bool bothSeriesMeasured = m_display.windowStatisticsValid.load(std::memory_order_acquire) &&
                                     m_presentation.windowStatisticsValid.load(std::memory_order_acquire);
     const bool flatterThanPresents = bothSeriesMeasured && displayJaggednessUs <= allowedJaggednessUs;

@@ -41,11 +41,7 @@ inline std::size_t SelectDisplaySubmissionPresent(const uint32_t* pendingThreadI
 }
 
 // Replaces each vsync-deferred completion's timestamp with the vertical blank
-// its frame actually reaches the screen at. Under fixed refresh with an active
-// blank grid, completions are claimed in display order and rounded to their blank.
-// Under variable refresh (VRR) or when no blank grid exists, the panel refreshes
-// dynamically as flips complete, so the unrounded completion timestamp is itself
-// the valid on-screen display transition time. The queue must already be ordered
+// its frame actually reaches the screen at. The queue must already be ordered
 // by timestamp: blanks are claimed in display order.
 // Returns how many timestamps the rounding moved.
 inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pending, VerticalBlankClock& blanks) {
@@ -60,8 +56,6 @@ inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pendin
             if (blank != entry.timestamp)
                 ++adjusted;
             entry.timestamp = blank;
-            entry.screenTimeResolved = true;
-        } else {
             entry.screenTimeResolved = true;
         }
     }

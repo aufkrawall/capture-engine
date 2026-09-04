@@ -459,6 +459,36 @@ TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsStillRefusedAgainstEvenPres
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
 }
 
+// Under variable refresh below the cap (or with FG off), completions are unclocked
+// and unlabelled (screenTimeResolved=false), but reflect true on-screen frame times
+// with minor DPC jitter (e.g. 10-25% over presents). The 1.5x selection margin admits
+// these legitimate display streams without falling back to Presentation.
+TEST_F(PerformanceMetricsTest, VRRDisplayStreamWithMinorDpcJitterIsAdmitted) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t presentUs = 1'000'000;
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    for (int i = 0; i < 400; ++i) {
+        // Presents with modest frame variation: alternating 13.0 ms and 14.0 ms (jaggedness ~1000 us).
+        presentUs += (i % 2 == 0) ? 13'000 : 14'000;
+        metrics.Update(presentUs);
+        // VRR display completions with slight DPC jitter: alternating 12.9 ms and 14.1 ms (jaggedness ~1200 us).
+        screenUs += (i % 2 == 0) ? 12'900 : 14'100;
+        timing.Publish(screenUs, ++publishUs, 0, /*screenTimeResolved=*/false);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
+    EXPECT_GT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
+    EXPECT_LE(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs() * 1.5);
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+}
+
 TEST_F(PerformanceMetricsTest, PresentationSelectionIgnoresAHealthyDisplayStream) {
     metrics.Update(1000000);
     metrics.Update(1020000);

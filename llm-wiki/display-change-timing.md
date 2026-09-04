@@ -199,15 +199,23 @@ stream is unavailable, denied, failed, or two seconds stale.
   three times as jagged, and `p1` rose from 800 us to 7200 us, so no published interval is shorter than the panel can
   produce any more. `adjusted` stops growing while `unresolved` climbs, which is the clock correctly declining.
 - **Under variable refresh below the cap (VRR)**, there is no fixed vertical-blank grid by design:
-  the panel refreshes dynamically as each flip completes. The unrounded hardware completion timestamp
-  is the valid on-screen display transition time (`screenTimeResolved = true`), reflecting actual on-screen
-  frame pacing (and micro-stutter/variance when present, e.g. with FSR FG or render-time jitter),
-  matching PresentMon and CapFrameX `msBetweenDisplayChange`.
+  the panel refreshes dynamically as each flip completes. However, deferred completions (`hsyncDpcMpo`)
+  arrive at the moment the GPU finishes rendering/interpolating and latches into the hardware flip queue,
+  not when scanout occurs. Under FSR FG below cap, the real frame (~10 ms) and generated frame (~3 ms)
+  create an alternating ~6.4 ms and ~17.8 ms latch sawtooth (`p1Us=6400` vs panel minimum 6944 us).
+  These unclocked completions are left in the driver's own units (`screenTimeResolved = false`).
+- **The screen-time gate distinguishes true screen delivery from flip-latch noise**:
+  `PerformanceMetrics::RefreshEffectiveSource` accepts a display stream if either:
+  1. `provenSamples` passes the share threshold (immediate flips with driver schedule announcements, or snapped blanks), OR
+  2. `flatterThanPresents`: `displayJaggednessUs <= allowedJaggednessUs` (1.5x selection margin, 2.0x retention hysteresis).
+  This smoothly admits:
+  - DLSS FG on VRR (proven immediate flips and flat ~450 us display series vs burst presents),
+  - Normal gameplay on VRR with FG OFF (display jaggedness tracks present jaggedness within 1.5x),
+  while safely rejecting the ~4100 us flip-latch sawtooth under FSR FG on VRR (where presents are rock-solid at ~518 us).
 - **Each publication is labelled with its provenance** (`DisplayTimingSample::flags`, shared ABI 57):
-  `kDisplayTimingScreenTimeResolved` is set when the timestamp is a screen time — a completion rounded
-  onto the blank under fixed refresh, an unrounded completion under variable refresh / no-grid mode,
-  an immediate flip corrected by the driver announcement, or an explicit generated-transition payload —
-  and clear only when a fixed-grid clock failed to answer for a completion.
+  `kDisplayTimingScreenTimeResolved` is set when the timestamp is an authoritative screen time — a completion rounded
+  onto the blank under fixed refresh, an immediate flip corrected by the driver announcement, or an explicit
+  generated-transition payload — and clear for unclocked deferred completions.
 
 - What the consumers then do with it:
   - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over its most recent samples
