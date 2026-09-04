@@ -141,11 +141,36 @@ stream is unavailable, denied, failed, or two seconds stale.
   announcement stranded on a driver thread would later be applied to an unrelated immediate flip.
 - The correction never assumes a refresh period. `VerticalBlankClock` records the `VSyncDPC` timestamps per
   `VidPnSourceId` - both that event and the multiplane completions carry that field, `VidPnTargetId` only appears on
-  `VSyncDPC` - and each deferred completion is rounded onto an observed blank. A completion within a fifth of the
-  measured period *after* a blank is that blank's screen time reported by a slightly late DPC and rounds back to it;
-  everything else rounds forward to the next blank. **Under VRR the blank stream follows the frame rate** (measured:
-  116 blanks/s at 116 fps output, with the clock's median period tracking from 6.95 ms to 8.60 ms), so the correction
-  follows variable refresh by construction rather than by modelling it.
+  `VSyncDPC` - and derives a **refresh grid** from them. A completion within a fifth of the period *after* a grid
+  point is that point's screen time reported by a slightly late DPC and rounds back to it; everything else rounds
+  forward to the next one.
+- **The clock answers from the grid, not from the blanks it happened to observe** (2026-09-04). Rounding only the
+  completions an observed blank could answer for was the defect: the rest kept their flip-latch timestamps, and a
+  series that alternates between screen times and latch times is jaggier than either alone. Measured in Talos under
+  FSR FG with variable refresh below the cap, before the change: `adjusted=1641 unresolved=2606` (a 39/61 split),
+  published `jaggedness=7186 us p1=800 us p99=27100 us` on a 10.7 ms mean, against `runtime jaggedness=328 us`.
+  **An 800 us published interval is shorter than the panel can produce**, which is the same impossibility check as
+  above and the fastest way to recognise this class of fault.
+- Two different things make an observed blank stream unusable as a per-frame clock, and they need different answers:
+  - **The driver does not report every blank.** At the 144 Hz cap one run reported 4264 blanks for 4235 flips and the
+    next reported 657 for 4247 - same application, same settings. Density is not a property the clock may rely on.
+  - **Under variable refresh there is no period at all.** The panel refreshes when a frame is ready; measured gaps
+    were 11 ms, 51 ms and 119 ms (`gaps(p50=11400 p99=51100 max=115009)`), and the stream carried only ~37 blanks/s
+    against ~93 displayed frames/s. *This corrects an earlier claim on this page that the blank stream follows the
+    frame rate under VRR: it does so only while the display is at or near its cap.*
+- So the grid is judged by **periodicity, not density** (`MeasureGrid`). The smallest gap in the retained window is
+  one refresh - it is one whenever any two consecutive refreshes were both reported, which bursts in the stream
+  provide - and every other gap must be a whole multiple of it within a fifth of a period. The period is then refined
+  as the whole span divided by the total step count, so one jittery sample cannot skew extrapolation. A sparse but
+  regular stream therefore still places frames, by extrapolating across the blanks nothing reported, bounded to
+  `kMaxExtrapolatedPeriods` (64) so a grid left over from before an idle stretch cannot answer for a distant time.
+  An aperiodic stream yields no grid, and every completion keeps the driver's timestamp.
+- `BlankCadence` gates the *answer* on how often the grid could produce one at all, over a decaying window
+  (`kRequiredPlacementPercent=90`, `kMinimumClaims=32`, `kWindowClaims=256`), so a display that changes regime is
+  followed rather than remembered. **The attempt is made on every completion whatever the gate says** - recording
+  only what it lets through would make refusing self-sustaining. The ordering walk below is deliberately not part of
+  that judgement: giving up there means a frame did not get a blank of its own, which is a true statement about a
+  game outrunning its display rather than a fault in the clock.
 - **A display shows at most one new frame per blank, and shows them in order.** Below the refresh cap the latch lead
   spread exceeds a refresh period and `Snap` alone maps two completions onto one blank; the later frame would then be
   published as a dropped frame the screen had in fact shown. `Claim` walks to the first unclaimed blank instead. The
@@ -158,14 +183,40 @@ stream is unavailable, denied, failed, or two seconds stale.
   about two refreshes, which fits a three-buffer vsync flip-model swapchain, where previous-blank would give ~7.4 ms.
   Either choice shifts every sample by the same constant refresh period, so **no frame time, FPS, low or graph value
   depends on it** - only the PC-latency estimate does. Stale-risk: unverified directly.
-- `vblank(observed,intervalUs,adjusted,unresolved)` reports the clock. `unresolved` counts deferred completions
-  published without ever being rounded, which is the pre-fix behaviour and the intended fallback when no blank stream
-  exists (another vendor, another present mode, a display that stopped raising the interrupt). It should be a handful
-  per window, not a fraction of the frames.
-- Coverage in `tests/test_display_timing_vblank.cpp` (period measurement, the alternating-phase rounding, the
-  at-a-blank tolerance, refusing to answer for a blank that has not happened, per-display separation, the
-  two-in-one-interval ordering case, the separate-intervals case that must not move anything, the bounded walk, and
-  reset) and `tests/test_display_timing_intervals.cpp` (a sawtooth with a correct mean, jaggedness, percentiles,
+- Measured after the change, which is the evidence that the two regimes are now being told apart rather than
+  averaged. `dx12_fg_switch_test` at 3840x2160 covers both; **Talos under FSR FG is the reported case and confirms
+  it on the same title the fault was reported from** (steady windows, 2026-09-04):
+
+  | run | regime | `usableClock` | latch stddev / jagg. | published stddev / jagg. | published p1 |
+  | --- | --- | --- | --- | --- | --- |
+  | test app | at the cap, 144 fps out | 1 | 2199 / 4397 us | **7 / 4 us** | 6900 us |
+  | test app | below cap, 87 fps out | 0 | 1699 / 2423 us | **1699 / 2421 us** | 9800 us |
+  | Talos | below cap, ~92 fps out (before) | - | - | 5851 / **7186 us** | **800 us** |
+  | Talos | below cap, ~92 fps out (after) | 0 | 1531 / 2353 us | **1536 / 2362 us** | 7200 us |
+
+  At the cap the rounding does exactly what it exists for. Below it the published series is now *equal* to the latch
+  series it is made of - in Talos to within 10 us of jaggedness across three consecutive windows - instead of being
+  three times as jagged, and `p1` rose from 800 us to 7200 us, so no published interval is shorter than the panel can
+  produce any more. `adjusted` stops growing while `unresolved` climbs, which is the clock correctly declining.
+- **The residual below the cap is the driver's own latch jitter**, and this service has no better source for it on
+  the deferred path (the NVIDIA announcement repeats the completion, above). How much of it is real FSR-FG pacing is
+  an **open question**: FSR FG does pace worse than DLSS FG, but at the cap that same latch series carries 4.4 ms of
+  jaggedness while the screen is provably flat at 6.946 ms, so a good part of it is reporting artifact rather than
+  anything the screen did. Separating them under VRR needs a screen-time source we do not currently have. Note the
+  contrast that makes this worth returning to: runtime `PresentStart` jaggedness in the same Talos windows is
+  333-395 us, so the presents are even and the whole 2.4 ms lives in the flip path.
+- `vblank(observed,periodUs,usableClock,adjusted,unresolved,gaps(...))` reports the clock, and
+  `latchInterval(...)` reports the completions as the driver timestamped them, next to `publishedInterval(...)`.
+  Read together they say whether a jagged graph is the screen or is this service: the two are equal while
+  `usableClock=0`, and the published one should be the flatter whenever it is not. `unresolved` being a *fraction of
+  the frames* is now the intended state under variable refresh, not a fault; what is a fault is `unresolved` and
+  `adjusted` both being large at once, which is the mixture this section is about.
+- Coverage in `tests/test_display_timing_vblank.cpp` (period measurement including across reporting jitter, the
+  alternating-phase rounding, the at-a-blank tolerance, answering for a blank that was never reported, placing frames
+  on a stream reported only in part, refusing a variable-refresh stream, the extrapolation bound, the cadence gate
+  switching off under sustained failure and back on when the grid answers again, per-display separation, the
+  two-in-one-interval ordering case, the separate-intervals case that must not move anything, the bounded walk, reset,
+  and the end-to-end case where variable-refresh completions stay in one unit) and `tests/test_display_timing_intervals.cpp` (a sawtooth with a correct mean, jaggedness, percentiles,
   window boundaries, non-advancing timestamps, histogram saturation).
 
 ## Graph scrolling under frame generation
