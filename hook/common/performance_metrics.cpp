@@ -317,10 +317,6 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     // which is the noise this gate exists to keep off the graph.
     const double displayJaggednessUs = m_display.windowJaggedness.load(std::memory_order_relaxed);
     const double presentJaggednessUs = m_presentation.windowJaggedness.load(std::memory_order_relaxed);
-    // Allow up to 1.5x presentation jaggedness to select DisplayChange (admitting
-    // normal VRR streams with minor DPC jitter), and 2.0x hysteresis once already
-    // selected. Under FSR FG the flip-latch clock is 4x-8x jaggier than presents
-    // (3000-4500 us vs ~350-540 us), so it remains firmly rejected.
     const double allowedJaggednessUs =
         alreadySelected ? presentJaggednessUs * 2.0 : presentJaggednessUs * 1.5;
     const bool bothSeriesMeasured = m_display.windowStatisticsValid.load(std::memory_order_acquire) &&
@@ -339,8 +335,10 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
                         currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs;
     const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
                          m_display.sampleCount.load(std::memory_order_acquire) > 0;
-    m_effectiveSource.store(healthy && screenTime ? FrameTimeSource::DisplayChange
-                                                  : FrameTimeSource::Presentation,
+    // When DisplayChange is preferred, display the active screen timing stream directly so
+    // the frame-time graph faithfully reflects real on-screen frame pacing (msBetweenDisplayChange)
+    // with VRR, GPU maxed out, VSync capping, and uncapped FPS, without sugarcoating.
+    m_effectiveSource.store(healthy ? FrameTimeSource::DisplayChange : FrameTimeSource::Presentation,
                             std::memory_order_release);
 }
 

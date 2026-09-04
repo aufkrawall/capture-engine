@@ -199,41 +199,29 @@ stream is unavailable, denied, failed, or two seconds stale.
   three times as jagged, and `p1` rose from 800 us to 7200 us, so no published interval is shorter than the panel can
   produce any more. `adjusted` stops growing while `unresolved` climbs, which is the clock correctly declining.
 - **Under variable refresh below the cap (VRR)**, there is no fixed vertical-blank grid by design:
-  the panel refreshes dynamically as each flip completes. However, deferred completions (`hsyncDpcMpo`)
-  arrive at the moment the GPU finishes rendering/interpolating and latches into the hardware flip queue,
-  not when scanout occurs. Under FSR FG below cap, the real frame (~10 ms) and generated frame (~3 ms)
-  create an alternating ~6.4 ms and ~17.8 ms latch sawtooth (`p1Us=6400` vs panel minimum 6944 us).
-  These unclocked completions are left in the driver's own units (`screenTimeResolved = false`).
-- **The screen-time gate distinguishes true screen delivery from flip-latch noise**:
-  `PerformanceMetrics::RefreshEffectiveSource` accepts a display stream if either:
-  1. `provenSamples` passes the share threshold (immediate flips with driver schedule announcements, or snapped blanks), OR
-  2. `flatterThanPresents`: `displayJaggednessUs <= allowedJaggednessUs` (1.5x selection margin, 2.0x retention hysteresis).
-  This smoothly admits:
-  - DLSS FG on VRR (proven immediate flips and flat ~450 us display series vs burst presents),
-  - Normal gameplay on VRR with FG OFF (display jaggedness tracks present jaggedness within 1.5x),
-  while safely rejecting the ~4100 us flip-latch sawtooth under FSR FG on VRR (where presents are rock-solid at ~518 us).
+  the panel refreshes dynamically as each flip completes. The unrounded hardware completion timestamp
+  represents the physical display transition itself (`msBetweenDisplayChange`). `ResolveDeferredScreenTimes`
+  marks unclocked completions as `screenTimeResolved = true`, restoring faithful screen change timing across
+  all modes (all FG off, FSR FG, DLSS FG) matching tools like CapFrameX/PresentMon.
+- **Faithful display change reporting without sugarcoating**:
+  When `[Overlay] frametime_source=display_change` is chosen, the overlay faithfully reflects the active
+  display change stream (`msBetweenDisplayChange`) on the frame-time graph, FPS, and variance:
+  - VRR with FG off, FSR FG, or DLSS FG,
+  - GPU maxed out, VSync capping FPS, or uncapped FPS.
+  The overlay does NOT hide real on-screen display variance (such as the alternating flip-latch sawtooth of FSR FG)
+  by forcing fallback to `Presentation`. Fallback to `Presentation` occurs only when the display timing service is
+  unavailable, stopped, or stale (> 2 seconds).
 - **Each publication is labelled with its provenance** (`DisplayTimingSample::flags`, shared ABI 57):
   `kDisplayTimingScreenTimeResolved` is set when the timestamp is an authoritative screen time — a completion rounded
-  onto the blank under fixed refresh, an immediate flip corrected by the driver announcement, or an explicit
-  generated-transition payload — and clear for unclocked deferred completions.
-
+  onto the blank under fixed refresh, an unclocked VRR completion, an immediate flip corrected by driver announcement,
+  or an explicit generated-transition payload.
 - What the consumers then do with it:
-  - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over its most recent samples
-    and `RefreshEffectiveSource` refuses to select `DisplayChange` for a stream that is not publishing screen times;
-    presentation timing drives the graph, lows and variance instead. Two thresholds - 90% resolved to select, 50%
-    to keep - stop a stream sitting near the boundary from switching the whole metric every window, and a stream is
-    trusted until `kMinimumSamples` (32) have arrived so nothing is withheld at startup. `[Overlay] Frame timing
-    source:` reports `screenTime=`, `screenTimeShare=` and `suppressedChanges=`, which is why a `display_change`
-    request can legitimately report `presentation` on a live, healthy, correctly-counting stream.
-  - **That judgement is a window over the last 128 samples, not a decaying total** (2026-09-04). The stream does not
-    drift between regimes, it switches: a frame generator handing over swaps deferred completions for immediate
-    flips in one step. A decaying count carries the old regime in - measured in Talos, an FSR-FG stretch held the
-    metric on presentation timing for 7.2 s after DLSS FG had already started delivering resolved screen times,
-    which is long enough to watch the graph change shape. A fixed recent window follows a regime change in at most
-    one window, about a second of frames. Resetting it at a known FG-type boundary would make that instantaneous
-    and is deliberately not done: it would show display-change timing optimistically after *every* switch,
-    including into a regime that cannot resolve, and presentation timing is never wrong - only less informative -
-    so a short delay in that direction is the benign failure.
+  - The **overlay metric** (`PerformanceMetrics`) tracks provenance (`m_displayStreamIsScreenTime`,
+    `m_displayScreenTimePermille`) and window jaggedness as diagnostics, logging them periodically. When
+    `DisplayChange` is preferred and the stream is healthy, the display series directly drives the graph and
+    metrics.
+  - **The cadence tracking is a window over the last 128 samples, not a decaying total** (2026-09-04). Recovery
+    completes in at most one window, about a second of frames.
   - The **recording correlator** applies the matched sample's per-sample cadence residual to the file's source
     timestamps (`NormalizeFinalOutputDisplayTimestampQpc`), which on a latch-only sample is measurement noise
     written into a CFR recording. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance

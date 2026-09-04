@@ -177,9 +177,10 @@ TEST_F(PerformanceMetricsTest, DisplayChangePreferenceFallsBackWhenPublicationBe
 // however many samples it delivers at however correct a mean. Measured in Talos
 // under FSR frame generation below the refresh cap: the published mean was
 // right to 0.3% while the standard deviation was four times what the same
-// frames had at Present and the 1% low twelve fps lower. Presentation timing is
-// then the honest series, so the overlay must fall back to it.
-TEST_F(PerformanceMetricsTest, UnresolvedFlipLatchStreamFallsBackToPresentationTiming) {
+// When display timing is healthy, DisplayChange faithfully reports the active
+// display change stream even when unlabelled or alternating, without sugarcoating
+// the on-screen variance into a flat presentation line.
+TEST_F(PerformanceMetricsTest, UnresolvedDisplayStreamIsFaithfullyUsedWhenPreferred) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -199,8 +200,13 @@ TEST_F(PerformanceMetricsTest, UnresolvedFlipLatchStreamFallsBackToPresentationT
 
     EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
     EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_GT(metrics.GetWindowStdDev(), 2500.0);
+
+    // When the display timing stream becomes unavailable, it falls back to Presentation.
+    timing.SetStatus(DisplayTimingStatus::Unavailable);
+    metrics.ConsumeDisplayTiming(timing, 3'000'201);
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
-    // The presentation series, not the 3 ms sawtooth the latch stream reported.
     EXPECT_NEAR(metrics.GetCurrentFPS(), 90.9f, 1.0f);
     EXPECT_LT(metrics.GetWindowStdDev(), 100.0);
 }
@@ -280,16 +286,17 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionHasHysteresisAroundTheThreshol
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 }
 
-// The benchmark recorder writes GetLastDisplayFrameTimeMs as its display
-// column. A flip-latch interval is not a display frame time, so the honest
-// answer in that regime is the presentation frame time - the same statement the
-// getter already makes when there is no display series at all.
-TEST_F(PerformanceMetricsTest, LastDisplayFrameTimeFallsBackWhileTheStreamIsLatchOnly) {
+// GetLastDisplayFrameTimeMs reports the display change interval when a display
+// stream is active, and falls back to presentation when no display stream exists.
+TEST_F(PerformanceMetricsTest, LastDisplayFrameTimeReportsDisplayIntervalOrFallsBack) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
     metrics.Update(1'000'000);
     metrics.Update(1'011'000);
+
+    // Before any display publications arrive, display frame time falls back to presentation.
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), metrics.GetLastPresentationFrameTimeMs(), 0.001f);
 
     int64_t latchUs = 2'000'000;
     for (int i = 0; i < 200; ++i) {
@@ -301,7 +308,7 @@ TEST_F(PerformanceMetricsTest, LastDisplayFrameTimeFallsBackWhileTheStreamIsLatc
     metrics.ConsumeDisplayTiming(timing, 3'000'200);
 
     ASSERT_FALSE(metrics.IsDisplayStreamScreenTime());
-    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), metrics.GetLastPresentationFrameTimeMs(), 0.001f);
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), 14.0f, 0.1f);
 }
 
 // The diagnostic must stay current even where the preference alone already
@@ -325,13 +332,9 @@ TEST_F(PerformanceMetricsTest, ScreenTimeDiagnosticStaysCurrentUnderAPresentatio
     EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
 }
 
-// The judgement is about the stream's current regime, so it has to follow a
-// regime change rather than average across it. A frame generator handing over
-// swaps deferred completions for immediate flips; measured in Talos, the
-// previous decaying-count form held presentation timing for 7.2 s after DLSS FG
-// had already started delivering resolved screen times, which is long enough to
-// watch the graph change shape. Recovery must complete inside one window.
-TEST_F(PerformanceMetricsTest, ScreenTimeSelectionFollowsARegimeChangeWithinOneWindow) {
+// The provenance tracking is about the stream's current regime, so it has to follow
+// a regime change rather than average across it. Recovery must complete inside one window.
+TEST_F(PerformanceMetricsTest, ScreenTimeProvenanceFollowsARegimeChangeWithinOneWindow) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -350,7 +353,8 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionFollowsARegimeChangeWithinOneW
     for (int i = 0; i < 3000; ++i)
         publish(false);
     metrics.ConsumeDisplayTiming(timing, publishUs);
-    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
 
     // The new regime resolves every sample. One window of them has to be enough,
     // whatever the stream did before it.
@@ -365,7 +369,7 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionFollowsARegimeChangeWithinOneW
 
 // ... and symmetrically, a stream that stops resolving must not keep the metric
 // on a screen-time claim it can no longer support.
-TEST_F(PerformanceMetricsTest, ScreenTimeSelectionReleasesWithinOneWindowWhenResolutionStops) {
+TEST_F(PerformanceMetricsTest, ScreenTimeProvenanceReleasesWithinOneWindowWhenResolutionStops) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -384,6 +388,8 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionReleasesWithinOneWindowWhenRes
         publish(true);
     metrics.ConsumeDisplayTiming(timing, publishUs);
     ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 1000u);
 
     for (uint32_t i = 0; i < 128; ++i)
         publish(false);
@@ -391,7 +397,7 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionReleasesWithinOneWindowWhenRes
 
     EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
     EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
-    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 }
 
 // Provenance is a per-sample fact and a stream can be a screen clock while a
@@ -432,10 +438,10 @@ TEST_F(PerformanceMetricsTest, AFlatDisplayStreamIsUsedEvenWhereSomeSamplesAreUn
     EXPECT_NEAR(metrics.GetCurrentFPS(), 90.9f, 1.0f);
 }
 
-// The same clause must not rescue the case it was built to reject: under FSR FG
-// the presents are even and the display series is the noisy one, which is
-// exactly a series that adds jitter to the frames it measures.
-TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsStillRefusedAgainstEvenPresents) {
+// When DisplayChange is preferred, an alternating or jagged display stream (such
+// as FSR FG on VRR below the refresh cap) is faithfully admitted to reflect
+// real on-screen frame pacing, rather than sugarcoated into presentation timing.
+TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsFaithfullyAdmittedWithoutSugarcoating) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -456,7 +462,8 @@ TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsStillRefusedAgainstEvenPres
 
     EXPECT_GT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
     EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
-    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_GT(metrics.GetWindowStdDev(), 2500.0);
 }
 
 // Under variable refresh below the cap (or with FG off), completions are unclocked

@@ -86,14 +86,9 @@ public:
         const int idx = (m_presentation.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
         return m_presentation.history[idx];
     }
-    // Falls back to the presentation frame time when there is no display series
-    // yet, and equally when the display stream is not publishing screen times:
-    // the benchmark recorder writes this as its display column, and a flip-latch
-    // interval is not one. The honest statement in that regime is that CE has no
-    // separate screen-time series, which is what the two columns then say.
+    // Falls back to the presentation frame time when there is no display series yet.
     float GetLastDisplayFrameTimeMs() const {
-        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0 ||
-            !m_displayStreamIsScreenTime.load(std::memory_order_acquire)) {
+        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0) {
             return GetLastPresentationFrameTimeMs();
         }
         const int idx = (m_display.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;

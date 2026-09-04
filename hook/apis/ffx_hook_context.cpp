@@ -569,6 +569,18 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         }
     }
 
+    if ((installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback) &&
+        !ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.load(std::memory_order_acquire)) {
+        ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
+        RestoreFfxConfigureBreakpointIfCurrent(reinterpret_cast<void*>(originalConfigure),
+                                               "native FSR present-callback bridge installed via direct ffxConfigure");
+        ffx_hook_g_FfxConfigureDeferredRearm.store(false, std::memory_order_release);
+        ffx_hook_g_FfxConfigureDeferredRearmTarget.store(nullptr, std::memory_order_release);
+        HookLogImportant(
+            "FFX Hook: Permanently disarmed ffxConfigure VEH breakpoint after establishing present-callback bridge — "
+            "IAT/caller route is active; eliminating per-frame VirtualProtect and code-page mutation on render thread");
+    }
+
     if (!parsed.enabled && disabledStartupArmingConfigure) {
         static std::atomic<int> s_disabledStartupArmingPreserveLogCount{0};
         const int logCount = s_disabledStartupArmingPreserveLogCount.fetch_add(1, std::memory_order_relaxed);

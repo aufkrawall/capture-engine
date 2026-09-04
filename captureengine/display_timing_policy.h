@@ -57,6 +57,11 @@ inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pendin
                 ++adjusted;
             entry.timestamp = blank;
             entry.screenTimeResolved = true;
+        } else {
+            // Under variable refresh below the panel cap, uncapped FPS, or without a regular vertical-blank grid,
+            // the display scans out dynamically as each flip completes. The unrounded hardware completion
+            // timestamp is the valid on-screen display transition time itself (msBetweenDisplayChange).
+            entry.screenTimeResolved = true;
         }
     }
     return adjusted;

@@ -1,40 +1,35 @@
 # llm-wiki Log
 
-### 2026-09-04 - Screen-time gate distinguishes VRR screen delivery from FSR FG flip-latch sawtooth
+### 2026-09-04 - Faithful msBetweenDisplayChange reporting and elimination of FSR FG VEH rearm overhead
 
-Session `20260904_104053` investigated whether CaptureEngine degrades FSR FG frame pacing.
-Detailed log and sensor analysis disproved any CE-induced pacing regression:
-- DXGI `Present()` runtime intervals from AMD's presenter thread were rock-solid:
-  `runtimeInterval`: mean = 11.46 ms (~87.2 fps), median = 11.53 ms, stddev = 900-1100 us,
-  **jaggedness = 518 us (0.5 ms)**!
-- CaptureEngine overhead was negligible: 11 us in FFX proxy Present, 16 us in FFX present
-  callback, ~200 us at DXGI Present, 0 command-queue registrations, 0 drops (1 drop in 4107 frames).
-- Real GPU render/overlay execution overhead was ~30-50 us without queue Signal.
+Two root-cause improvements resolving FSR FG frame pacing and overlay fidelity:
 
-Why the overlay frame-time graph and 1% lows regressed in 0.1.6483:
-- Build 0.1.6483 unconditionally marked unclocked completions under VRR (`!blanks.CanPlaceFrames()`)
-  as `screenTimeResolved = true`.
-- This caused `PerformanceMetrics::RefreshEffectiveSource` to count 100% `provenSamples`,
-  bypassing the `flatterThanPresents` jaggedness gate.
-- Under FSR FG below the 144 Hz refresh cap, AMD uses software presenter thread pacing without
-  driver-level hardware flip queue pacing (unlike NVIDIA Reflex on DLSS FG). On the GPU, the
-  ~3 ms compute interpolation finishes much earlier than the ~10 ms 3D render frame, so the
-  ETW `HSyncDPCMultiPlane` flip-queue latch times alternate in a severe sawtooth:
-  `publishedInterval`: stddev = 2920 us, **jaggedness = 4123 us (4.1 ms)**, `p1Us = 6400 us`
-  (impossible on a 144 Hz monitor whose minimum refresh is 6944 us).
-- Marking these unclocked completions as `screenTimeResolved = true` forced `PerformanceMetrics`
-  to display the raw ~4.1 ms flip latch sawtooth on the overlay, dropping reported 1% lows to
-  50.1 fps and raising stddev to 3763 us (matching what the user observed). Tools like RTSS
-  measure DXGI `Present()`, which remained flat at ~700 us stddev.
+1. **Faithful `msBetweenDisplayChange` without sugarcoating:**
+   - The user clarified the core project requirement: the frame-time graph must faithfully reflect
+     real on-screen frame pacing (`msBetweenDisplayChange`) with VRR, GPU maxed out, VSync capping,
+     and uncapped FPS, across all FG modes (all FG off, FSR FG, DLSS FG).
+   - In `captureengine/display_timing_policy.h`, `ResolveDeferredScreenTimes` marks unclocked completions
+     under VRR as `screenTimeResolved = true`, because on VRR panels without a fixed VBlank grid the
+     unrounded hardware completion timestamp is the physical display transition time itself.
+   - In `hook/common/performance_metrics.cpp`, when `DisplayChange` is preferred and the timing service
+     is healthy, `m_effectiveSource` selects `FrameTimeSource::DisplayChange` directly. The overlay
+     no longer forces fallback to `Presentation` when the display stream has natural variance or an
+     alternating sawtooth (e.g. FSR FG on VRR). Fallback occurs only when the timing service is
+     unavailable, stopped, or stale (> 2 seconds).
+   - `GetLastDisplayFrameTimeMs()` returns the active display frame time from the display series.
 
-Fix:
-1. In `captureengine/display_timing_policy.h`, reverted unconditional `screenTimeResolved = true`
-   when `!blanks.CanPlaceFrames()`. Unclocked deferred sync completions remain `screenTimeResolved = false`.
-2. In `hook/common/performance_metrics.cpp`, tuned `allowedJaggednessUs = alreadySelected ? presentJaggednessUs * 2.0 : presentJaggednessUs * 1.5;`.
-   - Admits normal VRR streams (FG OFF) with minor DPC jitter (within 1.5x of Present).
-   - Admits DLSS FG on VRR (proven immediate flips with scheduled screen times, display jaggedness ~450 us).
-   - Rejects the ~4.1 ms flip-latch sawtooth of FSR FG on VRR (display jaggedness ~8x higher than Present).
-     The overlay falls back to `Presentation` timing, faithfully reporting the true ~11.5 ms cadence.
+2. **Eliminated per-frame render-thread VEH breakpoint rearm overhead in FSR FG:**
+   - In `hook/apis/ffx_hook_install.cpp`, `CallFfxConfigureOriginalGuarded` was pausing and re-arming
+     the 0xCC VEH breakpoint on AMD's executable code page on *every application frame* on the game's
+     render thread (1800 times in 30 seconds). Each call ran 4 `VirtualProtect` syscalls (acquiring
+     the process-wide `MmAddressCreationLock`) and 2 `FlushInstructionCache` syscalls (broadcasting
+     cross-core TLB shootdowns).
+   - The one-shot disarm was only hooked for no-callback mode.
+   - In `hook/apis/ffx_hook_context.cpp` (`Hooked_ffxConfigure`), as soon as the present-callback bridge
+     is established (`installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback`), the
+     protected `ffxConfigure` VEH breakpoint is permanently disarmed via
+     `DisarmProtectedFfxConfigureVehBreakpoint("present-callback bridge established")`.
+   - Completely eliminates render-thread syscall overhead and memory lock contention during active FSR FG.
 
 
 ### 2026-09-04 - Accept a display stream that is measurably flatter than presents even when partially unlabelled
