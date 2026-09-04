@@ -40,10 +40,17 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         const DWORD sourceNow = GetTickCount();
         if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
             if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
-                HookLogImportant("[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u)",
-                                 effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
-                                 cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
-                                 static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()));
+                // screenTime says whether the display stream is publishing screen
+                // times or flip-latch timestamps its vertical-blank clock could not
+                // resolve; the latter is why a display-change request can still
+                // report presentation timing on a live, healthy stream.
+                HookLogImportant(
+                    "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
+                    "screenTimeShare=%upermille)",
+                    effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                    cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                    static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
+                    metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille());
                 lastFrameTimeSourceLogTime = sourceNow;
                 lastObservedFrameTimeSource = effectiveSource;
                 hasObservedFrameTimeSource = true;

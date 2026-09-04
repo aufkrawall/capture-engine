@@ -521,7 +521,7 @@ private:
                 ++blankUnresolvedTimestamps_;
             if (ShouldPublish(pending)) {
                 PublishTimestamp(pending.processId, pending.timestamp, publishUs,
-                                 pending.presentStartTimestamp);
+                                 pending.presentStartTimestamp, IsScreenTime(pending));
                 if (pending.completionKind != DisplayCompletionKind::Unconditional) {
                     ++fallbackPublished_;
                     correlation_.CommitFallback(pending);
@@ -551,7 +551,7 @@ private:
         for (const auto& pending : pendingTimestamps_)
             if (ShouldPublish(pending))
                 PublishTimestamp(pending.processId, pending.timestamp, publishUs,
-                                 pending.presentStartTimestamp);
+                                 pending.presentStartTimestamp, IsScreenTime(pending));
         pendingTimestamps_.clear();
     }
 
@@ -561,8 +561,19 @@ private:
         nvidiaFlips_.PruneBefore(cutoff);
     }
 
+    // Whether this completion's timestamp is a screen time or the moment the
+    // driver latched the flip. Only a vsync/hsync-deferred completion can be the
+    // latter, and only while the vertical-blank clock could not answer for it:
+    // an immediate flip carries the driver's own scheduled-screen-time
+    // announcement, and an explicit generated-transition payload is a screen
+    // time by construction. This is the same condition the unresolved counter
+    // above reports, so the health line and what the overlay is told agree.
+    static bool IsScreenTime(const PendingTimestamp& pending) {
+        return pending.completionKind != DisplayCompletionKind::Sync || pending.screenTimeResolved;
+    }
+
     void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs,
-                          int64_t presentStartTimestamp) {
+                          int64_t presentStartTimestamp, bool screenTimeResolved) {
         for (const auto& target : targets_) {
             if (!target.output)
                 continue;
@@ -580,7 +591,8 @@ private:
             const int64_t screenTimeUs = DisplayTimingQpcToUs(timestamp, qpcFrequency_);
             lastPublished->second.intervals.Observe(screenTimeUs);
             target.output->Publish(screenTimeUs, publishUs,
-                                   DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_));
+                                   DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_),
+                                   screenTimeResolved);
             ++publishedTimestamps_;
         }
     }

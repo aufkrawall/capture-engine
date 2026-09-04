@@ -148,6 +148,47 @@ TEST(FinalOutputCaptureTimingTest, DisplayWatermarkWaitsPastDelayedBacklogForNea
     EXPECT_EQ(timestampQpc, 100'001'000);
 }
 
+// A correlation has to say which of the two kinds of timestamp it matched. The
+// recording timeline applies the matched sample's per-sample cadence residual,
+// and a deferred completion the vertical-blank clock could not answer for
+// carries the flip-latch time, whose lead over the scanout varies by
+// milliseconds under frame generation - noise the file must not inherit.
+TEST(FinalOutputCaptureTimingTest, ResolutionReportsWhetherTheMatchedSampleIsAScreenTime) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 100, DisplayTimingStatus::Starting);
+    const auto watermark = policy::CaptureDisplayTimingPublicationWatermark(timing);
+    ASSERT_TRUE(watermark);
+
+    uint64_t matchedSequence = 0;
+    int64_t timestampQpc = 0;
+    bool screenTimeResolved = false;
+
+    timing.Publish(9'990'000, 10'030'000, 0, /*screenTimeResolved=*/false);
+    timing.Publish(10'000'100, 10'040'000, 0, /*screenTimeResolved=*/false);
+    ASSERT_EQ(policy::ResolveDisplayTimingAfterWatermark(
+                  timing, watermark.sequence, watermark.generation, 1, 100'000'000, 10'000'000,
+                  2'000'000, &matchedSequence, &timestampQpc, &screenTimeResolved),
+              policy::DisplayTimingResolution::kResolved);
+    EXPECT_EQ(matchedSequence, 2u);
+    EXPECT_FALSE(screenTimeResolved);
+
+    // The nearest sample decides, not the newest: a resolved sample published
+    // after an unresolved one must be reported as resolved.
+    timing.Publish(10'010'000, 10'050'000, 0, /*screenTimeResolved=*/true);
+    ASSERT_EQ(policy::ResolveDisplayTimingAfterWatermark(
+                  timing, watermark.sequence, watermark.generation, 3, 100'100'000, 10'000'000,
+                  2'000'000, &matchedSequence, &timestampQpc, &screenTimeResolved),
+              policy::DisplayTimingResolution::kResolved);
+    EXPECT_EQ(matchedSequence, 3u);
+    EXPECT_TRUE(screenTimeResolved);
+
+    // A caller that does not ask still gets the old behaviour.
+    EXPECT_EQ(policy::ResolveDisplayTimingAfterWatermark(
+                  timing, watermark.sequence, watermark.generation, 3, 100'100'000, 10'000'000,
+                  2'000'000, &matchedSequence, &timestampQpc),
+              policy::DisplayTimingResolution::kResolved);
+}
+
 TEST(FinalOutputCaptureTimingTest, DisplayGenerationChangeInvalidatesWatermark) {
     SharedDisplayTiming timing;
     timing.Reset(100, 100, DisplayTimingStatus::Starting);

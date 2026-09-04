@@ -187,6 +187,10 @@ private:
     bool injectDisplayTimingOffsetValid;
     int64_t injectDisplayTimingOffsetQpc;
     uint64_t injectDisplayTimingResolvedCount;
+    // Of the resolved correlations, how many matched a display sample carrying a
+    // flip-latch timestamp rather than a screen time, so its per-sample cadence
+    // residual was deliberately not written onto the recording timeline.
+    uint64_t injectDisplayTimingLatchOnlyCount;
     uint64_t injectDisplayTimingFallbackCount;
     uint64_t injectDisplayTimingPendingCount;
     uint32_t injectDisplayTimingPhaseMismatchStreak;

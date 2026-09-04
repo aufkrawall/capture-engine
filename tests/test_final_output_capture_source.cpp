@@ -89,6 +89,9 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(correlator.find("NormalizeFinalOutputDisplayTimestampQpc"),
               std::string::npos)
         << "display cadence must be retained without adding absolute driver queue latency";
+    EXPECT_NE(correlator.find("matchedScreenTime ? ce::capture_policy::NormalizeFinalOutputDisplayTimestampQpc"),
+              std::string::npos)
+        << "a flip-latch timestamp is not a cadence; its residual must not reach the recording timeline";
 
     const std::string encoderLoopStart =
         ReadSource("captureengine/media_main_encoder_01_loop_start.cpp");

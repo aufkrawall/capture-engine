@@ -1,5 +1,56 @@
 # llm-wiki Log
 
+### 2026-09-04 - The overlay's FSR-FG frame-time variance was the flip-latch clock
+
+User report: frame pacing under FSR FG in Talos is "sometimes worse, sometimes better"
+regarding constant micro stutter / frame-time variance. Two sessions of the same build
+(0.1.6475), same title, same settings, six minutes apart: `talosfsrfgbad` and
+`talosfsrfggood`. Nothing in CE's state machines differs between them - same route
+(`confirmedStandaloneNormalRoute` / `below-foreign-chain-fsr`), same epochs, same
+present-callback bridge, same 2x factor, same 3 log lines per rendered frame.
+
+What does differ is only what the overlay *reported*, and it is not what the frames did:
+
+| steady window | overlay (display series) | same frames at Present |
+| --- | --- | --- |
+| bad: fps / 1% low / stddev | 85.1 / **54.9** / **2978 us** | 84.9 / 66.7 / **748 us** |
+| good: fps / 1% low / stddev | 90.7 / **67.1** / **1426 us** | 91.1 / 74.4 / **612 us** |
+
+The mean is right to 0.3% in both and only the *values* are wrong - the exact failure
+mode `display-change-timing.md` warns about. The sensor health line names the cause
+directly: `usableClock=0`, `unresolved=3001` of `published=3063`, and `publishedInterval`
+equal to `latchInterval` to within 10 us, i.e. nothing was rounded and the overlay was
+drawing raw `HSyncDPCMultiPlane` flip-latch timestamps. `publishedInterval p1Us=6600` is
+below the panel's own 6946 us minimum frame interval, which is the impossibility check
+that settles it. Latch jaggedness 4575 us (bad) against 2043 us (good) with runtime
+`PresentStart` jaggedness 351-485 us in both: the presents were even, and all of the
+variance the user was looking at lived in the flip path. Under variable refresh below the
+cap the blank clock has no grid, so this is the permanent state there, and the DPC noise
+that rides on it varies run to run - which is exactly "sometimes worse, sometimes better".
+
+Fix, in three connected places:
+
+- `common/display_timing_shared.h` publishes what a timestamp *is* (`flags`,
+  `kDisplayTimingScreenTimeResolved`, ABI 57). The producer knew; the ring did not carry
+  it, so no consumer could tell a screen time from a latch time.
+- `PerformanceMetrics::ScreenTimeCadence` judges the stream over a decaying window and
+  `RefreshEffectiveSource` will not select `DisplayChange` for a stream that is not
+  publishing screen times. Presentation timing - the same frames, measured where the
+  measurement is exact - drives the graph, lows and variance instead. Two thresholds
+  (90% to select, 50% to keep) stop a stream near the boundary switching every window;
+  a stream is trusted until there is enough evidence against it, so nothing is withheld
+  at startup. `[Overlay] Frame timing source:` now reports `screenTime=`/`screenTimeShare=`.
+- The recording correlator applied the matched sample's *per-sample cadence residual* to
+  the file's source timestamps (`NormalizeFinalOutputDisplayTimestampQpc`). With latch
+  times that is +/-3 ms of measurement noise written into a CFR recording the game never
+  had. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance
+  and the correlator keeps the virtual (present-derived) cadence for latch-only samples,
+  while the *smoothed* phase keeps learning from them. New `latchOnly=` health counter.
+
+Not changed: the display series still accumulates every sample (an unresolved timestamp
+is still an ordered displayed transition, only its interval is untrustworthy), and system
+latency still observes all of them.
+
 ### 2026-09-04 - Two unbounded per-frame log lines on the game's render thread under FSR FG
 
 Found while reading the sessions above. With `log_level` defaulting to `trace`, CE wrote

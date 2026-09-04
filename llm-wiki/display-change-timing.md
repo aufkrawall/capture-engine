@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-03 (deferred flip completions rounded onto the observed vertical blank; validated under FSR FG at and below the refresh cap)
+Last verified: 2026-09-04 (published screen times labelled with their provenance, and the overlay metric plus the recording correlator both refusing to treat a flip-latch timestamp as a cadence)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -205,6 +205,36 @@ stream is unavailable, denied, failed, or two seconds stale.
   anything the screen did. Separating them under VRR needs a screen-time source we do not currently have. Note the
   contrast that makes this worth returning to: runtime `PresentStart` jaggedness in the same Talos windows is
   333-395 us, so the presents are even and the whole 2.4 ms lives in the flip path.
+- **So the series is labelled instead of guessed at** (2026-09-04). Each publication carries
+  `kDisplayTimingScreenTimeResolved` in `DisplayTimingSample::flags` (shared ABI 57), set when the timestamp is a
+  screen time - a deferred completion rounded onto the blank, an immediate flip corrected by the NVIDIA
+  announcement, or an explicit generated-transition payload - and clear when it is the flip-latch timestamp of a
+  deferred completion the clock could not answer for. It is the same condition the `unresolved` counter reports, so
+  the health line and what the consumers are told cannot disagree. The producer always knew this; the ring simply
+  did not carry it, so every consumer treated both kinds as a screen time.
+- What the consumers then do with it:
+  - The **overlay metric** (`PerformanceMetrics::ScreenTimeCadence`) judges the stream over a decaying window and
+    `RefreshEffectiveSource` refuses to select `DisplayChange` for a stream that is not publishing screen times;
+    presentation timing drives the graph, lows and variance instead. Two thresholds - 90% resolved to select, 50%
+    to keep - stop a stream sitting near the boundary from switching the whole metric every window, and a stream is
+    trusted until `kMinimumSamples` (64) have arrived so nothing is withheld at startup. `[Overlay] Frame timing
+    source:` reports `screenTime=` and `screenTimeShare=`, which is why a `display_change` request can legitimately
+    report `presentation` on a live, healthy, correctly-counting stream.
+  - The **recording correlator** applies the matched sample's per-sample cadence residual to the file's source
+    timestamps (`NormalizeFinalOutputDisplayTimestampQpc`), which on a latch-only sample is measurement noise
+    written into a CFR recording. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance
+    and the correlator keeps the virtual, present-derived cadence for those samples. The *smoothed* phase still
+    learns from them - transport latency and drift are what it tracks and the latch lead's mean is part of that -
+    so only the per-sample residual is withheld. Health counter: `latchOnly=`.
+  - **System latency** is unchanged and still observes every sample: an unresolved timestamp is still an ordered
+    displayed transition, and only its *interval* is untrustworthy.
+- Measured, and the reason this stopped being an open question about the overlay: two Talos FSR-FG sessions of build
+  0.1.6475, six minutes apart, same settings, identical CE routing. `usableClock=0` and `unresolved=3001` of
+  `published=3063` in both, `publishedInterval` equal to `latchInterval` to within 10 us, and `p1Us=6600` - below
+  the panel's 6946 us minimum. The overlay reported 1% lows of 54.9 and 67.1 fps and standard deviations of 2978 and
+  1426 us; the same frames at `Present` were 66.7 and 74.4 fps at 748 and 612 us. Correct means (85.1 vs 84.9,
+  90.7 vs 91.1), wrong values, and a four-times-versus-twice difference between two runs of the same build is what
+  a user experiences as "the frame-time variance is sometimes bad and sometimes not".
 - `vblank(observed,periodUs,usableClock,adjusted,unresolved,gaps(...))` reports the clock, and
   `latchInterval(...)` reports the completions as the driver timestamped them, next to `publishedInterval(...)`.
   Read together they say whether a jagged graph is the screen or is this service: the two are equal while

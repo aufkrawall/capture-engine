@@ -37,6 +37,18 @@ public:
     FrameTimeSource GetEffectiveFrameTimeSource() const {
         return m_effectiveSource.load(std::memory_order_acquire);
     }
+    // Whether the display stream is currently delivering screen times rather
+    // than flip-latch timestamps the vertical-blank clock could not resolve.
+    // Diagnostic only: it is the reason a display_change preference can still
+    // report presentation timing, so a health line can say so.
+    bool IsDisplayStreamScreenTime() const {
+        return m_displayStreamIsScreenTime.load(std::memory_order_acquire);
+    }
+    // Share of recent display publications that carried a resolved screen time,
+    // in per mille. Zero until the stream has produced any sample.
+    uint32_t GetDisplayScreenTimePermille() const {
+        return m_displayScreenTimePermille.load(std::memory_order_relaxed);
+    }
 
     const float* GetHistoryArray() const;
     int GetHistoryIndex() const;
@@ -65,8 +77,14 @@ public:
         const int idx = (m_presentation.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
         return m_presentation.history[idx];
     }
+    // Falls back to the presentation frame time when there is no display series
+    // yet, and equally when the display stream is not publishing screen times:
+    // the benchmark recorder writes this as its display column, and a flip-latch
+    // interval is not one. The honest statement in that regime is that CE has no
+    // separate screen-time series, which is what the two columns then say.
     float GetLastDisplayFrameTimeMs() const {
-        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0) {
+        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0 ||
+            !m_displayStreamIsScreenTime.load(std::memory_order_acquire)) {
             return GetLastPresentationFrameTimeMs();
         }
         const int idx = (m_display.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
@@ -133,6 +151,67 @@ private:
         void Reset();
     };
 
+    // How much of the display stream is actually a screen-time series.
+    //
+    // A published sample count that matches the display rate says nothing about
+    // the timestamp values. Under variable refresh below the panel's cap the
+    // vertical-blank clock has no grid to place frames on, and every deferred
+    // completion then reaches the overlay carrying the moment the driver
+    // latched the flip instead of the moment the screen changed. Measured in
+    // Talos under FSR frame generation, two runs of the same build and settings
+    // published a correct mean (85.1 against 84.9 fps at Present, 90.7 against
+    // 91.1) while reporting four times and twice the frame-time standard
+    // deviation the same frames had at Present - which is what "the variance is
+    // sometimes bad and sometimes not" looks like from the outside.
+    //
+    // Judged over a decaying window so a display that changes regime - reaching
+    // or leaving its refresh cap, a mode change, a monitor swap - is followed
+    // rather than remembered.
+    struct ScreenTimeCadence {
+        // Enough samples for the ratio to mean something, about two thirds of a
+        // second of frames, before it may overrule the initial assumption.
+        static constexpr uint32_t kMinimumSamples = 64;
+        // The window halves here, so the judgement follows the display instead
+        // of averaging over everything it has ever done.
+        static constexpr uint32_t kWindowSamples = 512;
+        // Selecting the display stream needs it to be almost entirely screen
+        // times; keeping it needs only a majority. The two thresholds are what
+        // stop a stream hovering at one of them from switching the metric back
+        // and forth every window.
+        static constexpr uint32_t kSelectPercent = 90;
+        static constexpr uint32_t kKeepPercent = 50;
+
+        void Observe(bool screenTimeResolved) {
+            ++samples;
+            if (screenTimeResolved)
+                ++resolved;
+            if (samples >= kWindowSamples) {
+                samples /= 2;
+                resolved /= 2;
+            }
+        }
+
+        void Reset() {
+            samples = 0;
+            resolved = 0;
+        }
+
+        // Assumed to be screen times until there is enough evidence to say
+        // otherwise, so a stream that is fine never spends its first frames
+        // withheld from the overlay.
+        bool IsScreenTime(bool currentlySelected) const {
+            if (samples < kMinimumSamples)
+                return true;
+            const uint32_t required = currentlySelected ? kKeepPercent : kSelectPercent;
+            return resolved * 100 >= samples * required;
+        }
+
+        uint32_t permille() const { return samples != 0 ? (resolved * 1000) / samples : 0; }
+
+        uint32_t samples = 0;
+        uint32_t resolved = 0;
+    };
+
     const MetricSeries& ActiveSeries() const;
     MetricSeries& ActiveSeries();
     void UpdateSeries(MetricSeries& series, int64_t currentQpcUs);
@@ -147,6 +226,9 @@ private:
     std::mutex m_displayConsumeMutex;
     uint64_t m_displayGeneration = UINT64_MAX;
     uint64_t m_nextDisplaySequence = 1;
+    ScreenTimeCadence m_displayScreenTimeCadence;
+    std::atomic<bool> m_displayStreamIsScreenTime{true};
+    std::atomic<uint32_t> m_displayScreenTimePermille{0};
 
     std::atomic<float> m_fgOutputFPS{0.0f};
     std::atomic<float> m_fgBaseFPS{0.0f};

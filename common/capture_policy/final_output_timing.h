@@ -321,6 +321,16 @@ inline int64_t PreserveFinalOutputTimestampOrder(FinalOutputTimestampOrderState&
 // the future and can exhaust the shared texture pool. Remove the learned
 // common phase while retaining the per-sample cadence residual around the
 // virtual final-output clock.
+//
+// The residual is only a cadence while the sample is a screen time. A deferred
+// completion the vertical-blank clock could not answer for carries the moment
+// the driver latched the flip, and that lead over the scanout varies by
+// milliseconds between the two frames of a generated pair - measured in Talos
+// under FSR frame generation at four times the standard deviation the same
+// frames had at Present, with published intervals shorter than the panel's own
+// minimum. Writing that onto a recording's source timestamps would put jitter
+// into the file the game never had, so the caller keeps the virtual cadence for
+// those samples; see ResolveDisplayTimingAfterWatermark's screenTimeResolved.
 inline int64_t NormalizeFinalOutputDisplayTimestampQpc(int64_t virtualTimestampQpc,
                                                        int64_t displayTimestampQpc,
                                                        int64_t smoothedCorrelationPhaseQpc) {
@@ -344,10 +354,17 @@ inline int64_t NormalizeFinalOutputDisplayTimestampQpc(int64_t virtualTimestampQ
 // published after its pre-Present watermark. Waiting until a sample at or
 // beyond the target exists makes the nearest choice stable. minimumSequence
 // prevents a later captured output from reusing an earlier output's sample.
+// `screenTimeResolved`, when supplied, reports whether the matched sample is a
+// screen time or the flip-latch timestamp a deferred completion carries while
+// the display's vertical-blank clock cannot answer for it. The caller needs it
+// because the cadence residual below is only a cadence when the sample is one.
 inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
     const SharedDisplayTiming& timing, uint64_t publicationWatermark, uint32_t generation,
     uint64_t minimumSequence, int64_t targetTimestampQpc, int64_t qpcFrequency,
-    int64_t maximumDistanceQpc, uint64_t* matchedSequence, int64_t* timestampQpc) {
+    int64_t maximumDistanceQpc, uint64_t* matchedSequence, int64_t* timestampQpc,
+    bool* screenTimeResolved = nullptr) {
+    if (screenTimeResolved)
+        *screenTimeResolved = true;
     if (targetTimestampQpc <= 0 || qpcFrequency <= 0 || maximumDistanceQpc <= 0 ||
         !matchedSequence || !timestampQpc)
         return DisplayTimingResolution::kInvalid;
@@ -375,11 +392,15 @@ inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
 
     uint64_t previousSequence = 0;
     int64_t previousTimestampQpc = 0;
+    bool previousScreenTime = true;
     uint64_t selectedSequence = 0;
     int64_t selectedTimestampQpc = 0;
+    bool selectedScreenTime = true;
     for (uint64_t sequence = firstAllowedSequence;; ++sequence) {
         int64_t screenTimeUs = 0;
-        if (!timing.Read(sequence, screenTimeUs))
+        int64_t presentStartTimeUs = 0;
+        bool candidateScreenTime = false;
+        if (!timing.Read(sequence, screenTimeUs, presentStartTimeUs, candidateScreenTime))
             return DisplayTimingResolution::kInvalid;
         const int64_t candidateTimestampQpc = DisplayTimingUsToQpc(screenTimeUs, qpcFrequency);
         if (candidateTimestampQpc <= 0)
@@ -387,13 +408,16 @@ inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
         if (candidateTimestampQpc < targetTimestampQpc) {
             previousSequence = sequence;
             previousTimestampQpc = candidateTimestampQpc;
+            previousScreenTime = candidateScreenTime;
         } else {
             selectedSequence = sequence;
             selectedTimestampQpc = candidateTimestampQpc;
+            selectedScreenTime = candidateScreenTime;
             if (previousSequence != 0 &&
                 targetTimestampQpc - previousTimestampQpc <= candidateTimestampQpc - targetTimestampQpc) {
                 selectedSequence = previousSequence;
                 selectedTimestampQpc = previousTimestampQpc;
+                selectedScreenTime = previousScreenTime;
             }
             break;
         }
@@ -426,6 +450,8 @@ inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
 
     *matchedSequence = selectedSequence;
     *timestampQpc = selectedTimestampQpc;
+    if (screenTimeResolved)
+        *screenTimeResolved = selectedScreenTime;
     return DisplayTimingResolution::kResolved;
 }
 

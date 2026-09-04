@@ -39,6 +39,23 @@ inline int64_t DisplayTimingUsToQpc(int64_t microseconds, int64_t frequency) {
 
 #pragma pack(push, 8)
 
+// What a published timestamp actually is. A sample count that matches the
+// present rate proves nothing about the timestamp *values*: a deferred flip
+// completion the vertical-blank clock could not answer for carries the moment
+// the driver latched the flip, which leads the scanout that shows it by a
+// variable amount. Measured in Talos under FSR frame generation below the
+// refresh cap, that lead alternates between the two frames of a generated pair
+// and inflates the frame-time standard deviation the overlay reports by four
+// times, with a 1% low 12 fps below what the same frames measured at Present.
+// The consumer therefore has to be told which of the two it is holding.
+enum : uint32_t {
+    // The timestamp is a screen time: either the completion was rounded onto
+    // the display's own vertical blank, or it needed no rounding (an immediate
+    // flip corrected by the driver's scheduled-flip announcement, or an
+    // explicit generated-transition payload).
+    kDisplayTimingScreenTimeResolved = 1u << 0,
+};
+
 struct DisplayTimingSample {
     std::atomic<uint64_t> sequence{0};
     std::atomic<int64_t> screenTimeUs{0};
@@ -47,6 +64,7 @@ struct DisplayTimingSample {
     // after a newer application marker has already been submitted, so screen
     // time alone is not a causal frame identity.
     std::atomic<int64_t> presentStartTimeUs{0};
+    std::atomic<uint32_t> flags{0};
 };
 
 // Sensor -> overlay single-producer/multi-consumer timestamp ring. Each reader
@@ -73,6 +91,7 @@ struct SharedDisplayTiming {
         for (auto& sample : samples) {
             sample.screenTimeUs.store(0, std::memory_order_relaxed);
             sample.presentStartTimeUs.store(0, std::memory_order_relaxed);
+            sample.flags.store(0, std::memory_order_relaxed);
             sample.sequence.store(0, std::memory_order_relaxed);
         }
         status.store(static_cast<uint32_t>(newStatus), std::memory_order_relaxed);
@@ -87,11 +106,16 @@ struct SharedDisplayTiming {
         return static_cast<DisplayTimingStatus>(status.load(std::memory_order_acquire));
     }
 
-    void Publish(int64_t screenTimeUs, int64_t publishQpcUs, int64_t presentStartTimeUs = 0) {
+    // `screenTimeResolved` is what the producer knows about its own timestamp;
+    // a publication that does not say otherwise is claiming a screen time.
+    void Publish(int64_t screenTimeUs, int64_t publishQpcUs, int64_t presentStartTimeUs = 0,
+                 bool screenTimeResolved = true) {
         const uint64_t sequence = writeSequence.load(std::memory_order_relaxed) + 1;
         auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         sample.screenTimeUs.store(screenTimeUs, std::memory_order_relaxed);
         sample.presentStartTimeUs.store(presentStartTimeUs, std::memory_order_relaxed);
+        sample.flags.store(screenTimeResolved ? kDisplayTimingScreenTimeResolved : 0u,
+                           std::memory_order_relaxed);
         sample.sequence.store(sequence, std::memory_order_release);
         lastPublishQpcUs.store(publishQpcUs, std::memory_order_relaxed);
         writeSequence.store(sequence, std::memory_order_release);
@@ -104,6 +128,12 @@ struct SharedDisplayTiming {
     }
 
     bool Read(uint64_t sequence, int64_t& screenTimeUs, int64_t& presentStartTimeUs) const {
+        bool unusedScreenTimeResolved = false;
+        return Read(sequence, screenTimeUs, presentStartTimeUs, unusedScreenTimeResolved);
+    }
+
+    bool Read(uint64_t sequence, int64_t& screenTimeUs, int64_t& presentStartTimeUs,
+              bool& screenTimeResolved) const {
         if (sequence == 0)
             return false;
         const auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
@@ -111,6 +141,8 @@ struct SharedDisplayTiming {
             return false;
         screenTimeUs = sample.screenTimeUs.load(std::memory_order_relaxed);
         presentStartTimeUs = sample.presentStartTimeUs.load(std::memory_order_relaxed);
+        screenTimeResolved =
+            (sample.flags.load(std::memory_order_relaxed) & kDisplayTimingScreenTimeResolved) != 0;
         return sample.sequence.load(std::memory_order_acquire) == sequence;
     }
 };

@@ -173,6 +173,158 @@ TEST_F(PerformanceMetricsTest, DisplayChangePreferenceFallsBackWhenPublicationBe
     EXPECT_NEAR(metrics.GetCurrentFPS(), 100.0f, 1.0f);
 }
 
+// A display stream that publishes flip-latch timestamps is not a screen clock,
+// however many samples it delivers at however correct a mean. Measured in Talos
+// under FSR frame generation below the refresh cap: the published mean was
+// right to 0.3% while the standard deviation was four times what the same
+// frames had at Present and the 1% low twelve fps lower. Presentation timing is
+// then the honest series, so the overlay must fall back to it.
+TEST_F(PerformanceMetricsTest, UnresolvedFlipLatchStreamFallsBackToPresentationTiming) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    // Presents are even; the reported latch times alternate around them.
+    int64_t presentUs = 1'000'000;
+    int64_t latchUs = 2'000'000;
+    metrics.Update(presentUs);
+    for (int i = 0; i < 200; ++i) {
+        presentUs += 11'000;
+        metrics.Update(presentUs);
+        latchUs += (i % 2 == 0) ? 8'000 : 14'000;
+        timing.Publish(latchUs, 3'000'000 + i, 0, /*screenTimeResolved=*/false);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3'000'200);
+
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    // The presentation series, not the 3 ms sawtooth the latch stream reported.
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 90.9f, 1.0f);
+    EXPECT_LT(metrics.GetWindowStdDev(), 100.0);
+}
+
+// The gate is about provenance, not about jitter: a resolved screen-time stream
+// keeps driving the metric even when the screen really is uneven, because that
+// unevenness is then a fact about the display rather than about the reporting.
+TEST_F(PerformanceMetricsTest, ResolvedScreenTimeStreamKeepsDrivingTheMetric) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    metrics.Update(1'000'000);
+    metrics.Update(1'011'000);
+
+    int64_t screenUs = 2'000'000;
+    for (int i = 0; i < 200; ++i) {
+        screenUs += (i % 2 == 0) ? 8'000 : 14'000;
+        timing.Publish(screenUs, 3'000'000 + i, 0, /*screenTimeResolved=*/true);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3'000'200);
+
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 1000u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_GT(metrics.GetWindowStdDev(), 2500.0);
+}
+
+// A stream is trusted until there is enough evidence against it, so a display
+// that is fine never spends its first frames withheld from the overlay.
+TEST_F(PerformanceMetricsTest, ShortUnresolvedRunDoesNotYetWithholdTheDisplayStream) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t screenUs = 2'000'000;
+    for (int i = 0; i < 8; ++i) {
+        screenUs += 11'000;
+        timing.Publish(screenUs, 3'000'000 + i, 0, /*screenTimeResolved=*/false);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3'000'010);
+
+    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+}
+
+// Selecting the stream needs it to be almost entirely screen times, keeping it
+// needs only a majority: a stream sitting between the two thresholds must not
+// switch the whole metric back and forth every window.
+TEST_F(PerformanceMetricsTest, ScreenTimeSelectionHasHysteresisAroundTheThreshold) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t screenUs = 2'000'000;
+    int64_t publishUs = 3'000'000;
+    const auto publishBatch = [&](int count, int unresolvedEvery) {
+        for (int i = 0; i < count; ++i) {
+            screenUs += 11'000;
+            timing.Publish(screenUs, ++publishUs, 0,
+                           /*screenTimeResolved=*/unresolvedEvery == 0 || (i % unresolvedEvery) != 0);
+        }
+    };
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    // Fully resolved first, so the stream is selected.
+    publishBatch(128, 0);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+
+    // Now around 80% resolved: below the select threshold, above the keep one.
+    publishBatch(200, 5);
+    metrics.ConsumeDisplayTiming(timing, publishUs);
+    EXPECT_LT(metrics.GetDisplayScreenTimePermille(), 900u);
+    EXPECT_GT(metrics.GetDisplayScreenTimePermille(), 500u);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+}
+
+// The benchmark recorder writes GetLastDisplayFrameTimeMs as its display
+// column. A flip-latch interval is not a display frame time, so the honest
+// answer in that regime is the presentation frame time - the same statement the
+// getter already makes when there is no display series at all.
+TEST_F(PerformanceMetricsTest, LastDisplayFrameTimeFallsBackWhileTheStreamIsLatchOnly) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    metrics.Update(1'000'000);
+    metrics.Update(1'011'000);
+
+    int64_t latchUs = 2'000'000;
+    for (int i = 0; i < 200; ++i) {
+        latchUs += (i % 2 == 0) ? 8'000 : 14'000;
+        timing.Publish(latchUs, 3'000'000 + i, 0, /*screenTimeResolved=*/false);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3'000'200);
+
+    ASSERT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), metrics.GetLastPresentationFrameTimeMs(), 0.001f);
+}
+
+// The diagnostic must stay current even where the preference alone already
+// decides the source, or a log line that exists to explain the choice would
+// report a value it stopped updating.
+TEST_F(PerformanceMetricsTest, ScreenTimeDiagnosticStaysCurrentUnderAPresentationPreference) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t latchUs = 2'000'000;
+    for (int i = 0; i < 200; ++i) {
+        latchUs += 11'000;
+        timing.Publish(latchUs, 3'000'000 + i, 0, /*screenTimeResolved=*/false);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::Presentation);
+    metrics.ConsumeDisplayTiming(timing, 3'000'200);
+
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
+}
+
 TEST_F(PerformanceMetricsTest, PresentationSelectionIgnoresAHealthyDisplayStream) {
     metrics.Update(1000000);
     metrics.Update(1020000);

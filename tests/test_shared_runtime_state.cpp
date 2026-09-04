@@ -211,15 +211,46 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_56_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_56"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_57_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_57"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_56"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_56_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_56_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_56_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_56_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_57"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_57_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_57_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_57_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_57_1234ABCD"), 0);
+}
+
+// A consumer has to be able to tell a resolved screen time from the flip-latch
+// timestamp a deferred completion carries when the vertical-blank clock cannot
+// answer for it; the two have the same shape and the same rate.
+TEST(SharedDisplayTimingTest, PublicationCarriesScreenTimeProvenance) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 101, DisplayTimingStatus::Starting);
+
+    timing.Publish(1'000'000, 2'000'000, 990'000, /*screenTimeResolved=*/true);
+    timing.Publish(1'011'000, 2'001'000, 999'000, /*screenTimeResolved=*/false);
+
+    int64_t screenTimeUs = 0;
+    int64_t presentStartTimeUs = 0;
+    bool screenTimeResolved = false;
+    ASSERT_TRUE(timing.Read(1, screenTimeUs, presentStartTimeUs, screenTimeResolved));
+    EXPECT_TRUE(screenTimeResolved);
+    ASSERT_TRUE(timing.Read(2, screenTimeUs, presentStartTimeUs, screenTimeResolved));
+    EXPECT_FALSE(screenTimeResolved);
+
+    // A publication that says nothing about its timestamp is claiming a screen
+    // time, which is what every non-service producer means.
+    timing.Publish(1'022'000, 2'002'000);
+    ASSERT_TRUE(timing.Read(3, screenTimeUs, presentStartTimeUs, screenTimeResolved));
+    EXPECT_TRUE(screenTimeResolved);
+
+    // A new generation must not leave a stale flag behind in a reused slot.
+    timing.Reset(100, 101, DisplayTimingStatus::Starting);
+    timing.Publish(2'000'000, 3'000'000, 0, /*screenTimeResolved=*/false);
+    ASSERT_TRUE(timing.Read(1, screenTimeUs, presentStartTimeUs, screenTimeResolved));
+    EXPECT_FALSE(screenTimeResolved);
 }
 
 TEST(SharedDisplayTimingTest, RingPublishesInOrderAndResetStartsANewGeneration) {

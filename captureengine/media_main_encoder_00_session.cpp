@@ -237,6 +237,7 @@ bool MediaEncoderSession::Init() {
     injectDisplayTimingOffsetValid = false;
     injectDisplayTimingOffsetQpc = 0;
     injectDisplayTimingResolvedCount = 0;
+    injectDisplayTimingLatchOnlyCount = 0;
     injectDisplayTimingFallbackCount = 0;
     injectDisplayTimingPendingCount = 0;
     injectDisplayTimingPhaseMismatchStreak = 0;

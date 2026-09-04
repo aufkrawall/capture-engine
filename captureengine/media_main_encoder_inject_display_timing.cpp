@@ -177,13 +177,14 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                 : it->virtualTimestampQpc;
         uint64_t matchedSequence = 0;
         int64_t displayTimestampQpc = 0;
+        bool matchedScreenTime = true;
         const int64_t maximumDistanceQpc =
             injectDisplayTimingOffsetValid ? std::max<int64_t>(1, qpcFreq.QuadPart / 50)
                                            : std::max<int64_t>(1, qpcFreq.QuadPart / 2);
         const auto resolution = ce::capture_policy::ResolveDisplayTimingAfterWatermark(
             media_main_g_pSharedMem->displayTiming, it->publicationWatermark, it->generation,
             injectDisplayTimingLastMatchedSequence + 1, targetTimestampQpc, qpcFreq.QuadPart,
-            maximumDistanceQpc, &matchedSequence, &displayTimestampQpc);
+            maximumDistanceQpc, &matchedSequence, &displayTimestampQpc, &matchedScreenTime);
         if (resolution == ce::capture_policy::DisplayTimingResolution::kPending) {
             // Correlations are ordered. Letting a later frame consume a sample
             // while the older one is pending would phase-shift the whole tail
@@ -203,14 +204,24 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                 injectDisplayTimingOffsetValid = true;
             }
             if (buffered) {
+                // The learned phase still averages over the sample whatever it
+                // is - transport latency and drift are what it tracks, and the
+                // latch lead's mean is part of that. Only the *per-sample*
+                // residual is withheld when the sample is not a screen time:
+                // it would be measurement noise written onto the recording's
+                // source timeline, which the virtual final-output cadence
+                // already carries correctly from the presents themselves.
                 buffered->timestamp =
-                    ce::capture_policy::NormalizeFinalOutputDisplayTimestampQpc(
-                        it->virtualTimestampQpc, displayTimestampQpc,
-                        injectDisplayTimingOffsetQpc);
+                    matchedScreenTime ? ce::capture_policy::NormalizeFinalOutputDisplayTimestampQpc(
+                                            it->virtualTimestampQpc, displayTimestampQpc,
+                                            injectDisplayTimingOffsetQpc)
+                                      : it->virtualTimestampQpc;
                 buffered->captureFlags &= ~SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
                 buffered->captureFlags |= SHARED_FRAME_CAPTURE_DISPLAY_TIMING_RESOLVED;
             }
             ++injectDisplayTimingResolvedCount;
+            if (!matchedScreenTime)
+                ++injectDisplayTimingLatchOnlyCount;
         } else {
             if (buffered)
                 buffered->captureFlags &= ~SHARED_FRAME_CAPTURE_DISPLAY_TIMING_WATERMARK;
@@ -275,11 +286,12 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
     const DWORD now = GetTickCount();
     if (sawFinalOutput && now - injectDisplayTimingLastLog >= 1000) {
         LogInfo(
-            "[Inject DLSS FG] final-output timing: resolved=%llu fallback=%llu pendingNow=%llu "
+            "[Inject DLSS FG] final-output timing: resolved=%llu latchOnly=%llu fallback=%llu pendingNow=%llu "
             "pendingPassSum=%llu correlationPhaseUs=%lld timestampCorrectionUs=%lld displayStatus=%u "
             "writeSequence=%llu retentionCap=%zu phaseReservePeak=%zu path=%s transitions=%llu "
             "phaseReacquire=%llu mismatchStreak=%u",
             static_cast<unsigned long long>(injectDisplayTimingResolvedCount),
+            static_cast<unsigned long long>(injectDisplayTimingLatchOnlyCount),
             static_cast<unsigned long long>(injectDisplayTimingFallbackCount),
             static_cast<unsigned long long>(pendingThisPass),
             static_cast<unsigned long long>(injectDisplayTimingPendingCount),

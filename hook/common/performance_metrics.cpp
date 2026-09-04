@@ -230,6 +230,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
     if (m_displayGeneration != generationBefore) {
         m_display.Reset();
         m_systemLatency.ResetDisplayHistory();
+        m_displayScreenTimeCadence.Reset();
+        m_displayScreenTimePermille.store(0, std::memory_order_relaxed);
         m_displayGeneration = generationBefore;
         const uint64_t earliestAvailable =
             writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
@@ -244,17 +246,37 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
     while (m_nextDisplaySequence <= writeSequence) {
         int64_t screenTimeUs = 0;
         int64_t presentStartTimeUs = 0;
-        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs))
+        bool screenTimeResolved = false;
+        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved))
             break;
         m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
+        // The series stays warm whatever the provenance is: an unresolved
+        // timestamp is still an ordered displayed transition, it is only its
+        // *interval* that cannot be trusted, and a stream that starts resolving
+        // again must not have to refill its history first.
+        m_displayScreenTimeCadence.Observe(screenTimeResolved);
         UpdateSeries(m_display, screenTimeUs);
         ++m_nextDisplaySequence;
     }
+    m_displayScreenTimePermille.store(m_displayScreenTimeCadence.permille(), std::memory_order_relaxed);
 
     RefreshEffectiveSource(timing, currentQpcUs);
 }
 
 void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs) {
+    // A live stream that is publishing flip-latch timestamps is not a screen
+    // clock, however many samples it delivers at however correct a mean. The
+    // frames were presented evenly and only their reported *screen* times are
+    // jittering, so presentation timing - the same frames, measured where the
+    // measurement is exact - is the honest series to draw and to compute lows
+    // and variance from until the display clock can answer again. Judged before
+    // the preference is consulted, so the diagnostic never goes stale on a
+    // configuration that was not going to select the stream anyway.
+    const bool alreadySelected =
+        m_effectiveSource.load(std::memory_order_relaxed) == FrameTimeSource::DisplayChange;
+    const bool screenTime = m_displayScreenTimeCadence.IsScreenTime(alreadySelected);
+    m_displayStreamIsScreenTime.store(screenTime, std::memory_order_release);
+
     if (m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation) {
         m_effectiveSource.store(FrameTimeSource::Presentation, std::memory_order_release);
         return;
@@ -265,7 +287,8 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
                         currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs;
     const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
                          m_display.sampleCount.load(std::memory_order_acquire) > 0;
-    m_effectiveSource.store(healthy ? FrameTimeSource::DisplayChange : FrameTimeSource::Presentation,
+    m_effectiveSource.store(healthy && screenTime ? FrameTimeSource::DisplayChange
+                                                  : FrameTimeSource::Presentation,
                             std::memory_order_release);
 }
 
