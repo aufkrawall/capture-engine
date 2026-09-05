@@ -45,20 +45,21 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             // so a flapping stream reached the log as unrelated one-off lines.
             lastObservedFrameTimeSource = effectiveSource;
             if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
-                // screenTime says whether the display stream is publishing screen
-                // times or flip-latch timestamps its vertical-blank clock could not
-                // resolve; the latter is why a display-change request can still
-                // report presentation timing on a live, healthy stream. suppressed
-                // counts the transitions the rate limit swallowed before this one.
+                // Age/status explain fallback. Provenance and interval shape are
+                // diagnostic only and never override a healthy display stream.
+                const int64_t lastPublishUs =
+                    sharedMem->displayTiming.lastPublishQpcUs.load(std::memory_order_acquire);
                 HookLogImportant(
                     "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
-                    "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u)",
+                    "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u "
+                    "publishAgeUs=%lld)",
                     effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
                     metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille(),
                     metrics->GetDisplayJaggednessUs(), metrics->GetPresentationJaggednessUs(),
-                    suppressedFrameTimeSourceChanges);
+                    suppressedFrameTimeSourceChanges,
+                    static_cast<long long>(lastPublishUs > 0 ? currentQpcUs - lastPublishUs : -1));
                 lastFrameTimeSourceLogTime = sourceNow;
                 hasObservedFrameTimeSource = true;
                 suppressedFrameTimeSourceChanges = 0;
@@ -70,9 +71,14 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
     const float presFrameTimeMs = metrics ? metrics->GetLastPresentationFrameTimeMs() : 0.0f;
     const float dispFrameTimeMs = metrics ? metrics->GetLastDisplayFrameTimeMs() : 0.0f;
-    BenchmarkManager::Get().OnFrame(currentQpcUs, presFrameTimeMs, dispFrameTimeMs,
-                                    SystemMetricsCollector::Get().GetMetrics(), sharedMem);
-    const bool benchmarkActive = BenchmarkManager::Get().IsActiveOrShowingResults();
+    auto& benchmark = BenchmarkManager::Get();
+    if (benchmark.NeedsFrame(sharedMem->benchmark.toggleSeq.load(std::memory_order_acquire))) {
+        // An idle benchmark needs no per-output sensor mutex, snapshot, or
+        // configuration string copies. A new toggle still wakes it immediately.
+        benchmark.OnFrame(currentQpcUs, presFrameTimeMs, dispFrameTimeMs,
+                          SystemMetricsCollector::Get().GetMetrics(), sharedMem);
+    }
+    const bool benchmarkActive = benchmark.IsActiveOrShowingResults();
 
     if (!cfg.showOverlay && !benchmarkActive) {
         if (renderLogCount < 5)

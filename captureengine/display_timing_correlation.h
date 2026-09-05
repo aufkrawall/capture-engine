@@ -78,12 +78,11 @@ struct PendingTimestamp {
     DisplayCompletionKind completionKind = DisplayCompletionKind::Unconditional;
     uint64_t arrivalOrder = 0;
     int64_t presentStartTimestamp = 0;
-    // Which display the flip completed on, so a deferred completion can be
-    // rounded onto that screen's own vertical blanks and not another's, and
-    // whether that rounding has already happened - the blank a completion
-    // belongs to is usually still in the future when the completion arrives.
+    // Display identity and provenance of this confirmed completion. Kernel
+    // sync completions retain their ETW timestamp, as in PresentMon; refresh
+    // periodicity is not evidence for moving a flip to another blank.
     uint32_t displaySource = 0;
-    bool screenTimeResolved = false;
+    bool screenTimeResolved = true;
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The

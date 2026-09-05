@@ -2,11 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 
 #include "../common/display_timing_shared.h"
 #include "display_timing_correlation.h"
-#include "display_timing_vblank.h"
 
 inline bool ShouldCollectDisplayTiming(bool useScreenGrabTarget, FrameTimeSource configuredSource,
                                        bool injectVideoCaptureNeeded, bool systemLatencyRequested = false) {
@@ -38,31 +36,4 @@ inline std::size_t SelectDisplaySubmissionPresent(const uint32_t* pendingThreadI
             return i;
     }
     return 0;
-}
-
-// Replaces each vsync-deferred completion's timestamp with the vertical blank
-// its frame actually reaches the screen at. The queue must already be ordered
-// by timestamp: blanks are claimed in display order.
-// Returns how many timestamps the rounding moved.
-inline uint64_t ResolveDeferredScreenTimes(std::vector<PendingTimestamp>& pending, VerticalBlankClock& blanks) {
-    uint64_t adjusted = 0;
-    for (auto& entry : pending) {
-        if (entry.completionKind != DisplayCompletionKind::Sync || entry.screenTimeResolved)
-            continue;
-        if (blanks.CanPlaceFrames(entry.displaySource)) {
-            const int64_t blank = blanks.Claim(entry.displaySource, entry.timestamp);
-            if (blank == 0)
-                continue;  // The blank has not happened yet, or is outside the grid window.
-            if (blank != entry.timestamp)
-                ++adjusted;
-            entry.timestamp = blank;
-            entry.screenTimeResolved = true;
-        } else {
-            // Under variable refresh below the panel cap, uncapped FPS, or without a regular vertical-blank grid,
-            // the display scans out dynamically as each flip completes. The unrounded hardware completion
-            // timestamp is the valid on-screen display transition time itself (msBetweenDisplayChange).
-            entry.screenTimeResolved = true;
-        }
-    }
-    return adjusted;
 }

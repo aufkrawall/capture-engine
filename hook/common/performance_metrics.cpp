@@ -11,7 +11,7 @@ namespace {
 constexpr int64_t kDuplicateFrameThresholdUs = 100;
 constexpr int64_t kDisplayTimingStaleThresholdUs = 2'000'000;
 
-float ComputeWorstPercentileFPS(const float* history, int historyIdx, float percentile, int minSamples) {
+float ComputeWorstPercentileFPS(const std::atomic<float>* history, int historyIdx, float percentile, int minSamples) {
     static thread_local std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes;
     int count = 0;
     float totalMs = 0.0f;
@@ -19,7 +19,7 @@ float ComputeWorstPercentileFPS(const float* history, int historyIdx, float perc
     for (int i = 0; i < PerformanceMetrics::HISTORY_SIZE; i++) {
         const int idx =
             (historyIdx - 1 - i + PerformanceMetrics::HISTORY_SIZE) % PerformanceMetrics::HISTORY_SIZE;
-        const float ms = history[idx];
+        const float ms = history[idx].load(std::memory_order_relaxed);
         if (ms <= 0.0001f)
             break;
         frameTimes[count++] = ms;
@@ -31,8 +31,8 @@ float ComputeWorstPercentileFPS(const float* history, int historyIdx, float perc
     if (count < minSamples)
         return 0.0f;
 
-    const int percentileIdx = std::min(count - 1, static_cast<int>(static_cast<float>(count) * percentile));
-    const int worstCount = std::max(1, percentileIdx + 1);
+    const int worstCount = std::min(count, std::max(1, static_cast<int>(
+        std::ceil(static_cast<float>(count) * percentile))));
     auto begin = frameTimes.begin();
     std::nth_element(begin, begin + worstCount, begin + count, std::greater<float>());
 
@@ -44,7 +44,8 @@ float ComputeWorstPercentileFPS(const float* history, int historyIdx, float perc
 }  // namespace
 
 void PerformanceMetrics::MetricSeries::Reset() {
-    std::memset(history, 0, sizeof(history));
+    for (auto& sample : history)
+        sample.store(0.0f, std::memory_order_relaxed);
     std::memset(frameTimeWindow, 0, sizeof(frameTimeWindow));
     historyIdx.store(0, std::memory_order_relaxed);
     sampleCount.store(0, std::memory_order_relaxed);
@@ -116,6 +117,7 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
     ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
     const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
     m_systemLatency.ObservePresent(currentQpcUs, frameBeginUs, frameBeginKind);
+    std::lock_guard<std::mutex> lock(m_presentationUpdateMutex);
     UpdateSeries(m_presentation, currentQpcUs);
 }
 
@@ -150,7 +152,11 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
     const int64_t lastUs = series.lastFrameTimeUs.load(std::memory_order_relaxed);
     const int64_t frameToFrameUs = lastUs > 0 ? currentQpcUs - lastUs : 0;
 
-    if (lastUs > 0 && frameToFrameUs > 0 && frameToFrameUs < kDuplicateFrameThresholdUs)
+    // Only the presentation observer needs a nested-hook duplicate guard.
+    // Distinct display-ring sequences are distinct transitions, even when a
+    // tearing display or driver reports them less than 100 us apart.
+    if (&series == &m_presentation && lastUs > 0 && frameToFrameUs > 0 &&
+        frameToFrameUs < kDuplicateFrameThresholdUs)
         return;
     if (lastUs > 0 && frameToFrameUs <= 0)
         return;
@@ -164,9 +170,9 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
     const float frameTimeMs = static_cast<float>(frameToFrameUs) / 1000.0f;
     const double frameToFrame = static_cast<double>(frameToFrameUs);
     const int idx = series.historyIdx.load(std::memory_order_relaxed);
-    series.history[idx] = frameTimeMs;
+    series.history[idx].store(frameTimeMs, std::memory_order_relaxed);
     series.historyIdx.store((idx + 1) % HISTORY_SIZE, std::memory_order_release);
-    series.sampleCount.fetch_add(1, std::memory_order_relaxed);
+    series.sampleCount.store(series.sampleCount.load(std::memory_order_relaxed) + 1, std::memory_order_release);
 
     series.frameTimeWindow[series.windowIndex] = frameToFrameUs;
     series.windowIndex = (series.windowIndex + 1) % VARIANCE_WINDOW;
@@ -191,11 +197,9 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
         const int count = series.windowFilled ? VARIANCE_WINDOW : series.windowIndex;
         // Walked oldest to newest, because jaggedness - the mean absolute
         // difference between neighbouring intervals - is the one statistic here
-        // that depends on the order. It is what separates a series that is
-        // merely spread out from one that alternates, and comparing it against
-        // the same statistic on the presentation series is how the frame-time
-        // source is chosen; mean and variance do not care about the order and
-        // ride along in the same pass.
+        // that depends on the order. It distinguishes a spread-out series from
+        // an alternating one for diagnostics; it never selects or smooths the
+        // frame-time source. Mean and variance ride along in the same pass.
         const int oldest = series.windowFilled ? series.windowIndex : 0;
         double sum = 0;
         double sumSq = 0;
@@ -264,6 +268,10 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // The correlator counts retirements, so silently skipping them would
         // inflate its in-flight estimate for the rest of the epoch.
         m_nextDisplaySequence = earliestAvailable;
+        // Missing telemetry is not one long displayed frame. Retain measured
+        // history, but start a fresh interval at the first available timestamp.
+        m_display.lastFrameTimeUs.store(0, std::memory_order_relaxed);
+        m_displayScreenTimeCadence.Reset();
         m_systemLatency.NoteDisplayStreamGap();
     }
 
@@ -273,6 +281,10 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         bool screenTimeResolved = false;
         if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved))
             break;
+        // A reset restarts sequence numbers. Even a coherent sample read must
+        // belong to the generation whose cursor/history we are consuming.
+        if (timing.publicationGeneration.load(std::memory_order_acquire) != generationBefore)
+            return;
         m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
         // The series stays warm whatever the provenance is: an unresolved
         // timestamp is still an ordered displayed transition, it is only its
@@ -288,42 +300,11 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
 }
 
 void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs) {
-    // A live stream that is publishing flip-latch timestamps is not a screen
-    // clock, however many samples it delivers at however correct a mean. The
-    // frames were presented evenly and only their reported *screen* times are
-    // jittering, so presentation timing - the same frames, measured where the
-    // measurement is exact - is the honest series to draw and to compute lows
-    // and variance from until the display clock can answer again. Judged before
-    // the preference is consulted, so the diagnostic never goes stale on a
-    // configuration that was not going to select the stream anyway.
-    const bool alreadySelected =
-        m_effectiveSource.load(std::memory_order_relaxed) == FrameTimeSource::DisplayChange;
-    const bool provenSamples = m_displayScreenTimeCadence.IsScreenTime(alreadySelected);
-    // Provenance is a per-sample fact, and a stream can be a screen clock while
-    // a minority of its samples are not. Measured under DLSS FG, four fifths of
-    // the completions are immediate flips carrying the driver's announced
-    // screen time and the rest are deferred and unresolved, yet the published
-    // series is flat at 450 us of jaggedness while the presents that produced
-    // it - issued as a generated group in a burst - carry 18244 us. Refusing
-    // that series because a fifth of it is unlabelled would throw away the one
-    // measurement that shows what the screen did.
-    //
-    // So a series is also accepted when it is measurably not adding jitter to
-    // the frames it measures: no jaggier than the presentation series over the
-    // same window. That is a statement about the values rather than about their
-    // labels, it needs no absolute threshold, and it fails exactly where the
-    // labels already said it should - under FSR FG below the refresh cap the
-    // presents are even at 351-540 us while the display series is 2043-4575 us,
-    // which is the noise this gate exists to keep off the graph.
-    const double displayJaggednessUs = m_display.windowJaggedness.load(std::memory_order_relaxed);
-    const double presentJaggednessUs = m_presentation.windowJaggedness.load(std::memory_order_relaxed);
-    const double allowedJaggednessUs =
-        alreadySelected ? presentJaggednessUs * 2.0 : presentJaggednessUs * 1.5;
-    const bool bothSeriesMeasured = m_display.windowStatisticsValid.load(std::memory_order_acquire) &&
-                                    m_presentation.windowStatisticsValid.load(std::memory_order_acquire);
-    const bool flatterThanPresents = bothSeriesMeasured && displayJaggednessUs <= allowedJaggednessUs;
-    const bool screenTime = provenSamples || flatterThanPresents;
-    m_displayStreamIsScreenTime.store(screenTime, std::memory_order_release);
+    // Provenance is a producer claim, not something inferred from flatness.
+    // A jagged display can be correct and a flat unlabelled stream can still
+    // be wrong. This diagnostic never participates in source selection.
+    m_displayStreamIsScreenTime.store(m_displayScreenTimeCadence.IsScreenTime(),
+                                      std::memory_order_release);
 
     if (m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation) {
         m_effectiveSource.store(FrameTimeSource::Presentation, std::memory_order_release);
@@ -331,8 +312,12 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     }
 
     const int64_t lastPublishUs = timing.lastPublishQpcUs.load(std::memory_order_acquire);
-    const bool recent = lastPublishUs > 0 && currentQpcUs >= lastPublishUs &&
-                        currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs;
+    // currentQpcUs was captured before taking the consumer lock. The sensor
+    // can publish while we acquire it or drain the ring, so a newer publication
+    // is fresh, not a clock failure. Reject only genuinely old publications.
+    const bool recent = lastPublishUs > 0 && currentQpcUs > 0 &&
+                        (lastPublishUs >= currentQpcUs ||
+                         currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs);
     const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
                          m_display.sampleCount.load(std::memory_order_acquire) > 0;
     // When DisplayChange is preferred, display the active screen timing stream directly so
@@ -342,7 +327,7 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
                             std::memory_order_release);
 }
 
-const float* PerformanceMetrics::GetHistoryArray() const {
+const std::atomic<float>* PerformanceMetrics::GetHistoryArray() const {
     return ActiveSeries().history;
 }
 
@@ -358,8 +343,8 @@ float PerformanceMetrics::GetCurrentFPS() const {
     const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     for (int i = 0; i < kAverageFrames; i++) {
         const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        const float ms = series.history[idx];
-        if (ms > 0.0001f && ms < 100.0f) {
+        const float ms = series.history[idx].load(std::memory_order_relaxed);
+        if (ms > 0.0001f) {
             totalMs += ms;
             validFrames++;
         }
@@ -376,7 +361,7 @@ float PerformanceMetrics::GetAverageFPS() const {
     int count = 0;
     for (int i = 0; i < HISTORY_SIZE; i++) {
         const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        const float ms = series.history[idx];
+        const float ms = series.history[idx].load(std::memory_order_relaxed);
         if (ms <= 0.0001f)
             break;
         totalMs += ms;
@@ -420,7 +405,7 @@ void PerformanceMetrics::GetHistoryEndingAt(uint64_t endIndex, float* outBuffer,
         const uint64_t index = endIndex - age;
         outBuffer[i] = (index < oldest || index >= written)
                            ? 0.0f
-                           : series.history[static_cast<std::size_t>(index % static_cast<uint64_t>(HISTORY_SIZE))];
+                           : series.history[static_cast<std::size_t>(index % static_cast<uint64_t>(HISTORY_SIZE))].load(std::memory_order_relaxed);
     }
 }
 
@@ -430,7 +415,7 @@ void PerformanceMetrics::GetLastHistory(float* outBuffer, int count) const {
     const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     for (int i = 0; i < count; i++) {
         const int idx = (historyIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE;
-        outBuffer[i] = series.history[idx];
+        outBuffer[i] = series.history[idx].load(std::memory_order_relaxed);
     }
 }
 
@@ -452,7 +437,7 @@ void PerformanceMetrics::GetSmartScale(float& outMin, float& outMax, float minRa
     int count = 0;
     for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
         const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        const float ms = series.history[idx];
+        const float ms = series.history[idx].load(std::memory_order_relaxed);
         maxValue = std::max(maxValue, ms);
         if (ms <= 0.0001f)
             break;
@@ -472,7 +457,7 @@ float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
     const int historyIdx = series.historyIdx.load(std::memory_order_acquire);
     for (int i = 0; i < HISTORY_SIZE; i++) {
         const int idx = (historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        const float ms = series.history[idx];
+        const float ms = series.history[idx].load(std::memory_order_relaxed);
         if (ms <= 0.0001f)
             break;
         maxMs = std::max(maxMs, ms);

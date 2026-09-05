@@ -14,6 +14,7 @@
 #include <vector>
 #include "custom_overlay.h"
 #include "dx12_overlay_policy/upload_slot_guard.h"
+#include "dx12_overlay_policy/inline_upload_slots.h"
 
 namespace CustomOverlay {
 
@@ -56,8 +57,11 @@ public:
     bool HasPendingResources() const {
         return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
     }
+    bool HasInlineUploadsInFlight() const;
 
 private:
+    friend void RetireDX12Backend(DX12Backend* backend);
+    friend void CollectRetiredDX12Backends();
     bool CreateRootSignature();
     bool CreatePipelineState();
     bool CreateBuffers();
@@ -66,6 +70,9 @@ private:
     bool ResizeVertexBuffer(int slot, size_t requiredBytes);
     bool ResizeIndexBuffer(int slot, size_t requiredBytes);
     bool WaitForSlotGpuComplete(int slot);
+    bool CreateInlineCompletionBuffer();
+    int AcquireInlineUploadSlot();
+    void MarkInlineUploadComplete(ID3D12GraphicsCommandList2* list, int slot);
 
     ID3D12Device* device = nullptr;
     ID3D12CommandQueue* commandQueue = nullptr;
@@ -83,17 +90,27 @@ private:
     // Pool size matches the command allocator pool in dx12_hook.cpp so fence
     // guarantees that slot N is GPU-idle before the CPU reuses it.
     static constexpr int kFramePoolSize = 16;
-    ComPtr<ID3D12Resource> vertexBuffer[kFramePoolSize];
-    ComPtr<ID3D12Resource> indexBuffer[kFramePoolSize];
-    void* vertexBufferPtr[kFramePoolSize] = {};
-    void* indexBufferPtr[kFramePoolSize] = {};
-    size_t vertexBufferSize[kFramePoolSize] = {};
-    size_t indexBufferSize[kFramePoolSize] = {};
+    // The ordinary fence/allocator ring stays at 16. Callback uploads may
+    // grow without waiting when those slots are still in flight.
+    static constexpr int kMaxUploadSlots = 128;
+    ComPtr<ID3D12Resource> vertexBuffer[kMaxUploadSlots];
+    ComPtr<ID3D12Resource> indexBuffer[kMaxUploadSlots];
+    void* vertexBufferPtr[kMaxUploadSlots] = {};
+    void* indexBufferPtr[kMaxUploadSlots] = {};
+    size_t vertexBufferSize[kMaxUploadSlots] = {};
+    size_t indexBufferSize[kMaxUploadSlots] = {};
     ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding;
     uint64_t slotFenceValue[kFramePoolSize] = {};
     uint64_t nextSlotFenceValue = 0;
     std::atomic<int> frameIdx{0};
     std::atomic<int> nextForcedUploadSlot{-1};
+    ce::dx12_overlay_policy::InlineUploadSlots<kMaxUploadSlots> inlineSlots;
+    ComPtr<ID3D12Resource> inlineCompletionBuffer;
+    volatile uint32_t* inlineCompletions = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS inlineCompletionGpuVA = 0;
+    // Intrusive retirement avoids allocation when an adapter is replaced.
+    DX12Backend* retiredNext = nullptr;
+    ComPtr<ID3D12Device> retirementDevice;
 
     ID3D12GraphicsCommandList* currentCmdList = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE currentRTV = {};
@@ -104,5 +121,9 @@ private:
 
     bool initialized = false;
 };
+
+void RetireDX12Backend(DX12Backend* backend);
+// Called by the existing hook service thread; never waits for the GPU.
+void CollectRetiredDX12Backends();
 
 }  // namespace CustomOverlay

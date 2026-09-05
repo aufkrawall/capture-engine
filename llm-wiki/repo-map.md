@@ -145,6 +145,8 @@ anchors that predate the split are approximate.
     present1, routing, steam, resize, original), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
+    `custom_overlay_dx12_{render,inline_upload,retirement}.cpp` (callback draw recording, GPU-completed upload slots,
+    and service-thread resource retirement; `custom_overlay_dx12_internal.h` groups the logical source),
     `system_metrics*.cpp` (metrics + gpu unit), `system_latency_metrics.h`
     (the PC-latency correlator; includes `system_latency_marker_reports.h`, the
     out-of-line marker path, at its end - mutual guarded include, either may be

@@ -94,7 +94,7 @@ public:
             }
         });
         flushThread_ = std::thread([this] { FlushLoop(); });
-        LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus)",
+        LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus timestampPolicy=event/no-grid)",
                 kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs));
     }
 
@@ -271,8 +271,8 @@ private:
     }
 
     // Every vertical blank is observed, whether or not it carries a flip of a
-    // tracked process: this event is the screen's own clock, and the deferred
-    // flip completions below are rounded onto it.
+    // tracked process. This is diagnostic only: HSync/VSync flip completions
+    // below keep their original timestamps, including genuine uneven pacing.
     void HandleVsync(EVENT_RECORD* event) {
         uint32_t displaySource = 0;
         if (ReadProperty(event, L"VidPnSourceId", displaySource)) {
@@ -483,16 +483,6 @@ private:
         });
     }
 
-    // A flip that waited for a vertical blank changed the screen at that blank,
-    // never at the moment the DPC reported it: on the hardware flip queue the
-    // driver latches each flip a variable time ahead of the scanout that shows
-    // it, which under frame generation alternates and turns a steady cadence
-    // into a sawtooth. Rounding onto the blank clock is skipped, not guessed,
-    // while the clock cannot answer.
-    void ResolveDeferredScreenTimes() {
-        blankAdjustedTimestamps_ += ::ResolveDeferredScreenTimes(pendingTimestamps_, verticalBlanks_);
-    }
-
     void DrainReady(int64_t nowQpc, bool force) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (lastPruneQpc_ == 0 || nowQpc - lastPruneQpc_ >= qpcFrequency_ * 5) {
@@ -502,23 +492,12 @@ private:
         if (pendingTimestamps_.empty())
             return;
         SortPending();
-        // Blanks are claimed in the order the frames reach the screen, so the
-        // queue is ordered first and re-ordered afterwards: resolving moves a
-        // completion forward onto its blank, by less than one refresh in the
-        // ordinary case but never by a fixed amount.
-        ResolveDeferredScreenTimes();
-        SortPending();
         const int64_t cutoff = nowQpc - (kTimestampReorderWindowUs * qpcFrequency_) / 1'000'000;
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         std::size_t consumed = 0;
         for (auto& pending : pendingTimestamps_) {
             if (!force && pending.timestamp > cutoff)
                 break;
-            // Publishing a deferred completion the blank clock never answered
-            // for means the uncorrected timestamp reaches the overlay, which is
-            // the one thing this counter has to make visible.
-            if (pending.completionKind == DisplayCompletionKind::Sync && !pending.screenTimeResolved)
-                ++blankUnresolvedTimestamps_;
             if (ShouldPublish(pending)) {
                 PublishTimestamp(pending.processId, pending.timestamp, publishUs,
                                  pending.presentStartTimestamp, IsScreenTime(pending));
@@ -545,8 +524,6 @@ private:
         if (pendingTimestamps_.empty())
             return;
         SortPending();
-        ResolveDeferredScreenTimes();
-        SortPending();
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         for (const auto& pending : pendingTimestamps_)
             if (ShouldPublish(pending))
@@ -561,15 +538,9 @@ private:
         nvidiaFlips_.PruneBefore(cutoff);
     }
 
-    // Whether this completion's timestamp is a screen time or the moment the
-    // driver latched the flip. Only a vsync/hsync-deferred completion can be the
-    // latter, and only while the vertical-blank clock could not answer for it:
-    // an immediate flip carries the driver's own scheduled-screen-time
-    // announcement, and an explicit generated-transition payload is a screen
-    // time by construction. This is the same condition the unresolved counter
-    // above reports, so the health line and what the overlay is told agree.
+    // Source provenance is independent of how even the measured intervals are.
     static bool IsScreenTime(const PendingTimestamp& pending) {
-        return pending.completionKind != DisplayCompletionKind::Sync || pending.screenTimeResolved;
+        return pending.screenTimeResolved;
     }
 
     void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs,
@@ -635,12 +606,10 @@ private:
                 nvidiaAnnouncedDelayTotal_ / static_cast<int64_t>(health.nvApplied), qpcFrequency_);
         }
         health.completions = completionsBySource_;
-        health.blankAdjusted = blankAdjustedTimestamps_;
-        health.blankUnresolved = blankUnresolvedTimestamps_;
         const uint32_t blankSource = verticalBlanks_.busiestSource();
         health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);
         health.blanksObserved = verticalBlanks_.observedBlanks(blankSource);
-        health.blankClockUsable = verticalBlanks_.CanPlaceFrames(blankSource);
+        health.blankClockPeriodic = verticalBlanks_.HasPeriodicCadence(blankSource);
         SetBlankIntervals(health, blankIntervals_);
         SetLatchIntervals(health, latchIntervals_);
         SnapshotIntervals(health);
@@ -743,8 +712,6 @@ private:
     std::unordered_map<SharedDisplayTiming*, PublishedOutputState> lastPublishedByOutput_;
     DisplayIntervalStats runtimeIntervals_;
     uint32_t runtimeIntervalPid_ = 0;
-    uint64_t blankAdjustedTimestamps_ = 0;
-    uint64_t blankUnresolvedTimestamps_ = 0;
     DisplayIntervalStats blankIntervals_;
     DisplayIntervalStats latchIntervals_;
     uint64_t nextTimestampOrder_ = 1;

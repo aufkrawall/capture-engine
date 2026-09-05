@@ -327,6 +327,46 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 
 ## Performance and diagnostics
 
+### FSR callback performance and lifetime audit (2026-09-05)
+
+Sources: `hook/apis/dx12_hook_ffx_overlay_adapter.cpp`, `hook/common/custom_overlay_dx12_render.cpp`,
+`custom_overlay_dx12_inline_upload.cpp`, `custom_overlay_dx12_retirement.cpp`,
+`dx12_overlay_policy/inline_upload_slots.h`, `hook_cost_window.h`, and `hook/main_hookthread.cpp`.
+
+- The official FFX callback remains preferred: draw into the supplied command list after the application's
+  composition. No added presentation-queue ECL or queue Signal is needed. This avoids extra submissions;
+  it does not make the CPU geometry work or GPU overlay draw free.
+- A warm callback backend is device/format scoped and records into that supplied list. It does not need
+  the global command-queue mutex or a fresh queue lookup. Cold initialization retains its queue while
+  preparing the backend, and a changed device also invalidates the old device's RTV heap.
+- The callback used to rotate its mapped vertex/index buffers modulo 16 without a completion proof.
+  It now writes an inline `MARKER_OUT` after the draw and reuses a slot only after that slot's marker
+  completes. Pending slots are never overwritten. A delayed GPU can grow the upload pool lazily to 128
+  slots, without a CPU wait; exhaustion is explicitly diagnosed and refuses unsafe reuse. Ordinary
+  externally fenced/forced allocator slots keep their existing ownership contract.
+- Resource growth commits only after both allocation and mapping succeed, preserving the old mapping on
+  failure. Initial VB/IB mapping failures also fail initialization rather than drawing uninitialized data.
+- Replacing an adapter retains a backend with pending inline uploads. The existing hook service thread
+  reclaims it after marker completion or device removal, including shaders/font/upload resources and a
+  device lifetime pin. Neither the presenter nor callback waits for retirement; process-exit cleanup
+  leaves driver-owned objects to the OS as before.
+- Queue discovery remains suppressed while a runtime-owned presenter survives FG suspension. The original
+  session resumed ~864 registrations/s on suspension even though AMD still owned the live path. Discovery
+  is restored when ownership returns, and still runs when the primary game queue is unknown.
+- An idle benchmark avoids per-output system-metric snapshots and config-string copies. Toggle delivery
+  and active benchmark updates remain immediate.
+- `[OVERLAY COST]` now reports exact disjoint per-thread windows of 600 calls, with `ceAvgUs`, `ceMaxUs`,
+  forwarded-runtime costs, and `ceOver500Us` / `ceOver1ms`. This replaces contended cumulative counters whose
+  startup maximum hid subsequent smaller stalls. The logger thread ID distinguishes callback workers.
+- `talosnew` validated the interim inline-marker route and suspension discovery guard without exhaustion
+  or source fallback. It predates the later history-atomic and cost-window work. No controlled Talos A/B
+  has yet attributed the remaining start-to-start variance; do not label that symptom fixed from unit tests.
+- Regression suites: `DX12InlineUploadSlotsTest`, `DX12UploadSlotGuardTest`,
+  `Dx12EclQueueRegistrationPolicyTest`, `HookCostWindowTest`, and `DisplayPacingIntegrityTest`.
+
+The following measurements are historical (2026-09-03), before this audit and the 2026-09-04 callback-route
+changes. Keep their intervention caveats; they are not a current proof of attribution or current overhead.
+
 ### What CE costs a frame-generation game, and the instruments that found it (2026-09-03)
 
 Measured with `dx12_fg_switch_test` at 3840x2160, vsync off, 2x FSR FG, `gpu_load=1200`, and every `[Stress]`
@@ -396,7 +436,7 @@ re-pointed `g_CommandQueue`, so the queue that submitted next looked unknown aga
 command-queue mutex, calls `GetDesc`/`GetDevice` on the queue, re-points `g_CommandQueue` with COM AddRef/Release
 on a driver object, and hooks the queue vtable (two `GetModuleFileName` calls under the loader lock).
 `ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists` now says: registration is discovery,
-so it runs while there is no frame generation or no primary game queue, and never once both are true - the game's
+so it runs while no runtime owns presentation or the primary game queue is unknown - the game's
 render queue is the first DIRECT queue seen and predates any FG runtime, so an unrecognised queue under active FG
 belongs to the runtime. ECL coverage does not depend on it (the detour is on the queue vtable, shared by every
 queue of the device). `DX12 DIAG: ECL timing/1s` now reports `registrations=`, which is 0 after the fix and was

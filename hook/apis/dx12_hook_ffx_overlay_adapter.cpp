@@ -6,7 +6,7 @@ namespace {
 bool EnsureOverlayAdapterReadyForFFXPresentTarget(
     ID3D12Device* device, ID3D12CommandQueue* callbackQueue, const D3D12_RESOURCE_DESC& resourceDesc,
     const char* initializationSource, bool logReuse, uint64_t frameId) {
-    if (!device || !callbackQueue) {
+    if (!device) {
         return false;
     }
 
@@ -24,9 +24,15 @@ bool EnsureOverlayAdapterReadyForFFXPresentTarget(
             initializationSource ? initializationSource : "unknown", dx12_hook_g_FFXPresentOverlayDevice, device,
             static_cast<int>(dx12_hook_g_FFXPresentOverlayFormat), static_cast<int>(resourceDesc.Format));
         dx12_hook_g_FFXPresentOverlayAdapter.Shutdown();
+        if (dx12_hook_g_FFXPresentOverlayDevice != device && dx12_hook_g_FFXPresentRtvHeap) {
+            dx12_hook_g_FFXPresentRtvHeap->Release();
+            dx12_hook_g_FFXPresentRtvHeap = nullptr;
+        }
     }
 
     if (!dx12_hook_g_FFXPresentOverlayAdapter.IsInitialized()) {
+        if (!callbackQueue)
+            return false;
         dx12_hook_g_FFXPresentOverlayAdapter.SetHwnd(nullptr);
         if (!dx12_hook_g_FFXPresentOverlayAdapter.InitDX12(
                 device, callbackQueue, static_cast<int>(resourceDesc.Format))) {
@@ -72,7 +78,20 @@ bool DX12_EnsureOverlayAdapterReadyForFFXPresentCallback(
 
     auto* device = static_cast<ID3D12Device*>(desc->device);
     auto* outputResource = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
-    ID3D12CommandQueue* callbackQueue = nullptr;
+    const D3D12_RESOURCE_DESC resourceDesc = outputResource->GetDesc();
+    {
+        std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
+        if (ce::dx12_overlay_policy::CanReuseWarmDX12OverlayBackend(
+                true, dx12_hook_g_FFXPresentOverlayAdapter.IsInitialized(),
+                dx12_hook_g_FFXPresentOverlayDevice == device,
+                dx12_hook_g_FFXPresentOverlayFormat == resourceDesc.Format)) {
+            // A warm backend records into the callback list. It needs neither
+            // a queue lookup nor the global queue-registration mutex.
+            return EnsureOverlayAdapterReadyForFFXPresentTarget(
+                device, nullptr, resourceDesc, "live app-callback", true, desc->frameID);
+        }
+    }
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> callbackQueue;
     {
         std::lock_guard<std::recursive_mutex> queueLock(g_CommandQueueMutex);
         callbackQueue =
@@ -89,7 +108,7 @@ bool DX12_EnsureOverlayAdapterReadyForFFXPresentCallback(
     }
 
     return EnsureOverlayAdapterReadyForFFXPresentTarget(
-        device, callbackQueue, outputResource->GetDesc(), "live app-callback", true, desc->frameID);
+        device, callbackQueue.Get(), resourceDesc, "live app-callback", true, desc->frameID);
 }
 
 bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapChain,

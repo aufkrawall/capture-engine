@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-04 (published screen times labelled with their provenance, and the overlay metric plus the recording correlator both refusing to treat a flip-latch timestamp as a cadence)
+Last verified: 2026-09-05 (event timestamps, publication concurrency, metric integrity; Talos sessions `20260905_011023` and `talosnew`)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -88,180 +88,84 @@ stream is unavailable, denied, failed, or two seconds stale.
 - Source layout: `captureengine/display_timing_etw.h` holds provider identity and real-time session plumbing,
   `display_timing_nvidia.h` the NVIDIA announcement reducer, `display_timing_correlation.h` the FrameType reducer,
   `display_timing_submissions.h` the runtime-present/kernel-submission association, `display_timing_vblank.h` the
-  vertical-blank clock, `display_timing_intervals.h` the per-window interval statistics,
-  `display_timing_policy.h` the present/submission selection and the deferred screen-time resolution, and
+  diagnostic vertical-blank summary, `display_timing_intervals.h` the per-window interval statistics,
+  `display_timing_policy.h` the present/submission selection and the collection/present-selection policy, and
   `display_timing_health.h` the health snapshot type and its formatting.
 - The per-window health line reports
   `completion(vsyncDpc,vsyncDpcMpo,hsyncDpcMpo,immediateFlip,immediateMpoFlip)` and
   `nvFlipSchedule(received,undecodable,applied,avgDelayUs,maxDelayUs,fieldOffset,abandoned)`. Only the immediate flip
   paths can take the NVIDIA announcement, so the completion split says whether the correction reaches the published
   series at all on a given machine and present mode; `fieldOffset` is -1 until the announcement field is located.
-  The VSync and HSync multiplane DPCs are counted apart because the HSync variant is the hardware flip queue, whose
-  timestamp is not a screen time - see the next section.
+  The VSync and HSync multiplane DPCs are counted apart to identify the completion transport.
+  Both retain the kernel event timestamp; neither is rewritten from unrelated blank reports.
   Measured under DLSS-G on this hardware: every completion arrives through `MMIOFlipMultiPlaneOverlay` with
   `FlipEntryStatusAfterFlip=11` (`FlipWaitComplete`), and a Talos MFG session showed
   `completion(vsyncDpc=36 syncDpcMpo=486 immediateFlip=0 immediateMpoFlip=4943)`. Without frame generation `VSyncDPC`
   carries `FlipFenceId=0` and `VSyncDPCMultiPlane` carries `FlipEntryCount=0`, so completions arrive via
   `HSyncDPCMultiPlane` / `MMIOFlipMultiPlaneOverlay`.
 
-- **A stage counter that matches the expected rate is not evidence the stage is correct.** The first attempt at this
-  fix shipped with `runtimePresents=3434 submitAssociations=3434 published=2780 suppressed=0 regressed=0` - one
-  sample per displayed frame, no drops, no regressions - while every published value was wrong. Only the timestamp
-  values could be, and were. The health line therefore also reports the *shape* of both series over the last window:
-  `publishedInterval(n,meanUs,stddevUs,jaggednessUs,p1Us,p50Us,p99Us,maxUs)` for what the overlay draws and
-  `runtimeInterval(n,meanUs,stddevUs,jaggednessUs)` for the same frames measured at `Present`. Jaggedness is the mean
-  absolute difference between neighbouring intervals, which is what a two-phase sawtooth shows up as while the mean
-  and the count stay exactly right. A jagged published series next to a flat runtime series localizes the fault in
-  this service rather than in the game.
+- **Counts alone do not validate timestamp values.** Health reports both
+  `publishedInterval(n,meanUs,stddevUs,jaggednessUs,p1Us,p50Us,p99Us,maxUs)` and
+  `runtimeInterval(n,meanUs,stddevUs,jaggednessUs)`. Jaggedness is the mean absolute difference between
+  neighbouring intervals. Interpret it together with provider provenance and independent evidence;
+  choosing whichever series is flatter would be circular validation.
 
-## Deferred flips reach the screen at a vertical blank
+## Event timestamps, not an inferred refresh grid
 
-- A flip whose `FlipEntryStatusAfterFlip` is `FlipWaitVSync` (5) or `FlipWaitHSync` (15) defers its screen time to a
-  `?SyncDPC` completion. **That completion's timestamp is not the screen time on the hardware flip queue**: the
-  driver latches each flip a variable time ahead of the scanout that shows it.
-- **Measured under FSR frame generation** (`dx12_fg_switch_test`, 3840x2160 at 144 Hz VRR, vsync on, 2x FSR FG, base
-  72 fps / output 144 fps). Every completion arrived as `HSyncDPCMultiPlane` with `FlipEntryStatusAfterFlip=15`, and
-  every flip carried an NVIDIA announcement:
+- `MsBetweenDisplayChange` is the difference between consecutive displayed-transition timestamps.
+  [PresentMon's SyncDPC reducer](https://github.com/GameTechDev/PresentMon/blob/main/PresentData/PresentMonTraceConsumer.cpp)
+  calls `SetScreenTime` with the VSync/HSync event timestamp. A periodic stream of other vertical-blank
+  reports does not establish that a given completion belongs to the next blank, nor that unreported blanks
+  displayed a new frame. The previous `Snap` / `Claim` / `ResolveDeferredScreenTimes` machinery inferred
+  both of those things. It was removed on 2026-09-05: neither normal publication nor the shutdown drain
+  quantizes, extrapolates, or walks a flip forward to make the series flatter.
+- `display_timing_vblank.h` now summarizes reported blank periodicity **only for diagnostics**.
+  `vblank(... periodic=... timestampPolicy=event ...)` and the startup `timestampPolicy=event/no-grid`
+  identify this policy. Existing `latchInterval` health fields retain their historical names; they contain
+  the raw HSync/VSync multiplane completion intervals. Their jaggedness is not proof of collector error.
+- Confirmed kernel completions retain their original timestamp and producer provenance; NVIDIA's validated
+  scheduled-flip correction and explicit Intel/AMD generated-transition payloads retain their existing
+  semantics. No sample is classified as more trustworthy merely because it is flatter than Present.
+- This is OS/driver event timing, **not optical validation** of physical scanout. Driver scheduling/event
+  semantics remain a limitation. Do not claim every observed difference is a physical panel hitch, or
+  that smooth runtime presents disprove uneven displayed cadence.
 
-  | series | mean | stddev | jaggedness | p1 / p50 / p99 |
-  | --- | --- | --- | --- | --- |
-  | `DxgKrnl` `VSyncDPC` (the screen's own clock) | 6.946 ms | ~0 | ~0 | - |
-  | runtime `PresentStart` | 6.945 ms | 0.117 ms | 0.230 ms | - |
-  | published flip completions (before the fix) | 6.945 ms | **2.180 ms** | **4.360 ms** | 4.6 / 4.9 / 9.2 ms |
-  | published, rounded onto the blank (after) | 6.946 ms | **0.014 ms** | **0.012 ms** | 6.8 / 6.9 / 6.9 ms |
+### Metric integrity and concurrent publication
 
-  The completions arrive at exactly two phases inside the blank interval, 3.92 ms and 6.14 ms after the preceding
-  blank, one per interval, because the two frames of a generated pair become ready at different times. **4.6 ms is
-  shorter than the panel's own minimum frame interval at its 144 Hz maximum, so the before-the-fix series could not
-  have been a screen cadence at all.** That is the check worth reaching for: a published interval below one refresh
-  period is proof the values are wrong, whatever the counters say.
-- The NVIDIA scheduled-flip announcement does **not** help here and is deliberately not applied on this path: measured
-  on the same run it leads the flip event by about **two microseconds** (`received=1395` for 1395 flips, all
-  decodable), so it repeats the completion timestamp. It is still *consumed* when a deferred flip is seen, because an
-  announcement stranded on a driver thread would later be applied to an unrelated immediate flip.
-- The correction never assumes a refresh period. `VerticalBlankClock` records the `VSyncDPC` timestamps per
-  `VidPnSourceId` - both that event and the multiplane completions carry that field, `VidPnTargetId` only appears on
-  `VSyncDPC` - and derives a **refresh grid** from them. A completion within a fifth of the period *after* a grid
-  point is that point's screen time reported by a slightly late DPC and rounds back to it; everything else rounds
-  forward to the next one.
-- **The clock answers from the grid, not from the blanks it happened to observe** (2026-09-04). Rounding only the
-  completions an observed blank could answer for was the defect: the rest kept their flip-latch timestamps, and a
-  series that alternates between screen times and latch times is jaggier than either alone. Measured in Talos under
-  FSR FG with variable refresh below the cap, before the change: `adjusted=1641 unresolved=2606` (a 39/61 split),
-  published `jaggedness=7186 us p1=800 us p99=27100 us` on a 10.7 ms mean, against `runtime jaggedness=328 us`.
-  **An 800 us published interval is shorter than the panel can produce**, which is the same impossibility check as
-  above and the fastest way to recognise this class of fault.
-- Two different things make an observed blank stream unusable as a per-frame clock, and they need different answers:
-  - **The driver does not report every blank.** At the 144 Hz cap one run reported 4264 blanks for 4235 flips and the
-    next reported 657 for 4247 - same application, same settings. Density is not a property the clock may rely on.
-  - **Under variable refresh there is no period at all.** The panel refreshes when a frame is ready; measured gaps
-    were 11 ms, 51 ms and 119 ms (`gaps(p50=11400 p99=51100 max=115009)`), and the stream carried only ~37 blanks/s
-    against ~93 displayed frames/s. *This corrects an earlier claim on this page that the blank stream follows the
-    frame rate under VRR: it does so only while the display is at or near its cap.*
-- So the grid is judged by **periodicity, not density** (`MeasureGrid`). The smallest gap in the retained window is
-  one refresh - it is one whenever any two consecutive refreshes were both reported, which bursts in the stream
-  provide - and every other gap must be a whole multiple of it within a fifth of a period. The period is then refined
-  as the whole span divided by the total step count, so one jittery sample cannot skew extrapolation. A sparse but
-  regular stream therefore still places frames, by extrapolating across the blanks nothing reported, bounded to
-  `kMaxExtrapolatedPeriods` (64) so a grid left over from before an idle stretch cannot answer for a distant time.
-  An aperiodic stream yields no grid, and every completion keeps the driver's timestamp.
-- `BlankCadence` gates the *answer* on how often the grid could produce one at all, over a decaying window
-  (`kRequiredPlacementPercent=90`, `kMinimumClaims=32`, `kWindowClaims=256`), so a display that changes regime is
-  followed rather than remembered. **The attempt is made on every completion whatever the gate says** - recording
-  only what it lets through would make refusing self-sustaining. The ordering walk below is deliberately not part of
-  that judgement: giving up there means a frame did not get a blank of its own, which is a true statement about a
-  game outrunning its display rather than a fault in the clock.
-- **A display shows at most one new frame per blank, and shows them in order.** Below the refresh cap the latch lead
-  spread exceeds a refresh period and `Snap` alone maps two completions onto one blank; the later frame would then be
-  published as a dropped frame the screen had in fact shown. `Claim` walks to the first unclaimed blank instead. The
-  walk is bounded (`kMaxForcedBlanks`) so a frame rate above the refresh rate cannot march it forward without end -
-  past that bound the natural blank is kept and the publisher's monotonic guard records an honest dropped frame.
-  Measured effect at 116 fps output: published `n=1158 mean=8637 us` against runtime `n=1159 mean=8637 us`, versus
-  `n=774 mean=12691 us` with the ordering rule missing.
-- Whether a latched flip belongs to the *next* blank (what is implemented) or to the previous one is an inference,
-  not a measurement: a DPC does not lag its interrupt by 3-6 ms, and next-blank puts `Present`-to-screen at ~14.4 ms,
-  about two refreshes, which fits a three-buffer vsync flip-model swapchain, where previous-blank would give ~7.4 ms.
-  Either choice shifts every sample by the same constant refresh period, so **no frame time, FPS, low or graph value
-  depends on it** - only the PC-latency estimate does. Stale-risk: unverified directly.
-- Measured after the change, which is the evidence that the two regimes are now being told apart rather than
-  averaged. `dx12_fg_switch_test` at 3840x2160 covers both; **Talos under FSR FG is the reported case and confirms
-  it on the same title the fault was reported from** (steady windows, 2026-09-04):
+- A healthy requested display stream always drives the graph/FPS/lows/variance. A fallback to presentation
+  requires unavailable/failed/stopped timing, no intervals yet, or a genuinely stale publication (>2 s).
+  `currentQpcUs` is sampled before the consumer mutex; the sensor may publish while the consumer acquires
+  the mutex or drains the ring. A publication newer than that sampled QPC is **fresh**. Previously this
+  ordinary race caused a one-draw fallback, resetting graph source/scroll state despite an active service.
+  Source logs now include `publishAgeUs` as well as status and suppressed source-change counts.
+- `SharedDisplayTiming::Publish` invalidates a reused slot before changing its atomic payload. Release/acquire
+  fences around payload writes/reads ensure the second sequence check rejects a mixture of two publications.
+  Reset follows the same invalidation protocol; readers also validate the publication generation so
+  a restarted sequence number cannot alias an old epoch. The shared layout/ABI is unchanged.
+- `PerformanceMetrics` serializes presentation writers and stores history values in lock-free atomics, so
+  a callback drawing the graph can read history while the displayed-output observer updates it. The display
+  consumer remains serialized; history readers do not take the presenter's mutex.
+- Distinct display-ring sequences are not subject to the presentation hook's 100 us duplicate guard.
+  Short reported intervals, long hitches, and alternating intervals remain visible. Current FPS includes
+  frames >=100 ms, and worst-percentile counts use `ceil(sampleCount * percentile)` rather than an extra
+  fast frame at exact percentile boundaries. A known ring overrun resets the previous timestamp anchor;
+  missing telemetry is not converted into one invented long displayed frame.
+- Producer-provenance share is diagnostic, measured over the last 128 publications. The recording
+  correlator still honors per-sample provenance, and system latency still observes the same transitions.
 
-  | run | regime | `usableClock` | latch stddev / jagg. | published stddev / jagg. | published p1 |
-  | --- | --- | --- | --- | --- | --- |
-  | test app | at the cap, 144 fps out | 1 | 2199 / 4397 us | **7 / 4 us** | 6900 us |
-  | test app | below cap, 87 fps out | 0 | 1699 / 2423 us | **1699 / 2421 us** | 9800 us |
-  | Talos | below cap, ~92 fps out (before) | - | - | 5851 / **7186 us** | **800 us** |
-  | Talos | below cap, ~92 fps out (after) | 0 | 1531 / 2353 us | **1536 / 2362 us** | 7200 us |
+### What the supplied Talos sessions establish
 
-  At the cap the rounding does exactly what it exists for. Below it the published series is now *equal* to the latch
-  series it is made of - in Talos to within 10 us of jaggedness across three consecutive windows - instead of being
-  three times as jagged, and `p1` rose from 800 us to 7200 us, so no published interval is shorter than the panel can
-  produce any more. `adjusted` stops growing while `unresolved` climbs, which is the clock correctly declining.
-- **Under variable refresh below the cap (VRR)**, there is no fixed vertical-blank grid by design:
-  the panel refreshes dynamically as each flip completes. The unrounded hardware completion timestamp
-  represents the physical display transition itself (`msBetweenDisplayChange`). `ResolveDeferredScreenTimes`
-  marks unclocked completions as `screenTimeResolved = true`, restoring faithful screen change timing across
-  all modes (all FG off, FSR FG, DLSS FG) matching tools like CapFrameX/PresentMon.
-- **Faithful display change reporting without sugarcoating**:
-  When `[Overlay] frametime_source=display_change` is chosen, the overlay faithfully reflects the active
-  display change stream (`msBetweenDisplayChange`) on the frame-time graph, FPS, and variance:
-  - VRR with FG off, FSR FG, or DLSS FG,
-  - GPU maxed out, VSync capping FPS, or uncapped FPS.
-  The overlay does NOT hide real on-screen display variance (such as the alternating flip-latch sawtooth of FSR FG)
-  by forcing fallback to `Presentation`. Fallback to `Presentation` occurs only when the display timing service is
-  unavailable, stopped, or stale (> 2 seconds).
-- **Each publication is labelled with its provenance** (`DisplayTimingSample::flags`, shared ABI 57):
-  `kDisplayTimingScreenTimeResolved` is set when the timestamp is an authoritative screen time — a completion rounded
-  onto the blank under fixed refresh, an unclocked VRR completion, an immediate flip corrected by driver announcement,
-  or an explicit generated-transition payload.
-- What the consumers then do with it:
-  - The **overlay metric** (`PerformanceMetrics`) tracks provenance (`m_displayStreamIsScreenTime`,
-    `m_displayScreenTimePermille`) and window jaggedness as diagnostics, logging them periodically. When
-    `DisplayChange` is preferred and the stream is healthy, the display series directly drives the graph and
-    metrics.
-  - **The cadence tracking is a window over the last 128 samples, not a decaying total** (2026-09-04). Recovery
-    completes in at most one window, about a second of frames.
-  - The **recording correlator** applies the matched sample's per-sample cadence residual to the file's source
-    timestamps (`NormalizeFinalOutputDisplayTimestampQpc`), which on a latch-only sample is measurement noise
-    written into a CFR recording. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance
-    and the correlator keeps the virtual, present-derived cadence for those samples. The *smoothed* phase still
-    learns from them - transport latency and drift are what it tracks and the latch lead's mean is part of that -
-    so only the per-sample residual is withheld. Health counter: `latchOnly=`.
-  - **System latency** is unchanged and still observes every sample: an unresolved timestamp is still an ordered
-    displayed transition, and only its *interval* is untrustworthy.
-- Measured, and the reason this stopped being an open question about the overlay: two Talos FSR-FG sessions of build
-  0.1.6475, six minutes apart, same settings, identical CE routing. `usableClock=0` and `unresolved=3001` of
-  `published=3063` in both, `publishedInterval` equal to `latchInterval` to within 10 us, and `p1Us=6600` - below
-  the panel's 6946 us minimum. The overlay reported 1% lows of 54.9 and 67.1 fps and standard deviations of 2978 and
-  1426 us; the same frames at `Present` were 66.7 and 74.4 fps at 748 and 612 us. Correct means (85.1 vs 84.9,
-  90.7 vs 91.1), wrong values, and a four-times-versus-twice difference between two runs of the same build is what
-  a user experiences as "the frame-time variance is sometimes bad and sometimes not".
-- **And measured on the other side of the same title, which is what makes the collector worth having**: under DLSS
-  FG every completion arrives as `immediateMpoFlip` and carries the driver's announcement, so the published screen
-  series reads `stddev=661/925 us jaggedness=473/650 us` while runtime `PresentStart` on the same frames reads
-  `stddev=11457/11670 us jaggedness=22772/23088 us` (session `20260904_092817`). Streamline issues a generated group
-  of presents in a burst and the screen consumes them evenly, so here it is *presentation* timing that is the
-  sawtooth and display timing that is flat - the exact inverse of the FSR-FG-below-cap case above. The gate has to
-  tell these two apart, which is why it evaluates both the provenance of the timestamps and the arrival-order
-  jaggedness (`windowJaggedness` mean absolute difference between neighbouring intervals). Where DLSS FG completions
-  are partially deferred or unlabelled (session `20260904_095110`, screenTimeShare ~492 permille), provenance alone
-  would refuse the stream; the flatness clause (`displayJaggedness <= allowedJaggedness`) accepts the stream because it
-  is measurably not adding jitter to the frames it measures, while safely continuing to reject the noisy flip-latch
-  clock under FSR FG below the refresh cap.
-- `vblank(observed,periodUs,usableClock,adjusted,unresolved,gaps(...))` reports the clock, and
-  `latchInterval(...)` reports the completions as the driver timestamped them, next to `publishedInterval(...)`.
-  Read together they say whether a jagged graph is the screen or is this service: the two are equal while
-  `usableClock=0`, and the published one should be the flatter whenever it is not. `unresolved` being a *fraction of
-  the frames* is now the intended state under variable refresh, not a fault; what is a fault is `unresolved` and
-  `adjusted` both being large at once, which is the mixture this section is about.
-- Coverage in `tests/test_display_timing_vblank.cpp` (period measurement including across reporting jitter, the
-  alternating-phase rounding, the at-a-blank tolerance, answering for a blank that was never reported, placing frames
-  on a stream reported only in part, refusing a variable-refresh stream, the extrapolation bound, the cadence gate
-  switching off under sustained failure and back on when the grid answers again, per-display separation, the
-  two-in-one-interval ordering case, the separate-intervals case that must not move anything, the bounded walk, reset,
-  and the end-to-end case where variable-refresh completions stay in one unit) and `tests/test_display_timing_intervals.cpp` (a sawtooth with a correct mean, jaggedness, percentiles,
-  window boundaries, non-advancing timestamps, histogram saturation).
+- `20260905_011023` used the official FFX callback, had zero steady-FG ECL registrations, and had display
+  interval stddev ~1.98-2.09 ms versus ~0.53-0.59 ms at runtime Present. It also logged a false presentation
+  fallback while the service was active; the publication-age race above explains an executable route to it.
+- The user's interim build in `talosnew` ran `timestampPolicy=event/no-grid`, stayed on display-change
+  timing, and used inline upload completion without exhaustion. Steady published stddev was ~2.0-2.3 ms,
+  matching the raw completion series to a few microseconds. Registration churn did not return at FSR suspension.
+- These are not controlled injected/non-injected A/B runs. They do **not** establish the cause of the
+  remaining start-to-start variance, or that CE adds zero CPU/GPU cost. The later history-atomic, idle-benchmark,
+  and disjoint cost-window changes were not present in `talosnew`.
+- Coverage: `test_display_pacing_integrity.cpp`, `test_display_timing_vblank.cpp`,
+  `test_display_timing_correlation.cpp`, `test_display_timing_nvidia.cpp`, and `test_performance_metrics.cpp`.
 
 ## Graph scrolling under frame generation
 

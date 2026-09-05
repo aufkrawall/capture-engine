@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/custom_overlay_dx12.h"
 
 namespace {
 
@@ -437,6 +438,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // startup window it is waiting out ends without any further hook callback.
     if (g_DX12Hook)
       g_DX12Hook->ServicePendingPresentHooks();
+    CustomOverlay::CollectRetiredDX12Backends();
 
     // Keep graphics/module hook installation ahead of the optional UE5 module
     // scan on every service pass as well as during initial startup.

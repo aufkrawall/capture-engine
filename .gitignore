@@ -5,6 +5,7 @@
 /captures/
 /temp/
 /testapp/bin/
+/tests/benchmarks/
 
 # Third-party generated dependency bundle
 /external/

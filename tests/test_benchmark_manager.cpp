@@ -6,6 +6,22 @@
 #include "benchmark_html_report.h"
 #include "benchmark_manager.h"
 
+TEST(BenchmarkManagerTest, IdleFramesNeedNoSensorSnapshotButToggleAndDelayDo) {
+    auto& manager = BenchmarkManager::Get();
+    BenchmarkConfig config;
+    config.startDelaySeconds = 5;
+    manager.Init(config, "TestGame");
+    ASSERT_EQ(manager.GetState(), BenchmarkState::Idle);
+    EXPECT_FALSE(manager.NeedsFrame(0));
+    EXPECT_TRUE(manager.NeedsFrame(1));
+    manager.Toggle();
+    EXPECT_EQ(manager.GetState(), BenchmarkState::Delaying);
+    EXPECT_TRUE(manager.NeedsFrame(0));
+    manager.Toggle();
+    EXPECT_EQ(manager.GetState(), BenchmarkState::Idle);
+    EXPECT_FALSE(manager.NeedsFrame(0));
+}
+
 TEST(BenchmarkStatsTest, EmptyVectorReturnsZeroes) {
     std::vector<float> empty;
     BenchmarkStats stats = BenchmarkManager::CalculateStats(empty);

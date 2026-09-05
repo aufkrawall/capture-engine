@@ -27,11 +27,14 @@
 // shares, so a queue CE never registers still reaches the hook.
 namespace ce::dx12_overlay_policy {
 
-inline bool ShouldRegisterCommandQueueFromExecuteCommandLists(bool frameGenerationActive, bool hasPrimaryGameQueue) {
+inline bool ShouldRegisterCommandQueueFromExecuteCommandLists(bool frameGenerationActive, bool hasPrimaryGameQueue,
+                                                              bool runtimeOwnedPresentPath = false) {
     // No frame generation, or the game's queue not yet discovered: registration is
     // the discovery mechanism and must run. It is idempotent for the queue that is
     // already the tracked one, so this stays the pre-FG behaviour exactly.
-    if (!frameGenerationActive || !hasPrimaryGameQueue) {
+    // Disabling generation does not destroy the FFX presenter or its queues.
+    // Discovery resumes when presentation ownership actually returns to the game.
+    if ((!frameGenerationActive && !runtimeOwnedPresentPath) || !hasPrimaryGameQueue) {
         return true;
     }
     // FG active with the game's queue already known: a recognised queue needs no

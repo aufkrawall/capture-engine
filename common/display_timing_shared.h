@@ -39,20 +39,13 @@ inline int64_t DisplayTimingUsToQpc(int64_t microseconds, int64_t frequency) {
 
 #pragma pack(push, 8)
 
-// What a published timestamp actually is. A sample count that matches the
-// present rate proves nothing about the timestamp *values*: a deferred flip
-// completion the vertical-blank clock could not answer for carries the moment
-// the driver latched the flip, which leads the scanout that shows it by a
-// variable amount. Measured in Talos under FSR frame generation below the
-// refresh cap, that lead alternates between the two frames of a generated pair
-// and inflates the frame-time standard deviation the overlay reports by four
-// times, with a 1% low 12 fps below what the same frames measured at Present.
-// The consumer therefore has to be told which of the two it is holding.
+// Provenance of a published screen timestamp. Kernel sync completions retain
+// the ETW timestamp used by PresentMon's MsBetweenDisplayChange. An immediate
+// flip may carry a driver-announced schedule; an explicit frame-type payload
+// carries its own screen time. None is inferred from interval flatness or a
+// guessed refresh grid. These are OS/driver observations, not optical timing.
 enum : uint32_t {
-    // The timestamp is a screen time: either the completion was rounded onto
-    // the display's own vertical blank, or it needed no rounding (an immediate
-    // flip corrected by the driver's scheduled-flip announcement, or an
-    // explicit generated-transition payload).
+    // The producer identified a screen-time event for this transition.
     kDisplayTimingScreenTimeResolved = 1u << 0,
 };
 
@@ -89,10 +82,11 @@ struct SharedDisplayTiming {
         rendererPid.store(renderer, std::memory_order_relaxed);
         droppedTimestampCount.store(0, std::memory_order_relaxed);
         for (auto& sample : samples) {
+            sample.sequence.store(0, std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_release);
             sample.screenTimeUs.store(0, std::memory_order_relaxed);
             sample.presentStartTimeUs.store(0, std::memory_order_relaxed);
             sample.flags.store(0, std::memory_order_relaxed);
-            sample.sequence.store(0, std::memory_order_relaxed);
         }
         status.store(static_cast<uint32_t>(newStatus), std::memory_order_relaxed);
         publicationGeneration.fetch_add(1, std::memory_order_release);
@@ -112,6 +106,12 @@ struct SharedDisplayTiming {
                  bool screenTimeResolved = true) {
         const uint64_t sequence = writeSequence.load(std::memory_order_relaxed) + 1;
         auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
+        // Invalidate before overwriting: a lagging reader must not accept new
+        // payload fields under this slot's previous sequence. The release /
+        // acquire fences also order a reader that sees only part of the new
+        // atomic payload before its second sequence check.
+        sample.sequence.store(0, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
         sample.screenTimeUs.store(screenTimeUs, std::memory_order_relaxed);
         sample.presentStartTimeUs.store(presentStartTimeUs, std::memory_order_relaxed);
         sample.flags.store(screenTimeResolved ? kDisplayTimingScreenTimeResolved : 0u,
@@ -136,6 +136,9 @@ struct SharedDisplayTiming {
               bool& screenTimeResolved) const {
         if (sequence == 0)
             return false;
+        const uint64_t generation = publicationGeneration.load(std::memory_order_acquire);
+        if ((generation & 1u) != 0)
+            return false;
         const auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         if (sample.sequence.load(std::memory_order_acquire) != sequence)
             return false;
@@ -143,7 +146,9 @@ struct SharedDisplayTiming {
         presentStartTimeUs = sample.presentStartTimeUs.load(std::memory_order_relaxed);
         screenTimeResolved =
             (sample.flags.load(std::memory_order_relaxed) & kDisplayTimingScreenTimeResolved) != 0;
-        return sample.sequence.load(std::memory_order_acquire) == sequence;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return sample.sequence.load(std::memory_order_acquire) == sequence &&
+               publicationGeneration.load(std::memory_order_acquire) == generation;
     }
 };
 

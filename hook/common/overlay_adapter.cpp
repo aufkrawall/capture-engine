@@ -169,6 +169,14 @@ void OverlayAdapter::ApplyShutdownModeLocked(bool skipRelease) {
 void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {
     ApplyShutdownModeLocked(skipDeviceRelease);
 
+#ifndef VK_LAYER_CE_OVERLAY
+    auto* retiringDX12 = backend && backendType == OverlayBackendType::DX12 && !IsProcessTerminating()
+                            ? static_cast<CustomOverlay::DX12Backend*>(backend) : nullptr;
+    if (retiringDX12 && !retiringDX12->HasInlineUploadsInFlight())
+        retiringDX12 = nullptr;
+    if (retiringDX12 && renderer)
+        renderer->SetSkipDeviceRelease(true);
+#endif
     if (renderer) {
         if (shutdownRenderer) {
             renderer->Shutdown();
@@ -178,6 +186,11 @@ void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {
     }
 
     if (backend) {
+#ifndef VK_LAYER_CE_OVERLAY
+        if (retiringDX12)
+            CustomOverlay::RetireDX12Backend(retiringDX12);
+        else
+#endif
         delete backend;
         backend = nullptr;
     }

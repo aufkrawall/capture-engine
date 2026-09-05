@@ -633,7 +633,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             goto skip_command_queue_registration;
         }
         if (ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists(anyFGActive,
-                                                                                       primaryQ != nullptr)) {
+                primaryQ != nullptr, HookHasRuntimeOwnedNativeFGPresentPath() || dx12_hook_g_FGRuntimeOwnsSwapchain)) {
             // Registration is the expensive branch (command-queue mutex, GetDesc/GetDevice, vtable
             // hook). Count it so the per-second ECL summary shows when it runs on a hot submission
             // path at all; under active frame generation it must not run.

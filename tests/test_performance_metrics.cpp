@@ -236,9 +236,9 @@ TEST_F(PerformanceMetricsTest, ResolvedScreenTimeStreamKeepsDrivingTheMetric) {
     EXPECT_GT(metrics.GetWindowStdDev(), 2500.0);
 }
 
-// A stream is trusted until there is enough evidence against it, so a display
-// that is fine never spends its first frames withheld from the overlay.
-TEST_F(PerformanceMetricsTest, ShortUnresolvedRunDoesNotYetWithholdTheDisplayStream) {
+// Even a short unlabelled stream remains selected. Diagnostic provenance must
+// not invent resolved samples just because the stream is new.
+TEST_F(PerformanceMetricsTest, ShortUnresolvedStreamStillDrivesMetricWithoutInventedProvenance) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -251,14 +251,12 @@ TEST_F(PerformanceMetricsTest, ShortUnresolvedRunDoesNotYetWithholdTheDisplayStr
     metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
     metrics.ConsumeDisplayTiming(timing, 3'000'010);
 
-    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 }
 
-// Selecting the stream needs it to be almost entirely screen times, keeping it
-// needs only a majority: a stream sitting between the two thresholds must not
-// switch the whole metric back and forth every window.
-TEST_F(PerformanceMetricsTest, ScreenTimeSelectionHasHysteresisAroundTheThreshold) {
+// Changes in producer provenance never switch a healthy requested display stream.
+TEST_F(PerformanceMetricsTest, ProvenanceDropDoesNotChangeHealthySource) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
 
@@ -278,7 +276,7 @@ TEST_F(PerformanceMetricsTest, ScreenTimeSelectionHasHysteresisAroundTheThreshol
     metrics.ConsumeDisplayTiming(timing, publishUs);
     ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 
-    // Now around 80% resolved: below the select threshold, above the keep one.
+    // Now around 80% resolved: the diagnostic changes, the source does not.
     publishBatch(200, 5);
     metrics.ConsumeDisplayTiming(timing, publishUs);
     EXPECT_LT(metrics.GetDisplayScreenTimePermille(), 900u);
@@ -431,9 +429,9 @@ TEST_F(PerformanceMetricsTest, AFlatDisplayStreamIsUsedEvenWhereSomeSamplesAreUn
     // Only four fifths carry a screen-time label, below the selection share...
     EXPECT_LT(metrics.GetDisplayScreenTimePermille(), 900u);
     EXPECT_GT(metrics.GetDisplayScreenTimePermille(), 700u);
-    // ...but the series is flatter than the presents, so it is the honest one.
+    // The measured display series remains selected; flatness cannot invent provenance.
     EXPECT_LT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
-    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
     EXPECT_NEAR(metrics.GetCurrentFPS(), 90.9f, 1.0f);
 }
@@ -468,8 +466,8 @@ TEST_F(PerformanceMetricsTest, AJaggedDisplayStreamIsFaithfullyAdmittedWithoutSu
 
 // Under variable refresh below the cap (or with FG off), completions are unclocked
 // and unlabelled (screenTimeResolved=false), but reflect true on-screen frame times
-// with minor DPC jitter (e.g. 10-25% over presents). The 1.5x selection margin admits
-// these legitimate display streams without falling back to Presentation.
+// with minor DPC jitter. A healthy display stream remains selected regardless
+// of its jaggedness and without inventing producer provenance.
 TEST_F(PerformanceMetricsTest, VRRDisplayStreamWithMinorDpcJitterIsAdmitted) {
     SharedDisplayTiming timing;
     timing.Reset(1234, 0, DisplayTimingStatus::Starting);
@@ -492,7 +490,7 @@ TEST_F(PerformanceMetricsTest, VRRDisplayStreamWithMinorDpcJitterIsAdmitted) {
     EXPECT_EQ(metrics.GetDisplayScreenTimePermille(), 0u);
     EXPECT_GT(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs());
     EXPECT_LE(metrics.GetDisplayJaggednessUs(), metrics.GetPresentationJaggednessUs() * 1.5);
-    EXPECT_TRUE(metrics.IsDisplayStreamScreenTime());
+    EXPECT_FALSE(metrics.IsDisplayStreamScreenTime());
     EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 }
 

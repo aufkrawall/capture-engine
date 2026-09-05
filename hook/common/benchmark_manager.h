@@ -121,6 +121,7 @@ public:
 
     BenchmarkState GetState() const;
     bool IsActiveOrShowingResults() const;
+    bool NeedsFrame(uint64_t toggleSequence) const;
 
     float GetDelayRemainingSeconds() const;
     float GetRecordingElapsedSeconds() const;

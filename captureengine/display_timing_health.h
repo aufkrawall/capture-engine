@@ -53,7 +53,8 @@ struct DisplayTimingHealth {
     // Shape of the two series over this window alone, in microseconds. The
     // published one is what the overlay draws; the runtime one is the same
     // frames measured at Present, so a jagged published series next to a flat
-    // runtime series localizes the fault in this service rather than the game.
+    // runtime series reveals a difference between submission and displayed cadence;
+    // it does not by itself attribute a fault to the collector or the game.
     uint64_t publishedIntervalCount = 0;
     int64_t publishedIntervalMeanUs = 0;
     int64_t publishedIntervalStdDevUs = 0;
@@ -66,20 +67,10 @@ struct DisplayTimingHealth {
     int64_t runtimeIntervalMeanUs = 0;
     int64_t runtimeIntervalStdDevUs = 0;
     int64_t runtimeIntervalJaggednessUs = 0;
-    // The screen's own clock and how often a deferred completion had to be
-    // rounded onto it. `unresolved` counts completions the clock could not
-    // answer for, which keep the uncorrected timestamp.
+    // Blank cadence is diagnostic only; no display timestamp is quantized.
     uint64_t blanksObserved = 0;
     int64_t blankIntervalUs = 0;
-    uint64_t blankAdjusted = 0;
-    uint64_t blankUnresolved = 0;
-    // Whether the blank clock is placing frames at all. False says the display
-    // is not refreshing on a grid the driver's blank reports describe - variable
-    // refresh below the cap - and that the published series therefore carries
-    // the driver's own flip-latch times. That is the difference between a graph
-    // that is jagged because the screen is and one that is jagged because this
-    // service made it so, and nothing else in the line says which.
-    bool blankClockUsable = false;
+    bool blankClockPeriodic = false;
     // The shape of the blank stream itself. The clock can only be as good as
     // this: gaps that are not multiples of one period are what the grid refuses.
     uint64_t blankIntervalCount = 0;
@@ -146,7 +137,7 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
-        "vblank(observed=%llu periodUs=%lld usableClock=%d adjusted=%llu unresolved=%llu "
+        "vblank(observed=%llu periodUs=%lld periodic=%d timestampPolicy=event "
         "gaps(n=%llu meanUs=%lld p50Us=%lld p99Us=%lld maxUs=%lld)) "
         "latchInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "publishedInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld p1Us=%lld p50Us=%lld p99Us=%lld "
@@ -159,8 +150,7 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
-        static_cast<long long>(health.blankIntervalUs), health.blankClockUsable ? 1 : 0, health.blankAdjusted,
-        health.blankUnresolved, health.blankIntervalCount, static_cast<long long>(health.blankIntervalMeanUs),
+        static_cast<long long>(health.blankIntervalUs), health.blankClockPeriodic ? 1 : 0, health.blankIntervalCount, static_cast<long long>(health.blankIntervalMeanUs),
         static_cast<long long>(health.blankIntervalP50Us), static_cast<long long>(health.blankIntervalP99Us),
         static_cast<long long>(health.blankIntervalMaxUs), health.latchIntervalCount,
         static_cast<long long>(health.latchIntervalMeanUs), static_cast<long long>(health.latchIntervalStdDevUs),

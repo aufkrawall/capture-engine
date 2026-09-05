@@ -1,0 +1,169 @@
+# Archived activity (2026-W36)
+
+### 2026-09-04 - Accept a display stream that is measurably flatter than presents even when partially unlabelled
+
+
+Follow-up report against 0.1.6481 in session `20260904_095110`: switching FSR FG -> DLSS FG
+still showed the "jigsaw frame time graph" briefly or intermittently.
+
+Under DLSS FG in this session, `screenTimeShare` sat at ~492 permille (about half of completions
+were immediate flips carrying announced screen times, while others were deferred/unresolved).
+Because `ScreenTimeCadence.IsScreenTime` required 900 permille to select display-change timing,
+the gate refused the stream and fell back to presentation timing (the DLSS-4 burst pattern,
+jaggedness ~18-23 ms). Yet the display timing stream was flat (jaggedness ~450 us). Refusing a
+stream because a fraction of completions lacked a provenance label threw away the true screen
+measurements.
+
+Fix: in `hook/common/performance_metrics.cpp`, `PerformanceMetrics` now computes `windowJaggedness`
+(mean absolute difference between neighbouring intervals in arrival order). The display stream is
+accepted if either `provenSamples` passes the 900 permille share OR `flatterThanPresents`:
+`displayJaggednessUs <= allowedJaggednessUs` (with a 1.5x hysteresis band if already selected) and
+both series have valid window statistics.
+
+This correctly rescues DLSS FG when completions are partially deferred/unlabelled, while firmly
+rejecting the noisy flip-latch stream under FSR FG below the refresh cap (where display jaggedness
+is ~2000-4500 us and presents are ~350-540 us).
+
+### 2026-09-04 - The screen-time gate has to follow a regime change, not average across it
+
+User report against 0.1.6480: switching FSR FG -> DLSS FG leaves the frame-time graph
+showing the presentation series (the DLSS-4 burst pattern) and it only goes flat "after a
+few seconds". Session `20260904_092817` confirms it and the cause is the gate added the
+same morning, not the display-timing service.
+
+Timeline: DLSS FG confirmed at 09:29:07.081 (`postsl-first-confirmed-render`), and the
+sensor's completions switch wholesale from `hsyncDpcMpo` to `immediateMpoFlip` at the
+same moment - immediate flips carry the driver's scheduled-screen-time announcement, so
+every one of them is a resolved screen time. The overlay nevertheless stayed on
+presentation timing until **09:29:14.269**, 7.2 s later.
+
+`ScreenTimeCadence` was a decaying counter halved at 512 samples. That is the wrong
+instrument for the thing it measures: the stream does not drift between regimes, it
+*switches*, and a decaying total carries the old regime into the new one. Simulated from
+the steady state of a long latch-only stretch, recovery needs about 830 resolved samples,
+which is 10 s at the 83 fps that session was running - matching the 7.2 s observed once
+the mixed handover window is accounted for. It is now a window over the last 128 samples
+(two `uint64` words plus a running count), so recovery completes in at most one window,
+about a second of frames, whatever the stream did before it. The 90%/50% hysteresis is
+unchanged, and `kMinimumSamples` drops 64 -> 32 because the window is smaller.
+
+Deliberately not done: resetting the cadence on an FG-type change would make recovery
+instantaneous, but it would also show display-change timing optimistically for the first
+32 samples after *every* switch, including switches into a regime that cannot resolve.
+Presentation timing is never wrong, only less informative, so a short delay in that
+direction is the benign failure and a short burst of latch times is not.
+
+**What the same session says about the gate's verdicts, which are correct.** Under DLSS FG
+(windows 09:29:23 and 09:29:33, all `immediateMpoFlip`): published/screen
+`stddev=661/925 us jaggedness=473/650 us` against runtime `PresentStart`
+`stddev=11457/11670 us jaggedness=22772/23088 us`. That inversion is the whole point of
+the collector - Streamline issues a generated group of presents in a burst and the screen
+consumes them evenly - and it is exactly the "jigsaw" the user was seeing while the gate
+still had them on presentation timing. Under FSR FG in the same session every completion
+was `hsyncDpcMpo` with `usableClock=0`, so there was no screen-time series to show and
+presentation timing is the honest answer. Both verdicts were right; only the latency of
+the second one was wrong.
+
+Also fixed: a suppressed source-transition log left `lastObservedFrameTimeSource` stale,
+so every later comparison ran against a source that was no longer current and a flapping
+stream reached the log as unrelated one-off lines. The observed source is now recorded
+whatever the rate limit decides, and the line carries `suppressedChanges=`.
+
+### 2026-09-04 - The single-frame hold was a Reflex-on assumption
+
+User rejection of the previous result, and correctly: at matched cadence FSR FG (Reflex off)
+read 62-65 ms against DLSS FG (Reflex on) at 66-73 ms, and a generator without a low-latency
+mode cannot be *faster* than one with it. The expected separation is 10-25 ms the other way.
+
+Session `20260904_042922` pins the configuration exactly - `ReflexLimiter: Game ACTIVATED
+Reflex (via Streamline)` at 04:29:36.644, `DEACTIVATED` at 04:30:04.852 - so Reflex is on
+only while DLSS FG is on, and every FSR-FG and no-FG window runs it off.
+
+Root cause: `MatchApplicationPresentLocked` stepped the anchor back exactly one application
+frame. That step is the *interpolation hold* - the generator must hold a complete source
+frame to interpolate toward - and the code's comment argues exactly that. It is not the
+game's queue depth. The two are the same number only when a low-latency mode pins the queue
+to one frame, which is precisely what Reflex does and what FSR FG here has nothing doing.
+
+The queue is real and saturated: CE's own `[OVERLAY COST] FFX proxy Present` telemetry
+measured `runtimePresentAvgUs=4857-9163` - AMD's proxy blocks the game thread for 5-9 ms of
+every ~22 ms application frame. That is back-pressure from a full queue sitting *above* the
+DXGI present, where `presentToDisplay` cannot see it (2.5-4.2 ms under FSR against 17-25 ms
+under DLSS, at the same cadence). Same blindness as the previous fix, one level up.
+
+Fix: count the in-flight application frames by conservation over both streams and step back
+that many, floored at one. Timestamps cannot answer which frame is on screen without being
+circular; conservation can, because every application frame is displayed exactly
+`fgMultiplier` times. The count needs a known-empty seed - FG switching on, or an
+application-present gap over 250 ms - and is dropped on any evidence the display stream was
+incomplete, including a new `NoteDisplayStreamGap()` that `ConsumeDisplayTiming` raises when
+it skips publication sequences.
+
+Unit topologies confirm it is exact and linear: measured depths 2/3/4 report `appQueue=2/3/4`
+and 73.5/94.5/115.5 ms - one application interval per queued frame, nothing else moving.
+
+`system_latency_metrics.h` was at 799 of 800 lines, so the marker path
+(`SubmitNativeReport` plus its three native-only helpers) moved to
+`system_latency_marker_reports.h` as out-of-line inline members, mutually included and guarded.
+618 lines and 210.
+
+Hardware run pending. What to read: `appQueue=` in the chain line under FSR FG, and whether
+the DLSS FG cross-check still agrees within a few ms - under Reflex the depth must measure 2,
+which reproduces the previous step exactly, so a moved DLSS value means the count is wrong.
+
+Open, and separate: without FG the log reports 6.1 ms with Reflex against 36-43 ms without,
+30+ ms apart. That is a wider separation than the user's own 10-25 ms estimate of the real
+on-screen difference, and 6.1 ms rests on Talos's own PCL markers reporting a 1.9 ms
+simulation-to-present and a 0.4 ms present-to-flip. Whether the marker path is under-reading
+there is unexamined.
+
+### 2026-09-04 - The overlay's FSR-FG frame-time variance was the flip-latch clock
+
+User report: frame pacing under FSR FG in Talos is "sometimes worse, sometimes better"
+regarding constant micro stutter / frame-time variance. Two sessions of the same build
+(0.1.6475), same title, same settings, six minutes apart: `talosfsrfgbad` and
+`talosfsrfggood`. Nothing in CE's state machines differs between them - same route
+(`confirmedStandaloneNormalRoute` / `below-foreign-chain-fsr`), same epochs, same
+present-callback bridge, same 2x factor, same 3 log lines per rendered frame.
+
+What does differ is only what the overlay *reported*, and it is not what the frames did:
+
+| steady window | overlay (display series) | same frames at Present |
+| --- | --- | --- |
+| bad: fps / 1% low / stddev | 85.1 / **54.9** / **2978 us** | 84.9 / 66.7 / **748 us** |
+| good: fps / 1% low / stddev | 90.7 / **67.1** / **1426 us** | 91.1 / 74.4 / **612 us** |
+
+The mean is right to 0.3% in both and only the *values* are wrong - the exact failure
+mode `display-change-timing.md` warns about. The sensor health line names the cause
+directly: `usableClock=0`, `unresolved=3001` of `published=3063`, and `publishedInterval`
+equal to `latchInterval` to within 10 us, i.e. nothing was rounded and the overlay was
+drawing raw `HSyncDPCMultiPlane` flip-latch timestamps. `publishedInterval p1Us=6600` is
+below the panel's own 6946 us minimum frame interval, which is the impossibility check
+that settles it. Latch jaggedness 4575 us (bad) against 2043 us (good) with runtime
+`PresentStart` jaggedness 351-485 us in both: the presents were even, and all of the
+variance the user was looking at lived in the flip path. Under variable refresh below the
+cap the blank clock has no grid, so this is the permanent state there, and the DPC noise
+that rides on it varies run to run - which is exactly "sometimes worse, sometimes better".
+
+Fix, in three connected places:
+
+- `common/display_timing_shared.h` publishes what a timestamp *is* (`flags`,
+  `kDisplayTimingScreenTimeResolved`, ABI 57). The producer knew; the ring did not carry
+  it, so no consumer could tell a screen time from a latch time.
+- `PerformanceMetrics::ScreenTimeCadence` judges the stream over a decaying window and
+  `RefreshEffectiveSource` will not select `DisplayChange` for a stream that is not
+  publishing screen times. Presentation timing - the same frames, measured where the
+  measurement is exact - drives the graph, lows and variance instead. Two thresholds
+  (90% to select, 50% to keep) stop a stream near the boundary switching every window;
+  a stream is trusted until there is enough evidence against it, so nothing is withheld
+  at startup. `[Overlay] Frame timing source:` now reports `screenTime=`/`screenTimeShare=`.
+- The recording correlator applied the matched sample's *per-sample cadence residual* to
+  the file's source timestamps (`NormalizeFinalOutputDisplayTimestampQpc`). With latch
+  times that is +/-3 ms of measurement noise written into a CFR recording the game never
+  had. `ResolveDisplayTimingAfterWatermark` now reports the matched sample's provenance
+  and the correlator keeps the virtual (present-derived) cadence for latch-only samples,
+  while the *smoothed* phase keeps learning from them. New `latchOnly=` health counter.
+
+Not changed: the display series still accumulates every sample (an unresolved timestamp
+is still an ordered displayed transition, only its interval is untrustworthy), and system
+latency still observes all of them.

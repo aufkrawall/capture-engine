@@ -186,6 +186,11 @@ bool BenchmarkManager::IsActiveOrShowingResults() const {
     return m_state != BenchmarkState::Idle;
 }
 
+bool BenchmarkManager::NeedsFrame(uint64_t toggleSequence) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_state != BenchmarkState::Idle || toggleSequence != m_lastObservedToggleSeq;
+}
+
 float BenchmarkManager::GetDelayRemainingSeconds() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_state != BenchmarkState::Delaying)

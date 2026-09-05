@@ -37,6 +37,12 @@ TEST(Dx12EclQueueRegistrationPolicyTest, NeverRegistersWhileFrameGenerationOwnsS
                                                                    /*hasPrimaryGameQueue=*/true));
 }
 
+TEST(Dx12EclQueueRegistrationPolicyTest, SuspendedGenerationKeepsRuntimeQueuesOutOfDiscovery) {
+    EXPECT_FALSE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, true, true));
+    EXPECT_TRUE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, false, true));
+    EXPECT_TRUE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, true, false));
+}
+
 // The decision must not depend on anything per-submission, or the hot path pays for
 // evaluating it. Same inputs, same answer, every time.
 TEST(Dx12EclQueueRegistrationPolicyTest, IsAPureFunctionOfTheTwoInputs) {

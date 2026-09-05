@@ -14,6 +14,16 @@ namespace CustomOverlay {
 
 
 bool DX12Backend::WaitForSlotGpuComplete(int slot) {
+    if (slot >= 0 && slot < kMaxUploadSlots && inlineCompletions &&
+        inlineSlots.Guard(static_cast<std::size_t>(slot)) != 0 &&
+        inlineCompletions[slot] != inlineSlots.Guard(static_cast<std::size_t>(slot))) {
+        static std::atomic<uint32_t> conflicts{0};
+        const uint32_t count = conflicts.fetch_add(1, std::memory_order_relaxed);
+        if (count < 3 || count % 600 == 0)
+            HookLogImportant("DX12 Overlay: external upload slot is still owned by an inline callback draw "
+                             "(count=%u)", count + 1);
+        return false;
+    }
     ID3D12Fence* slotFence = slotGuardBinding.GetFence();
     if (!slotFence || slot < 0 || slot >= kFramePoolSize) {
         return true;
@@ -71,20 +81,13 @@ bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    if (vertexBuffer[slot] && vertexBufferPtr[slot]) {
-        DX12_DEBUG_STEP("ResizeVertexBuffer", "Unmapping old vertex buffer[%d]", slot);
-        vertexBuffer[slot]->Unmap(0, nullptr);
-        vertexBufferPtr[slot] = nullptr;
-    }
-
-    size_t newSize = vertexBufferSize[slot] * 2;
+    size_t newSize = std::max(vertexBufferSize[slot], 4096 * sizeof(DrawVertex));
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
     DX12_DEBUG_STEP("ResizeVertexBuffer", "New size: %zu bytes (old=%zu, slot=%d)", newSize, vertexBufferSize[slot],
                     slot);
 
-// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -110,11 +113,19 @@ bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    vertexBuffer[slot] = newBuffer;
-    vertexBufferSize[slot] = newSize;
-
     D3D12_RANGE readRange = {0, 0};
-    vertexBuffer[slot]->Map(0, &readRange, &vertexBufferPtr[slot]);
+    void* newPointer = nullptr;
+    hr = newBuffer->Map(0, &readRange, &newPointer);
+    if (FAILED(hr) || !newPointer) {
+        HookLogImportant("DX12 Overlay: ResizeVertexBuffer Map failed (slot=%d hr=0x%08X)", slot, hr);
+        return false;
+    }
+    // Keep the old mapping usable if allocation or mapping fails.
+    if (vertexBuffer[slot] && vertexBufferPtr[slot])
+        vertexBuffer[slot]->Unmap(0, nullptr);
+    vertexBuffer[slot] = newBuffer;
+    vertexBufferPtr[slot] = newPointer;
+    vertexBufferSize[slot] = newSize;
     DX12_DEBUG_STEP("ResizeVertexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, vertexBufferPtr[slot]);
 
 
@@ -131,13 +142,7 @@ bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    if (indexBuffer[slot] && indexBufferPtr[slot]) {
-        DX12_DEBUG_STEP("ResizeIndexBuffer", "Unmapping old index buffer[%d]", slot);
-        indexBuffer[slot]->Unmap(0, nullptr);
-        indexBufferPtr[slot] = nullptr;
-    }
-
-    size_t newSize = indexBufferSize[slot] * 2;
+    size_t newSize = std::max(indexBufferSize[slot], 8192 * sizeof(uint16_t));
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
@@ -169,11 +174,19 @@ bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    indexBuffer[slot] = newBuffer;
-    indexBufferSize[slot] = newSize;
-
     D3D12_RANGE readRange = {0, 0};
-    indexBuffer[slot]->Map(0, &readRange, &indexBufferPtr[slot]);
+    void* newPointer = nullptr;
+    hr = newBuffer->Map(0, &readRange, &newPointer);
+    if (FAILED(hr) || !newPointer) {
+        HookLogImportant("DX12 Overlay: ResizeIndexBuffer Map failed (slot=%d hr=0x%08X)", slot, hr);
+        return false;
+    }
+    // Keep the old mapping usable if allocation or mapping fails.
+    if (indexBuffer[slot] && indexBufferPtr[slot])
+        indexBuffer[slot]->Unmap(0, nullptr);
+    indexBuffer[slot] = newBuffer;
+    indexBufferPtr[slot] = newPointer;
+    indexBufferSize[slot] = newSize;
     DX12_DEBUG_STEP("ResizeIndexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, indexBufferPtr[slot]);
 
     HookLog("DX12 Overlay: Index buffer[%d] resized to %zu bytes", slot, newSize);

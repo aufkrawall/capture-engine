@@ -566,8 +566,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const int64_t bridgeEnterUs = PerfLogger::GetQpcUs();
     int64_t wrappedCallUs = 0;
     auto costScope = ce::make_scope_guard([&]() {
-        g_FFXPresentCallbackCost.Observe(PerfLogger::GetQpcUs() - bridgeEnterUs, wrappedCallUs);
-        DX12_ReportFFXPresentCallbackCostIfDue();
+        DX12_ObserveFFXPresentCallbackCost(PerfLogger::GetQpcUs() - bridgeEnterUs, wrappedCallUs);
     });
 
     static thread_local int s_ffxPresentCallbackDepth = 0;
