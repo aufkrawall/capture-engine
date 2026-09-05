@@ -75,6 +75,11 @@ enum Bit : uint32_t {
     // The sampler/anisotropy overrides never detour the game's real D3D12 device
     // vtable (CreateRootSignature, CreateSampler).
     kSamplerDeviceHooksOff = 0x10000,
+    // The present-callback bridge still draws the overlay on application frames
+    // but skips generated frames, halving the overlay's GPU cost at 2x FG while
+    // keeping app-frame draws. Isolates the generated-frame draw share, which is
+    // the part that lands inside the generator's production budget.
+    kBridgeGeneratedFrameOverlayOff = 0x20000,
 };
 
 // Parses the mask the way the environment variable is written: decimal, or

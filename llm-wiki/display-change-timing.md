@@ -197,6 +197,40 @@ stream is unavailable, denied, failed, or two seconds stale.
   A same-scene run on the corrected build, including default VSync when the issue recurs and
   whether an FSR off/on cycle changes it, remains needed. No feature was disabled as a workaround.
 
+### Bad-start pacing signature and pacing-health telemetry (2026-09-05, build 0.1.6491)
+
+- Session `talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood` (two process starts, one CE
+  session) pins the bad-start signature in perf-CSV display-series data. BAD standing-still
+  FSR FG: output flip median 11.23 ms, **11.8% of intervals > median+1.2 ms**, gaps between
+  late flips exclusively even (pair-phase locked, never consecutive), presentToDisplay
+  swinging 0.9-3.2 ms, source stddev 2310 us, screen jaggedness 3330 us. GOOD restart:
+  1.0% late, stable presentToDisplay, stddev 746-913 us. DLSS FG in the same bad process ran
+  an even slower base cadence (23.8 ms) with a smooth screen - slower base cadence is a
+  marker, not the cause; the FSR generator/presenter output scheduling slips.
+- CE's own costs were identical in both windows ([OVERLAY COST] ceAvgUs 2 proxy / 79-87
+  callback; identical per-frame log behavior under normalized rate-diff), the fcd6f9f7
+  vsync policy behaved identically, and the present-callback bridge installed in both.
+  The bad state is per-process, survives FG mode switches, and is random per start
+  (user-confirmed: independent of warm/cold boot; RTSS's overlay was visible and smooth,
+  so the no-CE baseline is real).
+- CE draws the overlay on every output frame including generated frames (`generated=1`
+  draws observed) - the overlay GPU cost runs at 2x source rate inside AMD's composition
+  path. Note: skipping the generated-frame draw is NOT a viable optimization on this route
+  (each output buffer is separate; skipping = 50% overlay flicker). The
+  `CE_FG_COST_PROBE=0x20000` bit exists only to measure that share on hardware.
+- New instrumentation: `ce::pacing_health` interval rings (`hook/common/pacing_health_telemetry.*`)
+  fed by both metric series, `[FSRPacingHealth]` (10 s aggregate: median/p95/stddev,
+  late-permille at median+1200 us, max, callback draw counts app/gen/genSkip),
+  `[FSRActivationCadence]` at enabled ffxConfigure and authoritative takeover (cadence the
+  generator paces against), and `[HookThreadPass]` (service cost of the
+  THREAD_PRIORITY_HIGHEST hook thread, a presenter-preemption candidate).
+- Open: why AMD's presenter submits output presents irregularly in some starts. Candidates:
+  (1) ambient per-start GPU slack (no injected/non-injected A/B has ever been captured),
+  (2) CE's per-output-frame overlay draw inside the generator's production budget,
+  (3) hook-thread preemption of the presenter thread, (4) a generator pacing target latched
+  from the 144 Hz menu window. The A/B matrix (CE overlay / CE overlayEnabled=0 / no CE)
+  has not been run yet.
+
 ## Graph scrolling under frame generation
 
 - A scrolling graph advances one slot per drawn frame, which is automatic while every drawn frame produces exactly

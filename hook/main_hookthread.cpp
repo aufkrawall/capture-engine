@@ -1,11 +1,16 @@
 #include "main_internal.h"
 #include "common/custom_overlay_dx12.h"
+#include "common/hook_cost_window.h"
 
 namespace {
 
 void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
   OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
 }
+
+// Disjoint ~10 s service-cost windows for the monitor loop passes (the pass
+// cadence is ~10 Hz), owned by the single hook thread.
+ce::HookCostWindow<100> s_hookThreadPassCostWindow;
 
 }  // namespace
 
@@ -412,6 +417,24 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
 
     DWORD now = GetTickCount();
+
+    // This thread runs at THREAD_PRIORITY_HIGHEST inside the game, so every pass
+    // is preemption pressure on the title's timing-critical threads (AMD's FSR FG
+    // presenter paces hardware flips from QPC on its own thread). Measure the
+    // service cost of each pass so a regression here is visible per start.
+    struct PassCostScope {
+        int64_t enterUs;
+        ce::HookCostWindow<100>& window;
+        ~PassCostScope() {
+            if (const auto snapshot = window.Observe(PerfLogger::GetQpcUs() - enterUs, 0)) {
+                HookLogImportant("[HookThreadPass] passes=%llu avgUs=%llu maxUs=%llu over1ms=%llu",
+                                 static_cast<unsigned long long>(snapshot->calls),
+                                 static_cast<unsigned long long>(snapshot->selfUs / snapshot->calls),
+                                 static_cast<unsigned long long>(snapshot->selfMaxUs),
+                                 static_cast<unsigned long long>(snapshot->over1ms));
+            }
+        }
+    } passCost{PerfLogger::GetQpcUs(), s_hookThreadPassCostWindow};
 
     // Periodically update active graphics config state
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are

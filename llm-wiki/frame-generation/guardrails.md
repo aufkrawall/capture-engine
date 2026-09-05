@@ -114,6 +114,15 @@ This page records current guardrails and tested transition families for no-FG, D
 - The pseudo-overlay is not an injected-overlay replacement for FG. It must not be used to paper over DLSS FG or FSR FG injected-overlay failures.
 
 ## Facts
+- **CURRENT CALLBACK-ROUTE DRAW-PER-OUTPUT-FRAME INVARIANT (2026-09-05):** on the FFX
+  present-callback route the overlay MUST be drawn into every callback output, generated frames
+  included (`desc->isGeneratedFrame == true`). Each output buffer is a separate runtime resource:
+  a generated frame whose draw is skipped shows NO overlay at all (50% flicker at 2x FG), not
+  stale content, because interpolation runs before the per-output callback and does not inherit
+  the app frame's overlay. `CE_FG_COST_PROBE=0x20000`
+  (`kBridgeGeneratedFrameOverlayOff`) exists only as a hardware A/B diagnostic for that cost
+  share, never as a shipped behavior; `[FSRPacingHealth] cbDraws` counters make the
+  app/generated draw split visible per start.
 - **CURRENT PROTECTED-FFX-STARTUP LATCH LIFETIME INVARIANT (2026-09-03):** Talos session
   `installed/captureengine/logs/20260903_070055` lost the overlay for good after DLSS FG -> FSR FG -> DLSS FG in the
   2D menu. An official FFX swapchain create arms `dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending`, which

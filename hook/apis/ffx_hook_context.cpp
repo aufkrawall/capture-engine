@@ -1,6 +1,7 @@
 #include "ffx_hook_internal.h"
 
 #include "../common/fg_cost_probe.h"
+#include "../common/performance_metrics.h"
 
 
 void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context) {
@@ -493,6 +494,16 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                 originalDesc->frameGenerationEnabled ? 1 : 0, disabledStartupArmingConfigure ? 1 : 0,
                 reinterpret_cast<void*>(originalDesc->presentCallback),
                 reinterpret_cast<void*>(bridgedOriginalCallback), usingDefaultPresentCallback ? 1 : 0, logCount + 1);
+        }
+        // The generator's internal pacing target is learned around activation.
+        // Record the cadence it is about to pace against, so a start that later
+        // slips output deadlines can be compared with a healthy one at the root.
+        static std::atomic<int> s_activationCadenceLogCount{0};
+        const auto* cadenceDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
+        if (cadenceDesc->frameGenerationEnabled && s_activationCadenceLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+                perf->LogActivationCadenceContext("ffxConfigure-bridge-install");
+            }
         }
     } else if (retainedAlreadyBridgedPresentCallback) {
         static std::atomic<int> s_retainedAlreadyBridgedPresentCallbackLogCount{0};

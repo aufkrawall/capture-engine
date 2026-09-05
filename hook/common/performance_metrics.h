@@ -97,6 +97,17 @@ public:
 
     void SetRecording(bool isRecording);
 
+    // Counts FFX present-callback overlay draws for the pacing-health line. The
+    // generated-frame share is the diagnostic: it is the half of the overlay's
+    // GPU cost that lands inside the generator's own production path.
+    void NotifyOverlayCallbackDraw(bool generatedFrame, bool drewOverlay);
+
+    // One-shot activation context for FG pacing: the display/presentation
+    // cadence the runtime is about to pace against plus the current input
+    // admission interval. Called from the enabled-ffxConfigure and takeover
+    // sites, never per frame.
+    void LogActivationCadenceContext(const char* site);
+
     // Frame Generation metrics (for displaying base vs output FPS)
     // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
     void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
@@ -210,6 +221,9 @@ private:
     void UpdateSeries(MetricSeries& series, int64_t currentQpcUs);
     void ApplyRecordingTransition(MetricSeries& series);
     void RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs);
+    // Rate-limited cadence-health aggregation line; early-outs to one timestamp
+    // comparison on the per-present path.
+    void MaybeLogPacingHealth(int64_t currentQpcUs);
 
     MetricSeries m_presentation;
     MetricSeries m_display;
@@ -228,5 +242,8 @@ private:
     std::atomic<float> m_fgBaseFPS{0.0f};
     std::atomic<int> m_fgMultiplier{1};
     std::atomic<int> m_fgType{0};
+    std::atomic<uint64_t> m_callbackAppDraws{0};
+    std::atomic<uint64_t> m_callbackGeneratedDraws{0};
+    std::atomic<uint64_t> m_callbackGeneratedSkips{0};
     ce::system_latency::Tracker m_systemLatency;
 };

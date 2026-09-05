@@ -721,15 +721,20 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             belowForeignTopmostSubmitProven ? 1 : 0, completedNoCallbackTopmostBatch ? 1 : 0);
     }
 
-    const bool probeSuppressesBridgeOverlay = ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeOverlayOff);
+    const bool probeSuppressesBridgeOverlay =
+        ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeOverlayOff) ||
+        (desc->isGeneratedFrame && ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeGeneratedFrameOverlayOff));
+    bool overlayDrawn = false;
     if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+        overlayDrawn = true;
     }
     WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);
     WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcBeforeClose);
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        perf->NotifyOverlayCallbackDraw(desc->isGeneratedFrame, overlayDrawn);
         DX12_UpdateFFXPresentCallbackFrameTiming(perf, ffxRuntimeOwnsNativeFSRPresentation,
                                                  callbackYieldsToTopmostRoute);
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();

@@ -395,6 +395,14 @@ if (capturedQueue) {
         capturedQueue, liveSwapchainQueueAfterApply, stagedQueueApplied ? 1 : 0,
         stagedQueueActivatedOwnership ? 1 : 0, fgRuntimeOwnsAfterApply ? 1 : 0,
         reason && reason[0] ? reason : "unknown");
+    // The generator's internal pacing target is learned around this takeover.
+    // Record the cadence it is about to pace against for bad-vs-good comparison.
+    static std::atomic<int> s_takeoverCadenceLogCount{0};
+    if (s_takeoverCadenceLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+            perf->LogActivationCadenceContext("authoritative-ffx-takeover");
+        }
+    }
 }
 
 const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);

@@ -1,5 +1,8 @@
 #include "performance_metrics.h"
 
+#include "hook_common.h"
+#include "pacing_health_telemetry.h"
+#include "perf_logger.h"
 #include "system_latency_frame_begin.h"
 
 #include <algorithm>
@@ -117,8 +120,11 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
     ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
     const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
     m_systemLatency.ObservePresent(currentQpcUs, frameBeginUs, frameBeginKind);
-    std::lock_guard<std::mutex> lock(m_presentationUpdateMutex);
-    UpdateSeries(m_presentation, currentQpcUs);
+    {
+        std::lock_guard<std::mutex> lock(m_presentationUpdateMutex);
+        UpdateSeries(m_presentation, currentQpcUs);
+    }
+    MaybeLogPacingHealth(currentQpcUs);
 }
 
 void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
@@ -164,6 +170,10 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
     series.lastFrameTimeUs.store(currentQpcUs, std::memory_order_relaxed);
     if (frameToFrameUs <= 0)
         return;
+
+    ce::pacing_health::Observe(&series == &m_display ? ce::pacing_health::Channel::kDisplay
+                                                     : ce::pacing_health::Channel::kPresentation,
+                               frameToFrameUs);
 
     ApplyRecordingTransition(series);
 
@@ -425,6 +435,70 @@ double PerformanceMetrics::GetWindowStdDev() const {
 
 bool PerformanceMetrics::IsStutterDetected() const {
     return ActiveSeries().stutterDetected.load(std::memory_order_relaxed);
+}
+
+void PerformanceMetrics::NotifyOverlayCallbackDraw(bool generatedFrame, bool drewOverlay) {
+    if (generatedFrame) {
+        if (drewOverlay) {
+            m_callbackGeneratedDraws.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            m_callbackGeneratedSkips.fetch_add(1, std::memory_order_relaxed);
+        }
+    } else if (drewOverlay) {
+        m_callbackAppDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void PerformanceMetrics::LogActivationCadenceContext(const char* site) {
+    const int64_t nowUs = PerfLogger::GetQpcUs();
+    const auto display = ce::pacing_health::RecentCadence(ce::pacing_health::Channel::kDisplay, 120);
+    const auto presentation = ce::pacing_health::RecentCadence(ce::pacing_health::Channel::kPresentation, 120);
+    const auto latency = GetSystemLatencyDiagnostics(nowUs);
+    HookLogImportant(
+        "[FSRActivationCadence] site=%s dispMedUs=%u dispN=%u presMedUs=%u presN=%u applicationIntervalUs=%lld "
+        "displayIntervalUs=%lld",
+        site && site[0] ? site : "unknown", display.medianUs, display.samples, presentation.medianUs,
+        presentation.samples, static_cast<long long>(latency.applicationIntervalUs),
+        static_cast<long long>(latency.displayIntervalUs));
+}
+
+void PerformanceMetrics::MaybeLogPacingHealth(int64_t currentQpcUs) {
+    // The start-to-start FSR FG degradation is a share of output intervals
+    // landing past the median by 1.2-2 ms, invisible in the stddev alone and
+    // previously recoverable only from offline CSV analysis. This line carries
+    // the classification directly. Nothing here runs on the hot path beyond one
+    // timestamp comparison per present.
+    static constexpr int64_t kLogIntervalUs = 10'000'000;
+    static std::atomic<int64_t> s_nextLogUs{0};
+    if (!IsFGActive()) {
+        return;
+    }
+    int64_t nextLogUs = s_nextLogUs.load(std::memory_order_relaxed);
+    if (currentQpcUs < nextLogUs) {
+        return;
+    }
+    // Serialized tick: two racing present threads must not double-log, and the
+    // loser simply waits for the next window.
+    if (!s_nextLogUs.compare_exchange_strong(nextLogUs, currentQpcUs > 0 ? currentQpcUs + kLogIntervalUs
+                                                                          : kLogIntervalUs,
+                                             std::memory_order_relaxed)) {
+        return;
+    }
+
+    const auto display = ce::pacing_health::Snapshot(ce::pacing_health::Channel::kDisplay);
+    const auto presentation = ce::pacing_health::Snapshot(ce::pacing_health::Channel::kPresentation);
+    const uint64_t appDraws = m_callbackAppDraws.exchange(0, std::memory_order_relaxed);
+    const uint64_t generatedDraws = m_callbackGeneratedDraws.exchange(0, std::memory_order_relaxed);
+    const uint64_t generatedSkips = m_callbackGeneratedSkips.exchange(0, std::memory_order_relaxed);
+    HookLogImportant(
+        "[FSRPacingHealth] fg=%s mult=%d baseFps=%.1f outFps=%.1f "
+        "disp med=%uu p95=%uu sd=%uu late=%upermille max=%uu n=%u | "
+        "pres med=%uu p95=%uu late=%upermille n=%u | cbDraws app=%llu gen=%llu genSkip=%llu",
+        GetFGTypeLabel(), GetFGMultiplier(), GetFGBaseFPS(), GetFGOutputFPS(), display.medianUs, display.p95Us,
+        display.stddevUs, display.latePermille, display.maxUs, display.samples, presentation.medianUs,
+        presentation.p95Us, presentation.latePermille, presentation.samples,
+        static_cast<unsigned long long>(appDraws), static_cast<unsigned long long>(generatedDraws),
+        static_cast<unsigned long long>(generatedSkips));
 }
 
 void PerformanceMetrics::GetSmartScale(float& outMin, float& outMax, float minRangeMs) const {

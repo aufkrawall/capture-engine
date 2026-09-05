@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-09-05 - Bad-start FSR pacing signature quantified; pacing-health telemetry added
+
+Session `talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood` (0.1.6491, two process starts) gives
+the first objective bad-vs-good discriminator: in the bad start 11.8% of output flip intervals land
+> median+1.2 ms (good 1.0%), late events are pair-phase-locked (even gaps, never consecutive),
+presentToDisplay swings 0.9-3.2 ms, and the screen series stddev is 2310 vs 746-913 us. DLSS FG in
+the same bad process ran a *slower* base cadence with a smooth screen - base cadence is a marker,
+not the cause. CE's CPU costs, vsync policy and bridge behavior were identical in both windows, so
+the previous fixes (cff7a507/a7dc1ebc/ffa6ee60/fcd6f9f7) are not the differentiator either way.
+The bad state is per-process, survives FG mode switches, random per start regardless of warm/cold
+(user-confirmed), and RTSS's overlay was visible and smooth under FSR FG (no-CE baseline valid).
+
+Added `ce::pacing_health` interval rings + `[FSRPacingHealth]` (10 s aggregate with late-permille
+classification, callback draw counts app/gen/genSkip), `[FSRActivationCadence]` at enabled
+ffxConfigure and authoritative takeover, `[HookThreadPass]` (hook-thread service cost at
+THREAD_PRIORITY_HIGHEST - presenter-preemption candidate), and `CE_FG_COST_PROBE=0x20000`
+(skip overlay draw on generated frames; diagnostic only - a real skip would flicker because each
+output buffer is separate). Unit coverage: `tests/test_pacing_health.cpp` (ComputeChannelStats on
+the measured good/bad distributions, ring wrap, outlier drop). Next step is the hardware A/B
+matrix (CE overlay / CE overlayEnabled=0 / no CE) using `[FSRPacingHealth]` - it has never been run.
+Full data and candidate list: [display-change-timing](../display-change-timing.md).
+
 ### 2026-09-05 - Talos good/bad comparison: FFX VSync input boundary correction; random pacing unresolved
 
 Compared `talosgood` (6490) and `talosbad` (6489). Both use the official callback with similar CPU
