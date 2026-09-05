@@ -26,7 +26,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags);
             if (useBypass) {
                 return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
             }
@@ -51,7 +51,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
 
@@ -88,7 +88,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply(true);
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags);
             WaitBackbufferFrameLatency(pSwapChain);
             HRESULT handoffHr = dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
             if (SUCCEEDED(handoffHr)) {
@@ -348,7 +348,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 
-    ProcessVSyncOverride(SyncInterval, Flags);
+    ProcessPresentVSyncOverride(SyncInterval, Flags);
 
     // Always wait for overlay fence before Present.  The overlay ECL was
     // submitted during ProcessFrame (non-deferred), so the fence signals

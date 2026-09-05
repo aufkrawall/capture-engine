@@ -201,3 +201,22 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
     sc2->Release();
 }
 }
+
+namespace DXGIShared {
+void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags) {
+    if (ce::present_pacing_policy::ShouldPreserveNativeFGOutputVSync(
+            HookHasRuntimeOwnedNativeFGPresentPath(), DX12_IsFFXProxyPresentHookInstalled(),
+            g_StreamlineFGRunning.load(std::memory_order_acquire))) {
+        // Do not re-read user intent here: these frames may already have been
+        // scheduled before a config change. AMD owns their output parameters.
+        static thread_local bool logged = false;
+        if (!logged) {
+            logged = true;
+            HookLogImportant("DXGI: preserving FFX output VSync (sync=%u flags=0x%X); "
+                             "user intent applied at FFX proxy input", syncInterval, flags);
+        }
+        return;
+    }
+    ProcessVSyncOverride(syncInterval, flags);
+}
+}

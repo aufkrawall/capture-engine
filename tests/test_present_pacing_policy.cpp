@@ -198,3 +198,55 @@ TEST(PresentPacingPolicyTest, PublishedVulkanDecisionDrivesTheRuntimePredicate) 
     DXGIShared::SetVulkanActiveForDXGIPresentPath(true);
     EXPECT_FALSE(ShouldApplyCePresentationPolicy(DXGIShared::IsVulkanActive()));
 }
+
+TEST(PresentPacingPolicyTest, NativeFGOutputVSyncRequiresBothOwnershipAndTheSourceHook) {
+    using ce::present_pacing_policy::ShouldPreserveNativeFGOutputVSync;
+    for (const bool owns : {false, true}) {
+        for (const bool hooked : {false, true}) {
+            for (const bool dlss : {false, true}) {
+                EXPECT_EQ(ShouldPreserveNativeFGOutputVSync(owns, hooked, dlss),
+                          owns && hooked && !dlss);
+            }
+        }
+    }
+    // Suspended FG still owns outstanding/passthrough output. Native recovery does not.
+    EXPECT_TRUE(ShouldPreserveNativeFGOutputVSync(true, true, false));
+    EXPECT_FALSE(ShouldPreserveNativeFGOutputVSync(false, true, false));
+}
+
+TEST(PresentPacingPolicySourceTest, NativeFGReceivesVSyncBeforeEitherProxyPresentForward) {
+    const std::string proxy = ReadProjectSource("hook/apis/dx12_hook_ffx_proxy_present.cpp");
+    for (const char* method : {"DX12_FFXProxyDetourPresent(", "DX12_FFXProxyDetourPresent1("}) {
+        const size_t start = proxy.find(method);
+        ASSERT_NE(start, std::string::npos);
+        const size_t policy = proxy.find("DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);", start);
+        const size_t forward = proxy.find("const HRESULT hr = original(self, SyncInterval, Flags", start);
+        ASSERT_NE(policy, std::string::npos);
+        ASSERT_NE(forward, std::string::npos);
+        EXPECT_LT(policy, forward);
+        EXPECT_NE(proxy.substr(start, policy - start).find("outermost && !HookIsShuttingDown()"), std::string::npos);
+    }
+    EXPECT_NE(proxy.find("(flags & DXGI_PRESENT_TEST) != 0"), std::string::npos);
+}
+
+TEST(PresentPacingPolicySourceTest, AllInnerDXGIVSyncPathsRespectNativeFGOutputOwnership) {
+    for (const char* file : {"hook/common/dxgi_shared_present_core.cpp",
+                             "hook/common/dxgi_shared_present_routing.cpp",
+                             "hook/common/dxgi_shared_present1.cpp",
+                             "hook/wrappers/dxgi_swapchain_wrap_present.cpp"}) {
+        const std::string source = ReadProjectSource(file);
+        ASSERT_FALSE(source.empty());
+        EXPECT_EQ(source.find("ProcessVSyncOverride("), std::string::npos) << file;
+        EXPECT_NE(source.find("ProcessPresentVSyncOverride("), std::string::npos) << file;
+    }
+    const std::string pacing = ReadProjectSource("hook/common/dxgi_shared_present_pacing.cpp");
+    const size_t policy = pacing.find("void ProcessPresentVSyncOverride(");
+    ASSERT_NE(policy, std::string::npos);
+    const size_t preserve = pacing.find("ShouldPreserveNativeFGOutputVSync(", policy);
+    const size_t unchanged = pacing.find("return;", preserve);
+    const size_t apply = pacing.find("ProcessVSyncOverride(syncInterval, flags);", policy);
+    ASSERT_NE(preserve, std::string::npos);
+    ASSERT_NE(unchanged, std::string::npos);
+    ASSERT_NE(apply, std::string::npos);
+    EXPECT_LT(unchanged, apply);
+}

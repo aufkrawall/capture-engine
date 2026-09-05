@@ -167,6 +167,36 @@ stream is unavailable, denied, failed, or two seconds stale.
 - Coverage: `test_display_pacing_integrity.cpp`, `test_display_timing_vblank.cpp`,
   `test_display_timing_correlation.cpp`, `test_display_timing_nvidia.cpp`, and `test_performance_metrics.cpp`.
 
+### Good/bad Talos comparison and FFX VSync boundary (2026-09-05)
+
+- `talosgood` (6490) and `talosbad` (6489) both run event/no-grid timing, the official callback,
+  inline upload completion without exhaustion, and zero steady ECL registrations. No crash dumps
+  are present. Their matching config summaries request FIFO, no FPS cap or prerender override.
+- Steady published interval standard deviation is 857-953 us in good versus 1876-2315 us in bad;
+  runtime Present standard deviation is 277-284 us versus 571-847 us. The good base cadence is
+  also faster (~46-47 fps versus ~42-45 fps). CPU callback windows overlap (~62-88 us mean);
+  the final 1000 gameplay CSV ProcessFrame samples average ~15-16 us in both runs. The zero
+  `overlay_gpu_us` CSV field is **unmeasured** on this callback route, not zero GPU cost.
+- The source inspection found a separate policy-boundary defect: `DX12_FFXProxyDetourPresent/1`
+  forwarded unmodified application sync/flags, while the inner shared DXGI Present rewrote them.
+  AMD's [1.1.4 implementation](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v1.1.4/sdk/src/backends/dx12/FrameInterpolationSwapchain/FrameInterpolationSwapchainDX12.cpp)
+  takes `entry.vsync` from the application Present and derives physical sync/tearing flags from it.
+  This establishes the input/output contract; it does not prove the shipped game DLL is identical.
+- `hook/apis/dx12_hook_ffx_proxy_present.cpp` now applies user VSync intent at the outermost
+  application input, before AMD records its output group. Test Presents and dormant/quiescing
+  forwards remain unchanged. `DXGIShared::ProcessPresentVSyncOverride` in
+  `hook/common/dxgi_shared_present_pacing.cpp` preserves native-FG output parameters while the
+  source hook is installed and native ownership persists, including suspended FG. Streamline
+  FG and native recovery retain the prior final-output rule. This adds no GPU work or waits.
+- Diagnostics: `FFX proxy VSync: input(...) forwarded(...)` reports bounded input-policy changes;
+  `DXGI: preserving FFX output VSync` identifies the downstream handoff once per thread.
+  Coverage: `tests/test_present_pacing_policy.cpp` and `tests/test_dxgi_shared_fifo_recovery.cpp`.
+- **Still unresolved:** the user also suspects bad pacing without forced FIFO. These logs do not
+  prove the VSync-boundary defect caused their difference, and do not isolate CE GPU cost from
+  game/runtime/driver scheduling. No claim of a complete pacing fix or hardware validation.
+  A same-scene run on the corrected build, including default VSync when the issue recurs and
+  whether an FSR off/on cycle changes it, remains needed. No feature was disabled as a workaround.
+
 ## Graph scrolling under frame generation
 
 - A scrolling graph advances one slot per drawn frame, which is automatic while every drawn frame produces exactly

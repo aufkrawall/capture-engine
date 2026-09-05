@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-05 - Talos good/bad comparison: FFX VSync input boundary correction; random pacing unresolved
+
+Compared `talosgood` (6490) and `talosbad` (6489). Both use the official callback with similar CPU
+cost and clean upload/registration telemetry, but steady display interval stddev differs by ~2x.
+Neither records callback GPU duration. Both request FIFO; the user suspects recurrence without
+forced FIFO too. Do not treat the previous claimed fixes as proof that every pacing issue is solved.
+
+FFX proxy Present/Present1 now receives user VSync intent before AMD schedules outputs; inner
+DXGI paths preserve that runtime's parameters while the native source hook owns policy. Previously
+only the downstream call was rewritten. Bounded source/output diagnostics and regression coverage
+protect the ownership handoff, including suspended FG and DLSS/native recovery. No features,
+rendering routes, GPU work, or wait policy changed. Hardware pacing validation remains open.
+Evidence, source anchors and limitations: [display-change-timing](../display-change-timing.md).
+
 ### 2026-09-05 - Talos `talosbad` session on build 6489: FSR configure flapping confirmed as game behavior
 
 Captured on build 6489 (all session fixes active). The game calls `ffxConfigure` with `frameGenerationEnabled`

@@ -16,6 +16,8 @@ namespace DXGIShared {
 // the DXGI present/overlay path.
 void SetVulkanActiveForDXGIPresentPath(bool active);
 bool IsVulkanActive();
+// Native FFX receives user VSync intent at its proxy input, before scheduling outputs.
+void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags);
 // Creation-time counterpart to the Present/Resize pass-through rule. This is
 // deliberately checked by every residual factory/swapchain hook because those
 // hooks may have been installed before Vulkan ownership became observable.

@@ -37,6 +37,16 @@ inline bool ShouldApplyCePresentationPolicy(bool vulkanLayerOwnsPresentation) {
     return !vulkanLayerOwnsPresentation;
 }
 
+// A hooked FFX source Present already applied user intent before AMD scheduled
+// this output. Preserve the runtime's interval/flags, including suspended FG.
+// An installed source hook alone is not ownership: DLSS and native recovery
+// must continue applying their existing final-output policy.
+inline bool ShouldPreserveNativeFGOutputVSync(bool nativeRuntimeOwnsPresentation,
+                                              bool sourcePresentHookInstalled,
+                                              bool streamlineFGRunning) {
+    return nativeRuntimeOwnsPresentation && sourcePresentHookInstalled && !streamlineFGRunning;
+}
+
 // Ceiling for the flip-queue pacing wait.  A pacing wait is a throttle, never a
 // lock: CE must not be able to hold a present thread indefinitely no matter what
 // the presentation manager does with the waitable object.

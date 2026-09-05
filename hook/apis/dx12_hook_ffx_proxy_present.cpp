@@ -259,6 +259,33 @@ static void DX12_ObserveFFXProxyApplicationSourcePresent(int64_t presentQpcUs) {
     metrics->ObserveApplicationPresent(presentQpcUs);
 }
 
+// Apply at the application boundary so AMD sees the same VSync intent that
+// its generated outputs will use. Rewriting only the inner DXGI call is too late.
+static void DX12_ApplyFFXProxyVSyncOverride(UINT& syncInterval, UINT& flags) {
+    if ((flags & DXGI_PRESENT_TEST) != 0)
+        return;
+    const UINT incomingSync = syncInterval;
+    const UINT incomingFlags = flags;
+    ProcessVSyncOverride(syncInterval, flags);
+    static thread_local UINT previousSync = UINT_MAX;
+    static thread_local UINT previousFlags = UINT_MAX;
+    static thread_local UINT previousIncomingSync = UINT_MAX;
+    static thread_local UINT previousIncomingFlags = UINT_MAX;
+    if (previousSync != syncInterval || previousFlags != flags ||
+        previousIncomingSync != incomingSync || previousIncomingFlags != incomingFlags) {
+        static thread_local uint32_t changes = 0;
+        ++changes;
+        if (changes <= 10 || changes % 300 == 0)
+            HookLogImportant("FFX proxy VSync: input(sync=%u flags=0x%X) forwarded(sync=%u flags=0x%X); "
+                             "runtime schedules outputs from the forwarded intent",
+                             incomingSync, incomingFlags, syncInterval, flags);
+        previousSync = syncInterval;
+        previousFlags = flags;
+        previousIncomingSync = incomingSync;
+        previousIncomingFlags = incomingFlags;
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self, UINT SyncInterval, UINT Flags) {
     g_FFXProxyPresentDetoursInFlight.fetch_add(1, std::memory_order_acq_rel);
     auto inFlightGuard = ce::make_scope_guard([]() {
@@ -277,6 +304,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
+        DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present");
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();
@@ -304,6 +332,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
+        DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present1");
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();

@@ -404,7 +404,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
     if (!fgActive) {
-        ProcessVSyncOverride(SyncInterval, Flags);
+        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, Flags);
     } else if (callCount < 20) {
         WrapperLog("Present: Skipping VSync override because FG is active");
     }
@@ -642,7 +642,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
     if (!g_FGCompat.IsFGActive()) {
-        ProcessVSyncOverride(SyncInterval, PresentFlags);
+        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, PresentFlags);
     }
 
     // CRITICAL: Process frame for capture BEFORE calling real Present
