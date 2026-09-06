@@ -26,6 +26,34 @@ TrayIcon::~TrayIcon() {
         DestroyWindow(hWnd);
 }
 
+static thread_local HHOOK s_hTrayMenuCbtHook = nullptr;
+
+static LRESULT CALLBACK TrayMenuCbtProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HCBT_CREATEWND) {
+        auto* pCreate = reinterpret_cast<CBT_CREATEWNDW*>(lParam);
+        if (pCreate && pCreate->lpcs) {
+            const auto* lpszClass = reinterpret_cast<const wchar_t*>(pCreate->lpcs->lpszClass);
+            bool isMenu = false;
+            if (reinterpret_cast<uintptr_t>(lpszClass) <= 0xFFFF) {
+                isMenu = (reinterpret_cast<uintptr_t>(lpszClass) == 0x8000);
+            } else if (lpszClass) {
+                isMenu = (wcscmp(lpszClass, L"#32768") == 0);
+            }
+            if (isMenu) {
+                pCreate->lpcs->dwExStyle |= WS_EX_TOPMOST;
+                pCreate->hwndInsertAfter = HWND_TOPMOST;
+            }
+        }
+    } else if (nCode == HCBT_ACTIVATE) {
+        HWND hwnd = reinterpret_cast<HWND>(wParam);
+        wchar_t cls[32] = {0};
+        if (GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) && wcscmp(cls, L"#32768") == 0) {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+    return CallNextHookEx(s_hTrayMenuCbtHook, nCode, wParam, lParam);
+}
+
 void TrayIcon::InitWindow() {
     taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
     if (taskbarCreatedMessage == 0)
@@ -41,9 +69,10 @@ void TrayIcon::InitWindow() {
 
     // Use a hidden top-level tool window instead of a message-only window so
     // Explorer can observe a real UI window during launch and clear the startup
-    // wait cursor promptly.
-    hWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "CaptureEngineTray", "CaptureEngine", WS_POPUP, 0, 0, 0,
-                           0, NULL, NULL, hInstance, this);
+    // wait cursor promptly. Mark WS_EX_TOPMOST so popup menus owned by this window
+    // inherit topmost status over the taskbar and fullscreen games.
+    hWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, "CaptureEngineTray", "CaptureEngine",
+                           WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, this);
     if (!hWnd) {
         LogError("[Tray] Failed to create notification window (error=%lu)", GetLastError());
         return;
@@ -107,11 +136,35 @@ void TrayIcon::ShowContextMenu() {
     if (!GetCursorPos(&pt))
         return;
 
-    SetForegroundWindow(hWnd);
+    // Temporarily clear WS_EX_NOACTIVATE and ensure WS_EX_TOPMOST while showing the context menu
+    // so Windows allows our window to take foreground focus and forces owned popups above the taskbar.
+    const LONG_PTR originalExStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+    SetWindowLongPtr(hWnd, GWL_EXSTYLE, (originalExStyle & ~WS_EX_NOACTIVATE) | WS_EX_TOPMOST);
+
+    // Position the 0x0 window at cursor and show without stealing focus yet.
+    SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+
+    // Bring hWnd to the foreground. If a fullscreen borderless game is running, attach thread
+    // input so SetForegroundWindow succeeds reliably.
+    HWND hForeground = GetForegroundWindow();
+    DWORD foregroundThreadId = hForeground ? GetWindowThreadProcessId(hForeground, nullptr) : 0;
+    DWORD currentThreadId = GetCurrentThreadId();
+    if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId) {
+        AttachThreadInput(currentThreadId, foregroundThreadId, TRUE);
+        SetForegroundWindow(hWnd);
+        SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE);
+        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
+    } else {
+        SetForegroundWindow(hWnd);
+        SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE);
+    }
 
     HMENU hMenu = CreatePopupMenu();
-    if (!hMenu)
+    if (!hMenu) {
+        ShowWindow(hWnd, SW_HIDE);
+        SetWindowLongPtr(hWnd, GWL_EXSTYLE, originalExStyle);
         return;
+    }
 
     constexpr UINT kIdOpenConfig = 1001;
     constexpr UINT kIdInstallPawnIo = 1002;
@@ -131,9 +184,92 @@ void TrayIcon::ShowContextMenu() {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
 
-    const UINT cmd =
-        TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, nullptr);
+    // Detect the taskbar rectangle and monitor bounds to prevent the context menu from
+    // overlapping behind or under the taskbar.
+    RECT rcExclude = {0};
+    bool hasExcludeRect = false;
+
+    HWND hPointWnd = WindowFromPoint(pt);
+    if (hPointWnd) {
+        HWND hRoot = GetAncestor(hPointWnd, GA_ROOT);
+        if (hRoot) {
+            wchar_t cls[64] = {0};
+            if (GetClassNameW(hRoot, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) &&
+                (wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0)) {
+                if (GetWindowRect(hRoot, &rcExclude)) {
+                    hasExcludeRect = true;
+                }
+            }
+        }
+    }
+
+    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {sizeof(mi)};
+    const bool hasMonInfo = (hMon && GetMonitorInfoW(hMon, &mi));
+
+    if (!hasExcludeRect && hasMonInfo) {
+        if (mi.rcWork.bottom < mi.rcMonitor.bottom && pt.y >= mi.rcWork.bottom) {
+            rcExclude = {mi.rcMonitor.left, mi.rcWork.bottom, mi.rcMonitor.right, mi.rcMonitor.bottom};
+            hasExcludeRect = true;
+        } else if (mi.rcWork.top > mi.rcMonitor.top && pt.y <= mi.rcWork.top) {
+            rcExclude = {mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcWork.top};
+            hasExcludeRect = true;
+        } else if (mi.rcWork.left > mi.rcMonitor.left && pt.x <= mi.rcWork.left) {
+            rcExclude = {mi.rcMonitor.left, mi.rcMonitor.top, mi.rcWork.left, mi.rcMonitor.bottom};
+            hasExcludeRect = true;
+        } else if (mi.rcWork.right < mi.rcMonitor.right && pt.x >= mi.rcWork.right) {
+            rcExclude = {mi.rcWork.right, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom};
+            hasExcludeRect = true;
+        }
+    }
+
+    if (!hasExcludeRect) {
+        rcExclude = {pt.x - 16, pt.y - 16, pt.x + 16, pt.y + 16};
+        hasExcludeRect = true;
+    }
+
+    // Determine alignment: if the taskbar is at the bottom (or cursor in lower half),
+    // open the menu upwards above the taskbar so items like "Close" are fully visible and clickable.
+    UINT uFlags = TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY;
+    const bool isBottomTaskbar =
+        (hasExcludeRect && rcExclude.top > (hasMonInfo ? mi.rcMonitor.top : 0) &&
+         rcExclude.bottom >= (hasMonInfo ? mi.rcMonitor.bottom : rcExclude.top));
+    const bool isBottomHalf = hasMonInfo ? (pt.y >= (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2) : true;
+
+    int menuY = pt.y;
+    if (isBottomTaskbar || isBottomHalf) {
+        uFlags |= TPM_BOTTOMALIGN | TPM_VERTICAL;
+        if (hasExcludeRect && rcExclude.top > 0)
+            menuY = rcExclude.top;
+    } else {
+        uFlags |= TPM_TOPALIGN | TPM_VERTICAL;
+        if (hasExcludeRect && rcExclude.bottom > rcExclude.top)
+            menuY = rcExclude.bottom;
+    }
+
+    const bool isRightHalf = hasMonInfo ? (pt.x > (mi.rcMonitor.left + mi.rcMonitor.right) / 2) : true;
+    if (isRightHalf) {
+        uFlags |= TPM_RIGHTALIGN;
+    } else {
+        uFlags |= TPM_LEFTALIGN;
+    }
+
+    TPMPARAMS tpm = {sizeof(TPMPARAMS), rcExclude};
+
+    // Install thread-local CBT hook to force WS_EX_TOPMOST on the system popup menu (#32768)
+    // as it is being created and activated.
+    s_hTrayMenuCbtHook = SetWindowsHookExW(WH_CBT, TrayMenuCbtProc, nullptr, GetCurrentThreadId());
+
+    const UINT cmd = TrackPopupMenuEx(hMenu, uFlags, pt.x, menuY, hWnd, &tpm);
+
+    if (s_hTrayMenuCbtHook) {
+        UnhookWindowsHookEx(s_hTrayMenuCbtHook);
+        s_hTrayMenuCbtHook = nullptr;
+    }
+
     DestroyMenu(hMenu);
+    ShowWindow(hWnd, SW_HIDE);
+    SetWindowLongPtr(hWnd, GWL_EXSTYLE, originalExStyle);
     PostMessage(hWnd, WM_NULL, 0, 0);
 
     if (cmd == kIdOpenConfig) {
@@ -164,6 +300,12 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
     if (pThis && pThis->taskbarCreatedMessage != 0 && message == pThis->taskbarCreatedMessage) {
         pThis->RestoreAfterTaskbarCreated();
         return 0;
+    } else if (message == WM_INITMENUPOPUP) {
+        HWND hMenuWnd = FindWindowW(L"#32768", nullptr);
+        if (hMenuWnd) {
+            SetWindowPos(hMenuWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        return 0;
     } else if (message == WM_TRAYICON) {
         if (pThis && pThis->shuttingDown) {
             // Ignore all clicks during shutdown
@@ -172,7 +314,7 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
         if (lParam == WM_LBUTTONUP) {
             if (pThis && pThis->callbacks.onOpenConfig)
                 pThis->callbacks.onOpenConfig();
-        } else if (lParam == WM_RBUTTONUP) {
+        } else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
             if (pThis)
                 pThis->ShowContextMenu();
         }

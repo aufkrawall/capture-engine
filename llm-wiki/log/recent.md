@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-06 - Tray right-click context menu forced topmost and positioned above Windows taskbar
+
+Right-clicking the notification area tray icon while a fullscreen borderless game is running previously allowed the context menu to render behind the Windows taskbar (class `Shell_TrayWnd`), occluding bottom items like "Close".
+Root causes: (1) `hWnd` was created without `WS_EX_TOPMOST` and with `WS_EX_NOACTIVATE`, so owned popups (`#32768`) remained in the non-topmost Z-order band below the topmost taskbar; (2) `SetForegroundWindow` on the hidden inactive window could fail without thread-input attachment when a fullscreen game held foreground lock; (3) `TrackPopupMenu` defaulted to top-alignment (`TPM_TOPALIGN`) anchored at the tray cursor without taskbar exclusion, allowing the menu to span downward across the taskbar bounding box.
+Fix: `hWnd` is created with `WS_EX_TOPMOST`; before displaying the menu, `WS_EX_NOACTIVATE` is temporarily cleared, `hWnd` is positioned at the cursor and brought to the foreground with `AttachThreadInput` if needed; `TrackPopupMenuEx` is used with `TPMPARAMS.rcExclude` bound to the detected taskbar rect and `TPM_BOTTOMALIGN | TPM_VERTICAL` to anchor the menu above bottom-docked taskbars; a thread-local `WH_CBT` hook intercepts `#32768` creation and activation to force `WS_EX_TOPMOST` and `HWND_TOPMOST`; `WM_INITMENUPOPUP` redundantly reinforces topmost status. Unit coverage in `tests/test_tray_source.cpp`.
+
+### 2026-09-06 - New Talos logs move random FSR jitter downstream of PresentStart; passive fix/instrumentation hardened
+
+In `talosbadintheend`, the last/bad process has 858 smooth runtime PresentStart intervals
+(`stddev=743 us`) paired 1:1 with 858 jagged physical display intervals (`stddev=2537 us`,
+`p1/p50/p99=6900/10700/17000 us`). The first three starts were physically smooth. Callback/proxy
+CPU costs, ECL registrations, routing, and re-enable cadence do not discriminate. The failure boundary
+is now after PresentStart, not irregular AMD presenter calls; GPU completion/driver flip scheduling/
+scanout remain unresolved.
+
+`[FSRPacingHealth]` now uses exact time-stamped, FSR-tagged disjoint windows: startup/off/DLSS and
+edge-spanning intervals are excluded, while Talos's brief off/on configures become reported segments
+instead of preventing a window from filling. It automatically labels the observed downstream-jitter
+signature and includes PresentStart-to-screen distribution. Host `[DisplayTiming]` carries the same
+duration distribution. The housekeeping thread now stays at normal priority and default timer
+resolution, with `[HookThreadStages]` attributing its work. All timing additions are passive—no GPU
+query, extra submission, Signal, wait, or polling. Queue adoption remains a separate deterministic
+performance lead, not a good/bad-start discriminator; no unproven ownership rewrite was made.
+
 ### 2026-09-05 - Bad-start FSR pacing signature quantified; pacing-health telemetry added
 
 Session `talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood` (0.1.6491, two process starts) gives
@@ -20,7 +44,8 @@ THREAD_PRIORITY_HIGHEST - presenter-preemption candidate), and `CE_FG_COST_PROBE
 output buffer is separate). Unit coverage: `tests/test_pacing_health.cpp` (ComputeChannelStats on
 the measured good/bad distributions, ring wrap, outlier drop). Next step is the hardware A/B
 matrix (CE overlay / CE overlayEnabled=0 / no CE) using `[FSRPacingHealth]` - it has never been run.
-Full data and candidate list: [display-change-timing](../display-change-timing.md).
+Full data and candidate list: [display-change-timing](../display-change-timing.md). The 2026-09-06 entry above
+supersedes the old interpretation that runtime Present entry itself was irregular and the larger A/B matrix below.
 
 ### 2026-09-05 - Talos good/bad comparison: FFX VSync input boundary correction; random pacing unresolved
 
