@@ -65,9 +65,9 @@ TEST(TrayIconSourceTest, EnsuresContextMenuOpensOnTopOfTaskbar) {
     EXPECT_NE(showMenuBody.find("TPMPARAMS tpm = {sizeof(TPMPARAMS), rcExclude};"), std::string::npos);
     EXPECT_NE(showMenuBody.find("uFlags |= TPM_BOTTOMALIGN | TPM_VERTICAL;"), std::string::npos);
 
-    // Must install CBT hook to ensure popup menu window (#32768) is topmost
-    EXPECT_NE(showMenuBody.find("SetWindowsHookExW(WH_CBT, TrayMenuCbtProc"), std::string::npos);
-    EXPECT_NE(showMenuBody.find("UnhookWindowsHookEx(s_hTrayMenuCbtHook);"), std::string::npos);
+    // Must NOT install CBT hook because modifying #32768 creation parameters aborts TrackPopupMenuEx in User32
+    EXPECT_EQ(source.find("WH_CBT"), std::string::npos);
+    EXPECT_EQ(source.find("TrayMenuCbtProc"), std::string::npos);
 
     // WndProc must handle WM_INITMENUPOPUP to enforce topmost on the popup menu
     const std::string wndProcBody = source.substr(wndProc);

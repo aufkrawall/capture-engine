@@ -26,34 +26,6 @@ TrayIcon::~TrayIcon() {
         DestroyWindow(hWnd);
 }
 
-static thread_local HHOOK s_hTrayMenuCbtHook = nullptr;
-
-static LRESULT CALLBACK TrayMenuCbtProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HCBT_CREATEWND) {
-        auto* pCreate = reinterpret_cast<CBT_CREATEWNDW*>(lParam);
-        if (pCreate && pCreate->lpcs) {
-            const auto* lpszClass = reinterpret_cast<const wchar_t*>(pCreate->lpcs->lpszClass);
-            bool isMenu = false;
-            if (reinterpret_cast<uintptr_t>(lpszClass) <= 0xFFFF) {
-                isMenu = (reinterpret_cast<uintptr_t>(lpszClass) == 0x8000);
-            } else if (lpszClass) {
-                isMenu = (wcscmp(lpszClass, L"#32768") == 0);
-            }
-            if (isMenu) {
-                pCreate->lpcs->dwExStyle |= WS_EX_TOPMOST;
-                pCreate->hwndInsertAfter = HWND_TOPMOST;
-            }
-        }
-    } else if (nCode == HCBT_ACTIVATE) {
-        HWND hwnd = reinterpret_cast<HWND>(wParam);
-        wchar_t cls[32] = {0};
-        if (GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) && wcscmp(cls, L"#32768") == 0) {
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-    }
-    return CallNextHookEx(s_hTrayMenuCbtHook, nCode, wParam, lParam);
-}
-
 void TrayIcon::InitWindow() {
     taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
     if (taskbarCreatedMessage == 0)
@@ -136,54 +108,6 @@ void TrayIcon::ShowContextMenu() {
     if (!GetCursorPos(&pt))
         return;
 
-    // Temporarily clear WS_EX_NOACTIVATE and ensure WS_EX_TOPMOST while showing the context menu
-    // so Windows allows our window to take foreground focus and forces owned popups above the taskbar.
-    const LONG_PTR originalExStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
-    SetWindowLongPtr(hWnd, GWL_EXSTYLE, (originalExStyle & ~WS_EX_NOACTIVATE) | WS_EX_TOPMOST);
-
-    // Position the 0x0 window at cursor and show without stealing focus yet.
-    SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
-
-    // Bring hWnd to the foreground. If a fullscreen borderless game is running, attach thread
-    // input so SetForegroundWindow succeeds reliably.
-    HWND hForeground = GetForegroundWindow();
-    DWORD foregroundThreadId = hForeground ? GetWindowThreadProcessId(hForeground, nullptr) : 0;
-    DWORD currentThreadId = GetCurrentThreadId();
-    if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId) {
-        AttachThreadInput(currentThreadId, foregroundThreadId, TRUE);
-        SetForegroundWindow(hWnd);
-        SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE);
-        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
-    } else {
-        SetForegroundWindow(hWnd);
-        SetWindowPos(hWnd, HWND_TOPMOST, pt.x, pt.y, 0, 0, SWP_NOSIZE);
-    }
-
-    HMENU hMenu = CreatePopupMenu();
-    if (!hMenu) {
-        ShowWindow(hWnd, SW_HIDE);
-        SetWindowLongPtr(hWnd, GWL_EXSTYLE, originalExStyle);
-        return;
-    }
-
-    constexpr UINT kIdOpenConfig = 1001;
-    constexpr UINT kIdInstallPawnIo = 1002;
-    constexpr UINT kIdUninstallPawnIo = 1003;
-    constexpr UINT kIdClose = 1004;
-
-    AppendMenuW(hMenu, MF_STRING, kIdOpenConfig, L"Open config");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-
-    const bool installed = callbacks.isPawnIoInstalled ? callbacks.isPawnIoInstalled() : false;
-    if (installed) {
-        AppendMenuW(hMenu, MF_STRING, kIdUninstallPawnIo, L"Uninstall PawnIO");
-    } else {
-        AppendMenuW(hMenu, MF_STRING, kIdInstallPawnIo, L"Install PawnIO");
-    }
-
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
-
     // Detect the taskbar rectangle and monitor bounds to prevent the context menu from
     // overlapping behind or under the taskbar.
     RECT rcExclude = {0};
@@ -228,6 +152,51 @@ void TrayIcon::ShowContextMenu() {
         hasExcludeRect = true;
     }
 
+    // Temporarily clear WS_EX_NOACTIVATE and ensure WS_EX_TOPMOST while showing the context menu
+    // so Windows allows our window to take foreground focus and forces owned popups above the taskbar.
+    const LONG_PTR originalExStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+    SetWindowLongPtr(hWnd, GWL_EXSTYLE, (originalExStyle & ~WS_EX_NOACTIVATE) | WS_EX_TOPMOST);
+
+    // Bring hWnd to the foreground and ensure it is topmost. If a fullscreen borderless game is running,
+    // attach thread input so SetForegroundWindow succeeds reliably.
+    HWND hForeground = GetForegroundWindow();
+    DWORD foregroundThreadId = hForeground ? GetWindowThreadProcessId(hForeground, nullptr) : 0;
+    DWORD currentThreadId = GetCurrentThreadId();
+    if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId) {
+        AttachThreadInput(currentThreadId, foregroundThreadId, TRUE);
+        SetForegroundWindow(hWnd);
+        SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
+    } else {
+        SetForegroundWindow(hWnd);
+        SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu) {
+        ShowWindow(hWnd, SW_HIDE);
+        SetWindowLongPtr(hWnd, GWL_EXSTYLE, originalExStyle);
+        return;
+    }
+
+    constexpr UINT kIdOpenConfig = 1001;
+    constexpr UINT kIdInstallPawnIo = 1002;
+    constexpr UINT kIdUninstallPawnIo = 1003;
+    constexpr UINT kIdClose = 1004;
+
+    AppendMenuW(hMenu, MF_STRING, kIdOpenConfig, L"Open config");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    const bool installed = callbacks.isPawnIoInstalled ? callbacks.isPawnIoInstalled() : false;
+    if (installed) {
+        AppendMenuW(hMenu, MF_STRING, kIdUninstallPawnIo, L"Uninstall PawnIO");
+    } else {
+        AppendMenuW(hMenu, MF_STRING, kIdInstallPawnIo, L"Install PawnIO");
+    }
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
+
     // Determine alignment: if the taskbar is at the bottom (or cursor in lower half),
     // open the menu upwards above the taskbar so items like "Close" are fully visible and clickable.
     UINT uFlags = TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY;
@@ -256,16 +225,7 @@ void TrayIcon::ShowContextMenu() {
 
     TPMPARAMS tpm = {sizeof(TPMPARAMS), rcExclude};
 
-    // Install thread-local CBT hook to force WS_EX_TOPMOST on the system popup menu (#32768)
-    // as it is being created and activated.
-    s_hTrayMenuCbtHook = SetWindowsHookExW(WH_CBT, TrayMenuCbtProc, nullptr, GetCurrentThreadId());
-
     const UINT cmd = TrackPopupMenuEx(hMenu, uFlags, pt.x, menuY, hWnd, &tpm);
-
-    if (s_hTrayMenuCbtHook) {
-        UnhookWindowsHookEx(s_hTrayMenuCbtHook);
-        s_hTrayMenuCbtHook = nullptr;
-    }
 
     DestroyMenu(hMenu);
     ShowWindow(hWnd, SW_HIDE);
