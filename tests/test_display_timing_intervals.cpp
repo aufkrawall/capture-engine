@@ -91,3 +91,23 @@ TEST(DisplayIntervalStatsTest, SaturatesRatherThanOverflowingTheHistogram) {
     EXPECT_EQ(stats.percentileUs(0.99),
               static_cast<int64_t>(DisplayIntervalStats::kBucketCount - 1) * DisplayIntervalStats::kBucketWidthUs);
 }
+
+TEST(DisplayDurationStatsTest, ReportsPresentToDisplayDistributionPerWindow) {
+    DisplayDurationStats stats;
+    stats.Observe(-1);
+    stats.Observe(900);
+    stats.Observe(1700);
+    stats.Observe(2100);
+    stats.Observe(3200);
+    EXPECT_EQ(stats.count(), 4u);
+    EXPECT_EQ(stats.meanUs(), 1975);
+    EXPECT_EQ(stats.minUs(), 900);
+    EXPECT_EQ(stats.maxUs(), 3200);
+    EXPECT_EQ(stats.percentileUs(0.50), 1700);
+    EXPECT_EQ(stats.percentileUs(0.95), 3200);
+    EXPECT_GT(stats.stdDevUs(), 800);
+
+    stats.StartWindow();
+    EXPECT_EQ(stats.count(), 0u);
+    EXPECT_EQ(stats.meanUs(), 0);
+}

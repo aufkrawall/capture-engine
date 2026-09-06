@@ -228,7 +228,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
       HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
       if (hThread) {
-        SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
+        // The service loop is latency-tolerant housekeeping. Keeping the new
+        // thread's normal priority prevents it from preempting game/runtime
+        // presenter threads according to random per-process core placement.
         CloseHandle(hThread);
       }
     }

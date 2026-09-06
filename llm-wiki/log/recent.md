@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-06 - Five-start Talos reproduction rules out hook-service priority; callback-owned FSR ECL made transparent
+
+`20260906_160321` on build 0.1.6497 has four clean starts and bad final PID 21880. The exact stable
+window reproduces the downstream signature: PresentStart stddev 755 us, physical completion stddev
+2457 us / p95 16202 us / 381 permille late, and PresentStart-to-screen stddev 1237 us. Clean starts
+were 263-321 us PresentStart and 745-858 us physical. Queue roles, active-FG registrations=0,
+callback work, and hook-thread stage costs match; normal service priority/default timer resolution
+did not remove the failure and service-thread preemption is ruled out.
+
+Authoritative app-callback FSR needs no ECL-side overlay, discovery, or timing observation: AMD
+already provides the output resource/command list per real and generated frame. Its ECL detour now
+uses a recursion-safe transparent forward before CE diagnostics, classification, module lookup, and
+observers, removing about 1500 unnecessary traversals/s from runtime/game submission threads. All
+ambiguous routes retain full processing: no-callback FSR, Streamline/PostSL overlap, CE submissions,
+device removal, and FSR-off discovery. The health classifier was recalibrated so the observed clean
+78-120 permille physical tail is healthy while the bad 2.46 ms distribution remains degraded. One
+short multi-start hardware check is enough to validate this candidate; the exact queue-adoption
+rewrite remains deliberately deferred because no good/bad ownership discriminator exists.
+
 ### 2026-09-06 - Tray right-click context menu forced topmost and positioned above Windows taskbar
 
 Right-clicking the notification area tray icon while a fullscreen borderless game is running previously allowed the context menu to render behind the Windows taskbar (class `Shell_TrayWnd`), occluding bottom items like "Close".
@@ -39,7 +58,7 @@ The bad state is per-process, survives FG mode switches, random per start regard
 Added `ce::pacing_health` interval rings + `[FSRPacingHealth]` (10 s aggregate with late-permille
 classification, callback draw counts app/gen/genSkip), `[FSRActivationCadence]` at enabled
 ffxConfigure and authoritative takeover, `[HookThreadPass]` (hook-thread service cost at
-THREAD_PRIORITY_HIGHEST - presenter-preemption candidate), and `CE_FG_COST_PROBE=0x20000`
+THREAD_PRIORITY_HIGHEST - a then-unresolved candidate, ruled out by the newer entry above), and `CE_FG_COST_PROBE=0x20000`
 (skip overlay draw on generated frames; diagnostic only - a real skip would flicker because each
 output buffer is separate). Unit coverage: `tests/test_pacing_health.cpp` (ComputeChannelStats on
 the measured good/bad distributions, ring wrap, outlier drop). Next step is the hardware A/B
@@ -128,9 +147,9 @@ Analyzed and resolved four minidumps from `logs/20260904_143301` produced during
    - Added unit tests in `tests/test_swapchain_probe_lifetime.cpp`: `PromoteInterfacesDoesNotDuplicateReferencesWhenAlreadyPopulated`, `GlobalSwapchainDetoursConsumeFactoryReferenceAfterWrapping`, and `StreamlineLifecyclePreservesRuntimeAcrossModeSwitches`.
    - Full `--verify` gate passed with 0 warnings, ASan/UBSan green, all 713 clang-tidy translation units cached and clean.
 
-### 2026-09-04 - Fix FSR FG real on-screen frame pacing stutter by prioritizing official presentCallback and eliminating extra ECL/signals on AMD presentation queue
+### 2026-09-04 - Remove one FSR pacing hazard: prioritize official presentCallback and eliminate extra ECL/signals on AMD presentation queue
 
-Fixed root cause of intermittent on-screen frame pacing stutter in *The Talos Principle: Reawakened* (`Talos1-Win64-Shipping.exe`) with native AMD FSR Frame Generation:
+Fixed a real pacing hazard in *The Talos Principle: Reawakened* (`Talos1-Win64-Shipping.exe`) with native AMD FSR Frame Generation. Later 2026-09-06 reproductions prove it was not the complete random bad-start cause:
 
 1. **Root Cause (Route B extra ECL on AMD's presentation queue):**
    - When a foreign overlay like Steam was loaded, `DecideBelowForeignChainFSRDeepDraw` (`hook/common/dx12_overlay_policy/ffx_routing.h`) activated Route B (`TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR`).
@@ -147,7 +166,7 @@ Fixed root cause of intermittent on-screen frame pacing stutter in *The Talos Pr
 
 ### 2026-09-04 - Faithful msBetweenDisplayChange reporting and elimination of FSR FG VEH rearm overhead
 
-Two root-cause improvements resolving FSR FG frame pacing and overlay fidelity:
+Two improvements to FSR FG frame pacing and overlay fidelity:
 
 1. **Faithful `msBetweenDisplayChange` without sugarcoating:**
    - The user clarified the core project requirement: the frame-time graph must faithfully reflect

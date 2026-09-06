@@ -2,54 +2,8 @@
 
 #include "../common/fg_cost_probe.h"
 #include "../common/hook_cpu_cost.h"
+#include "dx12_hook_ecl_forward.h"
 #include "dx12_hook_ecl_shared.h"
-
-
-#include "dx12_hook_internal.h"
-
-namespace {
-
-using EclBreakTargetClass = ce::dx12_overlay_policy::EclBreakTargetClass;
-
-EclBreakTargetClass ClassifyEclBreakTargetCandidate(ExecuteCommandListsPtr candidate) {
-    char modulePath[MAX_PATH] = {};
-    const bool resolved =
-        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(candidate), modulePath, sizeof(modulePath));
-    return ce::dx12_overlay_policy::ClassifyEclBreakTargetCandidate(resolved, modulePath);
-}
-
-// Chooses the deepest provably safe ExecuteCommandLists for the recursion-break
-// path. Never returns a known third-party overlay proxy hook (ReShade throws
-// std::system_error(resource_deadlock_would_occur) when re-entered with the
-// wrapped real queue — Talos + ReShade-only, session 20260813_041416) or CE's
-// own detour.
-ExecuteCommandListsPtr ResolveECLRecursionBreakTarget(ID3D12CommandQueue* pThis) {
-    void** queueVtable = pThis ? *reinterpret_cast<void***>(pThis) : nullptr;
-    char queueVtablePath[MAX_PATH] = {};
-    const bool queueVtableResolved =
-        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(queueVtable), queueVtablePath,
-                                        sizeof(queueVtablePath));
-
-    const ExecuteCommandListsPtr perQueueOriginal = GetOriginalExecuteCommandLists(pThis);
-    const ExecuteCommandListsPtr realD3D12Ecl = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-
-    switch (ce::dx12_overlay_policy::SelectEclRecursionBreakTarget(
-        ce::dx12_overlay_policy::ClassifyEclBreakTargetCandidate(queueVtableResolved, queueVtablePath),
-        ClassifyEclBreakTargetCandidate(perQueueOriginal), ClassifyEclBreakTargetCandidate(realD3D12Ecl),
-        ClassifyEclBreakTargetCandidate(oExecuteCommandLists))) {
-        case ce::dx12_overlay_policy::EclBreakSelection::kPerQueueOriginal:
-            return perQueueOriginal;
-        case ce::dx12_overlay_policy::EclBreakSelection::kRealD3D12Ecl:
-            return realD3D12Ecl;
-        case ce::dx12_overlay_policy::EclBreakSelection::kGlobalOriginal:
-            return oExecuteCommandLists;
-        case ce::dx12_overlay_policy::EclBreakSelection::kNone:
-            return nullptr;
-    }
-    return nullptr;
-}
-
-}  // namespace
 
 // Submissions whose queue the frame-generation fast path did not recognise, and which
 // therefore re-ran queue registration. Reported once per second next to ECL timing.
@@ -80,9 +34,6 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             original(pThis, NumCommandLists, ppCommandLists);
         return;
     }
-    // Frame generation multiplies submissions per frame, so this hook is on a
-    // hotter path than the present hook is.
-    ScopedHookCpuCost eclCpuCost(HookExecuteCommandListsCpuCost());
     if (HookIsShuttingDown()) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (!original)
@@ -118,6 +69,36 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
         return;
     }
+
+    const bool transparentNativeFSRCallbackEcl =
+        ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl(
+            g_FGCompat.IsFSRFGApiActive(),
+            dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire),
+            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
+            dx12_hook_s_insideCEOverlayECLDepth > 0);
+    if (transparentNativeFSRCallbackEcl) {
+        static thread_local bool s_loggedTransparentNativeFSRCallbackEcl = false;
+        if (!s_loggedTransparentNativeFSRCallbackEcl) {
+            static std::atomic<int> s_transparentThreadLogCount{0};
+            const int logCount = s_transparentThreadLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20) {
+                HookLogImportant(
+                    "DX12: Native FSR app-callback owns overlay/timing; transparently forwarding ECL on this "
+                    "submission thread (queue=%p tid=0x%04X log=%d) - CE discovery, classification, diagnostics "
+                    "and observers resume when FSR callback ownership ends",
+                    pThis, GetCurrentThreadId(), logCount + 1);
+            }
+            s_loggedTransparentNativeFSRCallbackEcl = true;
+        }
+        ce::dx12_ecl_forward::TransparentNativeFSRCallback(pThis, NumCommandLists, ppCommandLists);
+        return;
+    }
+
+    // Frame generation multiplies submissions per frame, so this hook is on a
+    // hotter path than the present hook is.
+    ScopedHookCpuCost eclCpuCost(HookExecuteCommandListsCpuCost());
 
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_traceEclN{0};
@@ -229,9 +210,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // with the wrapped real queue throws std::system_error
     // (resource_deadlock_would_occur) from ReShade's queue mutex (Talos +
     // ReShade-only, session 20260813_041416).
-    static thread_local int s_eclRecursionDepth = 0;
-    if (s_eclRecursionDepth > 0) {
-        if (s_eclRecursionDepth >= 2) {
+    if (ce::dx12_ecl_forward::recursionDepth > 0) {
+        if (ce::dx12_ecl_forward::recursionDepth >= 2) {
             // A previously selected break target looped back into CE. Stop
             // instead of recursing forever; the foreign hook above us is
             // mid-flight, so dropping this submission is the only safe exit.
@@ -241,14 +221,14 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 HookLogImportant(
                     "DX12: ECL recursion break target looped back - dropping submission "
                     "(queue=%p lists=%u depth=%d log=%d)",
-                    pThis, NumCommandLists, s_eclRecursionDepth, logCount + 1);
+                    pThis, NumCommandLists, ce::dx12_ecl_forward::recursionDepth, logCount + 1);
             }
             return;
         }
-        ExecuteCommandListsPtr breakTarget = ResolveECLRecursionBreakTarget(pThis);
+        ExecuteCommandListsPtr breakTarget = ce::dx12_ecl_forward::ResolveRecursionBreakTarget(pThis);
         if (breakTarget) {
-            ++s_eclRecursionDepth;
-            auto breakGuard = ce::make_scope_guard([&]() { --s_eclRecursionDepth; });
+            ++ce::dx12_ecl_forward::recursionDepth;
+            auto breakGuard = ce::make_scope_guard([&]() { --ce::dx12_ecl_forward::recursionDepth; });
             breakTarget(pThis, NumCommandLists, ppCommandLists);
         } else {
             static std::atomic<int> s_eclBreakUnresolvedLogCount{0};
@@ -257,13 +237,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 HookLogImportant(
                     "DX12: ECL recursion with no usable native break target - skipping forward "
                     "(queue=%p lists=%u depth=%d log=%d)",
-                    pThis, NumCommandLists, s_eclRecursionDepth, logCount + 1);
+                    pThis, NumCommandLists, ce::dx12_ecl_forward::recursionDepth, logCount + 1);
             }
         }
         return;
     }
-    ++s_eclRecursionDepth;
-    auto depthGuard = ce::make_scope_guard([&]() { --s_eclRecursionDepth; });
+    ++ce::dx12_ecl_forward::recursionDepth;
+    auto depthGuard = ce::make_scope_guard([&]() { --ce::dx12_ecl_forward::recursionDepth; });
 
     // Track that this thread is inside an ECL call.  During Alt+Tab, D3D12's
     // internal WaitImpl can pump window messages which may trigger Present →

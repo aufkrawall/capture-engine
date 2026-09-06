@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-09-04 (application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-06 (FSR-tagged pacing windows and PresentStart-to-screen attribution; application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -420,14 +420,18 @@ bit so a frame-rate A/B can attribute the cost. None of these recovered anything
 
 against 189-192 fps with no CE and 135.5 fps with CE unmodified.
 
-**What it is, so far.** Exactly one intervention recovers the frames: **`0x8000`, CE never storing the game's
-command queue in `g_CommandQueue`** - 183.1 fps, `Present` back to 4536 us, 1.92 of the 2.11 ms returned. The
-adjacent device publish (`0x4000`) and the vtable hook (`0x2000`) each recover nothing, so it is the queue adoption
-itself, through a per-frame consumer that survives every suppression in the table above. The three probes that
-looked like answers earlier (`0x10` ECL passthrough, `0x400` ECL early forward, `0x1000` registration suppressed)
-all share one side effect - CE never adopts a queue at all - and that, not what they were nominally removing, is
-why they were fast. **Open question, and the next step: name the per-frame reader of `g_CommandQueue` that makes
-the frame-generation runtime's `Present` block 2 ms longer.**
+**What `0x8000` isolates, so far.** Exactly one intervention recovers the frames: **`0x8000`, CE skips the queue
+adoption block** - 183.1 fps, `Present` back to 4536 us, 1.92 of the 2.11 ms returned. The adjacent device-publish
+probe (`0x4000`) and vtable-hook probe (`0x2000`) each recover nothing. The three probes that looked like answers
+earlier (`0x10` ECL passthrough, `0x400` ECL early forward, `0x1000` registration suppressed) all share one side
+effect - CE never reaches queue adoption - and that, not what they were nominally removing, is why they were fast.
+The `0x8000` block suppresses the owning queue reference, `g_CommandQueue` publication, and downstream
+initialization enabled by that state, so it does **not** yet prove that one pointer read is the mechanism.
+
+Do not conflate that deterministic uncapped test-app cost with the random Talos bad-start pacing state.
+`talosbadintheend` has the same queue-role snapshot and zero active-FG ECL registrations in its three good starts
+and last bad start, while only the physical cadence after PresentStart changes. `0x8000` also prevents the whole
+adoption block, so a production queue rewrite still needs a role/lifetime proof.
 
 **A real defect found on the way, fixed.** Under FSR FG the ECL detour re-ran full command-queue registration on
 **1290 of 1290 submissions per second**: the "known queue" fast path compares against four pointers CE knows, and a
@@ -441,6 +445,18 @@ render queue is the first DIRECT queue seen and predates any FG runtime, so an u
 belongs to the runtime. ECL coverage does not depend on it (the detour is on the queue vtable, shared by every
 queue of the device). `DX12 DIAG: ECL timing/1s` now reports `registrations=`, which is 0 after the fix and was
 equal to the submission count before it. This did **not** recover the 2 ms.
+
+**Callback-owned FSR ECL fast-forward.** The five-start `20260906_160321` reproduction again has four smooth
+starts followed by a bad one even with active-FG registrations at zero and the housekeeping thread at normal
+priority. Stable bad PID 21880 has PresentStart stddev 755 us versus physical-completion stddev 2457 us; the
+clean starts are 263-321 us versus 745-858 us. Although registration is gone, the ECL detour still traversed CE's
+diagnostics/classification/observers about 1500 times/s on AMD/game submission threads. App-callback native FSR
+does not use ECL as an overlay, discovery, or timing transport: AMD's callback supplies the exact output and
+command list. `ShouldTransparentForwardNativeFSRCallbackEcl` therefore forwards before those CE side effects
+while that exact route owns presentation. The fast forward keeps the foreign-hook recursion breaker. Internal
+no-callback FSR, Streamline/PostSL overlap, CE-owned submissions, device removal, and FSR-off discovery stay on
+the full path. This is a generic low-interference optimization, not yet hardware proof that ECL traversal caused
+the random downstream state.
 
 **Method notes worth keeping.**
 

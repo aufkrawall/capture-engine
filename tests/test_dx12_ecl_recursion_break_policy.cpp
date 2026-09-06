@@ -114,13 +114,14 @@ TEST(Dx12EclRecursionBreakPolicyTest, RecursionBreakUsesResolvedTargetAndNeverBl
     const std::string source = ReadSource("hook/apis/dx12_hook_ecl.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t recursionGuard = source.find("if (s_eclRecursionDepth > 0)");
+    const size_t recursionGuard = source.find("if (ce::dx12_ecl_forward::recursionDepth > 0)");
     ASSERT_NE(recursionGuard, std::string::npos);
 
-    const size_t resolveCall = source.find("ResolveECLRecursionBreakTarget(pThis)", recursionGuard);
+    const size_t resolveCall =
+        source.find("ce::dx12_ecl_forward::ResolveRecursionBreakTarget(pThis)", recursionGuard);
     const size_t breakForward = source.find("breakTarget(pThis, NumCommandLists, ppCommandLists)", recursionGuard);
-    const size_t outerDepthIncrement =
-        source.find("++s_eclRecursionDepth;\n    auto depthGuard = ce::make_scope_guard");
+    const size_t outerDepthIncrement = source.find(
+        "++ce::dx12_ecl_forward::recursionDepth;\n    auto depthGuard = ce::make_scope_guard");
     ASSERT_NE(resolveCall, std::string::npos);
     ASSERT_NE(breakForward, std::string::npos);
     ASSERT_NE(outerDepthIncrement, std::string::npos);
@@ -132,6 +133,13 @@ TEST(Dx12EclRecursionBreakPolicyTest, RecursionBreakUsesResolvedTargetAndNeverBl
     // re-entered ReShade's proxy hook in Talos (session 20260813_041416).
     const std::string breakBlock = source.substr(recursionGuard, outerDepthIncrement - recursionGuard);
     EXPECT_EQ(breakBlock.find("oExecuteCommandLists(pThis"), std::string::npos);
+
+    const std::string transparentForward = ReadSource("hook/apis/dx12_hook_ecl_forward.cpp");
+    ASSERT_FALSE(transparentForward.empty());
+    EXPECT_NE(transparentForward.find("recursionDepth >= 2"), std::string::npos);
+    EXPECT_NE(transparentForward.find("ResolveRecursionBreakTarget(queue)"), std::string::npos);
+    EXPECT_EQ(transparentForward.find("oExecuteCommandLists(queue"), std::string::npos)
+        << "the callback-owned fast path must retain the proven recursion-break policy";
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, QueueVTableHookPublishesNativeOriginalEagerly) {

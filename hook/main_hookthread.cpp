@@ -1,6 +1,6 @@
 #include "main_internal.h"
 #include "common/custom_overlay_dx12.h"
-#include "common/hook_cost_window.h"
+#include "common/hook_thread_stage_cost.h"
 
 namespace {
 
@@ -10,7 +10,12 @@ void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
 
 // Disjoint ~10 s service-cost windows for the monitor loop passes (the pass
 // cadence is ~10 Hz), owned by the single hook thread.
-ce::HookCostWindow<100> s_hookThreadPassCostWindow;
+ce::HookThreadStageCostWindow<100> s_hookThreadStageCostWindow;
+
+const ce::HookThreadStageCost& StageCost(const ce::HookThreadStageSnapshot& snapshot,
+                                         ce::HookThreadStage stage) {
+  return snapshot.stages[static_cast<std::size_t>(stage)];
+}
 
 }  // namespace
 
@@ -171,7 +176,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
   }
 
-  EarlyLog("HookThread: Started (PID=%d)", GetCurrentProcessId());
+  EarlyLog("HookThread: Started (PID=%d, priority=normal, timerResolution=default)",
+           GetCurrentProcessId());
 
   // Create Event for Async Hook Checks
   g_hCheckHooksEvent = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset
@@ -418,54 +424,105 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     DWORD now = GetTickCount();
 
-    // This thread runs at THREAD_PRIORITY_HIGHEST inside the game, so every pass
-    // is preemption pressure on the title's timing-critical threads (AMD's FSR FG
-    // presenter paces hardware flips from QPC on its own thread). Measure the
-    // service cost of each pass so a regression here is visible per start.
+    // Attribute the service pass by stage. Total-only measurements hid whether
+    // a collision came from the periodic module scan, UE5 reads, retirement, or
+    // ordinary IPC/lifecycle work.
     struct PassCostScope {
         int64_t enterUs;
-        ce::HookCostWindow<100>& window;
+        int64_t ipcEnterUs = 0;
+        ce::HookThreadStageCostWindow<100>& window;
+        void Observe(ce::HookThreadStage stage, int64_t stageEnterUs) {
+            window.Observe(stage, PerfLogger::GetQpcUs() - stageEnterUs);
+        }
         ~PassCostScope() {
-            if (const auto snapshot = window.Observe(PerfLogger::GetQpcUs() - enterUs, 0)) {
-                HookLogImportant("[HookThreadPass] passes=%llu avgUs=%llu maxUs=%llu over1ms=%llu",
-                                 static_cast<unsigned long long>(snapshot->calls),
-                                 static_cast<unsigned long long>(snapshot->selfUs / snapshot->calls),
-                                 static_cast<unsigned long long>(snapshot->selfMaxUs),
-                                 static_cast<unsigned long long>(snapshot->over1ms));
+            if (ipcEnterUs != 0)
+                Observe(ce::HookThreadStage::kIpcAndLifecycle, ipcEnterUs);
+            if (const auto snapshot = window.FinishPass(PerfLogger::GetQpcUs() - enterUs)) {
+                const auto& config = StageCost(*snapshot, ce::HookThreadStage::kConfig);
+                const auto& deferred = StageCost(*snapshot, ce::HookThreadStage::kDeferredRelease);
+                const auto& hooks = StageCost(*snapshot, ce::HookThreadStage::kHookScan);
+                const auto& present = StageCost(*snapshot, ce::HookThreadStage::kPresentHooks);
+                const auto& retire = StageCost(*snapshot, ce::HookThreadStage::kRetirement);
+                const auto& ue5 = StageCost(*snapshot, ce::HookThreadStage::kUE5);
+                const auto& ipc = StageCost(*snapshot, ce::HookThreadStage::kIpcAndLifecycle);
+                HookLogImportant(
+                    "[HookThreadStages] passes=%llu total(avg=%lluu max=%lluu over1ms=%llu) "
+                    "config(n=%llu avg=%lluu max=%lluu) deferred(n=%llu avg=%lluu max=%lluu) "
+                    "hooks(n=%llu avg=%lluu max=%lluu) present(n=%llu avg=%lluu max=%lluu) "
+                    "retire(n=%llu avg=%lluu max=%lluu) ue5(n=%llu avg=%lluu max=%lluu) "
+                    "ipc(n=%llu avg=%lluu max=%lluu)",
+                    static_cast<unsigned long long>(snapshot->passes),
+                    static_cast<unsigned long long>(snapshot->totalUs / snapshot->passes),
+                    static_cast<unsigned long long>(snapshot->maxUs),
+                    static_cast<unsigned long long>(snapshot->over1ms),
+                    static_cast<unsigned long long>(config.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(config)),
+                    static_cast<unsigned long long>(config.maxUs),
+                    static_cast<unsigned long long>(deferred.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(deferred)),
+                    static_cast<unsigned long long>(deferred.maxUs),
+                    static_cast<unsigned long long>(hooks.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(hooks)),
+                    static_cast<unsigned long long>(hooks.maxUs),
+                    static_cast<unsigned long long>(present.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(present)),
+                    static_cast<unsigned long long>(present.maxUs),
+                    static_cast<unsigned long long>(retire.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(retire)),
+                    static_cast<unsigned long long>(retire.maxUs),
+                    static_cast<unsigned long long>(ue5.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(ue5)),
+                    static_cast<unsigned long long>(ue5.maxUs),
+                    static_cast<unsigned long long>(ipc.calls),
+                    static_cast<unsigned long long>(ce::AverageHookThreadStageUs(ipc)),
+                    static_cast<unsigned long long>(ipc.maxUs));
             }
         }
-    } passCost{PerfLogger::GetQpcUs(), s_hookThreadPassCostWindow};
+    } passCost{PerfLogger::GetQpcUs(), 0, s_hookThreadStageCostWindow};
 
     // Periodically update active graphics config state
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are
     // calling it yet
+    int64_t stageEnterUs = PerfLogger::GetQpcUs();
     const GraphicsConfig activeGraphicsConfig = GetActiveGraphicsConfig();
+    passCost.Observe(ce::HookThreadStage::kConfig, stageEnterUs);
 
     // Process deferred releases (D3D11) on background thread
     // This prevents render thread stalls when destroying capture resources
+    stageEnterUs = PerfLogger::GetQpcUs();
     if (g_DX11Hook)
       g_DX11Hook->ProcessDeferredReleases();
+    passCost.Observe(ce::HookThreadStage::kDeferredRelease, stageEnterUs);
 
     bool periodicHookCheckDue = (now - lastPeriodicHookCheck) >= 1000;
     if (waitResult == WAIT_OBJECT_0 || periodicHookCheckDue) {
+      stageEnterUs = PerfLogger::GetQpcUs();
       if (periodicHookCheckDue) {
         lastPeriodicHookCheck = now;
       }
       // Event signaled or periodic tick - run detection
       RefreshThirdPartyOverlayIdentityCache();
       CheckAndInstallHooks();
+      passCost.Observe(ce::HookThreadStage::kHookScan, stageEnterUs);
     }
 
     // A Present-hook install postponed because a third-party overlay owned the
     // swapchain creation path during startup has to be retried from here; the
     // startup window it is waiting out ends without any further hook callback.
+    stageEnterUs = PerfLogger::GetQpcUs();
     if (g_DX12Hook)
       g_DX12Hook->ServicePendingPresentHooks();
+    passCost.Observe(ce::HookThreadStage::kPresentHooks, stageEnterUs);
+    stageEnterUs = PerfLogger::GetQpcUs();
     CustomOverlay::CollectRetiredDX12Backends();
+    passCost.Observe(ce::HookThreadStage::kRetirement, stageEnterUs);
 
     // Keep graphics/module hook installation ahead of the optional UE5 module
     // scan on every service pass as well as during initial startup.
+    stageEnterUs = PerfLogger::GetQpcUs();
     UE5::RefreshOverrides(activeGraphicsConfig);
+    passCost.Observe(ce::HookThreadStage::kUE5, stageEnterUs);
+    passCost.ipcEnterUs = PerfLogger::GetQpcUs();
 
     // Check for recording state changes
     static bool s_WasRecording = false;

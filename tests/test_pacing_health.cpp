@@ -22,7 +22,9 @@ using ce::pacing_health::ComputeChannelStats;
 using ce::pacing_health::kLateFlipThresholdUs;
 using ce::pacing_health::Observe;
 using ce::pacing_health::RecentCadence;
+using ce::pacing_health::Signature;
 using ce::pacing_health::Snapshot;
+using ce::pacing_health::SnapshotTaggedWindow;
 
 std::vector<uint32_t> GoodWindowSamples() {
     // ~90 Hz output cadence with the good session's tail: 1% of flips ~1.4 ms late.
@@ -38,14 +40,18 @@ std::vector<uint32_t> GoodWindowSamples() {
 }
 
 std::vector<uint32_t> BadWindowSamples() {
-    // The measured bad window: median ~11.2 ms, 12% of flips at 12.5-13 ms.
+    // The reproduced 20260906_160321 bad window: median ~11 ms with both early
+    // and late physical completions (p1 ~7.1 ms, p99 ~17 ms, stddev ~2.5 ms).
     std::vector<uint32_t> samples;
     samples.reserve(1000);
-    for (int i = 0; i < 880; i++) {
+    for (int i = 0; i < 700; i++) {
         samples.push_back(11228 + (i % 5) * 40 - 80);
     }
-    for (int i = 0; i < 120; i++) {
-        samples.push_back(13100);
+    for (int i = 0; i < 150; i++) {
+        samples.push_back(7100);
+    }
+    for (int i = 0; i < 150; i++) {
+        samples.push_back(17000);
     }
     return samples;
 }
@@ -54,7 +60,7 @@ std::vector<uint32_t> BadWindowSamples() {
 // PerformanceMetrics; flushing one full capacity makes every later Snapshot
 // assertion order-independent.
 void FlushRing(Channel channel, uint32_t intervalUs) {
-    for (uint32_t i = 0; i < 2048; i++) {
+    for (uint32_t i = 0; i < 4096; i++) {
         Observe(channel, intervalUs);
     }
 }
@@ -70,16 +76,15 @@ TEST(PacingHealthStats, UniformCadenceHasZeroLateShare) {
     EXPECT_EQ(stats.stddevUs, 0u);
 }
 
-TEST(PacingHealthStats, BadWindowClassifiesTwelvePercentLate) {
+TEST(PacingHealthStats, ReproducedBadWindowHasWidePhysicalCompletionDistribution) {
     const auto samples = BadWindowSamples();
     const auto stats = ComputeChannelStats(samples.data(), static_cast<uint32_t>(samples.size()));
     EXPECT_EQ(stats.samples, 1000u);
     EXPECT_NEAR(stats.medianUs, 11228u, 80u);
-    // 120 of 1000 samples at +1872 us over the median: past the 1200 us threshold.
-    EXPECT_NEAR(stats.latePermille, 120u, 6u);
-    EXPECT_GT(stats.stddevUs, 500u);
-    EXPECT_EQ(stats.p95Us, 13100u);
-    EXPECT_EQ(stats.maxUs, 13100u);
+    EXPECT_NEAR(stats.latePermille, 150u, 6u);
+    EXPECT_GT(stats.stddevUs, 2500u);
+    EXPECT_EQ(stats.p95Us, 17000u);
+    EXPECT_EQ(stats.maxUs, 17000u);
 }
 
 TEST(PacingHealthStats, GoodWindowClassifiesOnePercentLate) {
@@ -120,7 +125,7 @@ TEST(PacingHealthRing, ObserveAndSnapshotRoundTrip) {
         Observe(Channel::kDisplay, 11000 + (i % 3) * 100);
     }
     const auto stats = Snapshot(Channel::kDisplay);
-    EXPECT_EQ(stats.samples, 2048u);
+    EXPECT_EQ(stats.samples, 4096u);
     EXPECT_EQ(stats.medianUs, 11000u);
     EXPECT_EQ(stats.latePermille, 0u);
 }
@@ -147,9 +152,36 @@ TEST(PacingHealthRing, OutlierIntervalsAreDropped) {
     Observe(Channel::kDisplay, -5);
     Observe(Channel::kDisplay, 0);
     const auto stats = Snapshot(Channel::kDisplay);
-    EXPECT_EQ(stats.samples, 2048u);
+    EXPECT_EQ(stats.samples, 4096u);
     EXPECT_EQ(stats.medianUs, 6900u);
     EXPECT_EQ(stats.maxUs, 1'300'000u);
     // The two retained gap samples count late; ~1 per mille of the window.
     EXPECT_LE(stats.latePermille, 2u);
+}
+
+TEST(PacingHealthRing, TaggedWindowExcludesStartupOtherModesAndBoundaries) {
+    FlushRing(Channel::kDisplay, 50000);
+    Observe(Channel::kDisplay, 30000, 9'999'999, 7);  // before window
+    Observe(Channel::kDisplay, 40000, 10'000'000, 8);  // disjoint-window boundary
+    Observe(Channel::kDisplay, 11000, 10'100'000, 8);
+    Observe(Channel::kDisplay, 13000, 11'000'000, 8);
+    Observe(Channel::kDisplay, 12000, 12'000'000, 9);
+    Observe(Channel::kDisplay, 45000, 12'000'001, 9);  // after window
+
+    const auto stats = SnapshotTaggedWindow(Channel::kDisplay, 10'000'000, 12'000'000);
+    EXPECT_EQ(stats.samples, 3u);
+    EXPECT_EQ(stats.minUs, 11000u);
+    EXPECT_EQ(stats.maxUs, 13000u);
+    EXPECT_EQ(stats.segments, 2u);
+}
+
+TEST(PacingHealthClassification, IdentifiesMeasuredDownstreamFailureShape) {
+    auto display = ComputeChannelStats(BadWindowSamples().data(), 1000);
+    auto presentation = ComputeChannelStats(GoodWindowSamples().data(), 1000);
+    EXPECT_EQ(ce::pacing_health::Classify(display, presentation), Signature::kDownstreamJitter);
+    EXPECT_STREQ(ce::pacing_health::SignatureName(Signature::kDownstreamJitter), "downstream-jitter");
+
+    EXPECT_EQ(ce::pacing_health::Classify(presentation, presentation), Signature::kHealthy);
+    display.samples = 119;
+    EXPECT_EQ(ce::pacing_health::Classify(display, presentation), Signature::kInsufficient);
 }

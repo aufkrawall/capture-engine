@@ -10,6 +10,7 @@
 namespace {
 
 using ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists;
+using ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl;
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
@@ -30,8 +31,9 @@ TEST(Dx12EclQueueRegistrationPolicyTest, RegistersWhileTheGameQueueIsStillBeingD
 // The regression this exists for: a frame-generation runtime submits from its own
 // internal queues, which CE never recognises. Registering them re-points
 // g_CommandQueue under the global command-queue mutex on the runtime's submission
-// threads — measured at 1290 of 1290 submissions per second under 2x FSR FG, worth
-// 1.9 ms per base frame.
+// threads — measured at 1290 of 1290 submissions per second under 2x FSR FG. The
+// separate 1.9 ms queue-adoption result is broader and must not be assigned to this
+// policy alone.
 TEST(Dx12EclQueueRegistrationPolicyTest, NeverRegistersWhileFrameGenerationOwnsSubmission) {
     EXPECT_FALSE(ShouldRegisterCommandQueueFromExecuteCommandLists(/*frameGenerationActive=*/true,
                                                                    /*hasPrimaryGameQueue=*/true));
@@ -41,6 +43,22 @@ TEST(Dx12EclQueueRegistrationPolicyTest, SuspendedGenerationKeepsRuntimeQueuesOu
     EXPECT_FALSE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, true, true));
     EXPECT_TRUE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, false, true));
     EXPECT_TRUE(ShouldRegisterCommandQueueFromExecuteCommandLists(false, true, false));
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, CallbackOwnedNativeFSRCanTransparentForwardEcl) {
+    EXPECT_TRUE(ShouldTransparentForwardNativeFSRCallbackEcl(
+        /*fsrApiActive=*/true, /*callbackBridgeExpected=*/true,
+        /*internalNoCallbackComposition=*/false, /*streamlineFGRunning=*/false,
+        /*postSLActive=*/false, /*insideCEOverlaySubmission=*/false));
+
+    // Every uncertain/mixed route keeps the full ECL policy. In particular,
+    // no-callback FSR appends the overlay to a proven topmost runtime batch.
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(true, false, false, false, false, false));
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(true, true, false, true, false, false));
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(true, true, false, false, true, false));
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(true, true, false, false, false, true));
+    EXPECT_FALSE(ShouldTransparentForwardNativeFSRCallbackEcl(false, true, false, false, false, false));
 }
 
 // The decision must not depend on anything per-submission, or the hot path pays for
@@ -70,6 +88,13 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyA
     // The old condition must be gone: it is what re-registered a runtime queue on
     // every submission.
     EXPECT_EQ(ecl.find("if (!anyFGActive || !primaryQ || !isKnownQueue)"), std::string::npos);
+
+    const size_t transparentForward = ecl.find("ShouldTransparentForwardNativeFSRCallbackEcl");
+    const size_t eclCostAccounting = ecl.find("ScopedHookCpuCost eclCpuCost");
+    ASSERT_NE(transparentForward, std::string::npos);
+    ASSERT_NE(eclCostAccounting, std::string::npos);
+    EXPECT_LT(transparentForward, eclCostAccounting)
+        << "callback-owned native FSR must bypass hot-path ECL diagnostics and accounting";
 }
 
 }  // namespace

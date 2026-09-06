@@ -108,6 +108,12 @@ public:
     // sites, never per frame.
     void LogActivationCadenceContext(const char* site);
 
+    // Tags exact FSR-active portions of pacing-health windows. The first
+    // interval after either edge is excluded because it straddles two states.
+    // Brief game-driven off/on configures form separate tagged segments without
+    // preventing the periodic aggregate from ever filling.
+    void NotifyFSRFrameGenerationTransition(bool enabled, const char* site);
+
     // Frame Generation metrics (for displaying base vs output FPS)
     // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
     void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
@@ -245,5 +251,12 @@ private:
     std::atomic<uint64_t> m_callbackAppDraws{0};
     std::atomic<uint64_t> m_callbackGeneratedDraws{0};
     std::atomic<uint64_t> m_callbackGeneratedSkips{0};
+    std::atomic<uint64_t> m_fsrPacingTag{0};
+    std::atomic<uint64_t> m_nextFsrPacingTag{0};
+    std::atomic<bool> m_fsrPresentationNeedsAnchor{true};
+    std::atomic<bool> m_fsrDisplayNeedsAnchor{true};
+    std::atomic<int64_t> m_nextPacingHealthLogUs{0};
+    std::mutex m_pacingHealthMutex;
+    int64_t m_pacingHealthWindowStartUs = 0;
     ce::system_latency::Tracker m_systemLatency;
 };

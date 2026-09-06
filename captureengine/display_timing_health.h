@@ -67,6 +67,18 @@ struct DisplayTimingHealth {
     int64_t runtimeIntervalMeanUs = 0;
     int64_t runtimeIntervalStdDevUs = 0;
     int64_t runtimeIntervalJaggednessUs = 0;
+    // Correlated time from the runtime's PresentStart to physical display.
+    // A smooth runtime interval next to a jagged duration isolates the fault
+    // downstream of Present entry without guessing whether it is queue
+    // completion, driver flip scheduling, or scanout.
+    uint64_t presentToDisplayCount = 0;
+    int64_t presentToDisplayMeanUs = 0;
+    int64_t presentToDisplayStdDevUs = 0;
+    int64_t presentToDisplayMinUs = 0;
+    int64_t presentToDisplayP50Us = 0;
+    int64_t presentToDisplayP95Us = 0;
+    int64_t presentToDisplayP99Us = 0;
+    int64_t presentToDisplayMaxUs = 0;
     // Blank cadence is diagnostic only; no display timestamp is quantized.
     uint64_t blanksObserved = 0;
     int64_t blankIntervalUs = 0;
@@ -121,6 +133,17 @@ inline void SetRuntimeIntervals(DisplayTimingHealth& health, const DisplayInterv
     health.runtimeIntervalJaggednessUs = stats.jaggednessUs();
 }
 
+inline void SetPresentToDisplay(DisplayTimingHealth& health, const DisplayDurationStats& stats) {
+    health.presentToDisplayCount = stats.count();
+    health.presentToDisplayMeanUs = stats.meanUs();
+    health.presentToDisplayStdDevUs = stats.stdDevUs();
+    health.presentToDisplayMinUs = stats.minUs();
+    health.presentToDisplayP50Us = stats.percentileUs(0.50);
+    health.presentToDisplayP95Us = stats.percentileUs(0.95);
+    health.presentToDisplayP99Us = stats.percentileUs(0.99);
+    health.presentToDisplayMaxUs = stats.maxUs();
+}
+
 // Formatting lives here so the service translation unit stays inside the source
 // size ceiling; the health snapshot is the only input.
 inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
@@ -141,7 +164,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "gaps(n=%llu meanUs=%lld p50Us=%lld p99Us=%lld maxUs=%lld)) "
         "latchInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "publishedInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld p1Us=%lld p50Us=%lld p99Us=%lld "
-        "maxUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld)",
+        "maxUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
+        "presentToDisplay(n=%llu meanUs=%lld stddevUs=%lld minUs=%lld p50Us=%lld p95Us=%lld p99Us=%lld "
+        "maxUs=%lld)",
         stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
         health.queued, health.published, health.suppressed, health.regressed, health.payloadReceived,
         health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
@@ -164,5 +189,12 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         static_cast<long long>(health.publishedIntervalMaxUs), health.runtimeIntervalCount,
         static_cast<long long>(health.runtimeIntervalMeanUs),
         static_cast<long long>(health.runtimeIntervalStdDevUs),
-        static_cast<long long>(health.runtimeIntervalJaggednessUs));
+        static_cast<long long>(health.runtimeIntervalJaggednessUs), health.presentToDisplayCount,
+        static_cast<long long>(health.presentToDisplayMeanUs),
+        static_cast<long long>(health.presentToDisplayStdDevUs),
+        static_cast<long long>(health.presentToDisplayMinUs),
+        static_cast<long long>(health.presentToDisplayP50Us),
+        static_cast<long long>(health.presentToDisplayP95Us),
+        static_cast<long long>(health.presentToDisplayP99Us),
+        static_cast<long long>(health.presentToDisplayMaxUs));
 }

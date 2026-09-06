@@ -117,3 +117,70 @@ private:
     uint64_t count_ = 0;
     bool hasPreviousInterval_ = false;
 };
+
+// Scalar duration distribution over one health window. Unlike
+// DisplayIntervalStats these values are already intervals (for example,
+// PresentStart-to-screen), so there is no timestamp anchor or cross-window
+// boundary to preserve.
+class DisplayDurationStats {
+public:
+    static constexpr int64_t kBucketWidthUs = DisplayIntervalStats::kBucketWidthUs;
+    static constexpr std::size_t kBucketCount = DisplayIntervalStats::kBucketCount;
+
+    void Observe(int64_t durationUs) {
+        if (durationUs < 0)
+            return;
+        ++count_;
+        sumUs_ += durationUs;
+        sumSquaresUs_ += static_cast<double>(durationUs) * static_cast<double>(durationUs);
+        minUs_ = count_ == 1 ? durationUs : std::min(minUs_, durationUs);
+        maxUs_ = std::max(maxUs_, durationUs);
+        const int64_t bucket =
+            std::min<int64_t>(durationUs / kBucketWidthUs, static_cast<int64_t>(kBucketCount) - 1);
+        ++buckets_[static_cast<std::size_t>(bucket)];
+    }
+
+    void StartWindow() {
+        count_ = 0;
+        sumUs_ = 0;
+        sumSquaresUs_ = 0.0;
+        minUs_ = 0;
+        maxUs_ = 0;
+        buckets_.fill(0);
+    }
+
+    uint64_t count() const { return count_; }
+    int64_t minUs() const { return minUs_; }
+    int64_t maxUs() const { return maxUs_; }
+    int64_t meanUs() const { return count_ != 0 ? sumUs_ / static_cast<int64_t>(count_) : 0; }
+
+    int64_t stdDevUs() const {
+        if (count_ < 2)
+            return 0;
+        const double mean = static_cast<double>(sumUs_) / static_cast<double>(count_);
+        const double variance = std::max(0.0, sumSquaresUs_ / static_cast<double>(count_) - mean * mean);
+        return static_cast<int64_t>(std::sqrt(variance));
+    }
+
+    int64_t percentileUs(double quantile) const {
+        if (count_ == 0)
+            return 0;
+        const uint64_t target = std::clamp<uint64_t>(
+            static_cast<uint64_t>(std::ceil(quantile * static_cast<double>(count_))), 1, count_);
+        uint64_t seen = 0;
+        for (std::size_t i = 0; i < kBucketCount; ++i) {
+            seen += buckets_[i];
+            if (seen >= target)
+                return static_cast<int64_t>(i) * kBucketWidthUs;
+        }
+        return static_cast<int64_t>(kBucketCount - 1) * kBucketWidthUs;
+    }
+
+private:
+    std::array<uint32_t, kBucketCount> buckets_ = {};
+    int64_t sumUs_ = 0;
+    double sumSquaresUs_ = 0.0;
+    int64_t minUs_ = 0;
+    int64_t maxUs_ = 0;
+    uint64_t count_ = 0;
+};

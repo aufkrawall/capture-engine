@@ -99,7 +99,8 @@ anchors that predate the split are approximate.
       proxy Present, final-batch topmost routing, callback-adapter prewarm, callback
       frame-metric ownership, warm route-edge retention), `dx12_ffx_suspend_overlay.cpp` (owner-queue
       renderer/state and exact-proxy lifetime),
-      `dx12_hook_ecl*.cpp` (ecl, ecl_install),
+      `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
+      transparent fast-forward and foreign-hook recursion break),
       `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/
       draw_transition/draw_main/draw_submit/draw_tail), `dx12_hook_postsl_render*.cpp`
       (render driver, entry, gate, route, submit), `dx12_hook_helpers.cpp`,
@@ -160,7 +161,9 @@ anchors that predate the split are approximate.
     `fps_limiter_policy.h` (pure pacing policy incl. `OutputGroupAdmission` ordinal classification and
     `NextRationalGroupIntervalTicks`) + `fps_limiter_detail/{apply,frame_pacing,lifecycle}.h`
     (out-of-line inline member definitions; apply.h owns the admission-epoch key, the boundary
-    classification fast path, and the exact rational group cadence).
+    classification fast path, and the exact rational group cadence),
+    `pacing_health_telemetry.{h,cpp}` (time-stamped/tagged FSR pacing windows and passive
+    bad-start classifier), and `hook_thread_stage_cost.h` (disjoint housekeeping-stage costs).
   - `wrappers/` - `dxgi_swapchain_wrap*.cpp` (wrap, present, lifetime, frame_latency),
     `hook_system.cpp`, `iat_hook.*`, `vtable_hook.cpp`, `inline_hook*.cpp`, and
     `hook_patch_transaction.*` (thread-quiesced code-patch transactions).

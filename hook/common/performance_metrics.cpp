@@ -171,9 +171,15 @@ void PerformanceMetrics::UpdateSeries(MetricSeries& series, int64_t currentQpcUs
     if (frameToFrameUs <= 0)
         return;
 
-    ce::pacing_health::Observe(&series == &m_display ? ce::pacing_health::Channel::kDisplay
-                                                     : ce::pacing_health::Channel::kPresentation,
-                               frameToFrameUs);
+    const bool displaySeries = &series == &m_display;
+    const uint64_t fsrTag = m_fsrPacingTag.load(std::memory_order_acquire);
+    auto& needsFsrAnchor = displaySeries ? m_fsrDisplayNeedsAnchor : m_fsrPresentationNeedsAnchor;
+    const uint64_t sampleTag = fsrTag != 0 && !needsFsrAnchor.exchange(false, std::memory_order_acq_rel)
+                                   ? fsrTag
+                                   : 0;
+    ce::pacing_health::Observe(displaySeries ? ce::pacing_health::Channel::kDisplay
+                                             : ce::pacing_health::Channel::kPresentation,
+                               frameToFrameUs, currentQpcUs, sampleTag);
 
     ApplyRecordingTransition(series);
 
@@ -296,6 +302,11 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         if (timing.publicationGeneration.load(std::memory_order_acquire) != generationBefore)
             return;
         m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
+        const uint64_t fsrTag = m_fsrPacingTag.load(std::memory_order_acquire);
+        if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs) {
+            ce::pacing_health::Observe(ce::pacing_health::Channel::kPresentToDisplay,
+                                       screenTimeUs - presentStartTimeUs, screenTimeUs, fsrTag);
+        }
         // The series stays warm whatever the provenance is: an unresolved
         // timestamp is still an ordered displayed transition, it is only its
         // *interval* that cannot be trusted, and a stream that starts resolving
@@ -438,6 +449,8 @@ bool PerformanceMetrics::IsStutterDetected() const {
 }
 
 void PerformanceMetrics::NotifyOverlayCallbackDraw(bool generatedFrame, bool drewOverlay) {
+    if (m_fsrPacingTag.load(std::memory_order_relaxed) == 0)
+        return;
     if (generatedFrame) {
         if (drewOverlay) {
             m_callbackGeneratedDraws.fetch_add(1, std::memory_order_relaxed);
@@ -462,41 +475,80 @@ void PerformanceMetrics::LogActivationCadenceContext(const char* site) {
         static_cast<long long>(latency.displayIntervalUs));
 }
 
+void PerformanceMetrics::NotifyFSRFrameGenerationTransition(bool enabled, const char* site) {
+    const int64_t nowUs = PerfLogger::GetQpcUs();
+    uint64_t tag = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_pacingHealthMutex);
+        const bool alreadyEnabled = m_fsrPacingTag.load(std::memory_order_acquire) != 0;
+        if (enabled == alreadyEnabled)
+            return;
+        if (enabled) {
+            tag = m_nextFsrPacingTag.fetch_add(1, std::memory_order_relaxed) + 1;
+            m_fsrPacingTag.store(tag, std::memory_order_release);
+            if (m_pacingHealthWindowStartUs == 0) {
+                m_pacingHealthWindowStartUs = nowUs;
+                m_nextPacingHealthLogUs.store(nowUs + 10'000'000, std::memory_order_release);
+            }
+        } else {
+            m_fsrPacingTag.store(0, std::memory_order_release);
+        }
+        m_fsrPresentationNeedsAnchor.store(true, std::memory_order_release);
+        m_fsrDisplayNeedsAnchor.store(true, std::memory_order_release);
+    }
+    HookLogImportant("[FSRPacingEpoch] state=%s tag=%llu site=%s",
+                     enabled ? "enabled" : "disabled", static_cast<unsigned long long>(tag),
+                     site && site[0] ? site : "unknown");
+}
+
 void PerformanceMetrics::MaybeLogPacingHealth(int64_t currentQpcUs) {
-    // The start-to-start FSR FG degradation is a share of output intervals
-    // landing past the median by 1.2-2 ms, invisible in the stddev alone and
-    // previously recoverable only from offline CSV analysis. This line carries
+    // The FSR FG degradation is a wide physical-completion distribution while
+    // PresentStart stays smooth, previously recoverable only from offline CSV
+    // analysis. This line carries both distributions and their classification.
     // the classification directly. Nothing here runs on the hot path beyond one
     // timestamp comparison per present.
     static constexpr int64_t kLogIntervalUs = 10'000'000;
-    static std::atomic<int64_t> s_nextLogUs{0};
-    if (!IsFGActive()) {
+    if (m_fsrPacingTag.load(std::memory_order_acquire) == 0) {
         return;
     }
-    int64_t nextLogUs = s_nextLogUs.load(std::memory_order_relaxed);
-    if (currentQpcUs < nextLogUs) {
+    int64_t nextLogUs = m_nextPacingHealthLogUs.load(std::memory_order_acquire);
+    if (nextLogUs == 0 || currentQpcUs < nextLogUs) {
         return;
     }
     // Serialized tick: two racing present threads must not double-log, and the
     // loser simply waits for the next window.
-    if (!s_nextLogUs.compare_exchange_strong(nextLogUs, currentQpcUs > 0 ? currentQpcUs + kLogIntervalUs
-                                                                          : kLogIntervalUs,
-                                             std::memory_order_relaxed)) {
+    if (!m_nextPacingHealthLogUs.compare_exchange_strong(nextLogUs, currentQpcUs + kLogIntervalUs,
+                                                         std::memory_order_acq_rel)) {
         return;
     }
 
-    const auto display = ce::pacing_health::Snapshot(ce::pacing_health::Channel::kDisplay);
-    const auto presentation = ce::pacing_health::Snapshot(ce::pacing_health::Channel::kPresentation);
+    std::lock_guard<std::mutex> lock(m_pacingHealthMutex);
+    if (m_fsrPacingTag.load(std::memory_order_acquire) == 0)
+        return;
+    const int64_t windowStartUs = m_pacingHealthWindowStartUs;
+    m_pacingHealthWindowStartUs = currentQpcUs;
+    const auto display = ce::pacing_health::SnapshotTaggedWindow(
+        ce::pacing_health::Channel::kDisplay, windowStartUs, currentQpcUs);
+    const auto presentation = ce::pacing_health::SnapshotTaggedWindow(
+        ce::pacing_health::Channel::kPresentation, windowStartUs, currentQpcUs);
+    const auto presentToDisplay = ce::pacing_health::SnapshotTaggedWindow(
+        ce::pacing_health::Channel::kPresentToDisplay, windowStartUs, currentQpcUs);
+    const auto signature = ce::pacing_health::Classify(display, presentation);
     const uint64_t appDraws = m_callbackAppDraws.exchange(0, std::memory_order_relaxed);
     const uint64_t generatedDraws = m_callbackGeneratedDraws.exchange(0, std::memory_order_relaxed);
     const uint64_t generatedSkips = m_callbackGeneratedSkips.exchange(0, std::memory_order_relaxed);
     HookLogImportant(
-        "[FSRPacingHealth] fg=%s mult=%d baseFps=%.1f outFps=%.1f "
+        "[FSRPacingHealth] signature=%s windowMs=%lld segments=%u mult=%d baseFps=%.1f outFps=%.1f "
         "disp med=%uu p95=%uu sd=%uu late=%upermille max=%uu n=%u | "
-        "pres med=%uu p95=%uu late=%upermille n=%u | cbDraws app=%llu gen=%llu genSkip=%llu",
-        GetFGTypeLabel(), GetFGMultiplier(), GetFGBaseFPS(), GetFGOutputFPS(), display.medianUs, display.p95Us,
-        display.stddevUs, display.latePermille, display.maxUs, display.samples, presentation.medianUs,
-        presentation.p95Us, presentation.latePermille, presentation.samples,
+        "pres med=%uu p95=%uu sd=%uu late=%upermille max=%uu n=%u | "
+        "presentToDisplay mean=%uu p95=%uu sd=%uu min=%uu max=%uu n=%u | "
+        "cbDraws app=%llu gen=%llu genSkip=%llu",
+        ce::pacing_health::SignatureName(signature), static_cast<long long>((currentQpcUs - windowStartUs) / 1000),
+        std::max(display.segments, presentation.segments), GetFGMultiplier(), GetFGBaseFPS(), GetFGOutputFPS(),
+        display.medianUs, display.p95Us, display.stddevUs, display.latePermille, display.maxUs, display.samples,
+        presentation.medianUs, presentation.p95Us, presentation.stddevUs, presentation.latePermille,
+        presentation.maxUs, presentation.samples, presentToDisplay.meanUs, presentToDisplay.p95Us,
+        presentToDisplay.stddevUs, presentToDisplay.minUs, presentToDisplay.maxUs, presentToDisplay.samples,
         static_cast<unsigned long long>(appDraws), static_cast<unsigned long long>(generatedDraws),
         static_cast<unsigned long long>(generatedSkips));
 }

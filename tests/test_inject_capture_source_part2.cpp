@@ -207,6 +207,20 @@ TEST(InjectLifecycleSourceTest, ThirdPartyPreloadPrecedesWrapperAndRuntimePreloa
     EXPECT_LT(thirdParty, runtimePreload);
 }
 
+TEST(InjectLifecycleSourceTest, HousekeepingThreadDoesNotRaiseProcessSchedulingPressure) {
+    const std::string dllMain = ReadSource("hook/main_dllmain.cpp");
+    const std::string internal = ReadSource("hook/main_internal.h");
+    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
+    ASSERT_FALSE(dllMain.empty());
+    ASSERT_FALSE(internal.empty());
+    ASSERT_FALSE(hookThread.empty());
+
+    EXPECT_EQ(dllMain.find("SetThreadPriority(hThread"), std::string::npos);
+    EXPECT_EQ(dllMain.find("THREAD_PRIORITY_HIGHEST"), std::string::npos);
+    EXPECT_EQ(internal.find("timeBeginPeriod(1)"), std::string::npos);
+    EXPECT_NE(hookThread.find("[HookThreadStages]"), std::string::npos);
+}
+
 TEST(InjectLifecycleSourceTest, SwapchainWrapperDestructorGuardsTheFinalRealRelease) {
     const std::string source = ReadSource("hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp");
     ASSERT_FALSE(source.empty());

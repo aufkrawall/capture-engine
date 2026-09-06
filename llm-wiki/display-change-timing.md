@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-05 (event timestamps, publication concurrency, metric integrity; Talos sessions `20260905_011023` and `talosnew`)
+Last verified: 2026-09-06 (event timestamps, publication concurrency, exact FSR pacing windows; Talos sessions `20260905_011023`, `talosnew`, `talosbadintheend`, and `20260906_160321`)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -197,19 +197,24 @@ stream is unavailable, denied, failed, or two seconds stale.
   A same-scene run on the corrected build, including default VSync when the issue recurs and
   whether an FSR off/on cycle changes it, remains needed. No feature was disabled as a workaround.
 
-### Bad-start pacing signature and pacing-health telemetry (2026-09-05, build 0.1.6491)
+### Bad-start pacing signature and pacing-health telemetry (2026-09-06)
 
-- Session `talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood` (two process starts, one CE
-  session) pins the bad-start signature in perf-CSV display-series data. BAD standing-still
-  FSR FG: output flip median 11.23 ms, **11.8% of intervals > median+1.2 ms**, gaps between
-  late flips exclusively even (pair-phase locked, never consecutive), presentToDisplay
-  swinging 0.9-3.2 ms, source stddev 2310 us, screen jaggedness 3330 us. GOOD restart:
-  1.0% late, stable presentToDisplay, stddev 746-913 us. DLSS FG in the same bad process ran
-  an even slower base cadence (23.8 ms) with a smooth screen - slower base cadence is a
-  marker, not the cause; the FSR generator/presenter output scheduling slips.
-- CE's own costs were identical in both windows ([OVERLAY COST] ceAvgUs 2 proxy / 79-87
-  callback; identical per-frame log behavior under normalized rate-diff), the fcd6f9f7
-  vsync policy behaved identically, and the present-callback bridge installed in both.
+- The older `talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood` pair established the visible
+  signature: BAD standing-still FSR FG had 11.8% of intervals > median+1.2 ms and 2310 us
+  screen stddev versus 1.0% and 746-913 us after restart. The newer four-start
+  `talosbadintheend` session finally moves the causal boundary. In the last/bad process its
+  final exact ten-second sensor window had smooth FSR runtime PresentStart cadence
+  (`n=858 mean=11637 us stddev=743 us jaggedness=571 us`) but jagged physical transitions
+  for the same 858 frames (`mean=11642 us stddev=2537 us jaggedness=3594 us`, p1/p50/p99
+  6900/10700/17000 us). The first three good processes had 674-989 us display stddev.
+  Therefore AMD's runtime is **not** calling Present irregularly in the bad start; the fault
+  appears after PresentStart, across forwarded Present, GPU completion, driver flip scheduling,
+  and scanout. The equal counts rule out missing/duplicated collector publications.
+- CE's own costs remain non-discriminating ([OVERLAY COST] 2 us proxy and 62-88 us callback,
+  no callback skips; ECL `registrations=0` in every active-FG run), the fcd6f9f7 VSync policy
+  behaved identically, and the present-callback bridge installed in all starts. Initial
+  activation presentation cadence differed in the bad start, but its later re-enable cadence
+  was normal while bad pacing persisted, weakening the latched-startup-target candidate.
   The bad state is per-process, survives FG mode switches, and is random per start
   (user-confirmed: independent of warm/cold boot; RTSS's overlay was visible and smooth,
   so the no-CE baseline is real).
@@ -218,18 +223,47 @@ stream is unavailable, denied, failed, or two seconds stale.
   path. Note: skipping the generated-frame draw is NOT a viable optimization on this route
   (each output buffer is separate; skipping = 50% overlay flicker). The
   `CE_FG_COST_PROBE=0x20000` bit exists only to measure that share on hardware.
-- New instrumentation: `ce::pacing_health` interval rings (`hook/common/pacing_health_telemetry.*`)
-  fed by both metric series, `[FSRPacingHealth]` (10 s aggregate: median/p95/stddev,
-  late-permille at median+1200 us, max, callback draw counts app/gen/genSkip),
-  `[FSRActivationCadence]` at enabled ffxConfigure and authoritative takeover (cadence the
-  generator paces against), and `[HookThreadPass]` (service cost of the
-  THREAD_PRIORITY_HIGHEST hook thread, a presenter-preemption candidate).
-- Open: why AMD's presenter submits output presents irregularly in some starts. Candidates:
-  (1) ambient per-start GPU slack (no injected/non-injected A/B has ever been captured),
-  (2) CE's per-output-frame overlay draw inside the generator's production budget,
-  (3) hook-thread preemption of the presenter thread, (4) a generator pacing target latched
-  from the 144 Hz menu window. The A/B matrix (CE overlay / CE overlayEnabled=0 / no CE)
-  has not been run yet.
+- Current instrumentation: `ce::pacing_health` time-stamped/tagged rings
+  (`hook/common/pacing_health_telemetry.*`) fed by both metric series. `[FSRPacingHealth]`
+  reports exact disjoint wall-clock windows, excludes pre-FSR/off/DLSS samples and
+  transition-spanning intervals, tolerates Talos's brief periodic off/on configures by
+  aggregating tagged FSR segments, and emits `signature=healthy/downstream-jitter/mixed-jitter`
+  plus PresentStart-to-screen mean/p95/stddev/min/max. Host `[DisplayTiming]` reports the same
+  PresentStart-to-screen distribution beside exact runtime/published intervals. No GPU query,
+  Signal, extra submission, wait, or polling is added. `[FSRActivationCadence]` remains at
+  enabled ffxConfigure and authoritative takeover.
+- The latency-tolerant hook service thread no longer raises itself to
+  `THREAD_PRIORITY_HIGHEST` or holds 1 ms timer resolution for the process lifetime;
+  `[HookThreadStages]` separates config, deferred release, hook scan, pending-Present service,
+  DX12 retirement, UE5, and IPC/lifecycle cost without touching a presenter thread.
+- The immediate five-start reproduction `20260906_160321` (build 0.1.6497) contains four
+  clean starts and a bad final PID 21880. Its stable FSR window is again downstream:
+  PresentStart `n=858 median=11434 us stddev=755 us`, physical completion
+  `n=855 median=11011 us p95=16202 us stddev=2457 us late=381 permille`, and
+  PresentStart-to-screen `mean=2491 us p95=4095 us stddev=1237 us`. The four clean stable
+  windows have physical stddev 745-858 us and PresentStart stddev 263-321 us. Queue roles,
+  zero active-FG registrations, callback draw coverage/cost, and `[HookThreadStages]` all
+  match. Bad pacing therefore survived normal housekeeping priority/default timer resolution;
+  that preemption candidate is now ruled out. The classifier's degraded late-tail threshold
+  is 150 permille so benign ETW completion quantization in the clean runs (78-120 permille)
+  reports healthy; the 1500 us display-stddev test independently catches both reproduced bad
+  families.
+- App-callback native FSR already supplies CE the exact output resource and command list for
+  every real/generated frame. While that authoritative route is active, the ECL detour now
+  transparently forwards submissions before CE CPU accounting, timing diagnostics, caller-
+  module lookup, queue classification, and Streamline observers. The forward retains the
+  existing depth-two recursion break for foreign overlays. No-callback FSR (whose topmost
+  batch is an overlay transport), overlapping Streamline/PostSL, CE-owned submissions,
+  device removal, FSR-off discovery, and all non-FSR modes retain the complete ECL path. This
+  removes roughly 1500 unnecessary CE traversals/s from AMD/game submission threads without
+  adding GPU work or changing the official FFX callback lists; hardware pacing validation is
+  still required.
+- Open: which downstream stage produces the bad physical cadence if transparent ECL forwarding
+  does not eliminate it. The remaining primary candidates are per-start GPU slack/queue
+  scheduling and CE work appended inside FFX's output lists. The
+  independent deterministic `g_CommandQueue` performance cost remains real but is not a
+  bad-vs-good discriminator: queue roles and active-FG registration counts matched across all
+  reproduced starts, so do not fold an unproven queue-ownership rewrite into this random-pacing fix.
 
 ## Graph scrolling under frame generation
 

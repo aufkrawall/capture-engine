@@ -627,6 +627,5 @@ struct ChildInjectParams {
 
 // Helper for QueueUserWorkItem (requires DWORD return, LPVOID param)
 inline DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
-  timeBeginPeriod(1);
   return HookThread(lpParam);
 }

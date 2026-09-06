@@ -560,10 +560,11 @@ private:
             }
             lastPublished->second.lastTimestamp = timestamp;
             const int64_t screenTimeUs = DisplayTimingQpcToUs(timestamp, qpcFrequency_);
+            const int64_t presentStartTimeUs = DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_);
             lastPublished->second.intervals.Observe(screenTimeUs);
-            target.output->Publish(screenTimeUs, publishUs,
-                                   DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_),
-                                   screenTimeResolved);
+            if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs)
+                lastPublished->second.presentToDisplay.Observe(screenTimeUs - presentStartTimeUs);
+            target.output->Publish(screenTimeUs, publishUs, presentStartTimeUs, screenTimeResolved);
             ++publishedTimestamps_;
         }
     }
@@ -619,16 +620,20 @@ private:
     // The busiest output is the one the overlay is reading; averaging several
     // would hide exactly the shape these statistics exist to expose.
     void SnapshotIntervals(DisplayTimingHealth& health) {
-        const DisplayIntervalStats* busiest = nullptr;
+        PublishedOutputState* busiest = nullptr;
         for (auto& output : lastPublishedByOutput_) {
-            if (!busiest || output.second.intervals.count() > busiest->count())
-                busiest = &output.second.intervals;
+            if (!busiest || output.second.intervals.count() > busiest->intervals.count())
+                busiest = &output.second;
         }
-        if (busiest)
-            SetPublishedIntervals(health, *busiest);
+        if (busiest) {
+            SetPublishedIntervals(health, busiest->intervals);
+            SetPresentToDisplay(health, busiest->presentToDisplay);
+        }
         SetRuntimeIntervals(health, runtimeIntervals_);
-        for (auto& output : lastPublishedByOutput_)
+        for (auto& output : lastPublishedByOutput_) {
             output.second.intervals.StartWindow();
+            output.second.presentToDisplay.StartWindow();
+        }
         runtimeIntervals_.StartWindow();
         blankIntervals_.StartWindow();
         latchIntervals_.StartWindow();
@@ -699,6 +704,7 @@ private:
     struct PublishedOutputState {
         int64_t lastTimestamp = 0;
         DisplayIntervalStats intervals;
+        DisplayDurationStats presentToDisplay;
     };
 
     std::mutex mutex_;

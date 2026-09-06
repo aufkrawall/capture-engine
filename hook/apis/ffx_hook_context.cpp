@@ -220,6 +220,9 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
             DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption("FFX FG context destroy");
             DX12_OnNativeFSRFrameGenerationContextsDestroyed();
             g_FGCompat.SetFSRFGActive(false);
+            if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+                perf->NotifyFSRFrameGenerationTransition(false, "ffxContextDestroy");
+            }
             ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
                                         "FFXHook::Hooked_ffxDestroyContext", reinterpret_cast<void*>(ffx_hook_context), nullptr,
                                         ce::fg_runtime::RuntimeMode::kOff, false, true);
@@ -635,6 +638,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         HookLogImportant("FFX Hook: Frame Generation configure transition %s (context=%p frameID=%llu type=0x%llx)",
                          parsed.enabled ? "ENABLED" : "DISABLED", ffx_hook_context,
                          static_cast<unsigned long long>(parsed.frameId), static_cast<unsigned long long>(ffx_hook_desc->type));
+        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+            perf->NotifyFSRFrameGenerationTransition(parsed.enabled, "ffxConfigure");
+        }
     } else {
         static std::atomic<int> s_unchangedConfigureLogCount{0};
         const int logCount = s_unchangedConfigureLogCount.fetch_add(1, std::memory_order_relaxed) + 1;

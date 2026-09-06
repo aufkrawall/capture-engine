@@ -11,12 +11,11 @@
 // construction, none of the queues CE knows, so an "is this queue unknown?" test
 // alone re-runs registration on every interpolation submission and never settles:
 // each registration re-points g_CommandQueue, which makes the queue that submits
-// next look unknown again. Measured under 2x FSR FG at 3840x2160: registration ran
-// on 1290 of 1290 submissions per second and cost the game 1.9 ms per base frame
-// (191 -> 136 fps) — not as GPU work, but because the runtime's submission threads
-// serialized on CE's mutex instead of feeding the GPU (board power fell from 150 W
-// to 119 W at an unchanged SM clock while the app's own command list kept taking
-// the same 4.2 ms).
+// next look unknown again. Measured under 2x FSR FG at 3840x2160, registration ran
+// on 1290 of 1290 submissions per second. Removing it made registrations settle at
+// zero. A later broader queue-adoption probe recovered 1.9 ms per base frame, but
+// also removed other state, so that larger gain must not be attributed to this one
+// registration fix.
 //
 // The game's render queue is the first DIRECT queue CE sees, and it is created
 // before any frame-generation runtime initializes. So once FG is active and that
@@ -40,6 +39,21 @@ inline bool ShouldRegisterCommandQueueFromExecuteCommandLists(bool frameGenerati
     // FG active with the game's queue already known: a recognised queue needs no
     // re-registration, and an unrecognised one belongs to the runtime.
     return false;
+}
+
+// App-callback native FSR already gives CE the exact output resource and command
+// list on every real/generated frame. In that state ExecuteCommandLists is not an
+// overlay transport, queue-discovery source, or timing source. Traversing CE's
+// normal ECL observers on AMD's submission threads is therefore pure interference.
+// Keep every ambiguity on the full path: internal no-callback FSR needs ECL for its
+// topmost-batch overlay route, Streamline needs it for PostSL handoff discovery,
+// and CE's own nested submissions need their recursion/ownership guards.
+inline bool ShouldTransparentForwardNativeFSRCallbackEcl(bool fsrApiActive, bool callbackBridgeExpected,
+                                                         bool internalNoCallbackComposition,
+                                                         bool streamlineFGRunning, bool postSLActive,
+                                                         bool insideCEOverlaySubmission) {
+    return fsrApiActive && callbackBridgeExpected && !internalNoCallbackComposition && !streamlineFGRunning &&
+           !postSLActive && !insideCEOverlaySubmission;
 }
 
 }  // namespace ce::dx12_overlay_policy
