@@ -16,12 +16,21 @@ records async/only-generated/flags/rect/callback inputs.
 
 Rejected before product build: injecting a shared UI texture merely because an app callback exists.
 Custom callbacks need not consume it; AMD's default changes from copy to full-screen blend when
-UI is supplied. This was not a proven generic performance fix. Recommended next evidence is one
-bad process, same scene, overlay on/off/on for 20-30 seconds per phase (default Ctrl+8), without
-changing FG or restarting. Ignore transition windows. This isolates live overlay GPU cost while
-retaining the random startup state; persistent degradation still leaves startup effects unresolved.
+UI is supplied. This was not a proven generic performance fix.
 Validation: build 0.1.6500 passed `--verify` (native tests, Python self-tests, ASan/UBSan,
 clang-tidy ratchet); formatting notices were advisory. Hardware pacing validation remains open.
+
+Follow-up `20260907_043150`, bad final PID 1752: overlay hidden at 04:34:58.100, no return-on
+phase before exit. The host's fully hidden 04:35:00.938-04:35:10.941 window has 872 displayed
+intervals, stddev 2254 us and present-to-display stddev 1130 us; the visible stable window has
+859 intervals / 2336 us / 1180 us respectively. Callback CE cost falls from 80-89 us to 2 us and
+`ceGpuCommands=0`. Ongoing callback overlay work is not necessary to sustain the bad state.
+Startup effects and non-overlay hooks remain unresolved; this does not exonerate CE.
+The hook health line incorrectly becomes `insufficient` when hidden: display consumption lived
+only in RenderOverlay. The host continued collecting, so this comparison is valid. Callback
+metrics now drain the sensor ring independently of rendering; the cursor prevents double consumption.
+Regression coverage protects hidden/visible consumption and the callback's unconditional drain.
+Build 0.1.6501 passed the full verification gate; this fixes reporting, not the random pacing fault.
 
 ### 2026-09-06 - Five-start Talos reproduction rules out hook-service priority; callback-owned FSR ECL made transparent
 

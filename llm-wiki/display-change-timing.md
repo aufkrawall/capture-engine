@@ -265,12 +265,21 @@ stream is unavailable, denied, failed, or two seconds stale.
   logging records async/only-generated/flags/rect/callback inputs for future comparisons.
 - Since 2026-09-07, a hidden callback with an original compositor emits no CE GPU tail, including
   diagnostic breadcrumbs, while timing collection continues. `[FSRCallbackWork]` records the edge.
-  One bad process can provide an on/off/on comparison (same scene and FG mode, 20-30 seconds per
-  phase, default Ctrl+8); compare full 10-second windows away from the toggles. Improvement while
-  hidden implicates ongoing overlay work; unchanged degradation cannot rule out a startup effect.
+  `20260907_043150` supplies the first such comparison, bad final PID 1752. Overlay went hidden at
+  04:34:58.100. The host's 04:35:00.938-04:35:10.941 window is fully hidden (872 intervals):
+  display stddev 2254 us, PresentStart stddev 673 us, present-to-display stddev 1130 us / mean
+  2469 us. The visible 04:34:40.933-04:34:50.934 window has 859 intervals, display stddev 2336 us,
+  PresentStart stddev 598 us and present-to-display stddev 1180 us / mean 2446 us. Callback cost
+  drops from 80-89 us to 2 us and `ceGpuCommands=0`, but downstream jitter persists. There is no
+  return-on phase. Ongoing callback overlay work is not necessary to sustain this bad state;
+  startup effects and other hooks remain open.
+  A telemetry bug made the hidden hook window `insufficient` (`disp n=0`): only RenderOverlay
+  called ConsumeDisplayTiming. The host `sensors.log` remained authoritative and preserved the
+  comparison. `dx12_hook_ffx_metrics.cpp` now drains independently of draw visibility; its existing
+  synchronized sequence cursor prevents duplicate consumption by the visible renderer.
 - Open: which downstream stage produces the bad physical cadence. The remaining primary
   candidates are per-start GPU slack/queue
-  scheduling and CE work appended inside FFX's output lists. The
+  scheduling and persistent CE startup/device/queue side effects. The
   independent deterministic `g_CommandQueue` performance cost remains real but is not a
   bad-vs-good discriminator: queue roles and active-FG registration counts matched across all
   reproduced starts, so do not fold an unproven queue-ownership rewrite into this random-pacing fix.

@@ -13,6 +13,38 @@
 
 namespace {
 
+TEST(DisplayPacingIntegrityTest, CallbackAndRendererConsumersDoNotDuplicateDisplaySamples) {
+    SharedDisplayTiming timing;
+    PerformanceMetrics metrics;
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    int64_t time = 1'000'000;
+    timing.Publish(time, time);
+    metrics.ConsumeDisplayTiming(timing, time);
+    for (int frame = 0; frame < 60; ++frame) {
+        time += 10'000;
+        timing.Publish(time, time);
+        // The callback always drains. Rendering occurs only in the visible portions.
+        metrics.ConsumeDisplayTiming(timing, time);
+        if (frame < 20 || frame >= 40)
+            metrics.ConsumeDisplayTiming(timing, time);
+        EXPECT_EQ(metrics.GetSampleCount(), static_cast<uint64_t>(frame + 1));
+        EXPECT_FLOAT_EQ(metrics.GetLastDisplayFrameTimeMs(), 10.0f);
+    }
+}
+
+TEST(DisplayPacingIntegrityTest, FsrCallbackDrainsDisplayBeforeOptionalPresentationSampling) {
+    const auto path = std::filesystem::current_path() / "hook/apis/dx12_hook_ffx_metrics.cpp";
+    const std::string source = ce::test_source::ReadLogicalSource(path);
+    const auto entry = source.find("void DX12_UpdateFFXPresentCallbackFrameTiming(");
+    ASSERT_NE(entry, std::string::npos);
+    const auto consume = source.find("metrics->ConsumeDisplayTiming(", entry);
+    const auto gate = source.find("if (callbackSamplesFrameTiming)", entry);
+    ASSERT_NE(consume, std::string::npos);
+    ASSERT_NE(gate, std::string::npos);
+    EXPECT_LT(consume, gate);
+    EXPECT_EQ(source.substr(entry, consume - entry).find("showOverlay"), std::string::npos);
+}
+
 TEST(DisplayPacingIntegrityTest, HistoryReadersUseLockFreeAtomicValues) {
     static_assert(std::atomic<float>::is_always_lock_free);
     PerformanceMetrics metrics;

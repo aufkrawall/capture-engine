@@ -26,6 +26,16 @@ void DX12_UpdateFFXPresentCallbackFrameTiming(PerformanceMetrics* metrics,
         return;
     }
 
+    // Sensor publication continues while the overlay is hidden. Drain independently of RenderOverlay,
+    // otherwise the FSR health window loses its display samples exactly during a visibility comparison.
+    // ConsumeDisplayTiming serializes its cursor, so a visible renderer cannot consume samples twice.
+    if (auto* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr) {
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter(&now);
+        metrics->ConsumeDisplayTiming(sharedMem->displayTiming,
+                                      DisplayTimingQpcToUs(now.QuadPart, PerfLogger::GetQpcFrequency()));
+    }
+
     const bool presentInterceptedBelowForeignChain = DXGIShared::IsPresentInterceptedBelowForeignChain();
     const bool callbackSamplesFrameTiming =
         ce::dx12_overlay_policy::ShouldSampleFrameTimingFromFFXPresentCallback(
