@@ -619,7 +619,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             // path at all; under active frame generation it must not run.
             g_EclQueueRegistrationsThisWindow.fetch_add(1, std::memory_order_relaxed);
             if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclQueueRegistrationOff)) {
-                DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
+                DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath, true);
             }
         } else if (!isKnownQueue) {
             // A queue CE does not recognise, submitting while frame generation owns presentation:

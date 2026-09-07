@@ -11,6 +11,32 @@ namespace {
 
 using ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists;
 using ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl;
+using ce::dx12_overlay_policy::ShouldAdoptDiscoveredCommandQueue;
+
+TEST(Dx12EclQueueRegistrationPolicyTest, SameDeviceAuxiliaryExecutionNeverReplacesEstablishedQueue) {
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, true));
+    // Arbitrary interleaving of auxiliary queues cannot change the established selection.
+    int selected = 1;
+    for (const int candidate : {2, 3, 2, 4, 3, 2}) {
+        if (ShouldAdoptDiscoveredCommandQueue(true, selected != 0, true, true, true))
+            selected = candidate;
+    }
+    EXPECT_EQ(selected, 1);
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, DiscoveryStillSupportsInitialQueueAndDeviceReplacement) {
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(true, false, true, false, false));
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, false));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, false, false));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, false, false, false, false));
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, ExplicitBindingsCanReplaceSameDeviceQueues) {
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, true, true));
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, true, false));
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, false, false));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(false, true, false, true, false));
+}
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
@@ -85,6 +111,8 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyA
     EXPECT_NE(ecl.find("ShouldRegisterCommandQueueFromExecuteCommandLists"), std::string::npos);
     EXPECT_NE(ecl.find("g_EclQueueRegistrationsThisWindow"), std::string::npos);
     EXPECT_NE(ecl.find("registrations=%u"), std::string::npos);
+    EXPECT_NE(ecl.find("DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath, true)"),
+              std::string::npos);
     // The old condition must be gone: it is what re-registered a runtime queue on
     // every submission.
     EXPECT_EQ(ecl.find("if (!anyFGActive || !primaryQ || !isKnownQueue)"), std::string::npos);

@@ -17,20 +17,31 @@
 // also removed other state, so that larger gain must not be attributed to this one
 // registration fix.
 //
-// The game's render queue is the first DIRECT queue CE sees, and it is created
-// before any frame-generation runtime initializes. So once FG is active and that
-// primary queue is known, a queue CE does not recognise belongs to the runtime:
-// registering it is both pointless and wrong, because it would adopt the runtime's
-// internal queue as the game's render queue. ECL coverage does not depend on it —
+// The first observed DIRECT queue is a provisional execution anchor, not proof
+// of presentation ownership. Exact swapchain bindings are tracked separately.
+// Once FG owns presentation and discovery has an anchor, unknown submissions
+// must not replace it with a runtime-internal queue. ECL coverage does not depend on it —
 // the detour is installed on the queue vtable, which every queue of that device
 // shares, so a queue CE never registers still reaches the hook.
 namespace ce::dx12_overlay_policy {
 
+// Submission is evidence that a queue executes work, not that it owns presentation. Preserve an
+// established queue on the same device; an explicit binding or a proven device migration may replace it.
+inline bool ShouldAdoptDiscoveredCommandQueue(bool fromExecuteCommandLists, bool hasCurrentQueue,
+                                             bool incomingDeviceKnown, bool currentDeviceKnown,
+                                             bool sameDevice) {
+    if (!incomingDeviceKnown)
+        return false;
+    if (!hasCurrentQueue || !fromExecuteCommandLists)
+        return true;
+    return currentDeviceKnown && !sameDevice;
+}
+
 inline bool ShouldRegisterCommandQueueFromExecuteCommandLists(bool frameGenerationActive, bool hasPrimaryGameQueue,
                                                               bool runtimeOwnedPresentPath = false) {
     // No frame generation, or the game's queue not yet discovered: registration is
-    // the discovery mechanism and must run. It is idempotent for the queue that is
-    // already the tracked one, so this stays the pre-FG behaviour exactly.
+    // the discovery mechanism and must run. Adoption separately preserves an
+    // established same-device queue even when another DIRECT queue submits work.
     // Disabling generation does not destroy the FFX presenter or its queues.
     // Discovery resumes when presentation ownership actually returns to the game.
     if ((!frameGenerationActive && !runtimeOwnedPresentPath) || !hasPrimaryGameQueue) {

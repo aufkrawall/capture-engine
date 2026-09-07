@@ -282,7 +282,16 @@ stream is unavailable, denied, failed, or two seconds stale.
   scheduling and persistent CE startup/device/queue side effects. The
   independent deterministic `g_CommandQueue` performance cost remains real but is not a
   bad-vs-good discriminator: queue roles and active-FG registration counts matched across all
-  reproduced starts, so do not fold an unproven queue-ownership rewrite into this random-pacing fix.
+  reproduced starts. Queue-role differences alone therefore do not establish the random-pacing cause;
+  the separately justified discovery correction below must be evaluated independently.
+
+2026-09-07 code audit: pre-FSR ECL discovery repeatedly replaced the global queue between two
+same-device DIRECT queues in the supplied runs. Discovery now preserves an established same-device
+queue; explicit bindings and proven device changes can still replace it. See
+`hook/apis/dx12_hook_queue_adoption.cpp`. This repairs a definite last-submitter-wins ownership
+defect, not a proven attribution of the Talos jitter. Runtime-owned overlay routes and exact
+swapchain queue selection remain separate and unchanged. A new hardware run must distinguish
+successful queue stabilization from successful pacing repair.
 
 ## Graph scrolling under frame generation
 

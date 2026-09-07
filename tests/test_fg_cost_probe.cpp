@@ -77,8 +77,9 @@ TEST(FgCostProbeTest, EverySuppressionSiteIsGatedOnTheMask) {
     EXPECT_NE(ReadSource("hook/apis/ffx_hook_context.cpp").find("ce::fg_cost_probe::kFfxBridgeOff"),
               std::string::npos);
     const std::string route = ReadSource("hook/apis/dx12_hook_postsl_route.cpp");
-    EXPECT_NE(route.find("ce::fg_cost_probe::kQueueAdoptionOff"), std::string::npos);
-    EXPECT_NE(route.find("ce::fg_cost_probe::kQueueDevicePublishOff"), std::string::npos);
+    const std::string adoption = ReadSource("hook/apis/dx12_hook_queue_adoption.cpp");
+    EXPECT_NE(adoption.find("ce::fg_cost_probe::kQueueAdoptionOff"), std::string::npos);
+    EXPECT_NE(adoption.find("ce::fg_cost_probe::kQueueDevicePublishOff"), std::string::npos);
     EXPECT_NE(route.find("ce::fg_cost_probe::kQueueVTableHookOff"), std::string::npos);
     EXPECT_NE(ReadSource("hook/apis/dx12_sampler_hooks.cpp").find("ce::fg_cost_probe::kSamplerDeviceHooksOff"),
               std::string::npos);

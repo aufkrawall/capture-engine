@@ -100,6 +100,8 @@ anchors that predate the split are approximate.
       frame-metric ownership, warm route-edge retention; `dx12_hook_ffx_callback_bridge.cpp` owns
       generation-cached callback registry access), `dx12_ffx_suspend_overlay.cpp` (owner-queue
       renderer/state and exact-proxy lifetime),
+      `dx12_hook_queue_adoption.cpp` (stable same-device discovery versus explicit queue binding,
+      device/queue reference publication),
       `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
       transparent fast-forward and foreign-hook recursion break),
       `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/

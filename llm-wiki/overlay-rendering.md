@@ -452,6 +452,17 @@ Do not conflate that deterministic uncapped test-app cost with the random Talos 
 and last bad start, while only the physical cadence after PresentStart changes. `0x8000` also prevents the whole
 adoption block, so a production queue rewrite still needs a role/lifetime proof.
 
+2026-09-07 ownership correction: `dx12_hook_queue_adoption.cpp` distinguishes ECL discovery from
+explicit wrapper bindings. A different queue's submission on the same device no longer replaces
+the established global queue. Initial discovery, proven device migration and explicit bindings
+still work; the separate exact swapchain/FSR/Streamline queues retain their rendering roles.
+Incoming GetDevice failure leaves the old pair intact. New queue/device references are acquired
+before publication and replaced references are released after the queue mutex unlocks. This removes
+the pre-FSR last-submitter-wins state and COM/publication churn observed across two Talos threads.
+`Dx12EclQueueRegistrationPolicyTest` covers interleaved auxiliary submissions, explicit rebinding,
+unknown identity and device migration. The older probe's performance gain and the random pacing
+failure are not yet proven to be caused by this defect; hardware validation remains required.
+
 **A real defect found on the way, fixed.** Under FSR FG the ECL detour re-ran full command-queue registration on
 **1290 of 1290 submissions per second**: the "known queue" fast path compares against four pointers CE knows, and a
 frame-generation runtime submits from its own internal queues, which are none of them - and each registration

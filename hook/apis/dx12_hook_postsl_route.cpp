@@ -1,11 +1,10 @@
 #include "dx12_hook_internal.h"
 
 #include "../common/fg_cost_probe.h"
-#include "streamline_bridge.h"
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
-__attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12CommandQueue* pQueue, bool callerFromThirdPartyOverlay, const char* callerModulePath) {
+__attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12CommandQueue* pQueue, bool callerFromThirdPartyOverlay, const char* callerModulePath, bool fromExecuteCommandLists) {
 if (!pQueue)
     return;
 
@@ -98,63 +97,10 @@ if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
     return;
 }
 
-// Set primary game queue once — the first DIRECT queue seen is always the
-// game's queue (created before any FG runtime initializes).  Used to filter
-// ECL counting for accurate real-vs-interpolated frame classification.
+// A provisional execution anchor is independent of the optional adoption cost probe.
 ID3D12CommandQueue* expected = nullptr;
 dx12_hook_g_PrimaryGameQueue.compare_exchange_strong(expected, pQueue, std::memory_order_acq_rel);
-
-std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kQueueAdoptionOff) && g_CommandQueue.load() != pQueue) {
-    if (g_CommandQueue.load())
-        g_CommandQueue.load()->Release();
-    g_CommandQueue.store(pQueue);
-    pQueue->AddRef();
-
-    // Re-check vtable before GetDevice — another thread may have freed
-    // the queue between GetDesc and here.  Volatile prevents caching.
-    auto vtblRecheck = *reinterpret_cast<void* volatile const*>(pQueue);
-    if (!vtblRecheck) {
-        HookLogImportant("DX12: SetCommandQueue — queue %p freed during registration (vtable null after store)",
-                         pQueue);
-        return;
-    }
-
-    ID3D12Device* dev = nullptr;
-    if (!ce::fg_cost_probe::Active(ce::fg_cost_probe::kQueueDevicePublishOff) &&
-        SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
-        DX12_PublishNativeLimiterDevice(dev, pQueue, "command queue");
-        // A bridged Streamline 2.x runtime needs this device, and this is the route that
-        // finds it in a title whose device never came through an sl.interposer export -
-        // an Agility SDK game creates it via ID3D12DeviceFactory::CreateDevice, which
-        // Streamline does not interpose at all. No-op unless the bridge is active.
-        ce::streamline_bridge::NotifyD3D12Device(dev);
-        if (g_Device.load() != dev) {
-            if (g_Device.load())
-                g_Device.load()->Release();
-            g_Device.store(dev);
-
-            // Clear device-removed flag — a new device means recovery.
-            dx12_hook_g_DeviceRemoved.store(false, std::memory_order_release);
-            DXGIShared::g_SharedState.deviceRemovedFatal.store(false, std::memory_order_release);
-            g_RenderWatchdog.SetForceMonitor(false);
-
-            // Reset primary game queue — new device means new queues.
-            dx12_hook_g_PrimaryGameQueue.store(pQueue, std::memory_order_release);
-            dx12_hook_g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_release);
-            dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
-            dx12_hook_g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
-
-            // Report GPU LUID for host metrics (PDH counter filtering).
-            // ID3D12Device has GetAdapterLuid() directly — don't use
-            // IDXGIDevice (D3D12 devices don't implement it).
-            LUID adapterLuid = dev->GetAdapterLuid();
-            ReportLUID(adapterLuid.LowPart, adapterLuid.HighPart);
-            HookLog("DX12: Reported LUID %08x-%08x", adapterLuid.HighPart, adapterLuid.LowPart);
-        } else
-            dev->Release();
-    }
-}
+DX12_AdoptCommandQueue(pQueue, fromExecuteCommandLists);
 
 // CRITICAL FIX: Hook queue vtable lazily here instead of during swapchain
 // creation This prevents hangs during DXGI internal operations
@@ -669,4 +615,3 @@ HookLogImportant(
     previousStableFrames, captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "unknown");
 return true;
 }
-
