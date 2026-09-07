@@ -527,6 +527,7 @@ bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup();
 bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff( IUnknown* pDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, ID3D12CommandQueue** queueOut);
 bool ShouldApplySwapchainDescriptorOverridesForCreate( const CreateSwapchainQueueCaptureEvidence& captureEvidence);
 void PrepareForAuthoritativeFFXSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context);
+void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage);
 void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate( const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence, UINT bufferCount, UINT flags, DXGI_SWAP_EFFECT swapEffect);
 bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr);
 void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup( IDXGISwapChain* swapchain, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context);

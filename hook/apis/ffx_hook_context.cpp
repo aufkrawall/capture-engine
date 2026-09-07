@@ -66,8 +66,21 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
         ce::ffx_api::ParseCreateContextBackend(reinterpret_cast<const ce::ffx_api::ApiHeader*>(ffx_hook_desc));
     const bool duringStreamlineStartup = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 
+    const ULONGLONG createStartedMs = GetTickCount64();
     // Call original first
     ffxReturnCode_t result = ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb);
+    if (parsedSwapChainCreate.recognized) {
+        static std::atomic<unsigned> createCount{0};
+        static std::atomic<unsigned> failedCreateCount{0};
+        const unsigned count = createCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const unsigned sample = result == ffx_hook_FFX_API_RETURN_OK ? count :
+            failedCreateCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (sample <= 8 || (sample != 0 && (sample & (sample - 1)) == 0)) {
+            HookLogImportant("FFX Hook: swapchain context create result=0x%X elapsedMs=%llu queue=%p outputSlot=%p count=%u",
+                             static_cast<unsigned>(result), static_cast<unsigned long long>(GetTickCount64() - createStartedMs),
+                             parsedSwapChainCreate.gameQueue, parsedSwapChainCreate.swapChainOutput, count);
+        }
+    }
 
     if (result == ffx_hook_FFX_API_RETURN_OK && ffx_hook_desc) {
         uint32_t effectId = GetEffectId(ffx_hook_desc->type);

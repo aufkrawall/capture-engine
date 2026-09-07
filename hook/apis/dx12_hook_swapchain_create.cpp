@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/swapchain_create_recovery.h"
 
 
 bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut, size_t modulePathOutCount) {
@@ -120,6 +121,7 @@ if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
 }
 
 MarkForwardedCreateSwapchainForHwndInlineSideEffectsHandled();
+ce::swapchain_create::RecoveryScope recoveryScope(hWnd);
 
 const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
 const void* callerAddress = callerContext.callerAddress;
@@ -203,11 +205,14 @@ if (deferPresentHookRefreshForStreamlineHandoff) {
 HRESULT hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 
-if (hr == E_ACCESSDENIED && hWnd) {
-    // When a frame-generation runtime is managing swapchain lifecycle,
-    // don't interfere. Our CleanupOverlay() flushes the GPU (200ms
-    // Signal+Wait) and destroys overlay resources, which disrupts the
-    // runtime's internal handoff state machine.
+if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
+    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "inline-pre-cleanup");
+    auto recoveryLog = ce::make_scope_guard([&]() {
+        HookLogImportant("CreateSwapChainForHwnd INLINE: recovery complete hwnd=%p hr=0x%08X nestedCalls=%u",
+                         hWnd, hr, recoveryScope.NestedCalls());
+    });
+    // The outermost hook owns recovery across inline/deep/foreign forwarding.
+    // Retry only after releasing CE state, never by waiting for the blocked caller.
     const bool streamlineModuleLoaded = IsStreamlineLoaded();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
@@ -240,8 +245,9 @@ if (hr == E_ACCESSDENIED && hWnd) {
             callerModulePath[0] ? callerModulePath : "unknown");
         ReleaseStreamlineStartupActivationSwapchain(
             "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED runtime-managed minimal recovery");
-        for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(20);
+        if (hr == E_ACCESSDENIED) {
+            // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
+            constexpr int attempt = 1;
             hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant(
@@ -269,8 +275,9 @@ if (hr == E_ACCESSDENIED && hWnd) {
             if (ppSC && *ppSC) {
                 ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
             }
-            for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
-                Sleep(20);
+            if (hr == E_ACCESSDENIED) {
+                // Retry once after cleanup, not on a timer.
+                constexpr int attempt = 1;
                 hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
                 if (SUCCEEDED(hr)) {
                     HookLogImportant(
@@ -316,14 +323,13 @@ if (hr == E_ACCESSDENIED && hWnd) {
             ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
         }
 
-        // Retry: 10 attempts × 20ms = 200ms max
-        for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(20);
-            hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+        if (hr == E_ACCESSDENIED) {
+            // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
+            constexpr int attempt = 1;
+            hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant("CreateSwapChainForHwnd INLINE: Retry attempt %d succeeded hr=0x%08X", attempt,
                                  hr);
-                break;
             }
         }
         if (FAILED(hr)) {

@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-07 - Startup access-denied crash and nested recovery correction
+
+The supplied startup dumps establish failed FFX replacement creation (`E_ACCESSDENIED`) followed
+by a game-side null read at executable offset 0x2AF04B7. The earlier diagnostic dump captures
+INLINE -> Steam -> Deep -> live-entry retry -> INLINE, proving the deep-only recursion flag
+did not prevent inline recovery. The same crash offset/family predates queue stabilization.
+This does not establish a common cause with random steady-state display jitter.
+
+`swapchain_create_recovery.h` gives the outermost same-HWND create a thread-local recovery owner
+across both hooks. Different HWNDs and threads remain independent. Recovery retries once after
+CE-owned state release, without the old nested 5/10-attempt sleep loops. Descriptor overrides
+are preserved on the inline full-cleanup retry. No foreign reference is forcibly released.
+Owner summaries include the HRESULT and nested-call count; FFX context results include duration
+and queue/output-slot identities with bounded sampling. Inline ownership retains pre-cleanup
+pin-ledger diagnostics, never COM probes of raw pointers.
+
+Open: no retained startup activation reference was reported in this failure, and cleanup did
+not free the HWND association. Its remaining owner is unproven; fixing recovery amplification
+must not be represented as a proven cure for the initiating create failure or frame pacing.
+
+Validation: focused recovery/source-policy tests and full `--verify` passed for 0.1.6503,
+including native tests, Python self-tests, zero-warning clang-tidy and sanitizer regression coverage.
+
 ### 2026-09-07 - Separate execution discovery from explicit DX12 queue binding
 
 Pre-FSR Talos logs show two threads repeatedly replacing the global queue with different DIRECT

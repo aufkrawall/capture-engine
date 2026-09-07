@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/swapchain_create_recovery.h"
 
 #include "../common/dx12_factory_slot_policy.h"
 #include "../common/swapchain_liveness.h"
@@ -11,6 +12,8 @@ namespace {
 // genuine function below the chain exactly once without recovery so the outer recovery observes the
 // foreign chain's result and can continue.
 thread_local bool s_forwardingAccessDeniedCreateThroughEntryChain = false;
+
+}  // namespace
 
 // Diagnostic-only: report what CE knows about the swapchains it still tracks for a HWND when DXGI
 // keeps answering E_ACCESSDENIED. The tracked pointers are raw (CE must not pin a chain it wants
@@ -60,9 +63,6 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
     }
 }
-
-}  // namespace
-
 
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
 if (!pDevice || !pSwapChain)
@@ -433,6 +433,7 @@ if (s_forwardingAccessDeniedCreateThroughEntryChain) {
     return E_FAIL;
 }
 
+ce::swapchain_create::RecoveryScope recoveryScope(hWnd);
 const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
 const void* callerAddress = callerContext.callerAddress;
 const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
@@ -523,10 +524,13 @@ if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay && !protected
 // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
 // DON'T force-destroy — that invalidates game-held references and causes
 // delayed UE5 assertion crashes. For ordinary callers we can clean up our
-// overlay refs and do a very brief retry. For runtime-managed Streamline /
-// authoritative FFX takeover paths, return the error untouched so the
-// runtime can manage its own swapchain state machine.
-if (hr == E_ACCESSDENIED && hWnd) {
+// overlay refs and retry once after each state change. Nested hooks must not
+// multiply recovery or wait for the blocked caller to release its references.
+if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
+    auto recoveryLog = ce::make_scope_guard([&]() {
+        HookLogImportant("DeepHook: recovery complete hwnd=%p hr=0x%08X nestedCalls=%u",
+                         hWnd, hr, recoveryScope.NestedCalls());
+    });
     LogAccessDeniedSwapchainPinDiagnostics(hWnd, "pre-cleanup");
 
     const bool streamlineModuleLoaded = IsStreamlineLoaded();
@@ -589,8 +593,9 @@ if (hr == E_ACCESSDENIED && hWnd) {
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0,
             callerModulePath[0] ? callerModulePath : "unknown");
         ReleaseStreamlineStartupActivationSwapchain("DeepHook: E_ACCESSDENIED runtime-managed minimal recovery");
-        for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(20);
+        if (hr == E_ACCESSDENIED) {
+            // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
+            constexpr int attempt = 1;
             hr = dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant("DeepHook: runtime-managed minimal-recovery retry %d succeeded hr=0x%08X sc=%p",
@@ -624,8 +629,9 @@ if (hr == E_ACCESSDENIED && hWnd) {
             if (hr == E_ACCESSDENIED) {
                 LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-entry-retry");
             }
-            for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
-                Sleep(20);
+            if (hr == E_ACCESSDENIED) {
+                // Retry once after cleanup, not on a timer.
+                constexpr int attempt = 1;
                 hr = dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
                 if (SUCCEEDED(hr)) {
                     HookLogImportant("DeepHook: escalated full-cleanup retry %d succeeded hr=0x%08X", attempt, hr);
@@ -684,16 +690,13 @@ if (hr == E_ACCESSDENIED && hWnd) {
             LogAccessDeniedSwapchainPinDiagnostics(hWnd, "post-entry-retry");
         }
 
-        // Retry: 10 attempts × 20ms = 200ms max.  FSR FG activation may
-        // need time for the game to release its own swapchain refs after
-        // we've released ours.
-        for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(20);
+        if (hr == E_ACCESSDENIED) {
+            // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
+            constexpr int attempt = 1;
             hr = dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant("DeepHook: Retry attempt %d succeeded hr=0x%08X sc=%p", attempt, hr,
                                  (ppSC ? *ppSC : nullptr));
-                break;
             }
         }
         if (FAILED(hr)) {

@@ -102,6 +102,7 @@ anchors that predate the split are approximate.
       renderer/state and exact-proxy lifetime),
       `dx12_hook_queue_adoption.cpp` (stable same-device discovery versus explicit queue binding,
       device/queue reference publication),
+      `../common/swapchain_create_recovery.h` (per-thread/HWND ownership across nested create hooks),
       `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
       transparent fast-forward and foreign-hook recursion break),
       `dx12_hook_process*.cpp` (process dispatch + session driver/phase1..phase5/

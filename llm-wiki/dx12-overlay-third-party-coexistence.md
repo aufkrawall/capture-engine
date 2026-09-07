@@ -116,6 +116,10 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
   exist: hidden-chain policy deliberately skips Present-hook refresh, so adding a retaining proxy there is an
   inconsistent side effect that can pin the future main chain. Visible incomplete-deep, non-DX12, overlay-free, and
   dedicated non-retaining Streamline runtime fallbacks remain unchanged.
+- **Create recovery has one owner (2026-09-07).** The startup investigation exposed
+  nested INLINE/Deep access-denied recovery through Steam: `swapchain_create_recovery.h` now
+  assigns one recovery owner per thread and HWND. Recovery retries follow CE state release, not
+  5/10-attempt sleep loops. This fixes amplification, not proven foreign-pin ownership; see recent log.
 - **A refcount probe is never a liveness test (0.1.6163).** CE may only call a virtual method on a real
   swapchain while it holds a reference to it. `VirtualQuery` + `ScopedAvGuard` cannot substitute: a freed
   heap block stays `MEM_COMMIT`, its first quadword still resolves to real vtable code, so a "net-zero"
