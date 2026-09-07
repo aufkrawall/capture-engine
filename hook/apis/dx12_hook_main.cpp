@@ -379,7 +379,7 @@ void DX12Hook::Shutdown() {
         ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), dx12_hook_g_State.overlayInit ? 1 : 0,
         dx12_hook_g_State.syncInit ? 1 : 0, dx12_hook_g_FGRuntimeOwnsSwapchain ? 1 : 0, HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
         dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
-        dx12_hook_g_FFXPresentCallbackBridges.size());
+        DX12_GetFFXPresentCallbackBridgeCount());
 
     // Stop new proxy prework and drain callbacks that entered before quiescing before releasing any queue,
     // renderer, or cached UI-resource state they can touch.
@@ -391,10 +391,7 @@ void DX12Hook::Shutdown() {
     ce::dx12_ffx_suspend_overlay::Shutdown("DX12 shutdown");
     ce::dx12_streamline_ui_overlay::Shutdown("DX12 shutdown");
     ResetFFXPresentCallbackOverlayBackend("DX12: Shutdown");
-    {
-        std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-        dx12_hook_g_FFXPresentCallbackBridges.clear();
-    }
+    DX12_ClearAllFFXPresentCallbackBridges();
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption("DX12: Shutdown");
     ResetFFXPresentCallbackFirstStallDetection();
     dx12_hook_g_FFXPresentCallbackBridgeExpected.store(false, std::memory_order_release);

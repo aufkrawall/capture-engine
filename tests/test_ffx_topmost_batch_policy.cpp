@@ -287,6 +287,34 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackRouteReusesWarmMarkerRendererAndPinsP
               std::string::npos);
 }
 
+TEST(FFXTopmostBatchSourceTest, HiddenCallbackHasNoDiagnosticGpuTailAndStillPublishesTiming) {
+    const std::string source = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const auto gate = source.find("if (overlayDrawn || shouldComposeCurrentToOutput) {");
+    ASSERT_NE(gate, std::string::npos);
+    const auto end = source.find("\n    }", gate);
+    ASSERT_NE(end, std::string::npos);
+    const auto tail = source.substr(gate, end - gate);
+    EXPECT_NE(tail.find("kOverlayBcAfterDraw"), std::string::npos);
+    EXPECT_NE(tail.find("kOverlayBcBeforeClose"), std::string::npos);
+    EXPECT_EQ(source.find("WriteOverlayGpuBreadcrumb(", end), std::string::npos);
+    EXPECT_NE(source.find("NotifyOverlayCallbackDraw(", end), std::string::npos);
+    EXPECT_NE(source.find("DX12_UpdateFFXPresentCallbackFrameTiming(", end), std::string::npos);
+    EXPECT_NE(source.find("[FSRCallbackWork]"), std::string::npos);
+}
+
+TEST(FFXTopmostBatchSourceTest, CallbackBridgeCacheInvalidatesAtShutdownAndAvoidsSteadyMutex) {
+    const std::string callback = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string registry = ReadSource("hook/apis/dx12_hook_ffx_callback_bridge.cpp");
+    const std::string shutdown = ReadSource("hook/apis/dx12_hook_main.cpp");
+    EXPECT_EQ(callback.find("lock(dx12_hook_g_FFXPresentCallbackBridgeMutex)"), std::string::npos);
+    EXPECT_NE(callback.find("DX12_ResolveFFXPresentCallbackBridge(userCtx)"), std::string::npos);
+    EXPECT_NE(shutdown.find("DX12_ClearAllFFXPresentCallbackBridges();"), std::string::npos);
+    const auto clear = registry.find("void DX12_ClearAllFFXPresentCallbackBridges()");
+    ASSERT_NE(clear, std::string::npos);
+    const auto end = registry.find("\n}", clear);
+    EXPECT_NE(registry.substr(clear, end - clear).find("s_bridgeGeneration.fetch_add("), std::string::npos);
+}
+
 TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreStateful) {
     const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
     const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");

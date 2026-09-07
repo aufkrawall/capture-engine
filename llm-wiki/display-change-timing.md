@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-06 (event timestamps, publication concurrency, exact FSR pacing windows; Talos sessions `20260905_011023`, `talosnew`, `talosbadintheend`, and `20260906_160321`)
+Last verified: 2026-09-07 (event timestamps, publication concurrency, exact FSR pacing windows and the `20260906_163800` recurrence; in-process visibility comparison)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -258,8 +258,18 @@ stream is unavailable, denied, failed, or two seconds stale.
   removes roughly 1500 unnecessary CE traversals/s from AMD/game submission threads without
   adding GPU work or changing the official FFX callback lists; hardware pacing validation is
   still required.
-- Open: which downstream stage produces the bad physical cadence if transparent ECL forwarding
-  does not eliminate it. The remaining primary candidates are per-start GPU slack/queue
+- The next recurrence `20260906_163800`, final PID 2208 on 0.1.6499, survives transparent ECL:
+  PresentStart stddev 889 us, display stddev 2564 us / p95 16224 us / 393 permille late,
+  present-to-display stddev 1258 us. Callback CPU cost and GPU saturation overlap clean starts.
+  ECL transparency therefore did not remove the random failure. New bounded configure-contract
+  logging records async/only-generated/flags/rect/callback inputs for future comparisons.
+- Since 2026-09-07, a hidden callback with an original compositor emits no CE GPU tail, including
+  diagnostic breadcrumbs, while timing collection continues. `[FSRCallbackWork]` records the edge.
+  One bad process can provide an on/off/on comparison (same scene and FG mode, 20-30 seconds per
+  phase, default Ctrl+8); compare full 10-second windows away from the toggles. Improvement while
+  hidden implicates ongoing overlay work; unchanged degradation cannot rule out a startup effect.
+- Open: which downstream stage produces the bad physical cadence. The remaining primary
+  candidates are per-start GPU slack/queue
   scheduling and CE work appended inside FFX's output lists. The
   independent deterministic `g_CommandQueue` performance cost remains real but is not a
   bad-vs-good discriminator: queue roles and active-FG registration counts matched across all

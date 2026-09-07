@@ -333,74 +333,6 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
     return true;
 }
 
-void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
-                                      void* originalUserContext) {
-    if (!bridgeKey) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-    auto it = dx12_hook_g_FFXPresentCallbackBridges.find(bridgeKey);
-    if (originalCallback == &DX12_RenderOverlayViaFFXPresentCallback) {
-        static std::atomic<int> s_selfBridgeLogCount{0};
-        const int logCount = s_selfBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 300) == 0) {
-            HookLogImportant(
-                "DX12: Ignoring recursive FFX present-callback bridge original for key=%p "
-                "(existing=%d originalUserCtx=%p log=%d)",
-                bridgeKey, it != dx12_hook_g_FFXPresentCallbackBridges.end() ? 1 : 0, originalUserContext, logCount + 1);
-        }
-        if (it == dx12_hook_g_FFXPresentCallbackBridges.end()) {
-            dx12_hook_g_FFXPresentCallbackBridges[bridgeKey] = {
-                .originalCallback = nullptr,
-                .originalUserContext = nullptr,
-                .installed = true,
-            };
-        }
-        return;
-    }
-
-    dx12_hook_g_FFXPresentCallbackBridges[bridgeKey] = {
-        .originalCallback = originalCallback,
-        .originalUserContext = originalUserContext,
-        .installed = true,
-    };
-}
-
-bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey) {
-    if (!bridgeKey) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-    const auto it = dx12_hook_g_FFXPresentCallbackBridges.find(bridgeKey);
-    return it != dx12_hook_g_FFXPresentCallbackBridges.end() && it->second.installed;
-}
-
-bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey) {
-    if (!bridgeKey) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-    const auto it = dx12_hook_g_FFXPresentCallbackBridges.find(bridgeKey);
-    return it != dx12_hook_g_FFXPresentCallbackBridges.end() && it->second.installed && it->second.originalCallback != nullptr &&
-           it->second.originalCallback != &DX12_RenderOverlayViaFFXPresentCallback;
-}
-
-bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback) {
-    return callback == &DX12_RenderOverlayViaFFXPresentCallback;
-}
-
-void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
-    if (!bridgeKey) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-    dx12_hook_g_FFXPresentCallbackBridges.erase(bridgeKey);
-}
-
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided) {
     DX12_ResetBelowForeignChainFSRTopmostSubmitProof("native FSR callback routing changed");
     DX12_ClearNoCallbackFSRTopmostBatch("native FSR callback routing changed");
@@ -542,16 +474,9 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
 
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
     if (HookIsShuttingDown()) {
-        ce::ffx_api::PresentCallback originalCallback = nullptr;
-        void* originalUserContext = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-            const auto it = dx12_hook_g_FFXPresentCallbackBridges.find(userCtx);
-            if (it != dx12_hook_g_FFXPresentCallbackBridges.end()) {
-                originalCallback = it->second.originalCallback;
-                originalUserContext = it->second.originalUserContext;
-            }
-        }
+        const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
+        const auto originalCallback = bridge.originalCallback;
+        void* originalUserContext = bridge.originalUserContext;
         return originalCallback && originalCallback != &DX12_RenderOverlayViaFFXPresentCallback
                    ? originalCallback(desc, originalUserContext)
                    : 0;
@@ -593,16 +518,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         }
     } depthGuard(s_ffxPresentCallbackDepth);
 
-    ce::ffx_api::PresentCallback originalCallback = nullptr;
-    void* originalUserContext = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(dx12_hook_g_FFXPresentCallbackBridgeMutex);
-        const auto it = dx12_hook_g_FFXPresentCallbackBridges.find(userCtx);
-        if (it != dx12_hook_g_FFXPresentCallbackBridges.end()) {
-            originalCallback = it->second.originalCallback;
-            originalUserContext = it->second.originalUserContext;
-        }
-    }
+    const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
+    const auto originalCallback = bridge.originalCallback;
+    void* originalUserContext = bridge.originalUserContext;
 
     uint32_t result = 0;
     if (originalCallback) {
@@ -729,8 +647,20 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
         overlayDrawn = true;
     }
-    WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);
-    WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcBeforeClose);
+    // A hidden/yielded callback has no CE GPU work to breadcrumb. Keeping MARKER_OUT writes here
+    // would still modify AMD's list and make an in-process visibility comparison inconclusive.
+    if (overlayDrawn || shouldComposeCurrentToOutput) {
+        WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);
+        WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcBeforeClose);
+    }
+    static thread_local int lastWorkState = -1;
+    const int workState = (overlayDrawn ? 1 : 0) | (shouldComposeCurrentToOutput ? 2 : 0);
+    if (lastWorkState != workState) {
+        HookLogImportant("[FSRCallbackWork] overlay=%d selfCompose=%d ceGpuCommands=%d frameId=%llu generated=%d",
+                         overlayDrawn ? 1 : 0, shouldComposeCurrentToOutput ? 1 : 0, workState != 0 ? 1 : 0,
+                         static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0);
+        lastWorkState = workState;
+    }
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {

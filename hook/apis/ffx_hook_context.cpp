@@ -335,6 +335,19 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     bool alreadyBridgedPresentCallbackProvided = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
+        static std::atomic<uint64_t> s_configContractLogCount{0};
+        const uint64_t configLogCount = s_configContractLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (configLogCount < 20 || (configLogCount % 300) == 0) {
+            HookLogImportant(
+                "FFX Hook: Frame Generation configure contract (context=%p frameID=%llu enabled=%d async=%d "
+                "onlyGenerated=%d flags=0x%X rect=%d,%d %dx%d swapChain=%p present=%p userCtx=%p log=%llu)",
+                contextHandle, static_cast<unsigned long long>(localConfig.frameID),
+                localConfig.frameGenerationEnabled ? 1 : 0, localConfig.allowAsyncWorkloads ? 1 : 0,
+                localConfig.onlyPresentGenerated ? 1 : 0, localConfig.flags, localConfig.generationRect.left,
+                localConfig.generationRect.top, localConfig.generationRect.width, localConfig.generationRect.height,
+                localConfig.swapChain, reinterpret_cast<void*>(localConfig.presentCallback),
+                localConfig.presentCallbackUserContext, static_cast<unsigned long long>(configLogCount + 1));
+        }
         alreadyBridgedPresentCallbackProvided = DX12_IsFFXPresentCallbackBridgeCallback(localConfig.presentCallback);
         appPresentCallbackProvided = localConfig.presentCallback && !alreadyBridgedPresentCallbackProvided;
         disabledStartupArmingConfigure = ce::dx12_overlay_policy::ShouldTreatNativeFSRDisabledConfigureAsStartupArming(

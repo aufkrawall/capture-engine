@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 723,
+    "entries": 725,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -173,6 +173,7 @@
       "hook/apis/dx12_hook_ecl_install.cpp",
       "hook/apis/dx12_hook_ecl_startup_activation.cpp",
       "hook/apis/dx12_hook_ffx.cpp",
+      "hook/apis/dx12_hook_ffx_callback_bridge.cpp",
       "hook/apis/dx12_hook_ffx_metrics.cpp",
       "hook/apis/dx12_hook_ffx_overlay_adapter.cpp",
       "hook/apis/dx12_hook_ffx_owner_queue.cpp",
@@ -560,6 +561,7 @@
       "tests/test_benchmark_manager.cpp",
       "tests/test_build_identity.cpp",
       "tests/test_callback_epoch.cpp",
+      "tests/test_callback_snapshot_cache.cpp",
       "tests/test_capture_base.cpp",
       "tests/test_capture_base_shm.cpp",
       "tests/test_capture_coordinator_source.cpp",

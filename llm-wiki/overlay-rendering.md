@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-09-06 (FSR-tagged pacing windows and PresentStart-to-screen attribution; application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-07 (callback registry caching and hidden-callback GPU transparency; FSR-tagged pacing windows and PresentStart-to-screen attribution; application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -328,6 +328,21 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 ## Performance and diagnostics
 
 ### FSR callback performance and lifetime audit (2026-09-05)
+
+Update 2026-09-07: `dx12_hook_ffx_callback_bridge.cpp` owns the registry. A per-thread
+`callback_snapshot_cache.h` snapshot avoids its mutex while the callback generation is unchanged.
+Identical configure writes do not advance the generation; replacement, removal and shutdown do.
+The cache does not pin application callback lifetime: existing runtime callback drain/teardown
+ordering remains required. Shutdown's registry size diagnostic now holds the registry mutex.
+`tests/test_callback_snapshot_cache.cpp` covers stable reads, replacement/removal, distinct contexts
+and independent caches, including a writer between the generation read and locked snapshot.
+
+The callback GPU breadcrumb tail is conditional on CE draw or self-composition. With an original
+app callback and the overlay hidden, CE adds no callback GPU commands; passive metrics continue.
+`[FSRCallbackWork]` marks that boundary for an on/off/on comparison in the same bad process.
+Do not substitute a shared UI surface solely because an original callback exists: custom callbacks
+need not consume it, and AMD's empty-UI copy path becomes a full-screen blend when UI is supplied.
+The proposed substitution was rejected before product build. No pacing cure is claimed.
 
 Sources: `hook/apis/dx12_hook_ffx_overlay_adapter.cpp`, `hook/common/custom_overlay_dx12_render.cpp`,
 `custom_overlay_dx12_inline_upload.cpp`, `custom_overlay_dx12_retirement.cpp`,

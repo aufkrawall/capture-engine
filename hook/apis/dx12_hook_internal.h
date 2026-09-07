@@ -205,6 +205,8 @@ bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
+void DX12_ClearAllFFXPresentCallbackBridges();
+size_t DX12_GetFFXPresentCallbackBridgeCount();
 
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided);
 

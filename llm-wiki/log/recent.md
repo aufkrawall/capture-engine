@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-07 - FSR recurrence survives transparent ECL; callback cache and visibility comparison hardened
+
+Final PID 2208 in `20260906_163800` (0.1.6499) repeats downstream jitter: PresentStart stddev
+889 us, display stddev 2564 us / p95 16224 us / 393 permille late, and present-to-display
+stddev 1258 us. Callback CPU costs, queue/config topology and GPU saturation overlap clean starts.
+Transparent ECL forwarding did not eliminate the random fault; its root cause remains unresolved.
+
+Callback registry snapshots now use a per-thread generation cache; identical configure writes do
+not invalidate it, while replacement, removal and shutdown do. Shutdown's diagnostic count is
+also mutex-protected. The bridge implementation moved to `dx12_hook_ffx_callback_bridge.cpp`.
+Callbacks without CE draw/self-composition no longer append diagnostic GPU markers; timing still
+runs. `[FSRCallbackWork]` marks draw/work transitions, and bounded configure-contract logging
+records async/only-generated/flags/rect/callback inputs.
+
+Rejected before product build: injecting a shared UI texture merely because an app callback exists.
+Custom callbacks need not consume it; AMD's default changes from copy to full-screen blend when
+UI is supplied. This was not a proven generic performance fix. Recommended next evidence is one
+bad process, same scene, overlay on/off/on for 20-30 seconds per phase (default Ctrl+8), without
+changing FG or restarting. Ignore transition windows. This isolates live overlay GPU cost while
+retaining the random startup state; persistent degradation still leaves startup effects unresolved.
+Validation: build 0.1.6500 passed `--verify` (native tests, Python self-tests, ASan/UBSan,
+clang-tidy ratchet); formatting notices were advisory. Hardware pacing validation remains open.
+
 ### 2026-09-06 - Five-start Talos reproduction rules out hook-service priority; callback-owned FSR ECL made transparent
 
 `20260906_160321` on build 0.1.6497 has four clean starts and bad final PID 21880. The exact stable

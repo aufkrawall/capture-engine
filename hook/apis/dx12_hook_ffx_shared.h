@@ -102,6 +102,7 @@ bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format);
 void TransitionResourceIfNeeded(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
 void CopyFFXPresentSourceToOutput(ID3D12GraphicsCommandList* cmdList, const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
 bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
+FFXPresentCallbackBridgeState DX12_ResolveFFXPresentCallbackBridge(void* bridgeKey);
 bool DX12_EnsureOverlayAdapterReadyForFFXPresentCallback(
     const ce::ffx_api::CallbackDescFrameGenerationPresent* desc);
 bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapChain,

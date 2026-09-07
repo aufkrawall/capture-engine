@@ -97,7 +97,8 @@ anchors that predate the split are approximate.
       `dx12_hook_focus_loss.cpp`, `dx12_hook_overlay*.cpp` (overlay, present,
       d3d11on12), `dx12_hook_ffx*.cpp` (FFX, UI composite/state, owner queue,
       proxy Present, final-batch topmost routing, callback-adapter prewarm, callback
-      frame-metric ownership, warm route-edge retention), `dx12_ffx_suspend_overlay.cpp` (owner-queue
+      frame-metric ownership, warm route-edge retention; `dx12_hook_ffx_callback_bridge.cpp` owns
+      generation-cached callback registry access), `dx12_ffx_suspend_overlay.cpp` (owner-queue
       renderer/state and exact-proxy lifetime),
       `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
       transparent fast-forward and foreign-hook recursion break),
