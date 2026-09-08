@@ -345,6 +345,38 @@ One `[PacingTraceSummary]` line per save reports the main values and analysis co
 retain coverage details. No extra producer events or GPU observations are collected for analysis.
 Snapshot ordering is stable so same-microsecond core events retain producer order.
 
+## FSR FG rate-loss elimination table (2026-09-08)
+
+Two discrete steady states on this machine, reproducible at random per game start: ~117 outFps
+(58.6 base) and ~109 outFps (54.6 base). User reports RTSS inject+overlay over 10+ launches never
+reached the degraded state. Measured shape of the degraded state, invariant across every capture:
+application `present_to_display` about 3.0-3.4 ms against 0.75-1.19 ms healthy, generated
+2.4-2.7 ms against 2.0-2.3 ms, runtime present interval 9.2 ms against 8.5 ms, and the game blocked
+correspondingly longer inside FFX's Present while its own CPU work outside Present *drops*.
+
+Eliminated, each with measurements in the referenced session:
+
+| candidate | evidence | session |
+| --- | --- | --- |
+| CE overlay GPU work | 7-8 us duration; commands start at an unchanged offset (1554 -> 1614 us) | `20260908_192922` |
+| CE overlay draw entirely | `CE_FG_COST_PROBE=0x4`, `cbDraws app=0 gen=0`, zero CE GPU commands; 2 of 5 launches still degraded | `20260908_180805` |
+| CE CPU spans | detour 409 -> 373 us, forward 273 -> 269 us, callback 97 -> 94 us, prework 1 us: all equal or *lower* when degraded | `20260908_192922` |
+| CE forced vsync override | `forwarded(sync=0 flags=0x200)`, override off, still degraded | `20260908_184320` |
+| CE screen-change ETW session | `CE_FG_COST_PROBE=0x40000`, `[DisplayTiming] SUPPRESSED`, 117.2 and 109.1 both observed | `20260908_195226` |
+| CE queue adoption / device publication | `CE_FG_COST_PROBE=0x8000`, zero `Adopted queue` lines, still degraded (108.9 outFps, app p2d 3430 us) | `20260908_201724` |
+| launch order within a CE session | degraded on launch 1 of a fresh CE | `20260908_200234` |
+| VRAM pressure | 10.18 GB healthy vs 10.15 GB degraded; in `new1` the degraded run used 2 GB less | `20260908_192922`, `new1` |
+| GPU thermals / clocks | 52-63 C, fan flat at ~700 rpm throughout | all |
+| per-frame GPU work | package energy per output frame within 1.2% between states | `20260908_192922` |
+| flip path / present mode | `completion(hsyncDpcMpo=...)` on essentially every present in both states | all |
+| swapchain buffer counts | identical `BufferCount=3` / `=6` sets per session | `20260908_184320` |
+| DXGI factory wrapper lifetime | the wrapper destroyed in healthy runs belongs to an earlier factory, released before the one the swapchain is created on; the swapchain is created on the *real* factory pointer in both states | `new1` |
+| CE temp bootstrap window/swapchain | created and destroyed inside `DX12_InstallHooks`, `DestroyWindow` + `UnregisterClassW` + releases | source |
+
+Untested probe bits that remain: `0x2000` (adopt the queue but never hook its vtable), `0x20`
+(present hook forwards immediately), `0x10` (ECL forwards immediately), `0x40` (CE never on the FFX
+callback path at all).
+
 ## What the GPU bracket settled (2026-09-08, 0.1.6511)
 
 `CE_FG_GPU_TIMING=1` over paired 117 fps and 109 fps steady segments (`20260908_192922`,

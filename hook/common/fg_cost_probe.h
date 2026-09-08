@@ -69,8 +69,11 @@ enum Bit : uint32_t {
     // device: no g_Device, no limiter device, no adapter LUID, no bridge notify.
     kQueueDevicePublishOff = 0x4000,
     // Queue registration never adopts the queue or its device: CE keeps no
-    // g_CommandQueue/g_Device, which is the state every configuration that
-    // recovers the frame rate happens to share.
+    // g_CommandQueue/g_Device. An earlier note here recorded this as the state
+    // every rate-recovering configuration shared; session 20260908_201724
+    // contradicts that directly - mask=0x8000, zero adoptions logged, and the
+    // FSR FG degraded state still occurred (108.9 outFps, application
+    // present-to-display 3430 us).
     kQueueAdoptionOff = 0x8000,
     // The sampler/anisotropy overrides never detour the game's real D3D12 device
     // vtable (CreateRootSignature, CreateSampler).

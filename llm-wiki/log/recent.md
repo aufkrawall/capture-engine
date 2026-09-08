@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-08 - Queue adoption eliminated; FSR FG rate-loss elimination table
+
+`CE_FG_COST_PROBE=0x8000` with zero `Adopted queue` lines still reached the degraded state
+(108.9 outFps, application present-to-display 3430 us, `20260908_201724`). That also contradicts the
+note previously carried in `fg_cost_probe.h` claiming queue-adoption-off was shared by every
+rate-recovering configuration; the comment is corrected in place rather than left standing.
+
+`display-change-timing.md` now carries the full elimination table for the ~10 fps FSR FG rate loss:
+overlay GPU work, the overlay draw entirely, every CE CPU span, the vsync override, the screen-change
+ETW session, queue adoption, launch order, VRAM, thermals, per-frame GPU energy, present mode,
+buffer counts, the DXGI factory-wrapper lifetime and the temp bootstrap window are all ruled out with
+measurements. Untested probe bits remain `0x2000`, `0x20`, `0x10` and `0x40`.
+
+Operational note learned the hard way: `reg delete` on `HKCU\Environment` does not reach processes
+that are already running. Explorer and Steam keep their old environment block and pass it to
+children, so a cleared `CE_FG_COST_PROBE` kept suppressing telemetry until Explorer was restarted.
+Restart Explorer, Steam and CaptureEngine after changing these variables, and confirm a fresh
+session's `hook_debug.log` contains no `FG COST PROBE ACTIVE` line.
+
 ### 2026-09-08 - The degraded state is a flat post-Present hold, and an ETW suppression bit to test it
 
 Anchoring the flip against GPU execution rather than Present localises the defect. In a 117 fps
