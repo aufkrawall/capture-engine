@@ -1,5 +1,6 @@
 #include "pacing_trace.h"
 #include "pacing_trace_boundary.h"
+#include "pacing_trace_analysis.h"
 #include "perf_logger.h"
 #include "hook_common.h"
 #include <windows.h>
@@ -28,7 +29,7 @@ std::vector<Event> History() {
     auto events = ring.Snapshot(sessionStart);
     auto queueEvents = submissions.Snapshot(submissionStart);
     events.insert(events.end(), queueEvents.begin(), queueEvents.end());
-    std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
+    std::stable_sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
     return events;
 }
 
@@ -39,6 +40,9 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
                          saves >= 6 ? "session limit reached" : "no observations");
         return;
     }
+    const auto analysisStarted = PerfLogger::GetQpcUs();
+    const auto analysis = Analyze(events);
+    const auto analysisUs = PerfLogger::GetQpcUs() - analysisStarted;
     const auto saveStarted = PerfLogger::GetQpcUs();
     const auto path = directory / ("pacing_trace_" + std::to_string(GetCurrentProcessId()) + "_" +
         std::to_string(now) + ".csv");
@@ -46,6 +50,11 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     if (!file) { HookLogImportant("[PacingTrace] save failed error=%lu", GetLastError()); return; }
     ++saves;
     setvbuf(file, nullptr, _IOFBF, 256 * 1024);
+    const auto metric = [&](const char* name, const TraceMetric& value) {
+        fprintf(file, "# summary_%s n=%llu mean_us=%llu p95_us=%llu max_us=%llu\n", name,
+            static_cast<unsigned long long>(value.samples), static_cast<unsigned long long>(value.meanUs),
+            static_cast<unsigned long long>(value.p95Us), static_cast<unsigned long long>(value.maxUs));
+    };
     fprintf(file, "# version=3 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
             reason, static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), events.size(), saves);
     fprintf(file, "# submission history is independently bounded and may start later than core history; marker_observed flags=1 means latest committed slot at callback entry, flags=0 means reuse check\n");
@@ -55,6 +64,20 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     fprintf(file, "# display:a=present_start_us,b=stream_generation,flags=resolved; callback:id=FSR_frame_id,object=list,flags=generated; callback_end:a=total_us,b=wrapped_us; work:a=overlay_bit1_selfcompose_bit2\n");
     fprintf(file, "# submit:object=queue,a=first_list_ptr,b=list_count,flags=CE_bit1_return_bit2; fence:object=fence,a=completed,b=slot,c=pool_size; marker:object=list,a=value,b=slot,c=buffer_ptr; marker_observed:object=buffer,a=observed,b=expected,c=slot; frame:a=total_us,b=overlay_us,c=fence_wait_us; fence_signal:object=fence,a=value,b=queue,c=HRESULT\n");
     fprintf(file, "# IDs are local to their source; display pairs use host PresentStart, not FSR frame IDs. Pointer reuse requires time/epoch matching. Observed fence/marker progress is a bound, not a GPU timestamp.\n");
+    fprintf(file, "# summary window_us=%lld epoch=%llu matched_present=%llu unmatched_begin=%llu unmatched_end=%llu invalid_present=%llu latest_complete=%llu latest_pending=%llu unmatched_marker=%llu\n",
+        static_cast<long long>(analysis.windowUs), static_cast<unsigned long long>(analysis.epoch),
+        static_cast<unsigned long long>(analysis.matchedPresents), static_cast<unsigned long long>(analysis.unmatchedBegins),
+        static_cast<unsigned long long>(analysis.unmatchedEnds), static_cast<unsigned long long>(analysis.invalidPresents),
+        static_cast<unsigned long long>(analysis.latestComplete), static_cast<unsigned long long>(analysis.latestPending),
+        static_cast<unsigned long long>(analysis.unmatchedMarkers));
+    fprintf(file, "# summary is the trailing window filtered to its last epoch, not proof of stable gameplay or cause; nested durations overlap; marker ages bound completion, not execution duration; n=0 means unavailable\n");
+    metric("proxy_prework", analysis.proxyPrework);
+    metric("proxy_runtime", analysis.proxyRuntime);
+    metric("detour_inclusive", analysis.detour);
+    metric("forward_inclusive", analysis.forwarding);
+    metric("callback_total", analysis.callback);
+    metric("completed_marker_age_bound", analysis.completedMarkerAge);
+    metric("pending_marker_age_bound", analysis.pendingMarkerAge);
     fprintf(file, "qpc_us,epoch,kind,thread,id,object,a,b,c,flags\n");
     for (const auto& e : events)
         fprintf(file, "%lld,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%u\n",
@@ -69,6 +92,14 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
         static_cast<long long>((events.back().timeUs - events.front().timeUs) / 1000),
         static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), saves,
         static_cast<long long>((PerfLogger::GetQpcUs() - saveStarted) / 1000), path.filename().string().c_str());
+    HookLogImportant("[PacingTraceSummary] epoch=%llu windowMs=%lld analysisUs=%lld preworkP95=%lluus runtimeP95=%lluus "
+                     "detourInclusiveP95=%lluus forwardInclusiveP95=%lluus latestMarkerComplete=%llu pending=%llu "
+                     "(n=0/unmatched details in CSV; CPU spans and completion bounds, not GPU durations or cause)",
+        static_cast<unsigned long long>(analysis.epoch), static_cast<long long>(analysis.windowUs / 1000),
+        static_cast<long long>(analysisUs),
+        static_cast<unsigned long long>(analysis.proxyPrework.p95Us), static_cast<unsigned long long>(analysis.proxyRuntime.p95Us),
+        static_cast<unsigned long long>(analysis.detour.p95Us), static_cast<unsigned long long>(analysis.forwarding.p95Us),
+        static_cast<unsigned long long>(analysis.latestComplete), static_cast<unsigned long long>(analysis.latestPending));
 }
 }  // namespace
 
@@ -120,7 +151,7 @@ void Service() {
     const auto start = lastWindow;
     if (!manual) lastWindow = now;
     auto events = manual ? History() : ring.Snapshot(sessionStart, start);
-    std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
+    std::stable_sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
     if (manual) { lastManual = now; Save(events, "manual", now); return; }
     const auto tag = epoch.load(std::memory_order_acquire);
     std::vector<uint32_t> displays, presents;

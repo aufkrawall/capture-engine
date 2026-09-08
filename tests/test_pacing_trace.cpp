@@ -96,6 +96,8 @@ TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     EXPECT_NE(trace.find("submissions.Snapshot(submissionStart)"), std::string::npos);
     EXPECT_NE(trace.find("manual ? History() : ring.Snapshot(sessionStart, start)"), std::string::npos);
     EXPECT_NE(trace.find("auto history = History()"), std::string::npos);
+    EXPECT_EQ(trace.find("std::sort(events.begin()"), std::string::npos);
+    EXPECT_NE(trace.find("std::stable_sort(events.begin()"), std::string::npos);
     const auto loop = ce::test_source::ReadLogicalSource(root / "hook/main_hookthread.cpp");
     EXPECT_NE(loop.find("ce::pacing_trace::Service()"), std::string::npos);
 }

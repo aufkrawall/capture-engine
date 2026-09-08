@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-08 - Self-describing pacing saves and equal-timestamp ordering
+
+The latest bad run again had prompt proxy prework and lower Present forwarding. No root-cause
+GPU/pacing-policy change is established. Added background-only summary analysis of existing copied
+trace events: validated Present pairs, explicit missing/invalid coverage, sample counts, cost
+quantiles and matched latest-marker age bounds. These remain CPU spans/completion bounds, never
+GPU execution timings or causal diagnoses. Saves preserve same-timestamp producer ordering so
+short calls cannot be mispaired by unstable sorting. No extra runtime observations or GPU work.
+Regression coverage exercises nesting, thread/epoch identity, malformed and truncated pairs,
+marker-generation matching, empty input, equal timestamps and quantiles.
+Validation: focused tests and full verification passed for 0.1.6507, including native/Python tests,
+x64 ASan/UBSan and zero-warning clang-tidy; formatting notices remain advisory.
+
 ### 2026-09-08 - Present scheduling boundaries and race-free heartbeat
 
 Good/bad comparison found identical callback and submission p95 costs, with complete latest GPU

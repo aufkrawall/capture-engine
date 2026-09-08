@@ -335,6 +335,16 @@ Forward-helper time includes CE routing, any existing queue-room wait, foreign h
 it is not pure driver time. Direct bypasses can have only a detour span. No new hook, GPU command,
 wait or timing policy is introduced. Disabled scopes do not read the clock or allocate IDs.
 
+Each save now includes a trailing-ten-second, last-epoch summary computed only from the copied
+snapshot (`pacing_trace_analysis.h`). Present pairing validates thread-local ID, object, stage,
+epoch and elapsed time; incomplete and invalid pairs are counted instead of silently treated as
+zero. Mean/nearest-rank p95/max and sample counts are included for proxy prework/runtime,
+inclusive detour/forwarding spans, callbacks and latest-marker age bounds. `n=0` means unavailable.
+The window is not an automatic assertion of stable gameplay, and inclusive times cannot be added.
+One `[PacingTraceSummary]` line per save reports the main values and analysis cost; CSV comments
+retain coverage details. No extra producer events or GPU observations are collected for analysis.
+Snapshot ordering is stable so same-microsecond core events retain producer order.
+
 The Present heartbeat uses `present_heartbeat.h`: concurrent observations cannot race on plain
 counters or move the timestamp backwards. One failed publication attempt discards that diagnostic
 gap rather than waiting. This repairs diagnostic bookkeeping, not a proven cause of FSR jitter.

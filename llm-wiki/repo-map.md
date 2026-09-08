@@ -104,6 +104,7 @@ anchors that predate the split are approximate.
       device/queue reference publication),
       `../common/pacing_trace.{h,cpp}` (bounded FSR event history and background suspect/manual saves),
       `../common/pacing_trace_boundary.h` (paired proxy/DXGI Present spans),
+      `../common/pacing_trace_analysis.h` (background save summaries and coverage validation),
       `../common/present_heartbeat.h` (race-free monotonic Present-gap diagnostics),
       `../common/swapchain_create_recovery.h` (per-thread/HWND ownership across nested create hooks),
       `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
