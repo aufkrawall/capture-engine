@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-09-08 - GPU bracket: CE's overlay costs 7 us, and the two states are one VRR lock
+
+First measurement of CE's own GPU time inside the frame-generation runtime's list. Paired 117/109
+fps steady segments: CE's overlay commands take **7-8 us** and, for application frames, begin
+executing at an unchanged offset after the callback (1554 -> 1614 us) while those frames reach the
+screen 2382 us later. Every CE CPU span is equal or lower in the degraded run. The callback path is
+excluded; the `fg_cost_probe.h` ~1.8 ms GPU-busy figure cannot be the overlay draw.
+
+The two states are two lock modes against the panel's 6947 us minimum refresh, not two amounts of
+work: 117 fps runs presents at 8502 us with flips alternating 6975/10079 us and 28% of gaps against
+the floor (`downstream-jitter`, 312-405 permille late), 109 fps runs 9208 us presents with even
+9416/9518 us flips and 3.4% near the floor (`healthy`, 66-112 permille). The faster mode is the
+jittery one, so the reported rate loss and the reported microstutter are the same bistability seen
+from opposite sides. What tips the lock is still open. See `display-change-timing.md`.
+
 ### 2026-09-08 - Display-anchored pacing decomposition, steady reference and an opt-in GPU bracket
 
 A five-launch `CE_FG_COST_PROBE=0x4` A/B refutes CE's overlay GPU work as the trigger: with

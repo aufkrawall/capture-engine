@@ -345,6 +345,39 @@ One `[PacingTraceSummary]` line per save reports the main values and analysis co
 retain coverage details. No extra producer events or GPU observations are collected for analysis.
 Snapshot ordering is stable so same-microsecond core events retain producer order.
 
+## What the GPU bracket settled (2026-09-08, 0.1.6511)
+
+`CE_FG_GPU_TIMING=1` over paired 117 fps and 109 fps steady segments (`20260908_192922`,
+`new1`), all four traces matched >99% of display pairs:
+
+| per presented frame | 117 fps | 109 fps |
+| --- | --- | --- |
+| CE GPU duration, app / gen | 7 / 8 us | 7 / 8 us |
+| CE GPU start after callback, app | 1554 us | 1614 us |
+| CE GPU start after callback, gen | 3058 us | 4021 us |
+| runtime pacer wait, app / gen | 8004 / 3224 us | 8649 / 4162 us |
+| present to display, app / gen | 859 / 2040 us | 3241 / 2711 us |
+| CE Present detour / forward | 409 / 273 us | 373 / 269 us |
+
+**CE's overlay GPU work is 7-8 microseconds.** The `fg_cost_probe.h` figure of ~1.8 ms of added GPU
+busy per base frame therefore cannot be the overlay draw; whatever it measures lies elsewhere.
+For application frames CE's commands begin executing at an unchanged offset after the callback
+(+60 us, 4%) while the frame reaches the screen 2382 us later, so the difference is downstream of
+every command CE records. Every CE CPU span is equal or *lower* in the degraded run.
+
+The two states are two lock modes against the panel's 6947 us minimum refresh interval, not two
+amounts of work:
+
+- 117 fps: presents every 8502 us, flips alternating 6975 / 10079 us, 28% of flip gaps within 300 us
+  of the floor. The generated frame's flip waits ~2 ms for its own completion (its commands execute
+  166 us before its Present), which squeezes the following application flip against the floor.
+- 109 fps: presents every 9208 us, flips 9416 / 9518 us, 3.4% near the floor.
+
+So the faster mode is the *uneven* one: it classifies `downstream-jitter` with a 312-405 permille
+late share, while the 109 fps mode classifies `healthy` at 66-112 permille. The rate loss and the
+microstutter are the same bistability seen from opposite sides, and "restore 117 fps" and "pace
+evenly" are not the same goal. Open: what tips the lock. It is not CE's callback path.
+
 ## Display-anchored decomposition and the steady reference (2026-09-08)
 
 Two facts forced a change of instrument. First, the degraded start is not always jittery: with the
