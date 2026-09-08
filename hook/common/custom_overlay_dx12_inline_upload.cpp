@@ -42,6 +42,14 @@ bool DX12Backend::CreateInlineCompletionBuffer() {
 int DX12Backend::AcquireInlineUploadSlot() {
     if (!inlineCompletions)
         return -1;
+    // Diagnostic-only: the reuse check can be six frames late. Observe the latest
+    // committed marker now without changing safety decisions or issuing GPU work.
+    const auto latest = inlineSlots.LastCommitted();
+    if (ce::pacing_trace::Enabled() && latest < inlineSlots.Count()) {
+        const uint32_t observed = inlineCompletions[latest];
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::MarkerObserved, 0, inlineCompletionBuffer.Get(),
+            observed, inlineSlots.Guard(latest), latest, 1);
+    }
     const uint64_t fenceComplete = slotGuardBinding.GetFence()
                                        ? slotGuardBinding.GetFence()->GetCompletedValue() : UINT64_MAX;
     const std::size_t previousCount = inlineSlots.Count();

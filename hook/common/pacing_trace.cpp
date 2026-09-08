@@ -9,17 +9,27 @@
 
 namespace ce::pacing_trace {
 namespace {
-Ring<65536> ring;
+Ring<49152> ring;
+Ring<16384> submissions;
 std::atomic<bool> enabled{false};
 std::atomic<uint64_t> epoch{0};
 std::atomic<int64_t> epochTime{0};
 std::mutex sessionMutex;
 std::filesystem::path directory;
 uint64_t sessionStart = 0;
+uint64_t submissionStart = 0;
 unsigned saves = 0;
 int64_t lastWindow = 0, lastManual = 0;
 bool keyWasDown = false;
 EpisodeDetector detector;
+
+std::vector<Event> History() {
+    auto events = ring.Snapshot(sessionStart);
+    auto queueEvents = submissions.Snapshot(submissionStart);
+    events.insert(events.end(), queueEvents.begin(), queueEvents.end());
+    std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
+    return events;
+}
 
 void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     // Per-process/session ceiling, automatic and manual combined. No unbounded dump storm.
@@ -35,8 +45,9 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     if (!file) { HookLogImportant("[PacingTrace] save failed error=%lu", GetLastError()); return; }
     ++saves;
     setvbuf(file, nullptr, _IOFBF, 256 * 1024);
-    fprintf(file, "# version=1 reason=%s suspect_only=1 dropped=%llu events=%zu capacity=65536 save=%u/6\n",
-            reason, static_cast<unsigned long long>(ring.Dropped()), events.size(), saves);
+    fprintf(file, "# version=2 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
+            reason, static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), events.size(), saves);
+    fprintf(file, "# submission history is independently bounded and may start later than core history; marker_observed flags=1 means latest committed slot at callback entry, flags=0 means reuse check\n");
     fprintf(file, "# kinds=0:epoch,1:display_pair,2:callback_begin,3:callback_end,4:work,5:submit,6:fence,7:marker,8:frame,9:marker_observed,10:fence_signal\n");
     fprintf(file, "# display:a=present_start_us,b=stream_generation,flags=resolved; callback:id=FSR_frame_id,object=list,flags=generated; callback_end:a=total_us,b=wrapped_us; work:a=overlay_bit1_selfcompose_bit2\n");
     fprintf(file, "# submit:object=queue,a=first_list_ptr,b=list_count,flags=CE_bit1_return_bit2; fence:object=fence,a=completed,b=slot,c=pool_size; marker:object=list,a=value,b=slot,c=buffer_ptr; marker_observed:object=buffer,a=observed,b=expected,c=slot; frame:a=total_us,b=overlay_us,c=fence_wait_us; fence_signal:object=fence,a=value,b=queue,c=HRESULT\n");
@@ -53,7 +64,7 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     HookLogImportant("[PacingTrace] %s reason=%s events=%zu spanMs=%lld dropped=%llu save=%u/6 ioMs=%lld file=%s",
         failed || closeResult != 0 ? "WRITE FAILED" : "saved", reason, events.size(),
         static_cast<long long>((events.back().timeUs - events.front().timeUs) / 1000),
-        static_cast<unsigned long long>(ring.Dropped()), saves,
+        static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), saves,
         static_cast<long long>((PerfLogger::GetQpcUs() - saveStarted) / 1000), path.filename().string().c_str());
 }
 }  // namespace
@@ -62,17 +73,22 @@ void Initialize(const char* perfPath) {
     std::lock_guard<std::mutex> lock(sessionMutex);
     directory = std::filesystem::path(perfPath).parent_path();
     sessionStart = ring.Total();
+    submissionStart = submissions.Total();
     saves = 0; lastWindow = lastManual = 0; keyWasDown = false; detector = {};
     enabled.store(true, std::memory_order_release);
-    HookLogImportant("[PacingTrace] armed: 65536 events, 6 saves/session, 3 stable 2s suspect windows; manual Ctrl+Shift+F11 (hold briefly)");
+    HookLogImportant("[PacingTrace] armed: 49152 core + 16384 submission events, 6 saves/session, 3 stable 2s suspect windows; manual Ctrl+Shift+F11 (hold briefly)");
 }
 
 void Record(Kind kind, uint64_t id, const void* object, uint64_t a, uint64_t b, uint64_t c,
             uint32_t flags, int64_t timeUs) {
     if (!enabled.load(std::memory_order_relaxed)) return;
-    ring.Push({timeUs ? timeUs : PerfLogger::GetQpcUs(), epoch.load(std::memory_order_relaxed), id,
-        reinterpret_cast<uintptr_t>(object), a, b, c, GetCurrentThreadId(), flags, kind});
+    const Event event{timeUs ? timeUs : PerfLogger::GetQpcUs(), epoch.load(std::memory_order_relaxed), id,
+        reinterpret_cast<uintptr_t>(object), a, b, c, GetCurrentThreadId(), flags, kind};
+    if (kind == Kind::Submit) submissions.Push(event);
+    else ring.Push(event);
 }
+
+bool Enabled() { return enabled.load(std::memory_order_relaxed); }
 
 void Epoch(uint64_t tag, int64_t timeUs) {
     epochTime.store(timeUs, std::memory_order_release);
@@ -99,7 +115,7 @@ void Service() {
     if (!manual && now - lastWindow < 2'000'000) return;
     const auto start = lastWindow;
     if (!manual) lastWindow = now;
-    auto events = ring.Snapshot(sessionStart, manual ? INT64_MIN : start);
+    auto events = manual ? History() : ring.Snapshot(sessionStart, start);
     std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
     if (manual) { lastManual = now; Save(events, "manual", now); return; }
     const auto tag = epoch.load(std::memory_order_acquire);
@@ -129,8 +145,7 @@ void Service() {
         now - previousScreen <= 250'000 && start > epochTime.load(std::memory_order_acquire) + 8'000'000 &&
         now - start <= 3'000'000 && foregroundPid == GetCurrentProcessId();
     if (detector.Observe(tag, stable, display, present)) {
-        auto history = ring.Snapshot(sessionStart);
-        std::sort(history.begin(), history.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
+        auto history = History();
         Save(history, "sustained-downstream-suspect", now);
     }
 }

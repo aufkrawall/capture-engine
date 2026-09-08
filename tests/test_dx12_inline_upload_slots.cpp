@@ -9,6 +9,28 @@
 namespace {
 using ce::dx12_overlay_policy::InlineUploadSlots;
 
+TEST(DX12InlineUploadSlotsTest, LatestCommittedObservationDoesNotChangeReuseSafety) {
+    InlineUploadSlots<4> slots;
+    EXPECT_EQ(slots.LastCommitted(), 4u);
+    const auto pending = [](std::size_t, uint32_t guard) { return guard == 0; };
+    ASSERT_EQ(slots.FindReusable(pending), 0);
+    EXPECT_EQ(slots.LastCommitted(), 4u);
+    slots.Commit(0);
+    EXPECT_EQ(slots.LastCommitted(), 0u);
+    ASSERT_EQ(slots.FindReusable(pending), 1);
+    EXPECT_EQ(slots.LastCommitted(), 0u);
+    slots.Commit(1);
+    EXPECT_EQ(slots.LastCommitted(), 1u);
+    EXPECT_EQ(slots.FindReusable([](std::size_t, uint32_t) { return true; }), 0);
+    slots.Commit(0);
+    EXPECT_EQ(slots.LastCommitted(), 0u);
+    EXPECT_EQ(slots.Guard(0), 2u);
+    EXPECT_EQ(slots.FindReusable(pending), 2);
+    slots = {};
+    EXPECT_EQ(slots.LastCommitted(), 4u);
+    EXPECT_EQ(slots.Count(), 0u);
+}
+
 TEST(DX12InlineUploadSlotsTest, DelayedGpuGrowsPastTheOldBlindSixteenFrameRing) {
     InlineUploadSlots<128> slots;
     std::array<uint32_t, 128> completed{};

@@ -37,16 +37,19 @@ public:
         if (next == 0)
             next = 1;
         guards_[slot] = next;
+        lastCommitted_ = slot;
         return next;
     }
 
     uint32_t Guard(std::size_t slot) const { return guards_[slot]; }
     std::size_t Count() const { return count_; }
+    std::size_t LastCommitted() const { return lastCommitted_; }
 
 private:
     std::array<uint32_t, Capacity> guards_{};
     std::size_t count_ = 0;
     std::size_t next_ = 0;
+    std::size_t lastCommitted_ = Capacity;
 };
 
 }  // namespace ce::dx12_overlay_policy

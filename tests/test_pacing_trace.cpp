@@ -81,11 +81,21 @@ TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     const auto upload = ce::test_source::ReadLogicalSource(root / "hook/common/custom_overlay_dx12_inline_upload.cpp");
     EXPECT_NE(upload.find("const uint32_t observed = inlineCompletions[index]"), std::string::npos);
     EXPECT_NE(upload.find("Kind::MarkerObserved"), std::string::npos);
+    EXPECT_NE(upload.find("inlineSlots.LastCommitted()"), std::string::npos);
+    EXPECT_NE(upload.find("ce::pacing_trace::Enabled() && latest < inlineSlots.Count()"), std::string::npos);
+    EXPECT_NE(upload.find("inlineSlots.Guard(latest), latest, 1"), std::string::npos);
     const auto trace = ce::test_source::ReadLogicalSource(root / "hook/common/pacing_trace.cpp");
     EXPECT_EQ(trace.find("->GetCompletedValue("), std::string::npos);
     EXPECT_EQ(trace.find("->Signal("), std::string::npos);
     EXPECT_EQ(trace.find("Sleep("), std::string::npos);
     EXPECT_NE(trace.find("saves >= 6"), std::string::npos);
+    EXPECT_NE(trace.find("Ring<49152> ring"), std::string::npos);
+    EXPECT_NE(trace.find("Ring<16384> submissions"), std::string::npos);
+    EXPECT_NE(trace.find("if (kind == Kind::Submit) submissions.Push(event)"), std::string::npos);
+    EXPECT_NE(trace.find("submissionStart = submissions.Total()"), std::string::npos);
+    EXPECT_NE(trace.find("submissions.Snapshot(submissionStart)"), std::string::npos);
+    EXPECT_NE(trace.find("manual ? History() : ring.Snapshot(sessionStart, start)"), std::string::npos);
+    EXPECT_NE(trace.find("auto history = History()"), std::string::npos);
     const auto loop = ce::test_source::ReadLogicalSource(root / "hook/main_hookthread.cpp");
     EXPECT_NE(loop.find("ce::pacing_trace::Service()"), std::string::npos);
 }

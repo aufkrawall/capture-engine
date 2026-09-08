@@ -295,7 +295,10 @@ successful queue stabilization from successful pacing repair.
 
 ## Bounded suspect-episode trace (2026-09-08)
 
-`hook/common/pacing_trace.{h,cpp}` records a 65,536-event ring while trace diagnostics are enabled.
+`hook/common/pacing_trace.{h,cpp}` reserves 49,152 core events and 16,384 submission events while
+trace diagnostics are enabled. Independent rings prevent high-rate ECL traffic from evicting
+callback/display/completion history. Version-2 files merge both by QPC; submission history may
+start later than core history, so an absent old submission is not evidence of a missing submit.
 The existing hook-service thread classifies paired host PresentStart/display timestamps every two
 seconds. It requires three consecutive suspect windows: display sd >=1.5 ms, late share >=15%,
 Present sd <1.2 ms and display sd >=2x Present sd. Eight seconds of epoch settling, contiguous
@@ -316,6 +319,17 @@ FSR IDs and host display sequences are different namespaces: time/list/epoch ass
 evidence, not an invented exact FSR-to-displayed-frame mapping. Marker observation only bounds GPU
 completion; pointer reuse and missing events must remain explicit uncertainties. Regression coverage:
 `tests/test_pacing_trace.cpp` (trigger exclusions/rearm, bounded retention, concurrent coherence).
+
+While tracing, inline upload acquisition also reads the latest committed slot's existing mapped
+completion marker (`MarkerObserved flags=1`); reuse checks remain `flags=0`. This observes progress
+on the next acquisition rather than only when that slot cycles back through the pool. It adds no
+GPU command or wait and does not change reuse eligibility. It is still not a GPU duration query:
+pending at the next callback can be legitimate pipelining, and completed only gives an upper bound.
+
+The 2026-09-08 marked bad run showed callback CPU p95 120 us and same-list callback-to-submit p95
+9 us (maximum 44 us), despite sustained display jitter. All reuse observations were complete, but
+the six-slot reuse interval was too coarse to exclude shorter GPU delays. This excludes a sustained
+millisecond CPU handoff stall in that trace, not CE GPU interference or an FSR/game scheduling defect.
 
 ## Graph scrolling under frame generation
 

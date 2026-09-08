@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-09-08 - Preserve pacing evidence and tighten GPU progress bounds
+
+The marked bad run had prompt callback CPU work and same-list submission, but completion was only
+observed on six-slot reuse. Submission traffic consumed about 81% of trace events. Split the existing
+event budget into independent core/submission rings, merging only for saves; retain recent queue
+detail without crowding out the longer callback/display history. Sample the latest committed mapped
+marker at inline acquisition while tracing, without new GPU commands, waits or reuse-policy changes.
+Version-2 metadata distinguishes the two history horizons and marker-observation meanings.
+See `display-change-timing.md`; neither this evidence nor this diagnostic change proves a pacing cure.
+Validation: focused tests and full verification passed for 0.1.6505, including native tests,
+Python self-tests, x64 ASan/UBSan and zero-warning clang-tidy; formatting notices were advisory.
+
 ### 2026-09-08 - Bounded FSR pacing episode trace
 
 The latest bad pacing survived stable queue ownership and successful FSR creation without access-denied

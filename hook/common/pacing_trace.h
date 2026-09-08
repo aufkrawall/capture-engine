@@ -84,6 +84,7 @@ struct EpisodeDetector {
 #ifdef VK_LAYER_CE_OVERLAY
 // The standalone Vulkan layer has no DX12 callbacks or hook-service loop.
 inline void Initialize(const char*) {}
+inline bool Enabled() { return false; }
 inline void Service() {}
 inline void Epoch(uint64_t, int64_t) {}
 inline void Invalidate(int64_t) {}
@@ -91,6 +92,7 @@ inline void Record(Kind, uint64_t = 0, const void* = nullptr, uint64_t = 0,
                    uint64_t = 0, uint64_t = 0, uint32_t = 0, int64_t = 0) {}
 #else
 void Initialize(const char* perfPath);
+bool Enabled();
 void Service(); // existing hook-service thread only; all aggregation/file I/O lives here
 void Epoch(uint64_t tag, int64_t timeUs);
 void Invalidate(int64_t timeUs);
