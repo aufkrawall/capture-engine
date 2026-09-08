@@ -14,35 +14,75 @@ ce::pacing_health::ChannelStats Stats(bool bad) {
     return s;
 }
 }
+// The detector now reports which episode fired. Suspect and steady-reference
+// captures are independent: a run that never turns jittery must still yield one
+// comparable artifact, and a reference must never consume a suspect trigger.
+namespace {
+bool Suspect(Episode episode) { return episode == Episode::kDownstreamJitter; }
+bool Quiet(Episode episode) { return episode == Episode::kNone; }
+}  // namespace
+
 TEST(PacingTraceTest, RequiresThreeStableWindowsAndRearmsOnlyAfterRecovery) {
     EpisodeDetector d;
-    EXPECT_FALSE(d.Observe(1, false, Stats(true), Stats(false)));
-    EXPECT_FALSE(d.Observe(1, true, Stats(true), Stats(false)));
-    EXPECT_FALSE(d.Observe(1, true, Stats(true), Stats(false)));
-    EXPECT_TRUE(d.Observe(1, true, Stats(true), Stats(false)));
-    for (int i = 0; i < 20; ++i) EXPECT_FALSE(d.Observe(1, true, Stats(true), Stats(false)));
-    for (int i = 0; i < 3; ++i) EXPECT_FALSE(d.Observe(2, true, Stats(true), Stats(false)));
-    for (int i = 0; i < 3; ++i) EXPECT_FALSE(d.Observe(2, true, Stats(false), Stats(false)));
-    EXPECT_FALSE(d.Observe(2, true, Stats(true), Stats(false)));
-    EXPECT_FALSE(d.Observe(2, true, Stats(true), Stats(false)));
-    EXPECT_TRUE(d.Observe(2, true, Stats(true), Stats(false)));
+    EXPECT_TRUE(Quiet(d.Observe(1, false, Stats(true), Stats(false))));
+    EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(true), Stats(false))));
+    EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(true), Stats(false))));
+    EXPECT_TRUE(Suspect(d.Observe(1, true, Stats(true), Stats(false))));
+    for (int i = 0; i < 20; ++i) EXPECT_FALSE(Suspect(d.Observe(1, true, Stats(true), Stats(false))));
+    for (int i = 0; i < 3; ++i) EXPECT_FALSE(Suspect(d.Observe(2, true, Stats(true), Stats(false))));
+    for (int i = 0; i < 3; ++i) EXPECT_FALSE(Suspect(d.Observe(2, true, Stats(false), Stats(false))));
+    EXPECT_FALSE(Suspect(d.Observe(2, true, Stats(true), Stats(false))));
+    EXPECT_FALSE(Suspect(d.Observe(2, true, Stats(true), Stats(false))));
+    EXPECT_TRUE(Suspect(d.Observe(2, true, Stats(true), Stats(false))));
 }
 TEST(PacingTraceTest, LoadingStallsTransitionsMissingSamplesAndCadenceChangesBreakStreak) {
     for (int reason = 0; reason < 5; ++reason) {
         EpisodeDetector d;
         auto display = Stats(true), present = Stats(false);
-        EXPECT_FALSE(d.Observe(1, true, display, present));
-        EXPECT_FALSE(d.Observe(1, true, display, present));
+        EXPECT_TRUE(Quiet(d.Observe(1, true, display, present)));
+        EXPECT_TRUE(Quiet(d.Observe(1, true, display, present)));
         if (reason == 0) display.maxUs = 200000;
         if (reason == 1) present.samples = 5;
         if (reason == 2) present.medianUs = 20000;
-        EXPECT_FALSE(d.Observe(reason == 3 ? 2 : 1, reason != 4, display, present));
-        EXPECT_FALSE(d.Observe(1, true, Stats(true), Stats(false)));
+        EXPECT_FALSE(Suspect(d.Observe(reason == 3 ? 2 : 1, reason != 4, display, present)));
+        EXPECT_FALSE(Suspect(d.Observe(1, true, Stats(true), Stats(false))));
     }
 }
 TEST(PacingTraceTest, MixedJitterDoesNotTrigger) {
     EpisodeDetector d;
-    for (int i = 0; i < 20; ++i) EXPECT_FALSE(d.Observe(1, true, Stats(true), Stats(true)));
+    for (int i = 0; i < 20; ++i) EXPECT_FALSE(Suspect(d.Observe(1, true, Stats(true), Stats(true))));
+}
+TEST(PacingTraceTest, SteadyReferenceFiresOnceForAHealthySegmentAndRearmsPerEpoch) {
+    // The degraded start is not always jittery: the reference exists so a run
+    // whose signature stays healthy still leaves a comparable capture.
+    EpisodeDetector d;
+    for (unsigned i = 1; i < EpisodeDetector::kSteadyWindowsForReference; ++i)
+        EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(false), Stats(false))));
+    EXPECT_EQ(d.Observe(1, true, Stats(false), Stats(false)), Episode::kSteadyReference);
+    for (int i = 0; i < 20; ++i) EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(false), Stats(false))));
+    for (unsigned i = 1; i < EpisodeDetector::kSteadyWindowsForReference; ++i)
+        EXPECT_TRUE(Quiet(d.Observe(2, true, Stats(false), Stats(false))));
+    EXPECT_EQ(d.Observe(2, true, Stats(false), Stats(false)), Episode::kSteadyReference);
+}
+TEST(PacingTraceTest, SteadyReferenceNeedsAnUninterruptedSegment) {
+    EpisodeDetector d;
+    for (unsigned i = 1; i < EpisodeDetector::kSteadyWindowsForReference; ++i)
+        EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(false), Stats(false))));
+    // One unusable window restarts the segment rather than shortening it.
+    EXPECT_TRUE(Quiet(d.Observe(1, false, Stats(false), Stats(false))));
+    for (unsigned i = 1; i < EpisodeDetector::kSteadyWindowsForReference; ++i)
+        EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(false), Stats(false))));
+    EXPECT_EQ(d.Observe(1, true, Stats(false), Stats(false)), Episode::kSteadyReference);
+}
+TEST(PacingTraceTest, SuspectCaptureDoesNotConsumeTheSteadyReference) {
+    EpisodeDetector d;
+    EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(true), Stats(false))));
+    EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(true), Stats(false))));
+    EXPECT_TRUE(Suspect(d.Observe(1, true, Stats(true), Stats(false))));
+    // The jittery windows still count as one held cadence, so the reference
+    // follows on its own schedule instead of being cancelled by the suspect.
+    EXPECT_TRUE(Quiet(d.Observe(1, true, Stats(true), Stats(false))));
+    EXPECT_EQ(d.Observe(1, true, Stats(true), Stats(false)), Episode::kSteadyReference);
 }
 TEST(PacingTraceTest, RingIsBoundedAndSessionMinimumExcludesOldSamples) {
     Ring<8> ring;

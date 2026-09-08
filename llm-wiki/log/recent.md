@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-08 - Display-anchored pacing decomposition, steady reference and an opt-in GPU bracket
+
+A five-launch `CE_FG_COST_PROBE=0x4` A/B refutes CE's overlay GPU work as the trigger: with
+`cbDraws app=0 gen=0` - and the breadcrumb writes gated on the same condition, so CE appended zero
+GPU commands to AMD's lists - two of five runs still latched into the degraded state with
+numerically identical signatures. With the profile's own overrides removed the state persists and
+shows as throughput instead of jitter (109 vs 117 output fps); the whole difference is the game
+blocked longer inside FFX's Present while its own CPU work *drops*, at 123 W against 161-167 W.
+That is a stall, and no CE CPU span differs between the two.
+
+Three instruments added, all diagnostic. `Analyze` decomposes each displayed transition against the
+callback that produced it (`pacer_wait`, `present_to_display`, `callback_to_display`, per frame
+type), which is the discriminator the last several sessions had to reconstruct by hand.
+`EpisodeDetector` now returns an `Episode` and saves one signature-blind `steady-reference` capture
+per steady segment, because the degraded start can classify as healthy and never trigger a suspect
+save. `present_callback_association.{h,cpp}` carries the same decomposition into the live
+`[FSRPacingHealth]` line, which also gained a per-window GPU usage/power reading.
+`overlay_gpu_timing.{h,cpp}` brackets CE's own commands in the runtime's list with GPU timestamps
+behind `CE_FG_GPU_TIMING=1`, to settle whether the missing 2.5 ms sits upstream or downstream of
+them. See `display-change-timing.md`. None of this fixes the defect or proves a cause.
+Validation: `--verify` passed for 0.1.6511 - native tests, Python self-tests, x64 ASan/UBSan,
+zero-warning clang-tidy and the file-size baseline; clang-format notices remain advisory.
+
 ### 2026-09-08 - Self-describing pacing saves and equal-timestamp ordering
 
 The latest bad run again had prompt proxy prework and lower Present forwarding. No root-cause

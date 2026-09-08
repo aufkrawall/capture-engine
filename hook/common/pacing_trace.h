@@ -8,7 +8,7 @@
 
 namespace ce::pacing_trace {
 enum class Kind : uint32_t { Epoch, DisplayPair, CallbackBegin, CallbackEnd, Work, Submit, Fence, Marker, Frame, MarkerObserved, FenceSignal,
-                             PresentBegin, PresentForward, PresentEnd };
+                             PresentBegin, PresentForward, PresentEnd, GpuSpan };
 struct Event {
     int64_t timeUs = 0;
     uint64_t epoch = 0, id = 0, object = 0, a = 0, b = 0, c = 0;
@@ -50,38 +50,57 @@ public:
     }
 };
 
+// Two independent reasons to keep a trace. The jitter latch is the original
+// suspect trigger. The steady reference exists because the degraded start is not
+// always jittery: the same latch can present as a lower stable output rate with
+// a *healthy* jitter signature, which the suspect trigger by construction never
+// fires on. Capturing one reference per steady segment makes every ordinary run
+// comparable without inventing a rate threshold, which would be a
+// system-specific tuning value.
+enum class Episode : uint32_t { kNone = 0, kDownstreamJitter, kSteadyReference };
+
 struct EpisodeDetector {
-    unsigned bad = 0, healthy = 0;
-    bool latched = false;
+    static constexpr unsigned kSteadyWindowsForReference = 5;
+    unsigned bad = 0, healthy = 0, steady = 0;
+    bool latched = false, referenceTaken = false;
     uint64_t epoch = 0;
     uint32_t previousMedian = 0;
-    bool Observe(uint64_t tag, bool stable, const pacing_health::ChannelStats& display,
-                 const pacing_health::ChannelStats& present) {
-        if (tag != epoch) { epoch = tag; bad = healthy = 0; previousMedian = 0; }
+    Episode Observe(uint64_t tag, bool stable, const pacing_health::ChannelStats& display,
+                    const pacing_health::ChannelStats& present) {
+        if (tag != epoch) { epoch = tag; bad = healthy = steady = 0; previousMedian = 0; referenceTaken = false; }
         // A transition does not re-arm an existing episode. Only measured recovery does.
         if (!tag || !stable || display.samples < 80 || present.samples < 80 ||
             present.maxUs > 100'000 || display.maxUs > 100'000) {
-            bad = healthy = 0; return false;
+            bad = healthy = steady = 0; return Episode::kNone;
         }
         const bool cadenceChanged = previousMedian &&
             (present.medianUs > previousMedian * 5ULL / 4 || present.medianUs < previousMedian * 3ULL / 4);
         previousMedian = present.medianUs;
-        if (cadenceChanged) { bad = healthy = 0; return false; }
+        if (cadenceChanged) { bad = healthy = steady = 0; return Episode::kNone; }
+        // Counted before the suspect check so a jittery window still proves the
+        // segment held one cadence. A suspect capture on the same window wins;
+        // the reference then follows on the next one rather than being lost.
+        ++steady;
         const bool suspect = display.stddevUs >= 1500 && display.latePermille >= 150 &&
             present.stddevUs < 1200 && display.stddevUs >= 2 * present.stddevUs;
         if (suspect) {
             healthy = 0;
-            if (++bad >= 3 && !latched) { latched = true; return true; }
+            if (++bad >= 3 && !latched) { latched = true; return Episode::kDownstreamJitter; }
         } else {
             bad = 0;
             if (display.stddevUs < 1200 && display.latePermille < 150) {
                 if (++healthy >= 3) latched = false;
             } else { healthy = 0; }
         }
-        return false;
+        // The reference capture is deliberately signature-blind: it only asks
+        // that the segment has held one cadence long enough to be comparable.
+        if (steady >= kSteadyWindowsForReference && !referenceTaken) {
+            referenceTaken = true;
+            return Episode::kSteadyReference;
+        }
+        return Episode::kNone;
     }
 };
-
 #ifdef VK_LAYER_CE_OVERLAY
 // The standalone Vulkan layer has no DX12 callbacks or hook-service loop.
 inline void Initialize(const char*) {}

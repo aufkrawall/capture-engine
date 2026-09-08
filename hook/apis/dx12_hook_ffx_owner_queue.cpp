@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
+#include "../common/overlay_gpu_timing.h"
 #include "../../common/log_meter.h"
 
 static std::atomic<bool> g_BelowForeignChainFSRTopmostSubmitProven{false};
@@ -288,6 +289,9 @@ AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwap
     if (underlyingDevice) {
         underlyingDevice->Release();
     }
+    // GPU timestamps only mean anything against a calibration pair from the
+    // queue that executed them; this is the queue that runs the callback list.
+    ce::overlay_gpu_timing::SetCalibrationQueue(selectedQueue);
     return {selectedQueue, route};
 }
 

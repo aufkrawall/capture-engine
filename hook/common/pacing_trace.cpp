@@ -21,6 +21,7 @@ std::filesystem::path directory;
 uint64_t sessionStart = 0;
 uint64_t submissionStart = 0;
 unsigned saves = 0;
+unsigned steadyReferences = 0;
 int64_t lastWindow = 0, lastManual = 0;
 bool keyWasDown = false;
 EpisodeDetector detector;
@@ -55,10 +56,11 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
             static_cast<unsigned long long>(value.samples), static_cast<unsigned long long>(value.meanUs),
             static_cast<unsigned long long>(value.p95Us), static_cast<unsigned long long>(value.maxUs));
     };
-    fprintf(file, "# version=3 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
+    fprintf(file, "# version=4 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
             reason, static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), events.size(), saves);
     fprintf(file, "# submission history is independently bounded and may start later than core history; marker_observed flags=1 means latest committed slot at callback entry, flags=0 means reuse check\n");
     fprintf(file, "# kinds=0:epoch,1:display_pair,2:callback_begin,3:callback_end,4:work,5:submit,6:fence,7:marker,8:frame,9:marker_observed,10:fence_signal\n");
+    fprintf(file, "# kind=14:gpu_span (opt-in CE_FG_GPU_TIMING): a=gpu_begin_us,b=gpu_end_us,c=callback_end_us,id=slot,flags=generated; a/b are GPU timestamps converted to the CPU clock through a queue clock calibration, so they are comparable with every other time in this file but carry that calibration's error\n");
     fprintf(file, "# kinds=11:present_begin,12:present_forward,13:present_end; flags stage=0:proxy,1:proxy1,2:detour,3:detour1,4:forward,5:forward1; pair by thread+id, nested spans overlap\n");
     fprintf(file, "# present begin/forward:a=sync,b=DXGI_flags; end:a=elapsed_us,b=HRESULT_bits,c=result_known; object=swapchain; forward stage includes CE routing/waits and foreign/driver calls, NOT pure GPU or driver time\n");
     fprintf(file, "# display:a=present_start_us,b=stream_generation,flags=resolved; callback:id=FSR_frame_id,object=list,flags=generated; callback_end:a=total_us,b=wrapped_us; work:a=overlay_bit1_selfcompose_bit2\n");
@@ -78,6 +80,19 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     metric("callback_total", analysis.callback);
     metric("completed_marker_age_bound", analysis.completedMarkerAge);
     metric("pending_marker_age_bound", analysis.pendingMarkerAge);
+    fprintf(file, "# summary display_pairs=%llu matched=%llu unresolved=%llu tolerance_us=%lld\n",
+        static_cast<unsigned long long>(analysis.displayPairs), static_cast<unsigned long long>(analysis.displayPairsMatched),
+        static_cast<unsigned long long>(analysis.displayPairsUnresolved), static_cast<long long>(kDisplayAssociationToleranceUs));
+    metric("app_pacer_wait", analysis.application.pacerWait);
+    metric("app_present_to_display", analysis.application.presentToDisplay);
+    metric("app_callback_to_display", analysis.application.callbackToDisplay);
+    metric("app_gpu_start_delay", analysis.application.gpuStartDelay);
+    metric("app_gpu_duration", analysis.application.gpuDuration);
+    metric("gen_pacer_wait", analysis.generated.pacerWait);
+    metric("gen_present_to_display", analysis.generated.presentToDisplay);
+    metric("gen_callback_to_display", analysis.generated.callbackToDisplay);
+    metric("gen_gpu_start_delay", analysis.generated.gpuStartDelay);
+    metric("gen_gpu_duration", analysis.generated.gpuDuration);
     fprintf(file, "qpc_us,epoch,kind,thread,id,object,a,b,c,flags\n");
     for (const auto& e : events)
         fprintf(file, "%lld,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%u\n",
@@ -100,6 +115,25 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
         static_cast<unsigned long long>(analysis.proxyPrework.p95Us), static_cast<unsigned long long>(analysis.proxyRuntime.p95Us),
         static_cast<unsigned long long>(analysis.detour.p95Us), static_cast<unsigned long long>(analysis.forwarding.p95Us),
         static_cast<unsigned long long>(analysis.latestComplete), static_cast<unsigned long long>(analysis.latestPending));
+    HookLogImportant("[PacingTraceDisplay] matched=%llu/%llu unresolved=%llu | app pacerWait=%lluus p2d=%lluus cb2d=%lluus n=%llu"
+                     " | gen pacerWait=%lluus p2d=%lluus cb2d=%lluus n=%llu | gpu app start=%lluus dur=%lluus n=%llu"
+                     " gen start=%lluus dur=%lluus n=%llu (means; screen times follow completion under VRR; gpu n=0 unless CE_FG_GPU_TIMING)",
+        static_cast<unsigned long long>(analysis.displayPairsMatched), static_cast<unsigned long long>(analysis.displayPairs),
+        static_cast<unsigned long long>(analysis.displayPairsUnresolved),
+        static_cast<unsigned long long>(analysis.application.pacerWait.meanUs),
+        static_cast<unsigned long long>(analysis.application.presentToDisplay.meanUs),
+        static_cast<unsigned long long>(analysis.application.callbackToDisplay.meanUs),
+        static_cast<unsigned long long>(analysis.application.callbackToDisplay.samples),
+        static_cast<unsigned long long>(analysis.generated.pacerWait.meanUs),
+        static_cast<unsigned long long>(analysis.generated.presentToDisplay.meanUs),
+        static_cast<unsigned long long>(analysis.generated.callbackToDisplay.meanUs),
+        static_cast<unsigned long long>(analysis.generated.callbackToDisplay.samples),
+        static_cast<unsigned long long>(analysis.application.gpuStartDelay.meanUs),
+        static_cast<unsigned long long>(analysis.application.gpuDuration.meanUs),
+        static_cast<unsigned long long>(analysis.application.gpuDuration.samples),
+        static_cast<unsigned long long>(analysis.generated.gpuStartDelay.meanUs),
+        static_cast<unsigned long long>(analysis.generated.gpuDuration.meanUs),
+        static_cast<unsigned long long>(analysis.generated.gpuDuration.samples));
 }
 }  // namespace
 
@@ -108,7 +142,7 @@ void Initialize(const char* perfPath) {
     directory = std::filesystem::path(perfPath).parent_path();
     sessionStart = ring.Total();
     submissionStart = submissions.Total();
-    saves = 0; lastWindow = lastManual = 0; keyWasDown = false; detector = {};
+    saves = steadyReferences = 0; lastWindow = lastManual = 0; keyWasDown = false; detector = {};
     enabled.store(true, std::memory_order_release);
     HookLogImportant("[PacingTrace] armed: 49152 core + 16384 submission events, 6 saves/session, 3 stable 2s suspect windows; manual Ctrl+Shift+F11 (hold briefly)");
 }
@@ -179,9 +213,25 @@ void Service() {
     const bool stable = continuous && previousScreen - firstScreen >= (now - start) * 3 / 4 &&
         now - previousScreen <= 250'000 && start > epochTime.load(std::memory_order_acquire) + 8'000'000 &&
         now - start <= 3'000'000 && foregroundPid == GetCurrentProcessId();
-    if (detector.Observe(tag, stable, display, present)) {
-        auto history = History();
-        Save(history, "sustained-downstream-suspect", now);
+    // The reference budget is separate from the suspect budget so a run that
+    // never turns jittery still leaves a comparable artifact, and a run that
+    // does cannot have its suspect captures crowded out by references.
+    static constexpr unsigned kMaxSteadyReferences = 2;
+    switch (detector.Observe(tag, stable, display, present)) {
+        case Episode::kDownstreamJitter: {
+            auto history = History();
+            Save(history, "sustained-downstream-suspect", now);
+            break;
+        }
+        case Episode::kSteadyReference: {
+            if (steadyReferences >= kMaxSteadyReferences) break;
+            ++steadyReferences;
+            auto history = History();
+            Save(history, "steady-reference", now);
+            break;
+        }
+        case Episode::kNone:
+            break;
     }
 }
 }  // namespace ce::pacing_trace

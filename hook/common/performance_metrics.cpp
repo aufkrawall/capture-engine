@@ -4,7 +4,9 @@
 #include "pacing_health_telemetry.h"
 #include "pacing_trace.h"
 #include "perf_logger.h"
+#include "present_callback_association.h"
 #include "system_latency_frame_begin.h"
+#include "system_metrics.h"
 
 #include <algorithm>
 #include <array>
@@ -310,6 +312,17 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs) {
             ce::pacing_health::Observe(ce::pacing_health::Channel::kPresentToDisplay,
                                        screenTimeUs - presentStartTimeUs, screenTimeUs, fsrTag);
+            // Present time does not decide screen time under free-running VRR;
+            // completion does. Measuring the same transition from the callback
+            // that produced it separates the runtime's own hold from the wait
+            // for the frame to be finished, which the Present-anchored series
+            // cannot. Unknown associations are dropped, never estimated.
+            ce::present_association::Association association;
+            if (ce::present_association::Find(presentStartTimeUs, association) &&
+                screenTimeUs >= association.callbackEndUs) {
+                ce::pacing_health::Observe(ce::pacing_health::Channel::kCallbackToDisplay,
+                                           screenTimeUs - association.callbackEndUs, screenTimeUs, fsrTag);
+            }
         }
         // The series stays warm whatever the provenance is: an unresolved
         // timestamp is still an ordered displayed transition, it is only its
@@ -499,6 +512,10 @@ void PerformanceMetrics::NotifyFSRFrameGenerationTransition(bool enabled, const 
         }
         m_fsrPresentationNeedsAnchor.store(true, std::memory_order_release);
         m_fsrDisplayNeedsAnchor.store(true, std::memory_order_release);
+        // A pending association from before the transition describes a different
+        // presentation topology; keeping it would attribute one epoch's screen
+        // time to the other's callback.
+        ce::present_association::Reset();
         ce::pacing_trace::Epoch(tag, nowUs);
     }
     HookLogImportant("[FSRPacingEpoch] state=%s tag=%llu site=%s",
@@ -538,6 +555,12 @@ void PerformanceMetrics::MaybeLogPacingHealth(int64_t currentQpcUs) {
         ce::pacing_health::Channel::kPresentation, windowStartUs, currentQpcUs);
     const auto presentToDisplay = ce::pacing_health::SnapshotTaggedWindow(
         ce::pacing_health::Channel::kPresentToDisplay, windowStartUs, currentQpcUs);
+    const auto callbackToDisplay = ce::pacing_health::SnapshotTaggedWindow(
+        ce::pacing_health::Channel::kCallbackToDisplay, windowStartUs, currentQpcUs);
+    // A degraded segment has repeatedly shown the same output cadence at lower
+    // GPU power, which is a stall rather than added work. One sample per session
+    // could not tell those apart; a per-window reading can.
+    const SystemMetrics sensors = SystemMetricsCollector::Get().GetMetrics();
     const auto signature = ce::pacing_health::Classify(display, presentation);
     const uint64_t appDraws = m_callbackAppDraws.exchange(0, std::memory_order_relaxed);
     const uint64_t generatedDraws = m_callbackGeneratedDraws.exchange(0, std::memory_order_relaxed);
@@ -547,13 +570,18 @@ void PerformanceMetrics::MaybeLogPacingHealth(int64_t currentQpcUs) {
         "disp med=%uu p95=%uu sd=%uu late=%upermille max=%uu n=%u | "
         "pres med=%uu p95=%uu sd=%uu late=%upermille max=%uu n=%u | "
         "presentToDisplay mean=%uu p95=%uu sd=%uu min=%uu max=%uu n=%u | "
-        "cbDraws app=%llu gen=%llu genSkip=%llu",
+        "callbackToDisplay mean=%uu p95=%uu sd=%uu min=%uu max=%uu n=%u | "
+        "gpu=%s%.0f%% gpuW=%s%.0f | cbDraws app=%llu gen=%llu genSkip=%llu",
         ce::pacing_health::SignatureName(signature), static_cast<long long>((currentQpcUs - windowStartUs) / 1000),
         std::max(display.segments, presentation.segments), GetFGMultiplier(), GetFGBaseFPS(), GetFGOutputFPS(),
         display.medianUs, display.p95Us, display.stddevUs, display.latePermille, display.maxUs, display.samples,
         presentation.medianUs, presentation.p95Us, presentation.stddevUs, presentation.latePermille,
         presentation.maxUs, presentation.samples, presentToDisplay.meanUs, presentToDisplay.p95Us,
         presentToDisplay.stddevUs, presentToDisplay.minUs, presentToDisplay.maxUs, presentToDisplay.samples,
+        callbackToDisplay.meanUs, callbackToDisplay.p95Us, callbackToDisplay.stddevUs, callbackToDisplay.minUs,
+        callbackToDisplay.maxUs, callbackToDisplay.samples,
+        sensors.gpuUsageValid ? "" : "?", sensors.gpuUsage,
+        sensors.gpuPackagePowerValid ? "" : "?", sensors.gpuPackagePowerW,
         static_cast<unsigned long long>(appDraws), static_cast<unsigned long long>(generatedDraws),
         static_cast<unsigned long long>(generatedSkips));
 }

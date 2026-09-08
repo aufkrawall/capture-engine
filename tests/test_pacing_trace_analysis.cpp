@@ -116,3 +116,109 @@ TEST(PacingTraceAnalysisTest, EqualTimestampCallsRetainTheirRecordedOrder) {
     EXPECT_EQ(result.proxyRuntime.maxUs, 0u);
 }
 }  // namespace
+
+namespace {
+Event Callback(Kind kind, int64_t time, uint32_t generated, uint32_t thread = 1) {
+    return {time, 1, 7, 0, 0, 0, 0, thread, generated, kind};
+}
+Event Display(int64_t screen, int64_t presentStart, uint32_t resolved = 1, uint32_t thread = 9) {
+    return {screen, 1, 0, 0, static_cast<uint64_t>(presentStart), 0, 0, thread, resolved, Kind::DisplayPair};
+}
+// One presented frame: the callback that produced it, then its runtime Present.
+void PushFrame(std::vector<Event>& events, int64_t callbackBegin, int64_t callbackEnd, int64_t presentBegin,
+               int64_t screen, uint32_t generated) {
+    events.push_back(Callback(Kind::CallbackBegin, callbackBegin, generated));
+    events.push_back(Callback(Kind::CallbackEnd, callbackEnd, generated));
+    events.push_back(Boundary(Kind::PresentBegin, presentBegin, static_cast<uint64_t>(presentBegin), 2));
+    events.push_back(Boundary(Kind::PresentEnd, presentBegin + 300, static_cast<uint64_t>(presentBegin), 2, 300));
+    events.push_back(Display(screen, presentBegin + 120));
+}
+}  // namespace
+
+TEST(PacingTraceAnalysisTest, DecomposesScreenTimeAgainstTheProducingCallbackPerFrameType) {
+    std::vector<Event> events;
+    // Generated frames are held 3 ms after the callback and reach the screen
+    // 2 ms after Present; application frames are held 10 ms and land in 1.5 ms.
+    for (int i = 0; i < 4; ++i) {
+        const int64_t base = 100'000 + i * 20'000;
+        PushFrame(events, base, base + 100, base + 3'100, base + 5'100, 1);
+        PushFrame(events, base + 3'400, base + 3'500, base + 13'500, base + 15'000, 0);
+    }
+    const auto result = Analyze(events);
+    EXPECT_EQ(result.displayPairs, 8u);
+    EXPECT_EQ(result.displayPairsMatched, 8u);
+    EXPECT_EQ(result.displayPairsUnresolved, 0u);
+    EXPECT_EQ(result.generated.pacerWait.samples, 4u);
+    EXPECT_EQ(result.generated.pacerWait.meanUs, 3'000u);
+    EXPECT_EQ(result.generated.presentToDisplay.meanUs, 1'880u);
+    EXPECT_EQ(result.generated.callbackToDisplay.meanUs, 5'000u);
+    EXPECT_EQ(result.application.pacerWait.samples, 4u);
+    EXPECT_EQ(result.application.pacerWait.meanUs, 10'000u);
+    EXPECT_EQ(result.application.presentToDisplay.meanUs, 1'380u);
+    EXPECT_EQ(result.application.callbackToDisplay.meanUs, 11'500u);
+}
+
+TEST(PacingTraceAnalysisTest, UnresolvedAndUnassociatedDisplayPairsAreCountedNotGuessed) {
+    std::vector<Event> events;
+    PushFrame(events, 100'000, 100'100, 103'100, 105'100, 1);
+    // An unresolved screen time carries no trustworthy interval, and a pair with
+    // no Present within tolerance must not bind to the nearest unrelated frame.
+    events.push_back(Display(126'000, 125'880, 0));
+    events.push_back(Display(200'000, 199'880));
+    const auto result = Analyze(events);
+    EXPECT_EQ(result.displayPairs, 3u);
+    EXPECT_EQ(result.displayPairsUnresolved, 1u);
+    EXPECT_EQ(result.displayPairsMatched, 1u);
+    EXPECT_EQ(result.generated.callbackToDisplay.samples, 1u);
+    EXPECT_EQ(result.application.callbackToDisplay.samples, 0u);
+}
+
+TEST(PacingTraceAnalysisTest, ACallbackWithoutItsOwnRuntimePresentContributesNothing) {
+    std::vector<Event> events;
+    // The proxy stage is the game's Present, not the runtime's: a callback
+    // followed only by a proxy Present must not be associated with a screen time.
+    events.push_back(Callback(Kind::CallbackBegin, 100'000, 1));
+    events.push_back(Callback(Kind::CallbackEnd, 100'100, 1));
+    events.push_back(Boundary(Kind::PresentBegin, 103'100, 1, 0));
+    events.push_back(Boundary(Kind::PresentEnd, 103'400, 1, 0, 300));
+    events.push_back(Display(105'100, 103'220));
+    const auto result = Analyze(events);
+    EXPECT_EQ(result.displayPairs, 1u);
+    EXPECT_EQ(result.displayPairsMatched, 0u);
+    EXPECT_EQ(result.generated.callbackToDisplay.samples, 0u);
+}
+
+TEST(PacingTraceAnalysisTest, GpuSpansSeparateWhenCeCommandsRanFromHowLongTheyTook) {
+    std::vector<Event> events;
+    for (int i = 0; i < 3; ++i) {
+        const int64_t callbackEnd = 100'000 + i * 20'000;
+        // Generated frames: CE's commands start 2 ms after the callback and run
+        // 300 us. Application frames start 4 ms after and run 400 us.
+        Event generated{callbackEnd + 2'000, 1, 0, 0, static_cast<uint64_t>(callbackEnd + 2'000),
+                        static_cast<uint64_t>(callbackEnd + 2'300), static_cast<uint64_t>(callbackEnd), 5, 1,
+                        Kind::GpuSpan};
+        Event application{callbackEnd + 14'000, 1, 0, 0, static_cast<uint64_t>(callbackEnd + 14'000),
+                          static_cast<uint64_t>(callbackEnd + 14'400), static_cast<uint64_t>(callbackEnd + 10'000), 5,
+                          0, Kind::GpuSpan};
+        events.push_back(generated);
+        events.push_back(application);
+    }
+    const auto result = Analyze(events);
+    EXPECT_EQ(result.generated.gpuStartDelay.samples, 3u);
+    EXPECT_EQ(result.generated.gpuStartDelay.meanUs, 2'000u);
+    EXPECT_EQ(result.generated.gpuDuration.meanUs, 300u);
+    EXPECT_EQ(result.application.gpuStartDelay.meanUs, 4'000u);
+    EXPECT_EQ(result.application.gpuDuration.meanUs, 400u);
+}
+
+TEST(PacingTraceAnalysisTest, UncalibratedOrReorderedGpuSpansAreDroppedNotAveragedIn) {
+    std::vector<Event> events;
+    // No callback anchor (calibration not settled), and an end before its begin.
+    events.push_back(Event{100'000, 1, 0, 0, 102'000, 102'300, 0, 5, 1, Kind::GpuSpan});
+    events.push_back(Event{120'000, 1, 0, 0, 122'000, 121'000, 120'000, 5, 1, Kind::GpuSpan});
+    events.push_back(Event{140'000, 1, 0, 0, 142'000, 142'500, 140'000, 5, 1, Kind::GpuSpan});
+    const auto result = Analyze(events);
+    EXPECT_EQ(result.generated.gpuDuration.samples, 1u);
+    EXPECT_EQ(result.generated.gpuDuration.meanUs, 500u);
+    EXPECT_EQ(result.generated.gpuStartDelay.meanUs, 2'000u);
+}

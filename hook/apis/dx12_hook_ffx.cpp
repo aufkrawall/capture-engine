@@ -3,6 +3,8 @@
 #include "dx12_hook_ffx_shared.h"
 
 #include "../common/fg_cost_probe.h"
+#include "../common/overlay_gpu_timing.h"
+#include "../common/present_callback_association.h"
 static bool KnownDLSSFGModuleLoaded() {
     if (dx12_hook_g_KnownDLSSFGModuleSeen.load(std::memory_order_acquire)) {
         return true;
@@ -499,6 +501,10 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         ce::pacing_trace::Record(ce::pacing_trace::Kind::CallbackEnd, desc ? desc->frameID : 0,
             desc ? desc->commandList : nullptr, exitUs - bridgeEnterUs, wrappedCallUs, 0,
             desc && desc->isGeneratedFrame ? 1u : 0u, exitUs);
+        // The runtime presents this frame from this thread moments later. Staging
+        // it here is what lets the health line measure screen time from the
+        // callback rather than only from Present.
+        ce::present_association::NoteCallbackEnd(exitUs, desc && desc->isGeneratedFrame);
     });
 
     static thread_local int s_ffxPresentCallbackDepth = 0;
@@ -649,6 +655,17 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const bool probeSuppressesBridgeOverlay =
         ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeOverlayOff) ||
         (desc->isGeneratedFrame && ce::fg_cost_probe::Active(ce::fg_cost_probe::kBridgeGeneratedFrameOverlayOff));
+    // Opt-in GPU bracket around exactly the commands CE contributes to this
+    // list. Every CPU span CE measures is identical between a healthy and a
+    // degraded start; when this frame's commands actually execute is the one
+    // thing that has never been observable from inside the process.
+    const int gpuTimingSlot = ce::overlay_gpu_timing::Begin(
+        static_cast<ID3D12Device*>(desc->device), static_cast<ID3D12GraphicsCommandList*>(desc->commandList),
+        desc->isGeneratedFrame != 0, bridgeEnterUs);
+    auto gpuTimingScope = ce::make_scope_guard([&]() {
+        ce::overlay_gpu_timing::End(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), gpuTimingSlot,
+                                    PerfLogger::GetQpcUs());
+    });
     bool overlayDrawn = false;
     if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);

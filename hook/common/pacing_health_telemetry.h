@@ -17,7 +17,12 @@ enum class Channel : uint32_t {
     kPresentation = 0,  // hooked Present entry cadence (presentation series)
     kDisplay = 1,       // displayed-transition cadence (display-change series)
     kPresentToDisplay = 2,  // correlated PresentStart-to-screen duration
-    kCount = 3,
+    // Screen time measured from the frame-generation callback that produced the
+    // frame instead of from Present. Under free-running VRR the flip follows
+    // completion, so this is the one series that separates "the runtime held the
+    // frame" from "the frame was not finished"; Present-anchored latency cannot.
+    kCallbackToDisplay = 3,
+    kCount = 4,
 };
 
 // Feed one interval/value in microseconds. `observationTimeUs` makes periodic

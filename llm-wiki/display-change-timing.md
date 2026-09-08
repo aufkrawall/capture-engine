@@ -345,6 +345,52 @@ One `[PacingTraceSummary]` line per save reports the main values and analysis co
 retain coverage details. No extra producer events or GPU observations are collected for analysis.
 Snapshot ordering is stable so same-microsecond core events retain producer order.
 
+## Display-anchored decomposition and the steady reference (2026-09-08)
+
+Two facts forced a change of instrument. First, the degraded start is not always jittery: with the
+game's own present intent left alone it appears as a lower stable output rate (109 vs 117 fps in
+`20260908_184320`) with a *healthy* jitter signature, which the suspect trigger by construction can
+never fire on. `EpisodeDetector::Observe` therefore returns an `Episode`, and a segment that has held
+one cadence for five consecutive stable windows saves one `steady-reference` capture per epoch, at
+most twice per session and on a budget separate from suspect saves. It is deliberately
+signature-blind; classifying by rate would require a system-specific threshold.
+
+Second, the panel runs free VRR (fitting flip times to the 6947 us period gives a phase vector of
+0.008-0.032, and under 2% of flips sit near the min-refresh floor), so a frame reaches the screen
+when it is finished, not when Present was called. A PresentStart-anchored latency therefore cannot
+separate "the runtime held the frame" from "the frame was not ready". `Analyze` now associates each
+display pair with the callback that produced it - presenter-thread `CallbackBegin`/`CallbackEnd`
+followed by that thread's own Detour `PresentBegin`, matched to the host PresentStart within
+1500 us - and reports `pacer_wait`, `present_to_display` and `callback_to_display` separately for
+application and generated frames. Measured on the existing captures this is the discriminator: for
+generated frames `flip - callbackEnd` spans 294 us p95-p5 in a healthy segment against 1750 us in a
+degraded one, while `flip - Present` spans 734 us against 2903 us.
+
+The same decomposition is available live: `pacing_health::Channel::kCallbackToDisplay` is fed from
+`present_callback_association.{h,cpp}`, a seqlock ring the presenter thread stages a callback end
+into and commits when that Present enters CE's detour. A frame-generation epoch change resets it so
+a display pair cannot be attributed across a transition. `[FSRPacingHealth]` carries the channel and
+a per-window GPU usage/power reading, because a degraded segment has repeatedly shown the same
+cadence at *lower* GPU power (123 W vs 161-167 W), which is a stall rather than added work and could
+not be told apart from one sensor sample per session.
+
+## Opt-in GPU bracket around CE's callback commands (2026-09-08)
+
+`overlay_gpu_timing.{h,cpp}` writes two timestamp queries, one `ResolveQueryData` and one MARKER_OUT
+into the frame-generation runtime's own command list around exactly the commands CE contributes,
+behind `CE_FG_GPU_TIMING=1`. Off by default, nothing is allocated and no command is recorded.
+Slot reuse waits for the marker, never a fence or a CPU wait; clock calibration runs on the
+hook-service thread with the module lock released, so it cannot stall the presenter. Resolved slots
+are published as `Kind::GpuSpan` in the CPU clock and summarised as `app_/gen_gpu_start_delay` and
+`gpu_duration`.
+
+It exists because every CPU span CE measures is identical between a healthy and a degraded start
+(ECL detour mean 38.9 vs 39.8 us with the real driver call inside that bracket, callback 93-95 us,
+proxy prework 1-2 us, detour 374-424 us), while the frame reaches the screen about 2.5 ms later.
+`gpu_start_delay` answers the one question those spans cannot: whether CE's commands execute late
+(the delay is upstream, in the game's or the runtime's GPU work) or on time with the flip still late
+(downstream). The bracket is a measurement, not a supported configuration.
+
 The Present heartbeat uses `present_heartbeat.h`: concurrent observations cannot race on plain
 counters or move the timestamp backwards. One failed publication attempt discards that diagnostic
 gap rather than waiting. This repairs diagnostic bookkeeping, not a proven cause of FSR jitter.
