@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/pacing_trace.h"
 
 
 bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
@@ -44,6 +45,8 @@ if (s_submitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
 }
 
 ID3D12CommandList* lists[] = {list};
+ce::pacing_trace::Record(ce::pacing_trace::Kind::Submit, 0, submitQueue,
+    reinterpret_cast<uintptr_t>(list), 1, 0, 1);
 
 // When using the dedicated overlay queue during SL FG, use the REAL
 // D3D12 ECL (bypassing SL's vtable hook) to prevent SL's internal
@@ -69,6 +72,8 @@ bool slActive = IsStreamlineLoaded() && IsActualFrameGenerationActive();
 if (dx12_hook_g_State.fence) {
     UINT64 next = dx12_hook_g_State.currentFenceValue + 1;
     HRESULT signalHr = submitQueue->Signal(dx12_hook_g_State.fence, next);
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::FenceSignal, 0, dx12_hook_g_State.fence,
+        next, reinterpret_cast<uintptr_t>(submitQueue), static_cast<uint32_t>(signalHr));
     if (SUCCEEDED(signalHr)) {
         dx12_hook_g_State.currentFenceValue = next;
         if (allocatorIndex >= 0 && allocatorIndex < static_cast<int>(dx12_hook_g_State.fenceValues.size())) {

@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include "hook_common.h"
+#include "pacing_trace.h"
 
 namespace CustomOverlay {
 
@@ -46,9 +47,15 @@ int DX12Backend::AcquireInlineUploadSlot() {
     const std::size_t previousCount = inlineSlots.Count();
     const int slot = inlineSlots.FindReusable([&](std::size_t index, uint32_t guard) {
         const bool externalComplete = index >= kFramePoolSize || slotFenceValue[index] <= fenceComplete;
-        return externalComplete && (guard == 0 || inlineCompletions[index] == guard);
+        if (!externalComplete || guard == 0) return externalComplete;
+        const uint32_t observed = inlineCompletions[index];
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::MarkerObserved, 0, inlineCompletionBuffer.Get(),
+            observed, guard, index);
+        return observed == guard;
     });
     std::atomic_thread_fence(std::memory_order_acquire);
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::Fence, 0, slotGuardBinding.GetFence(),
+        fenceComplete, static_cast<uint64_t>(slot), inlineSlots.Count());
     if (previousCount == 0 || (inlineSlots.Count() > previousCount && inlineSlots.Count() > kFramePoolSize)) {
         HookLogImportant("DX12 Overlay: callback upload pool slots=%zu completion=inline-marker "
                          "(no queue Signal, no CPU wait)", inlineSlots.Count());
@@ -67,6 +74,8 @@ void DX12Backend::MarkInlineUploadComplete(ID3D12GraphicsCommandList2* list, int
     D3D12_WRITEBUFFERIMMEDIATE_PARAMETER marker = {};
     marker.Dest = inlineCompletionGpuVA + static_cast<UINT64>(slot) * sizeof(uint32_t);
     marker.Value = inlineSlots.Commit(static_cast<std::size_t>(slot));
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::Marker, 0, list, marker.Value, slot,
+        reinterpret_cast<uintptr_t>(inlineCompletionBuffer.Get()));
     constexpr auto mode = D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
     list->WriteBufferImmediate(1, &marker, &mode);
 }

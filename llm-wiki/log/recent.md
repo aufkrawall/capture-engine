@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-08 - Bounded FSR pacing episode trace
+
+The latest bad pacing survived stable queue ownership and successful FSR creation without access-denied
+recovery. Added an in-memory event ring and existing-background-service automatic/manual saving rather
+than another steady-state summary. See `display-change-timing.md`, bounded suspect-episode trace.
+Audit: callback GPU work is carried on AMD's command list; its upload completion already has marker
+and optional fence observations. Reuse those reads; do not introduce timing queries or extra waits.
+Host PresentStart/display pairs support same-source cadence comparison, not exact FSR-ID attribution.
+The trace does not fix the pacing defect or prove zero measurement interference.
+
+Validation: focused tests and full verification passed for 0.1.6504, including x64 ASan/UBSan,
+native tests and zero-warning clang-tidy. The initial Vulkan-layer link failure was corrected by
+scoping this DX12-only trace API out of that separate binary; verification resumed successfully.
+
 ### 2026-09-07 - Startup access-denied crash and nested recovery correction
 
 The supplied startup dumps establish failed FFX replacement creation (`E_ACCESSDENIED`) followed

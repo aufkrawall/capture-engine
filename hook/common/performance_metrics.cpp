@@ -2,6 +2,7 @@
 
 #include "hook_common.h"
 #include "pacing_health_telemetry.h"
+#include "pacing_trace.h"
 #include "perf_logger.h"
 #include "system_latency_frame_begin.h"
 
@@ -267,6 +268,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         return;
 
     if (m_displayGeneration != generationBefore) {
+        ce::pacing_trace::Invalidate(currentQpcUs);
         m_display.Reset();
         m_systemLatency.ResetDisplayHistory();
         m_displayScreenTimeCadence.Reset();
@@ -302,6 +304,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         if (timing.publicationGeneration.load(std::memory_order_acquire) != generationBefore)
             return;
         m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::DisplayPair, m_nextDisplaySequence, nullptr,
+            presentStartTimeUs, generationBefore, 0, screenTimeResolved ? 1u : 0u, screenTimeUs);
         const uint64_t fsrTag = m_fsrPacingTag.load(std::memory_order_acquire);
         if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs) {
             ce::pacing_health::Observe(ce::pacing_health::Channel::kPresentToDisplay,
@@ -495,6 +499,7 @@ void PerformanceMetrics::NotifyFSRFrameGenerationTransition(bool enabled, const 
         }
         m_fsrPresentationNeedsAnchor.store(true, std::memory_order_release);
         m_fsrDisplayNeedsAnchor.store(true, std::memory_order_release);
+        ce::pacing_trace::Epoch(tag, nowUs);
     }
     HookLogImportant("[FSRPacingEpoch] state=%s tag=%llu site=%s",
                      enabled ? "enabled" : "disabled", static_cast<unsigned long long>(tag),

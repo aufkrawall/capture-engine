@@ -1,4 +1,5 @@
 #include "perf_logger.h"
+#include "pacing_trace.h"
 #include <windows.h>
 #include <cstring>
 #include <filesystem>
@@ -85,6 +86,7 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
         headerWritten_ = true;
         lastLoggedQpcUs_ = 0;
         HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
+        ce::pacing_trace::Initialize(logPath);
     } else {
         HookLog("PerfLogger: Failed to open %s for writing", logPath);
     }
@@ -113,6 +115,8 @@ bool PerfLogger::InnerRowLoggedInPresentRowScope() {
 }
 
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
+        metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);
     t_frameRowLoggedInPresentScope = true;
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (!file_)

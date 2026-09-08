@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/pacing_trace.h"
 #include "dx12_hook_ffx_shared.h"
 
 #include "../common/fg_cost_probe.h"
@@ -489,9 +490,15 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     // callback it wraps, and report the split rather than leaving CE's share to
     // be inferred from a frame-rate A/B.
     const int64_t bridgeEnterUs = PerfLogger::GetQpcUs();
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::CallbackBegin, desc ? desc->frameID : 0,
+        desc ? desc->commandList : nullptr, 0, 0, 0, desc && desc->isGeneratedFrame ? 1u : 0u, bridgeEnterUs);
     int64_t wrappedCallUs = 0;
     auto costScope = ce::make_scope_guard([&]() {
-        DX12_ObserveFFXPresentCallbackCost(PerfLogger::GetQpcUs() - bridgeEnterUs, wrappedCallUs);
+        const auto exitUs = PerfLogger::GetQpcUs();
+        DX12_ObserveFFXPresentCallbackCost(exitUs - bridgeEnterUs, wrappedCallUs);
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::CallbackEnd, desc ? desc->frameID : 0,
+            desc ? desc->commandList : nullptr, exitUs - bridgeEnterUs, wrappedCallUs, 0,
+            desc && desc->isGeneratedFrame ? 1u : 0u, exitUs);
     });
 
     static thread_local int s_ffxPresentCallbackDepth = 0;
@@ -655,6 +662,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
     static thread_local int lastWorkState = -1;
     const int workState = (overlayDrawn ? 1 : 0) | (shouldComposeCurrentToOutput ? 2 : 0);
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::Work, desc->frameID, desc->commandList,
+        workState, 0, 0, desc->isGeneratedFrame ? 1u : 0u);
     if (lastWorkState != workState) {
         HookLogImportant("[FSRCallbackWork] overlay=%d selfCompose=%d ceGpuCommands=%d frameId=%llu generated=%d",
                          overlayDrawn ? 1 : 0, shouldComposeCurrentToOutput ? 1 : 0, workState != 0 ? 1 : 0,

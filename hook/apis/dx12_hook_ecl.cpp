@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/pacing_trace.h"
 
 #include "../common/fg_cost_probe.h"
 #include "../common/hook_cpu_cost.h"
@@ -92,7 +93,11 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             }
             s_loggedTransparentNativeFSRCallbackEcl = true;
         }
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::Submit, 0, pThis,
+            reinterpret_cast<uintptr_t>(NumCommandLists && ppCommandLists ? ppCommandLists[0] : nullptr), NumCommandLists);
         ce::dx12_ecl_forward::TransparentNativeFSRCallback(pThis, NumCommandLists, ppCommandLists);
+        ce::pacing_trace::Record(ce::pacing_trace::Kind::Submit, 0, pThis,
+            reinterpret_cast<uintptr_t>(NumCommandLists && ppCommandLists ? ppCommandLists[0] : nullptr), NumCommandLists, 0, 2);
         return;
     }
 

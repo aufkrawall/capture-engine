@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/pacing_trace.h"
 #include "common/custom_overlay_dx12.h"
 #include "common/hook_thread_stage_cost.h"
 
@@ -423,6 +424,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
 
     DWORD now = GetTickCount();
+    ce::pacing_trace::Service();
 
     // Attribute the service pass by stage. Total-only measurements hid whether
     // a collision came from the periodic module scan, UE5 reads, retirement, or

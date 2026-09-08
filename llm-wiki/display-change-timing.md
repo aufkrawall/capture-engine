@@ -293,6 +293,30 @@ defect, not a proven attribution of the Talos jitter. Runtime-owned overlay rout
 swapchain queue selection remain separate and unchanged. A new hardware run must distinguish
 successful queue stabilization from successful pacing repair.
 
+## Bounded suspect-episode trace (2026-09-08)
+
+`hook/common/pacing_trace.{h,cpp}` records a 65,536-event ring while trace diagnostics are enabled.
+The existing hook-service thread classifies paired host PresentStart/display timestamps every two
+seconds. It requires three consecutive suspect windows: display sd >=1.5 ms, late share >=15%,
+Present sd <1.2 ms and display sd >=2x Present sd. Eight seconds of epoch settling, contiguous
+resolved display sequences, sufficient time/sample coverage, foreground ownership, <=100 ms maximum
+intervals and stable median cadence are required. FSR transitions and display-stream generation
+changes invalidate settling. These are suspect intervals, not loading-screen recognition or cause proof.
+One save per episode re-arms only after three healthy windows. Manual Ctrl+Shift+F11 (hold about
+half a second with the game focused) bypasses classification, not the six-save process/session cap.
+Files are `pacing_trace_<pid>_<qpc>.csv` beside perf metrics; `[PacingTrace]` reports saves/errors.
+
+Producers use bounded nonblocking slot acquisition (drop rather than wait), no allocation/file I/O,
+and no added GPU queries, signals, markers or waits. Existing callback IDs/list pointers, CE work,
+first-list ECL begin/return, normal CE submission/fence signals, upload-slot fence/marker observations,
+and host timestamp pairs share QPC microseconds. The existing background service copies and writes;
+this has nonzero CPU/I/O cost, reported save I/O duration, and is not a pristine baseline.
+History duration depends on event rate; each file reports actual span and dropped producer events.
+FSR IDs and host display sequences are different namespaces: time/list/epoch associations are
+evidence, not an invented exact FSR-to-displayed-frame mapping. Marker observation only bounds GPU
+completion; pointer reuse and missing events must remain explicit uncertainties. Regression coverage:
+`tests/test_pacing_trace.cpp` (trigger exclusions/rearm, bounded retention, concurrent coherence).
+
 ## Graph scrolling under frame generation
 
 - A scrolling graph advances one slot per drawn frame, which is automatic while every drawn frame produces exactly
