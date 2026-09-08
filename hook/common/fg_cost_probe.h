@@ -80,6 +80,19 @@ enum Bit : uint32_t {
     // keeping app-frame draws. Isolates the generated-frame draw share, which is
     // the part that lands inside the generator's production budget.
     kBridgeGeneratedFrameOverlayOff = 0x20000,
+    // CE's own screen-change ETW session is not collected. This is the only bit
+    // read outside the hooked process: the consumer lives in CaptureEngine's
+    // sensor process, which inherits the same environment variable.
+    //
+    // It exists because the measured degradation is a flat ~2.4 ms hold added to
+    // every flip, after the frame is already finished, and CE's per-frame GPU
+    // work in the runtime's list is 7-8 us. A system-wide DxgKrnl consumer is
+    // the one thing CE runs on that path that a Present-hooking overlay such as
+    // RTSS - which never reaches the degraded state on the same machine - does
+    // not. Turning it off removes the display-change frame-time source, the
+    // present-to-display series and the pacing trace's display pairs with it, so
+    // a run with this bit is judged on the output frame rate alone.
+    kDisplayTimingEtwOff = 0x40000,
 };
 
 // Parses the mask the way the environment variable is written: decimal, or

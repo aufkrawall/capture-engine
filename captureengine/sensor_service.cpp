@@ -11,6 +11,29 @@
 #include "../common/strict_integer_parse.h"
 #include "host_metrics.h"  // Reuse existing logic for native sensors
 #include "display_timing_service.h"
+#include "../hook/common/fg_cost_probe.h"
+
+namespace {
+// Resolved once: the probe mask is a process-lifetime diagnostic switch, and a
+// consumer that appeared or vanished mid-session would make its own measurement
+// unreadable.
+bool DisplayTimingSuppressedByCostProbe() {
+    static const bool suppressed = [] {
+        char buffer[16] = {};
+        const DWORD length = GetEnvironmentVariableA("CE_FG_COST_PROBE", buffer, sizeof(buffer));
+        const uint32_t mask = length > 0 && length < sizeof(buffer) ? ce::fg_cost_probe::ParseMask(buffer) : 0;
+        const bool off = (mask & ce::fg_cost_probe::kDisplayTimingEtwOff) != 0;
+        if (off) {
+            LogInfo("[DisplayTiming] SUPPRESSED by CE_FG_COST_PROBE=0x%X - no screen-change ETW session is started. "
+                    "This removes the display-change frame-time source and every present-to-display measurement; "
+                    "it is a diagnostic configuration, not a supported one",
+                    mask);
+        }
+        return off;
+    }();
+    return suppressed;
+}
+}  // namespace
 #include "display_timing_policy.h"
 #include "sensor_plugin.h"
 
@@ -307,7 +330,8 @@ int SensorProcessMain(const AppConfig& config) {
             const bool injectVideoTimingNeeded =
                 s.shm->runtimeState.IsInjectVideoCaptureRequested() ||
                 s.shm->runtimeState.GetRecordingStartIntent() == RecordingStartIntent::Video;
-            if (ShouldCollectDisplayTiming(
+            if (!DisplayTimingSuppressedByCostProbe() &&
+                ShouldCollectDisplayTiming(
                     useScreenGrabTarget, overlayConfig.frameTimeSource,
                     injectVideoTimingNeeded,
                     overlayConfig.showOverlay && overlayConfig.showSystemLatency)) {

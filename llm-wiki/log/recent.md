@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-09-08 - The degraded state is a flat post-Present hold, and an ETW suppression bit to test it
+
+Anchoring the flip against GPU execution rather than Present localises the defect. In a 117 fps
+segment the generated frame reaches the screen 2324 us after its GPU work starts with 94 us of
+spread over 1106 frames, and the two frame types differ correctly: the application frame, finished
+about 7 ms before its Present, flips in 753 us, while the generated frame, still finishing, takes
+2271 us. That is flip-when-ready. In a 109 fps segment *both* types flip at a uniform ~3050 us after
+Present, including the frame that was finished 7 ms earlier - a flat ~2.4 ms hold that completion
+cannot explain and that costs the 10 fps. VRAM is ruled out (10.18 vs 10.15 GB, and the slow run in
+`new1` used less), as is per-frame GPU work (energy per frame within 1.2%).
+
+`CE_FG_COST_PROBE=0x40000` (`kDisplayTimingEtwOff`) now suppresses CE's screen-change ETW session in
+the sensor process, which inherits the same variable. It is the one thing CE runs on the flip path
+that a Present-hooking overlay like RTSS - which never reaches the degraded state on this machine -
+has no equivalent of. The bit removes every present-to-display measurement with it, so such a run is
+judged on output frame rate alone. See `display-change-timing.md`.
+Validation: `--verify` passed for 0.1.6513.
+
 ### 2026-09-08 - GPU bracket: CE's overlay costs 7 us, and the two states are one VRR lock
 
 First measurement of CE's own GPU time inside the frame-generation runtime's list. Paired 117/109

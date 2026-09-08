@@ -5,6 +5,7 @@
 #include "../common/capture_pipeline_policy.h"
 #include "../captureengine/display_timing_policy.h"
 #include "../hook/common/capture_pacing.h"
+#include "../hook/common/fg_cost_probe.h"
 #include "../hook/common/dxgi_shared.h"
 
 namespace policy = ce::capture_policy;
@@ -531,4 +532,22 @@ TEST(FinalOutputCaptureTimingTest, FinalOutputCadenceUsesIndependentTwoTimesGate
     gate.Reset();
     EXPECT_FALSE(ShouldSkipCaptureForTargetCadenceAtUs(
         &sharedMemory, "test", 1'007'000, gate, policy::kFinalOutputCfrPublicationHeadroomPermille));
+}
+
+TEST(DisplayTimingPolicyTest, ProbeMaskParsesTheEtwSuppressionBitWithoutDisturbingOthers) {
+    // The sensor process reads the same variable as the hooked process, so the
+    // bit has to survive both spellings the documented mask accepts.
+    using namespace ce::fg_cost_probe;
+    EXPECT_EQ(ParseMask("0x40000") & kDisplayTimingEtwOff, kDisplayTimingEtwOff);
+    EXPECT_EQ(ParseMask("262144") & kDisplayTimingEtwOff, kDisplayTimingEtwOff);
+    EXPECT_EQ(ParseMask("0x48000") & kDisplayTimingEtwOff, kDisplayTimingEtwOff);
+    EXPECT_EQ(ParseMask("0x48000") & kQueueAdoptionOff, kQueueAdoptionOff);
+    // Anything else must leave the collection policy alone.
+    EXPECT_EQ(ParseMask("0x8000") & kDisplayTimingEtwOff, 0u);
+    EXPECT_EQ(ParseMask("") & kDisplayTimingEtwOff, 0u);
+    EXPECT_EQ(ParseMask("0x4000g") & kDisplayTimingEtwOff, 0u);
+    // The bit is a separate decision from the source policy, which stays intact.
+    EXPECT_TRUE(ShouldCollectDisplayTiming(false, FrameTimeSource::DisplayChange, false));
+    EXPECT_TRUE(ShouldCollectDisplayTiming(false, FrameTimeSource::Presentation, true));
+    EXPECT_FALSE(ShouldCollectDisplayTiming(true, FrameTimeSource::DisplayChange, true));
 }
