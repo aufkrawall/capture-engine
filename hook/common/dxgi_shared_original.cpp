@@ -1,8 +1,10 @@
 #include "dxgi_shared_internal.h"
 #include "hook_cpu_cost.h"
+#include "pacing_trace_boundary.h"
 
 namespace DXGIShared {
 HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Forward, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }

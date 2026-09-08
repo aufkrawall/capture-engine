@@ -99,3 +99,22 @@ TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     const auto loop = ce::test_source::ReadLogicalSource(root / "hook/main_hookthread.cpp");
     EXPECT_NE(loop.find("ce::pacing_trace::Service()"), std::string::npos);
 }
+
+TEST(PacingTraceTest, PresentBoundariesCoverBothVariantsWithoutChangingForwardedArguments) {
+    const auto root = std::filesystem::current_path();
+    const auto read = [&](const char* path) { return ce::test_source::ReadLogicalSource(root / path); };
+    const auto proxy = read("hook/apis/dx12_hook_ffx_proxy_present.cpp");
+    EXPECT_NE(proxy.find("PresentStage::Proxy, self, SyncInterval, Flags"), std::string::npos);
+    EXPECT_NE(proxy.find("PresentStage::Proxy1, self, SyncInterval, Flags"), std::string::npos);
+    EXPECT_NE(proxy.find("trace.Forward(SyncInterval, Flags);\n    const HRESULT hr = original(self, SyncInterval, Flags);"), std::string::npos);
+    EXPECT_NE(proxy.find("trace.Forward(SyncInterval, Flags);\n    const HRESULT hr = original(self, SyncInterval, Flags, pParams);"), std::string::npos);
+    EXPECT_NE(proxy.find("trace.Finish(static_cast<uint32_t>(hr));"), std::string::npos);
+    const auto detour = read("hook/common/dxgi_shared_present.cpp");
+    EXPECT_NE(detour.find("PresentStage::Detour, pSwapChain, SyncInterval, Flags"), std::string::npos);
+    EXPECT_NE(detour.find("static ce::PresentHeartbeat heartbeat"), std::string::npos);
+    EXPECT_EQ(detour.find("static LARGE_INTEGER s_lastPresentTime"), std::string::npos);
+    EXPECT_EQ(detour.find("static int s_entryCount"), std::string::npos);
+    EXPECT_NE(read("hook/common/dxgi_shared_present1.cpp").find("PresentStage::Detour1"), std::string::npos);
+    EXPECT_NE(read("hook/common/dxgi_shared_original.cpp").find("PresentStage::Forward"), std::string::npos);
+    EXPECT_NE(read("hook/common/dxgi_shared_original_present1.cpp").find("PresentStage::Forward1"), std::string::npos);
+}

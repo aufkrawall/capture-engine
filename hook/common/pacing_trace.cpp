@@ -1,4 +1,5 @@
 #include "pacing_trace.h"
+#include "pacing_trace_boundary.h"
 #include "perf_logger.h"
 #include "hook_common.h"
 #include <windows.h>
@@ -45,10 +46,12 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     if (!file) { HookLogImportant("[PacingTrace] save failed error=%lu", GetLastError()); return; }
     ++saves;
     setvbuf(file, nullptr, _IOFBF, 256 * 1024);
-    fprintf(file, "# version=2 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
+    fprintf(file, "# version=3 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
             reason, static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), events.size(), saves);
     fprintf(file, "# submission history is independently bounded and may start later than core history; marker_observed flags=1 means latest committed slot at callback entry, flags=0 means reuse check\n");
     fprintf(file, "# kinds=0:epoch,1:display_pair,2:callback_begin,3:callback_end,4:work,5:submit,6:fence,7:marker,8:frame,9:marker_observed,10:fence_signal\n");
+    fprintf(file, "# kinds=11:present_begin,12:present_forward,13:present_end; flags stage=0:proxy,1:proxy1,2:detour,3:detour1,4:forward,5:forward1; pair by thread+id, nested spans overlap\n");
+    fprintf(file, "# present begin/forward:a=sync,b=DXGI_flags; end:a=elapsed_us,b=HRESULT_bits,c=result_known; object=swapchain; forward stage includes CE routing/waits and foreign/driver calls, NOT pure GPU or driver time\n");
     fprintf(file, "# display:a=present_start_us,b=stream_generation,flags=resolved; callback:id=FSR_frame_id,object=list,flags=generated; callback_end:a=total_us,b=wrapped_us; work:a=overlay_bit1_selfcompose_bit2\n");
     fprintf(file, "# submit:object=queue,a=first_list_ptr,b=list_count,flags=CE_bit1_return_bit2; fence:object=fence,a=completed,b=slot,c=pool_size; marker:object=list,a=value,b=slot,c=buffer_ptr; marker_observed:object=buffer,a=observed,b=expected,c=slot; frame:a=total_us,b=overlay_us,c=fence_wait_us; fence_signal:object=fence,a=value,b=queue,c=HRESULT\n");
     fprintf(file, "# IDs are local to their source; display pairs use host PresentStart, not FSR frame IDs. Pointer reuse requires time/epoch matching. Observed fence/marker progress is a bound, not a GPU timestamp.\n");
@@ -89,6 +92,7 @@ void Record(Kind kind, uint64_t id, const void* object, uint64_t a, uint64_t b, 
 }
 
 bool Enabled() { return enabled.load(std::memory_order_relaxed); }
+int64_t TraceBoundaryBackend::Now() { return PerfLogger::GetQpcUs(); }
 
 void Epoch(uint64_t tag, int64_t timeUs) {
     epochTime.store(timeUs, std::memory_order_release);

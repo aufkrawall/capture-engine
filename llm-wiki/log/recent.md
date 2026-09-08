@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-08 - Present scheduling boundaries and race-free heartbeat
+
+Good/bad comparison found identical callback and submission p95 costs, with complete latest GPU
+markers in both stable windows, despite much higher display jitter in the bad run. Added paired
+game-facing FFX proxy, DXGI detour and forwarding-helper spans to the bounded trace. Proxy input
+and forwarded VSync intent plus returned HRESULT are explicit; nesting, unknown results and the
+helper's mixed CE/foreign/driver time must not be interpreted as GPU durations.
+Repaired plain shared Present heartbeat counters/timestamps: one-attempt monotonic atomic
+publication drops contended diagnostics rather than blocking. Deterministic nested/early-return,
+disabled-scope and concurrent-heartbeat regression coverage accompanies the change. No pacing
+policy or GPU submission changes; the FSR pacing root cause remains open.
+Validation: focused tests and full verification passed for 0.1.6506, including native/Python tests,
+x64 ASan/UBSan and zero-warning clang-tidy. Fixed test-backend exception safety before resuming.
+
 ### 2026-09-08 - Preserve pacing evidence and tighten GPU progress bounds
 
 The marked bad run had prompt callback CPU work and same-list submission, but completion was only

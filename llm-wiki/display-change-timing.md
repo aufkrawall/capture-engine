@@ -326,6 +326,25 @@ on the next acquisition rather than only when that slot cycles back through the 
 GPU command or wait and does not change reuse eligibility. It is still not a GPU duration query:
 pending at the next callback can be legitimate pipelining, and completed only gives an upper bound.
 
+Version-3 traces add paired Present boundary events: `PresentBegin` (11), `PresentForward` (12),
+`PresentEnd` (13). Stages distinguish the game-facing FFX proxy, DXGI detour, and CE's forwarding
+helper, separately for Present/Present1. Pair by `(thread,id)`, never swapchain address alone;
+nested spans overlap and must not be summed. Proxy forward records the actual post-override
+SyncInterval/flags; proxy end records the HRESULT. Other scope exits explicitly mark result unknown.
+Forward-helper time includes CE routing, any existing queue-room wait, foreign hooks and driver:
+it is not pure driver time. Direct bypasses can have only a detour span. No new hook, GPU command,
+wait or timing policy is introduced. Disabled scopes do not read the clock or allocate IDs.
+
+The Present heartbeat uses `present_heartbeat.h`: concurrent observations cannot race on plain
+counters or move the timestamp backwards. One failed publication attempt discards that diagnostic
+gap rather than waiting. This repairs diagnostic bookkeeping, not a proven cause of FSR jitter.
+
+Good/bad 0.1.6505 captures had identical CE callback CPU p95 (107 us), submission handoff p95
+(10 us), and fully complete latest markers over the last ten captured seconds. Display jitter was
+740 us good versus 2439 us bad. Generated-to-real callback-entry median gaps differed (3112 vs
+5236 us), but base FPS also differed and both runs batched callbacks unevenly. The CPU cost alone
+does not explain the defect; earlier scheduling interactions and GPU execution remain unproven.
+
 The 2026-09-08 marked bad run showed callback CPU p95 120 us and same-list callback-to-submit p95
 9 us (maximum 44 us), despite sustained display jitter. All reuse observations were complete, but
 the six-slot reuse interval was too coarse to exclude shorter GPU delays. This excludes a sustained

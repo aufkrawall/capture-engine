@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
+#include "../common/pacing_trace_boundary.h"
 
 static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason);  // defined below
 
@@ -287,6 +288,7 @@ static void DX12_ApplyFFXProxyVSyncOverride(UINT& syncInterval, UINT& flags) {
 }
 
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self, UINT SyncInterval, UINT Flags) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Proxy, self, SyncInterval, Flags);
     g_FFXProxyPresentDetoursInFlight.fetch_add(1, std::memory_order_acq_rel);
     auto inFlightGuard = ce::make_scope_guard([]() {
         if (g_FFXProxyPresentDetoursInFlight.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -308,13 +310,16 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
         DX12_RunFFXProxyPrePresentWork(self, "Present");
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();
+    trace.Forward(SyncInterval, Flags);
     const HRESULT hr = original(self, SyncInterval, Flags);
+    trace.Finish(static_cast<uint32_t>(hr));
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* self, UINT SyncInterval, UINT Flags,
                                                              const DXGI_PRESENT_PARAMETERS* pParams) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Proxy1, self, SyncInterval, Flags);
     g_FFXProxyPresentDetoursInFlight.fetch_add(1, std::memory_order_acq_rel);
     auto inFlightGuard = ce::make_scope_guard([]() {
         if (g_FFXProxyPresentDetoursInFlight.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -336,7 +341,9 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
         DX12_RunFFXProxyPrePresentWork(self, "Present1");
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();
+    trace.Forward(SyncInterval, Flags);
     const HRESULT hr = original(self, SyncInterval, Flags, pParams);
+    trace.Finish(static_cast<uint32_t>(hr));
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;
 }

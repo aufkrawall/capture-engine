@@ -1,12 +1,14 @@
 #include "dxgi_shared_internal.h"
 
 #include "fg_cost_probe.h"
+#include "pacing_trace_boundary.h"
 
 #include "../wrappers/vulkan_dxgi_fifo_present.h"
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour1, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }

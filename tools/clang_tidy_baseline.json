@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 729,
+    "entries": 730,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -687,6 +687,7 @@
       "tests/test_overlay_submit_queue_policy.cpp",
       "tests/test_overlay_system.cpp",
       "tests/test_pacing_health.cpp",
+      "tests/test_pacing_present_boundaries.cpp",
       "tests/test_pacing_trace.cpp",
       "tests/test_path_utils.cpp",
       "tests/test_pawnio_setup.cpp",

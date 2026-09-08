@@ -1,6 +1,8 @@
 #include "dxgi_shared_internal.h"
 #include "fg_cost_probe.h"
 #include "hook_cpu_cost.h"
+#include "pacing_trace_boundary.h"
+#include "present_heartbeat.h"
 
 #include "../wrappers/vulkan_dxgi_fifo_present.h"
 
@@ -455,6 +457,7 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain)
         return DXGI_ERROR_INVALID_CALL;
     if (HookIsShuttingDown())
@@ -526,8 +529,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return S_OK;
     }
 
-    static int s_entryCount = 0;
-    int entryNum = ++s_entryCount;
+    static std::atomic<int> s_entryCount{0};
+    int entryNum = s_entryCount.fetch_add(1, std::memory_order_relaxed) + 1;
 
     // Present-call heartbeat diagnostic:
     // Logs periodically (every 1000th call) and whenever there's a gap >250ms.
@@ -541,21 +544,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Also logs: IsRecursivePresent (SL FG re-entrant calls), g_StreamlineFGRunning
     // (whether SL thinks FG is active), and thread ID (SL uses worker threads).
     {
-        static LARGE_INTEGER s_lastPresentTime = {};
-        static int s_heartbeatCount = 0;
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-        if (s_lastPresentTime.QuadPart != 0) {
-            LARGE_INTEGER freq;
-            QueryPerformanceFrequency(&freq);
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            double gapMs = (double)(now.QuadPart - s_lastPresentTime.QuadPart) * 1000.0 / freq.QuadPart;
+        static ce::PresentHeartbeat heartbeat;
+        const auto observation = heartbeat.Observe(PerfLogger::GetQpcUs());
+        if (observation.gapUs > 0) {
+            const double gapMs = static_cast<double>(observation.gapUs) / 1000.0;
             static constexpr double kLargePresentGapMs = 250.0;
 
             // Treat quarter-second Present gaps as scene/load transitions. This
             // is conservative enough to ignore ordinary jitter while still
             // catching save-load handoff disruptions.
-            if (gapMs > kLargePresentGapMs || (s_heartbeatCount % 1000 == 0)) {
+            if (gapMs > kLargePresentGapMs || (observation.count % 1000 == 0)) {
                 if (gapMs > kLargePresentGapMs) {
                     MarkLargePresentGap();
                 }
@@ -567,13 +565,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 DWORD presentOwner = dxgi_shared_g_presentThreadId.load(std::memory_order_relaxed);
                 int presentDepthVal = dxgi_shared_g_presentDepth.load(std::memory_order_relaxed);
                 HookLogImportant(
-                    "DetourPresent: heartbeat #%d gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
-                    s_heartbeatCount, gapMs, presentOwner, presentDepthVal,
+                    "DetourPresent: heartbeat #%llu gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
+                    static_cast<unsigned long long>(observation.count), gapMs, presentOwner, presentDepthVal,
                     g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
             }
         }
-        s_lastPresentTime = now;
-        s_heartbeatCount++;
     }
 
     if (entryNum <= 10) {

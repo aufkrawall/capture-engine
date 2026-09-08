@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "pacing_trace_boundary.h"
 
 // Split out of dxgi_shared_original.cpp to keep both units under the source-size
 // ceiling: CallOriginalPresent1 and the SL present-routing switch.
@@ -6,6 +7,7 @@
 namespace DXGIShared {
 HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                              const DXGI_PRESENT_PARAMETERS* pParams) {
+    ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Forward1, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
