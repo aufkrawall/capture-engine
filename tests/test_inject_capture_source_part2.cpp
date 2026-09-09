@@ -102,6 +102,58 @@ TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoi
     EXPECT_NE(installers.find("InlineHook::InstallDeepHookPublished("), std::string::npos);
 }
 
+TEST(InjectLifecycleSourceTest, GraphicsModuleObserverPrecedesDiagnosticEntryHooks) {
+    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
+    ASSERT_FALSE(hookThread.empty());
+
+    const size_t runtimePreload = hookThread.find("PreloadConfiguredGraphicsRuntimeDlls();");
+    const size_t loaderObserver = hookThread.find("InlineHook::InstallPublished(pLdrLoadDll");
+    const size_t fatalHooks = hookThread.find("TryInstallFatalTerminationDumpHooks();");
+    ASSERT_NE(runtimePreload, std::string::npos);
+    ASSERT_NE(loaderObserver, std::string::npos);
+    ASSERT_NE(fatalHooks, std::string::npos);
+    EXPECT_LT(runtimePreload, loaderObserver);
+    EXPECT_LT(loaderObserver, fatalHooks);
+}
+
+TEST(InjectLifecycleSourceTest, AgilityBootstrapEvidenceSuppressesSpeculativeLegacyHooks) {
+    const std::string samplerHooks = ReadSource("hook/apis/dx12_sampler_hooks.cpp");
+    const std::string wrapperState = ReadSource("hook/wrappers/wrapper_hooks.cpp");
+    const std::string install = ReadSource("hook/main_install.cpp");
+    ASSERT_FALSE(samplerHooks.empty());
+    ASSERT_FALSE(wrapperState.empty());
+    ASSERT_FALSE(install.empty());
+
+    const size_t getInterface = samplerHooks.find("HRESULT WINAPI DetourD3D12GetInterface");
+    const size_t bootstrapMark = samplerHooks.find("MarkD3D12RuntimeBootstrapObserved()", getInterface);
+    const size_t sdkFactoryHook = samplerHooks.find("DetourSDKCreateDeviceFactory");
+    const size_t sdkBootstrapMark = samplerHooks.find("MarkD3D12RuntimeBootstrapObserved()", sdkFactoryHook);
+    const size_t sdkFactoryCall = samplerHooks.find("original(configuration, sdkVersion", sdkFactoryHook);
+    const size_t factoryCreate = samplerHooks.find("HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice");
+    const size_t deviceMark = samplerHooks.find("MarkD3D12DeviceCreated();", factoryCreate);
+    const size_t deviceHook = samplerHooks.find("DX12_HookDeviceVTable(baseDevice);", factoryCreate);
+    const size_t samplerHook = samplerHooks.find("bool HookDevice(ID3D12Device* device)");
+    const size_t overrideGate = samplerHooks.find("HasSamplerOverride(GetActiveGraphicsConfig())", samplerHook);
+    const size_t samplerVtableRead = samplerHooks.find("void** vtable", samplerHook);
+    ASSERT_NE(bootstrapMark, std::string::npos);
+    ASSERT_NE(sdkFactoryHook, std::string::npos);
+    ASSERT_NE(sdkBootstrapMark, std::string::npos);
+    ASSERT_NE(sdkFactoryCall, std::string::npos);
+    ASSERT_NE(deviceMark, std::string::npos);
+    ASSERT_NE(deviceHook, std::string::npos);
+    ASSERT_NE(overrideGate, std::string::npos);
+    ASSERT_NE(samplerVtableRead, std::string::npos);
+    EXPECT_LT(sdkBootstrapMark, sdkFactoryCall);
+    EXPECT_LT(deviceMark, deviceHook);
+    EXPECT_LT(overrideGate, samplerVtableRead);
+    EXPECT_NE(samplerHooks.find("HookSDKConfiguration(sdkConfiguration1)"), std::string::npos);
+    EXPECT_NE(samplerHooks.find("reinterpret_cast<void*>(&vtable[4])"), std::string::npos);
+    EXPECT_NE(samplerHooks.find("if (hasDeviceFactory && MarkD3D12RuntimeBootstrapObserved())"), std::string::npos);
+    EXPECT_NE(wrapperState.find("bool HasD3D12RuntimeUseEvidence()"), std::string::npos);
+    EXPECT_NE(install.find("d3d12UseEvidence = HasD3D12RuntimeUseEvidence();"), std::string::npos);
+    EXPECT_NE(install.find("OpenGL hooks skipped: D3D12 runtime-use evidence"), std::string::npos);
+}
+
 TEST(InjectLifecycleSourceTest, StableDX12OverlayDiagnosticsAvoidPerFrameNoOpSpam) {
     const std::string overlay = ReadSource("hook/common/custom_overlay_dx12.cpp");
     const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");

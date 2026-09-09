@@ -1,6 +1,6 @@
 # Display-change frame timing
 
-Last verified: 2026-09-07 (event timestamps, publication concurrency, exact FSR pacing windows and the `20260906_163800` recurrence; in-process visibility comparison)
+Last verified: 2026-09-09 (event timestamps, publication concurrency, exact FSR pacing windows, the `20260908_201724` startup-order pair, and the bootstrap correction; fresh hardware validation remains pending)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -376,6 +376,42 @@ Eliminated, each with measurements in the referenced session:
 Untested probe bits that remain: `0x2000` (adopt the queue but never hook its vtable), `0x20`
 (present hook forwards immediately), `0x10` (ECL forwards immediately), `0x40` (CE never on the FFX
 callback path at all).
+
+### Startup-order discriminator and corrective bootstrap policy (2026-09-08)
+
+The controlled pair in `20260908_201724` exposes a CE-owned startup race that the steady-state
+cost probes could not see:
+
+- Healthy PID 4316 was injected before `d3d12.dll` was resident. CE's speculative OpenGL install
+  finished at 20:17:41.313, about 626 ms before the first real game ECL at 20:17:41.939.
+- Degraded PID 25920 already had D3D12 resident when injection began. The application resolved
+  `D3D12GetInterface` at 20:18:11.427; CE then installed three sampler/root-signature vtable hooks
+  on its temporary default-config device at 20:18:11.758. The unrelated OpenGL bootstrap ran from
+  20:18:12.028 through 20:18:12.392, overlapping the game's first real ECL at 20:18:12.034 and the
+  official FFX module load at 20:18:12.044. Its export entry patches quiesce peer threads, so this
+  is a real injection-side perturbation exactly while D3D12 and FSR establish their initial state.
+
+The correction is evidence-based rather than executable-specific. An application request to create
+an Agility device factory, or a successful application-routed `D3D12GetInterface` that returns one
+directly, is early D3D12 intent; merely loading `d3d12.dll` or querying SDK/debug/tool interfaces is
+not. That signal suppresses only synthetic D3D9/DX8/OpenGL bootstrap, while renderer ownership still
+requires the existing device/queue/swapchain evidence. The Agility chain now intercepts
+`ID3D12SDKConfiguration1::CreateDeviceFactory`, then marks a successful factory-created device
+before installing its DX12 vtable hooks. This closes the factory route the prior source claimed to
+cover but did not actually intercept.
+
+Two smaller startup costs are removed without changing enabled behavior: default sampler settings
+install no sampler/root-signature device hooks, and resolved target profiles are cached until the
+normal config-reload path replaces the base config. The low-level module observer is armed after
+configured runtime preloads but before optional fatal-dump entry hooks, so an FFX/Streamline module
+loaded concurrently with diagnostic bootstrap is observed without changing preload semantics.
+
+This comparison establishes the bad overlap and a direct way for CE to prevent it; it does not turn
+one corrected source build into hardware proof that the 109 fps state is gone. Acceptance requires
+repeated same-scene Talos launches with no cost-probe environment inherited by Explorer/Steam. A
+late-injected D3D12 start should log the recognized bootstrap and `OpenGL hooks skipped`, should not
+log default sampler fingerprints/hooks, and should consistently retain the expected ~117 fps state.
+If the state recurs, the four remaining cost probes above stay valid next discriminators.
 
 ## What the GPU bracket settled (2026-09-08, 0.1.6511)
 

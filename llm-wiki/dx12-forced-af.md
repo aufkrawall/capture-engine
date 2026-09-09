@@ -1,12 +1,13 @@
 # DX12 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-15
+Last cross-checked: 2026-09-09
 
 Primary sources:
 - `hook/common/dx12_sampler_policy.{h,cpp}`
 - `hook/apis/dx12_sampler_hooks.{h,cpp}`
-- `hook/wrappers/iat_hook.cpp`
+- `hook/wrappers/iat_hook_init.cpp`
 - `tests/test_dx12_sampler_policy.cpp`
+- `tests/test_inject_capture_source_part2.cpp`
 
 ## Summary
 
@@ -35,14 +36,23 @@ promotion especially visible as red/green corruption.
 - Raw `D3D12CreateDevice` interception returns the requested unwrapped interface,
   then installs `CreateSampler` and `CreateRootSignature` hooks on the actual
   device before it reaches the game. Originals are retained per validated vtable.
-- D3D12 device creation, `D3D12GetInterface`/`ID3D12DeviceFactory::CreateDevice`, and both root-signature serializers
-  are covered through IAT imports and dynamic `GetProcAddress` resolution. Third-party overlay and Streamline modules
-  retain the existing bypass rules.
+- D3D12 device creation, `D3D12GetInterface`,
+  `ID3D12SDKConfiguration1::CreateDeviceFactory`, `ID3D12DeviceFactory::CreateDevice`, and both
+  root-signature serializers are covered through IAT imports, dynamic `GetProcAddress` resolution,
+  and per-vtable chaining. Third-party overlay and Streamline modules retain the existing bypass
+  rules.
+- When anisotropic filtering, mip mapping, mip bias, and forced bias clamping are all at their
+  defaults, `HookDevice` installs no sampler/root-signature vtable hooks. This is exact policy
+  equivalence, not a feature disable: there is no descriptor mutation to perform. The surrounding
+  DX12 device/queue/present tracking still installs normally. Creation-time hooks remain mandatory
+  when any sampler override is configured.
 
 ## Diagnostics
 
 - `DX12 AF: creation-time sampler policy configured ...` records the resolved
   configuration once.
+- `DX12 AF: sampler/root-signature device hooks skipped because all overrides are default` records
+  the one-time no-mutation fast path.
 - The first bounded set of unique descriptor fingerprints records source,
   decision reason, filter, addressing, LOD range, anisotropy, and bias.
 - Shutdown summaries split dynamic/static observed and modified counts and emit

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
@@ -24,11 +25,18 @@ struct PublicationState {
     AppConfig baseConfig;
     std::string targetProcess;
     OverlayVisibilityOverride overlayVisibility;
+    std::unordered_map<std::string, AppConfig> resolvedTargetConfigs;
 };
 
 PublicationState& Publication() {
     static PublicationState state;
     return state;
+}
+
+std::string NormalizeTargetProcessName(std::string processName) {
+    std::transform(processName.begin(), processName.end(), processName.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return processName;
 }
 
 AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::string& targetProcessOut) {
@@ -39,9 +47,23 @@ AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::strin
             hookSourceProcess = GetProcessNameFromPID(sourcePid);
     }
 
-    const PublicationState& publication = Publication();
+    PublicationState& publication = Publication();
     targetProcessOut = ResolveActiveTargetProcessName(publication.targetProcess, hookSourceProcess);
-    return ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
+    if (targetProcessOut.empty()) {
+        return publication.baseConfig;
+    }
+
+    const std::string cacheKey = NormalizeTargetProcessName(targetProcessOut);
+    const auto cached = publication.resolvedTargetConfigs.find(cacheKey);
+    if (cached != publication.resolvedTargetConfigs.end()) {
+        LogDebug("[Inject] Reusing resolved target config: target=%s", targetProcessOut.c_str());
+        return cached->second;
+    }
+
+    AppConfig resolved = ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
+    publication.resolvedTargetConfigs.emplace(cacheKey, resolved);
+    LogDebug("[Inject] Cached resolved target config: target=%s", targetProcessOut.c_str());
+    return resolved;
 }
 
 void PublishConfigLocked(SharedMemoryLayout* sharedMemory, const AppConfig& resolved,
@@ -91,6 +113,7 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
     publication.configPath = configPath;
     publication.baseConfig = baseConfig;
     publication.overlayVisibility = {};
+    publication.resolvedTargetConfigs.clear();
 }
 
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {

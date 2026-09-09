@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-08-30
+Last cross-checked: 2026-09-09
 
 Primary sources:
 - `captureengine/injection.cpp`
@@ -15,18 +15,24 @@ Primary sources:
 - `common/inject_overlay_policy.cpp`
 - `common/shared_defs.h`
 - `hook/main.cpp`
+- `hook/main_hookthread.cpp`
+- `hook/main_install.cpp`
 - `hook/main_host_lifecycle.cpp`
 - `hook/common/ipc_client.cpp`
 - `hook/vulkan_layer/layer_ipc.cpp`
+- `hook/apis/dx12_sampler_hooks.cpp`
 - `hook/apis/dx12_device_creation_report.cpp`
 - `hook/apis/dx12_hook_hook_install.cpp`
 - `hook/common/d3d12_device_creation_policy.h`
+- `hook/wrappers/wrapper_hooks.cpp`
 - `hook/wrappers/inline_hook.cpp`
 - `tests/test_d3d12_device_creation_policy.cpp`
 - `tests/test_crash_handler.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_capture_coordinator_source.cpp`
 - `tests/test_inject_capture_source.cpp`
+- `tests/test_inject_capture_source_part2.cpp`
+- `tests/test_process_ipc.cpp`
 
 ## Scope
 This page describes how DX12 injection and overlay bootstrap currently work, with emphasis on how to make inject and overlay behavior work optimally for DX12 games without turning the wiki into a substitute for the code.
@@ -61,6 +67,27 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - With global `capture_method=auto`, an explicit `video_capture=inherit` profile normally resolves to inject and resolves to WGC when `dll_injection=never` is set. Explicit per-profile WGC/DXGI/none routes override that global choice. New DLL-only profiles that omit `video_capture` have no video route; compatibility injection keys retain their historical implicit inherited route. During a live inject-to-WGC fallback, inject publication remains enabled until WGC first-frame proof; the media coordinator clears the inject-video flag only after committing the WGC path and before stopping the inject capture pipeline.
 - In current wrapper builds, DX12 hook bootstrap is for state tracking and `ExecuteCommandLists` tracking. Present and `ResizeBuffers` interception comes from wrappers rather than DXGI vtable hooks.
 - In wrapper builds, DX12 hook init is deferred until real D3D12 device creation is observed. In no-wrapper builds, the hook instance is initialized more eagerly so late injection does not miss the recovery path.
+- **An Agility factory request is early D3D12-use evidence, not renderer ownership.** The signal
+  latches when the application calls `ID3D12SDKConfiguration1::CreateDeviceFactory`, before that
+  runtime call begins, or when an application-routed `D3D12GetInterface` returns a device factory
+  directly. Merely loading `d3d12.dll` or querying SDK/debug/tool interfaces does not qualify.
+  `CheckAndInstallHooks` uses the evidence to suppress only synthetic D3D9, DX8, and OpenGL
+  bootstrap while D3D12 starts. The ordinary device/queue/swapchain observations still own renderer
+  selection. The factory is intercepted before it reaches the application, and
+  `ID3D12DeviceFactory::CreateDevice` marks definitive device evidence before any device-vtable
+  work. This prevents unrelated OpenGL entry patches from quiescing the renderer during a late
+  D3D12/FSR startup without making plain runtime presence authoritative.
+- **Configured runtime preloads retain their original position and semantics; continuous module
+  observation precedes optional diagnostics.** `PreloadConfiguredGraphicsRuntimeDlls` explicitly
+  notifies the feature hooks. The `LdrLoadDll` observer is armed immediately afterwards and before
+  fatal-dump entry hooks, so FFX/Streamline loads on another thread cannot escape during that slower
+  diagnostic phase. Session `20260908_201724` showed the old late-injected path enter its first real
+  ECL and load the official FFX module while CE was still patching unrelated OpenGL exports.
+- Target-profile resolution is cached by normalized process name inside the serialized publication
+  state. Injection detection, hook-source handoff, overlay toggles, and later launches therefore
+  reuse the same immutable resolved config instead of repeating the many Win32 INI reads. The
+  normal `SetPublicationBaseConfig` startup/reload path clears the cache, so explicit config reload
+  remains authoritative.
 - Late injection must not feed the pre-ECL-hook warmup presents into the
   ECL-pattern FSR heuristic as "interpolated" evidence: until the game queue's
   ECL hook is live, every present looks zero-ECL. The heuristic only counts a

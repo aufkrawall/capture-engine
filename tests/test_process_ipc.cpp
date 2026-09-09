@@ -350,6 +350,16 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
               std::string::npos);
     EXPECT_NE(publicationSource.find("PublishConfigLocked(sharedMemory, resolved"), std::string::npos);
 
+    // Resolving a profile performs many Win32 INI reads. The injector can
+    // publish the same target at detection, hook-source handoff and on later
+    // launches, so reuse the immutable resolved value until base-config reload.
+    const size_t cacheLookup = publicationSource.find("resolvedTargetConfigs.find(cacheKey)");
+    const size_t profileResolve = publicationSource.find("ResolveTargetConfig(publication.configPath");
+    ASSERT_NE(cacheLookup, std::string::npos);
+    ASSERT_NE(profileResolve, std::string::npos);
+    EXPECT_LT(cacheLookup, profileResolve);
+    EXPECT_NE(publicationSource.find("publication.resolvedTargetConfigs.clear();"), std::string::npos);
+
     // One publication path for the whole process. A second direct call is
     // exactly how an unresolved base config reached shared memory.
     size_t publications = 0;

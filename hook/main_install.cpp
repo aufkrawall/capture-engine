@@ -311,10 +311,12 @@ void CheckAndInstallHooks() {
     }
   }
 
-  // For other APIs, skip if D3D12 was actually used (not just loaded).
-  // d3d12.dll can be loaded by D3D11On12 even in non-DX12 apps.
-  // We use the actual device creation flag instead of just DLL presence.
-  bool dx12ActuallyUsed = WasD3D12DeviceCreated();
+  // For synthetic legacy-API bootstraps, an application request to create an
+  // Agility device factory (or a directly returned factory interface) is
+  // actionable before device creation. Launching unrelated OpenGL/DX8 probes in
+  // that window globally pauses renderer threads and can perturb FSR's initial
+  // pacing calibration.
+  bool d3d12UseEvidence = HasD3D12RuntimeUseEvidence();
 
   // Never actively probe D3D9 after Vulkan ownership is established, or when
   // d3d9.dll is a non-system translation runtime. DX9Hook::Init creates a
@@ -327,10 +329,10 @@ void CheckAndInstallHooks() {
   const bool d3d9DllLoaded = GetModuleHandleA("d3d9.dll") != nullptr;
   if (ce::vulkan_renderer_policy::ShouldBootstrapD3D9Hooks(
           s_vulkanActive, dxvkD3D9WrapperLoaded, g_DX9Hook != nullptr,
-          dx12ActuallyUsed, dx11DllLoaded, d3d9DllLoaded)) {
+          d3d12UseEvidence, dx11DllLoaded, d3d9DllLoaded)) {
     EarlyLog(
         "DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
-        s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
+        s_vulkanActive ? 1 : 0, d3d12UseEvidence ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
     HookLog("Detected d3d9.dll. Installing DX9 hooks...");
     g_DX9Hook = new DX9Hook();
     LARGE_INTEGER _t1, _t2, _freq;
@@ -347,7 +349,7 @@ void CheckAndInstallHooks() {
     if (skipCount <= 4 || (skipCount & (skipCount - 1)) == 0) {
       EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dx11Loaded=%d, "
                "dxvkD3D9=%d, occurrence=%lu)",
-               s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dx11DllLoaded ? 1 : 0,
+               s_vulkanActive ? 1 : 0, d3d12UseEvidence ? 1 : 0, dx11DllLoaded ? 1 : 0,
                dxvkD3D9WrapperLoaded ? 1 : 0, static_cast<unsigned long>(skipCount));
     }
   }
@@ -364,7 +366,7 @@ void CheckAndInstallHooks() {
   if (!s_vulkanActive && !g_DDrawHook && GetModuleHandleA("ddraw.dll") &&
       !GetModuleHandleA("d3d9.dll") && !GetModuleHandleA("d3d8.dll")) {
     HookLog("Detected ddraw.dll. Installing DirectDraw hooks... (dx12Used=%d)",
-            dx12ActuallyUsed ? 1 : 0);
+            d3d12UseEvidence ? 1 : 0);
     g_DDrawHook = new DDrawHook();
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
@@ -381,7 +383,8 @@ void CheckAndInstallHooks() {
             GetModuleHandleA("d3d8.dll") ? 1 : 0);
   }
 
-  if (!s_vulkanActive && !g_DX8Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d8.dll")) {
+  d3d12UseEvidence = HasD3D12RuntimeUseEvidence();
+  if (!s_vulkanActive && !g_DX8Hook && !d3d12UseEvidence && GetModuleHandleA("d3d8.dll")) {
     HookLog("Detected d3d8.dll. Installing DX8 hooks...");
     g_DX8Hook = new DX8Hook();
     LARGE_INTEGER _t1, _t2, _freq;
@@ -395,7 +398,8 @@ void CheckAndInstallHooks() {
     HookLog("DX8 hooks installed (init=%.1f ms)", _initMs);
   }
 
-  if (!s_vulkanActive && !g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
+  d3d12UseEvidence = HasD3D12RuntimeUseEvidence();
+  if (!s_vulkanActive && !g_OpenGLHook && !d3d12UseEvidence && GetModuleHandleA("opengl32.dll")) {
     HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
     g_OpenGLHook = new OpenGLHook();
     LARGE_INTEGER _t1, _t2, _freq;
@@ -407,6 +411,14 @@ void CheckAndInstallHooks() {
     QueryPerformanceCounter(&_t2);
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
     HookLog("OpenGL hooks installed (init=%.1f ms)", _initMs);
+  } else if (!s_vulkanActive && !g_OpenGLHook && d3d12UseEvidence && GetModuleHandleA("opengl32.dll")) {
+    static std::atomic<uint32_t> s_openglD3D12SkipLogCount{0};
+    const uint32_t skipCount = s_openglD3D12SkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (skipCount <= 4 || (skipCount & (skipCount - 1)) == 0) {
+      HookLog("OpenGL hooks skipped: D3D12 runtime-use evidence already exists (device=%d interface=%d occurrence=%lu)",
+              WasD3D12DeviceCreated() ? 1 : 0, WasD3D12RuntimeBootstrapObserved() ? 1 : 0,
+              static_cast<unsigned long>(skipCount));
+    }
   }
 
   // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer)

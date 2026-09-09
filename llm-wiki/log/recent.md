@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-09-09 - Remove the late-injection D3D12/FSR startup collision
+
+The controlled `20260908_201724` pair finally exposed a CE-owned discriminator outside the
+steady-state callback path. Healthy PID 4316 completed CE's speculative OpenGL patches 626 ms
+before the first game ECL. Degraded PID 25920 entered its first game ECL and loaded the official
+FFX runtime while CE was still installing unrelated OpenGL export hooks; those patches quiesce
+peer threads. The application had already resolved `D3D12GetInterface`, but CE did not treat the
+Agility bootstrap as evidence until a classic exported device creation was observed.
+
+An application request to create an Agility device factory, or a directly returned factory, now
+suppresses synthetic legacy D3D9/DX8/OpenGL bootstrap without changing renderer ownership. Merely
+querying an SDK/debug/tool interface does not qualify. The missing
+`ID3D12SDKConfiguration1::CreateDeviceFactory` interception is added, and successful
+factory-device creation publishes actual D3D12 evidence before device hook work. All-default
+sampler settings no longer install dormant sampler/root-signature vtable hooks. Configured runtime
+preloads retain their semantics, while the low-level module observer now precedes optional
+fatal-dump hooks. Resolved per-target configs are cached and invalidated by normal config reload,
+removing the repeated ~150 ms profile resolution at hook-source handoff after injection.
+
+Focused sampler/source/publication regressions and the full `--verify` gate passed for 0.1.6515,
+including both hook architectures, native/Python tests, x64 ASan/UBSan, zero-warning clang-tidy,
+file-size and packaging/privacy checks. Repeated Talos hardware launches remain pending; source/log
+correlation must not be reported as proof that 109 fps can no longer recur. Expected validation
+anchors are `application Agility SDK/factory bootstrap observed`, `OpenGL hooks skipped`, and the
+absence of default sampler hook/fingerprint traffic. See `display-change-timing.md` and
+`dx12-injection-bootstrap.md`.
+
 ### 2026-09-08 - Queue adoption eliminated; FSR FG rate-loss elimination table
 
 `CE_FG_COST_PROBE=0x8000` with zero `Adopted queue` lines still reached the degraded state

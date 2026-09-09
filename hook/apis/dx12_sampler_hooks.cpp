@@ -71,7 +71,9 @@ struct DecisionCounters {
 std::mutex g_deviceHookMutex;
 std::unordered_map<void**, DeviceOriginals> g_deviceOriginals;
 using FactoryCreateDevicePtr = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+using SDKCreateDeviceFactoryPtr = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, UINT, const char*, REFIID, void**);
 std::unordered_map<void**, FactoryCreateDevicePtr> g_factoryOriginals;
+std::unordered_map<void**, SDKCreateDeviceFactoryPtr> g_sdkConfigurationOriginals;
 DecisionCounters g_dynamicCounters;
 DecisionCounters g_staticCounters;
 std::atomic<uint64_t> g_deviceCreateCalls{0};
@@ -81,6 +83,13 @@ std::atomic<uint64_t> g_firstConfigHash{0};
 std::atomic<bool> g_configChangeLogged{false};
 std::mutex g_fingerprintMutex;
 std::unordered_set<uint64_t> g_loggedFingerprints;
+
+const GUID kIidD3D12SDKConfiguration = {
+    0xe9eb5314, 0x33aa, 0x42b2, {0xa7, 0x18, 0xd7, 0x7f, 0x58, 0xb1, 0xf1, 0xc7}};
+const GUID kIidD3D12SDKConfiguration1 = {
+    0x8aaf9303, 0xad25, 0x48b9, {0x9a, 0x57, 0xd9, 0xc3, 0x7e, 0x00, 0x9d, 0x9f}};
+const GUID kIidD3D12DeviceFactory = {
+    0x61f307d3, 0xd34e, 0x4e7c, {0x83, 0x74, 0x3b, 0xa4, 0xde, 0x23, 0xcc, 0xcb}};
 
 constexpr size_t DecisionIndex(ce::dx12_sampler_policy::Decision decision) {
     return static_cast<size_t>(decision);
@@ -175,6 +184,11 @@ HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown*
         return E_FAIL;
     const HRESULT hr = original(factory, adapter, minimumFeatureLevel, riid, device);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && device && *device) {
+        // Agility SDK applications can create their device through
+        // ID3D12DeviceFactory without ever calling the D3D12CreateDevice export.
+        // Publish the same definitive evidence before optional sampler work.
+        MarkD3D12DeviceCreated();
+        g_deviceCreateCalls.fetch_add(1, std::memory_order_relaxed);
         ID3D12Device* baseDevice = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*device);
         if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) && baseDevice) {
@@ -202,6 +216,62 @@ void HookDeviceFactory(IUnknown* factory) {
         HookLogImportant("DX12 AF: ID3D12DeviceFactory::CreateDevice hook ready factory=%p vtable=%p", factory, vtable);
     } else {
         HookLogImportant("DX12 AF: ID3D12DeviceFactory hook failed factory=%p status=%s", factory,
+                         VTableHook::StatusToString(status));
+    }
+}
+
+HRESULT STDMETHODCALLTYPE DetourSDKCreateDeviceFactory(IUnknown* configuration, UINT sdkVersion,
+                                                        const char* sdkPath, REFIID riid, void** factory) {
+    SDKCreateDeviceFactoryPtr original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_deviceHookMutex);
+        const auto it = g_sdkConfigurationOriginals.find(*reinterpret_cast<void***>(configuration));
+        if (it != g_sdkConfigurationOriginals.end())
+            original = it->second;
+    }
+    if (!original)
+        return E_FAIL;
+
+    // The application is committing to an Agility device-factory path. Publish
+    // this before the runtime call so a concurrent hook scan cannot launch
+    // synthetic legacy-renderer probes while factory creation is in flight.
+    if (MarkD3D12RuntimeBootstrapObserved()) {
+        HookLogImportant("DX12: application Agility SDK/factory bootstrap observed via "
+                         "ID3D12SDKConfiguration1::CreateDeviceFactory; speculative legacy API hooks will stay off");
+    }
+    const HRESULT hr = original(configuration, sdkVersion, sdkPath, riid, factory);
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && factory && *factory) {
+        IUnknown* baseFactory = nullptr;
+        auto* unknown = reinterpret_cast<IUnknown*>(*factory);
+        if (SUCCEEDED(unknown->QueryInterface(kIidD3D12DeviceFactory, reinterpret_cast<void**>(&baseFactory))) &&
+            baseFactory) {
+            HookDeviceFactory(baseFactory);
+            baseFactory->Release();
+        }
+    }
+    return hr;
+}
+
+void HookSDKConfiguration(IUnknown* configuration) {
+    if (!configuration)
+        return;
+    void** vtable = *reinterpret_cast<void***>(configuration);
+    if (!vtable || !vtable[4])
+        return;
+
+    std::lock_guard<std::mutex> lock(g_deviceHookMutex);
+    if (g_sdkConfigurationOriginals.find(vtable) != g_sdkConfigurationOriginals.end())
+        return;
+    SDKCreateDeviceFactoryPtr original = nullptr;
+    const VTableHook::Status status =
+        VTableHook::Create(reinterpret_cast<void*>(&vtable[4]), reinterpret_cast<void*>(&DetourSDKCreateDeviceFactory),
+                           reinterpret_cast<void**>(&original));
+    if (status == VTableHook::Success && original) {
+        g_sdkConfigurationOriginals.emplace(vtable, original);
+        HookLogImportant("DX12 AF: ID3D12SDKConfiguration1::CreateDeviceFactory hook ready configuration=%p vtable=%p",
+                         configuration, vtable);
+    } else {
+        HookLogImportant("DX12 AF: ID3D12SDKConfiguration1 hook failed configuration=%p status=%s", configuration,
                          VTableHook::StatusToString(status));
     }
 }
@@ -413,6 +483,13 @@ bool HookDevice(ID3D12Device* device) {
     if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kSamplerDeviceHooksOff)) {
         return false;
     }
+    if (!ce::dx12_sampler_policy::HasSamplerOverride(GetActiveGraphicsConfig())) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            HookLog("DX12 AF: sampler/root-signature device hooks skipped because all overrides are default");
+        }
+        return false;
+    }
     LogConfigOnce();
 
     void** vtable = *reinterpret_cast<void***>(device);
@@ -562,11 +639,37 @@ HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** objec
         return E_FAIL;
     const HRESULT hr = oD3D12GetInterface(clsid, riid, object);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && object && *object) {
-        static const GUID iidDeviceFactory = {
-            0x61f307d3, 0xd34e, 0x4e7c, {0x83, 0x74, 0x3b, 0xa4, 0xde, 0x23, 0xcc, 0xcb}};
-        IUnknown* factory = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*object);
-        if (SUCCEEDED(unknown->QueryInterface(iidDeviceFactory, reinterpret_cast<void**>(&factory))) && factory) {
+        IUnknown* sdkConfiguration1 = nullptr;
+        IUnknown* sdkConfiguration = nullptr;
+        IUnknown* factory = nullptr;
+        const bool hasSDKConfiguration1 =
+            SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12SDKConfiguration1,
+                                              reinterpret_cast<void**>(&sdkConfiguration1))) &&
+            sdkConfiguration1;
+        const bool hasSDKConfiguration =
+            hasSDKConfiguration1 ||
+            (SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12SDKConfiguration,
+                                               reinterpret_cast<void**>(&sdkConfiguration))) &&
+             sdkConfiguration);
+        const bool hasDeviceFactory =
+            SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12DeviceFactory,
+                                              reinterpret_cast<void**>(&factory))) &&
+            factory;
+
+        if (hasDeviceFactory && MarkD3D12RuntimeBootstrapObserved()) {
+            HookLogImportant("DX12: application Agility SDK/factory bootstrap observed; speculative legacy API "
+                             "hooks will stay off");
+        }
+
+        if (sdkConfiguration1) {
+            ce::dx12_sampler_hooks::HookSDKConfiguration(sdkConfiguration1);
+            sdkConfiguration1->Release();
+        }
+        if (sdkConfiguration) {
+            sdkConfiguration->Release();
+        }
+        if (factory) {
             ce::dx12_sampler_hooks::HookDeviceFactory(factory);
             factory->Release();
         }

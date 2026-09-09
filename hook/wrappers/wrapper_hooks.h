@@ -172,6 +172,15 @@ bool WasD3D11Or10DeviceCreated();
 bool WasD3D12DeviceCreated();
 void MarkD3D12DeviceCreated();
 
+// An application request to create an Agility device factory, or a successful
+// application-routed D3D12GetInterface call returning one directly, is earlier
+// evidence than device creation itself. It is used only to suppress synthetic
+// legacy-renderer probes while D3D12 starts; actual renderer ownership still
+// requires a device/queue/swapchain observation.
+bool WasD3D12RuntimeBootstrapObserved();
+bool MarkD3D12RuntimeBootstrapObserved();
+bool HasD3D12RuntimeUseEvidence();
+
 // ============================================================================
 // Helper Functions
 // ============================================================================

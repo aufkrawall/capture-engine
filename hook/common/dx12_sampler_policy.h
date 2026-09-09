@@ -32,6 +32,7 @@ struct Result {
     }
 };
 
+bool HasSamplerOverride(const GraphicsConfig& gfx);
 Result Apply(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
 Result Apply(D3D12_STATIC_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
 

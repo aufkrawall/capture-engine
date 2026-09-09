@@ -334,14 +334,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
   OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
 
-  // GTA and some middleware can terminate with fail-fast style status codes
-  // before VEH/UEF crash filters get control. Keep this narrow and passive:
-  // one CE-owned dump for current-process fatal exits, then forward.
   FFXHook::RegisterDynamicHooks();
   RemixHook::RegisterDynamicHooks();
   RemixHook::Install();
   IATHook::InitializeGetProcAddressHook();
-  TryInstallFatalTerminationDumpHooks();
 
   // When the profile configures runtime override paths (dlss_sr_dll_path,
   // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override
@@ -350,6 +346,35 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // Streamline-internal loads, which run through the IAT of modules that load
   // after this snapshot pass.
   PreloadConfiguredGraphicsRuntimeDlls();
+
+  // Install the low-level loader observer before optional diagnostic hooks.
+  // FFX/Streamline can initialize on another thread while HookThread is still
+  // bootstrapping; module observation must already be live during any later
+  // entry-patch transaction so their first exported calls cannot escape.
+  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
+    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
+      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
+        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
+          void *trampoline = nullptr;
+          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
+                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
+            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
+          } else {
+            HookLog("Failed to install LdrLoadDll hook");
+          }
+        }
+      }
+    }
+  } else {
+    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
+  }
+
+  // GTA and some middleware can terminate with fail-fast style status codes
+  // before VEH/UEF crash filters get control. Keep this narrow and passive:
+  // one CE-owned dump for current-process fatal exits, then forward. The
+  // graphics module observer above remains active while these optional hooks
+  // are installed.
+  TryInstallFatalTerminationDumpHooks();
 
   // Answer the NGX ShowDlssIndicator registry probe for dlss_debug_overlay.
   // This must be an inline hook on the shared advapi32 exports, not an IAT
@@ -373,29 +398,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   ce::nv_lod_spread::Install(GetActiveGraphicsConfig().nvLodSpreadFix
                                  ? ce::nv_lod_spread::Mode::kOn
                                  : ce::nv_lod_spread::Mode::kOff);
-
-  // Install the low-level loader hook for DLL redirection and early module-load
-  // observation. GTA Enhanced can bring up the official FFX runtime through a
-  // path that reaches CE's periodic scan only after ffxConfigure has already
-  // been cached, which prevents the native FSR present-callback bridge from
-  // arming.
-  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
-    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
-      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
-        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
-          void *trampoline = nullptr;
-          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
-                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
-            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
-          } else {
-            HookLog("Failed to install LdrLoadDll hook");
-          }
-        }
-      }
-    }
-  } else {
-    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
-  }
 
   HookLogImportant("HookThread: IAT hooks installed");
 

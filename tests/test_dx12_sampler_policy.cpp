@@ -56,6 +56,27 @@ TEST(DX12SamplerPolicyTest, PromotesOnlyMaterialStyleLinearSampler) {
     EXPECT_EQ(desc.MaxAnisotropy, 16u);
 }
 
+TEST(DX12SamplerPolicyTest, DeviceHooksAreNeededOnlyWhenAnOverrideIsConfigured) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "default";
+    gfx.mipMapping = "default";
+    gfx.mipBias = "default";
+    gfx.forceMipBiasClamp = false;
+    EXPECT_FALSE(ce::dx12_sampler_policy::HasSamplerOverride(gfx));
+
+    gfx.anisotropicFiltering = "16x";
+    EXPECT_TRUE(ce::dx12_sampler_policy::HasSamplerOverride(gfx));
+    gfx.anisotropicFiltering = "default";
+    gfx.mipMapping = "bilinear";
+    EXPECT_TRUE(ce::dx12_sampler_policy::HasSamplerOverride(gfx));
+    gfx.mipMapping = "default";
+    gfx.mipBias = "-1";
+    EXPECT_TRUE(ce::dx12_sampler_policy::HasSamplerOverride(gfx));
+    gfx.mipBias = "default";
+    gfx.forceMipBiasClamp = true;
+    EXPECT_TRUE(ce::dx12_sampler_policy::HasSamplerOverride(gfx));
+}
+
 TEST(DX12SamplerPolicyTest, NormalFilterIgnoresComparisonFunc) {
     D3D12_SAMPLER_DESC desc = MaterialSampler();
     desc.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;

@@ -244,6 +244,7 @@ bool g_WrappersActive = false;
 // D3D11On12) vs the app actually using that API.
 std::atomic<bool> g_D3D11Or10DeviceCreated{false};
 static std::atomic<bool> g_D3D12DeviceCreated{false};
+static std::atomic<bool> g_D3D12RuntimeBootstrapObserved{false};
 
 bool WasD3D11Or10DeviceCreated() {
     return g_D3D11Or10DeviceCreated.load(std::memory_order_acquire);
@@ -255,6 +256,18 @@ bool WasD3D12DeviceCreated() {
 
 void MarkD3D12DeviceCreated() {
     g_D3D12DeviceCreated.store(true, std::memory_order_release);
+}
+
+bool WasD3D12RuntimeBootstrapObserved() {
+    return g_D3D12RuntimeBootstrapObserved.load(std::memory_order_acquire);
+}
+
+bool MarkD3D12RuntimeBootstrapObserved() {
+    return !g_D3D12RuntimeBootstrapObserved.exchange(true, std::memory_order_acq_rel);
+}
+
+bool HasD3D12RuntimeUseEvidence() {
+    return WasD3D12DeviceCreated() || WasD3D12RuntimeBootstrapObserved();
 }
 
 void WrapperLog(const char* fmt, ...) {

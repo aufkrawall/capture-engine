@@ -9,12 +9,6 @@
 namespace ce::dx12_sampler_policy {
 namespace {
 
-bool HasSamplerOverride(const GraphicsConfig& gfx) {
-    return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
-           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") ||
-           (!gfx.mipBias.empty() && gfx.mipBias != "default") || gfx.forceMipBiasClamp;
-}
-
 bool IsAggressive(const GraphicsConfig& gfx) {
     return gfx.samplerOverrideMode == "aggressive";
 }
@@ -135,6 +129,12 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
 }
 
 }  // namespace
+
+bool HasSamplerOverride(const GraphicsConfig& gfx) {
+    return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
+           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") ||
+           (!gfx.mipBias.empty() && gfx.mipBias != "default") || gfx.forceMipBiasClamp;
+}
 
 Result Apply(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     return ApplyImpl(desc, gfx);
