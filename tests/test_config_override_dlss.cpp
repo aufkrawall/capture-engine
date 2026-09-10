@@ -56,7 +56,8 @@ TEST_F(ConfigOverrideTest, ProfileControlsUE5BundlesAndSharpenPrecedenceInput) {
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "ue5.exe");
-    EXPECT_EQ(config.graphics.rayReconstructionOptimalSettings, 3);
+    EXPECT_EQ(config.graphics.rayReconstructionOptimalSettings,
+              ce::ue5_cvar::kRayReconstructionPresetFull);
     EXPECT_FALSE(config.graphics.forceRayReconstruction);
     EXPECT_TRUE(config.graphics.disablePostProcessingEffects);
     EXPECT_FLOAT_EQ(config.graphics.tonemapperSharpen, 0.6f);

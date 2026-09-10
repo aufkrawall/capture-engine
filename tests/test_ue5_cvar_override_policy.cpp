@@ -31,7 +31,10 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Lumen.Reflections.DownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.Reflections.DownsampleCheckerboard", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.Reflections.MaxRayIntensity", ce::ue5_cvar::ValueType::Float, 100.0},
-        {"r.Lumen.ScreenProbeGather.StochasticInterpolation", ce::ue5_cvar::ValueType::Int32, 0.0},
+        // The cheaper stochastic direction, not the engine's bilinear default:
+        // it is what an RR denoiser expects and it is up to ~30% cheaper in the
+        // screen probe gather passes (AMD's UE performance guide).
+        {"r.Lumen.ScreenProbeGather.StochasticInterpolation", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ce::ue5_cvar::ValueType::Int32, 3.0},
         // Float in the engine, not int: Talos's console object holds 25.0f.
@@ -99,26 +102,65 @@ TEST(UE5CVarOverridePolicyTest, RayReconstructionSettingsLevelsAreNestedWithoutS
     const auto* bilateral = FindSpec("r.Lumen.Reflections.BilateralFilter");
     const auto* ssrTemporal = FindSpec("r.SSR.Temporal");
     const auto* downsample = FindSpec("r.Lumen.Reflections.DownsampleFactor");
+    const auto* stochastic = FindSpec("r.Lumen.ScreenProbeGather.StochasticInterpolation");
     const auto* maxIntensity = FindSpec("r.Lumen.Reflections.MaxRayIntensity");
+    const auto* octahedron = FindSpec("r.Lumen.ScreenProbeGather.TracingOctahedronResolution");
+    const auto* probeResolution = FindSpec("r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution");
+    const auto* probeBudget =
+        FindSpec("r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget");
+    const auto* maxDirections = FindSpec("r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections");
+    const auto* smrtLocal = FindSpec("r.Shadow.Virtual.SMRT.RayCountLocal");
+    const auto* shortRangeAo = FindSpec("r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor");
     ASSERT_NE(bilateral, nullptr);
     ASSERT_NE(ssrTemporal, nullptr);
     ASSERT_NE(downsample, nullptr);
+    ASSERT_NE(stochastic, nullptr);
     ASSERT_NE(maxIntensity, nullptr);
+    ASSERT_NE(octahedron, nullptr);
+    ASSERT_NE(probeResolution, nullptr);
+    ASSERT_NE(probeBudget, nullptr);
+    ASSERT_NE(maxDirections, nullptr);
+    ASSERT_NE(smrtLocal, nullptr);
+    ASSERT_NE(shortRangeAo, nullptr);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetLight;
-    EXPECT_EQ(countEnabled(), 4u);
+    EXPECT_EQ(countEnabled(), 5u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*bilateral, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*ssrTemporal, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*stochastic, settings).enabled);
+    EXPECT_EQ(static_cast<int32_t>(ce::ue5_cvar::Resolve(*stochastic, settings).bits), 1);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetMedium;
-    EXPECT_EQ(countEnabled(), 5u);
+    EXPECT_EQ(countEnabled(), 15u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled)
+        << "medium is the cost-free stabilizer level and must not carry paid rays";
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
+
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetHigh;
+    EXPECT_EQ(countEnabled(), 26u);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*probeResolution, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled)
+        << "the per-frame screen probe ray count is what full adds over high";
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*probeBudget, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
+    EXPECT_EQ(countEnabled(), 31u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*probeBudget, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetOff;
     settings.forceRayReconstruction = true;
@@ -126,6 +168,29 @@ TEST(UE5CVarOverridePolicyTest, RayReconstructionSettingsLevelsAreNestedWithoutS
         ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex], settings);
     ASSERT_TRUE(forcedDenoiser.enabled);
     EXPECT_EQ(static_cast<int32_t>(forcedDenoiser.bits), 1);
+}
+
+// The preset number is what crosses the shared-memory boundary, so its mapping is
+// an ABI contract: inserting `high` renumbered `full` from 3 to 4 and required a
+// SHARED_MEMORY_VERSION bump. Pin both the values and the diagnostic names.
+TEST(UE5CVarOverridePolicyTest, PresetValuesAndNamesAreAStableAbiContract) {
+    EXPECT_EQ(ce::ue5_cvar::kRayReconstructionPresetOff, 0);
+    EXPECT_EQ(ce::ue5_cvar::kRayReconstructionPresetLight, 1);
+    EXPECT_EQ(ce::ue5_cvar::kRayReconstructionPresetMedium, 2);
+    EXPECT_EQ(ce::ue5_cvar::kRayReconstructionPresetHigh, 3);
+    EXPECT_EQ(ce::ue5_cvar::kRayReconstructionPresetFull, 4);
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(ce::ue5_cvar::kRayReconstructionPresetOff),
+                 "off");
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(ce::ue5_cvar::kRayReconstructionPresetLight),
+                 "light");
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(ce::ue5_cvar::kRayReconstructionPresetMedium),
+                 "medium");
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(ce::ue5_cvar::kRayReconstructionPresetHigh),
+                 "high");
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(ce::ue5_cvar::kRayReconstructionPresetFull),
+                 "full");
+    EXPECT_STREQ(ce::ue5_cvar::RayReconstructionPresetName(200), "off")
+        << "an unknown value from a future host must not be reported as a level";
 }
 
 TEST(UE5CVarOverridePolicyTest, CustomCVarValueHasFinalPrecedence) {

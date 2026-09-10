@@ -619,8 +619,10 @@ See the [app profile example](#app-profile-example) for a minimal per-game setup
 The `[UE5]` section contains process-local overrides that persistently redirect validated game-thread/render-thread
 CVar shadows in memory; they never edit `Engine.ini` or other game files. `force_ray_reconstruction=on` selects an
 existing NVIDIA plugin's `r.NGX.DLSS.DenoiserMode=1` path, while
-`ray_reconstruction_optimal_settings=on` also applies the documented Lumen, virtual-shadow, and MegaLights quality
-bundle from `config.ini`. Neither option invents missing RR inputs, spoofs driver support, or blocks ordinary DLSS SR
+`ray_reconstruction_optimal_settings=off|light|medium|high|full` also applies the documented Lumen, virtual-shadow,
+and MegaLights quality bundle from `config.ini`, as a strict ladder: the cheaper levels carry everything that costs
+no GPU time and add sampling density only as the level rises, with `on` kept as an alias for `full`. Neither option
+invents missing RR inputs, spoofs driver support, or blocks ordinary DLSS SR
 fallback. A compatible `nvngx_dlssd.dll` can still be supplied separately with `[DLSS] dlss_rr_dll_path`.
 
 `depth_of_field`, `dlss_super_resolution` and the `hdr_*` settings drive the same mechanism for engine features a game

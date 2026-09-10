@@ -54,6 +54,7 @@ TEST_F(ConfigTest, ParsesGraduatedRayReconstructionSettingsAndLegacyOnAsFull) {
         {"off", ce::ue5_cvar::kRayReconstructionPresetOff},
         {"light", ce::ue5_cvar::kRayReconstructionPresetLight},
         {"medium", ce::ue5_cvar::kRayReconstructionPresetMedium},
+        {"high", ce::ue5_cvar::kRayReconstructionPresetHigh},
         {"full", ce::ue5_cvar::kRayReconstructionPresetFull},
         {"on", ce::ue5_cvar::kRayReconstructionPresetFull},
         {"true", ce::ue5_cvar::kRayReconstructionPresetFull},

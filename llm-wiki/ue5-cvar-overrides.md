@@ -330,10 +330,12 @@ mode is a visibly broken frame in the user's game.
 
 ## Graduated RR quality settings and typed custom values (2026-08-22)
 
-- `ray_reconstruction_optimal_settings` is a nested `off|light|medium|full` preset. `light` writes
-  `r.Lumen.Reflections.BilateralFilter=0`, `ScreenSpaceReconstruction=0`, `Temporal=0`, and `r.SSR.Temporal=0`;
-  `medium` adds `r.Lumen.Reflections.DownsampleFactor=1`; `full` adds every remaining value from the former bundle.
-  The old `on`/true spellings remain aliases for `full` so existing profiles retain their quality settings.
+- `ray_reconstruction_optimal_settings` is a nested preset, `off|light|medium|high|full` since 2026-09-10 (the last
+  section of this page carries the cost rationale and the per-level contents). `light` writes
+  `r.Lumen.Reflections.BilateralFilter=0`, `ScreenSpaceReconstruction=0`, `Temporal=0`, `r.SSR.Temporal=0` and
+  `r.Lumen.ScreenProbeGather.StochasticInterpolation=1`; `medium` adds `r.Lumen.Reflections.DownsampleFactor=1` plus
+  every cost-free stabilizer and engine-default floor; `high` and `full` add the paid sampling density in two graded
+  steps. The old `on`/true spellings remain aliases for `full` so existing profiles retain their quality settings.
 - The preset never selects `r.NGX.DLSS.DenoiserMode`. Its dedicated named control is
   `force_ray_reconstruction=on`, preserving the distinction between tuning renderer inputs and selecting the NVIDIA
   RR denoiser. An explicit custom DenoiserMode entry can still override it like any other supported CVar.
@@ -461,3 +463,68 @@ redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue
   pins newer SL DLLs under older plugins. Cheapest first step if this is ever pursued: log whether the game already
   tags buffer type 68 on its RR evaluation - if it does, the mask is game-side tuning and nothing needs injecting.
   Unverified in-game.
+
+## Cost-ranked RR preset ladder with a new `high` level (2026-09-10)
+
+The measured 10-15% frame-time delta between `medium` and `full` was attributed to the wrong settings: the bundle
+mixed three kinds of entry and only one kind is what the delta is made of. The levels are now ranked by cost, and
+every entry is classified explicitly:
+
+- **history-only, free** (memory, not GPU time): `Temporal.MaxFramesAccumulated` floored to 16,
+  `Temporal.RejectBasedOnNormal=0`, `Temporal.FastUpdateModeUseNeighborhoodClamp=0`, the two spatial filter entries.
+- **already engine defaults, no-ops, or work-reducing**: `MegaLights.NumSamplesPerPixel=4` (the real tier; 8
+  executes as 4), `MegaLights.DownsampleMode=0`, `ShortRangeAO.ApplyDuringIntegration=0`, `ShortRangeAO.Temporal=1`
+  (5.6 default), `Reflections.MaxRayIntensity=100` (registered default), `Reflections.DownsampleCheckerboard=0`
+  (default, and inert while `DownsampleFactor=1`), and both `LumenScene` update factors, which *save* work.
+- **paid sampling density**: the screen-probe ray count (`Temporal.MaxRayDirections`, roughly 2x the trace cost
+  against the engine default of 8), `TracingOctahedronResolution` (the engine clamps it at 16, so `full` is already
+  at the ceiling), the radiance-cache `ProbeResolution`/`NumProbesToTraceBudget`, the SMRT ray counts and
+  `ResolutionLodBiasLocal`, and, on 5.6+, full-resolution short-range AO.
+
+Level contents (strict ladder, `on` still aliases `full`): `light` = the reconstruction and pre-smoothing RR
+replaces (`BilateralFilter`, `ScreenSpaceReconstruction`, `Reflections.Temporal`, `SSR.Temporal`, and
+`StochasticInterpolation=1`); `medium` = light + full-resolution reflection tracing + every free, default, or
+work-reducing entry above; `high` = medium + the paid density that is visibly worth it (VSM ray counts and local LOD
+bias, the octahedron lattice, radiance-cache `ProbeResolution`, the RR firefly/ghosting tolerances); `full` = high +
+the two maximum-sampling escalations (`Temporal.MaxRayDirections` floor 16, radiance-cache probe budget 600,
+short-range AO at full resolution).
+
+- **`r.Lumen.ScreenProbeGather.StochasticInterpolation` was the one genuinely reversed entry.** The bundle wrote `0`
+  (bilinear, 4-sample) while AMD's UE performance guide measures up to ~30% faster screen probe gather passes at `1`
+  (1-sample stochastic) with no perceptible difference in most content, and Epic's own High scalability uses `1`. A
+  stochastic signal is also what an RR denoiser expects - bilinear interpolation is pre-smoothed input - so `light`
+  and up now write `1`, with `SpatialFilterNumPasses=3` left on to absorb the extra per-frame noise.
+- **Which paid entries actually cost anything is title-dependent, so the classification above is per-CVar, not
+  global.** `RadianceCache.ProbeResolution` registers at 32 but UE's own scalability lowers it at reduced GI quality
+  (measured: 16), so raising it is a real cost step there and a no-op elsewhere; `NumProbesToTraceBudget` is a
+  *responsiveness* lever (Epic: "Higher values make lighting more responsive but cost more") rather than steady-state
+  quality, which is why it stayed in `full`. Defaults were checked per CVar against Unreal Directive, AMD's UE
+  performance guide, Epic's Lumen Performance Guide and ArtStation's UE5.5+ cinematic tool notes, and the wrong
+  reading of a default was what had made `r.MegaLights.NumSamplesPerPixel=8` look harmless.
+- **The reflection-density saving is documented as an opt-in, not applied as a default.**
+  `r.Lumen.Reflections.DownsampleCheckerboard` only does anything when `DownsampleFactor > 1` (5.6+, default 0), so
+  the preset's `=0` write is inert while the presets pin `DownsampleFactor=1` - i.e. one ray per pixel, the most
+  expensive tracing density UE offers. Epic documents `factor 2 + checkerboard 1` as the middle ground (one ray per
+  two pixels) and `factor 2` alone as one ray per quad, and RR is built to reconstruct such signals. The config
+  template now carries it as a `custom_cvar_overrides` example; it is not a preset default because the visible risk
+  (softer, less stable reflections, and worse without RR) has not been A/B'd in a title yet.
+- **`medium` and up keep `DownsampleFactor=1` on purpose.** `light` disables the Lumen reflection reconstruction that
+  makes low-resolution traces presentable, so lowering the density is only safe together with RR - which is exactly
+  the configuration the opt-in example targets.
+- **Inserting a level renumbers the shared-memory preset byte** (`off=0, light=1, medium=2, high=3, full=4`) because
+  the hook compares `>=` against it. A pre-58 hook would read a new host's `3` as `full`, and a 58 hook would read a
+  pre-58 host's `3` (`full`) as `high`, so `SHARED_MEMORY_VERSION` moved 57 -> 58 together with the hardcoded
+  `SHARED_MEM_BASE_NAME` / `SHARED_MEM_DISCOVERY` literals
+  (`SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting` pins all of them).
+  `RayReconstructionPresetName()` plus
+  `UE5CVarOverridePolicyTest.PresetValuesAndNamesAreAStableAbiContract` pin the mapping and the diagnostic name now
+  printed by `UE5 overrides enabled: ... rrOptimal=%d(%s)`.
+- **Tier membership is ratcheted** by
+  `UE5CVarOverridePolicyTest.RayReconstructionSettingsLevelsAreNestedWithoutSelectingDenoiserMode`, which asserts the
+  enabled count per level (5/15/26/31 excluding the denoiser) plus per-entry membership of the paid axes, so a later
+  edit cannot silently move a paid setting into a cheap tier or a free one out of `medium`.
+- Open question, unmeasured: whether `high`'s `TracingOctahedronResolution=16` at the engine default ray count and
+  `full`'s doubled ray count are separable in practice. The evidence for the coupling is the CVar help text ("Number
+  of possible random directions per pixel. Should be tweaked based on MaxFramesAccumulated") and the arithmetic that
+  16 directions x 16 accumulated frames covers a 16x16 octahedron once, but the shader was not read; if the lattice
+  resolution turns out to be the real per-frame cost, `high` and `full` should swap that entry.

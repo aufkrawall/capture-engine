@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-09-01 (DLSS-G production-qualified limiter scaling, single-owner nested Reflex sleep pacing, composed constraints, and progress-qualified post-gap handoff)
+Last cross-checked: 2026-09-10 (cost-ranked RR preset ladder with a new `high` level, `StochasticInterpolation=1`, shared-memory preset-byte renumbering)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -66,10 +66,12 @@ Primary sources:
 - `[UE5] force_ray_reconstruction=off|on` is the canonical x64 policy. `on` persistently selects the existing NVIDIA
   plugin's `r.NGX.DLSS.DenoiserMode=1` render path in process memory; legacy `[DLSS]` / `[Graphics]` inputs remain
   accepted, and `UE5.force_ray_reconstruction` works in a process-backed profile.
-- `ray_reconstruction_optimal_settings=off|light|medium|full` applies nested rendering-quality bundles listed in
-  `captureengine/config.ini.template`; none selects `r.NGX.DLSS.DenoiserMode`, so RR remains the independent
+- `ray_reconstruction_optimal_settings=off|light|medium|high|full` applies the cost-ranked rendering-quality ladder
+  listed in `captureengine/config.ini.template`; none selects `r.NGX.DLSS.DenoiserMode`, so RR remains the independent
   `force_ray_reconstruction` policy. Legacy `on` maps to `full`, which also restores full-resolution short-range AO on
-  UE 5.6+ and floors the screen-probe history (a game-tuned longer history wins). `custom_cvar_overrides` accepts typed, comma-separated
+  UE 5.6+ and floors the screen-probe history (a game-tuned longer history wins), while `high` is the level that adds
+  the paid virtual-shadow/radiance-cache quality without the maximum screen-probe ray count. All levels write
+  `ScreenProbeGather.StochasticInterpolation=1`, the cheaper and RR-native direction. `custom_cvar_overrides` accepts typed, comma-separated
   values for any CVar in the supported spec table and has final precedence. `disable_post_processing_effects=on` applies dedicated
   built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
   touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.

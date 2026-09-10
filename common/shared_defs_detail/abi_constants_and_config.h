@@ -96,17 +96,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 57: Added per-sample screen-time provenance to the display-timing ring
 //             so a consumer can tell a resolved screen time from an
 //             unresolved flip-latch timestamp.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 57;
+// Version 58: The UE5 RR quality preset gained a `high` level between `medium`
+//             and `full`, so the byte in SharedGraphicsConfig renumbers
+//             `full` 3 -> 4. An older hook would read 3 (high) as full and a
+//             newer hook would read a pre-58 host's 3 (full) as high, hence the
+//             bump.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 58;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_57_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_58_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_57";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_58";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -538,8 +543,10 @@ struct SharedGraphicsConfig {
 
     // UE5 process-local persistent CVar overrides. A negative sharpen value
     // leaves r.Tonemapper.Sharpen alone unless disablePostProcessingEffects is set.
-    // 0=off, 1=light, 2=medium, 3=full. The uint8 representation preserves the
-    // original Boolean field's layout while allowing the graduated preset.
+    // 0=off, 1=light, 2=medium, 3=high, 4=full. The uint8 representation
+    // preserves the original Boolean field's layout while allowing the graduated
+    // preset. See ce::ue5_cvar::RayReconstructionPresetName for the ordering
+    // contract and SHARED_MEMORY_VERSION 58 for why `full` is 4 rather than 3.
     uint8_t rayReconstructionOptimalSettings;
     bool disablePostProcessingEffects;
     float tonemapperSharpen;

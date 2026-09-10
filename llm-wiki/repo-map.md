@@ -89,8 +89,8 @@ anchors that predate the split are approximate.
     `main_ue5.cpp` (policy/lifecycle/service pass), `main_ue5_scan.cpp` (literal + candidate discovery),
     `main_ue5_install.cpp` (install, refresh, read-back verification, restore), `main_ue5_memory.cpp`
     (process-memory/PE primitives), `main_ue5_registry.cpp` (resolution through UE's console-object map).
-    `hook/common/ue5_cvar_override_policy.h` defines the graduated RR-quality bundles, typed custom-CVar
-    precedence, sharpen precedence, and the
+    `hook/common/ue5_cvar_override_policy.h` defines the cost-ranked graduated RR-quality ladder
+    (`off/light/medium/high/full`), typed custom-CVar precedence, sharpen precedence, and the
     depth-of-field / DLSS Super Resolution / HDR specs, `ue5_redirect_plan.h` the redirect undo contract,
     `ue5_console_registry.h` the registry decoders. Topic page: `llm-wiki/ue5-cvar-overrides.md`.
   - `apis/` - per-API hook sets, de-inlined into semantic units:

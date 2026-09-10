@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-08-31
+Last cross-checked: 2026-09-10
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -77,13 +77,19 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   the canonical global location wins when several globals are present. Existing section-qualified legacy profile
   values retain profile precedence over globals. It does not change Engine.ini, add absent RR inputs, or falsify
   runtime capability/support results.
-- `[UE5] ray_reconstruction_optimal_settings=off|light|medium|full` applies nested quality bundles. `light` disables
-  Lumen reflection bilateral/screen-space/temporal reconstruction and SSR temporal accumulation; `medium` also sets
-  the Lumen reflection downsample factor to 1; `full` adds the remaining former Lumen/VSM/MegaLights values, restores
-  full-resolution short-range AO on UE 5.6+ (`ShortRangeAO.DownsampleFactor=1`, `ShortRangeAO.Temporal=1`), and floors
-  the screen-probe history (`Temporal.MaxFramesAccumulated`/`MaxRayDirections` to a 16 minimum, so a game-tuned longer
-  history is kept). It no longer includes `r.NGX.DLSS.DenoiserMode` or implies the independent force policy. Legacy
-  `on`/Boolean-true inputs remain compatibility aliases for `full`. Missing CVars are logged and skipped.
+- `[UE5] ray_reconstruction_optimal_settings=off|light|medium|high|full` applies a strict cost-ranked ladder of
+  quality bundles. `light` disables the Lumen reflection bilateral/screen-space/temporal reconstruction, SSR temporal
+  accumulation and the bilinear screen-probe interpolation that RR replaces (`StochasticInterpolation=1`, also the
+  cheaper path); `medium` also sets the Lumen reflection downsample factor to 1 and adds every cost-free stabilizer
+  and engine-default floor (screen-probe history, spatial filter passes, scene-lighting update factors, the MegaLights
+  tiers); `high` adds the paid sampling density that is visibly worth it (virtual-shadow ray counts and local LOD
+  bias, the engine-clamped 16-wide octahedron lattice, the radiance-cache probe resolution, the RR firefly/ghosting
+  tolerances); `full` adds the maximum screen-probe ray count, the radiance-cache probe budget, and full-resolution
+  short-range AO on UE 5.6+ (`ShortRangeAO.DownsampleFactor=1`, `ShortRangeAO.Temporal=1`).
+  `Temporal.MaxFramesAccumulated` and `MaxRayDirections` are floors, so a game-tuned longer history or a wider
+  direction set is kept. It does not include `r.NGX.DLSS.DenoiserMode` or imply the independent force policy, and
+  legacy `on`/Boolean-true inputs remain compatibility aliases for `full`. Missing CVars are logged and skipped;
+  adding `high` renumbered the shared-memory preset byte (`full` 3 -> 4) and moved `SHARED_MEMORY_VERSION` 57 -> 58.
 - `[UE5] custom_cvar_overrides` is a comma-separated final-precedence list for any CVar already present in
   `ce::ue5_cvar::kSpecs`. Names are case-insensitive; normalized aliases such as `tonemapper_sharpen` drop a leading
   `r.`/`t.` and replace dots with underscores. Each value must match the known Int32/Float type; unsupported,

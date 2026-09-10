@@ -184,7 +184,7 @@ void RefreshOverrides(const GraphicsConfig& config) {
     detail::g_fullRescanRequested.store(true, std::memory_order_release);
     detail::ResetConsoleRegistry();
     HookLogImportant(
-        "UE5 overrides enabled: forceRR=%d rrOptimal=%d disablePost=%d tonemapperSharpen=%.3f "
+        "UE5 overrides enabled: forceRR=%d rrOptimal=%d(%s) disablePost=%d tonemapperSharpen=%.3f "
         "internalFpsLimit=%.3f internalAF=%d internalTextureMipBias=%.3f displayGamma=%.3f "
         "depthOfField=%d dlssSR=%d dlssScreenPercentage=%.2f hdrOutput=%d hdrPeak=%d "
         "hdrPaperWhite=%.1f hdrUiLuminance=%.1f hdrMinLuminance=%.4f hdrColorGamut=%d "
@@ -192,6 +192,7 @@ void RefreshOverrides(const GraphicsConfig& config) {
         "installing persistent in-memory CVar shadows without changing Engine.ini",
         settings.forceRayReconstruction ? 1 : 0,
         static_cast<int>(settings.rayReconstructionOptimalSettings),
+        ce::ue5_cvar::RayReconstructionPresetName(settings.rayReconstructionOptimalSettings),
         settings.disablePostProcessingEffects ? 1 : 0, settings.tonemapperSharpen,
         settings.internalFpsLimit, settings.internalAnisotropicFiltering,
         settings.internalTextureMipBias, settings.displayGamma, settings.depthOfField,

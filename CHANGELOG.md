@@ -37,17 +37,30 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
   through UE's screen percentage; the `hdr_*` settings drive `r.HDR.EnableHDROutput` and the
   `r.HDR.Display.*`/`r.HDR.UI.*` parameters in the nits and gamut the engine documents. None of them can add a
   missing plugin, invent HDR output on an SDR display, or create depth of field a game never configured.
-- Expanded `ray_reconstruction_optimal_settings` into graduated `off|light|medium|full` presets: `light`
-  applies four temporal/reconstruction settings (`r.SSR.Temporal=0`, `r.Lumen.Reflections.Temporal=0`,
-  `r.Lumen.Reflections.BilateralFilter=0`, `r.Lumen.Reflections.ScreenSpaceReconstruction=0`), `medium` adds
-  `r.Lumen.Reflections.DownsampleFactor=1`, and `full` adds the remaining former bundle values; the legacy
-  `on` spelling remains an alias for `full`. Presets no longer enforce `r.NGX.DLSS.DenoiserMode=1` (select the
+- Expanded `ray_reconstruction_optimal_settings` into graduated `off|light|medium|high|full` presets that form
+  a strict ladder, so every setting which costs no GPU time is reachable without the settings that do: `light`
+  applies the reconstruction and pre-smoothing RR replaces (`r.SSR.Temporal=0`, `r.Lumen.Reflections.Temporal=0`,
+  `r.Lumen.Reflections.BilateralFilter=0`, `r.Lumen.Reflections.ScreenSpaceReconstruction=0`,
+  `r.Lumen.ScreenProbeGather.StochasticInterpolation=1`), `medium` adds full-resolution reflection tracing plus
+  every cost-free stabilizer and engine-default floor (screen-probe history, spatial filter passes,
+  scene-lighting update factors), `high` adds the paid sampling that is visibly worth it (virtual-shadow ray
+  counts and local resolution, the screen-probe octahedron lattice, the radiance-cache probe resolution), and
+  `full` adds the maximum screen-probe ray count (`Temporal.MaxRayDirections=16` as a floor), the radiance-cache
+  probe budget, and full-resolution short-range AO on UE 5.6+; the legacy `on` spelling remains an alias for
+  `full`. Presets no longer enforce `r.NGX.DLSS.DenoiserMode=1` (select the
   RR denoiser explicitly via `force_ray_reconstruction=on`). Added `custom_cvar_overrides` /
   per-app `UE5.custom_cvar_overrides` for typed final-value overrides of individual UE5 CVars; valid entries
   take precedence over all presets and dedicated options.
 
 ### Improved
 
+- Rebalanced the UE5 RR quality presets by cost instead of bundling everything into `full`: settings that only
+  cost history memory, that are already engine defaults, or that reduce work now sit in `medium`, while `high`
+  and `full` carry only the sampling density that costs GPU time. `r.Lumen.ScreenProbeGather.StochasticInterpolation`
+  is now `1` - the cheaper stochastic path AMD measures as up to ~30% faster in the screen probe gather passes,
+  and the signal a ray reconstruction denoiser expects - instead of the bilinear `0`. Inserting the new level
+  renumbered the shared-memory preset byte (`full` 3 -> 4) and moved `SHARED_MEMORY_VERSION` 57 -> 58, which also
+  renamed the shared mappings.
 - Made overlay rendering cheap under DOOM Eternal's Vulkan "present from compute": overlay submits land on
   the game's own graphics queue instead of the compute present queue, the compute-present overlay hot path
   avoids redundant work, and CE diagnostics moved off the present critical path.

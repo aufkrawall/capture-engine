@@ -70,6 +70,8 @@ uint8_t ParseRayReconstructionSettingsPreset(ConfigReader& reader) {
         return ce::ue5_cvar::kRayReconstructionPresetLight;
     if (value == "medium")
         return ce::ue5_cvar::kRayReconstructionPresetMedium;
+    if (value == "high")
+        return ce::ue5_cvar::kRayReconstructionPresetHigh;
     if (value == "full" || value == "on" || value == "true" || value == "1" || value == "yes" ||
         value == "enabled")
         return ce::ue5_cvar::kRayReconstructionPresetFull;

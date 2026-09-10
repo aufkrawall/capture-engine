@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-10 - RR preset ladder re-ranked by cost with a new `high` level
+
+The 10-15% frame-time delta between `ray_reconstruction_optimal_settings=medium` and `=full` was attributed to the
+wrong settings, so the preset was ranked by cost instead of by "maximum quality". The bundle mixed three kinds of
+entry and only the third is what the delta is made of: history-only settings (free), settings that are already engine
+defaults or reduce work, and paid sampling density. Levels are now `off|light|medium|high|full` and a strict ladder:
+`medium` holds every free/default/work-reducing entry (screen-probe history floor, spatial filter passes, the two
+`LumenScene` update factors, MegaLights tiers, SRAO apply mode), `high` holds the paid density that is visibly worth it
+(VSM ray counts and local LOD bias, the engine-clamped 16 octahedron lattice, radiance-cache `ProbeResolution`, RR
+firefly/ghosting tolerances), and `full` holds the two maximum-sampling escalations (`Temporal.MaxRayDirections` floor
+16, radiance-cache probe budget 600, 5.6+ full-resolution short-range AO). The one reversed entry was fixed:
+`r.Lumen.ScreenProbeGather.StochasticInterpolation` is `1` (AMD measures up to ~30% faster screen probe gather
+passes; Epic's High scalability uses 1; a stochastic signal is what an RR denoiser expects) instead of the bilinear
+`0`, with `SpatialFilterNumPasses=3` absorbing the extra noise. The reflection-density saving (`DownsampleFactor=2`
+with the 5.6 `DownsampleCheckerboard=1` middle ground) is documented as an opt-in `custom_cvar_overrides` example
+rather than applied, because `light` deliberately disables the Lumen reflection reconstruction and the non-RR quality
+cost is unmeasured. Inserting a level renumbered the shared-memory preset byte (`full` 3 -> 4) and moved
+`SHARED_MEMORY_VERSION` 57 -> 58 with the hardcoded mapping literals; `RayReconstructionPresetName()` now prints the
+level in `UE5 overrides enabled: ... rrOptimal=%d(%s)`. Validation: the complete `--verify --verify-clean` gate is
+green (content-validated product build, full native unit suite, Python tool self-tests, clang-tidy/file-size/Python
+lint with no new findings, ASan/UBSan regression), including the new tier-membership and ABI-value ratchet tests. No
+in-game A/B or frame-time measurement yet.
+
 ### 2026-09-10 - RR preset F AO-boiling mitigations: full-res short-range AO, history floors, honest MegaLights tier
 
 A follow-up review of the `full` RR preset against DLSS 4.5 RR preset F (2nd-gen transformer) splits three
