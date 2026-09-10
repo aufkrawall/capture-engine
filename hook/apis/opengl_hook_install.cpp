@@ -1,44 +1,31 @@
 #include "opengl_hook_internal.h"
 
+#include <iterator>
+
 // Write-only sink for the IAT/dynamic-hook "original" output of a swap entry
 // point that already routes through an inline trampoline.
 static LPVOID opengl_hook_g_DiscardedSwapOriginal = nullptr;
 
 struct OpenGLTrampolinePublication {
-    void** destination = nullptr;
+    void* volatile* destination = nullptr;
     void* fallback = nullptr;
 };
 
 static void PublishOpenGLSwapTrampoline(void* trampoline, void* context) {
     auto* publication = static_cast<OpenGLTrampolinePublication*>(context);
-    *publication->destination = trampoline ? trampoline : publication->fallback;
+    InterlockedExchangePointer(publication->destination, trampoline ? trampoline : publication->fallback);
 }
 
-// Patch the exported swap function itself so callers that cached the import
-// address reach the detour as well. The published trampoline becomes the
-// "original", so calling it never re-enters the detour.
-static bool InstallOpenGLSwapInlineHook(const char* moduleName, const char* functionName, void* detour,
-                                        void** original) {
-    HMODULE module = GetModuleHandleA(moduleName);
-    if (!module)
-        return false;
-
-    void* target = reinterpret_cast<void*>(GetProcAddress(module, functionName));
-    if (!target || target == detour)
-        return false;
-
-    OpenGLTrampolinePublication publication{original, *original};
-    void* trampoline = nullptr;
-    if (!InlineHook::InstallPublished(target, detour, &trampoline, &PublishOpenGLSwapTrampoline,
-                                      &publication)) {
+static void LogOpenGLSwapInlineHookResult(const char* moduleName, const char* functionName, void* target,
+                                          void* trampoline, bool installed) {
+    if (!installed) {
         HookLogImportant("OpenGL: Inline hook failed for %s!%s at %p; only IAT-routed callers are covered", moduleName,
                          functionName, target);
-        return false;
+        return;
     }
 
     HookLogImportant("OpenGL: Inline hook installed for %s!%s at %p (trampoline=%p)", moduleName, functionName, target,
                      trampoline);
-    return true;
 }
 
 void OpenGLHook::Init() {
@@ -72,14 +59,36 @@ void OpenGLHook::Init() {
     // logging all stay silently dead (opengl_test.exe caches it in r13, which is
     // exactly why its overlay never appeared while opengl_legacy_test.exe worked).
     // Patching the export itself catches those cached pointers too.
-    const bool swapBuffersInline = InstallOpenGLSwapInlineHook("gdi32.dll", "SwapBuffers", (void*)&DetourSwapBuffers,
-                                                               (void**)&opengl_hook_oSwapBuffers);
-    const bool wglSwapBuffersInline =
-        InstallOpenGLSwapInlineHook("opengl32.dll", "wglSwapBuffers", (void*)&DetourWglSwapBuffers,
-                                    (void**)&opengl_hook_oWglSwapBuffers);
-    const bool wglSwapLayerBuffersInline =
-        InstallOpenGLSwapInlineHook("opengl32.dll", "wglSwapLayerBuffers", (void*)&DetourWglSwapLayerBuffers,
-                                    (void**)&opengl_hook_oWglSwapLayerBuffers);
+    void* swapTargets[] = {
+        reinterpret_cast<void*>(GetProcAddress(gdi32Module, "SwapBuffers")),
+        reinterpret_cast<void*>(GetProcAddress(glModule, "wglSwapBuffers")),
+        reinterpret_cast<void*>(GetProcAddress(glModule, "wglSwapLayerBuffers")),
+    };
+    void* swapTrampolines[3] = {};
+    OpenGLTrampolinePublication publications[] = {
+        {reinterpret_cast<void* volatile*>(&opengl_hook_oSwapBuffers), (void*)opengl_hook_oSwapBuffers},
+        {reinterpret_cast<void* volatile*>(&opengl_hook_oWglSwapBuffers), (void*)opengl_hook_oWglSwapBuffers},
+        {reinterpret_cast<void* volatile*>(&opengl_hook_oWglSwapLayerBuffers),
+         (void*)opengl_hook_oWglSwapLayerBuffers},
+    };
+    InlineHook::PublishedHookSpec inlineHooks[] = {
+        {swapTargets[0], (void*)&DetourSwapBuffers, &swapTrampolines[0], &PublishOpenGLSwapTrampoline,
+         &publications[0]},
+        {swapTargets[1], (void*)&DetourWglSwapBuffers, &swapTrampolines[1], &PublishOpenGLSwapTrampoline,
+         &publications[1]},
+        {swapTargets[2], (void*)&DetourWglSwapLayerBuffers, &swapTrampolines[2], &PublishOpenGLSwapTrampoline,
+         &publications[2]},
+    };
+    InlineHook::InstallPublishedBatch(inlineHooks, std::size(inlineHooks));
+    const bool swapBuffersInline = inlineHooks[0].installed;
+    const bool wglSwapBuffersInline = inlineHooks[1].installed;
+    const bool wglSwapLayerBuffersInline = inlineHooks[2].installed;
+    LogOpenGLSwapInlineHookResult("gdi32.dll", "SwapBuffers", swapTargets[0], swapTrampolines[0],
+                                  swapBuffersInline);
+    LogOpenGLSwapInlineHookResult("opengl32.dll", "wglSwapBuffers", swapTargets[1], swapTrampolines[1],
+                                  wglSwapBuffersInline);
+    LogOpenGLSwapInlineHookResult("opengl32.dll", "wglSwapLayerBuffers", swapTargets[2], swapTrampolines[2],
+                                  wglSwapLayerBuffersInline);
 
     // Where an inline trampoline is live, the IAT/dynamic routes must not write
     // the raw export back over it - the detour would then call itself forever.

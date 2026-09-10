@@ -115,7 +115,7 @@ if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("CreateSwapChainForHwnd INL
 }
 
 // Skip side-effects for temp swapchains created during hook installation
-if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
+if (DX12_IsInternalDXGISwapchainProbe()) {
     HookLog("CreateSwapChainForHwnd INLINE: Temp swapchain — passthrough");
     return dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 }

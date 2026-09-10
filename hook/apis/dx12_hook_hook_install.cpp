@@ -262,10 +262,31 @@ if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pCr
         pCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(bypass);
     } else {
         HookLogImportant(
-            "DX12: Could not bypass foreign entry patch on CreateDXGIFactory1 at %p - the temp factory may be "
-            "a third-party proxy",
+            "DX12: Could not bypass foreign entry patch on CreateDXGIFactory1 at %p - refusing the synthetic "
+            "bootstrap rather than entering a third-party factory handler",
             reinterpret_cast<void*>(pCreateFactory));
+        return;
     }
+}
+
+// The synthetic WARP device is not an application device and must not enter a
+// Steam/RTSS/vendor interposer's D3D12CreateDevice handler. Apart from avoiding
+// false device state in that overlay, this keeps its graphics-startup work out
+// of the exact launch window this bootstrap is intended to leave untouched.
+if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pD3D12CreateDevice))) {
+    void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pD3D12CreateDevice));
+    if (!bypass) {
+        HookLogImportant(
+            "DX12: Could not bypass foreign entry patch on D3D12CreateDevice at %p - refusing the synthetic "
+            "WARP bootstrap rather than entering a third-party device handler",
+            reinterpret_cast<void*>(pD3D12CreateDevice));
+        return;
+    }
+    HookLogImportant(
+        "DX12: Bypassing foreign entry patch on D3D12CreateDevice at %p (trampoline=%p) so the synthetic WARP "
+        "device enters no third-party handler",
+        reinterpret_cast<void*>(pD3D12CreateDevice), bypass);
+    pD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(bypass);
 }
 
 // These three failures used to return in silence, which made a dead Present-hook
@@ -280,39 +301,63 @@ if (FAILED(factoryHr) || !pFactory) {
     return;
 }
 
-// A device-creation failure that is terminal stays terminal: DXGI_ERROR_UNSUPPORTED does
-// not become S_OK later in the process, and every retry maps and unmaps the vendor UMD
-// inside the game's startup for ~48 ms. Witcher 3 session 20260820_211008 paid that thirty
-// times in five seconds and logged the same HRESULT thirty times with it. The budget lets
-// a genuinely early failure retry and then stops.
+// A terminal WARP creation failure does not become S_OK later in the process.
+// Keep the existing bounded retry so a genuinely early runtime failure can
+// recover without rebuilding this synthetic software stack indefinitely.
 if (!ce::dx12_device_creation_report::ShouldAttemptTempDeviceCreation()) {
     pFactory->Release();
     return;
 }
 
+// Scope suppression to this bootstrap thread. A process-global flag can hide a
+// real game swapchain created concurrently and misclassify this synthetic WARP
+// device as application D3D12 use.
+DX12_BeginInternalDXGISwapchainProbe();
+CE_SCOPE_EXIT(DX12_EndInternalDXGISwapchainProbe());
+
+// This device exists only to expose stable system-DXGI Present and D3D12 queue
+// method addresses. Never ask the game's hardware adapter/UMD to create it:
+// doing so concurrently with the application's first real device can alter
+// driver-global startup state and FSR FG's initial pacing calibration. WARP
+// supplies the same public D3D12/DXGI method surfaces without entering the
+// vendor graphics driver.
+IDXGIFactory4* pWarpFactory = nullptr;
+IDXGIAdapter* pWarpAdapter = nullptr;
+const HRESULT warpFactoryHr = pFactory->QueryInterface(IID_PPV_ARGS(&pWarpFactory));
+const HRESULT warpAdapterHr =
+    SUCCEEDED(warpFactoryHr) && pWarpFactory
+        ? pWarpFactory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter))
+        : warpFactoryHr;
+if (pWarpFactory) {
+    pWarpFactory->Release();
+}
+if (FAILED(warpAdapterHr) || !pWarpAdapter) {
+    HookLogImportant(
+        "DX12: Temp-swapchain bootstrap: EnumWarpAdapter failed (factoryHr=0x%08X adapterHr=0x%08X) - refusing "
+        "to create a synthetic hardware device in the game process",
+        static_cast<unsigned>(warpFactoryHr), static_cast<unsigned>(warpAdapterHr));
+    pFactory->Release();
+    return;
+}
+
 ID3D12Device* pDevice = nullptr;
-HRESULT deviceHr = pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice));
+HRESULT deviceHr = pD3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice));
+pWarpAdapter->Release();
 ce::dx12_device_creation_report::NoteTempDeviceCreationResult(deviceHr);
 if (FAILED(deviceHr) || !pDevice) {
     HookLogImportant(
-        "DX12: Temp-swapchain bootstrap: D3D12CreateDevice failed (hr=0x%08X) - Present hooks now depend on "
-        "intercepting the game's own CreateSwapChainForHwnd",
+        "DX12: Temp-swapchain bootstrap: WARP D3D12CreateDevice failed (hr=0x%08X) - Present hooks now depend "
+        "on intercepting the game's own CreateSwapChainForHwnd",
         (unsigned)deviceHr);
-    // The bare HRESULT cannot distinguish a foreign entry patch, a runtime that refuses
-    // every adapter, and an adapter that simply cannot reach the requested level. Emit the
-    // evidence for all three once, while the process is still alive to be asked.
-    ce::dx12_device_creation_report::ReportDeviceCreationFailure(
-        SUCCEEDED(deviceHr) ? E_FAIL : deviceHr, "temp-swapchain bootstrap");
     if (pDevice) {
         pDevice->Release();
     }
     pFactory->Release();
     return;
 }
-
-// Hook CreateSampler on the device vtable
-// All D3D12 devices share the same vtable, so this hooks ALL devices
-DX12_HookDeviceVTable(pDevice);
+HookLogImportant(
+    "DX12: Temp-swapchain bootstrap: WARP D3D12 device created; synthetic hardware-adapter creation remains "
+    "disabled");
 
 D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -343,11 +388,6 @@ scd.SampleDesc.Count = 1;
 scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 scd.BufferCount = 2;
 scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
-// Mark that we're creating a temp swapchain for hook installation.
-// This prevents the CreateSwapChainForHwnd hooks from capturing the temp
-// queue as g_SwapchainQueue or tracking the temp swapchain.
-dx12_hook_g_CreatingTempSwapchain.store(true, std::memory_order_release);
 
 IDXGISwapChain1* pSwapChain = nullptr;
 HRESULT hr = E_FAIL;
@@ -481,8 +521,6 @@ if (!pSwapChain && guardedSystemRouteOnly) {
             "Present vtable hooks");
     }
 }
-
-dx12_hook_g_CreatingTempSwapchain.store(false, std::memory_order_release);
 
 if (SUCCEEDED(hr) && pSwapChain) {
     HookLog("DX12: Installing Present inline hooks via temp swapchain");

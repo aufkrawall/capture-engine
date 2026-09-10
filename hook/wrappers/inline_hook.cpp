@@ -87,11 +87,8 @@ static bool WriteNearJumpWithoutLogging(uint8_t* destination, void* target) {
 }
 #endif
 
-static bool WriteOwnedEntryPatch(void* target, void* detour, int patchSize, const uint8_t* expectedBytes,
-                                 uint8_t* installedBytes) {
-    ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
-    if (!quiescence.IsReady())
-        return false;
+bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patchSize,
+                                  const uint8_t* expectedBytes, uint8_t* installedBytes) {
     if (memcmp(target, expectedBytes, patchSize) != 0)
         return false;
     DWORD oldProtect = 0;
@@ -99,7 +96,7 @@ static bool WriteOwnedEntryPatch(void* target, void* detour, int patchSize, cons
         return false;
 #ifdef _WIN64
     if (patchSize == ce::inline_hook_policy::kExternalPrependPatchSize) {
-        if (!WriteNearJumpWithoutLogging(static_cast<uint8_t*>(target), detour)) {
+        if (!WriteNearJumpWithoutLogging(static_cast<uint8_t*>(target), patchDestination)) {
             DWORD ignoredProtect = 0;
             VirtualProtect(target, patchSize, oldProtect, &ignoredProtect);
             return false;
@@ -107,7 +104,7 @@ static bool WriteOwnedEntryPatch(void* target, void* detour, int patchSize, cons
     } else
 #endif
     {
-        WriteJumpWithoutLogging(static_cast<uint8_t*>(target), detour);
+        WriteJumpWithoutLogging(static_cast<uint8_t*>(target), patchDestination);
     }
     for (int i = PATCH_SIZE; i < patchSize; ++i)
         static_cast<uint8_t*>(target)[i] = 0x90;
@@ -116,6 +113,13 @@ static bool WriteOwnedEntryPatch(void* target, void* detour, int patchSize, cons
     FlushInstructionCache(GetCurrentProcess(), target, patchSize);
     memcpy(installedBytes, target, patchSize);
     return true;
+}
+
+bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
+                          const uint8_t* expectedBytes, uint8_t* installedBytes) {
+    ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
+    return quiescence.IsReady() &&
+           WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
 }
 
 static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
@@ -151,7 +155,8 @@ static bool InstalledEntryBytesMatch(const HookEntry& hook) {
 // ============================================================================
 
 static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
-                        void* publisherContext) {
+                        void* publisherContext, bool hookMutexAlreadyHeld = false,
+                        size_t* preparedHookIndex = nullptr) {
     // Use existing optional hook logger; avoid absolute-path file writes from injected code.
     auto LogDirect = [](const char* fmt, ...) {
         va_list args;
@@ -192,16 +197,22 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
                                                                    s_traceDetailHookCount.fetch_add(1, std::memory_order_relaxed) + 1),
                                                                4, 100);
 
-    if (!target || !detour || !outTrampoline) {
-        LogDirect("FAILED: null parameter");
+    if (!target || !detour || !outTrampoline || target == detour) {
+        LogDirect("FAILED: invalid hook parameter (target=%p detour=%p out=%p)", target, detour, outTrampoline);
         return false;
     }
     *outTrampoline = nullptr;
 
-    std::lock_guard<std::mutex> lock(g_hookMutex);
+    std::unique_lock<std::mutex> lock(g_hookMutex, std::defer_lock);
+    if (!hookMutexAlreadyHeld)
+        lock.lock();
 
     // Check if already hooked
     for (auto& h : g_hooks) {
+        if (h.target == target && !h.installed) {
+            LogDirect("FAILED: Target %p is already part of the active hook preparation batch", target);
+            return false;
+        }
         if (h.target == target && h.installed) {
             if (h.detour != detour) {
                 LogDirect("FAILED: Target %p is already owned by CE with different detour %p (requested=%p)",
@@ -305,6 +316,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         HookEntry entry = {};
         entry.target = target;
         entry.detour = detour;
+        entry.patchDestination = prependTarget;
         entry.trampoline = trampoline;
         entry.patchSize = ce::inline_hook_policy::kExternalPrependPatchSize;
         memcpy(entry.origBytes, code, entry.patchSize);
@@ -318,6 +330,11 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         *outTrampoline = trampoline;
         if (publisher) {
             publisher(trampoline, publisherContext);
+        }
+
+        if (preparedHookIndex) {
+            *preparedHookIndex = g_hooks.size() - 1;
+            return true;
         }
 
         if (!WriteOwnedEntryPatch(target, prependTarget, entry.patchSize, entry.origBytes,
@@ -555,6 +572,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     HookEntry entry = {};
     entry.target = target;
     entry.detour = detour;
+    entry.patchDestination = detour;
     entry.trampoline = trampoline;
     entry.patchSize = copySize;
     entry.installed = false;
@@ -574,6 +592,11 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         // detour. Publication is harmless while the original entry remains
         // unpatched and closes the installer-return race for fatal hooks.
         publisher(trampoline, publisherContext);
+    }
+
+    if (preparedHookIndex) {
+        *preparedHookIndex = g_hooks.size() - 1;
+        return true;
     }
 
     LogDirect("Patching target function with peer threads quiesced...");
@@ -611,6 +634,26 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
         return false;
     }
     return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
+}
+
+bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex) {
+    if (!hook || !hookIndex || !hook->outTrampoline || !hook->publisher) {
+        return false;
+    }
+    hook->installed = false;
+    *hook->outTrampoline = nullptr;
+    *hookIndex = static_cast<size_t>(-1);
+    for (const auto& installedHook : g_hooks) {
+        if (installedHook.target == hook->target && installedHook.detour == hook->detour &&
+            installedHook.installed && InstalledEntryBytesMatch(installedHook)) {
+            *hook->outTrampoline = installedHook.trampoline;
+            hook->publisher(installedHook.trampoline, hook->publisherContext);
+            hook->installed = true;
+            return true;
+        }
+    }
+    return InstallImpl(hook->target, hook->detour, hook->outTrampoline, hook->publisher,
+                       hook->publisherContext, true, hookIndex);
 }
 
 bool TryGetInstalledTrampoline(void* target, void* detour, void** outTrampoline) {

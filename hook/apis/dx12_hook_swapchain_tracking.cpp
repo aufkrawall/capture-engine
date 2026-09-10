@@ -418,7 +418,7 @@ if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DeepHookCreateSwapChainFor
 }
 
 // Skip side-effects for temp swapchains created during hook installation
-if (dx12_hook_g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
+if (DX12_IsInternalDXGISwapchainProbe()) {
     HookLog("DeepHook: Temp swapchain creation — passthrough (no tracking)");
     return dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 }

@@ -13,6 +13,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | --- | --- |
 | Policy (activation, feature/buffer maps, preference flags) | `hook/apis/streamline_bridge_policy.h` (unit-tested) |
 | Runtime (import takeover, fallback, 1.x quiesce) | `hook/apis/streamline_bridge.{h,cpp}` |
+| Core-export grouped hook publication | `hook/apis/streamline_inline_hook_batch.{h,cpp}` |
 | 2.x bring-up (load by full path, `slInit`, inventory) | `hook/apis/streamline_bridge_runtime.{h,cpp}` |
 | Native D3D12 device continuity | `hook/apis/streamline_bridge_device_cache.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
@@ -58,8 +59,9 @@ its D3D12 and DXGI entry points **from `sl.interposer.dll`**, not from Microsoft
 `sl.interposer.dll` imports neither. The only module that pulls `d3d12.dll` into the process
 is `sl.common.dll`, through its own import table - and that loads from inside `slInit`. CE's
 delayed-injection gate waits for `d3d12.dll`. So CE's arrival signal and the deadline it was
-being held to are *the same event*, with WMI notification (`WITHIN 0.5`), a 114 ms config
-reload and a ~380 ms remote-thread `LoadLibrary` stacked in between. Session
+being held to are *the same event*, with the then-current intrinsic WMI notification
+(`WITHIN 0.5`), a 114 ms config reload and a ~380 ms remote-thread `LoadLibrary` stacked in
+between. Session
 `20260821_151924` shows the losing end: `d3d12=1` on the very first poll, i.e. `slInit` had
 already run before CE was even notified the process existed.
 
@@ -76,6 +78,14 @@ Two things follow, and both were fixed:
    margin is not marginal: in the same session the 1.x core was resident by 15:18:12.3, its
    feature plugins did not load until 15:18:13.4-13.9, and the game's real swapchain was not
    created until **15:18:29.1** - sixteen seconds later.
+
+Current process discovery first requests event-driven `Win32_ProcessStartTrace`, but treats it as
+an optimization: access denial falls back to the intrinsic half-second query plus a catch-up scan.
+The target-config callback is installed before either subscription or scan begins. Streamline's
+correctness still rests on recoverable late takeover rather than assuming the event trace is
+available. Core exports that arrive together in one Streamline module are now prepared together and
+committed with one thread-quiescence transaction; unsafe individual targets retain the established
+independent fallback.
 
 So a late arrival now takes the imports over and shuts the game's 1.x runtime back down
 through the `slShutdown` slot it saved while repointing it, reaching the same end state from

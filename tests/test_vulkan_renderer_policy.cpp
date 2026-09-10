@@ -727,7 +727,7 @@ TEST(VulkanRendererPolicySourceTest, FifoIsAppliedBeforeStreamlineDlssgSeesSwapc
     EXPECT_NE(install.find("GetProcAddress(module, \"vkCreateSwapchainKHR\")"), std::string::npos);
     EXPECT_NE(install.find("ResolveVulkanFifoPresentModeOverride"), std::string::npos);
     EXPECT_NE(install.find("before Streamline DLSS-G hooks"), std::string::npos);
-    EXPECT_NE(install.find("InstallInlineHookOnce("), std::string::npos);
+    EXPECT_NE(install.find("coreHookBatch.Queue("), std::string::npos);
     EXPECT_NE(layer.find("modifiedCI.presentMode = desiredMode"), std::string::npos)
         << "the Streamline proxy hook and the downstream Vulkan layer are both required";
     EXPECT_NE(layer.find("driver returned: %d (presentMode=%d"), std::string::npos)

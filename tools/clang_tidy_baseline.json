@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 734,
+    "entries": 737,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -41,6 +41,7 @@
       "captureengine/injection_inject.cpp",
       "captureengine/injection_manager.cpp",
       "captureengine/injection_security.cpp",
+      "captureengine/injection_wmi_events.cpp",
       "captureengine/ipc.cpp",
       "captureengine/limiter_main.cpp",
       "captureengine/logger_service.cpp",
@@ -295,6 +296,7 @@
       "hook/apis/streamline_hook_startup.cpp",
       "hook/apis/streamline_hook_state.cpp",
       "hook/apis/streamline_hook_v1.cpp",
+      "hook/apis/streamline_inline_hook_batch.cpp",
       "hook/apis/streamline_v1_feature_probe.cpp",
       "hook/capture/shared_capture.cpp",
       "hook/capture/shared_capture_d3d12.cpp",
@@ -440,6 +442,7 @@
       "hook/wrappers/iat_hook.cpp",
       "hook/wrappers/iat_hook_init.cpp",
       "hook/wrappers/inline_hook.cpp",
+      "hook/wrappers/inline_hook_batch.cpp",
       "hook/wrappers/inline_hook_deep.cpp",
       "hook/wrappers/inline_hook_deep_remove.cpp",
       "hook/wrappers/inline_hook_lde.cpp",

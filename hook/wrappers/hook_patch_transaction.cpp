@@ -5,10 +5,19 @@
 
 namespace ce::hook_patch {
 
+ThreadQuiescence::ThreadQuiescence() {
+    Quiesce();
+}
+
 ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
     if (!patchAddress || patchSize == 0)
         return;
+    Quiesce();
+    if (ready_ && !IsRangeSafe(patchAddress, patchSize))
+        ready_ = false;
+}
 
+void ThreadQuiescence::Quiesce() {
     const DWORD processId = GetCurrentProcessId();
     const DWORD currentThreadId = GetCurrentThreadId();
     try {
@@ -49,7 +58,7 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
                     enumerationSucceeded = false;
                     break;
                 }
-                threads_.push_back({thread, entry.th32ThreadID, false});
+                threads_.push_back({thread, entry.th32ThreadID, false, 0, false});
             } while (Thread32Next(snapshot, &entry));
         }
         CloseHandle(snapshot);
@@ -76,8 +85,11 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
     if (!stableSnapshot)
         return;
 
-    const uintptr_t patchStart = reinterpret_cast<uintptr_t>(patchAddress);
-    for (const auto& thread : threads_) {
+    // A grouped transaction keeps every tracked thread suspended throughout,
+    // so its control context cannot change between related entry patches.
+    // Capture it once instead of issuing one GetThreadContext call per thread
+    // per target.
+    for (auto& thread : threads_) {
         if (!thread.handle)
             continue;
         CONTEXT context = {};
@@ -88,14 +100,27 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
             return;
         }
 #ifdef _WIN64
-        const uintptr_t instructionPointer = static_cast<uintptr_t>(context.Rip);
+        thread.instructionPointer = static_cast<uintptr_t>(context.Rip);
 #else
-        const uintptr_t instructionPointer = static_cast<uintptr_t>(context.Eip);
+        thread.instructionPointer = static_cast<uintptr_t>(context.Eip);
 #endif
-        if (IsInstructionPointerInsidePatchRange(instructionPointer, patchStart, patchSize))
-            return;
+        thread.contextCaptured = true;
     }
     ready_ = true;
+}
+
+bool ThreadQuiescence::IsRangeSafe(const void* patchAddress, size_t patchSize) const {
+    if (!ready_ || !patchAddress || patchSize == 0)
+        return false;
+
+    const uintptr_t patchStart = reinterpret_cast<uintptr_t>(patchAddress);
+    for (const auto& thread : threads_) {
+        if (!thread.contextCaptured)
+            continue;
+        if (IsInstructionPointerInsidePatchRange(thread.instructionPointer, patchStart, patchSize))
+            return false;
+    }
+    return true;
 }
 
 ThreadQuiescence::~ThreadQuiescence() {

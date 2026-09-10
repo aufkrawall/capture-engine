@@ -1,9 +1,11 @@
 #include "dlss_indicator_spoof.h"
 
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstring>
 #include <cwchar>
+#include <iterator>
 
 #include "../wrappers/inline_hook.h"
 #include "hook_common.h"
@@ -136,26 +138,65 @@ LSTATUS WINAPI DetourRegGetValueW(HKEY hkey, LPCWSTR lpSubKey, LPCWSTR lpValue, 
 // advapi32 stays as a fallback in case a host resolves the export elsewhere.
 constexpr const wchar_t* kRegistryHostModules[] = {L"kernelbase.dll", L"advapi32.dll"};
 
-// Publishes the trampoline before the target goes live so a concurrent registry
-// read from another thread can never observe a detour without an original.
-bool InstallOne(const char* exportName, void* detour, InlineHook::TrampolinePublisher publisher) {
-    for (const wchar_t* moduleName : kRegistryHostModules) {
+struct RegistryHookRequest {
+    const char* exportName = nullptr;
+    void* detour = nullptr;
+    InlineHook::TrampolinePublisher publisher = nullptr;
+    size_t nextModuleIndex = 0;
+    const wchar_t* selectedModule = nullptr;
+    void* target = nullptr;
+    void* trampoline = nullptr;
+};
+
+bool SelectNextTarget(RegistryHookRequest* request) {
+    if (!request) {
+        return false;
+    }
+    request->selectedModule = nullptr;
+    request->target = nullptr;
+    while (request->nextModuleIndex < std::size(kRegistryHostModules)) {
+        const wchar_t* moduleName = kRegistryHostModules[request->nextModuleIndex++];
         HMODULE module = GetModuleHandleW(moduleName);
         if (!module)
             module = LoadLibraryW(moduleName);
         if (!module)
             continue;
-        void* target = reinterpret_cast<void*>(GetProcAddress(module, exportName));
-        if (!target)
+        void* target = reinterpret_cast<void*>(GetProcAddress(module, request->exportName));
+        if (!target) {
             continue;
-        void* trampoline = nullptr;
-        if (InlineHook::InstallPublished(target, detour, &trampoline, publisher, nullptr)) {
-            HookLog("DLSS indicator: hooked %ls!%s at %p", moduleName, exportName, target);
+        }
+        request->selectedModule = moduleName;
+        request->target = target;
+        return true;
+    }
+    return false;
+}
+
+// The primary registry entry points are one logical feature. They are prepared
+// together and committed under one peer-thread quiescence; a rare unhookable
+// kernelbase target retains the historical advapi32 fallback independently.
+bool FinishRegistryHook(RegistryHookRequest* request, bool primaryInstalled) {
+    if (primaryInstalled) {
+        HookLog("DLSS indicator: hooked %ls!%s at %p", request->selectedModule, request->exportName,
+                request->target);
+        return true;
+    }
+    if (request->target) {
+        HookLogImportant("DLSS indicator: failed to hook %ls!%s at %p", request->selectedModule,
+                         request->exportName, request->target);
+    }
+    while (SelectNextTarget(request)) {
+        request->trampoline = nullptr;
+        if (InlineHook::InstallPublished(request->target, request->detour, &request->trampoline,
+                                         request->publisher, nullptr)) {
+            HookLog("DLSS indicator: hooked fallback %ls!%s at %p", request->selectedModule,
+                    request->exportName, request->target);
             return true;
         }
-        HookLogImportant("DLSS indicator: failed to hook %ls!%s at %p", moduleName, exportName, target);
+        HookLogImportant("DLSS indicator: failed to hook fallback %ls!%s at %p", request->selectedModule,
+                         request->exportName, request->target);
     }
-    HookLogImportant("DLSS indicator: no registry host module exposed a hookable %s", exportName);
+    HookLogImportant("DLSS indicator: no registry host module exposed a hookable %s", request->exportName);
     return false;
 }
 
@@ -230,11 +271,19 @@ bool Install(Mode mode) {
     // Arm the mode before the hooks go live so the first probe already sees it.
     g_mode.store(mode, std::memory_order_release);
 
-    const bool queryHooked =
-        InstallOne("RegQueryValueExW", reinterpret_cast<void*>(&DetourRegQueryValueExW),
-                   &PublishRegQueryValueExWTrampoline);
-    const bool getHooked =
-        InstallOne("RegGetValueW", reinterpret_cast<void*>(&DetourRegGetValueW), &PublishRegGetValueWTrampoline);
+    std::array<RegistryHookRequest, 2> requests = {{
+        {"RegQueryValueExW", reinterpret_cast<void*>(&DetourRegQueryValueExW),
+         &PublishRegQueryValueExWTrampoline},
+        {"RegGetValueW", reinterpret_cast<void*>(&DetourRegGetValueW), &PublishRegGetValueWTrampoline},
+    }};
+    std::array<InlineHook::PublishedHookSpec, 2> hooks = {};
+    for (size_t i = 0; i < requests.size(); ++i) {
+        SelectNextTarget(&requests[i]);
+        hooks[i] = {requests[i].target, requests[i].detour, &requests[i].trampoline, requests[i].publisher, nullptr};
+    }
+    InlineHook::InstallPublishedBatch(hooks.data(), hooks.size());
+    const bool queryHooked = FinishRegistryHook(&requests[0], hooks[0].installed);
+    const bool getHooked = FinishRegistryHook(&requests[1], hooks[1].installed);
 
     // nvngx_dlss.dll and nvngx_dlssg.dll read the value through RegQueryValueExW,
     // so that one is the load-bearing hook; RegGetValueW only widens coverage.

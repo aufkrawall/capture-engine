@@ -2,9 +2,14 @@
 
 bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     // Execute callback if set (e.g. to reload config for this specific process)
-    if (onInjectCallback) {
+    std::function<void(DWORD, const std::string&)> injectCallback;
+    {
+        std::lock_guard<std::mutex> lock(injectCallbackMutex);
+        injectCallback = onInjectCallback;
+    }
+    if (injectCallback) {
         LogInfo("[Inject] Executing pre-injection callback for %s", processName.c_str());
-        onInjectCallback(pid, processName);
+        injectCallback(pid, processName);
     }
 
     // Determine architecture - use RAII HandleGuard to prevent leaks

@@ -5,6 +5,7 @@ Last cross-checked: 2026-09-09
 Primary sources:
 - `captureengine/injection.cpp`
 - `captureengine/injection_manager.cpp`
+- `captureengine/injection_wmi_events.cpp`
 - `captureengine/injection_inject.cpp`
 - `captureengine/injection_policy.h`
 - `captureengine/inject_main.cpp`
@@ -23,9 +24,11 @@ Primary sources:
 - `hook/apis/dx12_sampler_hooks.cpp`
 - `hook/apis/dx12_device_creation_report.cpp`
 - `hook/apis/dx12_hook_hook_install.cpp`
+- `hook/apis/streamline_inline_hook_batch.{h,cpp}`
 - `hook/common/d3d12_device_creation_policy.h`
 - `hook/wrappers/wrapper_hooks.cpp`
 - `hook/wrappers/inline_hook.cpp`
+- `hook/wrappers/inline_hook_batch.cpp`
 - `tests/test_d3d12_device_creation_policy.cpp`
 - `tests/test_crash_handler.cpp`
 - `tests/test_shared_runtime_state.cpp`
@@ -40,6 +43,20 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 ## Facts
 - Host-side injection currently uses a delayed-injection thread instead of injecting blindly at process start.
 - The startup scan also discovers already-running whitelisted processes. It queues them through the same graphics-probe injection path, so starting CaptureEngine after a DirectX/OpenGL title is supported without changing the established game-start path.
+- **Process monitoring begins only after the pre-injection target callback exists.** The
+  `InjectionManager` constructor resolves its two DLL paths but does not subscribe or scan.
+  `inject_main` installs the callback that publishes the exact profile target and resolved config,
+  then calls `StartMonitoring`; a discovery callback can therefore never race ahead of target
+  publication. The direct suspended-launch helper intentionally constructs a manager without
+  monitoring because it invokes `InjectEarly` for one already-known PID.
+- **Process-start tracing is opportunistic, while discovery correctness retains a polling
+  fallback.** WMI first requests `Win32_ProcessStartTrace`, which has no intrinsic `WITHIN` sampling
+  interval. This account receives `WBEM_E_ACCESS_DENIED` (`0x80041003`), so the same sink then uses
+  `__InstanceCreationEvent WITHIN 0.5` and immediately scans to cover the handoff interval. An
+  asynchronous trace failure only queues that transition; `Update` performs the WMI call because
+  a sink callback must not call back into WMI. One atomic subscription state makes synchronous
+  failure, late completion, shutdown, and fallback activation mutually exclusive. Duplicate
+  scan/event notifications are coalesced per PID, and event logs include source plus process age.
 - **Vulkan late injection depends entirely on the implicit-layer registration being resident, because it cannot be repaired in-process.** The Vulkan loader composes a process's layer chain exactly once, inside `vkCreateInstance`, from `SOFTWARE\Khronos\Vulkan\ImplicitLayers` as it reads at that moment. CE's whole Vulkan present/overlay path lives in `VK_LAYER_CE_overlay.dll`, not in the injected hook DLL, so a title that started without the layer in its chain can never gain an overlay later no matter how the hook is injected. `captureengine/main_vulkan_residency.h` therefore registers at controller startup and **never unregisters**; there is deliberately no destructor, no `Unregister()`, and no `ApplyRegistrationPlan(plan, false)` on any controller teardown path (`tests/test_vulkan_layer_registration.cpp` asserts all of that). Until 0.1.6156 this was an `ScopedVulkanRegistration` RAII that unregistered on exit, which made Vulkan late injection structurally impossible: session `logs/20260818_224257` (Strange Brigade Vulkan started before CE) contains no `vulkan_layer*.log` at all because the layer DLL was never loaded, `vulkanLayerActive` never got set, and the hook fell through to the D3D path with no overlay.
 - **Discovery compatibility is judged on the compiled layout, never on build identity.** Residency makes the Vulkan layer the one CE component that is routinely a *different build* from the host that later wakes it, so `ValidateDiscoveryInfo` checks `DiscoveryInfo::abiSignature == SHARED_MEMORY_ABI_SIGNATURE`; `buildNumber` is diagnostics only. Until 0.1.6162 it required exact build equality, which stranded every resident layer as soon as CaptureEngine was rebuilt or updated while a Vulkan title was running: the layer could not read the whitelist, could not reach the host, and could not even resolve `logsPath` to say why, so the session contained no `vulkan_layer*.log` at all and looked identical to "the layer was never loaded" (session `logs/20260818_231619`, reproduced deliberately with host 6157 against a resident 6156 layer). The first 16 bytes of `DiscoveryInfo` (`injectPid`/`magic`/`buildNumber`/`abiSignature`) are a cross-build contract and their offsets are asserted; nothing past them may be parsed until the signature matches. `ComputeSharedMemoryAbiSignature` therefore also covers `sizeof(DiscoveryInfo)` and the `processWhitelist`/`logsPath` offsets. **Any semantic change to what these shared fields mean must bump `SHARED_MEMORY_VERSION`** — which renames every mapping and event — because the build number no longer keeps incompatible builds apart.
 - **The selected profile target is published before injection.** `DiscoveryInfo::profileTargetPid` is distinct from hook-owned `sourcePid`: the former identifies the exact PID whose profile the host selected in the pre-injection callback, while the latter proves remote `LoadLibrary` completed and the hook connected. A non-whitelisted direct child Vulkan renderer may inherit only when its parent PID equals one of those published identities and the parent executable still exactly matches the discovery whitelist. This closes split-renderer startup without a polling delay or executable-specific bridge rule. The field was added with shared-memory version 46 because the discovery layout is part of the compiled ABI.
@@ -76,7 +93,28 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   selection. The factory is intercepted before it reaches the application, and
   `ID3D12DeviceFactory::CreateDevice` marks definitive device evidence before any device-vtable
   work. This prevents unrelated OpenGL entry patches from quiescing the renderer during a late
-  D3D12/FSR startup without making plain runtime presence authoritative.
+  D3D12/FSR startup without making plain runtime presence authoritative. This is still a useful
+  optimization, but build 0.1.6515's `20260909_063715` second launch proved it was not sufficient:
+  CE's remaining synthetic hardware bootstrap and other process-wide hook transactions still
+  overlapped D3D12/FFX startup.
+- **The temporary Present/ECL discovery stack is software-only and thread-local.**
+  `DX12_InstallHooksViaTempSwapchain` obtains WARP with `IDXGIFactory4::EnumWarpAdapter`, passes that
+  adapter to `D3D12CreateDevice`, and has no hardware-adapter fallback. It bypasses existing foreign
+  factory/device entry jumps; inability to construct the bypass rejects only this synthetic route.
+  The thread-local internal-probe scope excludes its device/factory/swapchain callbacks from
+  application D3D12 evidence, device sampler hooks, Present-hook recursion, and queue/swapchain
+  tracking. The removed process-global flag could hide a real game swapchain created concurrently.
+  A standalone same-process probe found identical ECL, Present, and Present1 method addresses on
+  WARP and hardware, so hook discovery does not need a vendor UMD device.
+- **Related inline entry patches share one short quiescence.** `InstallPublishedBatch` performs
+  instruction decoding, trampoline allocation, RX/CFG finalization, logging, and callable-original
+  publication while peers run. It then takes one stable thread snapshot, exact-range checks every
+  candidate, and commits only unchanged original bytes. Unsafe candidates retry through the normal
+  per-target transaction after resume. Fatal hooks, OpenGL swap exports, DXGI Present/Present1,
+  DLSS registry probes, Streamline core exports per module, and NGX core exports use this path.
+  NGX aliases publish every predecessor atomically before the shared entry becomes live. Existing
+  foreign E9/FF25 chain rules, retained published trampolines, CFG policy, and independent fallback
+  coverage are unchanged.
 - **Configured runtime preloads retain their original position and semantics; continuous module
   observation precedes optional diagnostics.** `PreloadConfiguredGraphicsRuntimeDlls` explicitly
   notifies the feature hooks. The `LdrLoadDll` observer is armed immediately afterwards and before
@@ -141,8 +179,16 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - Inline-hook trampolines in a CFG-enabled x64 host begin on a `PAGE_TARGETS_INVALID` page, are built without write/execute overlap, sealed RX with `PAGE_TARGETS_NO_UPDATE`, and register only their aligned entrypoint. MinGW's Kernel32 import library lacks `SetProcessValidCallTargets`, so the exact export is resolved from already-loaded KernelBase/Kernel32 and invoked through one x64 `guard(nocf)` bootstrap wrapper. Do not turn that into a general unchecked-call helper or widen its use: the exception exists only because a normal dynamically resolved call is CFG-checked before it can register the new target. Session `20260716_013421` and a debugger reproduction proved the old indirect call fast-failed with subcode 10 in `InlineHook::FinalizeExecutableTrampoline` before hook initialization.
 - Windows export suppression also makes some dynamically resolved system exports invalid guarded indirect-call targets even when their address is genuine. `IATHook::DetourGetProcAddress` therefore reaches the real API through the hook DLL's deliberately unpatched static `GetProcAddress` import, never a cached self-resolved function pointer. Supplied session `20260716_021732` and CDB sessions `20260716_022257`/`20260716_022313` put the resulting `FAST_FAIL_GUARD_ICALL_CHECK_FAILURE` in the old detour call while NVIDIA and Vulkan components initialized.
 - Fatal-dump hook bootstrap is transactional with respect to callable originals: each surviving termination/fail-fast trampoline is atomically published before its inline target patch becomes live and before any IAT route can reach it. Fatal IAT patching is limited to application modules; modules anywhere under the Windows directory retain their original imports so forwarded system implementations cannot recurse through CE. Fallback calls use the hook DLL's own unpatched static Kernel32/ntdll imports, including a direct static `RtlExitUserProcess` fallback rather than the recursively equivalent `ExitProcess`. The bootstrap never publishes a raw dynamically resolved OS export as a callable original. Live exception-raising primitives (`RaiseException`, `RtlRaiseException`, `RtlRaiseStatus`, and `Nt`/`ZwRaiseException`) remain byte-identical to avoid a process-wide patch race; VEH plus application-import/dynamic interception retain diagnostic coverage. CDB sessions `20260716_023403`/`20260716_023432` proved the old ordering could route `OutputDebugStringA` through a suppressed exception export and fast-fail; all seven dumps in supplied session `20260716_025345` proved the old Rtl fallback recursively re-entered normal shutdown until `0xC00000FD`.
-- **A failing `D3D12CreateDevice` gets a report, not a repeated HRESULT.** `hook/common/d3d12_device_creation_policy.h` classifies and `hook/apis/dx12_device_creation_report.cpp` gathers: entry bytes plus jump-target owning module for `D3D12CreateDevice`, `D3D12GetInterface`, `D3D12EnableExperimentalFeatures`, `CreateDXGIFactory1`, `CreateDXGIFactory2`; the loaded `D3D12Core.dll` path and any Agility SDK the host exe declares; the non-Windows modules in the process; an adapter x feature-level matrix; the failing call repeated past a foreign entry patch when one exists; and a verdict. The matrix probes with a **null `ppDevice`**, which makes D3D12 answer `S_FALSE` without building a device, so the report costs no driver load per cell. The D3D11 cross-check runs only after D3D12 has already refused every hardware adapter, because that is the only case where its answer changes the verdict — DXGI describing a hardware adapter that both D3D11 and D3D12 refuse is `DisplayDriverRefusesThisProcess`, a per-application driver decision no application or overlay can work around (The Witcher 3, 2026-08-20: the NVIDIA driver refuses any process named `witcher3.exe`; see `log/recent.md`). A foreign entry patch is only *blamed* when the bypass succeeds where the patched entry failed; both failing proves the patch innocent.
-- **Terminal device-creation failures are retried three times, then abandoned.** `DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SDK_COMPONENT_MISSING`, `E_NOINTERFACE` and `E_INVALIDARG` describe a decision, not a moment; nothing later in the process turns them into success. Session `20260820_211008` paid ~48 ms and one `nvldumdx.dll` map/unmap per attempt, thirty times in five seconds, inside the game's startup. Transient failures (`DXGI_ERROR_DEVICE_REMOVED` and anything else) still retry without limit.
+- **Hardware device-creation forensics are separate from the synthetic bootstrap.** The retained
+  `ReportDeviceCreationFailure` helper can gather entry bytes/owners, Agility provenance, foreign
+  modules, a null-output adapter/feature-level matrix, foreign-entry bypass comparison, and a
+  conditional D3D11 cross-check without creating one hardware device per matrix cell. The WARP temp
+  route deliberately never invokes that report because its hardware matrix would re-enter vendor
+  initialization during the window this fix isolates.
+- **Terminal WARP bootstrap failures are retried three times, then abandoned.**
+  `DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SDK_COMPONENT_MISSING`, `E_NOINTERFACE`, and `E_INVALIDARG`
+  describe a stable result. Transient failures such as `DXGI_ERROR_DEVICE_REMOVED` remain eligible
+  for later recovery. There is no hardware fallback after the WARP budget.
 
 ## Working Guidance
 - For DX12 games, prefer bootstrap-aware injection over eager process-start injection.
@@ -157,7 +203,9 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - Preserve the one-call CFG registration bootstrap boundary when changing trampoline allocation or API resolution. The host CFG policy and the hook DLL's own CFG instrumentation must remain enabled; never solve a bootstrap failure by disabling x64 test-app CFG or marking whole trampoline pages valid.
 - Preserve static-import fallbacks, publish every callable trampoline before activating its inline patch, and only then patch application-module imports to its hook. Do not patch Windows-directory module imports, translate the Rtl exit fallback into `ExitProcess`, cache dynamically resolved Kernel32/ntdll exports for guarded indirect calls, or inline-patch live exception-dispatch primitives during process-wide bootstrap.
 - Do not treat the current polling sleeps as permission to add more timing bandaids. Existing polling is part of bootstrap orchestration; it is not a general-purpose fix for overlay or FG correctness bugs.
-- When D3D12 device creation fails, read the `DX12 device-creation report:` block before suspecting CE. It names the entry-patch owner, the per-adapter feature-level answers, and whether the display driver is refusing the process outright. If the verdict is `DisplayDriverRefusesThisProcess`, reproduce it with a trivial probe binary renamed to the game's executable: a per-application driver refusal follows the name, not the code.
+- When an explicit hardware-failure call site emits a `DX12 device-creation report:` block, use its
+  entry-owner and adapter evidence before attributing the failure. Absence of that optional report is
+  not evidence that the WARP bootstrap attempted hardware creation.
 - Do not re-add an unbounded retry around device creation. If a new failure mode genuinely needs retrying, classify its HRESULT in `IsTerminalCreationFailure` instead of widening the budget.
 
 ## Open Questions / Stale-Risk

@@ -535,7 +535,6 @@ extern ID3D12CommandQueue* dx12_hook_g_SwapchainQueue;
 extern ULONGLONG dx12_hook_g_SwapchainQueueCaptureTime;
 extern bool dx12_hook_g_FGRuntimeOwnsSwapchain;
 extern ULONGLONG dx12_hook_g_FGRuntimeOwnsSwapchainSince;
-extern std::atomic<bool> dx12_hook_g_CreatingTempSwapchain;
 // Set when DX12Hook::Init skipped the eager temp swapchain because a
 // third-party overlay owned the creation path before the game's first real
 // D3D12 device. The deferred install then has to honour the same condition

@@ -290,7 +290,7 @@ TEST(DXGISharedSourceTest, BelowChainViewFallsBackToThePrependOnlyAgainstASingle
     const size_t revert =
         install.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(false", fallbackDecision);
     ASSERT_NE(revert, std::string::npos);
-    const size_t prependInstall = install.find("InlineHook::InstallPublished(presentAddr", revert);
+    const size_t prependInstall = install.find("InlineHook::InstallPublishedBatch", revert);
     ASSERT_NE(prependInstall, std::string::npos);
     EXPECT_NE(install.find("dxgi_shared_oPresent = previousPresent;", revert), std::string::npos);
     EXPECT_LT(install.find("dxgi_shared_oPresent = previousPresent;", revert), prependInstall);

@@ -157,6 +157,7 @@ bool InjectionManager::IsAlreadyPendingLocked(DWORD pid) {
 }
 
 void InjectionManager::Update() {
+    ServiceWmiFallbackRequest();
     std::lock_guard<std::mutex> lock(injectMutex);
 
     // A co-injected process can hold the loader lock for longer than the normal
@@ -247,6 +248,72 @@ void InjectionManager::Update() {
 }
 
 // WMI Implementation
+HRESULT InjectionManager::StartPolledWmiFallback(HRESULT reason, const char* failurePhase) {
+    if (!pSvc || !pStubSink) {
+        return E_POINTER;
+    }
+    const BstrGuard queryLanguage(L"WQL");
+    const BstrGuard fallbackQuery(ce::injection_policy::kPolledProcessStartFallbackQuery);
+    if (!queryLanguage.valid() || !fallbackQuery.valid()) {
+        return E_OUTOFMEMORY;
+    }
+
+    LogWarn(
+        "[Inject] Event-driven Win32_ProcessStartTrace subscription failed %s (hr=0x%08lX); falling back to the "
+        "0.5-second intrinsic process poll",
+        failurePhase ? failurePhase : "", static_cast<unsigned long>(reason));
+    const HRESULT fallbackHr =
+        pSvc->ExecNotificationQueryAsync(queryLanguage, fallbackQuery, WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
+    if (SUCCEEDED(fallbackHr)) {
+        LogInfo("[Inject] WMI intrinsic process-poll fallback is active");
+    }
+    return fallbackHr;
+}
+
+bool InjectionManager::RequestWmiFallback(HRESULT reason) {
+    // Publish the reason before the state transition. The state CAS is the
+    // ownership hand-off to Update(); unlike a separate armed/requested pair,
+    // it cannot be overtaken by a synchronous query failure and publish a late
+    // duplicate request after the fallback is already active.
+    wmiFallbackReason.store(reason, std::memory_order_relaxed);
+    WmiSubscriptionState state = wmiSubscriptionState.load(std::memory_order_acquire);
+    while (state == WmiSubscriptionState::kRealtimeSubscribing ||
+           state == WmiSubscriptionState::kRealtimeActive) {
+        if (wmiSubscriptionState.compare_exchange_weak(state, WmiSubscriptionState::kFallbackRequested,
+                                                       std::memory_order_release,
+                                                       std::memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void InjectionManager::ServiceWmiFallbackRequest() {
+    WmiSubscriptionState expected = WmiSubscriptionState::kFallbackRequested;
+    if (!wmiSubscriptionState.compare_exchange_strong(expected, WmiSubscriptionState::kFallbackActive,
+                                                      std::memory_order_acq_rel,
+                                                      std::memory_order_acquire)) {
+        return;
+    }
+    if (IsShuttingDown()) {
+        wmiSubscriptionState.store(WmiSubscriptionState::kStopped, std::memory_order_release);
+        return;
+    }
+    const HRESULT reason = wmiFallbackReason.load(std::memory_order_relaxed);
+    const HRESULT fallbackHr = StartPolledWmiFallback(reason, "asynchronously");
+    if (FAILED(fallbackHr)) {
+        wmiSubscriptionState.store(WmiSubscriptionState::kStopped, std::memory_order_release);
+        LogError("[Inject] Asynchronous WMI process-start fallback failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(fallbackHr));
+        return;
+    }
+
+    // Cover the interval between the failed trace subscription and owner-thread
+    // fallback activation without delaying callback return or relying on
+    // another process event.
+    ScanExistingProcesses();
+}
+
 bool InjectionManager::InitializeWMI() {
     HRESULT hres;
     const int64_t initStartUs = Log_GetQpcUs();
@@ -387,20 +454,59 @@ bool InjectionManager::InitializeWMI() {
     }
     sinkSetupUs = Log_GetQpcUs() - phaseStartUs;
 
-    // Exec Notification Query
-    // Use WITHIN 0.5 to reduce idle WMI churn while still reacting to launches
-    // within half a second.
+    // Prefer the event-driven process trace. The intrinsic creation query below
+    // samples Win32_Process and can arrive up to half a second after the process
+    // has already entered graphics initialization.
     phaseStartUs = Log_GetQpcUs();
     const BstrGuard queryLanguage(L"WQL");
-    const BstrGuard queryText(
-        L"SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
-        L"TargetInstance ISA 'Win32_Process'");
-    if (!queryLanguage.valid() || !queryText.valid()) {
+    const BstrGuard realtimeQuery(ce::injection_policy::kRealtimeProcessStartQuery);
+    if (!queryLanguage.valid() || !realtimeQuery.valid()) {
         LogError("Failed to allocate WMI query BSTR");
         return false;
     }
 
-    hres = pSvc->ExecNotificationQueryAsync(queryLanguage, queryText, WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
+    wmiSubscriptionState.store(WmiSubscriptionState::kRealtimeSubscribing, std::memory_order_release);
+    const HRESULT realtimeHr =
+        pSvc->ExecNotificationQueryAsync(queryLanguage, realtimeQuery, WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
+    hres = realtimeHr;
+    const char* notificationMode = "Win32_ProcessStartTrace";
+    bool startFallbackNow = false;
+    HRESULT fallbackReason = realtimeHr;
+    if (FAILED(realtimeHr)) {
+        // Claim either the still-subscribing state or a callback's already
+        // queued transition in one CAS loop. Once kFallbackActive is visible,
+        // a late SetStatus cannot queue the same replacement a second time.
+        wmiFallbackReason.store(realtimeHr, std::memory_order_relaxed);
+        WmiSubscriptionState state = wmiSubscriptionState.load(std::memory_order_acquire);
+        while (state == WmiSubscriptionState::kRealtimeSubscribing ||
+               state == WmiSubscriptionState::kFallbackRequested) {
+            if (wmiSubscriptionState.compare_exchange_weak(state, WmiSubscriptionState::kFallbackActive,
+                                                           std::memory_order_acq_rel,
+                                                           std::memory_order_acquire)) {
+                startFallbackNow = true;
+                break;
+            }
+        }
+    } else {
+        WmiSubscriptionState expected = WmiSubscriptionState::kRealtimeSubscribing;
+        if (!wmiSubscriptionState.compare_exchange_strong(expected, WmiSubscriptionState::kRealtimeActive,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_acquire) &&
+            expected == WmiSubscriptionState::kFallbackRequested) {
+            fallbackReason = wmiFallbackReason.load(std::memory_order_relaxed);
+            WmiSubscriptionState pending = WmiSubscriptionState::kFallbackRequested;
+            startFallbackNow = wmiSubscriptionState.compare_exchange_strong(
+                pending, WmiSubscriptionState::kFallbackActive, std::memory_order_acq_rel,
+                std::memory_order_acquire);
+        }
+    }
+    if (startFallbackNow) {
+        hres = StartPolledWmiFallback(fallbackReason, "immediately");
+        notificationMode = "__InstanceCreationEvent fallback";
+        if (FAILED(hres)) {
+            wmiSubscriptionState.store(WmiSubscriptionState::kStopped, std::memory_order_release);
+        }
+    }
     notificationUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
@@ -413,11 +519,12 @@ bool InjectionManager::InitializeWMI() {
     LogInfo(
         "[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
         "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
-        "NotificationQuery=%.3f ms, total=%.3f ms",
+        "NotificationQuery=%.3f ms, mode=%s, total=%.3f ms",
         QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
         QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
+        notificationMode,
         QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
-    LogInfo("WMI Event Sink Initialized");
+    LogInfo("WMI Event Sink Initialized (%s)", notificationMode);
     return true;
 }
 
@@ -426,6 +533,7 @@ void InjectionManager::ShutdownWMI() {
     // not entered yet and synchronously drains callbacks already using the raw
     // manager pointer; CancelAsyncCall itself does not wait for client callback
     // responses.
+    wmiSubscriptionState.store(WmiSubscriptionState::kStopped, std::memory_order_release);
     if (pSink) {
         pSink->MarkDoneAndDrain();
     }
@@ -463,129 +571,6 @@ void InjectionManager::ShutdownWMI() {
     }
 }
 
-ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::AddRef() {
-    return InterlockedIncrement(&m_lRef);
-}
-
-ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Release() {
-    LONG lRef = InterlockedDecrement(&m_lRef);
-    if (lRef == 0)
-        delete this;
-    return lRef;
-}
-
-HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::QueryInterface(REFIID riid, void** ppv) {
-    if (!ppv) {
-        return E_POINTER;
-    }
-    *ppv = nullptr;
-    if (riid == IID_IUnknown || riid == IID_IWbemObjectSink) {
-        *ppv = (IWbemObjectSink*)this;
-        AddRef();
-        return WBEM_S_NO_ERROR;
-    }
-    return E_NOINTERFACE;
-}
-
-bool InjectionManager::ProcessEventSink::EnterCallback() {
-    std::lock_guard<std::mutex> lock(callbackMutex);
-    if (bDone || !pManager) {
-        return false;
-    }
-    ++activeCallbacks;
-    return true;
-}
-
-void InjectionManager::ProcessEventSink::LeaveCallback() {
-    std::lock_guard<std::mutex> lock(callbackMutex);
-    if (activeCallbacks > 0) {
-        --activeCallbacks;
-    }
-    if (activeCallbacks == 0) {
-        callbacksDrained.notify_all();
-    }
-}
-
-void InjectionManager::ProcessEventSink::MarkDoneAndDrain() {
-    std::unique_lock<std::mutex> lock(callbackMutex);
-    bDone = true;
-    callbacksDrained.wait(lock, [this]() { return activeCallbacks == 0; });
-    pManager = nullptr;
-}
-
-HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObjectCount, IWbemClassObject __RPC_FAR *
-                                                                                              __RPC_FAR * apObjArray) {
-    if (!EnterCallback()) {
-        return WBEM_S_NO_ERROR;
-    }
-    CE_SCOPE_EXIT(LeaveCallback());
-
-    // Exception handling: WMI callbacks can throw COM exceptions
-    // Catching them prevents crashes and allows graceful degradation
-    try {
-        if (!pManager)
-            return WBEM_S_NO_ERROR;
-
-        for (int i = 0; i < lObjectCount; i++) {
-            IWbemClassObject* pObj = apObjArray[i];
-
-            // Get TargetInstance
-            _variant_t vTarget;
-            if (FAILED(pObj->Get(L"TargetInstance", 0, &vTarget, NULL, NULL)))
-                continue;
-
-            IUnknown* pUnk = vTarget;
-            IWbemClassObject* pTargetCase = nullptr;
-            if (FAILED(pUnk->QueryInterface(IID_IWbemClassObject, (void**)&pTargetCase)))
-                continue;
-
-            struct TargetCaseGuard {
-                IWbemClassObject* obj;
-                ~TargetCaseGuard() {
-                    if (obj)
-                        obj->Release();
-                }
-            } guard{pTargetCase};
-
-            // Get Name
-            _variant_t vName;
-            pTargetCase->Get(L"Name", 0, &vName, NULL, NULL);
-
-            // Get PID
-            _variant_t vPid;
-            pTargetCase->Get(L"ProcessId", 0, &vPid, NULL, NULL);
-
-            if (vName.vt == VT_BSTR && vPid.vt == VT_I4) {
-                std::wstring wName = vName.bstrVal;
-                std::string name(wName.begin(), wName.end());
-                DWORD pid = vPid.intVal;
-
-                // Check whitelist (thread-safe? IsWhitelisted reads config which is
-                // const, so yes)
-                if (pManager->IsWhitelisted(name)) {
-                    pManager->LaunchDelayedInjectionThread(pid, name, "WMI");
-                }
-            }
-        }
-    } catch (const _com_error& e) {
-        // COM exception - log and continue gracefully
-        LogError("WMI Indicate: COM exception 0x%lX: %s", (unsigned long)e.Error(), e.ErrorMessage());
-    } catch (const std::exception& e) {
-        // Standard exception
-        LogError("WMI Indicate: Exception: %s", e.what());
-    } catch (...) {
-        // Unknown exception
-        LogError("WMI Indicate: Unknown exception caught");
-    }
-
-    return WBEM_S_NO_ERROR;
-}
-
-HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG lFlags, HRESULT hResult, BSTR strParam,
-                                                                        IWbemClassObject __RPC_FAR* pObjParam) {
-    return WBEM_S_NO_ERROR;
-}
-
 bool InjectionManager::IsRecentlyFailed(DWORD pid) {
     std::lock_guard<std::mutex> lock(injectMutex);
     return IsRecentlyFailedLocked(pid);
@@ -617,10 +602,19 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                 name.c_str(), static_cast<unsigned long>(pid));
         return;
     }
+    if (!delayedInjectionPids.insert(pid).second) {
+        LogInfo("[%s] Injection worker already active for %s (PID: %lu); coalescing duplicate discovery",
+                source.c_str(), name.c_str(), static_cast<unsigned long>(pid));
+        return;
+    }
 
     try {
         // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below
         delayedInjectionThreads.emplace_back([this, pid, name, source]() {
+            CE_SCOPE_EXIT({
+                std::lock_guard<std::mutex> completedLock(threadListMutex);
+                delayedInjectionPids.erase(pid);
+            });
             try {
                 LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...",
                         source.c_str(), name.c_str(), (unsigned long)pid);
@@ -729,6 +723,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
             }
         });
     } catch (const std::system_error& error) {
+        delayedInjectionPids.erase(pid);
         LogError("[%s] Failed to create delayed injection thread for %s (PID: %lu): %s", source.c_str(), name.c_str(),
                  static_cast<unsigned long>(pid), error.what());
     }

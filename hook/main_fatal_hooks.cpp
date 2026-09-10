@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include <array>
+
 bool ShouldCaptureExplicitFatalRaise(DWORD code) {
   return code == ce::crash_dump_policy::kFailFastExceptionExitCode || code == EXCEPTION_STACK_OVERFLOW ||
          code == EXCEPTION_ILLEGAL_INSTRUCTION;
@@ -300,70 +302,130 @@ void TryInstallFatalTerminationDumpHooks() {
       }
     };
 
-    std::vector<void*> inlineHookTargets;
-    auto installInlineHook = [&patchedAny, &inlineHookTargets](const char* moduleName, const char* functionName,
-                                                               void* hookFunction,
-                                                               InlineHook::TrampolinePublisher publisher,
-                                                               void* publisherContext) -> void* {
-      void* target = ResolveModuleExport(moduleName, functionName);
-      if (!target || target == hookFunction) {
-        return nullptr;
-      }
-      if (std::find(inlineHookTargets.begin(), inlineHookTargets.end(), target) != inlineHookTargets.end()) {
-        return nullptr;
-      }
-
+    struct FatalInlineHookRequest {
+      const char* moduleName;
+      const char* functionName;
+      const char* fallbackModuleName;
+      const char* fallbackFunctionName;
+      void* hookFunction;
+      InlineHook::TrampolinePublisher publisher;
+      void* publisherContext;
+      const char* selectedModuleName = nullptr;
+      const char* selectedFunctionName = nullptr;
+      void* target = nullptr;
       void* trampoline = nullptr;
-      if (!InlineHook::InstallPublished(target, hookFunction, &trampoline, publisher, publisherContext)) {
-        HookLog("FatalExitDump: Inline pre-termination hook failed for %s!%s at %p", moduleName, functionName,
-                target);
-        return nullptr;
+      size_t batchIndex = 0;
+      bool queued = false;
+      bool selectedFallback = false;
+    };
+    std::array<FatalInlineHookRequest, 10> requests = {{
+        {"KERNELBASE.dll", "RaiseFailFastException", "kernel32.dll", "RaiseFailFastException",
+         reinterpret_cast<void*>(&HookedRaiseFailFastException),
+         &PublishFatalHookTrampoline<RaiseFailFastException_t>, &g_OriginalRaiseFailFastException},
+        {"KERNELBASE.dll", "TerminateProcess", "kernel32.dll", "TerminateProcess",
+         reinterpret_cast<void*>(&HookedTerminateProcess), &PublishFatalHookTrampoline<TerminateProcess_t>,
+         &g_OriginalTerminateProcess},
+        {"KERNELBASE.dll", "ExitProcess", "kernel32.dll", "ExitProcess",
+         reinterpret_cast<void*>(&HookedExitProcess), &PublishFatalHookTrampoline<ExitProcess_t>,
+         &g_OriginalExitProcess},
+        {"ntdll.dll", "RtlExitUserProcess", nullptr, nullptr, reinterpret_cast<void*>(&HookedRtlExitUserProcess),
+         &PublishFatalHookTrampoline<RtlExitUserProcess_t>, &g_OriginalRtlExitUserProcess},
+        {"ntdll.dll", "NtTerminateProcess", "ntdll.dll", "ZwTerminateProcess",
+         reinterpret_cast<void*>(&HookedNtTerminateProcess), &PublishFatalHookTrampoline<NtTerminateProcess_t>,
+         &g_OriginalNtTerminateProcess},
+        {"ucrtbase.dll", "_invalid_parameter_noinfo_noreturn", nullptr, nullptr,
+         reinterpret_cast<void*>(&HookedInvalidParameterNoInfoNoReturn),
+         &PublishFatalHookTrampoline<InvalidParameterNoInfoNoReturn_t>,
+         &g_OriginalInvalidParameterNoInfoNoReturn},
+        {"ucrtbase.dll", "_invoke_watson", nullptr, nullptr, reinterpret_cast<void*>(&HookedInvokeWatson),
+         &PublishFatalHookTrampoline<InvokeWatson_t>, &g_OriginalInvokeWatson},
+        {"ucrtbase.dll", "abort", nullptr, nullptr, reinterpret_cast<void*>(&HookedAbort),
+         &PublishFatalHookTrampoline<Abort_t>, &g_OriginalAbort},
+        {"ucrtbase.dll", "terminate", nullptr, nullptr, reinterpret_cast<void*>(&HookedTerminate),
+         &PublishFatalHookTrampoline<Terminate_t>, &g_OriginalTerminate},
+        {"ucrtbase.dll", "_purecall", nullptr, nullptr, reinterpret_cast<void*>(&HookedPurecall),
+         &PublishFatalHookTrampoline<Purecall_t>, &g_OriginalPurecall},
+    }};
+
+    std::array<InlineHook::PublishedHookSpec, 10> inlineHooks = {};
+    std::array<size_t, 10> requestForBatchEntry = {};
+    size_t batchEntryCount = 0;
+    for (size_t requestIndex = 0; requestIndex < requests.size(); ++requestIndex) {
+      auto& request = requests[requestIndex];
+      request.selectedModuleName = request.moduleName;
+      request.selectedFunctionName = request.functionName;
+      request.target = ResolveModuleExport(request.moduleName, request.functionName);
+      if ((!request.target || request.target == request.hookFunction) && request.fallbackModuleName) {
+        request.selectedModuleName = request.fallbackModuleName;
+        request.selectedFunctionName = request.fallbackFunctionName;
+        request.target = ResolveModuleExport(request.fallbackModuleName, request.fallbackFunctionName);
+        request.selectedFallback = true;
+      }
+      if (!request.target || request.target == request.hookFunction) {
+        continue;
       }
 
-      inlineHookTargets.push_back(target);
+      bool duplicateTarget = false;
+      for (size_t earlierIndex = 0; earlierIndex < requestIndex; ++earlierIndex) {
+        if (requests[earlierIndex].queued && requests[earlierIndex].target == request.target) {
+          duplicateTarget = true;
+          break;
+        }
+      }
+      if (duplicateTarget) {
+        continue;
+      }
+
+      request.batchIndex = batchEntryCount;
+      request.queued = true;
+      requestForBatchEntry[batchEntryCount] = requestIndex;
+      inlineHooks[batchEntryCount] = {request.target, request.hookFunction, &request.trampoline,
+                                      request.publisher, request.publisherContext};
+      ++batchEntryCount;
+    }
+
+    InlineHook::InstallPublishedBatch(inlineHooks.data(), batchEntryCount);
+    std::vector<void*> inlineHookTargets;
+    for (size_t batchIndex = 0; batchIndex < batchEntryCount; ++batchIndex) {
+      auto& request = requests[requestForBatchEntry[batchIndex]];
+      if (!inlineHooks[batchIndex].installed) {
+        HookLog("FatalExitDump: Inline pre-termination hook failed for %s!%s at %p",
+                request.selectedModuleName, request.selectedFunctionName, request.target);
+        continue;
+      }
+      inlineHookTargets.push_back(request.target);
       patchedAny = true;
       HookLogImportant("FatalExitDump: Installed inline pre-termination hook for %s!%s at %p (trampoline=%p)",
-                       moduleName, functionName, target, trampoline);
-      return trampoline;
-    };
+                       request.selectedModuleName, request.selectedFunctionName, request.target,
+                       request.trampoline);
+    }
 
-    if (!installInlineHook("KERNELBASE.dll", "RaiseFailFastException",
-                           reinterpret_cast<void*>(&HookedRaiseFailFastException),
-                           &PublishFatalHookTrampoline<RaiseFailFastException_t>,
-                           &g_OriginalRaiseFailFastException)) {
-      installInlineHook("kernel32.dll", "RaiseFailFastException",
-                        reinterpret_cast<void*>(&HookedRaiseFailFastException),
-                        &PublishFatalHookTrampoline<RaiseFailFastException_t>, &g_OriginalRaiseFailFastException);
+    // Preserve the established export fallback on the rare preparation or
+    // exact-byte commit failure. The common path above still quiesces peers
+    // only once for the complete fatal-hook family.
+    for (auto& request : requests) {
+      if (!request.queued || inlineHooks[request.batchIndex].installed || !request.fallbackModuleName ||
+          request.selectedFallback) {
+        continue;
+      }
+      void* fallbackTarget = ResolveModuleExport(request.fallbackModuleName, request.fallbackFunctionName);
+      if (!fallbackTarget || fallbackTarget == request.target || fallbackTarget == request.hookFunction ||
+          std::find(inlineHookTargets.begin(), inlineHookTargets.end(), fallbackTarget) != inlineHookTargets.end()) {
+        continue;
+      }
+      request.trampoline = nullptr;
+      if (!InlineHook::InstallPublished(fallbackTarget, request.hookFunction, &request.trampoline,
+                                        request.publisher, request.publisherContext)) {
+        HookLog("FatalExitDump: Inline fallback hook failed for %s!%s at %p", request.fallbackModuleName,
+                request.fallbackFunctionName, fallbackTarget);
+        continue;
+      }
+      inlineHookTargets.push_back(fallbackTarget);
+      patchedAny = true;
+      HookLogImportant("FatalExitDump: Installed inline fallback hook for %s!%s at %p (trampoline=%p)",
+                       request.fallbackModuleName, request.fallbackFunctionName, fallbackTarget,
+                       request.trampoline);
     }
-    if (!installInlineHook("KERNELBASE.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess),
-                           &PublishFatalHookTrampoline<TerminateProcess_t>, &g_OriginalTerminateProcess)) {
-      installInlineHook("kernel32.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess),
-                        &PublishFatalHookTrampoline<TerminateProcess_t>, &g_OriginalTerminateProcess);
-    }
-    if (!installInlineHook("KERNELBASE.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
-                           &PublishFatalHookTrampoline<ExitProcess_t>, &g_OriginalExitProcess)) {
-      installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
-                        &PublishFatalHookTrampoline<ExitProcess_t>, &g_OriginalExitProcess);
-    }
-    installInlineHook("ntdll.dll", "RtlExitUserProcess", reinterpret_cast<void*>(&HookedRtlExitUserProcess),
-                      &PublishFatalHookTrampoline<RtlExitUserProcess_t>, &g_OriginalRtlExitUserProcess);
-    if (!installInlineHook("ntdll.dll", "NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess),
-                           &PublishFatalHookTrampoline<NtTerminateProcess_t>, &g_OriginalNtTerminateProcess)) {
-      installInlineHook("ntdll.dll", "ZwTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess),
-                        &PublishFatalHookTrampoline<NtTerminateProcess_t>, &g_OriginalNtTerminateProcess);
-    }
-    installInlineHook("ucrtbase.dll", "_invalid_parameter_noinfo_noreturn",
-                      reinterpret_cast<void*>(&HookedInvalidParameterNoInfoNoReturn),
-                      &PublishFatalHookTrampoline<InvalidParameterNoInfoNoReturn_t>,
-                      &g_OriginalInvalidParameterNoInfoNoReturn);
-    installInlineHook("ucrtbase.dll", "_invoke_watson", reinterpret_cast<void*>(&HookedInvokeWatson),
-                      &PublishFatalHookTrampoline<InvokeWatson_t>, &g_OriginalInvokeWatson);
-    installInlineHook("ucrtbase.dll", "abort", reinterpret_cast<void*>(&HookedAbort),
-                      &PublishFatalHookTrampoline<Abort_t>, &g_OriginalAbort);
-    installInlineHook("ucrtbase.dll", "terminate", reinterpret_cast<void*>(&HookedTerminate),
-                      &PublishFatalHookTrampoline<Terminate_t>, &g_OriginalTerminate);
-    installInlineHook("ucrtbase.dll", "_purecall", reinterpret_cast<void*>(&HookedPurecall),
-                      &PublishFatalHookTrampoline<Purecall_t>, &g_OriginalPurecall);
 
     // Publish every callable trampoline before routing any imports to our
     // wrappers. Exception/termination paths can run on arbitrary threads while

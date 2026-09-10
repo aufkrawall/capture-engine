@@ -1,6 +1,8 @@
 # Display-change frame timing
 
-Last verified: 2026-09-09 (event timestamps, publication concurrency, exact FSR pacing windows, the `20260908_201724` startup-order pair, and the bootstrap correction; fresh hardware validation remains pending)
+Last verified: 2026-09-09 (event timestamps, exact FSR pacing windows, the controlled
+`20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
+repeated same-scene validation of the final startup-isolation build remains pending)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -371,13 +373,13 @@ Eliminated, each with measurements in the referenced session:
 | flip path / present mode | `completion(hsyncDpcMpo=...)` on essentially every present in both states | all |
 | swapchain buffer counts | identical `BufferCount=3` / `=6` sets per session | `20260908_184320` |
 | DXGI factory wrapper lifetime | the wrapper destroyed in healthy runs belongs to an earlier factory, released before the one the swapchain is created on; the swapchain is created on the *real* factory pointer in both states | `new1` |
-| CE temp bootstrap window/swapchain | created and destroyed inside `DX12_InstallHooks`, `DestroyWindow` + `UnregisterClassW` + releases | source |
+| persistent CE temp-bootstrap object/leak | objects are destroyed inside `DX12_InstallHooks` (`DestroyWindow`, `UnregisterClassW`, COM releases); this excludes persistent ownership, not transient hardware-startup interference | source |
 
 Untested probe bits that remain: `0x2000` (adopt the queue but never hook its vtable), `0x20`
 (present hook forwards immediately), `0x10` (ECL forwards immediately), `0x40` (CE never on the FFX
 callback path at all).
 
-### Startup-order discriminator and corrective bootstrap policy (2026-09-08)
+### Initial startup-order discriminator and insufficient correction (2026-09-08)
 
 The controlled pair in `20260908_201724` exposes a CE-owned startup race that the steady-state
 cost probes could not see:
@@ -391,7 +393,7 @@ cost probes could not see:
   official FFX module load at 20:18:12.044. Its export entry patches quiesce peer threads, so this
   is a real injection-side perturbation exactly while D3D12 and FSR establish their initial state.
 
-The correction is evidence-based rather than executable-specific. An application request to create
+The first correction was evidence-based rather than executable-specific. An application request to create
 an Agility device factory, or a successful application-routed `D3D12GetInterface` that returns one
 directly, is early D3D12 intent; merely loading `d3d12.dll` or querying SDK/debug/tool interfaces is
 not. That signal suppresses only synthetic D3D9/DX8/OpenGL bootstrap, while renderer ownership still
@@ -406,12 +408,67 @@ normal config-reload path replaces the base config. The low-level module observe
 configured runtime preloads but before optional fatal-dump entry hooks, so an FFX/Streamline module
 loaded concurrently with diagnostic bootstrap is observed without changing preload semantics.
 
-This comparison establishes the bad overlap and a direct way for CE to prevent it; it does not turn
-one corrected source build into hardware proof that the 109 fps state is gone. Acceptance requires
-repeated same-scene Talos launches with no cost-probe environment inherited by Explorer/Steam. A
-late-injected D3D12 start should log the recognized bootstrap and `OpenGL hooks skipped`, should not
-log default sampler fingerprints/hooks, and should consistently retain the expected ~117 fps state.
-If the state recurs, the four remaining cost probes above stay valid next discriminators.
+Build 0.1.6515 implemented those changes, but the controlled `20260909_063715` retest disproved
+them as a sufficient fix: the second launch was still slower. They remain valid reductions in
+unrelated startup work, but must not be cited as the cure.
+
+### Root cause and corrected startup isolation (2026-09-09)
+
+The genuine same-scene 0.1.6515 A/B pair finally separated startup perturbation from steady-state
+cost:
+
+- Healthy PID 3416 was discovered with `d3d12=0`; it stabilized at about 115.7 output fps
+  (116.05 QPC-derived fps).
+- Slow second-run PID 19884 was discovered at 06:38:33.226 with `d3d12=1`. Fatal-hook batches
+  repeatedly quiesced the process at 06:38:34.000-34.517, then CE created a synthetic *hardware*
+  D3D12 device/swapchain at 34.519-35.449. The game entered `D3D12GetInterface` at 34.909,
+  created its factory at 35.097, initialized NVAPI at 35.256, and loaded the official FFX runtime
+  at 35.366. Three OpenGL entry patches added more quiescences at 35.455-35.901; full hook startup
+  did not finish until 36.288. The run stabilized near 107.5 output fps (107.74 QPC fps).
+- Once initialized, CE was cheap in both runs. The state difference instead appeared in FSR's
+  downstream pacing: the fast run's display interval was about 8.63 ms with application
+  present-to-display around 1.65 ms, versus roughly 9.19-9.27 ms and 2.9 ms in the slow run.
+
+This is CE-owned, phase-dependent interference while the game, driver, and frame-generation runtime
+establish their state. It explains why steady-state cost probes and hiding the overlay could not
+remove the problem, and why another overlay with a different bootstrap sequence did not reproduce
+it. The evidence does not identify one vendor-global variable; the correct boundary is therefore to
+keep synthetic hardware work and repeated whole-process suspensions out of graphics startup rather
+than tune a delay.
+
+The corrected boundary has three parts:
+
+1. The temporary DX12 hook-discovery device comes exclusively from
+   `IDXGIFactory4::EnumWarpAdapter`. There is no hardware fallback. Existing foreign
+   `CreateDXGIFactory1`/`D3D12CreateDevice` entry patches are bypassed safely or the synthetic route
+   fails closed. A thread-local internal-probe scope prevents this WARP device, queue, and swapchain
+   from becoming application evidence or sampler/queue state. A standalone probe confirmed WARP and
+   hardware expose the same ECL, Present, and Present1 method addresses.
+2. `InstallPublishedBatch` prepares/CFG-seals and atomically publishes all related trampolines while
+   peers run, then checks every exact patch range and original byte sequence under one
+   `ThreadQuiescence`. An unsafe member retries independently after resume. Fatal termination hooks,
+   the OpenGL swap family, DXGI Present/Present1, the DLSS indicator registry pair, each Streamline
+   core module, and the NGX core export family use this path. Foreign E9 chaining and per-target
+   fail-closed ownership remain intact.
+3. Injection installs its target-config callback before process monitoring starts. WMI attempts
+   event-driven `Win32_ProcessStartTrace`, falls back to the old half-second intrinsic query when
+   permission or runtime support denies it, and catch-up scans the gap. The sink only queues a
+   fallback for the owner thread; one atomic subscription state prevents duplicate activation and
+   one PID set coalesces duplicate scan/event workers. Correctness does not depend on trace access.
+
+User run `20260909_170855` is encouraging validation of build 0.1.6516. Trace subscription was
+denied (`0x80041003`), the fallback found Talos at age 317.585 ms with `d3d12=0`, and the WARP
+bootstrap finished about 1.5 seconds before the game's first D3D12 interface call. It had zero
+uncovered overlay transitions, unresolved/dropped pacing matches, staging drops, overload rows, or
+device failures. Stable windows were about 86-87 fps at 100% GPU load; callback-bridge averages
+were roughly 73-89 us, proxy-Present CE work 1-10 us, and steady total CE CPU cost 15-16 us median.
+That different scene and single launch cannot prove the historical 117/109 bistability is gone.
+
+The same log exposed startup work still present in that tested binary: two independently installed
+registry hooks plus roughly 29 Streamline/NGX export installs, with 22 NGX quiescences totaling
+about 1.2 seconds. Those families were batched after the run, as were the final WMI state/log-noise
+refinements. Acceptance still requires repeated launches of the final build in one identical scene;
+the four remaining cost probes above are useful only if the state recurs after that controlled test.
 
 ## What the GPU bracket settled (2026-09-08, 0.1.6511)
 

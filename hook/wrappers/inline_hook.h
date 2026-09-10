@@ -14,11 +14,28 @@
 #pragma once
 
 #include <windows.h>
+#include <cstddef>
 #include <cstdint>
 
 namespace InlineHook {
 
 using TrampolinePublisher = void (*)(void* trampoline, void* context);
+
+struct PublishedHookSpec {
+    void* target = nullptr;
+    void* detour = nullptr;
+    void** outTrampoline = nullptr;
+    TrampolinePublisher publisher = nullptr;
+    void* publisherContext = nullptr;
+    bool installed = false;
+};
+
+// Prepare every trampoline while peer threads are running, then suspend them
+// once to validate and commit all related entry patches. A failed group
+// quiescence falls back to the ordinary per-target transaction without
+// weakening exact-byte/IP ownership checks. Returns the installed count and
+// records each result in PublishedHookSpec::installed.
+size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count);
 
 // Install an inline hook on the target function.
 // - target: address of the function to hook

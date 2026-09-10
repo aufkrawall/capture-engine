@@ -1,6 +1,9 @@
 #include "nvngx_hook_internal.h"
 #include "../common/module_export_resolver.h"
 
+#include <array>
+#include <iterator>
+
 static PFN_NVSDK_NGX_CreateFeature oCreateFeature_VULKAN = nullptr;
 static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
 
@@ -436,14 +439,6 @@ static void InstallNGXExportInlineHooks() {
         void* detour;
         void** original;
     };
-    struct TrampolinePublication {
-        void** destination;
-        void* fallback;
-    };
-    const auto publishTrampoline = [](void* trampoline, void* context) {
-        auto* publication = static_cast<TrampolinePublication*>(context);
-        *publication->destination = trampoline ? trampoline : publication->fallback;
-    };
     const ExportHook exports[] = {
         {"NVSDK_NGX_D3D11_GetParameters", (void*)&Hooked_GetParams_D3D11, (void**)&nvngx_hook_oGetParameters_D3D11},
         {"NVSDK_NGX_D3D11_AllocateParameters", (void*)&Hooked_AllocParams_D3D11,
@@ -492,12 +487,36 @@ static void InstallNGXExportInlineHooks() {
          (void**)&nvngx_hook_oReleaseFeature_VULKAN},
     };
 
-    int hooked = 0;
-    int aliased = 0;
+    constexpr size_t kExportCount = std::size(exports);
+    struct TrampolinePublication {
+        const ExportHook* exports;
+        const size_t* hookForExport;
+        void* const* fallbacks;
+        size_t exportCount;
+        size_t hookIndex;
+    };
+    const auto publishTrampoline = [](void* trampoline, void* context) {
+        const auto* publication = static_cast<const TrampolinePublication*>(context);
+        for (size_t i = 0; i < publication->exportCount; ++i) {
+            if (publication->hookForExport[i] == publication->hookIndex) {
+                InterlockedExchangePointer(reinterpret_cast<void* volatile*>(publication->exports[i].original),
+                                           trampoline ? trampoline : publication->fallbacks[i]);
+            }
+        }
+    };
+    std::array<void*, kExportCount> targets = {};
+    std::array<void*, kExportCount> trampolines = {};
+    std::array<void*, kExportCount> fallbacks = {};
+    std::array<TrampolinePublication, kExportCount> publications = {};
+    std::array<InlineHook::PublishedHookSpec, kExportCount> hooks = {};
+    std::array<size_t, kExportCount> exportForHook = {};
+    std::array<size_t, kExportCount> hookForExport = {};
+    hookForExport.fill(kExportCount);
+
     int missing = 0;
-    int failed = 0;
-    std::vector<std::pair<void*, void*>> hookedTargets;
-    for (const ExportHook& entry : exports) {
+    size_t hookCount = 0;
+    for (size_t exportIndex = 0; exportIndex < kExportCount; ++exportIndex) {
+        const ExportHook& entry = exports[exportIndex];
         // A game-local proxy can intercept GetProcAddress and return one of its
         // own wrappers for an NGX query. Patching that address as though it were
         // the core export corrupts the proxy's saved-original chain. Read the
@@ -508,25 +527,74 @@ static void InstallNGXExportInlineHooks() {
             ++missing;
             continue;
         }
-        const auto existing = std::find_if(hookedTargets.begin(), hookedTargets.end(),
-                                           [target](const auto& item) { return item.first == target; });
-        if (existing != hookedTargets.end()) {
-            *entry.original = existing->second;
-            ++aliased;
+
+        size_t existingHook = kExportCount;
+        for (size_t candidate = 0; candidate < hookCount; ++candidate) {
+            if (targets[candidate] == target) {
+                existingHook = candidate;
+                break;
+            }
+        }
+        if (existingHook != kExportCount) {
+            hookForExport[exportIndex] = existingHook;
             continue;
         }
-        TrampolinePublication publication{entry.original, *entry.original};
-        void* trampoline = nullptr;
-        if (!InlineHook::InstallPublished(target, entry.detour, &trampoline, publishTrampoline, &publication) ||
-            !trampoline) {
+
+        const size_t hookIndex = hookCount++;
+        targets[hookIndex] = target;
+        exportForHook[hookIndex] = exportIndex;
+        hookForExport[exportIndex] = hookIndex;
+    }
+    for (size_t exportIndex = 0; exportIndex < kExportCount; ++exportIndex) {
+        if (hookForExport[exportIndex] != kExportCount) {
+            fallbacks[exportIndex] = InterlockedCompareExchangePointer(
+                reinterpret_cast<void* volatile*>(exports[exportIndex].original), nullptr, nullptr);
+        }
+    }
+    for (size_t hookIndex = 0; hookIndex < hookCount; ++hookIndex) {
+        const ExportHook& entry = exports[exportForHook[hookIndex]];
+        publications[hookIndex] = {exports, hookForExport.data(), fallbacks.data(), kExportCount, hookIndex};
+        hooks[hookIndex] = {targets[hookIndex], entry.detour, &trampolines[hookIndex], publishTrampoline,
+                            &publications[hookIndex]};
+    }
+
+    // A loaded NGX core exposes up to 25 aliases/exports at once. Installing
+    // them independently suspended every game thread once per export (22
+    // times, about 1.2 seconds total, in Talos 20260909_170855). Prepare the
+    // complete family first and commit it under one ownership-checked snapshot.
+    InlineHook::InstallPublishedBatch(hooks.data(), hookCount);
+
+    int hooked = 0;
+    int aliased = 0;
+    int failed = 0;
+    for (size_t hookIndex = 0; hookIndex < hookCount; ++hookIndex) {
+        const ExportHook& entry = exports[exportForHook[hookIndex]];
+        if (hooks[hookIndex].installed && trampolines[hookIndex]) {
+            // Publication replaced any raw address captured by the earlier IAT
+            // pass before the export body became callable as our detour.
+            ++hooked;
+        } else {
             ++failed;
-            HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name, target);
+            HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name,
+                             targets[hookIndex]);
+        }
+    }
+    for (size_t exportIndex = 0; exportIndex < kExportCount; ++exportIndex) {
+        const size_t hookIndex = hookForExport[exportIndex];
+        if (hookIndex == kExportCount || exportForHook[hookIndex] == exportIndex) {
             continue;
         }
-        // Publication replaced any raw address captured by the earlier IAT pass
-        // before the export body became callable as our detour.
-        hookedTargets.push_back({target, trampoline});
-        ++hooked;
+        const ExportHook& entry = exports[exportIndex];
+        if (hooks[hookIndex].installed && trampolines[hookIndex]) {
+            // The batch publisher updated every alias before the shared entry
+            // patch became live, so an IAT detour cannot recurse through a
+            // stale raw export address while peers are resumed.
+            ++aliased;
+        } else {
+            ++failed;
+            HookLogImportant("NVNGX: alias %s!%s shares an unhookable target %p", moduleName, entry.name,
+                             targets[hookIndex]);
+        }
     }
 
     if (hooked > 0)
@@ -569,16 +637,6 @@ void NVNGXHook::Install() {
         if (g_IPC && g_IPC->GetSharedMem()) {
             g_IPC->GetSharedMem()->dlssState.srPreset = PresetIDToChar(presetVal);
             NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", PresetIDToChar(presetVal));
-        } else {
-            // Store it in a static backup if IPC isn't ready?
-
-            // Actually, IPC connects in DX12Hook::Init or similar.
-            // NVNGX Install happens early.
-            // Let's rely on the fact that GetPresetChar now has a fallback!
-            // Wait, GetPresetChar is only called by CreateFeature.
-            // If CreateFeature is bypassed, GetPresetChar updates nothing.
-            // So I DO need to update shared state here if possible.
-            // If IPC fails, we can't update shared state anyway (it doesn't exist).
         }
     }
 

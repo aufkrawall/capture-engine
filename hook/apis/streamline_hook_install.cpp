@@ -3,6 +3,7 @@
 #include "../common/streamline_api_generation.h"
 #include "streamline_bridge.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_inline_hook_batch.h"
 #include "streamline_hook_v1.h"
 #include "streamline_v1_feature_probe.h"
 
@@ -353,13 +354,14 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     bool hookedAnything = false;
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_ModuleHookMutex);
+        StreamlineInlineHookBatch coreHookBatch;
 
         if (originalVulkanCreateSwapchain) {
             if (!streamline_hook_g_Original_vkCreateSwapchainKHR) {
                 streamline_hook_g_Original_vkCreateSwapchainKHR =
                     reinterpret_cast<void*>(originalVulkanCreateSwapchain);
             }
-            hookedAnything |= InstallInlineHookOnce(
+            hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalVulkanCreateSwapchain),
                 reinterpret_cast<void*>(Hooked_Streamline_vkCreateSwapchainKHR),
                 streamline_hook_g_Original_vkCreateSwapchainKHR,
@@ -372,10 +374,12 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slGetFeatureFunction = originalGetFeatureFunction;
             }
 
-            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalGetFeatureFunction),
-                                                    reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
-                                                    streamline_hook_g_Original_slGetFeatureFunction, streamline_hook_g_SLGetFeatureFunctionHooked,
-                                                    streamline_hook_g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
+            hookedAnything |= coreHookBatch.Queue(
+                reinterpret_cast<void*>(originalGetFeatureFunction),
+                reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
+                streamline_hook_g_Original_slGetFeatureFunction,
+                streamline_hook_g_SLGetFeatureFunctionHooked,
+                streamline_hook_g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
         }
 
         if (shouldHookCoreExports && originalGetPluginFunction) {
@@ -383,10 +387,12 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slGetPluginFunction = originalGetPluginFunction;
             }
 
-            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalGetPluginFunction),
-                                                    reinterpret_cast<void*>(Hooked_slGetPluginFunction),
-                                                    streamline_hook_g_Original_slGetPluginFunction, streamline_hook_g_SLGetPluginFunctionHooked,
-                                                    streamline_hook_g_SLGetPluginFunctionTarget, "slGetPluginFunction");
+            hookedAnything |= coreHookBatch.Queue(
+                reinterpret_cast<void*>(originalGetPluginFunction),
+                reinterpret_cast<void*>(Hooked_slGetPluginFunction),
+                streamline_hook_g_Original_slGetPluginFunction,
+                streamline_hook_g_SLGetPluginFunctionHooked,
+                streamline_hook_g_SLGetPluginFunctionTarget, "slGetPluginFunction");
         }
 
         if (shouldHookCoreExports && originalSetD3DDevice) {
@@ -394,7 +400,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slSetD3DDevice = originalSetD3DDevice;
             }
 
-            hookedAnything |= InstallInlineHookOnce(
+            hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalSetD3DDevice), reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                 streamline_hook_g_Original_slSetD3DDevice, streamline_hook_g_SLSetD3DDeviceHooked, streamline_hook_g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
@@ -406,9 +412,10 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
 
             void* setTagDetour = mayHookV1Abi ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetTagV1)
                                               : reinterpret_cast<void*>(Hooked_slSetTag);
-            hookedAnything |=
-                InstallInlineHookOnce(reinterpret_cast<void*>(originalSetTag), setTagDetour,
-                                      streamline_hook_g_Original_slSetTag, streamline_hook_g_SLSetTagHooked, streamline_hook_g_SLSetTagTarget, "slSetTag");
+            hookedAnything |= coreHookBatch.Queue(
+                reinterpret_cast<void*>(originalSetTag), setTagDetour,
+                streamline_hook_g_Original_slSetTag, streamline_hook_g_SLSetTagHooked,
+                streamline_hook_g_SLSetTagTarget, "slSetTag");
         }
 
         if (shouldHookCoreExports && originalSetTagForFrame) {
@@ -416,7 +423,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 streamline_hook_g_Original_slSetTagForFrame = originalSetTagForFrame;
             }
 
-            hookedAnything |= InstallInlineHookOnce(
+            hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalSetTagForFrame), reinterpret_cast<void*>(Hooked_slSetTagForFrame),
                 streamline_hook_g_Original_slSetTagForFrame, streamline_hook_g_SLSetTagForFrameHooked, streamline_hook_g_SLSetTagForFrameTarget, "slSetTagForFrame");
         }
@@ -429,10 +436,11 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
             void* evaluateDetour = mayHookV1Abi
                                        ? reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slEvaluateFeatureV1)
                                        : reinterpret_cast<void*>(Hooked_slEvaluateFeature);
-            hookedAnything |=
-                InstallInlineHookOnce(reinterpret_cast<void*>(originalEvaluateFeature), evaluateDetour,
-                                      streamline_hook_g_Original_slEvaluateFeature,
-                                      streamline_hook_g_SLEvaluateFeatureHooked, streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature");
+            hookedAnything |= coreHookBatch.Queue(
+                reinterpret_cast<void*>(originalEvaluateFeature), evaluateDetour,
+                streamline_hook_g_Original_slEvaluateFeature,
+                streamline_hook_g_SLEvaluateFeatureHooked,
+                streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature");
         }
 
         // The two 1.x calls whose payload layout is unpublished. Recorded on the way
@@ -445,7 +453,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 if (!ce::streamline_v1::g_Original_slSetFeatureConstantsV1) {
                     ce::streamline_v1::g_Original_slSetFeatureConstantsV1 = originalSetFeatureConstants;
                 }
-                hookedAnything |= InstallInlineHookOnce(
+                hookedAnything |= coreHookBatch.Queue(
                     reinterpret_cast<void*>(originalSetFeatureConstants),
                     reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slSetFeatureConstantsV1),
                     ce::streamline_v1::g_Original_slSetFeatureConstantsV1,
@@ -457,7 +465,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 if (!ce::streamline_v1::g_Original_slGetFeatureSettingsV1) {
                     ce::streamline_v1::g_Original_slGetFeatureSettingsV1 = originalGetFeatureSettings;
                 }
-                hookedAnything |= InstallInlineHookOnce(
+                hookedAnything |= coreHookBatch.Queue(
                     reinterpret_cast<void*>(originalGetFeatureSettings),
                     reinterpret_cast<void*>(&ce::streamline_v1::Hooked_slGetFeatureSettingsV1),
                     ce::streamline_v1::g_Original_slGetFeatureSettingsV1,
@@ -465,6 +473,11 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                     ce::streamline_v1::g_GetFeatureSettingsV1Target, "slGetFeatureSettings");
             }
         }
+
+        // A newly loaded interposer publishes all of its core exports at once.
+        // Commit that logical family with one peer-thread snapshot so module
+        // discovery cannot pause the game's startup once per exported symbol.
+        hookedAnything |= coreHookBatch.Commit() != 0;
 
         if (shouldHookCoreExports && (originalSetTag || originalEvaluateFeature) && !mayHookAbiSensitive) {
             static std::atomic<bool> s_refusalLogged{false};

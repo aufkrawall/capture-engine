@@ -61,7 +61,8 @@ anchors that predate the split are approximate.
   | `pgp-keys/<FINGERPRINT>.asc` | vendored armored signing keys, so a build needs no keyserver (and no `dirmngr`). Fetch only from a keyserver that keeps user IDs — gpg refuses a UID-less key |
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
-  - `shared_defs.h` - shared-memory ABI (current version `52`).
+  - `shared_defs.h` - shared-memory facade; `shared_defs_detail/abi_constants_and_config.h`
+    owns the current ABI version (`57`).
   - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5/streaming/face_camera.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
@@ -70,9 +71,11 @@ anchors that predate the split are approximate.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.
-  - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_inject.cpp`,
+  - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_wmi_events.cpp`,
+    `injection_inject.cpp`,
     `injection_security.cpp`, `inject_main.cpp`, `inject_config.cpp`,
-    `inject_config_publication.cpp`, `inject_lifecycle.cpp`.
+    `inject_config_publication.cpp`, `inject_lifecycle.cpp`; the WMI unit owns both event-driven
+    ProcessStartTrace and intrinsic-poll event parsing/callback lifetime.
   - Recording/media orchestration: `media_main_encoder_0*.cpp` (session, loop start,
     WGC target, select, startup, emit, encode, health),
     `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target
@@ -138,7 +141,8 @@ anchors that predate the split are approximate.
       `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.
     - Streamline: `streamline_hook.cpp` + `streamline_hook_{helpers,state,startup,
       modules,originals,feature_fallback,install,resolve,dlssg,api,pcl}.cpp` +
-      `streamline_hook_internal.h`; `streamline_hook_pcl.cpp` captures the game's real
+      `streamline_hook_internal.h` + `streamline_inline_hook_batch.{h,cpp}` (one grouped
+      quiescence for a module's core exports); `streamline_hook_pcl.cpp` captures the game's real
       SimulationStart/PresentStart PCL calls for D3D latency correlation without synthetic markers.
     - FFX: `ffx_hook.cpp` + `ffx_hook_{context,install}.cpp` + `ffx_hook_internal.h`.
     - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
@@ -173,8 +177,9 @@ anchors that predate the split are approximate.
     `pacing_health_telemetry.{h,cpp}` (time-stamped/tagged FSR pacing windows and passive
     bad-start classifier), and `hook_thread_stage_cost.h` (disjoint housekeeping-stage costs).
   - `wrappers/` - `dxgi_swapchain_wrap*.cpp` (wrap, present, lifetime, frame_latency),
-    `hook_system.cpp`, `iat_hook.*`, `vtable_hook.cpp`, `inline_hook*.cpp`, and
-    `hook_patch_transaction.*` (thread-quiesced code-patch transactions).
+    `hook_system.cpp`, `iat_hook.*`, `vtable_hook.cpp`, `inline_hook*.cpp` (including
+    two-phase grouped publication/commit), and `hook_patch_transaction.*` (single-target or
+    grouped exact-range thread-quiesced code-patch transactions).
 - `mediaengine/`
   - De-inlined `MediaEngine` class: `mediaengine.cpp` (facade) + semantic units:
     `mediaengine_audio_{helpers,thread,loop_poll,loop_commit,audio_pull,
@@ -219,9 +224,12 @@ anchors that predate the split are approximate.
 
 ## High-Risk / High-Value Files
 
-- `common/shared_defs.h` - shared-memory ABI (version `52`, source-verified).
-- `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_inject.cpp` -
-  host-side startup/late injection, resident target adoption, and deject acknowledgement.
+- `common/shared_defs.h` - shared-memory facade; the source-verified ABI version is `57` in
+  `common/shared_defs_detail/abi_constants_and_config.h`.
+- `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_wmi_events.cpp` +
+  `injection_inject.cpp` - ordered host-side startup/late injection, event-driven/polled process
+  discovery, callback lifetime, duplicate-worker coalescing, resident target adoption, and deject
+  acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
   `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
   reactivation lifecycle across host generations.
@@ -256,8 +264,8 @@ anchors that predate the split are approximate.
 - `hook/common/overlay_compat.h` + `overlay_compat_detail/module_table.h` - loader-free
   hot-path identity for third-party overlays/injects and FFX modules.
 - `hook/wrappers/inline_hook*.cpp` + `hook_patch_transaction.*` + `vtable_hook.cpp` +
-  `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, and
-  thread-quiesced inline patching.
+  `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, callable-original
+  publication, and exact-byte single/group thread-quiesced inline patching.
 - `hook/common/ngx_fg_preset_override.{h,cpp}` - `dlss_fg_preset`: the DLSS FG render
   preset is a driver-settings (DRS) key, not an NGX parameter, so this wraps the
   `NvAPI_DRS_GetSetting` pointer `nvngx_dlssg.dll` resolves.

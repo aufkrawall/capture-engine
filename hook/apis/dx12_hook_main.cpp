@@ -139,8 +139,8 @@ void DX12Hook::Init() {
                                                                                      startupOverlayModule != nullptr)) {
         dx12_hook_g_EarlyPresentHookInstallDeferred.store(true, std::memory_order_release);
         HookLogImportant(
-            "DX12Hook: Deferring eager temp-swapchain Present hook install because third-party overlay %s is already "
-            "loaded before the first real D3D12 device",
+            "DX12Hook: Deferring the unguarded temp-swapchain Present hook path because third-party overlay %s is "
+            "already loaded before the first real D3D12 device; guarded system-DXGI/WARP recovery remains eligible",
             startupOverlayModule);
     } else {
         HookLog("DX12Hook: Installing Present hooks eagerly (no D3D12 wrapper)");
@@ -264,9 +264,9 @@ static void FindAndWrapPreExistingSwapchains() {
     // the CreateSwapChainForHwnd detours will never fire, and Present hooks
     // would remain uninstalled forever — the overlay would never render.
     //
-    // Install Present hooks via a temp swapchain.  The g_CreatingTempSwapchain
-    // guard prevents our own CreateSwapChainForHwnd hooks from processing the
-    // temp swapchain's queue, and calling oCreateSwapChainForHwndGlobal
+    // Install Present hooks via a temp swapchain. The thread-local internal
+    // probe scope prevents our own CreateSwapChainForHwnd hooks from processing
+    // the temp swapchain's queue, and calling oCreateSwapChainForHwndGlobal
     // bypasses our hooks entirely.
     //
     // What it cannot bypass is a third-party overlay that hooked the creation
@@ -297,6 +297,10 @@ static void FindAndWrapPreExistingSwapchains() {
         // fallback stays deferred.
         TryInstallPresentHooksViaGuardedTempSwapchain("postponed deferral");
         if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+            dx12_hook_g_EarlyPresentHookInstallDeferred.store(false, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Deferred Present hooks installed through the guarded system-DXGI/WARP bootstrap; no "
+                "third-party overlay creation handler was entered");
             return;
         }
         if (!dx12_hook_g_PostponedPresentHookInstallLogged.exchange(true, std::memory_order_acq_rel)) {
@@ -335,8 +339,8 @@ void DX12Hook::ServicePendingPresentHooks() {
         // which is the outcome the deferral was waiting for.
         if (dx12_hook_g_EarlyPresentHookInstallDeferred.exchange(false, std::memory_order_acq_rel)) {
             HookLogImportant(
-                "DX12: Postponed Present hook install resolved by the game's own swapchain — no temp swapchain was "
-                "created while the third-party overlay was still initializing");
+                "DX12: Postponed Present hook install resolved by the game's own swapchain; the guarded temp "
+                "bootstrap had not already completed");
         }
         return;
     }

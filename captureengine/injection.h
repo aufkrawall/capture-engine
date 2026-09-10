@@ -14,12 +14,17 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 class InjectionManager {
 public:
   InjectionManager(const AppConfig &config);
   ~InjectionManager();
+
+  // Begin process discovery only after the pre-injection publication callback
+  // is installed. This closes the process-start callback/config race.
+  bool StartMonitoring();
 
   // Check running processes (cleanup) and process pending injections
   void Update();
@@ -121,14 +126,32 @@ private:
   std::vector<PendingInjection> pendingInjections;
 
   // WMI Members
+  enum class WmiSubscriptionState : uint8_t {
+    kInactive,
+    kRealtimeSubscribing,
+    kRealtimeActive,
+    kFallbackRequested,
+    kFallbackActive,
+    kStopped,
+  };
+
   IWbemServices *pSvc = nullptr;
   IWbemLocator *pLoc = nullptr;
   IUnsecuredApartment *pUnsecApp = nullptr;
   ProcessEventSink *pSink = nullptr;
   IWbemObjectSink *pStubSink = nullptr;
   bool wmiCoInitNeedsUninitialize = false;
+  std::atomic<WmiSubscriptionState> wmiSubscriptionState{
+      WmiSubscriptionState::kInactive};
+  std::atomic<HRESULT> wmiFallbackReason{S_OK};
+  std::mutex monitoringMutex;
+  bool monitoringStarted = false;
+  bool monitoringInitialized = false;
 
   void ScanExistingProcesses();
+  HRESULT StartPolledWmiFallback(HRESULT reason, const char *failurePhase);
+  bool RequestWmiFallback(HRESULT reason);
+  void ServiceWmiFallbackRequest();
   void EjectWithDeadline(DWORD pid, ULONGLONG deadline);
   void LaunchDelayedInjectionThread(DWORD pid, const std::string &name,
                                     const char *sourceTag);
@@ -145,9 +168,11 @@ private:
 
   // CRITICAL FIX: Track delayed injection threads for proper cleanup
   std::list<std::thread> delayedInjectionThreads;
+  std::unordered_set<DWORD> delayedInjectionPids;
   std::mutex threadListMutex;
 
   // Inject moved to public
+  std::mutex injectCallbackMutex;
   std::function<void(DWORD, const std::string &)> onInjectCallback;
 
 public:

@@ -78,7 +78,7 @@ TEST(DXGISharedSourceTest, PresentBootstrapPreservesE9AndDetoursFF25ForeignEntri
     const size_t ff25Detection = hooks.find("const bool entryUsesFF25");
     const size_t ff25Resolve = hooks.find("ResolveFF25JmpTarget(presentAddr)", ff25Detection);
     const size_t bypass = hooks.find("InlineHook::CreateBypassTrampoline(presentAddr)", ff25Resolve);
-    const size_t prepend = hooks.find("InlineHook::InstallPublished(presentAddr", bypass);
+    const size_t prepend = hooks.find("InlineHook::InstallPublishedBatch", bypass);
     ASSERT_NE(e9Detection, std::string::npos);
     ASSERT_NE(ff25Detection, std::string::npos);
     ASSERT_NE(ff25Resolve, std::string::npos);
@@ -508,7 +508,7 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     EXPECT_NE(hooks.find("ShouldLeavePresentEntryToForeignOverlayChain("), std::string::npos);
     const size_t leaveEntry = hooks.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(true");
     ASSERT_NE(leaveEntry, std::string::npos);
-    const size_t prependInstall = hooks.find("InlineHook::InstallPublished(presentAddr");
+    const size_t prependInstall = hooks.find("InlineHook::InstallPublishedBatch");
     ASSERT_NE(prependInstall, std::string::npos);
     EXPECT_LT(leaveEntry, prependInstall);
     EXPECT_NE(hooks.find("return true;", leaveEntry), std::string::npos);

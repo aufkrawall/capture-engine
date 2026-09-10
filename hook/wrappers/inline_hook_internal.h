@@ -17,9 +17,12 @@
 
 namespace InlineHook {
 
+struct PublishedHookSpec;
+
 struct HookEntry {
     void* target;
     void* detour;
+    void* patchDestination;
     void* trampoline;
     uint8_t origBytes[32];
     uint8_t installedBytes[32];
@@ -54,6 +57,20 @@ extern std::mutex g_hookMutex;
 extern uint8_t* g_trampolinePool;
 extern std::vector<uint8_t*> g_trampolinePools;
 extern size_t g_trampolineOffset;
+
+// Batch-install helpers. The caller owns g_hookMutex throughout preparation
+// and commit; failed published trampolines are retained under the same rule as
+// a failed individual InstallPublished call.
+bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex);
+// Caller must keep a ready ThreadQuiescence transaction alive for the entire
+// call and prove this exact target range safe against its captured contexts.
+bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patchSize,
+                                  const uint8_t* expectedBytes, uint8_t* installedBytes);
+bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
+                          const uint8_t* expectedBytes, uint8_t* installedBytes);
+bool CanCommitPreparedEntryPatchLocked(size_t hookIndex);
+bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex);
+bool CommitPreparedEntryPatchLocked(size_t hookIndex);
 
 // Commit one TRAMPOLINE_POOL_SIZE page, writable, with an all-invalid CFG
 // bitmap when Control Flow Guard is active.

@@ -1,8 +1,6 @@
 #include "injection_internal.h"
 
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
-    const int64_t constructorStartUs = Log_GetQpcUs();
-
     // Determine DLL paths (assume next to exe)
     char buffer[MAX_PATH];
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
@@ -27,9 +25,18 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
         LogError("Capture Hook X64 DLL not found: %s", hookDllPathX64.c_str());
     if (!fs::exists(hookDllPathX86))
         LogError("Capture Hook X86 DLL not found: %s", hookDllPathX86.c_str());
+}
 
+bool InjectionManager::StartMonitoring() {
+    std::lock_guard<std::mutex> lock(monitoringMutex);
+    if (monitoringStarted) {
+        LogInfo("[Inject] Process monitoring is already active");
+        return monitoringInitialized;
+    }
+    monitoringStarted = true;
+    const int64_t startUs = Log_GetQpcUs();
     const int64_t wmiStartUs = Log_GetQpcUs();
-    bool wmiInitialized = InitializeWMI();
+    monitoringInitialized = InitializeWMI();
     const int64_t wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
 
     const int64_t scanStartUs = Log_GetQpcUs();
@@ -37,10 +44,12 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
     const int64_t scanTotalUs = Log_GetQpcUs() - scanStartUs;
 
     LogInfo(
-        "[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
+        "[StartupPerf] InjectionManager monitoring: InitializeWMI=%.3f ms (ok=%d), "
+        "ScanExistingProcesses=%.3f ms, "
         "total=%.3f ms",
-        QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
-        QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
+        QpcDeltaToMs(wmiTotalUs), monitoringInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
+        QpcDeltaToMs(Log_GetQpcUs() - startUs));
+    return monitoringInitialized;
 }
 
 InjectionManager::~InjectionManager() {
@@ -58,6 +67,7 @@ InjectionManager::~InjectionManager() {
 }
 
 void InjectionManager::SetOnInjectCallback(std::function<void(DWORD, const std::string&)> callback) {
+    std::lock_guard<std::mutex> lock(injectCallbackMutex);
     this->onInjectCallback = std::move(callback);
 }
 

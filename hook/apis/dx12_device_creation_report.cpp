@@ -353,8 +353,8 @@ void NoteTempDeviceCreationResult(HRESULT hr) {
         const int failures = g_terminalCreationFailures.fetch_add(1, std::memory_order_relaxed) + 1;
         if (failures == policy::kMaxTerminalDeviceCreationAttempts) {
             HookLogImportant(
-                "DX12: D3D12CreateDevice has failed %d times with the terminal hr=0x%08X (%s) - the temp-swapchain "
-                "route stops paying for device creation; Present hooks now depend on intercepting the game's own "
+                "DX12: Synthetic WARP D3D12CreateDevice has failed %d times with terminal hr=0x%08X (%s) - the "
+                "temp-swapchain route stops retrying; Present hooks now depend on intercepting the game's own "
                 "CreateSwapChainForHwnd",
                 failures, static_cast<unsigned>(hr), HrName(hr));
         }

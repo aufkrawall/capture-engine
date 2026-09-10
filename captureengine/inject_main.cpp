@@ -358,6 +358,7 @@ int InjectProcessMain(const AppConfig& config) {
             // Update shared memory with this target's profile applied
             PublishResolvedConfigForTarget(pSharedMem, processName, "injector:onInject");
         });
+        manager->StartMonitoring();
     };
 
     if (injectorState.allowInjection) {
@@ -366,9 +367,9 @@ int InjectProcessMain(const AppConfig& config) {
         // lifetime through a shared_ptr cycle.
         const int64_t injectorInitStartUs = Log_GetQpcUs();
         injector = std::make_shared<InjectionManager>(injectorState.config);
-        LogInfo("[StartupPerf] Injection manager construction took %.3f ms",
-                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
         configureInjector(injector);
+        LogInfo("[StartupPerf] Injection manager construction and monitoring took %.3f ms",
+                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
         LogInfo("[Inject] Injection manager initialized");
     } else {
         LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no whitelist targets)",

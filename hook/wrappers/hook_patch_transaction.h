@@ -18,6 +18,9 @@ inline bool IsInstructionPointerInsidePatchRange(uintptr_t instructionPointer, u
 // every thread successfully suspended by this transaction.
 class ThreadQuiescence {
 public:
+    // Quiesce every peer thread for a group of patches. Each patch range must
+    // still be checked with IsRangeSafe() before its bytes are changed.
+    ThreadQuiescence();
     ThreadQuiescence(const void* patchAddress, size_t patchSize);
     ~ThreadQuiescence();
 
@@ -28,11 +31,17 @@ public:
         return ready_;
     }
 
+    bool IsRangeSafe(const void* patchAddress, size_t patchSize) const;
+
 private:
+    void Quiesce();
+
     struct SuspendedThread {
         HANDLE handle = nullptr;
         DWORD threadId = 0;
         bool suspended = false;
+        uintptr_t instructionPointer = 0;
+        bool contextCaptured = false;
     };
 
     std::vector<SuspendedThread> threads_;

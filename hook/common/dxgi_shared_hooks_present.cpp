@@ -407,11 +407,17 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             entryUsesE9 ? "E9" : "FF25", loadedOverlayCount, frameGenerationInterposerLoaded ? 1 : 0);
     }
 
-
     PresentTrampolinePublication presentPublication{dxgi_shared_oPresent};
+    Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
     void* presentTrampoline = nullptr;
-    if (!InlineHook::InstallPublished(presentAddr, (void*)DetourPresent, &presentTrampoline,
-                                      PublishPresentTrampoline, &presentPublication)) {
+    void* present1Trampoline = nullptr;
+    InlineHook::PublishedHookSpec inlineHooks[] = {
+        {presentAddr, (void*)DetourPresent, &presentTrampoline, PublishPresentTrampoline, &presentPublication},
+        {present1Addr, (void*)DetourPresent1, &present1Trampoline, PublishPresent1Trampoline,
+         &present1Publication},
+    };
+    InlineHook::InstallPublishedBatch(inlineHooks, present1Addr ? 2 : 1);
+    if (!inlineHooks[0].installed) {
         HookLog("InstallPresentInlineHooks: Failed to install Present inline hook");
         return false;
     }
@@ -420,16 +426,11 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         "trampoline=%p) — s_hookedVTable remains %p",
         presentAddr, presentTrampoline, dxgi_shared_s_hookedVTable);
 
-    if (present1Addr) {
-        Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
-        void* present1Trampoline = nullptr;
-        if (InlineHook::InstallPublished(present1Addr, (void*)DetourPresent1, &present1Trampoline,
-                                         PublishPresent1Trampoline, &present1Publication)) {
-            HookLog(
-                "InstallPresentInlineHooks: Present1 inline hook installed "
-                "(addr=%p, trampoline=%p)",
-                present1Addr, present1Trampoline);
-        }
+    if (present1Addr && inlineHooks[1].installed) {
+        HookLog(
+            "InstallPresentInlineHooks: Present1 inline hook installed "
+            "(addr=%p, trampoline=%p)",
+            present1Addr, present1Trampoline);
     }
 
     s_inlineHooksInstalled = true;
@@ -587,4 +588,3 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
         dxgi_shared_s_present1EntryAddress, claimedThisVTable ? 1 : 0, source ? source : "runtime wrap");
 }
 }
-

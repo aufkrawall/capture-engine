@@ -59,6 +59,15 @@ void ApplyFinalPresentPolicy(IDXGISwapChain*, UINT&, UINT&, FinalPresentVariant)
 // The real InlineHook is a class with static methods, so we provide definitions here
 #include "inline_hook.h"
 
+size_t InlineHook::InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
+    for (size_t i = 0; hooks && i < count; ++i) {
+        hooks[i].installed = false;
+        if (hooks[i].outTrampoline) {
+            *hooks[i].outTrampoline = nullptr;
+        }
+    }
+    return 0;
+}
 bool InlineHook::Install(void*, void*, void**) {
     return false;
 }

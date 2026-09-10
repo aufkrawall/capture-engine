@@ -212,16 +212,17 @@ TEST(D3D12DeviceCreationPolicyTest, BootstrapConsultsTheBudgetBeforePayingForDev
     ASSERT_FALSE(source.empty());
 
     const size_t budget = source.find("ShouldAttemptTempDeviceCreation()");
-    const size_t create = source.find("pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0", budget);
+    const size_t warp = source.find("EnumWarpAdapter", budget);
+    const size_t create = source.find("pD3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_11_0", warp);
     const size_t note = source.find("NoteTempDeviceCreationResult(deviceHr)", create);
-    const size_t report = source.find("ReportDeviceCreationFailure(", note);
     ASSERT_NE(budget, std::string::npos);
+    ASSERT_NE(warp, std::string::npos);
     ASSERT_NE(create, std::string::npos);
     ASSERT_NE(note, std::string::npos);
-    ASSERT_NE(report, std::string::npos);
+    EXPECT_EQ(source.find("ReportDeviceCreationFailure(", note), std::string::npos);
     EXPECT_LT(budget, create);
+    EXPECT_LT(warp, create);
     EXPECT_LT(create, note);
-    EXPECT_LT(note, report);
 }
 
 TEST(D3D12DeviceCreationPolicyTest, ReportProbesCapabilityWithoutCreatingADevice) {

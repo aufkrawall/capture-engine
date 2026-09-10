@@ -66,7 +66,7 @@ TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTab
     EXPECT_EQ(dx11Present.find("vtable[13] ="), std::string::npos);
 
     const size_t externalChain = presentHooks.find("prepending CE at the original entry");
-    const size_t inlineInstall = presentHooks.find("InlineHook::InstallPublished(presentAddr", externalChain);
+    const size_t inlineInstall = presentHooks.find("InlineHook::InstallPublishedBatch", externalChain);
     ASSERT_NE(externalChain, std::string::npos);
     ASSERT_NE(inlineInstall, std::string::npos);
     EXPECT_LT(externalChain, inlineInstall);
@@ -85,6 +85,51 @@ TEST(InjectLifecycleSourceTest, LateDeepHookPatchingUsesQuiescedExactByteOwnersh
     EXPECT_NE(deepHook.find("g_deepHooks.back().installedBytes"), std::string::npos);
     EXPECT_NE(deepRemove.find("Preserving foreign replacement"), std::string::npos);
     EXPECT_EQ(deepHook.find("pPatch[0] = 0xCC"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, RelatedInlineHooksShareOnePeerThreadQuiescenceTransaction) {
+    const std::string inlineHook = ReadSource("hook/wrappers/inline_hook.cpp");
+    const std::string inlineHookBatch = ReadSource("hook/wrappers/inline_hook_batch.cpp");
+    const std::string fatalHooks = ReadSource("hook/main_fatal_hooks.cpp");
+    const std::string openGL = ReadSource("hook/apis/opengl_hook_install.cpp");
+    const std::string presentHooks = ReadSource("hook/common/dxgi_shared_hooks_present.cpp");
+    const std::string dlssIndicator = ReadSource("hook/common/dlss_indicator_spoof.cpp");
+    const std::string streamlineBatch = ReadSource("hook/apis/streamline_inline_hook_batch.cpp");
+    const std::string streamlineInstall = ReadSource("hook/apis/streamline_hook_install.cpp");
+    const std::string nvngx = ReadSource("hook/apis/nvngx_hook_feature.cpp");
+    ASSERT_FALSE(inlineHook.empty());
+    ASSERT_FALSE(inlineHookBatch.empty());
+    ASSERT_FALSE(fatalHooks.empty());
+    ASSERT_FALSE(openGL.empty());
+    ASSERT_FALSE(presentHooks.empty());
+    ASSERT_FALSE(dlssIndicator.empty());
+    ASSERT_FALSE(streamlineBatch.empty());
+    ASSERT_FALSE(streamlineInstall.empty());
+    ASSERT_FALSE(nvngx.empty());
+
+    const size_t prepare = inlineHookBatch.find("PreparePublishedHookLocked");
+    const size_t quiesce = inlineHookBatch.find("ThreadQuiescence groupQuiescence", prepare);
+    const size_t rangeCheck = inlineHookBatch.find("groupQuiescence.IsRangeSafe", quiesce);
+    const size_t groupedCommit = inlineHookBatch.find("CommitPreparedEntryPatchQuiescedLocked", rangeCheck);
+    ASSERT_NE(prepare, std::string::npos);
+    ASSERT_NE(quiesce, std::string::npos);
+    ASSERT_NE(rangeCheck, std::string::npos);
+    ASSERT_NE(groupedCommit, std::string::npos);
+    EXPECT_LT(prepare, quiesce) << "decoding/allocation/publication must finish before peer suspension";
+    EXPECT_LT(quiesce, rangeCheck);
+    EXPECT_LT(rangeCheck, groupedCommit);
+    EXPECT_NE(inlineHook.find("WriteOwnedEntryPatchQuiesced"), std::string::npos);
+    EXPECT_NE(fatalHooks.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(openGL.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(presentHooks.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(dlssIndicator.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(streamlineBatch.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(streamlineInstall.find("coreHookBatch.Commit()"), std::string::npos);
+    EXPECT_NE(nvngx.find("InlineHook::InstallPublishedBatch"), std::string::npos);
+    EXPECT_NE(nvngx.find("publication->hookForExport[i] == publication->hookIndex"), std::string::npos);
+    EXPECT_NE(nvngx.find("InterlockedExchangePointer", nvngx.find("const auto publishTrampoline")),
+              std::string::npos);
+    EXPECT_EQ(inlineHookBatch.find("InstallBatchScope"), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoingLive) {
@@ -152,6 +197,62 @@ TEST(InjectLifecycleSourceTest, AgilityBootstrapEvidenceSuppressesSpeculativeLeg
     EXPECT_NE(wrapperState.find("bool HasD3D12RuntimeUseEvidence()"), std::string::npos);
     EXPECT_NE(install.find("d3d12UseEvidence = HasD3D12RuntimeUseEvidence();"), std::string::npos);
     EXPECT_NE(install.find("OpenGL hooks skipped: D3D12 runtime-use evidence"), std::string::npos);
+}
+
+TEST(InjectLifecycleSourceTest, LateAttachPresentDiscoveryUsesWarpInsteadOfTheGameHardwareAdapter) {
+    const std::string install = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string hookMain = ReadSource("hook/apis/dx12_hook_main.cpp");
+    const std::string samplerHooks = ReadSource("hook/apis/dx12_sampler_hooks.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(hookMain.empty());
+    ASSERT_FALSE(samplerHooks.empty());
+
+    const size_t tempBootstrap = install.find("void HookSwapchainVTableViaTempSwapchain(");
+    const size_t internalScope = install.find("DX12_BeginInternalDXGISwapchainProbe();", tempBootstrap);
+    const size_t deviceEntryBypass =
+        install.find("Bypassing foreign entry patch on D3D12CreateDevice", tempBootstrap);
+    const size_t warpAdapter = install.find("EnumWarpAdapter", tempBootstrap);
+    const size_t deviceCreate = install.find("pD3D12CreateDevice(pWarpAdapter", warpAdapter);
+    const size_t queueCreate = install.find("pDevice->CreateCommandQueue", deviceCreate);
+    ASSERT_NE(tempBootstrap, std::string::npos);
+    ASSERT_NE(internalScope, std::string::npos);
+    ASSERT_NE(deviceEntryBypass, std::string::npos);
+    ASSERT_NE(warpAdapter, std::string::npos);
+    ASSERT_NE(deviceCreate, std::string::npos);
+    ASSERT_NE(queueCreate, std::string::npos);
+    EXPECT_LT(internalScope, warpAdapter);
+    EXPECT_LT(deviceEntryBypass, internalScope);
+    EXPECT_LT(warpAdapter, deviceCreate);
+    EXPECT_LT(deviceCreate, queueCreate);
+    EXPECT_EQ(install.find("pD3D12CreateDevice(nullptr", tempBootstrap), std::string::npos);
+    EXPECT_EQ(install.find("DX12_HookDeviceVTable(pDevice)", tempBootstrap), std::string::npos);
+    EXPECT_EQ(install.find("dx12_hook_g_CreatingTempSwapchain", tempBootstrap), std::string::npos);
+    EXPECT_NE(install.find("WARP D3D12 device created; synthetic hardware-adapter creation remains"),
+              std::string::npos);
+
+    const size_t rawCreate = samplerHooks.find("HRESULT WINAPI DetourD3D12CreateDeviceRaw");
+    const size_t internalProbe = samplerHooks.find("const bool internalProbe = DX12_IsInternalDXGISwapchainProbe()",
+                                                   rawCreate);
+    const size_t applicationOnly = samplerHooks.find("if (!internalProbe)", internalProbe);
+    const size_t deviceHook = samplerHooks.find("DX12_HookDeviceVTable(baseDevice);", applicationOnly);
+    ASSERT_NE(internalProbe, std::string::npos);
+    ASSERT_NE(applicationOnly, std::string::npos);
+    ASSERT_NE(deviceHook, std::string::npos);
+    EXPECT_LT(applicationOnly, deviceHook);
+
+    const size_t guardedAttempt =
+        hookMain.find("TryInstallPresentHooksViaGuardedTempSwapchain(\"postponed deferral\")");
+    const size_t guardedSuccess = hookMain.find("DXGIShared::HasPresentInlineHooks()", guardedAttempt);
+    const size_t clearDeferred =
+        hookMain.find("dx12_hook_g_EarlyPresentHookInstallDeferred.store(false", guardedSuccess);
+    const size_t successReturn = hookMain.find("return;", guardedSuccess);
+    ASSERT_NE(guardedAttempt, std::string::npos);
+    ASSERT_NE(guardedSuccess, std::string::npos);
+    ASSERT_NE(clearDeferred, std::string::npos);
+    ASSERT_NE(successReturn, std::string::npos);
+    EXPECT_LT(clearDeferred, successReturn);
+    EXPECT_NE(hookMain.find("Deferred Present hooks installed through the guarded system-DXGI/WARP bootstrap"),
+              std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, StableDX12OverlayDiagnosticsAvoidPerFrameNoOpSpam) {

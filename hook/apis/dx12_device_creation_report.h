@@ -4,12 +4,10 @@
 
 // One-shot forensics for a failing D3D12 device creation inside the injected process.
 //
-// The temp-swapchain bootstrap is usually the first thing in a process to call
-// `D3D12CreateDevice`, which makes it the first thing to notice that D3D12 is broken here -
-// often seconds before the game's own renderer reaches the same conclusion and aborts. That
-// head start is only worth something if the log says *why*, so a failure emits an entry
-// integrity check, a per-adapter feature-level matrix, an unpatched-body retry, and a
-// verdict, instead of one bare HRESULT repeated until the process dies.
+// Hardware-device failures can be expanded into entry-integrity and adapter
+// capability evidence. The temp-swapchain bootstrap intentionally uses WARP
+// and must not call this report: its hardware probes would re-enter the vendor
+// UMD during the application's graphics startup.
 namespace ce::dx12_device_creation_report {
 
 // Emit the report for `observedHr`, at most `kMaxDeviceCreationReports` times per process
@@ -18,8 +16,7 @@ namespace ce::dx12_device_creation_report {
 void ReportDeviceCreationFailure(HRESULT observedHr, const char* callSite);
 
 // True while the temp-swapchain route should still pay for a device-creation attempt.
-// Terminal failures stop being retried after a small budget: each attempt maps and unmaps
-// the vendor UMD inside the game's startup for a result that cannot change.
+// Terminal WARP failures stop being retried after a small budget.
 bool ShouldAttemptTempDeviceCreation();
 
 // Record the outcome of one temp-swapchain device-creation attempt.

@@ -1,5 +1,14 @@
 #include "test_dxgi_shared_shared.h"
 
+TEST(DXGISharedTest, ProcessDiscoveryPrefersEventDrivenStartTraceAndRetainsPolledFallback) {
+    const std::wstring realtimeQuery = ce::injection_policy::kRealtimeProcessStartQuery;
+    const std::wstring fallbackQuery = ce::injection_policy::kPolledProcessStartFallbackQuery;
+
+    EXPECT_NE(realtimeQuery.find(L"Win32_ProcessStartTrace"), std::wstring::npos);
+    EXPECT_EQ(realtimeQuery.find(L"WITHIN"), std::wstring::npos);
+    EXPECT_NE(fallbackQuery.find(L"__InstanceCreationEvent WITHIN 0.5"), std::wstring::npos);
+}
+
 // The app-callback deep draw and no-callback final-batch draw key renderer state by the presented FFX
 // swapchain, while the queue bindings are keyed by the game-facing proxy. Both the explicit Streamline
 // enable prep and the FFX context-destroy unregister must retire the fence and inline-marker maps, otherwise
