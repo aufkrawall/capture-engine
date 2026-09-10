@@ -78,7 +78,16 @@ bool SameSettings(const ce::ue5_cvar::Settings& left, const ce::ue5_cvar::Settin
 void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
   bool newlyEnabled = false;
   for (std::size_t index = 0; index < detail::kCVarCount; ++index) {
-    const ce::ue5_cvar::ResolvedValue resolved = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[index], settings);
+    ce::ue5_cvar::ResolvedValue resolved = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[index], settings);
+    // A floor spec keeps the effective value installed earlier: a title that
+    // tuned a longer history (Talos ships 25 where the engine default is 10)
+    // must not be pulled down to CE's minimum by an unrelated settings change.
+    // Explicit custom entries are exact and are never floored.
+    if (resolved.enabled && resolved.floor && detail::g_desired[index].enabled &&
+        detail::IsOverrideInstalled(detail::g_overrides[index])) {
+      resolved.bits = ce::ue5_cvar::MaxBits(ce::ue5_cvar::kSpecs[index].type, resolved.bits,
+                                            detail::g_desired[index].bits);
+    }
     if (detail::g_desired[index].enabled && !resolved.enabled)
       detail::RestoreOverride(index, "configuration disabled");
     if (!detail::g_desired[index].enabled && resolved.enabled)

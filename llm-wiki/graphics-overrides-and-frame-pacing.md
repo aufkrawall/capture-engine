@@ -68,7 +68,8 @@ Primary sources:
   accepted, and `UE5.force_ray_reconstruction` works in a process-backed profile.
 - `ray_reconstruction_optimal_settings=off|light|medium|full` applies nested rendering-quality bundles listed in
   `captureengine/config.ini.template`; none selects `r.NGX.DLSS.DenoiserMode`, so RR remains the independent
-  `force_ray_reconstruction` policy. Legacy `on` maps to `full`. `custom_cvar_overrides` accepts typed, comma-separated
+  `force_ray_reconstruction` policy. Legacy `on` maps to `full`, which also restores full-resolution short-range AO on
+  UE 5.6+ and floors the screen-probe history (a game-tuned longer history wins). `custom_cvar_overrides` accepts typed, comma-separated
   values for any CVar in the supported spec table and has final precedence. `disable_post_processing_effects=on` applies dedicated
   built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
   touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.

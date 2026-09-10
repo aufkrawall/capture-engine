@@ -79,9 +79,11 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   runtime capability/support results.
 - `[UE5] ray_reconstruction_optimal_settings=off|light|medium|full` applies nested quality bundles. `light` disables
   Lumen reflection bilateral/screen-space/temporal reconstruction and SSR temporal accumulation; `medium` also sets
-  the Lumen reflection downsample factor to 1; `full` adds the remaining former Lumen/VSM/MegaLights values. It no
-  longer includes `r.NGX.DLSS.DenoiserMode` or implies the independent force policy. Legacy `on`/Boolean-true inputs
-  remain compatibility aliases for `full`. Missing CVars are logged and skipped.
+  the Lumen reflection downsample factor to 1; `full` adds the remaining former Lumen/VSM/MegaLights values, restores
+  full-resolution short-range AO on UE 5.6+ (`ShortRangeAO.DownsampleFactor=1`, `ShortRangeAO.Temporal=1`), and floors
+  the screen-probe history (`Temporal.MaxFramesAccumulated`/`MaxRayDirections` to a 16 minimum, so a game-tuned longer
+  history is kept). It no longer includes `r.NGX.DLSS.DenoiserMode` or implies the independent force policy. Legacy
+  `on`/Boolean-true inputs remain compatibility aliases for `full`. Missing CVars are logged and skipped.
 - `[UE5] custom_cvar_overrides` is a comma-separated final-precedence list for any CVar already present in
   `ce::ue5_cvar::kSpecs`. Names are case-insensitive; normalized aliases such as `tonemapper_sharpen` drop a leading
   `r.`/`t.` and replace dots with underscores. Each value must match the known Int32/Float type; unsupported,

@@ -1,6 +1,6 @@
 # UE5 CVar Overrides
 
-Last cross-checked: 2026-08-22
+Last cross-checked: 2026-09-10
 
 Process-local, persistent overrides of Unreal Engine console variables in an injected x64 game: how CE finds a CVar's
 value storage, which layouts it accepts, what it refuses, and every setting the `[UE5]` config section ships. Split
@@ -342,6 +342,31 @@ mode is a visibly broken frame in the user's game.
   `t.` and replace dots with underscores (`tonemapper_sharpen` -> `r.Tonemapper.Sharpen`). Int32 values require
   integer syntax and Float values require a finite full-string number. Invalid entries are independently ignored,
   duplicates are last-wins, and custom values resolve after all presets/dedicated options.
+- **`full` restores full-resolution short-range AO on UE 5.6+** with
+  `r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor=1` and `ShortRangeAO.Temporal=1`. UE 5.6 moved short-range
+  AO to half resolution with its own temporal denoiser; Epic's Lumen developer documents the pair as the way back to
+  the pre-5.6 path. Full resolution restores the spatial quality of the pass whose half-res residuals DLSS RR preset F
+  preserves instead of smoothing away, while the temporal stage stays enabled so the result is not noisier. Both
+  literals are 5.6+; older engines report them as not found and skip them.
+- **The two screen-probe history entries are minimums, not fixed writes.** `Temporal.MaxFramesAccumulated` (16, Float)
+  and `Temporal.MaxRayDirections` (16, Int32) use `ce::ue5_cvar::ApplyMode::Floor`: `Resolve()` reports
+  `ResolvedValue::floor` and the install paths (`ResolveEffectiveBits()` in `main_ue5_install.cpp`, shared by the scan
+  install and both console-registry installs) write `max(configured, observed)`. A title that already keeps a longer
+  history keeps it - measured: Talos ships `MaxFramesAccumulated=25.0f` where the engine default is 10, and the former
+  fixed 10 silently lowered it. `UpdateDesiredOverrides()` re-floors against the previous desired value so an unrelated
+  settings change cannot pull an installed 25 back to 16; explicit `custom_cvar_overrides` stay exact (`floor=false`)
+  because the user asked for that value.
+- **`r.MegaLights.NumSamplesPerPixel` is 4, not 8.** The engine quantizes the setting to real tiers - 2, 4 and 16
+  (ARM's MegaLights article and Epic's Tokyo DevDays 26 deck show only those), and every value from 4 up to 16 builds
+  the same 2x2 sample grid, so the former 8 executed as 4. 16 is the next real tier and multiplies the tracing cost;
+  `r.MegaLights.DownsampleMode=0`, where the literal exists (UE 5.7+), already quadruples the ray count.
+- **`r.Shadow.Denoiser` is deliberately not in the bundle.** NVIDIA's `UDLSSLibrary::EnableDLSSRR()` sets it to 0
+  together with the three Lumen reflection CVars, but only on an actual enable transition with DLSS-SR enabled; UE
+  5.6/5.7 register the CVar with an actual default of 2 (its help text still says "0: Disabled (default)"), and
+  forcing 0 while RR is not provably active exposes raw ray-traced shadow masks. The `light` preset already writes the
+  three Lumen reflection CVars itself, so pre-setting `r.NGX.DLSS.DenoiserMode=1` cannot leave those unset even when
+  the plugin's own transaction early-returns. If it is ever added, the correct mechanism is an RR-state-gated enable
+  with restore, not a persistent write.
 - Parsing occurs at the host config boundary. ABI 45 transports only a 64-bit spec mask and 64 raw values whose
   types were already validated; the injected hook does not parse an untrusted expression. `kSpecs` is statically
   capped at that capacity. `SharedGraphicsConfig` grows from 420 to 688 bytes, and all mapping/event names move with
@@ -422,3 +447,17 @@ redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue
 - **DLAA vs upscaling:** with `dlss_super_resolution=on` and no quality mode, a game sitting at 100% screen
   percentage gets DLAA rather than a performance win. That is intentional (CE does not change render resolution
   unasked), but it is the most likely "it did nothing" report.
+- **DLSS-RR `ResponsivityMask` is the real 4.5 temporal control, and CE does not inject it.** Streamline 2.12.0 added
+  the optional `sl::kBufferTypeResponsivityMask` (numeric id 68; `kBufferTypeUIAlpha` moved 68 -> 69 in the same
+  release) as a per-pixel temporal-responsivity input for `sl.dlss_d`. The NGX helper headers document it as one
+  channel, range [-1,1], R16F or R8 SNORM, and `sl.dlss_d` forwards it to NGX as
+  `NVSDK_NGX_Parameter_DLSSD_ResponsivityMask` when the host tags it. A tag is a per-frame GPU resource submitted by
+  the game/plugin's own Streamline integration: a CVar override cannot reach it, and loading newer
+  `sl.interposer.dll`/`sl.dlss_d.dll` (e.g. the 2.14.1 set in `Programme/npi/sl`) does not make an older plugin tag
+  an input it was not compiled to send. CE interposes `slSetTag`/`slSetTagForFrame`/`slEvaluateFeature`
+  (`hook/apis/streamline_bridge.cpp`), so appending the tag is technically conceivable, but the mask's per-pixel
+  content is renderer knowledge CE does not have (a constant mask is an unvalidated global bias), the sign/scale
+  semantics are not publicly documented, and the 68/69 renumbering makes cross-version tagging a UI/FG hazard when CE
+  pins newer SL DLLs under older plugins. Cheapest first step if this is ever pursued: log whether the game already
+  tags buffer type 68 on its RR evaluation - if it does, the mask is game-side tuning and nothing needs injecting.
+  Unverified in-game.

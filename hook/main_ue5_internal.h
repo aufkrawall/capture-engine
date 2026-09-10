@@ -208,6 +208,11 @@ bool ReadValue(const void* pointer, T& value) {
 
 void ClearPendingModules();
 void UpdateForcedData(std::size_t specIndex, uint32_t bits);
+// Applies an `ApplyMode::Floor` spec's minimum to the value the title currently
+// holds and records the result as the desired value, so verification,
+// re-assertion, and later settings changes all agree on the effective value.
+// Set specs are returned unchanged.
+uint32_t ResolveEffectiveBits(std::size_t specIndex, uint32_t observedBits);
 // Process-lifetime shadow storage for one override, allocated on first use.
 ForcedConsoleVariableData* GetOrCreateForcedData(std::size_t specIndex);
 // Commits the recorded undo information for a data-pointer redirect, then

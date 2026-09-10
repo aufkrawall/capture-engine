@@ -223,7 +223,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("internal_anisotropic_filtering=default"), std::string::npos);
     EXPECT_NE(generatedText.find("r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32"),
               std::string::npos);
-    EXPECT_NE(generatedText.find("r.MegaLights.NumSamplesPerPixel=8"), std::string::npos);
+    EXPECT_NE(generatedText.find("r.MegaLights.NumSamplesPerPixel=4"), std::string::npos);
+    EXPECT_NE(generatedText.find("r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor=1"),
+              std::string::npos);
     EXPECT_NE(generatedText.find("audio_capture_latency_ms=0 measures"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);

@@ -35,8 +35,9 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ce::ue5_cvar::ValueType::Int32, 3.0},
         // Float in the engine, not int: Talos's console object holds 25.0f.
-        {"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ce::ue5_cvar::ValueType::Float, 10.0},
-        {"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ce::ue5_cvar::ValueType::Int32, 8.0},
+        // The value is a floor: a longer game-tuned history is kept.
+        {"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ce::ue5_cvar::ValueType::Float, 16.0},
+        {"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ce::ue5_cvar::ValueType::Int32, 16.0},
         {"r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.ScreenProbeGather.TracingOctahedronResolution", ce::ue5_cvar::ValueType::Int32, 16.0},
@@ -53,8 +54,11 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Shadow.Virtual.ResolutionLodBiasLocal", ce::ue5_cvar::ValueType::Float, -0.5},
         {"r.Shadow.Virtual.ResolutionLodBiasLocalMoving", ce::ue5_cvar::ValueType::Float, 0.5},
         {"r.MegaLights.DownsampleMode", ce::ue5_cvar::ValueType::Int32, 0.0},
-        {"r.MegaLights.NumSamplesPerPixel", ce::ue5_cvar::ValueType::Int32, 8.0},
+        {"r.MegaLights.NumSamplesPerPixel", ce::ue5_cvar::ValueType::Int32, 4.0},
         {"r.SSR.Temporal", ce::ue5_cvar::ValueType::Int32, 0.0},
+        // Appended last so the positional indices above stay stable.
+        {"r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
+        {"r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal", ce::ue5_cvar::ValueType::Int32, 1.0},
     };
     for (const auto& item : expected) {
         const auto* spec = FindSpec(item.name);
@@ -90,7 +94,7 @@ TEST(UE5CVarOverridePolicyTest, RayReconstructionSettingsLevelsAreNestedWithoutS
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
     const auto denoiser = ce::ue5_cvar::Resolve(ce::ue5_cvar::kSpecs[ce::ue5_cvar::kDenoiserModeIndex], settings);
     EXPECT_FALSE(denoiser.enabled);
-    EXPECT_EQ(countEnabled(), 29u);
+    EXPECT_EQ(countEnabled(), 31u);
 
     const auto* bilateral = FindSpec("r.Lumen.Reflections.BilateralFilter");
     const auto* ssrTemporal = FindSpec("r.SSR.Temporal");
@@ -626,6 +630,51 @@ TEST(UE5CVarOverridePolicyTest, NewOverridesAreIndependentlySelectable) {
     settings.hdrColorGamut = 0;
     EXPECT_TRUE(ce::ue5_cvar::AnyEnabled(settings))
         << "Rec709 is a real gamut selection, not the untouched state";
+}
+
+// The two history entries are floors, not fixed writes. A title that already
+// accumulates more than CE's minimum keeps its own value (Talos ships 25.0f
+// where the engine default is 10), while the default is raised; explicit custom
+// entries stay exact because the user asked for a specific value.
+TEST(UE5CVarOverridePolicyTest, HistoryEntriesAreFloorsThatNeverLowerAGameValue) {
+    ce::ue5_cvar::Settings settings;
+    settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
+
+    const auto* frames = FindSpec("r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated");
+    const auto* directions = FindSpec("r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections");
+    ASSERT_NE(frames, nullptr);
+    ASSERT_NE(directions, nullptr);
+    EXPECT_EQ(frames->mode, ce::ue5_cvar::ApplyMode::Floor);
+    EXPECT_EQ(directions->mode, ce::ue5_cvar::ApplyMode::Floor);
+
+    const auto framesResolved = ce::ue5_cvar::Resolve(*frames, settings);
+    const auto directionsResolved = ce::ue5_cvar::Resolve(*directions, settings);
+    ASSERT_TRUE(framesResolved.enabled);
+    ASSERT_TRUE(directionsResolved.enabled);
+    ASSERT_TRUE(framesResolved.floor);
+    ASSERT_TRUE(directionsResolved.floor);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(framesResolved.bits), 16.0f);
+    EXPECT_EQ(static_cast<int32_t>(directionsResolved.bits), 16);
+
+    // max(configured, observed), in both directions and for both value types.
+    const uint32_t tunedFrames = std::bit_cast<uint32_t>(25.0f);
+    EXPECT_FLOAT_EQ(
+        std::bit_cast<float>(ce::ue5_cvar::MaxBits(frames->type, framesResolved.bits, tunedFrames)), 25.0f);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(ce::ue5_cvar::MaxBits(
+                        frames->type, framesResolved.bits, std::bit_cast<uint32_t>(10.0f))),
+                    16.0f);
+    EXPECT_EQ(static_cast<int32_t>(ce::ue5_cvar::MaxBits(directions->type, directionsResolved.bits, 8u)), 16);
+    EXPECT_EQ(static_cast<int32_t>(ce::ue5_cvar::MaxBits(directions->type, directionsResolved.bits, 32u)), 32);
+
+    // A custom entry selects an exact value and must not be raised again.
+    const std::size_t framesIndex = ce::ue5_cvar::FindSpecIndex(frames->name);
+    ASSERT_LT(framesIndex, ce::ue5_cvar::kSpecs.size());
+    settings.customCVarOverrideMask = uint64_t{1} << framesIndex;
+    settings.customCVarOverrideValues[framesIndex] = std::bit_cast<uint32_t>(12.0f);
+    const auto custom = ce::ue5_cvar::Resolve(*frames, settings);
+    ASSERT_TRUE(custom.enabled);
+    EXPECT_FALSE(custom.floor);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(custom.bits), 12.0f);
 }
 
 // Every spec name has to be unique: two entries sharing a CVar would race for the

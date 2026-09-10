@@ -127,6 +127,7 @@ bool InstallReferencePointer(std::size_t specIndex, HMODULE owner, uintptr_t con
                      spec.name, origin, static_cast<int32_t>(value));
     return false;
   }
+  ResolveEffectiveBits(specIndex, value);
   if (!IsWritableRange(reinterpret_cast<void*>(pointerSlot), sizeof(uint32_t) * 4)) {
     HookLogImportant("UE5 overrides: %s value storage found via %s is not writable; leaving it unchanged",
                      spec.name, origin);
@@ -198,6 +199,7 @@ bool InstallInlinePair(std::size_t specIndex, HMODULE owner, uintptr_t consoleOb
                      spec.name, origin, static_cast<int32_t>(game));
     return false;
   }
+  ResolveEffectiveBits(specIndex, game);
   if (!GetOrCreateForcedData(specIndex)) {
     HookLogImportant("UE5 overrides: unable to allocate process-lifetime storage for %s (error=%lu)",
                      spec.name, GetLastError());

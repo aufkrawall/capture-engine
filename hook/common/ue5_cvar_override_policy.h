@@ -65,6 +65,17 @@ enum class ApplyGuard : uint8_t {
     SdrOutputDeviceOnly,
 };
 
+// How the configured value relates to the value the title already holds. `Set`
+// writes the configured value everywhere. `Floor` treats it as a minimum: the
+// effective value becomes max(configured, observed), so a title that tuned a
+// longer history keeps it while a title sitting at or below the minimum is
+// raised. The policy decides this and Resolve() reports it as `floor`; the
+// install layer only has to ask `ResolveEffectiveBits()`.
+enum class ApplyMode : uint8_t {
+    Set,
+    Floor,
+};
+
 // UE's own texture mip bias is a float CVar whose engine help documents the
 // range -15.0 to 15.0 (verified in the Talos 5.4.4 binary, where the
 // registration passes its default in xmm2 - a float, not an int). Negative
@@ -211,11 +222,16 @@ struct Spec {
     Activation activation = Activation::RayReconstructionFull;
     double value = 0.0;
     ApplyGuard guard = ApplyGuard::Always;
+    ApplyMode mode = ApplyMode::Set;
 };
 
 struct ResolvedValue {
     bool enabled = false;
     uint32_t bits = 0;
+    // True when the spec is a floor and the value came from the preset rather
+    // than an explicit custom entry: the install layer raises the game's value
+    // to `bits` instead of overwriting it.
+    bool floor = false;
 };
 
 inline constexpr std::array kSpecs{
@@ -244,11 +260,16 @@ inline constexpr std::array kSpecs{
     // float global, i.e. no temporal accumulation at all. The type checks stay
     // fail-closed in the other direction too: an int-typed build would present
     // 10 or 25, which reinterpret as denormal floats and are refused rather
-    // than written.
+    // than written. The value is a floor: a title that already accumulates
+    // longer than 16 frames keeps its own history (Talos ships 25), while the
+    // engine default of 10 is raised.
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated", ValueType::Float,
-         Activation::RayReconstructionFull, 10.0},
+         Activation::RayReconstructionFull, 16.0, ApplyGuard::Always, ApplyMode::Floor},
+    // Epic's own help couples this to MaxFramesAccumulated ("Should be tweaked
+    // based on MaxFramesAccumulated"), so it is floored to the same value; a
+    // title already using a wider direction set keeps it.
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ValueType::Int32,
-         Activation::RayReconstructionFull, 8.0},
+         Activation::RayReconstructionFull, 16.0, ApplyGuard::Always, ApplyMode::Floor},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal", ValueType::Int32,
          Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp", ValueType::Int32,
@@ -280,8 +301,13 @@ inline constexpr std::array kSpecs{
     Spec{"r.Shadow.Virtual.ResolutionLodBiasLocalMoving", ValueType::Float,
          Activation::RayReconstructionFull, 0.5},
     Spec{"r.MegaLights.DownsampleMode", ValueType::Int32, Activation::RayReconstructionFull, 0.0},
+    // UE quantises this to real sample tiers: the supported values are 2, 4 and
+    // 16, and everything from 4 up to 16 builds the same 2x2 sample grid, so 8
+    // executed as 4. Write the tier that is actually used; 16 is the next real
+    // one and multiplies the tracing cost, to be chosen only for an attributed
+    // MegaLights noise problem.
     Spec{"r.MegaLights.NumSamplesPerPixel", ValueType::Int32,
-         Activation::RayReconstructionFull, 8.0},
+         Activation::RayReconstructionFull, 4.0},
     Spec{"r.Tonemapper.Sharpen", ValueType::Float, Activation::TonemapperSharpen, 0.0},
     Spec{"r.FilmGrain", ValueType::Int32, Activation::DisablePostProcessing, 0.0},
     Spec{"r.Tonemapper.GrainQuantization", ValueType::Int32,
@@ -333,6 +359,17 @@ inline constexpr std::array kSpecs{
     Spec{"r.HDR.Display.ColorGamut", ValueType::Int32, Activation::HdrColorGamut, 0.0},
     // Kept at the end so every established positional index remains stable.
     Spec{"r.SSR.Temporal", ValueType::Int32, Activation::RayReconstructionLight, 0.0},
+    // UE 5.6 moved short-range AO to half resolution with its own temporal
+    // denoiser - faster, but it leaves half-resolution AO residuals that RR
+    // preset F preserves instead of smoothing away. Full resolution restores
+    // the spatial quality of exactly the pass that boils, and the temporal
+    // stage stays enabled so the result is not noisier. Both literals are 5.6+
+    // (Epic's own Lumen developer documents the pair as the way back to the
+    // pre-5.6 path); older engines report them as not found and skip them.
+    Spec{"r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor", ValueType::Int32,
+         Activation::RayReconstructionFull, 1.0},
+    Spec{"r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal", ValueType::Int32,
+         Activation::RayReconstructionFull, 1.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -380,6 +417,21 @@ inline uint32_t ValueBits(ValueType type, double value) noexcept {
     if (type == ValueType::Float)
         return std::bit_cast<uint32_t>(static_cast<float>(value));
     return static_cast<uint32_t>(static_cast<int32_t>(value));
+}
+
+// Ordering helper for `ApplyMode::Floor` specs. Both operands are validated
+// before they get here (observed values pass IsPlausibleShadowValue and custom
+// values were parsed against the spec's type at the config boundary), so this is
+// a plain comparison rather than a sanitiser for garbage.
+inline uint32_t MaxBits(ValueType type, uint32_t left, uint32_t right) noexcept {
+    if (type == ValueType::Float) {
+        const float leftValue = std::bit_cast<float>(left);
+        const float rightValue = std::bit_cast<float>(right);
+        return std::bit_cast<uint32_t>(rightValue > leftValue ? rightValue : leftValue);
+    }
+    const int32_t leftValue = static_cast<int32_t>(left);
+    const int32_t rightValue = static_cast<int32_t>(right);
+    return static_cast<uint32_t>(rightValue > leftValue ? rightValue : leftValue);
 }
 
 inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcept {
@@ -475,8 +527,8 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
     }
     const std::size_t specIndex = FindSpecIndex(spec.name ? spec.name : "");
     if (specIndex < kSpecs.size() && (settings.customCVarOverrideMask & (uint64_t{1} << specIndex)))
-        return {true, settings.customCVarOverrideValues[specIndex]};
-    return {enabled, ValueBits(spec.type, value)};
+        return {true, settings.customCVarOverrideValues[specIndex], false};
+    return {enabled, ValueBits(spec.type, value), spec.mode == ApplyMode::Floor};
 }
 
 inline bool AnyEnabled(const Settings& settings) noexcept {

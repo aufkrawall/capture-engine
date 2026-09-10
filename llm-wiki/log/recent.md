@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-09-10 - RR preset F AO-boiling mitigations: full-res short-range AO, history floors, honest MegaLights tier
+
+A follow-up review of the `full` RR preset against DLSS 4.5 RR preset F (2nd-gen transformer) splits three
+assumptions that predated that model. Preset F preserves detail instead of temporally smoothing it, so residual
+half-resolution short-range AO from UE 5.6 and an artificially low screen-probe history survive into the output.
+`full` now also writes `r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor=1` with `ShortRangeAO.Temporal=1`
+(5.6+; older engines log them missing and skip), and the two screen-probe history entries became floors: new
+`ApplyMode::Floor`/`ResolvedValue::floor` resolve to `max(configured, observed)` through `ResolveEffectiveBits()`, so
+Talos's game-tuned `MaxFramesAccumulated=25.0f` is kept while the engine default of 10 is raised to 16, and an
+unrelated settings change re-floors instead of downgrading. `r.MegaLights.NumSamplesPerPixel` is corrected from 8 to
+4: the engine quantizes to 2/4/16 and 8 executed as 4, which the config template and tests now state.
+`r.Shadow.Denoiser` stays out on purpose (would need an RR-state-gated enable with restore; UE 5.6/5.7 actual default
+2, help text stale). Open thread: the Streamline 2.12+ `ResponsivityMask` (id 68, one channel [-1,1], R16F/R8 SNORM)
+is the real 4.5 temporal control, but it is a per-frame resource tag the game/plugin must submit; CE does not inject
+it, and the 68/69 UIAlpha renumbering makes cross-version tagging risky when newer SL DLLs are pinned under older
+plugins. Validation: full unit suite + Python self-tests, incremental product build, clang-tidy/file-size/Python lint
+all clean. No in-game A/B yet.
+
 ### 2026-09-10 - Repeated-start validation closes the FSR rate split; exact Present-queue proof closes DLSS startup blank
 
 Talos session `installed/captureengine/logs/20260910_075304` exercises build `0.1.6518` over eight

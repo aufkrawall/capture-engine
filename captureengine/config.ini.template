@@ -597,14 +597,16 @@ force_ray_reconstruction=off
 ; r.Lumen.ScreenProbeGather.StochasticInterpolation=0
 ; r.Lumen.ScreenProbeGather.SpatialFilterProbes=1
 ; r.Lumen.ScreenProbeGather.SpatialFilterNumPasses=3
-; r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated=10
-; r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections=8
+; r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated=16
+; r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections=16
 ; r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal=0
 ; r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp=0
 ; r.Lumen.ScreenProbeGather.TracingOctahedronResolution=16
 ; r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget=600
 ; r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32
 ; r.Lumen.ScreenProbeGather.ShortRangeAO.ApplyDuringIntegration=0
+; r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor=1
+; r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal=1
 ; r.LumenScene.Radiosity.Temporal.MaxFramesAccumulated=4
 ; r.LumenScene.Radiosity.UpdateFactor=16
 ; r.LumenScene.DirectLighting.UpdateFactor=16
@@ -615,7 +617,13 @@ force_ray_reconstruction=off
 ; r.Shadow.Virtual.ResolutionLodBiasLocal=-0.5
 ; r.Shadow.Virtual.ResolutionLodBiasLocalMoving=0.5
 ; r.MegaLights.DownsampleMode=0
-; r.MegaLights.NumSamplesPerPixel=8
+; r.MegaLights.NumSamplesPerPixel=4
+; CVars a build does not have are logged and skipped, so this list is shared
+; across engine versions: ShortRangeAO.DownsampleFactor/Temporal need UE 5.6+,
+; MegaLights.DownsampleMode needs UE 5.7+. MegaLights quantizes its sample count
+; to 2, 4 or 16; 4 is the engine default tier. MaxFramesAccumulated and
+; MaxRayDirections are minimums rather than fixed values, so a game that already
+; keeps a longer probe history keeps it while shorter histories are raised.
 ; The legacy value on remains accepted as an alias for full.
 ray_reconstruction_optimal_settings=off
 ;

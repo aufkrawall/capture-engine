@@ -142,6 +142,15 @@ void UpdateForcedData(std::size_t specIndex, uint32_t bits) {
     WriteThroughReferencePair(state, bits);
 }
 
+uint32_t ResolveEffectiveBits(std::size_t specIndex, uint32_t observedBits) {
+  ce::ue5_cvar::ResolvedValue& desired = g_desired[specIndex];
+  if (desired.floor) {
+    const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
+    desired.bits = ce::ue5_cvar::MaxBits(spec.type, desired.bits, observedBits);
+  }
+  return desired.bits;
+}
+
 bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::size_t discoveredCandidates,
                     std::size_t validatedCandidates, ULONGLONG scanElapsedMs) {
   const std::size_t specIndex = candidate.specIndex;
@@ -167,6 +176,9 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
         spec.name, baseName, static_cast<int32_t>(observedBits));
     return false;
   }
+  // Floor specs raise the title's value to CE's minimum instead of replacing
+  // it, so the recorded original decides the effective value here.
+  const uint32_t forcedBits = ResolveEffectiveBits(specIndex, observedBits);
   bool writeThrough = false;
   if (candidate.originalReference && candidate.evidence.shadowValuesPlausible) {
     auto* referenceField = reinterpret_cast<void* volatile*>(candidate.object + sizeof(void*) * 2);
@@ -195,7 +207,7 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
     observedPair.pairWritable = IsWritableRange(candidate.originalReference, sizeof(uint32_t) * 2);
     writeThrough = ApplyReferencePlan(g_overrides[specIndex],
                                       ce::ue5_redirect::MakeReferencePlan(observedPair),
-                                      g_desired[specIndex].bits);
+                                      forcedBits);
   } else if (candidate.dataShadowUsable) {
     if (!IsWritableRange(reinterpret_cast<void*>(candidate.dataShadowAddress),
                          sizeof(uint32_t) * (candidate.dataShadowPointerRedirect ? 4 : 2))) {
@@ -241,7 +253,7 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
         g_overrides[specIndex] = {};
         return false;
       }
-      ApplyRestorePlan(g_overrides[specIndex], plan, g_desired[specIndex].bits);
+      ApplyRestorePlan(g_overrides[specIndex], plan, forcedBits);
       writeThrough = g_overrides[specIndex].dataPointerValueWritten;
     }
   } else {
@@ -252,13 +264,13 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
   const bool installedAsDataShadow =
       !(candidate.originalReference && candidate.evidence.shadowValuesPlausible);
   const char* installMode = installedAsDataShadow ? "data-pointer redirect" : "Ref redirect";
-  UpdateForcedData(specIndex, g_desired[specIndex].bits);
+  UpdateForcedData(specIndex, forcedBits);
   g_activeModules[specIndex].store(image.module, std::memory_order_release);
   g_activeModuleUnloaded[specIndex].store(false, std::memory_order_release);
   LogInstall(spec, baseName, installMode, candidate, installedAsDataShadow, writeThrough,
              validatedCandidates, discoveredCandidates,
              candidate.object > image.base ? candidate.object - image.base : 0, scanElapsedMs,
-             g_desired[specIndex].bits);
+             forcedBits);
   return true;
 }
 
