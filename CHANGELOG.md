@@ -1,24 +1,147 @@
 # Changelog
 
+## Unreleased
+
+Changes since [v0.1.6143](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6143).
+
+### New
+
+- Added in-game benchmark recording, an overlay benchmark HUD, and interactive HTML reports. The `benchmark` hotkey
+  (`CTRL+7` by default) starts, stops, or clears a run; `[Benchmark]` controls an optional start delay, a fixed run
+  duration, and the output directory (empty means a `benchmarks` folder beside the executable). Reports use the same
+  live frame metrics the overlay already collects.
+- Added `[Overlay] frametime_source=display_change` (the new default): frame time, FPS, 1% lows, variance, graph
+  samples, and stutter state can come from real screen-change timestamps instead of application presents, so
+  generated frames and variable-refresh scanout are included. A dedicated timing service owns the tracing work and
+  publishes a lock-free ring that each DXGI and Vulkan overlay consumes independently; the overlay falls back to
+  presentation timing whenever the display stream is unavailable, denied, failed, or stale.
+- Added NVIDIA scheduled-flip decoding for display-change timing. Deferred flip completions are corrected with the
+  driver's scheduled screen-time announcement; the payload is decoded positionally and continuously revalidated so
+  an unrecognised or moved field yields no correction instead of a wrong one. This removes the DLSS 4 MFG
+  presentation sawtooth that made smooth generated output look stuttery, validated in Talos at MFG 1x/2x/3x/4x.
+- Added injected-overlay PC latency. `PC Latency~` uses D3D/Vulkan Reflex/PCL frame markers plus measured display
+  timing, while `Latency est.` provides a frame-cadence fallback without markers. Both account for dropped frames
+  and frame-generation base cadence, fail closed below the heuristic's supported rate, and exclude
+  peripherals/scanout.
+- Added an opt-in USB/webcam face-camera overlay for WGC/DXGI and inject capture. Camera ingest is nonblocking and
+  latest-frame-only; a one-draw D3D11 compositor provides configurable placement, size, crop, mirroring, opacity,
+  rectangle/rounded/circle masks, borders, SDR/HDR mapping, and moving camera content on CFR repeated game frames.
+- Added opt-in, stream-only YouTube, Twitch, and custom RTMP/RTMPS output. It reuses CaptureEngine's CFR/audio
+  timing, selects a low-latency H.264/AAC compatibility profile on the configured hardware backend, redacts stream
+  keys, and stops the session on bounded network/queue failure instead of sacrificing A/V synchronization.
+- Added optional LibreHardwareMonitor polling for CPU/GPU temperature, package power, fan RPM, core clocks, and
+  voltages in the existing overlay rows. The runtime files are now installed by the build from a pinned,
+  digest-verified archive instead of being copied in by hand; the PowerShell bridge was replaced by a native CLR
+  host, and an unresolvable hardware scope now fails loudly instead of publishing zeros.
+- Added bundled PawnIO setup with integrity verification. When CPU sensors are requested and the kernel driver is
+  missing, CaptureEngine offers a single elevated Windows Package Manager install prompt (or the project page);
+  install and removal are elevated product commands (`--install-pawnio` / `--uninstall-pawnio`) rather than
+  user-editable scripts beside the executable.
+- Added log privacy filtering. Shared logs mask the Windows account name in user-profile paths and collapse
+  user-configured capture/screenshot output paths to a root prefix plus leaf; game process names, PIDs, timestamps,
+  and hardware model stay logged. CE's crash-dump content map and the deliberate no-redaction containment policy
+  are documented.
+
+### Improved
+
+- Rebalanced `ray_reconstruction_optimal_settings` by cost into a strict `off|light|medium|high|full` ladder:
+  `light` applies the reconstruction and pre-smoothing passes RR replaces, `medium` adds full-resolution reflection
+  tracing plus every cost-free stabilizer and engine-default floor, `high` adds the paid sampling that is visibly
+  worth it (virtual-shadow ray counts and local resolution, the screen-probe octahedron lattice, radiance-cache
+  probe resolution), and `full` keeps the maximum screen-probe ray count, the radiance-cache probe budget, and
+  full-resolution short-range AO on UE 5.6+ (`on` still aliases `full`).
+  `r.Lumen.ScreenProbeGather.StochasticInterpolation` is now `1` at every level - the cheaper stochastic path and
+  the signal a ray-reconstruction denoiser expects - and inserting the new level renumbered the shared-memory
+  preset byte and moved `SHARED_MEMORY_VERSION` accordingly.
+- Reduced CaptureEngine's cost and interference in frame-generation games. The command-queue detour no longer
+  re-registers the FG runtime's own queues on every submission, overlay work stays off the present critical path,
+  hidden-overlay GPU work is isolated, and CE now measures its own per-hook cost with forwarded runtime blocking
+  subtracted. In the validated FG scene the overlay costs about 7 us of GPU time per output frame, and CE's own
+  CPU in the hottest hooks is about 1.4% of one core.
+- Made FSR frame-generation pacing less invasive and explainable: bounded pacing-episode traces capture
+  automatically on health regressions or manually on demand, preserve context across trace boundaries, decompose
+  displayed frames against the callback that produced them, and record the rate-loss table. CE no longer adopts
+  the runtime's queue, keeps display telemetry alive while the overlay is hidden, and reduces contention in
+  callback-owned pacing.
+- Improved frame-generation capture and limiter robustness: DLSS frame-generated output captures smoothly, DLSS
+  MFG capture clock drift and capture-phase liveness are fixed, inject CFR recovers after display phase shifts,
+  Reflex limiter recovery and pacing are stable, and CFR encoder overload recovery is faster.
+- Applied native Vulkan present timing and the FFX VSync intent before output scheduling. Forced FIFO now follows
+  the swapchain's own presentation contract instead of CE adding a second rate limiter, `VK_NV_present_metering`
+  is withheld where it would override FIFO, and CaptureEngine no longer force-overrides variable-refresh presents
+  with fixed vertical-blank pacing.
+- Made split-renderer setups work correctly: Vulkan profile inheritance and GPU telemetry attribution now follow
+  the real renderer child instead of the host process.
+- Made the tray and elevation flow more reliable: the context menu opens above the Windows taskbar, startup stays
+  responsive under delayed shell startup, admin restart hands over cleanly, a second instance no longer collides
+  with a running one, and PawnIO uninstallation tears down cleanly.
+- Cleaned up diagnostics and background state: duplicate per-frame trace logging on the game render thread was
+  removed (about 135 lines/s in Talos under FSR FG), and orphaned CE display-timing ETW sessions left by killed
+  instances are reclaimed before they exhaust the machine-wide session budget and silently degrade display timing
+  and PC latency to fallbacks.
+- The overlay frame-time graph now scrolls by drawn frames instead of sample arrival, so it animates smoothly under
+  frame generation instead of stepping like a lower frame rate; metric values themselves are unchanged.
+
+### Fixed
+
+- **Portal RTX (RTX Remix):** fixed `vsync_mode=fifo` under DLSS multi-frame generation. The layer withholds
+  `VK_NV_present_metering`, propagates native FIFO before Streamline DLSS-G, corrects the final DXGI FIFO present,
+  and fixes a FIFO present crash. A 143 Hz display now receives a paced FIFO stream rather than the metering-driven
+  ~172 fps burst.
+- **Portal RTX (RTX Remix):** fixed `general_limiter_mode=reflex` applying the frame-generation divisor twice: a
+  130 fps cap with 3x DLSS MFG displayed about 43 fps. The driver-owned low-latency interval is now fed the final
+  output rate.
+- **Portal RTX (RTX Remix):** fixed an FPS-cap escape where generated callbacks were mistaken for new output groups,
+  letting the game run at ~146-167 fps against a 130 fps cap. Output-group admission is now deterministic and
+  ordinal instead of a time-window guess.
+- **Portal RTX (RTX Remix):** fixed overlay flicker and a stale FG multiplier under 4x DLSS MFG by keeping the
+  Vulkan overlay on one composite route, growing the submit ring when a group has no reusable slot, and mirroring
+  the live DLSS-G state on every present; a stale semaphore/fence reuse bug that could re-signal a still-pending
+  present was fixed as well.
+- **Portal RTX (RTX Remix):** fixed clean exits writing a 191 MB pre-termination dump and spending 2.5 s in it; the
+  fallback now recognises an application ending itself, while genuine crashes still dump.
+- **RTX Remix:** fixed override and Vulkan pacing regressions, frame-generation scheduling, and late
+  frame-generation control.
+- **Talos:** fixed PC-latency estimation under FSR FG, which reported about 45 ms against 70 ms of real Reflex/PCL
+  markers. CE now classifies the application's own Present inside AMD's proxy and measures the generator's real
+  in-flight queue depth instead of assuming one frame; the anchored generator hold is reported as measured.
+- **Talos:** fixed frame-time variance that flipped between runs of the same build. The overlay no longer treats a
+  flip-latch timestamp as displayed frame time or mixes screen times with latch times: display timing is selected
+  only for a stream that actually resolves screen times, and presentation timing is used otherwise.
+- **Talos Reawakened:** fixed DLSS overrides being skipped after a stale `NvRemixBridge.exe` renderer claim from
+  Portal RTX; renderer claims are now scoped to the client that published them.
+- **Frame generation (all supported titles):** fixed blank gap lines across FG switching and keep-alive, FSR FG
+  frame-pacing stutter on AMD's presentation queue, a swapchain COM reference leak and Streamline runtime state
+  loss across FG mode switches, and DLSS MFG capture clock drift/liveness so recorded generated output stays
+  smooth. DLSS final-output declarations are complete, and the overlay reports the live DLSS-G multiplier even
+  when no override is configured.
+- **PC-latency overlay:** fixed idle mislabeling and survival across FG switches, 4x-vs-2x and 2x-vs-3x/4x
+  reporting inversions, transition outlier spikes, doubled latency after a DLSS FG -> FSR FG switch, fallback
+  recovery over hitches and unconstrained present rates, and async frame-generation correlation. Streamline PCL
+  reports are ignored while FSR FG is active.
+- **Display timing / VRR:** fixed `msBetweenDisplayChange` and the overlay frame-time source on variable-refresh
+  displays: unclocked flip-latch sawtooth is rejected, valid VRR completions are accepted, vsync-deferred
+  completions are rounded onto the blank they reach the screen at, flat but partially unlabelled display streams
+  are accepted, and an FSR-FG -> DLSS-FG regime change recovers within one measurement window instead of averaging
+  the old stream in for several seconds.
+- **Vulkan / DX12 integration:** fixed nested DXGI swapchain recovery and its timed retry amplification, DX12
+  execution discovery replacing established same-device queues, late D3D12 bootstrap and injection startup
+  perturbing FSR FG, a protected FFX startup latch escaping its swapchain, a proven-queue DLSS startup blank, and
+  a recursion in the NGX proxy hook path.
+- **Vulkan layer:** scoped Vulkan and DLSS state to the renderer process that owns it, fixed stale renderer claims
+  silencing the next game's overrides, and fixed queue-loader data plus resume verification.
+- **NVIDIA LOD-spread override:** fixed `nv_lod_spread_fix=on` becoming a silent no-op on 32-bit Vulkan/OpenGL
+  titles under newer drivers. The branch is neutralized by zeroing its relative displacement instead of writing a
+  two-byte NOP pair that can tear at that alignment; already-patched encodings are still recognised.
+- **Sensors and shutdown:** fixed a face-camera teardown deadlock and stopped unreadable sensor values from being
+  published as zeros.
+
 ## v0.1.6143
 
 Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6142).
 
 ### New
 
-- Added an opt-in USB/webcam face-camera overlay for WGC/DXGI and inject capture. Camera ingest is nonblocking and
-  latest-frame-only; a one-draw D3D11 compositor provides configurable placement, size, crop, mirroring, opacity,
-  rectangle/rounded/circle masks, borders, SDR/HDR mapping, and moving camera content on CFR repeated game frames.
-- Added opt-in, stream-only YouTube, Twitch, and custom RTMP/RTMPS output. It reuses CaptureEngine's CFR/audio timing,
-  selects a low-latency H.264/AAC compatibility profile on the configured hardware backend, redacts stream keys, and
-  stops the session on bounded network/queue failure instead of sacrificing A/V synchronization.
-- Added optional LibreHardwareMonitor polling for CPU/GPU temperature, package power, and GPU fan RPM in the existing
-  overlay rows. The managed library runs behind the dedicated sensor service and remains user-supplied in
-  `plugins\LibreHardwareMonitor`; release packaging includes only CaptureEngine's bridge/setup files and excludes all
-  locally added third-party binaries.
-- Added injected-overlay PC latency. `PC Latency~` uses D3D/Vulkan Reflex/PCL frame markers plus measured display
-  timing, while `Latency est.` provides a frame-cadence fallback without markers. Both account for dropped frames and
-  frame-generation base cadence, fail closed below the heuristic's supported rate, and exclude peripherals/scanout.
 - Added a Streamline 1.x-to-2.x upgrade bridge behind `streamline_upgrade=on`. This feature is still
   work-in-progress and currently non-functioning: it does not yet produce a working upgrade, so enabling it
   is not expected to restore Streamline features in a bridged game. The mechanism loads a complete
@@ -37,30 +160,17 @@ Changes since [v0.1.6142](https://github.com/aufkrawall/capture-engine/releases/
   through UE's screen percentage; the `hdr_*` settings drive `r.HDR.EnableHDROutput` and the
   `r.HDR.Display.*`/`r.HDR.UI.*` parameters in the nits and gamut the engine documents. None of them can add a
   missing plugin, invent HDR output on an SDR display, or create depth of field a game never configured.
-- Expanded `ray_reconstruction_optimal_settings` into graduated `off|light|medium|high|full` presets that form
-  a strict ladder, so every setting which costs no GPU time is reachable without the settings that do: `light`
-  applies the reconstruction and pre-smoothing RR replaces (`r.SSR.Temporal=0`, `r.Lumen.Reflections.Temporal=0`,
-  `r.Lumen.Reflections.BilateralFilter=0`, `r.Lumen.Reflections.ScreenSpaceReconstruction=0`,
-  `r.Lumen.ScreenProbeGather.StochasticInterpolation=1`), `medium` adds full-resolution reflection tracing plus
-  every cost-free stabilizer and engine-default floor (screen-probe history, spatial filter passes,
-  scene-lighting update factors), `high` adds the paid sampling that is visibly worth it (virtual-shadow ray
-  counts and local resolution, the screen-probe octahedron lattice, the radiance-cache probe resolution), and
-  `full` adds the maximum screen-probe ray count (`Temporal.MaxRayDirections=16` as a floor), the radiance-cache
-  probe budget, and full-resolution short-range AO on UE 5.6+; the legacy `on` spelling remains an alias for
-  `full`. Presets no longer enforce `r.NGX.DLSS.DenoiserMode=1` (select the
+- Expanded `ray_reconstruction_optimal_settings` into graduated `off|light|medium|full` presets: `light`
+  applies four temporal/reconstruction settings (`r.SSR.Temporal=0`, `r.Lumen.Reflections.Temporal=0`,
+  `r.Lumen.Reflections.BilateralFilter=0`, `r.Lumen.Reflections.ScreenSpaceReconstruction=0`), `medium` adds
+  `r.Lumen.Reflections.DownsampleFactor=1`, and `full` adds the remaining former bundle values; the legacy
+  `on` spelling remains an alias for `full`. Presets no longer enforce `r.NGX.DLSS.DenoiserMode=1` (select the
   RR denoiser explicitly via `force_ray_reconstruction=on`). Added `custom_cvar_overrides` /
   per-app `UE5.custom_cvar_overrides` for typed final-value overrides of individual UE5 CVars; valid entries
   take precedence over all presets and dedicated options.
 
 ### Improved
 
-- Rebalanced the UE5 RR quality presets by cost instead of bundling everything into `full`: settings that only
-  cost history memory, that are already engine defaults, or that reduce work now sit in `medium`, while `high`
-  and `full` carry only the sampling density that costs GPU time. `r.Lumen.ScreenProbeGather.StochasticInterpolation`
-  is now `1` - the cheaper stochastic path AMD measures as up to ~30% faster in the screen probe gather passes,
-  and the signal a ray reconstruction denoiser expects - instead of the bilinear `0`. Inserting the new level
-  renumbered the shared-memory preset byte (`full` 3 -> 4) and moved `SHARED_MEMORY_VERSION` 57 -> 58, which also
-  renamed the shared mappings.
 - Made overlay rendering cheap under DOOM Eternal's Vulkan "present from compute": overlay submits land on
   the game's own graphics queue instead of the compute present queue, the compute-present overlay hot path
   avoids redundant work, and CE diagnostics moved off the present critical path.
